@@ -17,9 +17,10 @@ interface AgentBarProps {
   view: "landing" | "gallery"
   chatOpen: boolean
   onToggleChat: (open: boolean) => void
+  siteId?: "casa-serena" | "velocity"
 }
 
-export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chatOpen, onToggleChat }: AgentBarProps) {
+export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chatOpen, onToggleChat, siteId = "casa-serena" }: AgentBarProps) {
   const [input, setInput] = useState("")
   const [conversationId, setConversationId] = useState<number | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -85,7 +86,7 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
   useEffect(() => {
     if (conversationId && !greetingShown) {
       setGreetingShown(true)
-      fetch("/api/greeting")
+      fetch(`/api/greeting?siteId=${siteId}`)
         .then(res => res.json())
         .then(data => {
           setMessages([{ role: "assistant", content: data.greeting }])
@@ -93,7 +94,7 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
         })
         .catch(console.error)
     }
-  }, [conversationId, greetingShown])
+  }, [conversationId, greetingShown, siteId])
 
   const playVoiceGreeting = useCallback(async () => {
     if (greetingPlayedRef.current || messages.length === 0) return
@@ -109,7 +110,7 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
       const response = await fetch("/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: messages[0].content, voice: "alloy" }),
+        body: JSON.stringify({ text: messages[0].content, voice: "alloy", siteId }),
         signal: controller.signal,
       })
       if (!response.ok) throw new Error("TTS failed")
@@ -154,7 +155,12 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
 
   const parseNavigationCommands = (text: string) => {
     const lower = text.toLowerCase()
-    const roomMap: Record<string, string> = {
+    const roomMap: Record<string, string> = siteId === "velocity" ? {
+      "experiential": "experiential-web", "voice": "voice-first", "orchestrat": "visual-orchestration",
+      "luxury": "luxury-brands", "b2b": "b2b-saas", "saas": "b2b-saas",
+      "education": "education", "coaching": "education", "result": "results", "roi": "results",
+      "pricing": "results",
+    } : {
       "kitchen": "chef-kitchen", "master": "master-suite", "pool": "infinity-pool",
       "ocean": "ocean-room", "wine": "wine-cellar", "sunset": "sunset-terrace",
       "terrace": "sunset-terrace", "village": "coastal-village", "san lorenzo": "coastal-village",
@@ -191,7 +197,7 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, conversationId }),
+        body: JSON.stringify({ message: text, conversationId, siteId }),
         signal: controller.signal,
       })
       if (!response.ok) throw new Error("Chat request failed")
@@ -239,8 +245,14 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
   }
 
   const isActive = isStreaming || isSpeaking
+  const agentName = siteId === "velocity" ? "Vex" : "Marco"
+  const agentRole = siteId === "velocity" ? "Sales Agent" : "Concierge"
 
-  const quickPrompts = [
+  const quickPrompts = siteId === "velocity" ? [
+    { label: "How it works", text: "How does Velocity transform a website into a guided experience?" },
+    { label: "Use cases", text: "What kinds of businesses benefit most from Velocity?" },
+    { label: "Pricing", text: "Tell me about pricing and how to get started" },
+  ] : [
     { label: "Tour the villa", text: "Give me a quick tour of the entire property" },
     { label: "Best room?", text: "Which room would you recommend for a couple?" },
     { label: "Food & Wine", text: "Tell me about the culinary experiences" },
@@ -266,7 +278,7 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
                   onClick={stopEverything}
                   className="flex-shrink-0 p-1 rounded-full bg-white/15 text-white/80 hover:bg-white/25 transition-colors"
                   data-testid="button-stop-greeting"
-                  title="Stop Marco"
+                  title={`Stop ${agentName}`}
                 >
                   <Square className="w-3 h-3" />
                 </button>
@@ -275,7 +287,7 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
                   onClick={playVoiceGreeting}
                   className="flex-shrink-0 p-1 rounded-full hover:bg-white/10 text-white/50 hover:text-white transition-colors"
                   data-testid="button-play-greeting"
-                  title="Listen to Marco"
+                  title={`Listen to ${agentName}`}
                 >
                   <Volume2 className="w-3 h-3" />
                 </button>
@@ -304,7 +316,7 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               onFocus={() => onToggleChat(true)}
-              placeholder="Ask Marco anything..."
+              placeholder={`Ask ${agentName} anything...`}
               className="flex-1 bg-transparent text-sm text-white placeholder-white/40 focus:outline-none px-2"
               disabled={isStreaming}
               data-testid="input-chat-strip"
@@ -345,8 +357,8 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
             <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 flex-shrink-0">
               <div className="flex items-center gap-2.5">
                 <AudioVisualizer isActive={isSpeaking || recorder.state === "recording"} size="sm" />
-                <span className="text-sm font-sans font-medium text-white/90">Marco</span>
-                <span className="text-[9px] font-sans uppercase tracking-widest text-white/40">Concierge</span>
+                <span className="text-sm font-sans font-medium text-white/90">{agentName}</span>
+                <span className="text-[9px] font-sans uppercase tracking-widest text-white/40">{agentRole}</span>
               </div>
               <div className="flex items-center gap-1">
                 {isActive && (
@@ -354,7 +366,7 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
                     onClick={stopEverything}
                     className="p-1.5 rounded-full bg-white/10 text-white/70 hover:bg-white/20 hover:text-white transition-colors"
                     data-testid="button-stop-panel"
-                    title="Stop Marco"
+                    title={`Stop ${agentName}`}
                   >
                     <Square className="w-4 h-4" />
                   </button>
@@ -364,7 +376,7 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
                     onClick={playVoiceGreeting}
                     className="p-1.5 rounded-full hover:bg-white/10 text-white/50 hover:text-white transition-colors"
                     data-testid="button-play-greeting-panel"
-                    title="Listen to Marco"
+                    title={`Listen to ${agentName}`}
                   >
                     <Volume2 className="w-4 h-4" />
                   </button>
@@ -448,7 +460,7 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="Ask Marco anything..."
+                  placeholder={`Ask ${agentName} anything...`}
                   className="flex-1 bg-white/10 border border-white/10 rounded-full px-3.5 py-2 text-[13px] text-white placeholder-white/30 focus:outline-none focus:border-white/25 transition-colors"
                   disabled={isStreaming}
                   data-testid="input-chat-panel"

@@ -1,32 +1,43 @@
 import { useEffect, useRef, useCallback } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { ChevronUp, ChevronDown } from "lucide-react"
-import { galleryCards } from "@/lib/property-data"
 import { cn } from "@/lib/utils"
+
+interface GalleryCardData {
+  id: string
+  title: string
+  subtitle: string
+  image: string
+  category: string
+  description: string
+  details?: string[]
+  price?: string
+}
 
 interface ImmersiveGalleryProps {
   currentRoom: string
   previousRoom: string | null
   onNavigate: (roomId: string) => void
+  cards: GalleryCardData[]
 }
 
-export function ImmersiveGallery({ currentRoom, previousRoom, onNavigate }: ImmersiveGalleryProps) {
-  const currentCard = galleryCards.find((c) => c.id === currentRoom)
-  const currentIndex = galleryCards.findIndex((c) => c.id === currentRoom)
+export function ImmersiveGallery({ currentRoom, previousRoom, onNavigate, cards }: ImmersiveGalleryProps) {
+  const currentCard = cards.find((c) => c.id === currentRoom)
+  const currentIndex = cards.findIndex((c) => c.id === currentRoom)
   const scrollCooldown = useRef(false)
   const touchStartY = useRef<number | null>(null)
 
   const goNext = useCallback(() => {
-    if (currentIndex < galleryCards.length - 1) {
-      onNavigate(galleryCards[currentIndex + 1].id)
+    if (currentIndex < cards.length - 1) {
+      onNavigate(cards[currentIndex + 1].id)
     }
-  }, [currentIndex, onNavigate])
+  }, [currentIndex, onNavigate, cards])
 
   const goPrev = useCallback(() => {
     if (currentIndex > 0) {
-      onNavigate(galleryCards[currentIndex - 1].id)
+      onNavigate(cards[currentIndex - 1].id)
     }
-  }, [currentIndex, onNavigate])
+  }, [currentIndex, onNavigate, cards])
 
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
@@ -73,7 +84,7 @@ export function ImmersiveGallery({ currentRoom, previousRoom, onNavigate }: Imme
   if (!currentCard) return null
 
   const direction = previousRoom
-    ? galleryCards.findIndex(c => c.id === previousRoom) < currentIndex ? 1 : -1
+    ? cards.findIndex(c => c.id === previousRoom) < currentIndex ? 1 : -1
     : 0
 
   return (
@@ -138,7 +149,7 @@ export function ImmersiveGallery({ currentRoom, previousRoom, onNavigate }: Imme
       </AnimatePresence>
 
       {/* Up/Down Arrow Navigation */}
-      <div className="absolute left-1/2 -translate-x-1/2 top-6 z-30 flex flex-col items-center gap-1">
+      <div className="absolute left-1/2 -translate-x-1/2 top-16 z-30 flex flex-col items-center gap-1">
         <button
           onClick={goPrev}
           disabled={currentIndex === 0}
@@ -156,14 +167,14 @@ export function ImmersiveGallery({ currentRoom, previousRoom, onNavigate }: Imme
 
       <div className="absolute left-1/2 -translate-x-1/2 bottom-6 z-30 flex flex-col items-center gap-1">
         <span className="text-[10px] text-white/40 uppercase tracking-widest mb-1">
-          {currentIndex + 1} / {galleryCards.length}
+          {currentIndex + 1} / {cards.length}
         </span>
         <button
           onClick={goNext}
-          disabled={currentIndex === galleryCards.length - 1}
+          disabled={currentIndex === cards.length - 1}
           className={cn(
             "w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md border transition-all",
-            currentIndex === galleryCards.length - 1
+            currentIndex === cards.length - 1
               ? "border-white/10 text-white/20 cursor-not-allowed"
               : "border-white/30 bg-white/10 text-white hover:bg-white/20"
           )}

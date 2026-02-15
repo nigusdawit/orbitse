@@ -6,10 +6,19 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import Home from "@/pages/home";
 
+function CasaSerena() {
+  return <Home siteId="casa-serena" />;
+}
+
+function Velocity() {
+  return <Home siteId="velocity" />;
+}
+
 function Router() {
   return (
     <Switch>
-      <Route path="/" component={Home} />
+      <Route path="/" component={CasaSerena} />
+      <Route path="/velocity" component={Velocity} />
       <Route component={NotFound} />
     </Switch>
   );

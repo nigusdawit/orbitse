@@ -1,0 +1,900 @@
+Comprehensive Replit Prompt: Dynamic Velocity Website with Admin CMS
+Build a full-stack, database-driven website for Velocity by Osyx Labs with complete admin control over content and theming. The site must perfectly match the Osyx Labs design system while allowing non-technical admins to customize all content, colors, and branding without touching code.
+
+🎯 PROJECT OVERVIEW
+What to build:
+A production-ready marketing website with two interfaces:
+
+Public Site - Dynamic landing page that reads ALL content from database
+Admin Dashboard - Full CMS to control every text element, color, image, and section
+
+Core Principle: ZERO hardcoded content. Everything visible on the frontend comes from PostgreSQL.
+
+🏗️ TECH STACK (Required)
+Frontend
+
+Framework: React 18 + TypeScript (Vite)
+Routing: Wouter
+State Management: TanStack React Query v5
+UI Components: shadcn/ui (Radix UI primitives)
+Styling: Tailwind CSS with CSS custom properties
+Animations: Framer Motion
+Icons: Lucide React + react-icons/si (brand logos)
+Forms: React Hook Form + Zod validation
+
+Backend
+
+Server: Express.js + TypeScript
+Database: PostgreSQL 15+
+ORM: Drizzle ORM
+Auth: JWT with HTTP-only cookies
+File Storage: Local uploads (with signed URLs) or Cloudinary integration
+Validation: Zod schemas (shared between frontend/backend)
+
+Development
+
+Monorepo structure with /client and /server directories
+Shared types in /shared directory
+Environment variables via .env files
+Database migrations via Drizzle Kit
+
+
+📊 DATABASE SCHEMA
+1. Site Configuration (site_config)
+Stores global site settings (singleton table - only 1 row):
+typescript{
+  id: 1 (always),
+  siteName: string,           // "Velocity"
+  tagline: string,            // "Universal AI Sales Agent"
+  metaDescription: string,
+  metaKeywords: string[],
+  logoUrl: string,            // Upload
+  faviconUrl: string,         // Upload
+  
+  // Contact/Social
+  email: string,
+  phone: string,
+  socialLinks: {
+    twitter?: string,
+    linkedin?: string,
+    github?: string,
+    youtube?: string
+  },
+  
+  // Theme Colors (HSL format: "H S% L%")
+  theme: {
+    light: {
+      background: string,     // "150 4% 78%"
+      foreground: string,
+      border: string,
+      card: string,
+      primary: string,        // "152 60% 32%"
+      accent: string,
+      // ... all CSS variables from design system
+    },
+    dark: {
+      background: string,     // "120 5% 3%"
+      foreground: string,
+      // ... all dark mode variables
+    }
+  },
+  
+  // Typography
+  fonts: {
+    sans: string,             // "Inter"
+    serif: string,            // "Instrument Serif"
+    mono: string              // "SF Mono"
+  },
+  
+  // Feature Flags
+  features: {
+    darkModeEnabled: boolean,
+    newsletterEnabled: boolean,
+    chatWidgetEnabled: boolean
+  },
+  
+  updatedAt: timestamp
+}
+2. Navigation (navigation_items)
+typescript{
+  id: uuid,
+  label: string,              // "Features"
+  href: string,               // "#features" or "/features"
+  order: number,              // For sorting
+  isExternal: boolean,
+  openInNewTab: boolean,
+  isVisible: boolean,
+  createdAt: timestamp
+}
+3. Hero Section (hero_section)
+Singleton table (only 1 row):
+typescript{
+  id: 1,
+  headline: string,           // "Universal AI Sales Agent..."
+  subheadline: string,
+  videoUrl: string,           // Background video upload
+  videoPlaybackSpeed: number, // 0.5
+  overlayOpacity: number,     // 0.6 (for bg-black overlay)
+  
+  ctaButtons: [{
+    text: string,             // "Start Free Trial"
+    href: string,
+    variant: 'primary' | 'outline',
+    icon?: string             // "ArrowRight"
+  }],
+  
+  floatingBadges?: [{
+    text: string,
+    position: { x: string, y: string } // "20%", "30%"
+  }],
+  
+  isVisible: boolean
+}
+4. Content Sections (sections)
+Generic section table for all page sections:
+typescript{
+  id: uuid,
+  slug: string,               // "features", "pricing", "how-it-works"
+  label: string,              // "THE FEATURES" (small caps label)
+  title: string,              // "Built for Every Business"
+  description?: string,       // Optional subtitle
+  
+  sectionType: enum(
+    'grid-cards',             // Features, team, testimonials
+    'horizontal-scroll',      // Solutions, experiments
+    'accordion',              // FAQ, modules
+    'timeline',               // Process
+    'before-after',           // Case studies
+    'metrics-showcase',       // Stats with colored accents
+    'text-content',           // About, legal pages
+    'partners-strip',         // Infinite scroll logos
+    'newsletter',             // Email capture
+    'cta'                     // Call-to-action block
+  ),
+  
+  order: number,              // Display order
+  maxWidth: string,           // "max-w-5xl", "max-w-6xl"
+  isVisible: boolean,
+  
+  // Section-specific config (JSON)
+  config: {
+    gridColumns?: { mobile: 1, tablet: 2, desktop: 3 },
+    cardStyle?: 'glass' | 'solid' | 'outline',
+    accentColor?: 'emerald' | 'blue' | 'purple' | 'amber' | 'rose',
+    // ... other section-specific settings
+  },
+  
+  createdAt: timestamp,
+  updatedAt: timestamp
+}
+5. Section Items (section_items)
+Content items within sections (cards, FAQs, timeline steps, etc.):
+typescript{
+  id: uuid,
+  sectionId: uuid (FK → sections),
+  
+  // Universal fields
+  title: string,
+  description?: string,
+  imageUrl?: string,
+  icon?: string,              // Lucide icon name
+  
+  // Flexible content (JSON - adapts to section type)
+  content: {
+    // For grid cards
+    features?: string[],
+    badge?: string,
+    link?: { text: string, href: string },
+    
+    // For testimonials
+    author?: { name: string, role: string, company: string, avatar?: string },
+    rating?: number,
+    
+    // For timeline
+    weekLabel?: string,
+    
+    // For before/after
+    beforeValue?: string,
+    afterValue?: string,
+    
+    // For metrics showcase
+    value?: string,
+    unit?: string,
+    accentColor?: 'emerald' | 'blue' | 'purple' | 'amber' | 'rose',
+    
+    // For accordion (FAQ)
+    question?: string,
+    answer?: string,
+    
+    // For partners
+    logoUrl?: string,
+    companyName?: string,
+    
+    // Any other custom fields
+    [key: string]: any
+  },
+  
+  order: number,
+  isVisible: boolean,
+  createdAt: timestamp
+}
+6. Pricing Plans (pricing_plans)
+typescript{
+  id: uuid,
+  name: string,               // "Starter", "Professional", "Enterprise"
+  price: number,              // 297
+  billingPeriod: string,      // "month"
+  description: string,
+  
+  features: [{
+    text: string,
+    included: boolean,
+    tooltip?: string
+  }],
+  
+  isPopular: boolean,         // Show "Most Popular" badge
+  ctaText: string,            // "Start Free Trial"
+  ctaLink: string,
+  
+  order: number,
+  isVisible: boolean
+}
+7. Footer (footer_config)
+Singleton table:
+typescript{
+  id: 1,
+  copyrightText: string,      // "© 2026 Osyx Labs"
+  
+  footerLinks: [{
+    text: string,             // "Privacy Policy"
+    href: string
+  }],
+  
+  socialLinks: [{
+    platform: string,         // "twitter", "linkedin", "github"
+    url: string,
+    icon: string              // Lucide icon name
+  }]
+}
+8. Admin Users (admin_users)
+typescript{
+  id: uuid,
+  email: string (unique),
+  passwordHash: string,       // bcrypt
+  name: string,
+  role: 'super_admin' | 'editor',
+  lastLogin?: timestamp,
+  createdAt: timestamp
+}
+9. Media Library (media)
+Track all uploaded files:
+typescript{
+  id: uuid,
+  filename: string,
+  originalName: string,
+  mimeType: string,
+  fileSize: number,           // bytes
+  url: string,                // Public URL
+  uploadedBy: uuid (FK → admin_users),
+  usedIn: string[],           // Array of references ["hero.videoUrl", "section.xyz"]
+  createdAt: timestamp
+}
+
+🎨 DESIGN SYSTEM IMPLEMENTATION
+CSS Architecture
+1. Root CSS Variables (Dynamic from site_config.theme):
+css:root {
+  /* Loaded from database */
+  --background: var(--db-light-background, 150 4% 78%);
+  --foreground: var(--db-light-foreground, 150 10% 8%);
+  --primary: var(--db-light-primary, 152 60% 32%);
+  /* ... all other variables */
+}
+
+.dark {
+  --background: var(--db-dark-background, 120 5% 3%);
+  --foreground: var(--db-dark-foreground, 0 0% 90%);
+  /* ... all dark mode variables */
+}
+2. Google Fonts (Dynamic):
+typescript// Dynamically inject based on site_config.fonts
+const fontUrl = `https://fonts.googleapis.com/css2?family=${fonts.sans}:wght@300;400;500;600;700&family=${fonts.serif}:ital@0;1&display=swap`;
+3. Utility Classes (Static - from design system):
+css.glass-card { /* ... */ }
+.text-gradient { /* ... */ }
+.nav-link { /* ... */ }
+.floating-badge { /* ... */ }
+/* All design system classes from the guide */
+Component Architecture
+SectionRenderer Component:
+typescript// Dynamically renders sections based on sectionType
+function SectionRenderer({ section, items }) {
+  const renderers = {
+    'grid-cards': GridCardsSection,
+    'horizontal-scroll': HorizontalScrollSection,
+    'accordion': AccordionSection,
+    'timeline': TimelineSection,
+    'before-after': BeforeAfterSection,
+    'metrics-showcase': MetricsShowcaseSection,
+    'text-content': TextContentSection,
+    'partners-strip': PartnersStripSection,
+    'newsletter': NewsletterSection,
+    'cta': CTASection
+  };
+  
+  const Component = renderers[section.sectionType];
+  return <Component section={section} items={items} />;
+}
+```
+
+---
+
+## 🔐 ADMIN DASHBOARD FEATURES
+
+### Dashboard Layout
+```
+├── Login (/admin/login)
+├── Dashboard Layout (after auth)
+    ├── Sidebar Navigation
+    │   ├── Overview
+    │   ├── Site Settings
+    │   ├── Theme Customizer
+    │   ├── Navigation
+    │   ├── Hero Section
+    │   ├── Content Sections
+    │   ├── Pricing Plans
+    │   ├── Footer
+    │   ├── Media Library
+    │   └── Account
+    └── Main Content Area
+```
+
+### Key Admin Pages
+
+**1. Site Settings (`/admin/settings`)**
+- Form to edit `site_config` table
+- Logo/favicon upload with preview
+- Contact information
+- Social media links
+- Meta tags for SEO
+- Feature toggles (dark mode, newsletter, etc.)
+
+**2. Theme Customizer (`/admin/theme`)**
+- Visual color picker for all CSS variables
+- Live preview of changes
+- Separate light/dark mode tabs
+- Reset to default theme button
+- Font family selector (Google Fonts API integration)
+- Save & Publish button
+
+**3. Navigation Manager (`/admin/navigation`)**
+- Drag-and-drop to reorder nav items
+- Add/edit/delete navigation links
+- Toggle visibility
+- Set external/internal links
+
+**4. Hero Section Editor (`/admin/hero`)**
+- WYSIWYG-style editor for headline/subheadline
+- Video upload with preview
+- Playback speed slider
+- Overlay opacity slider
+- CTA button builder (text, link, variant, icon)
+- Floating badges editor (text + position)
+
+**5. Content Sections Manager (`/admin/sections`)**
+- List all sections with drag-to-reorder
+- Add new section (select type from dropdown)
+- Edit section (label, title, description, config)
+- Manage section items (cards, FAQs, timeline steps, etc.)
+- Duplicate section button
+- Toggle section visibility
+- Delete section (with confirmation)
+
+**Section Item Editor (nested):**
+- Dynamic form based on section type
+- Rich text editor for descriptions
+- Image upload with crop/resize
+- Icon picker (searchable Lucide icons)
+- Drag-to-reorder items within section
+
+**6. Pricing Plans (`/admin/pricing`)**
+- CRUD for pricing plans
+- Feature list builder (checkmarks/icons)
+- Popular badge toggle
+- Drag-to-reorder plans
+
+**7. Footer Editor (`/admin/footer`)**
+- Copyright text input
+- Footer links manager (add/edit/delete)
+- Social links manager with icon picker
+
+**8. Media Library (`/admin/media`)**
+- Grid view of all uploaded files
+- Upload new files (drag & drop)
+- File details (size, type, upload date, used in...)
+- Search/filter by type
+- Delete with "used in" warning
+- Copy URL to clipboard
+
+**9. Preview Mode**
+- "Preview Changes" button on every admin page
+- Opens public site in new tab with `?preview=true` query param
+- Shows draft changes from database before publishing
+- "Publish" button to make changes live
+
+---
+
+## 🛠️ BACKEND API ENDPOINTS
+
+### Public API (No Auth Required)
+```
+GET  /api/config              → Full site config + theme
+GET  /api/navigation          → Nav items (visible only)
+GET  /api/hero                → Hero section data
+GET  /api/sections            → All visible sections + items
+GET  /api/sections/:slug      → Single section by slug
+GET  /api/pricing             → Visible pricing plans
+GET  /api/footer              → Footer config
+POST /api/newsletter/subscribe → Email capture (validate + store)
+```
+
+### Admin API (Auth Required - JWT)
+
+**Auth:**
+```
+POST /api/admin/login         → Returns JWT in HTTP-only cookie
+POST /api/admin/logout        → Clears cookie
+GET  /api/admin/me            → Current admin user
+```
+
+**Site Config:**
+```
+GET  /api/admin/config
+PUT  /api/admin/config        → Update site config
+```
+
+**Theme:**
+```
+GET  /api/admin/theme
+PUT  /api/admin/theme         → Update theme variables
+POST /api/admin/theme/reset   → Reset to default theme
+```
+
+**Navigation:**
+```
+GET    /api/admin/navigation
+POST   /api/admin/navigation
+PUT    /api/admin/navigation/:id
+DELETE /api/admin/navigation/:id
+PUT    /api/admin/navigation/reorder → Update order field
+```
+
+**Hero:**
+```
+GET  /api/admin/hero
+PUT  /api/admin/hero
+```
+
+**Sections:**
+```
+GET    /api/admin/sections
+POST   /api/admin/sections
+GET    /api/admin/sections/:id
+PUT    /api/admin/sections/:id
+DELETE /api/admin/sections/:id
+PUT    /api/admin/sections/reorder
+POST   /api/admin/sections/:id/duplicate
+```
+
+**Section Items:**
+```
+GET    /api/admin/sections/:sectionId/items
+POST   /api/admin/sections/:sectionId/items
+PUT    /api/admin/items/:id
+DELETE /api/admin/items/:id
+PUT    /api/admin/sections/:sectionId/items/reorder
+```
+
+**Pricing:**
+```
+GET    /api/admin/pricing
+POST   /api/admin/pricing
+PUT    /api/admin/pricing/:id
+DELETE /api/admin/pricing/:id
+```
+
+**Footer:**
+```
+GET  /api/admin/footer
+PUT  /api/admin/footer
+```
+
+**Media:**
+```
+GET    /api/admin/media              → List all files
+POST   /api/admin/media/upload       → Multipart file upload
+DELETE /api/admin/media/:id
+GET    /api/admin/media/:id/usage    → Where file is used
+```
+
+---
+
+## 🎭 FRONTEND ARCHITECTURE
+
+### File Structure
+```
+client/
+├── src/
+│   ├── components/
+│   │   ├── ui/              → shadcn components
+│   │   ├── layout/
+│   │   │   ├── Navbar.tsx
+│   │   │   ├── Footer.tsx
+│   │   │   └── ScrollReveal.tsx
+│   │   ├── sections/        → Dynamic section renderers
+│   │   │   ├── GridCardsSection.tsx
+│   │   │   ├── HorizontalScrollSection.tsx
+│   │   │   ├── AccordionSection.tsx
+│   │   │   ├── TimelineSection.tsx
+│   │   │   ├── BeforeAfterSection.tsx
+│   │   │   ├── MetricsShowcaseSection.tsx
+│   │   │   ├── PartnersStripSection.tsx
+│   │   │   ├── NewsletterSection.tsx
+│   │   │   └── CTASection.tsx
+│   │   └── admin/
+│   │       ├── AdminLayout.tsx
+│   │       ├── AdminSidebar.tsx
+│   │       ├── editors/
+│   │       │   ├── SiteSettingsEditor.tsx
+│   │       │   ├── ThemeCustomizer.tsx
+│   │       │   ├── HeroEditor.tsx
+│   │       │   ├── SectionEditor.tsx
+│   │       │   └── MediaLibrary.tsx
+│   │       └── forms/
+│   │           ├── ColorPicker.tsx
+│   │           ├── IconPicker.tsx
+│   │           ├── ImageUpload.tsx
+│   │           └── RichTextEditor.tsx
+│   ├── pages/
+│   │   ├── Home.tsx         → Public homepage
+│   │   ├── admin/
+│   │   │   ├── Login.tsx
+│   │   │   ├── Dashboard.tsx
+│   │   │   ├── Settings.tsx
+│   │   │   ├── Theme.tsx
+│   │   │   ├── Navigation.tsx
+│   │   │   ├── Hero.tsx
+│   │   │   ├── Sections.tsx
+│   │   │   ├── Pricing.tsx
+│   │   │   ├── Footer.tsx
+│   │   │   └── Media.tsx
+│   ├── lib/
+│   │   ├── api.ts           → API client (axios/fetch wrapper)
+│   │   ├── theme.ts         → Dynamic CSS variable injection
+│   │   └── utils.ts
+│   ├── hooks/
+│   │   ├── useConfig.ts     → React Query hook for site config
+│   │   ├── useSections.ts
+│   │   ├── useAuth.ts
+│   │   └── useTheme.ts
+│   ├── types/
+│   │   └── index.ts         → Shared TypeScript types
+│   └── styles/
+│       └── index.css        → Design system CSS
+State Management Pattern
+typescript// Example: useConfig hook
+import { useQuery } from '@tanstack/react-query';
+
+export function useConfig() {
+  return useQuery({
+    queryKey: ['config'],
+    queryFn: async () => {
+      const res = await fetch('/api/config');
+      return res.json();
+    },
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
+}
+
+// Usage in component
+function Navbar() {
+  const { data: config } = useConfig();
+  
+  useEffect(() => {
+    // Inject theme CSS variables dynamically
+    if (config?.theme) {
+      injectThemeVariables(config.theme);
+    }
+  }, [config?.theme]);
+  
+  return <nav>...</nav>;
+}
+
+🎨 THEME SYSTEM IMPLEMENTATION
+Dynamic CSS Variable Injection
+typescript// lib/theme.ts
+export function injectThemeVariables(theme: ThemeConfig) {
+  const root = document.documentElement;
+  
+  // Light mode
+  Object.entries(theme.light).forEach(([key, value]) => {
+    root.style.setProperty(`--${key}`, value);
+  });
+  
+  // Dark mode (on .dark class)
+  const darkVars = Object.entries(theme.dark)
+    .map(([key, value]) => `--${key}: ${value};`)
+    .join('\n');
+    
+  // Inject dark mode variables into a style tag
+  const styleId = 'dynamic-dark-theme';
+  let style = document.getElementById(styleId);
+  if (!style) {
+    style = document.createElement('style');
+    style.id = styleId;
+    document.head.appendChild(style);
+  }
+  style.textContent = `.dark { ${darkVars} }`;
+}
+Theme Customizer Preview
+typescript// Admin component with live preview
+function ThemeCustomizer() {
+  const [lightVars, setLightVars] = useState({...});
+  const [darkVars, setDarkVars] = useState({...});
+  
+  // Real-time preview
+  useEffect(() => {
+    injectThemeVariables({ light: lightVars, dark: darkVars });
+  }, [lightVars, darkVars]);
+  
+  return (
+    <div className="grid grid-cols-2 gap-6">
+      <div>
+        <h3>Edit Colors</h3>
+        <ColorPicker 
+          label="Primary Color"
+          value={lightVars.primary}
+          onChange={(val) => setLightVars({...lightVars, primary: val})}
+        />
+        {/* More pickers */}
+      </div>
+      
+      <div className="glass-card p-6">
+        <h3>Preview</h3>
+        <div className="space-y-4">
+          <Button>Sample Button</Button>
+          <div className="glass-card p-4">Sample Card</div>
+          {/* More preview elements */}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+📝 CRITICAL IMPLEMENTATION REQUIREMENTS
+1. No Hardcoded Content
+✅ DO:
+typescript<h1>{heroData.headline}</h1>
+<p style={{ color: `hsl(${theme.primary})` }}>{section.title}</p>
+❌ DON'T:
+typescript<h1>Universal AI Sales Agent</h1>
+<p className="text-emerald-500">Features</p>
+2. All Colors from Database
+typescript// Component receives accentColor from database
+function MetricCard({ value, color }) {
+  const colorClasses = {
+    emerald: 'text-emerald-700 dark:text-emerald-400',
+    blue: 'text-blue-700 dark:text-blue-400',
+    // ... all from database
+  };
+  
+  return <div className={colorClasses[color]}>{value}</div>;
+}
+3. Image Handling
+
+All images uploaded through admin → stored in /uploads directory
+Generate thumbnails on upload (sharp library)
+Return signed URLs with expiry
+Track usage in media table
+
+4. Responsive Design
+
+Mobile-first approach (per design system)
+Test all admin forms on mobile
+Ensure drag-and-drop works on touch devices
+
+5. Performance
+
+Lazy load images (React Suspense + lazy)
+Code splitting per route
+Optimize video (compress, multiple quality levels)
+Database indexes on order, isVisible, sectionId
+
+6. Security
+
+Sanitize all admin inputs (XSS prevention)
+Rate limit API endpoints
+Validate file uploads (type, size, malware scan)
+CSRF protection on admin forms
+SQL injection prevention (parameterized queries via Drizzle)
+
+7. Error Handling
+
+Global error boundary (React)
+Toast notifications (success/error)
+Validation errors displayed inline
+Fallback UI for failed data fetching
+
+
+🚀 DEPLOYMENT & SETUP
+Initial Database Seed
+typescript// seed.ts - Run once on first deploy
+await db.insert(siteConfig).values({
+  id: 1,
+  siteName: 'Velocity',
+  tagline: 'Universal AI Sales Agent',
+  theme: {
+    light: { /* default from design system */ },
+    dark: { /* default from design system */ }
+  },
+  fonts: {
+    sans: 'Inter',
+    serif: 'Instrument Serif',
+    mono: 'SF Mono'
+  },
+  // ... all defaults
+});
+
+// Create default admin user
+await db.insert(adminUsers).values({
+  email: 'admin@osyxlabs.com',
+  passwordHash: await bcrypt.hash('ChangeMe123!', 10),
+  name: 'Admin',
+  role: 'super_admin'
+});
+
+// Seed default sections (empty but with structure)
+await db.insert(sections).values([
+  { slug: 'hero', sectionType: 'hero', order: 0, isVisible: true },
+  { slug: 'features', sectionType: 'grid-cards', order: 1, isVisible: true },
+  // ... etc
+]);
+Environment Variables
+bash# Server
+DATABASE_URL=postgresql://user:pass@localhost:5432/velocity
+JWT_SECRET=random_64_char_string
+NODE_ENV=production
+PORT=3000
+
+# Client
+VITE_API_URL=http://localhost:3000
+
+📚 DOCUMENTATION TO GENERATE
+
+Admin User Guide (/docs/admin-guide.md)
+
+How to edit site settings
+How to customize theme colors
+How to add/reorder sections
+How to upload media
+Video tutorials (optional)
+
+
+Developer Guide (/docs/developer-guide.md)
+
+Database schema explanation
+API endpoint documentation
+How to add new section types
+Theme customization guide
+Deployment instructions
+
+
+API Reference (/docs/api.md)
+
+All endpoints with request/response examples
+Authentication flow
+Error codes
+
+
+
+
+✅ ACCEPTANCE CRITERIA
+The project is complete when:
+
+ Admin can log in and access dashboard
+ Admin can edit site name, tagline, logo without touching code
+ Admin can change ALL theme colors via color picker
+ Admin can upload hero background video
+ Admin can add/edit/delete/reorder navigation items
+ Admin can add/edit/delete/reorder content sections
+ Admin can add/edit/delete items within sections
+ Admin can upload images via media library
+ Admin can edit pricing plans
+ Admin can customize footer
+ Public site renders ALL content from database
+ Theme changes apply instantly (after page refresh)
+ Dark mode toggle works
+ All animations from design system work
+ Mobile responsive (both public + admin)
+ No console errors
+ All text is readable (proper contrast per design system)
+ Database migrations work
+ Seed script populates default data
+ README with setup instructions exists
+
+
+🎯 PHASE 1 MVP (Start Here)
+
+Database Setup
+
+Create all tables via Drizzle schema
+Write seed script with default Velocity content
+Test migrations
+
+
+Backend Core
+
+Public API endpoints (config, sections, hero, pricing, footer)
+Admin auth (login/logout)
+File upload endpoint
+
+
+Frontend Core
+
+Public homepage rendering from API
+Navbar (dynamic from nav table)
+Hero section (from hero table)
+Footer (from footer table)
+Theme injection system
+
+
+Admin MVP
+
+Login page
+Dashboard layout with sidebar
+Site Settings editor (just text fields first)
+Hero section editor
+Basic section manager (list + add/edit/delete)
+
+
+Polish
+
+Add theme customizer
+Add media library
+Add all section types
+Add drag-and-drop reordering
+Add animations
+Mobile optimization
+
+
+
+
+🔗 DESIGN SYSTEM CHECKLIST
+Ensure these are implemented exactly per the design document:
+
+ CSS variables injected dynamically from site_config.theme
+ Google Fonts loaded based on site_config.fonts
+ .glass-card class used on all cards
+ .text-gradient class on all section titles
+ Navbar is floating pill with glassmorphic background
+ Hero has video background + dark overlay + gradient text
+ All section labels use: text-xs uppercase tracking-[0.2em] text-emerald-700 dark:text-emerald-400/60
+ All section titles use: text-3xl sm:text-4xl md:text-5xl font-serif text-gradient
+ Accent colors follow -700 (light) / -400 (dark) pattern
+ Borders use black/[0.06] / white/[0.06] pattern
+ All buttons are rounded-full
+ Framer Motion animations with ScrollReveal and StaggerContainer
+ Dark mode toggle in navbar (Sun/Moon icons)
+ Footer with subtle links and social icons
+ No emojis anywhere (use Lucide icons instead)
+
+
+💡 FINAL NOTES
+
+Prioritize flexibility over perfection - The goal is a CMS that works for ANY Osyx Labs product, not just Velocity
+Keep admin UX simple - Non-technical users should be able to make changes confidently
+Test with real content - Use the Velocity product knowledge from document 1 to populate the seed data
+Document as you build - Add inline comments explaining why things are structured a certain way
+Think scale - This architecture should support 10+ Osyx Labs product sites
+
+Build this as a production-ready foundation that Osyx Labs can clone and customize for each new product launch.

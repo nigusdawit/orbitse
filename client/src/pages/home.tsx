@@ -1,20 +1,38 @@
 import { useState, useCallback } from "react"
+import { useLocation } from "wouter"
 import { ImmersiveGallery } from "@/components/immersive-gallery"
 import { AgentBar } from "@/components/agent-bar"
 import { BookingModal } from "@/components/booking-modal"
 import { LandingPage } from "@/components/landing-page"
+import { VelocityLanding } from "@/components/velocity-landing"
+import { SiteSwitcher } from "@/components/site-switcher"
 import { galleryCards } from "@/lib/property-data"
+import { velocityCards } from "@/lib/velocity-data"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/hooks/use-auth"
-import { LogIn, LogOut, Calendar, ArrowLeft } from "lucide-react"
+import { LogIn, LogOut, Calendar, ArrowLeft, Zap, Palmtree } from "lucide-react"
 
-export default function Home() {
+type SiteId = "casa-serena" | "velocity"
+
+interface SiteHomeProps {
+  siteId?: SiteId
+  params?: Record<string, string>
+}
+
+export default function Home({ siteId: initialSiteId }: SiteHomeProps) {
+  const [, setLocation] = useLocation()
+  const [siteId, setSiteId] = useState<SiteId>(initialSiteId || "casa-serena")
   const [view, setView] = useState<"landing" | "gallery">("landing")
-  const [currentRoom, setCurrentRoom] = useState("hero-villa")
+  const [currentRoom, setCurrentRoom] = useState(() =>
+    siteId === "velocity" ? "hero-velocity" : "hero-villa"
+  )
   const [previousRoom, setPreviousRoom] = useState<string | null>(null)
   const [isBookingOpen, setIsBookingOpen] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
   const { user, isAuthenticated, logout } = useAuth()
+
+  const cards = siteId === "velocity" ? velocityCards : galleryCards
+  const isVelocity = siteId === "velocity"
 
   const handleNavigate = useCallback((roomId: string) => {
     if (roomId === currentRoom) return
@@ -30,19 +48,39 @@ export default function Home() {
     setChatOpen(open)
   }, [])
 
+  const handleSiteSwitch = useCallback((newSite: SiteId) => {
+    if (newSite === siteId) return
+    setSiteId(newSite)
+    setView("landing")
+    setChatOpen(false)
+    setCurrentRoom(newSite === "velocity" ? "hero-velocity" : "hero-villa")
+    setPreviousRoom(null)
+    setLocation(newSite === "velocity" ? "/velocity" : "/")
+  }, [siteId, setLocation])
+
   return (
     <main className="relative h-screen w-full overflow-hidden bg-black">
+      <SiteSwitcher activeSite={siteId} onSwitch={handleSiteSwitch} />
+
       {view === "landing" ? (
-        <LandingPage
-          onExplore={handleExploreGallery}
-          onBook={() => setIsBookingOpen(true)}
-        />
+        isVelocity ? (
+          <VelocityLanding
+            onExplore={handleExploreGallery}
+            onBook={() => setIsBookingOpen(true)}
+          />
+        ) : (
+          <LandingPage
+            onExplore={handleExploreGallery}
+            onBook={() => setIsBookingOpen(true)}
+          />
+        )
       ) : (
         <>
           <ImmersiveGallery
             currentRoom={currentRoom}
             previousRoom={previousRoom}
             onNavigate={handleNavigate}
+            cards={cards}
           />
 
           <div className="absolute top-6 left-6 z-30 flex items-center gap-3 animate-fade-in">
@@ -54,8 +92,20 @@ export default function Home() {
               <ArrowLeft className="w-4 h-4" />
             </button>
             <div className="text-white">
-              <p className="text-sm font-serif font-medium tracking-wide leading-none">Casa Serena</p>
-              <p className="text-[10px] font-sans uppercase tracking-[0.2em] text-white/60 mt-1">Mediterranean Villa</p>
+              {isVelocity ? (
+                <>
+                  <p className="text-sm font-sans font-semibold tracking-wide leading-none flex items-center gap-1.5">
+                    <Zap className="w-3.5 h-3.5 text-emerald-400" />
+                    Velocity
+                  </p>
+                  <p className="text-[10px] font-sans uppercase tracking-[0.2em] text-emerald-400/60 mt-1">by Osyx Labs</p>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm font-serif font-medium tracking-wide leading-none">Casa Serena</p>
+                  <p className="text-[10px] font-sans uppercase tracking-[0.2em] text-white/60 mt-1">Mediterranean Villa</p>
+                </>
+              )}
             </div>
           </div>
 
@@ -80,16 +130,30 @@ export default function Home() {
             )}
             <button
               onClick={() => setIsBookingOpen(true)}
-              className="bg-white text-black px-5 py-2 rounded-full text-xs font-bold uppercase tracking-widest hover:bg-white/90 transition-all shadow-lg flex items-center gap-2"
+              className={cn(
+                "px-5 py-2 rounded-full text-xs font-bold uppercase tracking-widest transition-all shadow-lg flex items-center gap-2",
+                isVelocity
+                  ? "bg-emerald-500 text-black hover:bg-emerald-400 shadow-emerald-500/20"
+                  : "bg-white text-black hover:bg-white/90"
+              )}
               data-testid="button-reserve-gallery"
             >
-              <Calendar className="w-3 h-3" />
-              Reserve
+              {isVelocity ? (
+                <>
+                  <Zap className="w-3 h-3" />
+                  Get Started
+                </>
+              ) : (
+                <>
+                  <Calendar className="w-3 h-3" />
+                  Reserve
+                </>
+              )}
             </button>
           </div>
 
           <div className="absolute top-1/2 right-6 -translate-y-1/2 z-30 flex flex-col gap-3">
-            {galleryCards.map((card) => (
+            {cards.map((card) => (
               <button
                 key={card.id}
                 onClick={() => handleNavigate(card.id)}
@@ -100,8 +164,10 @@ export default function Home() {
                   {card.title}
                 </span>
                 <div className={cn(
-                  "w-2 h-2 rounded-full transition-all duration-500 border border-white/50",
-                  currentRoom === card.id ? "bg-white scale-125 border-white" : "bg-transparent hover:bg-white/50"
+                  "w-2 h-2 rounded-full transition-all duration-500 border",
+                  currentRoom === card.id
+                    ? isVelocity ? "bg-emerald-400 scale-125 border-emerald-400" : "bg-white scale-125 border-white"
+                    : "bg-transparent hover:bg-white/50 border-white/50"
                 )} />
               </button>
             ))}
@@ -116,6 +182,7 @@ export default function Home() {
       />
 
       <AgentBar
+        key={siteId}
         currentRoom={currentRoom}
         onNavigate={(roomId) => {
           if (view === "landing") setView("gallery")
@@ -125,6 +192,7 @@ export default function Home() {
         view={view}
         chatOpen={chatOpen}
         onToggleChat={handleToggleChat}
+        siteId={siteId}
       />
     </main>
   )
