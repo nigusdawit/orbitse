@@ -3,7 +3,6 @@ import { ImmersiveGallery } from "@/components/immersive-gallery"
 import { AgentBar } from "@/components/agent-bar"
 import { BookingModal } from "@/components/booking-modal"
 import { LandingPage } from "@/components/landing-page"
-import { GallerySphere } from "@/components/gallery-sphere"
 import { galleryCards } from "@/lib/property-data"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/hooks/use-auth"
@@ -83,10 +82,24 @@ export default function Home() {
             </button>
           </div>
 
-          <GallerySphere
-            currentRoom={currentRoom}
-            onNavigate={handleNavigate}
-          />
+          <div className="absolute top-1/2 right-6 -translate-y-1/2 z-30 flex flex-col gap-3">
+            {galleryCards.map((card) => (
+              <button
+                key={card.id}
+                onClick={() => handleNavigate(card.id)}
+                className="group relative flex items-center justify-end py-1"
+                data-testid={`button-nav-${card.id}`}
+              >
+                <span className="absolute right-6 text-[10px] font-medium text-white opacity-0 group-hover:opacity-100 transition-all duration-300 translate-x-2 group-hover:translate-x-0 whitespace-nowrap bg-black/40 px-2 py-0.5 rounded backdrop-blur-sm" style={{ visibility: 'hidden' }}>
+                  {card.title}
+                </span>
+                <div className={cn(
+                  "w-2 h-2 rounded-full transition-all duration-500 border border-white/50",
+                  currentRoom === card.id ? "bg-white scale-125 border-white" : "bg-transparent hover:bg-white/50"
+                )} />
+              </button>
+            ))}
+          </div>
         </>
       )}
 
