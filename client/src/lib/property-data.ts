@@ -31,7 +31,7 @@ export const galleryCards: GalleryCard[] = [
     id: "master-suite",
     title: "Master Suite",
     subtitle: "Private Terrace & Ocean Views",
-    image: "https://images.unsplash.com/photo-1590490360182-f33efe29a77d?q=80&w=2074&auto=format&fit=crop", /* Luxury bedroom with ocean view */
+    image: "https://images.unsplash.com/photo-1631049307264-da0ec9d70304?q=80&w=2070&auto=format&fit=crop",
     category: "rooms",
     description:
       "Wake to the sound of waves in our signature suite. Private terrace with panoramic Aegean views, king bed with Italian linens, freestanding copper bathtub.",
@@ -65,7 +65,7 @@ export const galleryCards: GalleryCard[] = [
     id: "infinity-pool",
     title: "Infinity Pool",
     subtitle: "Where Water Meets Sky",
-    image: "https://images.unsplash.com/photo-1572331165267-854da2b00dc1?q=80&w=2070&auto=format&fit=crop", /* Infinity pool overlooking ocean */
+    image: "https://images.unsplash.com/photo-1575429198097-0414ec08e8cd?q=80&w=2070&auto=format&fit=crop",
     category: "amenities",
     description:
       "Our heated infinity pool seems to pour directly into the Aegean. Surrounded by sun-warmed stone loungers, it's the heart of lazy Mediterranean mornings and sunset aperitivos.",
@@ -80,7 +80,7 @@ export const galleryCards: GalleryCard[] = [
     id: "chef-kitchen",
     title: "Chef's Kitchen",
     subtitle: "A Culinary Sanctuary",
-    image: "https://images.unsplash.com/photo-1556912173-3db996e7c3ac?q=80&w=2070&auto=format&fit=crop", /* Modern luxury kitchen */
+    image: "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?q=80&w=2070&auto=format&fit=crop",
     category: "dining",
     description:
       "Our chef-designed kitchen features a professional Viking range, wood-fired pizza oven on the terrace, and a wine fridge stocked with local vintages. Many guests hire our chef for a few dinners, then cook with market-fresh ingredients themselves.",
@@ -96,7 +96,7 @@ export const galleryCards: GalleryCard[] = [
     id: "wine-cellar",
     title: "Wine Cellar",
     subtitle: "400 Labels, One Passion",
-    image: "https://images.unsplash.com/photo-1569924994982-2c6f62439167?q=80&w=1974&auto=format&fit=crop", /* Wine cellar */
+    image: "https://images.unsplash.com/photo-1528823872057-9c018a7a7553?q=80&w=2070&auto=format&fit=crop",
     category: "amenities",
     description:
       "Descend into our stone-vaulted cellar housing over 400 labels from the finest Mediterranean vineyards. Private tastings can be arranged with our sommelier.",

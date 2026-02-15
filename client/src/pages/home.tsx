@@ -42,6 +42,7 @@ export default function Home() {
           <ImmersiveGallery
             currentRoom={currentRoom}
             previousRoom={previousRoom}
+            onNavigate={handleNavigate}
           />
 
           <div className="absolute top-6 left-6 z-30 flex items-center gap-3 animate-fade-in">
