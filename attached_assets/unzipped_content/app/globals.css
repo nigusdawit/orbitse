@@ -1,0 +1,184 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+@layer base {
+  :root {
+    --background: 220 28% 6%;
+    --foreground: 40 20% 92%;
+    --card: 220 24% 10%;
+    --card-foreground: 40 20% 92%;
+    --popover: 220 24% 10%;
+    --popover-foreground: 40 20% 92%;
+    --primary: 38 55% 62%;
+    --primary-foreground: 220 28% 6%;
+    --secondary: 220 18% 14%;
+    --secondary-foreground: 40 20% 85%;
+    --muted: 220 18% 12%;
+    --muted-foreground: 220 10% 50%;
+    --accent: 16 50% 50%;
+    --accent-foreground: 40 20% 95%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 220 18% 16%;
+    --input: 220 18% 18%;
+    --ring: 38 55% 62%;
+    --radius: 0.75rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Room transitions */
+@keyframes roomEnter {
+  from {
+    opacity: 0;
+    transform: scale(1.05);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes roomExit {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+@keyframes kenBurns {
+  0% {
+    transform: scale(1);
+  }
+  100% {
+    transform: scale(1.12);
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes breathe {
+  0%, 100% { transform: scaleY(0.3); }
+  50% { transform: scaleY(1); }
+}
+
+@keyframes subtlePulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+@keyframes presentationSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(40px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-room-enter {
+  animation: roomEnter 1.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.animate-ken-burns {
+  animation: kenBurns 25s ease-in-out infinite alternate;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.6s ease-out forwards;
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.5s ease-out forwards;
+}
+
+.animate-fade-out {
+  animation: fadeOut 0.5s ease-out forwards;
+}
+
+.animate-slide-up {
+  animation: slideUp 0.5s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.animate-presentation {
+  animation: presentationSlideIn 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* Message fade for chat transcript */
+.message-fade-1 { opacity: 1; }
+.message-fade-2 { opacity: 0.55; }
+.message-fade-3 { opacity: 0.3; }
+.message-fade-4 { opacity: 0.15; }
+.message-fade-5 { opacity: 0.07; }
+
+/* Scrollbar hidden */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Minimal scrollbar for chat */
+::-webkit-scrollbar {
+  width: 2px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(38 55% 62% / 0.15);
+  border-radius: 2px;
+}
