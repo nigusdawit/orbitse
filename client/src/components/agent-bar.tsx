@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react"
-import { Send, Mic, MicOff, X, Volume2 } from "lucide-react"
+import { Send, Mic, MicOff, X, Volume2, Square } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { AudioVisualizer } from "./audio-visualizer"
 import { useVoiceRecorder, useVoiceStream } from "@/replit_integrations/audio"
@@ -28,6 +28,7 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
   const [greetingText, setGreetingText] = useState("")
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const panelInputRef = useRef<HTMLInputElement>(null)
+  const abortControllerRef = useRef<AbortController | null>(null)
 
   const recorder = useVoiceRecorder()
   const [isSpeaking, setIsSpeaking] = useState(false)
@@ -59,6 +60,17 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
     }
   })
 
+  const stopEverything = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+      abortControllerRef.current = null
+    }
+    greetingPlayback.clear()
+    stream.abort?.()
+    setIsStreaming(false)
+    setIsSpeaking(false)
+  }, [greetingPlayback, stream])
+
   useEffect(() => {
     fetch("/api/conversations", {
       method: "POST",
@@ -87,6 +99,10 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
     if (greetingPlayedRef.current || messages.length === 0) return
     greetingPlayedRef.current = true
     setIsSpeaking(true)
+
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+
     try {
       await greetingPlayback.init()
       greetingPlayback.clear()
@@ -94,6 +110,7 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: messages[0].content, voice: "alloy" }),
+        signal: controller.signal,
       })
       if (!response.ok) throw new Error("TTS failed")
       const reader = response.body?.getReader()
@@ -116,8 +133,11 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
         }
       }
     } catch (err) {
-      console.error("Voice greeting error:", err)
+      if ((err as Error).name !== "AbortError") {
+        console.error("Voice greeting error:", err)
+      }
     } finally {
+      abortControllerRef.current = null
       setTimeout(() => setIsSpeaking(false), 2000)
     }
   }, [messages, greetingPlayback])
@@ -163,11 +183,16 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
     setInput("")
     setMessages(prev => [...prev, { role: "user", content: text }])
     setIsStreaming(true)
+
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text, conversationId }),
+        signal: controller.signal,
       })
       if (!response.ok) throw new Error("Chat request failed")
       const reader = response.body?.getReader()
@@ -199,9 +224,12 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
         }
       }
     } catch (err) {
-      console.error("Text chat error:", err)
-      setMessages(prev => [...prev, { role: "assistant", content: "I apologize, I'm having trouble responding right now. Please try again." }])
+      if ((err as Error).name !== "AbortError") {
+        console.error("Text chat error:", err)
+        setMessages(prev => [...prev, { role: "assistant", content: "I apologize, I'm having trouble responding right now. Please try again." }])
+      }
     } finally {
+      abortControllerRef.current = null
       setIsStreaming(false)
     }
   }
@@ -209,6 +237,8 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleTextSend() }
   }
+
+  const isActive = isStreaming || isSpeaking
 
   const quickPrompts = [
     { label: "Tour the villa", text: "Give me a quick tour of the entire property" },
@@ -231,7 +261,16 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
               <p className="text-[11px] text-white/70 font-light truncate flex-1" data-testid="text-greeting-strip">
                 {greetingText}
               </p>
-              {!greetingPlayedRef.current && (
+              {isSpeaking ? (
+                <button
+                  onClick={stopEverything}
+                  className="flex-shrink-0 p-1 rounded-full bg-white/15 text-white/80 hover:bg-white/25 transition-colors"
+                  data-testid="button-stop-greeting"
+                  title="Stop Marco"
+                >
+                  <Square className="w-3 h-3" />
+                </button>
+              ) : !greetingPlayedRef.current ? (
                 <button
                   onClick={playVoiceGreeting}
                   className="flex-shrink-0 p-1 rounded-full hover:bg-white/10 text-white/50 hover:text-white transition-colors"
@@ -240,7 +279,7 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
                 >
                   <Volume2 className="w-3 h-3" />
                 </button>
-              )}
+              ) : null}
             </div>
           )}
 
@@ -271,7 +310,16 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
               data-testid="input-chat-strip"
             />
 
-            {input.trim() && (
+            {isActive && !chatOpen ? (
+              <button
+                type="button"
+                onClick={stopEverything}
+                className="p-3 rounded-full bg-white/15 text-white transition-all flex-shrink-0 shadow-lg hover:bg-white/25"
+                data-testid="button-stop-strip"
+              >
+                <Square className="w-4 h-4" />
+              </button>
+            ) : input.trim() ? (
               <button
                 type="button"
                 onClick={handleTextSend}
@@ -281,7 +329,7 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
               >
                 <Send className="w-4 h-4" />
               </button>
-            )}
+            ) : null}
           </div>
         </div>
       </div>
@@ -301,7 +349,17 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
                 <span className="text-[9px] font-sans uppercase tracking-widest text-white/40">Concierge</span>
               </div>
               <div className="flex items-center gap-1">
-                {!greetingPlayedRef.current && messages.length > 0 && (
+                {isActive && (
+                  <button
+                    onClick={stopEverything}
+                    className="p-1.5 rounded-full bg-white/10 text-white/70 hover:bg-white/20 hover:text-white transition-colors"
+                    data-testid="button-stop-panel"
+                    title="Stop Marco"
+                  >
+                    <Square className="w-4 h-4" />
+                  </button>
+                )}
+                {!isActive && !greetingPlayedRef.current && messages.length > 0 && (
                   <button
                     onClick={playVoiceGreeting}
                     className="p-1.5 rounded-full hover:bg-white/10 text-white/50 hover:text-white transition-colors"
@@ -395,15 +453,26 @@ export function AgentBar({ onNavigate, onExploreGallery, currentRoom, view, chat
                   disabled={isStreaming}
                   data-testid="input-chat-panel"
                 />
-                <button
-                  type="button"
-                  onClick={handleTextSend}
-                  disabled={!input.trim() || isStreaming}
-                  className="p-2 rounded-full bg-white/10 text-white/60 hover:bg-white/20 hover:text-white transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
-                  data-testid="button-send-panel"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                </button>
+                {isActive ? (
+                  <button
+                    type="button"
+                    onClick={stopEverything}
+                    className="p-2 rounded-full bg-white/10 text-white/70 hover:bg-white/20 hover:text-white transition-all flex-shrink-0"
+                    data-testid="button-stop-panel-input"
+                  >
+                    <Square className="w-3.5 h-3.5" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleTextSend}
+                    disabled={!input.trim() || isStreaming}
+                    className="p-2 rounded-full bg-white/10 text-white/60 hover:bg-white/20 hover:text-white transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                    data-testid="button-send-panel"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
             </div>
           </div>
