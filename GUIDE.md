@@ -93,8 +93,9 @@ The admin has eight tabs:
 | `pricing_seasons`  | Pricing tiers                            | label, date_range, price_range, sort_order      |
 | `chatbot_settings` | AI chatbot configuration (one row, id=1) | enabled, mode, agent_name, greeting, quick_prompts (JSON), api_endpoint |
 | `custom_forms`     | Dynamic form definitions                 | name, slug, description, status, submit_button_text, success_message |
-| `form_fields`      | Form field definitions                   | form_id, field_type, label, name, placeholder, required, options (JSON), width |
+| `form_fields`      | Form field definitions                   | form_id, field_type, label, name, placeholder, required, options (JSON), width, step |
 | `form_submissions` | Form submissions with marketing data     | form_id, submission_data (JSON), status, UTM params, device, browser, session_id |
+| `uploaded_images`  | Uploaded image file records              | filename, original_name, file_size, uploaded_at |
 
 ---
 
@@ -343,29 +344,137 @@ The chat interface adapts depending on what the AI is showing:
 
 ## Dynamic Form Builder
 
-Create custom forms for any purpose — contact forms, inquiry forms, registration forms, quote requests, etc.
+Create custom forms for any purpose — contact forms, inquiry forms, registration forms, quote requests, etc. Forms can be single-page or multi-step with a progress indicator.
 
 ### Creating a Form
 Admin panel > Forms tab > "+ New Form". Set the name, description, submit button text, and success message.
 
 ### Adding Fields
-Click "Edit" on any form, then use "Add Field" to add fields. Supported types:
+Click "Edit" on any form, then use "Add Field" to add fields. Each field has these properties:
+
+| Property      | Description                                                    |
+|---------------|----------------------------------------------------------------|
+| Field Type    | The input type (see list below)                                |
+| Label         | The label shown above the field                                |
+| Name (slug)   | The database key for the field (auto-generated from label)     |
+| Placeholder   | Gray hint text inside the field                                |
+| Width         | Full width or half width (two half-width fields sit side-by-side) |
+| Step          | Which step this field appears on (1–5)                         |
+| Default Value | Pre-filled value                                               |
+| Help Text     | Small guidance text below the field                            |
+| Required      | Whether the field must be filled before continuing             |
+| Options       | For dropdowns and radio buttons — one option per line          |
+
+Supported field types:
 - **text** — Single-line text input
 - **email** — Email input with validation
 - **tel** — Phone number input
 - **number** — Numeric input
 - **date** — Date picker
-- **select** — Dropdown menu (configure options)
+- **select** — Dropdown menu (configure options, or leave empty to auto-populate from gallery cards)
 - **textarea** — Multi-line text area
 - **checkbox** — Single checkbox
 - **radio** — Radio button group (configure options)
-- **hidden** — Hidden field (for tracking)
+- **hidden** — Hidden field (for tracking or passing values)
+
+### Multi-Step Forms
+
+Forms can be broken into multiple steps for a cleaner experience. Each field has a "Step" setting (1–5) in the admin editor. Here's how it works:
+
+- **Assigning steps**: When adding or editing a field, choose which step it belongs to from the Step dropdown.
+- **Progress indicator**: If a form has fields on more than one step, a numbered progress indicator (dots connected by lines) appears at the top of the modal. Completed steps show a checkmark; the active step is highlighted with the accent color.
+- **Navigation**: Each step has a "Continue" button to advance and a "Back" button to return to the previous step. The first step shows "Cancel" instead of "Back". The final step shows the submit button.
+- **Per-step validation**: Required fields are validated before the visitor can advance to the next step. Invalid fields are highlighted with a red border and the cursor jumps to the first error.
+- **Single-step forms**: If all fields are on step 1 (the default), the form renders as a normal single-page form with no progress indicator.
+
+**Example — a 3-step contact form:**
+| Step | Fields                                |
+|------|---------------------------------------|
+| 1    | Full Name, Email, Service (dropdown)  |
+| 2    | Start Date, End Date, Quantity, Phone |
+| 3    | Additional Details (textarea)         |
+
+### Frosted Glass Modal
+
+The form modal uses a frosted glass design that matches the rest of the site:
+- Semi-transparent dark background with a strong blur effect
+- Input fields have subtle glass borders that glow with the accent color on focus
+- The submit and continue buttons use the accent color (gold by default)
+- All styling adapts to your Theme Editor settings
 
 ### Partial/Abandon Capture
-When a visitor starts filling out a form but leaves before submitting, their partial data is automatically saved. This helps with lead recovery — you can see what fields they filled in and reach out to them.
+
+When a visitor starts filling out a form but leaves before submitting, their partial data is automatically saved after 1.5 seconds of inactivity. This helps with lead recovery — you can see what fields they filled in and reach out to them. Partial submissions appear with an amber "Partial" badge in the admin.
 
 ### Marketing Analytics
-Every submission automatically captures: UTM parameters, device type, browser, OS, screen resolution, language, referrer URL, page URL, IP address, and session ID.
+Every submission automatically captures: UTM parameters (source, medium, campaign, term, content), device type, browser, OS, screen resolution, language, referrer URL, page URL, IP address, and session ID. The admin shows analytics cards for totals, today's count, abandoned forms, abandon rate, device breakdown, and UTM source tracking.
+
+### Drag-and-Drop Field Reordering
+In the field editor, drag fields by the handle (⠿) to reorder them. The new order is saved automatically. Fields are sorted within their assigned step.
+
+---
+
+## Image Upload System
+
+Upload images directly from the admin panel instead of pasting external URLs.
+
+### How It Works
+In the Gallery Cards tab, each card has an "Upload Image" button. Click it to select an image from your computer. The file is uploaded to the `/uploads/` directory on the server and the image URL is automatically set on the card.
+
+Uploaded images are served from `/uploads/filename.ext` and stored in the `uploaded_images` table for tracking.
+
+### Supported Formats
+Any standard image format: JPG, PNG, GIF, WebP, SVG.
+
+---
+
+## Theme Editor
+
+Customize the visual design of the entire site without editing CSS.
+
+### How to Use
+Admin panel > Theme tab. Changes apply instantly on the public site after a page reload.
+
+### What You Can Customize
+
+| Setting           | What It Controls                                         |
+|-------------------|----------------------------------------------------------|
+| Background Color  | The main page background                                 |
+| Section Color 1   | Background for alternating content sections              |
+| Section Color 2   | Background for the other alternating sections            |
+| Accent Color      | Buttons, highlights, focus rings, step indicators        |
+| Text Color        | Main body text color                                     |
+| Glass Border      | Border color on frosted glass panels                     |
+| Glass Background  | Background tint on frosted glass panels                  |
+| Serif Font        | Heading font (default: Playfair Display)                 |
+| Sans Font         | Body font (default: DM Sans)                             |
+
+Colors can be any CSS value: hex (`#c9a96e`), rgb, hsl, or named colors. Fonts can be any Google Font name — the template loads them automatically.
+
+---
+
+## Drag-and-Drop Reordering
+
+Gallery cards, experiences, pricing tiers, and form fields all support drag-and-drop reordering in the admin panel.
+
+### How It Works
+Each table row in the admin has a drag handle (⠿) on the left side. Grab it and drag the row to a new position. The new order is saved to the database automatically.
+
+This uses the SortableJS library and sends a batch update to the server with the new `sort_order` values.
+
+---
+
+## Chat History & Analytics
+
+View all AI conversations and basic analytics in the admin panel.
+
+### Chat History Tab
+- Lists all conversations with timestamps, device type, and message count
+- Click any conversation to expand and read the full message history
+- Messages show the role (visitor or AI) and any commands the AI used
+
+### Analytics
+The Chat History tab shows summary cards: total conversations, messages today, device breakdown, and average messages per conversation.
 
 ---
 
