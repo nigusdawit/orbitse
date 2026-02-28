@@ -56,19 +56,11 @@ FONTS:
        (like the chat bar) naturally stay above the keyboard without JS hacks. -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
 
-  <!-- SEO Meta Tags — Update these for your own site -->
-  <title>My Site — Website Template</title>
-  <meta name="description" content="A beautiful, database-driven website template with AI assistant, dynamic forms, and full admin panel.">
-
-  <!-- Favicon — Shows next to the URL in browser tabs and on smartphone home screens -->
-  <link rel="icon" type="image/png" href="/ai_concierge.png">
-  <link rel="apple-touch-icon" href="/ai_concierge.png">
-
-  <!-- Open Graph Tags — For social media sharing -->
-  <meta property="og:title" content="My Site — Website Template">
-  <meta property="og:description" content="A beautiful, database-driven website template.">
-  <meta property="og:type" content="website">
-  <meta property="og:image" content="/ai_concierge.png">
+  <!-- SEO_META_INJECT — This placeholder is replaced server-side by Flask
+       with actual SEO meta tags from the database (title, description, OG tags,
+       Twitter Cards, canonical URL, etc.) so crawlers see proper SEO data
+       without needing JavaScript. See app.py serve_index() and _build_seo_meta_html(). -->
+  <!-- SEO_META_INJECT -->
 
   <!-- Stylesheet -->
   <link rel="stylesheet" href="/styles.css">
@@ -76,6 +68,17 @@ FONTS:
   <!-- Lucide Icons — Lightweight icon library (used for arrows, calendar, etc.) -->
   <!-- TO CHANGE ICONS: Browse available icons at https://lucide.dev/icons -->
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+
+  <!-- DOMPurify — Sanitizes AI-generated HTML before rendering into the DOM.
+       This prevents XSS (Cross-Site Scripting) attacks from malicious or
+       unexpected HTML/JS in AI responses. All innerHTML assignments of
+       AI-generated content pass through DOMPurify.sanitize() first. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.4/purify.min.js" integrity="sha512-MRxSTHOqMPFz8gRXMPfqPqwxBBMhSbpWOYBMochFflixJg3BnuD/xQQxDj8AkKA1ANWPQHR7IYUKBFCP0iLHg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+
+  <!-- JSON_LD_INJECT — This placeholder is replaced server-side by Flask
+       with JSON-LD structured data (Organization + WebSite schemas) for
+       search engine rich results. See app.py _build_json_ld(). -->
+  <!-- JSON_LD_INJECT -->
 </head>
 
 <body>
@@ -86,7 +89,8 @@ FONTS:
   This container uses CSS scroll-snap for a "page-by-page" scroll experience.
   Each child <section> with class "snap-section" will snap into view.
   -->
-  <div id="landing-view" class="landing-container scrollbar-hide">
+  <!-- role="main" identifies this as the primary content area of the page -->
+  <div id="landing-view" class="landing-container scrollbar-hide" role="main">
 
     <!--
     ========================================================================
@@ -95,7 +99,8 @@ FONTS:
     Content is populated dynamically from /api/site-settings by script.js.
     The background image, title, tagline, and description all come from the database.
     -->
-    <section id="section-hero" class="snap-section hero-section" data-testid="section-hero">
+    <!-- role="banner" identifies the hero as the site's primary banner landmark -->
+    <section id="section-hero" class="snap-section hero-section" role="banner" data-testid="section-hero">
 
       <!-- Background image — set dynamically by JavaScript -->
       <div id="hero-bg" class="hero-bg"></div>
@@ -116,14 +121,15 @@ FONTS:
 
         <!-- Action Buttons -->
         <div class="flex items-center gap-md">
-          <button id="btn-reserve-hero" class="btn-reserve" onclick="openModal()" data-testid="button-reserve-hero">
+          <button id="btn-reserve-hero" class="btn-reserve" onclick="openModal()" aria-label="Get started — open inquiry form" data-testid="button-reserve-hero">
             &#x1f4c5; Get Started
           </button>
         </div>
       </div>
 
       <!-- Hero Content — Centered text and CTA buttons -->
-      <div class="hero-content">
+      <!-- aria-live="polite" announces hero message changes to screen readers (AI typing) -->
+      <div class="hero-content" aria-live="polite">
         <div class="fade-in-view visible" style="max-width: 48rem;">
           <p id="hero-tagline" class="hero-tagline" data-testid="text-hero-tagline">
             Welcome to Our Website
@@ -135,10 +141,10 @@ FONTS:
             Loading...
           </p>
           <div class="hero-buttons">
-            <button class="btn-secondary" onclick="showGallery()" data-testid="button-explore-gallery">
+            <button class="btn-secondary" onclick="showGallery()" aria-label="Explore the gallery" data-testid="button-explore-gallery">
               Explore Gallery
             </button>
-            <button class="btn-primary" onclick="openModal()" data-testid="button-get-started">
+            <button class="btn-primary" onclick="openModal()" aria-label="Get started — open inquiry form" data-testid="button-get-started">
               Get Started
             </button>
           </div>
@@ -173,7 +179,7 @@ FONTS:
         </div>
 
         <div class="text-center mt-xl">
-          <button class="btn-secondary" onclick="showGallery()" data-testid="button-view-all-gallery">
+          <button class="btn-secondary" onclick="showGallery()" aria-label="View all gallery items" data-testid="button-view-all-gallery">
             View All Gallery Items
           </button>
         </div>
@@ -214,7 +220,7 @@ FONTS:
 
         <!-- Final CTA -->
         <div class="text-center mt-2xl" style="padding-bottom: 8rem;">
-          <button class="btn-primary" onclick="openModal()" data-testid="button-cta-bottom">
+          <button class="btn-primary" onclick="openModal()" aria-label="Get started — open inquiry form" data-testid="button-cta-bottom">
             Get Started
           </button>
         </div>
@@ -292,6 +298,30 @@ FONTS:
       </div>
     </section>
 
+    <!--
+    ========================================================================
+    BLOG SECTION — Gallery-style preview cards for latest blog posts
+    ========================================================================
+    Blog posts are loaded from /api/blog (published posts only).
+    Each card shows a cover image, category badge, title, excerpt,
+    author, date, and a "Read More" link to /blog/<slug>.
+    Hidden by default; shown when the blog section is enabled in page_sections.
+    -->
+    <section id="section-blog" class="snap-section landing-section" style="background: var(--bg-section-2); display: none;" data-testid="section-blog">
+      <div class="max-w-container">
+        <div class="section-header fade-in-view">
+          <p class="section-eyebrow">From Our Blog</p>
+          <h2 class="section-title" data-testid="text-blog-title">Latest Stories</h2>
+          <p class="section-subtitle">Insights, updates, and stories from our team.</p>
+        </div>
+
+        <!-- Blog Cards Grid — populated by JavaScript -->
+        <div id="blog-grid" class="blog-grid" data-testid="blog-grid">
+          <!-- Blog preview cards are inserted here dynamically -->
+        </div>
+      </div>
+    </section>
+
     <div id="custom-sections-container"></div>
 
   </div>
@@ -305,7 +335,8 @@ FONTS:
   Content is populated dynamically from /api/business-info and site settings.
   Hidden by default; shown when section_footer is enabled in site_settings.
   -->
-  <footer id="site-footer" class="site-footer" style="display: none;" data-testid="site-footer">
+  <!-- role="contentinfo" identifies the footer as the page's contentinfo landmark -->
+  <footer id="site-footer" class="site-footer" role="contentinfo" style="display: none;" data-testid="site-footer">
     <div class="footer-container">
 
       <!-- Footer Column 1 — Brand + Description -->
@@ -330,6 +361,7 @@ FONTS:
           <li id="footer-link-testimonials" style="display:none;"><a href="#section-testimonials" onclick="scrollToSection('section-testimonials')" data-testid="link-footer-testimonials">Testimonials</a></li>
           <li id="footer-link-team" style="display:none;"><a href="#section-team" onclick="scrollToSection('section-team')" data-testid="link-footer-team">Team</a></li>
           <li id="footer-link-faq" style="display:none;"><a href="#section-faq" onclick="scrollToSection('section-faq')" data-testid="link-footer-faq">FAQ</a></li>
+          <li id="footer-link-blog" style="display:none;"><a href="#section-blog" onclick="scrollToSection('section-blog')" data-testid="link-footer-blog">Blog</a></li>
         </ul>
       </div>
 
@@ -397,7 +429,7 @@ FONTS:
 
     <!-- Back button + Branding (top-left) -->
     <div class="gallery-top-left">
-      <button class="nav-circle-btn" onclick="showLanding()" data-testid="button-back-landing">
+      <button class="nav-circle-btn" onclick="showLanding()" aria-label="Back to landing page" data-testid="button-back-landing">
         <i data-lucide="arrow-left" style="width:16px;height:16px;"></i>
       </button>
       <div class="logo-text">
@@ -408,14 +440,14 @@ FONTS:
 
     <!-- CTA button (top-right) -->
     <div class="gallery-top-right">
-      <button class="btn-reserve" onclick="openModal()" data-testid="button-cta-gallery">
+      <button class="btn-reserve" onclick="openModal()" aria-label="Get started — open inquiry form" data-testid="button-cta-gallery">
         &#x1f4c5; Get Started
       </button>
     </div>
 
     <!-- Up Arrow (top-center) -->
     <div class="gallery-nav-up">
-      <button id="btn-prev" class="nav-circle-btn" onclick="galleryPrev()" data-testid="button-gallery-prev">
+      <button id="btn-prev" class="nav-circle-btn" onclick="galleryPrev()" aria-label="Previous gallery slide" data-testid="button-gallery-prev">
         <i data-lucide="chevron-up" style="width:20px;height:20px;"></i>
       </button>
     </div>
@@ -423,13 +455,14 @@ FONTS:
     <!-- Down Arrow + Slide Counter (bottom-center) -->
     <div class="gallery-nav-down">
       <span id="slide-counter" class="slide-counter" data-testid="text-slide-counter">1 / 8</span>
-      <button id="btn-next" class="nav-circle-btn" onclick="galleryNext()" data-testid="button-gallery-next">
+      <button id="btn-next" class="nav-circle-btn" onclick="galleryNext()" aria-label="Next gallery slide" data-testid="button-gallery-next">
         <i data-lucide="chevron-down" style="width:20px;height:20px;"></i>
       </button>
     </div>
 
     <!-- Dot Navigation (right-side) — one dot per slide -->
-    <div id="dot-nav" class="dot-nav" data-testid="dot-nav">
+    <!-- role="navigation" identifies dot nav as a navigation landmark for screen readers -->
+    <div id="dot-nav" class="dot-nav" role="navigation" aria-label="Gallery slide navigation" data-testid="dot-nav">
       <!-- Dots are inserted here by JavaScript -->
     </div>
   </div>
@@ -448,7 +481,8 @@ FONTS:
   - The form is rendered dynamically by script.js (loadDynamicForm function)
   - Select fields can be auto-populated from gallery cards data
   -->
-  <div id="booking-modal" class="modal-backdrop" data-testid="booking-modal">
+  <!-- role="dialog" and aria-labelledby link the modal to its title for screen readers -->
+  <div id="booking-modal" class="modal-backdrop" role="dialog" aria-labelledby="dynamic-form-title" aria-modal="true" data-testid="booking-modal">
     <div class="modal-content modal-glass">
 
       <div class="modal-header">
@@ -456,7 +490,7 @@ FONTS:
           <h2 class="modal-title" id="dynamic-form-title" data-testid="text-modal-title">Get In Touch</h2>
           <p class="modal-subtitle" id="dynamic-form-subtitle">We'd love to hear from you</p>
         </div>
-        <button class="modal-close" onclick="closeModal()" data-testid="button-close-modal">&times;</button>
+        <button class="modal-close" onclick="closeModal()" aria-label="Close inquiry form" data-testid="button-close-modal">&times;</button>
       </div>
 
       <div id="multistep-progress" class="multistep-progress" style="display:none;" data-testid="multistep-progress"></div>
@@ -524,7 +558,8 @@ FONTS:
     Always visible when the chatbot is enabled.
     Contains: avatar, agent name/role, inline text input, send + expand buttons.
     -->
-    <div id="chatbot-bar" class="chatbot-bar" data-testid="chatbot-bar">
+    <!-- aria-label identifies the chatbot bar for screen readers -->
+    <div id="chatbot-bar" class="chatbot-bar" aria-label="AI assistant chat bar" data-testid="chatbot-bar">
       <!-- Agent avatar — profile image for the AI concierge -->
       <div id="chatbot-avatar" class="chatbot-avatar" data-testid="chatbot-avatar">
         <img src="/ai_concierge.png" alt="AI Concierge" class="chatbot-avatar-img">
@@ -537,24 +572,27 @@ FONTS:
       </div>
 
       <!-- Inline text input — users can type here without expanding -->
+      <!-- aria-label provides accessible name for the chat input field -->
       <input
         id="chatbot-bar-input"
         class="chatbot-bar-input"
         type="text"
         placeholder="Ask me anything..."
         autocomplete="off"
+        aria-label="Type a message to the AI assistant"
         data-testid="input-chatbot-bar"
       >
 
       <!-- Send button — submits the message -->
-      <button id="chatbot-send-btn" class="chatbot-bar-btn" onclick="chatSendMessage()" data-testid="button-chatbot-send">
+      <button id="chatbot-send-btn" class="chatbot-bar-btn" onclick="chatSendMessage()" aria-label="Send message" data-testid="button-chatbot-send">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="m22 2-7 20-4-9-9-4Z"/><path d="m22 2-11 11"/>
         </svg>
       </button>
 
       <!-- Expand/collapse toggle — opens/closes the full chat panel -->
-      <button id="chatbot-expand-btn" class="chatbot-bar-btn" onclick="chatToggleExpand()" data-testid="button-chatbot-expand">
+      <!-- aria-expanded tracks whether the chat panel is open or closed for screen readers -->
+      <button id="chatbot-expand-btn" class="chatbot-bar-btn" onclick="chatToggleExpand()" aria-expanded="false" aria-label="Expand chat panel" data-testid="button-chatbot-expand">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="m18 15-6-6-6 6"/>
         </svg>
@@ -612,7 +650,8 @@ FONTS:
             </button>
           </div>
         </div>
-        <div id="chatbot-messages" class="chatbot-messages" data-testid="chatbot-messages"></div>
+        <!-- role="log" and aria-live="polite" announce new chat messages to screen readers -->
+      <div id="chatbot-messages" class="chatbot-messages" role="log" aria-live="polite" data-testid="chatbot-messages"></div>
       </div>
 
     </div>
@@ -667,7 +706,8 @@ FONTS:
           </svg>
         </button>
       </div>
-      <div id="split-chat-messages" class="chatbot-messages" data-testid="split-chat-messages">
+      <!-- role="log" and aria-live="polite" announce new chat messages to screen readers -->
+      <div id="split-chat-messages" class="chatbot-messages" role="log" aria-live="polite" data-testid="split-chat-messages">
         <!-- Synced from main chat -->
       </div>
       <div class="chatbot-input-bar">
@@ -855,7 +895,8 @@ FONTS:
           </button>
         </div>
       </div>
-      <div id="side-chat-messages" class="chatbot-messages" data-testid="side-chat-messages"></div>
+      <!-- role="log" and aria-live="polite" announce new chat messages to screen readers -->
+      <div id="side-chat-messages" class="chatbot-messages" role="log" aria-live="polite" data-testid="side-chat-messages"></div>
     </div>
 
   </div>

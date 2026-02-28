@@ -566,7 +566,10 @@ TO CUSTOMIZE THIS DASHBOARD:
     <button class="tab-btn" onclick="switchTab('chat-history')" data-testid="tab-chat-history">Chat History</button>
     <button class="tab-btn" onclick="switchTab('forms')" data-testid="tab-forms">Forms</button>
     <button class="tab-btn" onclick="switchTab('theme')" data-testid="tab-theme">Theme</button>
+    <button class="tab-btn" onclick="switchTab('seo')" data-testid="tab-seo">SEO</button>
+    <button class="tab-btn" onclick="switchTab('blog')" data-testid="tab-blog">Blog</button>
     <button class="tab-btn" onclick="switchTab('pages')" data-testid="tab-pages">Saved Pages</button>
+    <button class="tab-btn" onclick="switchTab('analytics')" data-testid="tab-analytics">Analytics</button>
   </nav>
 
 
@@ -1920,6 +1923,236 @@ TO CUSTOMIZE THIS DASHBOARD:
   </div>
 
 
+  <!--
+  ========================================================================
+  TAB: SEO
+  ========================================================================
+  Manage SEO settings: meta title, description, keywords, Open Graph,
+  Twitter Cards, canonical URL, and robots directives.
+  Includes an AI-powered "Generate with AI" feature and live previews.
+  -->
+  <div id="tab-seo" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>SEO Settings</h2>
+        <p>Manage meta tags, Open Graph, Twitter Cards, and search engine directives for your site.</p>
+      </div>
+      <button class="btn btn-primary" onclick="generateSeoWithAI()" data-testid="button-generate-seo" id="seo-generate-btn">Generate with AI</button>
+    </div>
+
+    <div class="form-panel" id="seo-form-panel">
+      <!-- Meta Title with character count -->
+      <h3>Basic Meta Tags</h3>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="seo-meta-title">Meta Title <span id="seo-title-count" style="float:right; color:var(--admin-text-muted); font-weight:400; text-transform:none; letter-spacing:normal;">0 / 60</span></label>
+          <input type="text" id="seo-meta-title" placeholder="My Site — Best Widgets in Town" data-testid="input-seo-meta-title" oninput="updateSeoCharCount('seo-meta-title', 'seo-title-count', 60); updateSeoPreview();" maxlength="120">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="seo-meta-description">Meta Description <span id="seo-desc-count" style="float:right; color:var(--admin-text-muted); font-weight:400; text-transform:none; letter-spacing:normal;">0 / 160</span></label>
+          <textarea id="seo-meta-description" rows="3" placeholder="A concise description of your site for search engines..." data-testid="input-seo-meta-description" oninput="updateSeoCharCount('seo-meta-description', 'seo-desc-count', 160); updateSeoPreview();" maxlength="320"></textarea>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="seo-keywords">Keywords <span style="float:right; color:var(--admin-text-muted); font-weight:400; text-transform:none; letter-spacing:normal;">comma-separated</span></label>
+          <input type="text" id="seo-keywords" placeholder="luxury hotel, boutique resort, ocean view" data-testid="input-seo-keywords">
+        </div>
+      </div>
+
+      <!-- Open Graph & Twitter -->
+      <h3 style="margin-top: 1.5rem;">Social Sharing</h3>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="seo-og-image">OG Image URL</label>
+          <div style="display: flex; gap: 0.5rem;">
+            <input type="url" id="seo-og-image" placeholder="https://example.com/og-image.jpg" data-testid="input-seo-og-image" style="flex:1;" oninput="updateSeoPreview();">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('seo-og-image')" data-testid="button-upload-seo-og-image">Upload</button>
+          </div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="seo-twitter-handle">Twitter Handle</label>
+          <input type="text" id="seo-twitter-handle" placeholder="@yourbrand" data-testid="input-seo-twitter-handle">
+        </div>
+        <div class="form-group">
+          <label for="seo-canonical-url">Canonical URL</label>
+          <input type="url" id="seo-canonical-url" placeholder="https://yourdomain.com" data-testid="input-seo-canonical-url" oninput="updateSeoPreview();">
+        </div>
+      </div>
+
+      <!-- Robots directive -->
+      <h3 style="margin-top: 1.5rem;">Search Engine Directives</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="seo-robots">Robots Directive</label>
+          <select id="seo-robots" data-testid="select-seo-robots">
+            <option value="index, follow">index, follow (default)</option>
+            <option value="index, nofollow">index, nofollow</option>
+            <option value="noindex, follow">noindex, follow</option>
+            <option value="noindex, nofollow">noindex, nofollow</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="saveSeoSettings()" data-testid="button-save-seo">Save SEO Settings</button>
+      </div>
+    </div>
+
+    <!-- Google Search Preview -->
+    <div class="form-panel" style="margin-top: 1.5rem;">
+      <h3 style="margin-bottom: 1rem;">Google Search Preview</h3>
+      <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--admin-border); border-radius: var(--admin-radius); padding: 1.25rem;">
+        <div id="seo-preview-title" style="color: #8ab4f8; font-size: 1.125rem; font-weight: 500; margin-bottom: 0.25rem; word-break: break-word;" data-testid="text-seo-preview-title">Page Title</div>
+        <div id="seo-preview-url" style="color: #bdc1c6; font-size: 0.8125rem; margin-bottom: 0.25rem;" data-testid="text-seo-preview-url">https://yourdomain.com</div>
+        <div id="seo-preview-desc" style="color: #9aa0a6; font-size: 0.875rem; line-height: 1.5; word-break: break-word;" data-testid="text-seo-preview-desc">Your meta description will appear here...</div>
+      </div>
+    </div>
+
+    <!-- Open Graph Social Share Preview -->
+    <div class="form-panel" style="margin-top: 1.5rem;">
+      <h3 style="margin-bottom: 1rem;">Social Share Preview</h3>
+      <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--admin-border); border-radius: var(--admin-radius); overflow: hidden; max-width: 500px;">
+        <div id="seo-og-preview-image" style="width: 100%; height: 200px; background: rgba(255,255,255,0.05); display: flex; align-items: center; justify-content: center; color: var(--admin-text-muted); font-size: 0.875rem;" data-testid="img-seo-og-preview">No OG image set</div>
+        <div style="padding: 1rem;">
+          <div id="seo-og-preview-url" style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem;" data-testid="text-seo-og-url">yourdomain.com</div>
+          <div id="seo-og-preview-title" style="color: #fff; font-size: 1rem; font-weight: 600; margin-bottom: 0.25rem;" data-testid="text-seo-og-title">Page Title</div>
+          <div id="seo-og-preview-desc" style="color: var(--admin-text-muted); font-size: 0.8125rem; line-height: 1.4;" data-testid="text-seo-og-desc">Your meta description...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+  <!--
+  ========================================================================
+  TAB: BLOG
+  ========================================================================
+  Manage blog posts: create, edit, delete, publish/unpublish.
+  Supports cover image uploads, SEO fields per post, and drag-to-reorder.
+  -->
+  <div id="tab-blog" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Blog Posts</h2>
+        <p>Create and manage blog posts displayed on the public site.</p>
+      </div>
+      <button class="btn btn-primary" onclick="showBlogForm()" data-testid="button-add-blog">+ New Post</button>
+    </div>
+
+    <!-- Blog post form (hidden by default) -->
+    <div id="blog-form-panel" class="form-panel" style="display:none;">
+      <h3 id="blog-form-title">New Blog Post</h3>
+      <input type="hidden" id="blog-form-id">
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="blog-title">Title</label>
+          <input type="text" id="blog-title" placeholder="My Awesome Post" data-testid="input-blog-title" oninput="autoGenerateBlogSlug()">
+        </div>
+        <div class="form-group">
+          <label for="blog-slug">Slug (URL-friendly)</label>
+          <input type="text" id="blog-slug" placeholder="my-awesome-post" data-testid="input-blog-slug">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="blog-subtitle">Subtitle</label>
+          <input type="text" id="blog-subtitle" placeholder="A brief subtitle..." data-testid="input-blog-subtitle">
+        </div>
+        <div class="form-group">
+          <label for="blog-author">Author</label>
+          <input type="text" id="blog-author" placeholder="John Doe" data-testid="input-blog-author">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="blog-category">Category</label>
+          <input type="text" id="blog-category" placeholder="Travel, Lifestyle, etc." data-testid="input-blog-category">
+        </div>
+        <div class="form-group">
+          <label for="blog-tags">Tags (comma-separated)</label>
+          <input type="text" id="blog-tags" placeholder="tips, guide, featured" data-testid="input-blog-tags">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="blog-status">Status</label>
+          <select id="blog-status" data-testid="select-blog-status">
+            <option value="draft">Draft</option>
+            <option value="published">Published</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="blog-sort-order">Sort Order</label>
+          <input type="number" id="blog-sort-order" placeholder="0" value="0" data-testid="input-blog-sort">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="blog-cover-image">Cover Image URL</label>
+          <div style="display: flex; gap: 0.5rem;">
+            <input type="url" id="blog-cover-image" placeholder="https://images.unsplash.com/..." data-testid="input-blog-cover" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('blog-cover-image')" data-testid="button-upload-blog-cover">Upload</button>
+          </div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="blog-excerpt">Excerpt (short preview text for card)</label>
+          <textarea id="blog-excerpt" rows="2" placeholder="A brief summary shown on the blog card..." data-testid="input-blog-excerpt"></textarea>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="blog-content">Content (HTML)</label>
+          <textarea id="blog-content" rows="12" placeholder="<p>Your full blog post content here...</p>" data-testid="input-blog-content" style="font-family: monospace; font-size: 0.8125rem;"></textarea>
+        </div>
+      </div>
+
+      <!-- Per-post SEO fields -->
+      <h3 style="margin-top: 1.5rem;">Post SEO</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="blog-seo-title">SEO Title</label>
+          <input type="text" id="blog-seo-title" placeholder="Override title for search engines" data-testid="input-blog-seo-title">
+        </div>
+        <div class="form-group">
+          <label for="blog-seo-description">SEO Description</label>
+          <input type="text" id="blog-seo-description" placeholder="Override description for search engines" data-testid="input-blog-seo-desc">
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="hideBlogForm()" data-testid="button-cancel-blog">Cancel</button>
+        <button class="btn btn-primary" onclick="saveBlogPost()" data-testid="button-save-blog">Save Post</button>
+      </div>
+    </div>
+
+    <!-- Blog posts data table -->
+    <table class="data-table" id="blog-table">
+      <thead>
+        <tr>
+          <th style="width:30px;"></th>
+          <th>Title</th>
+          <th>Status</th>
+          <th>Category</th>
+          <th>Author</th>
+          <th>Date</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="blog-tbody">
+        <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+
   <!-- ====================================================================
        SAVED PAGES TAB — AI-generated HTML pages stored in the database
        ==================================================================== -->
@@ -1947,6 +2180,147 @@ TO CUSTOMIZE THIS DASHBOARD:
         </tbody>
       </table>
     </div>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: ANALYTICS
+  ========================================================================
+  Visitor analytics dashboard showing page views, sessions, devices,
+  browsers, referrers, top pages, and a daily page-views bar chart.
+  -->
+  <div id="tab-analytics" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Visitor Analytics</h2>
+        <p>Track page views, visitor sessions, browsers, devices, and traffic sources.</p>
+      </div>
+      <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <label for="analytics-days-select" style="color: var(--admin-text-muted); font-size: 0.85rem;">Period:</label>
+        <select id="analytics-days-select" onchange="loadAnalytics()" data-testid="select-analytics-days" style="background: var(--admin-input-bg); border: 1px solid var(--admin-border); color: var(--admin-text); padding: 0.4rem 0.6rem; border-radius: var(--admin-radius); font-size: 0.85rem;">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="loadAnalytics()" data-testid="button-refresh-analytics">Refresh</button>
+      </div>
+    </div>
+
+    <!-- Summary Cards -->
+    <div id="analytics-summary-cards" class="form-panel" style="display: flex; gap: 2rem; flex-wrap: wrap; margin-bottom: 1.5rem;">
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Total Views</div>
+        <div id="av-total-views" style="font-size: 1.5rem; font-weight: 600; color: #fff;" data-testid="text-av-total-views">0</div>
+      </div>
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Unique Visitors</div>
+        <div id="av-unique-visitors" style="font-size: 1.5rem; font-weight: 600; color: #fff;" data-testid="text-av-unique-visitors">0</div>
+      </div>
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Sessions</div>
+        <div id="av-total-sessions" style="font-size: 1.5rem; font-weight: 600; color: #fff;" data-testid="text-av-total-sessions">0</div>
+      </div>
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Avg. Duration</div>
+        <div id="av-avg-duration" style="font-size: 1.5rem; font-weight: 600; color: #fff;" data-testid="text-av-avg-duration">0s</div>
+      </div>
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Today</div>
+        <div id="av-today-views" style="font-size: 1.5rem; font-weight: 600; color: #60a5fa;" data-testid="text-av-today-views">0</div>
+      </div>
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">This Week</div>
+        <div id="av-week-views" style="font-size: 1.5rem; font-weight: 600; color: #60a5fa;" data-testid="text-av-week-views">0</div>
+      </div>
+    </div>
+
+    <!-- Daily Views Bar Chart -->
+    <div class="form-panel" style="margin-bottom: 1.5rem;">
+      <h3 style="margin-bottom: 1rem;">Daily Page Views</h3>
+      <div id="av-chart-container" data-testid="chart-daily-views" style="display: flex; align-items: flex-end; gap: 2px; height: 180px; padding: 0.5rem 0; overflow-x: auto;">
+        <div style="color: var(--admin-text-muted); font-size: 0.85rem;">Loading chart data...</div>
+      </div>
+      <div id="av-chart-labels" style="display: flex; gap: 2px; font-size: 0.65rem; color: var(--admin-text-muted); overflow-x: auto; margin-top: 0.25rem;"></div>
+    </div>
+
+    <!-- Breakdowns: Browsers, Devices, OS, UTM Sources side-by-side -->
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+      <!-- Browsers -->
+      <div class="form-panel">
+        <h3 style="margin-bottom: 0.75rem; font-size: 0.9rem;">Browsers</h3>
+        <div id="av-browsers" data-testid="list-av-browsers" style="font-size: 0.85rem; color: rgba(255,255,255,0.8);">—</div>
+      </div>
+      <!-- Devices -->
+      <div class="form-panel">
+        <h3 style="margin-bottom: 0.75rem; font-size: 0.9rem;">Devices</h3>
+        <div id="av-devices" data-testid="list-av-devices" style="font-size: 0.85rem; color: rgba(255,255,255,0.8);">—</div>
+      </div>
+      <!-- Operating Systems -->
+      <div class="form-panel">
+        <h3 style="margin-bottom: 0.75rem; font-size: 0.9rem;">Operating Systems</h3>
+        <div id="av-os" data-testid="list-av-os" style="font-size: 0.85rem; color: rgba(255,255,255,0.8);">—</div>
+      </div>
+      <!-- UTM Sources -->
+      <div class="form-panel">
+        <h3 style="margin-bottom: 0.75rem; font-size: 0.9rem;">UTM Sources</h3>
+        <div id="av-utm" data-testid="list-av-utm" style="font-size: 0.85rem; color: rgba(255,255,255,0.8);">—</div>
+      </div>
+    </div>
+
+    <!-- Top Pages Table -->
+    <div class="form-panel" style="margin-bottom: 1.5rem;">
+      <h3 style="margin-bottom: 0.75rem;">Top Pages</h3>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Page URL</th>
+            <th>Views</th>
+            <th>Avg. Duration</th>
+          </tr>
+        </thead>
+        <tbody id="av-top-pages-tbody" data-testid="table-av-top-pages">
+          <tr><td colspan="3" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Top Referrers Table -->
+    <div class="form-panel" style="margin-bottom: 1.5rem;">
+      <h3 style="margin-bottom: 0.75rem;">Top Referrers</h3>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Referrer URL</th>
+            <th>Views</th>
+          </tr>
+        </thead>
+        <tbody id="av-referrers-tbody" data-testid="table-av-referrers">
+          <tr><td colspan="2" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Recent Page Views Table -->
+    <div class="form-panel">
+      <h3 style="margin-bottom: 0.75rem;">Recent Page Views</h3>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Page</th>
+            <th>Browser</th>
+            <th>OS</th>
+            <th>Device</th>
+            <th>Duration</th>
+            <th>UTM Source</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody id="av-recent-tbody" data-testid="table-av-recent">
+          <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
   </div>
 
   <!-- Preview modal for saved pages -->
@@ -4160,6 +4534,502 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     /*
     ========================================================================
+    SEO SETTINGS — Load, save, AI generation, and live preview
+    ========================================================================
+    Manages SEO meta tags, Open Graph, Twitter Cards, canonical URL,
+    and robots directives. Includes AI-powered content generation
+    and live Google/social share previews.
+    */
+
+    /** Load current SEO settings from the database into the form fields */
+    async function loadSeoSettings() {
+      try {
+        const res = await fetch('/admin/api/seo');
+        const data = await res.json();
+
+        document.getElementById('seo-meta-title').value = data.seo_meta_title || '';
+        document.getElementById('seo-meta-description').value = data.seo_meta_description || '';
+        document.getElementById('seo-keywords').value = data.seo_keywords || '';
+        document.getElementById('seo-og-image').value = data.seo_og_image || '';
+        document.getElementById('seo-twitter-handle').value = data.seo_twitter_handle || '';
+        document.getElementById('seo-canonical-url').value = data.seo_canonical_url || '';
+        document.getElementById('seo-robots').value = data.seo_robots || 'index, follow';
+
+        /* Update character counts and preview */
+        updateSeoCharCount('seo-meta-title', 'seo-title-count', 60);
+        updateSeoCharCount('seo-meta-description', 'seo-desc-count', 160);
+        updateSeoPreview();
+      } catch (err) {
+        showToast('Failed to load SEO settings', 'error');
+      }
+    }
+
+    /** Save SEO settings to the database */
+    async function saveSeoSettings() {
+      const data = {
+        seo_meta_title: document.getElementById('seo-meta-title').value,
+        seo_meta_description: document.getElementById('seo-meta-description').value,
+        seo_keywords: document.getElementById('seo-keywords').value,
+        seo_og_image: document.getElementById('seo-og-image').value,
+        seo_twitter_handle: document.getElementById('seo-twitter-handle').value,
+        seo_canonical_url: document.getElementById('seo-canonical-url').value,
+        seo_robots: document.getElementById('seo-robots').value
+      };
+
+      try {
+        const res = await fetch('/admin/api/seo', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+
+        if (res.ok) {
+          showToast('SEO settings saved!');
+        } else {
+          showToast('Failed to save SEO settings', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save SEO settings', 'error');
+      }
+    }
+
+    /** Use AI to generate SEO meta title, description, and keywords */
+    async function generateSeoWithAI() {
+      const btn = document.getElementById('seo-generate-btn');
+      btn.disabled = true;
+      btn.textContent = 'Generating...';
+
+      try {
+        const res = await fetch('/admin/api/seo/generate', { method: 'POST' });
+        const data = await res.json();
+
+        if (res.ok && data) {
+          /* Pre-fill form fields with AI-suggested content */
+          if (data.seo_meta_title) document.getElementById('seo-meta-title').value = data.seo_meta_title;
+          if (data.seo_meta_description) document.getElementById('seo-meta-description').value = data.seo_meta_description;
+          if (data.seo_keywords) document.getElementById('seo-keywords').value = data.seo_keywords;
+
+          /* Update character counts and preview after AI fill */
+          updateSeoCharCount('seo-meta-title', 'seo-title-count', 60);
+          updateSeoCharCount('seo-meta-description', 'seo-desc-count', 160);
+          updateSeoPreview();
+
+          showToast('AI-generated SEO content loaded! Review and save.');
+        } else {
+          showToast(data.error || 'Failed to generate SEO content', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to generate SEO content', 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Generate with AI';
+      }
+    }
+
+    /**
+     * Update character count display for an input field.
+     * Changes color to warn when approaching or exceeding the recommended limit.
+     */
+    function updateSeoCharCount(inputId, countId, maxChars) {
+      const input = document.getElementById(inputId);
+      const countEl = document.getElementById(countId);
+      if (!input || !countEl) return;
+
+      const len = input.value.length;
+      countEl.textContent = len + ' / ' + maxChars;
+
+      /* Color coding: green when optimal, yellow when close, red when over */
+      if (len > maxChars) {
+        countEl.style.color = '#ef4444';
+      } else if (len > maxChars * 0.85) {
+        countEl.style.color = '#f59e0b';
+      } else {
+        countEl.style.color = 'var(--admin-text-muted)';
+      }
+    }
+
+    /** Update both Google search and social share previews with current field values */
+    function updateSeoPreview() {
+      const title = document.getElementById('seo-meta-title').value || 'Page Title';
+      const desc = document.getElementById('seo-meta-description').value || 'Your meta description will appear here...';
+      const url = document.getElementById('seo-canonical-url').value || 'https://yourdomain.com';
+      const ogImage = document.getElementById('seo-og-image').value;
+
+      /* Google search preview */
+      document.getElementById('seo-preview-title').textContent = title;
+      document.getElementById('seo-preview-url').textContent = url;
+      document.getElementById('seo-preview-desc').textContent = desc;
+
+      /* Social share preview */
+      document.getElementById('seo-og-preview-title').textContent = title;
+      document.getElementById('seo-og-preview-desc').textContent = desc;
+
+      /* Extract domain from URL for display */
+      try {
+        const domain = new URL(url).hostname;
+        document.getElementById('seo-og-preview-url').textContent = domain;
+      } catch (e) {
+        document.getElementById('seo-og-preview-url').textContent = url;
+      }
+
+      /* OG image preview */
+      const imageContainer = document.getElementById('seo-og-preview-image');
+      if (ogImage) {
+        imageContainer.innerHTML = '<img src="' + esc(ogImage) + '" alt="OG Preview" style="width:100%; height:100%; object-fit:cover;">';
+      } else {
+        imageContainer.innerHTML = '<span style="color:var(--admin-text-muted); font-size:0.875rem;">No OG image set</span>';
+      }
+    }
+
+
+    /*
+    ========================================================================
+    BLOG POSTS — CRUD Operations
+    ========================================================================
+    Manage blog posts: create, edit, delete, publish/unpublish, reorder.
+    Supports cover image uploads and per-post SEO fields.
+    */
+
+    /** Load all blog posts and render the table */
+    async function loadBlogPosts() {
+      try {
+        const res = await fetch('/admin/api/blog');
+        const posts = await res.json();
+        const tbody = document.getElementById('blog-tbody');
+
+        if (!posts.length) {
+          tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No blog posts yet. Click "+ New Post" to create one.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = posts.map(post => {
+          /* Status badge styling: green for published, amber for draft */
+          const statusBadge = post.status === 'published'
+            ? '<span class="badge" style="background:rgba(34,197,94,0.2); color:#22c55e; border-color:rgba(34,197,94,0.3);">Published</span>'
+            : '<span class="badge" style="background:rgba(251,191,36,0.2); color:#fbbf24; border-color:rgba(251,191,36,0.3);">Draft</span>';
+
+          /* Format the date for display */
+          const dateStr = post.published_at
+            ? new Date(post.published_at).toLocaleDateString()
+            : (post.created_at ? new Date(post.created_at).toLocaleDateString() : '\u2014');
+
+          return `
+            <tr data-id="${post.id}">
+              <td><span class="drag-handle" title="Drag to reorder">&#x2630;</span></td>
+              <td><strong>${esc(post.title)}</strong></td>
+              <td>${statusBadge}</td>
+              <td>${esc(post.category || '\u2014')}</td>
+              <td>${esc(post.author || '\u2014')}</td>
+              <td>${dateStr}</td>
+              <td class="cell-actions">
+                <button class="btn btn-secondary btn-sm" onclick="toggleBlogStatus(${post.id}, '${post.status}')" data-testid="button-toggle-blog-${post.id}">${post.status === 'published' ? 'Unpublish' : 'Publish'}</button>
+                <button class="btn btn-secondary btn-sm" onclick='editBlogPost(${JSON.stringify(post).replace(/'/g, "&#39;")})' data-testid="button-edit-blog-${post.id}">Edit</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteBlogPost(${post.id})" data-testid="button-delete-blog-${post.id}">Delete</button>
+              </td>
+            </tr>
+          `;
+        }).join('');
+
+        /* Initialize drag-to-reorder for blog posts */
+        initSortable('blog-tbody', 'blog-posts');
+      } catch (err) {
+        showToast('Failed to load blog posts', 'error');
+      }
+    }
+
+    /** Show the blog form for adding a new post with empty fields */
+    function showBlogForm() {
+      document.getElementById('blog-form-panel').style.display = 'block';
+      document.getElementById('blog-form-title').textContent = 'New Blog Post';
+      document.getElementById('blog-form-id').value = '';
+      document.getElementById('blog-title').value = '';
+      document.getElementById('blog-slug').value = '';
+      document.getElementById('blog-subtitle').value = '';
+      document.getElementById('blog-author').value = '';
+      document.getElementById('blog-category').value = '';
+      document.getElementById('blog-tags').value = '';
+      document.getElementById('blog-status').value = 'draft';
+      document.getElementById('blog-sort-order').value = '0';
+      document.getElementById('blog-cover-image').value = '';
+      document.getElementById('blog-excerpt').value = '';
+      document.getElementById('blog-content').value = '';
+      document.getElementById('blog-seo-title').value = '';
+      document.getElementById('blog-seo-description').value = '';
+    }
+
+    /** Hide the blog form */
+    function hideBlogForm() {
+      document.getElementById('blog-form-panel').style.display = 'none';
+    }
+
+    /** Auto-generate slug from blog title as the user types */
+    function autoGenerateBlogSlug() {
+      const title = document.getElementById('blog-title').value;
+      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      document.getElementById('blog-slug').value = slug;
+    }
+
+    /** Populate the blog form with existing post data for editing */
+    function editBlogPost(post) {
+      document.getElementById('blog-form-panel').style.display = 'block';
+      document.getElementById('blog-form-title').textContent = 'Edit: ' + post.title;
+      document.getElementById('blog-form-id').value = post.id;
+      document.getElementById('blog-title').value = post.title || '';
+      document.getElementById('blog-slug').value = post.slug || '';
+      document.getElementById('blog-subtitle').value = post.subtitle || '';
+      document.getElementById('blog-author').value = post.author || '';
+      document.getElementById('blog-category').value = post.category || '';
+      document.getElementById('blog-tags').value = post.tags || '';
+      document.getElementById('blog-status').value = post.status || 'draft';
+      document.getElementById('blog-sort-order').value = post.sort_order || 0;
+      document.getElementById('blog-cover-image').value = post.cover_image || '';
+      document.getElementById('blog-excerpt').value = post.excerpt || '';
+      document.getElementById('blog-content').value = post.content || '';
+      document.getElementById('blog-seo-title').value = post.seo_title || '';
+      document.getElementById('blog-seo-description').value = post.seo_description || '';
+    }
+
+    /** Save a blog post (create new or update existing) */
+    async function saveBlogPost() {
+      const id = document.getElementById('blog-form-id').value;
+      const data = {
+        title: document.getElementById('blog-title').value,
+        slug: document.getElementById('blog-slug').value,
+        subtitle: document.getElementById('blog-subtitle').value,
+        author: document.getElementById('blog-author').value,
+        category: document.getElementById('blog-category').value,
+        tags: document.getElementById('blog-tags').value,
+        status: document.getElementById('blog-status').value,
+        sort_order: parseInt(document.getElementById('blog-sort-order').value) || 0,
+        cover_image: document.getElementById('blog-cover-image').value,
+        excerpt: document.getElementById('blog-excerpt').value,
+        content: document.getElementById('blog-content').value,
+        seo_title: document.getElementById('blog-seo-title').value,
+        seo_description: document.getElementById('blog-seo-description').value
+      };
+
+      try {
+        const url = id ? `/admin/api/blog/${id}` : '/admin/api/blog';
+        const method = id ? 'PUT' : 'POST';
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+
+        if (res.ok) {
+          showToast(id ? 'Post updated!' : 'Post created!');
+          hideBlogForm();
+          loadBlogPosts();
+        } else {
+          const err = await res.json();
+          showToast(err.error || 'Failed to save post', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save post', 'error');
+      }
+    }
+
+    /** Quick-toggle publish/unpublish status for a blog post */
+    async function toggleBlogStatus(postId, currentStatus) {
+      const newStatus = currentStatus === 'published' ? 'draft' : 'published';
+      try {
+        const res = await fetch(`/admin/api/blog/${postId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: newStatus })
+        });
+
+        if (res.ok) {
+          showToast(newStatus === 'published' ? 'Post published!' : 'Post unpublished');
+          loadBlogPosts();
+        } else {
+          showToast('Failed to update post status', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to update post status', 'error');
+      }
+    }
+
+    /** Delete a blog post after confirmation */
+    async function deleteBlogPost(postId) {
+      if (!confirm('Delete this blog post? This cannot be undone.')) return;
+      try {
+        const res = await fetch(`/admin/api/blog/${postId}`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('Post deleted');
+          loadBlogPosts();
+        } else {
+          showToast('Failed to delete post', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to delete post', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
+    VISITOR ANALYTICS — Load and render analytics dashboard
+    ========================================================================
+    Fetches aggregated analytics data and daily chart from the API,
+    then populates the summary cards, breakdown lists, tables, and bar chart.
+    */
+
+    /** Load all analytics data and render every section of the Analytics tab */
+    async function loadAnalytics() {
+      const days = document.getElementById('analytics-days-select').value || 30;
+
+      try {
+        /* Fetch summary + breakdowns and chart data in parallel */
+        const [statsRes, chartRes] = await Promise.all([
+          fetch('/admin/api/analytics?days=' + days),
+          fetch('/admin/api/analytics/chart?days=' + Math.min(days, 90))
+        ]);
+
+        const stats = await statsRes.json();
+        const chartData = await chartRes.json();
+
+        /* ---- Summary cards ---- */
+        const s = stats.summary || {};
+        document.getElementById('av-total-views').textContent = s.total_views || 0;
+        document.getElementById('av-unique-visitors').textContent = s.unique_visitors || 0;
+        document.getElementById('av-total-sessions').textContent = s.total_sessions || 0;
+        document.getElementById('av-today-views').textContent = s.today_views || 0;
+        document.getElementById('av-week-views').textContent = s.week_views || 0;
+
+        /* Format average duration as Xm Ys */
+        const avgDur = Math.round(s.avg_duration || 0);
+        if (avgDur >= 60) {
+          document.getElementById('av-avg-duration').textContent = Math.floor(avgDur / 60) + 'm ' + (avgDur % 60) + 's';
+        } else {
+          document.getElementById('av-avg-duration').textContent = avgDur + 's';
+        }
+
+        /* ---- Breakdown lists (browsers, devices, OS, UTM) ---- */
+        renderBreakdownList('av-browsers', stats.browsers || [], 'browser', 'cnt');
+        renderBreakdownList('av-devices', stats.devices || [], 'device_type', 'cnt');
+        renderBreakdownList('av-os', stats.os_stats || [], 'os', 'cnt');
+        renderBreakdownList('av-utm', stats.utm_sources || [], 'utm_source', 'cnt');
+
+        /* ---- Top Pages table ---- */
+        const tpTbody = document.getElementById('av-top-pages-tbody');
+        if ((stats.top_pages || []).length === 0) {
+          tpTbody.innerHTML = '<tr><td colspan="3" class="empty-state">No page views recorded yet.</td></tr>';
+        } else {
+          tpTbody.innerHTML = stats.top_pages.map(p => {
+            const dur = Math.round(p.avg_dur || 0);
+            const durStr = dur >= 60 ? Math.floor(dur / 60) + 'm ' + (dur % 60) + 's' : dur + 's';
+            return '<tr data-testid="row-top-page"><td>' + esc(p.page_url) + '</td><td>' + p.views + '</td><td>' + durStr + '</td></tr>';
+          }).join('');
+        }
+
+        /* ---- Top Referrers table ---- */
+        const refTbody = document.getElementById('av-referrers-tbody');
+        if ((stats.referrers || []).length === 0) {
+          refTbody.innerHTML = '<tr><td colspan="2" class="empty-state">No referrer data.</td></tr>';
+        } else {
+          refTbody.innerHTML = stats.referrers.map(r =>
+            '<tr data-testid="row-referrer"><td>' + esc(r.referrer_url) + '</td><td>' + r.cnt + '</td></tr>'
+          ).join('');
+        }
+
+        /* ---- Recent Page Views table ---- */
+        const recTbody = document.getElementById('av-recent-tbody');
+        if ((stats.recent || []).length === 0) {
+          recTbody.innerHTML = '<tr><td colspan="7" class="empty-state">No page views recorded yet.</td></tr>';
+        } else {
+          recTbody.innerHTML = stats.recent.map(r => {
+            const dur = r.duration_seconds || 0;
+            const durStr = dur >= 60 ? Math.floor(dur / 60) + 'm ' + (dur % 60) + 's' : dur + 's';
+            const timeStr = r.created_at ? new Date(r.created_at).toLocaleString() : '';
+            return '<tr data-testid="row-recent-pv">' +
+              '<td>' + esc(r.page_url) + '</td>' +
+              '<td>' + esc(r.browser) + '</td>' +
+              '<td>' + esc(r.os) + '</td>' +
+              '<td>' + esc(r.device_type) + '</td>' +
+              '<td>' + durStr + '</td>' +
+              '<td>' + esc(r.utm_source || '\u2014') + '</td>' +
+              '<td style="font-size:0.8rem; color:var(--admin-text-muted);">' + esc(timeStr) + '</td>' +
+              '</tr>';
+          }).join('');
+        }
+
+        /* ---- Bar chart ---- */
+        renderAnalyticsChart(chartData);
+
+      } catch (err) {
+        showToast('Failed to load analytics', 'error');
+      }
+    }
+
+
+    /**
+     * Render a simple breakdown list inside an element.
+     * @param {string} containerId — ID of the container div
+     * @param {Array} items — array of { [labelKey]: string, [valueKey]: number }
+     * @param {string} labelKey — key for the label
+     * @param {string} valueKey — key for the count
+     */
+    function renderBreakdownList(containerId, items, labelKey, valueKey) {
+      const el = document.getElementById(containerId);
+      if (!items.length) {
+        el.innerHTML = '<span style="color: var(--admin-text-muted);">\u2014</span>';
+        return;
+      }
+      el.innerHTML = items.map(item => {
+        const label = esc(item[labelKey] || 'Unknown');
+        const count = item[valueKey] || 0;
+        return '<div style="display:flex; justify-content:space-between; gap:0.5rem; padding:0.2rem 0; border-bottom:1px solid rgba(255,255,255,0.05);">' +
+          '<span>' + label + '</span><span style="color:var(--admin-text-muted);">' + count + '</span></div>';
+      }).join('');
+    }
+
+
+    /**
+     * Render an inline CSS bar chart for daily page views.
+     * No external library needed — uses plain divs with dynamic heights.
+     * @param {Array} data — array of { date: string, views: number }
+     */
+    function renderAnalyticsChart(data) {
+      const container = document.getElementById('av-chart-container');
+      const labelsContainer = document.getElementById('av-chart-labels');
+
+      if (!data || !data.length) {
+        container.innerHTML = '<div style="color: var(--admin-text-muted); font-size: 0.85rem;">No chart data available.</div>';
+        labelsContainer.innerHTML = '';
+        return;
+      }
+
+      /* Find max views for scaling bar heights */
+      const maxViews = Math.max(1, ...data.map(d => d.views));
+      const barWidth = Math.max(6, Math.floor(600 / data.length));
+
+      /* Build bars */
+      container.innerHTML = data.map((d, i) => {
+        const heightPct = (d.views / maxViews) * 100;
+        const minHeight = d.views > 0 ? 4 : 1;
+        const bgColor = d.views > 0 ? '#3b82f6' : 'rgba(255,255,255,0.08)';
+        return '<div data-testid="bar-day-' + i + '" title="' + esc(d.date) + ': ' + d.views + ' views" ' +
+          'style="width:' + barWidth + 'px; min-height:' + minHeight + 'px; height:' + heightPct + '%; ' +
+          'background:' + bgColor + '; border-radius:2px 2px 0 0; cursor:default; position:relative;">' +
+          (d.views > 0 ? '<span style="position:absolute; top:-16px; left:50%; transform:translateX(-50%); font-size:0.6rem; color:var(--admin-text-muted); white-space:nowrap;">' + d.views + '</span>' : '') +
+          '</div>';
+      }).join('');
+
+      /* Build date labels (show every Nth label to avoid crowding) */
+      const step = data.length <= 14 ? 1 : data.length <= 31 ? 3 : 7;
+      labelsContainer.innerHTML = data.map((d, i) => {
+        const label = (i % step === 0)
+          ? new Date(d.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+          : '';
+        return '<div style="width:' + barWidth + 'px; text-align:center; white-space:nowrap;">' + label + '</div>';
+      }).join('');
+    }
+
+
+    /*
+    ========================================================================
     INITIALIZATION — Load all data on page load
     ========================================================================
     */
@@ -4178,7 +5048,10 @@ TO CUSTOMIZE THIS DASHBOARD:
       loadChatHistory();
       loadForms();
       loadTheme();
+      loadSeoSettings();
+      loadBlogPosts();
       loadPages();
+      loadAnalytics();
     });
 
     /* ==================================================================

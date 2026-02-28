@@ -5,7 +5,7 @@
 A database-driven website template built as a reusable, industry-agnostic HTML/CSS/JS application. All content (gallery slides, experiences, pricing, site settings, chatbot) is managed through a PostgreSQL database and a password-protected admin dashboard — no code editing needed to change content. Suitable for any business type: hospitality, real estate, restaurants, portfolios, agencies, and more.
 
 The site features:
-- **Snap-scroll landing page** with hero, highlights, experiences, pricing, testimonials, team, and FAQ sections
+- **Snap-scroll landing page** with hero, highlights, experiences, pricing, testimonials, team, FAQ, and blog sections
 - **Immersive fullscreen gallery** with swipe/wheel/keyboard navigation
 - **AI chatbot with site control** — enable/disable from admin, supports built-in chat or external embed
 - **Side-panel AI chat** — frosted glass panel slides in from the right when AI navigates gallery slides; shows only the agent's latest message by default with a toggle to reveal full conversation history; on mobile, appears as a compact bottom strip that expands when history is opened
@@ -22,6 +22,11 @@ The site features:
 - **FAQ** — collapsible question/answer pairs
 - **Page Layout Manager** — drag-to-reorder all site sections from admin, toggle sections on/off
 - **Custom Section Builder** — create new sections from admin using 6 templates (cards grid, text content, image gallery, CTA banner, stats counter, icon features)
+- **Blog System** — database-driven blog with gallery-style preview cards on landing page, full post pages with SEO meta tags, admin management with draft/publish workflow
+- **SEO Management** — admin tab for meta title, description, keywords, Open Graph, Twitter Cards; AI-powered SEO suggestion generator; auto-generated sitemap.xml and robots.txt; JSON-LD structured data
+- **Visitor Analytics** — page view tracking with UTM params, device/browser/OS breakdown, referral sources, session duration; admin dashboard with charts and stats
+- **HTML Sanitization** — DOMPurify sanitizes all AI-generated HTML before DOM injection
+- **Accessibility** — dynamic ARIA labels, roles, live regions throughout the site; modular system auto-applies accessibility to admin-created custom sections
 - **Chat History & Analytics** — view all AI conversations, message counts, device types
 - **Dynamic Form Builder** — create custom forms from admin, add/remove/reorder fields, assign fields to steps for multi-step forms, view submissions with full marketing analytics
 - **Partial/Abandon Capture** — auto-saves incomplete form data for lead recovery
@@ -61,7 +66,7 @@ The entire template is industry-agnostic — naming, comments, and instructions 
 - **Login**: `/admin/login` — password set via `ADMIN_PASSWORD` environment variable (default: "admin")
 - **Logout**: `/admin/logout`
 - **Location**: `templates/admin/dashboard.html`, `templates/admin/login.html`
-- **Tabs**: Page Layout (section ordering + custom section builder), Site Settings, Gallery Cards, Experiences, Pricing, Business Info (contact + hours + social links), Testimonials, Team, FAQ, Chatbot, Chat History, Forms, Theme, Saved Pages
+- **Tabs**: Page Layout (section ordering + custom section builder), Site Settings, Gallery Cards, Experiences, Pricing, Business Info (contact + hours + social links), Testimonials, Team, FAQ, Blog, SEO (with AI generation), Chatbot, Chat History, Forms, Theme, Analytics, Saved Pages
 
 ### Database (PostgreSQL)
 - **Connection**: `DATABASE_URL` environment variable
@@ -75,6 +80,8 @@ The entire template is industry-agnostic — naming, comments, and instructions 
   - `faqs` — Frequently asked questions. Has question, answer, sort_order.
   - `page_sections` — Registry of all site sections (built-in + custom). Controls page layout order, section visibility, and template assignment. Built-in sections (hero, highlights, experiences, testimonials, team, faq, footer) are seeded on first run. Custom sections use templates: cards_grid, text_content, image_gallery, cta_banner, stats_counter, icon_features. Has slug (unique), title, section_type (built_in/custom), template, sort_order, enabled, settings (JSONB).
   - `custom_section_items` — Content items for custom sections. Linked to page_sections via section_id (CASCADE delete). Has title, subtitle, content, image_url, link_url, link_text, icon, sort_order, extra_data (JSONB for template-specific fields).
+  - `blog_posts` — Blog post content. Has slug (unique), title, subtitle, excerpt, content (HTML), cover_image, author, category, tags, status (draft/published), seo_title, seo_description, published_at, sort_order. Sample post seeded on first run.
+  - `page_views` — Visitor analytics tracking. Has session_id, visitor_id, page_url, referrer_url, UTM params (source/medium/campaign/term/content), ip_address, browser, os, device_type, screen_resolution, language, country, duration_seconds.
   - `chatbot_settings` — AI chatbot configuration. Singleton row (id=1). Has enabled, mode, agent_name, agent_role, agent_avatar, greeting, quick_prompts (JSONB), api_endpoint, embed_code, system_prompt.
   - `chat_conversations` — Chat sessions with visitor info (session_id, ip, device_type, user_agent).
   - `chat_messages` — Individual chat messages linked to conversations (role, content, command_json).
@@ -95,14 +102,24 @@ The entire template is industry-agnostic — naming, comments, and instructions 
 - `GET /api/team` — Returns all team members ordered by sort_order
 - `GET /api/faq` — Returns all FAQ entries ordered by sort_order
 - `GET /api/business-info` — Returns business contact info, hours, and social links
-- `GET /api/page-sections` — Returns all enabled sections in sort order (controls page layout)
+- `GET /api/page-sections` — Returns all sections in sort order (controls page layout and visibility)
 - `GET /api/custom-section/<section_id>/items` — Returns items for a custom section
+- `GET /api/blog` — Returns all published blog posts
+- `GET /api/blog/<slug>` — Returns a single published blog post
+- `GET /api/seo` — Returns SEO settings for meta tag injection
 - `GET /api/chatbot-settings` — Returns chatbot configuration (enabled, mode, agent info, etc.)
 - `GET /api/theme` — Returns theme customization values (colors, fonts)
 - `GET /api/forms/<slug>` — Returns form config (fields, types, options) for dynamic rendering
+- `GET /sitemap.xml` — Auto-generated XML sitemap (home, published blogs, published generated pages)
+- `GET /robots.txt` — Standard robots.txt with sitemap reference
+- `GET /blog/<slug>` — Public blog post page with SEO meta tags and JSON-LD structured data
 
 **Chat API:**
 - `POST /api/chat` — Streaming SSE chat. Accepts `{message, history, session_id}`, streams token/text/html/command/done events. Saves messages to chat_conversations/chat_messages. AI commands include: navigate, showSlide, generateVisual, generateHTML, submitForm, scrollToSection, heroMessage. The AI can also collect form data conversationally and submit via the submitForm command.
+
+**Tracking API:**
+- `POST /api/track/pageview` — Record a page view with session/visitor IDs, UTM params, device info (rate-limited to 1 per session+page per 30s)
+- `POST /api/track/duration` — Update session duration via sendBeacon on page unload
 
 **Form Submission API:**
 - `POST /api/forms/<slug>/submit` — Submit a dynamic form with auto-captured marketing data (UTM, device, browser, OS, screen resolution, language, referrer, IP, session ID)
@@ -127,7 +144,12 @@ The entire template is industry-agnostic — naming, comments, and instructions 
 - `GET/POST/PUT/DELETE /admin/api/page-sections[/<id>]` — Page section registry (layout order, custom sections)
 - `PUT /admin/api/page-sections/<id>/toggle` — Quick enable/disable toggle for a section
 - `GET/POST/PUT/DELETE /admin/api/custom-sections/<section_id>/items[/<item_id>]` — Custom section items CRUD
-- `PUT /admin/api/reorder/<type>` — Batch reorder gallery-cards, experiences, pricing, testimonials, team, faq, page-sections, or custom-section-items
+- `GET/PUT /admin/api/seo` — Read and update SEO settings (meta title, description, keywords, OG image, Twitter handle, canonical URL, robots)
+- `POST /admin/api/seo/generate` — AI-powered SEO content suggestion generator (uses OpenAI to analyze site content)
+- `GET/POST/PUT/DELETE /admin/api/blog[/<id>]` — Blog post management (CRUD with draft/publish workflow)
+- `GET /admin/api/analytics` — Aggregated visitor analytics (views, unique visitors, top pages, referrers, UTM, devices, browsers, OS)
+- `GET /admin/api/analytics/chart` — Daily page view counts for bar chart (last 30 days)
+- `PUT /admin/api/reorder/<type>` — Batch reorder gallery-cards, experiences, pricing, testimonials, team, faq, page-sections, custom-section-items, or blog-posts
 - `GET /admin/api/chat-history` — List conversations with stats
 - `GET /admin/api/chat-history/<id>` — Full conversation detail with messages
 - `GET/POST /admin/api/forms` — List all forms / create new form
@@ -333,20 +355,22 @@ Add new sections inside the `.landing-container` div with classes `snap-section 
 - Google Fonts (Playfair Display, DM Sans, plus dynamic fonts via Theme Editor)
 - Lucide Icons
 - SortableJS (drag-and-drop reordering in admin)
+- DOMPurify (HTML sanitization for AI-generated content)
 
 ## Project File Structure
 
 ```
 app.py                          — Flask backend (main entry point, all routes + API)
 public/
-  index.html                    — Public site HTML structure
+  index.html                    — Public site HTML structure (SEO meta tags injected server-side)
   styles.css                    — All visual styles
-  script.js                     — All interactivity and AI chat
+  script.js                     — All interactivity, AI chat, visitor tracking
 uploads/                        — Uploaded image files (created at runtime)
 templates/
   admin/
-    dashboard.html              — Admin panel (content management)
+    dashboard.html              — Admin panel (content management, SEO, blog, analytics)
     login.html                  — Admin login page
+  blog_post.html                — Individual blog post page template
 GUIDE.md                       — Developer guide for customizing the template
 pyproject.toml                  — Python package dependencies
 uv.lock                        — Python dependency lock file

@@ -44,6 +44,7 @@ TO RUN:
 import os
 import re
 import json
+import html as html_module
 import secrets
 from datetime import datetime
 from functools import wraps
@@ -470,6 +471,66 @@ def init_db():
                     created_at  TIMESTAMP DEFAULT NOW()
                 );
                 CREATE INDEX IF NOT EXISTS idx_custom_items_section ON custom_section_items (section_id, sort_order);
+
+                -- =============================================================
+                -- BLOG POSTS
+                -- =============================================================
+                -- Database-driven blog with gallery-style preview cards on the
+                -- landing page. Each post has SEO fields, cover image, and
+                -- supports draft/published workflow.
+                CREATE TABLE IF NOT EXISTS blog_posts (
+                    id              SERIAL PRIMARY KEY,
+                    slug            TEXT UNIQUE NOT NULL,
+                    title           TEXT NOT NULL,
+                    subtitle        TEXT DEFAULT '',
+                    excerpt         TEXT DEFAULT '',
+                    content         TEXT DEFAULT '',
+                    cover_image     TEXT DEFAULT '',
+                    author          TEXT DEFAULT '',
+                    category        TEXT DEFAULT '',
+                    tags            TEXT DEFAULT '',
+                    status          TEXT DEFAULT 'draft',
+                    seo_title       TEXT DEFAULT '',
+                    seo_description TEXT DEFAULT '',
+                    published_at    TIMESTAMP,
+                    created_at      TIMESTAMP DEFAULT NOW(),
+                    updated_at      TIMESTAMP DEFAULT NOW(),
+                    sort_order      INTEGER DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_blog_posts_status ON blog_posts (status);
+                CREATE INDEX IF NOT EXISTS idx_blog_posts_slug ON blog_posts (slug);
+                CREATE INDEX IF NOT EXISTS idx_blog_posts_sort ON blog_posts (sort_order);
+
+                -- =============================================================
+                -- PAGE VIEWS — Visitor Analytics
+                -- =============================================================
+                -- Tracks individual page views for the visitor analytics
+                -- dashboard. Captures session, referrer, UTM params, device
+                -- info, and session duration for aggregated reporting.
+                CREATE TABLE IF NOT EXISTS page_views (
+                    id                SERIAL PRIMARY KEY,
+                    session_id        VARCHAR(100) NOT NULL,
+                    visitor_id        VARCHAR(100) DEFAULT '',
+                    page_url          TEXT NOT NULL,
+                    referrer_url      TEXT DEFAULT '',
+                    utm_source        TEXT DEFAULT '',
+                    utm_medium        TEXT DEFAULT '',
+                    utm_campaign      TEXT DEFAULT '',
+                    utm_term          TEXT DEFAULT '',
+                    utm_content       TEXT DEFAULT '',
+                    ip_address        VARCHAR(45) DEFAULT '',
+                    browser           TEXT DEFAULT '',
+                    os                TEXT DEFAULT '',
+                    device_type       TEXT DEFAULT 'desktop',
+                    screen_resolution TEXT DEFAULT '',
+                    language          TEXT DEFAULT '',
+                    country           TEXT DEFAULT '',
+                    duration_seconds  INTEGER DEFAULT 0,
+                    created_at        TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_page_views_session ON page_views (session_id);
+                CREATE INDEX IF NOT EXISTS idx_page_views_created ON page_views (created_at);
+                CREATE INDEX IF NOT EXISTS idx_page_views_page ON page_views (page_url);
             """)
 
             # Seed chatbot_settings singleton if it doesn't exist
@@ -511,6 +572,14 @@ def init_db():
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS business_map_embed TEXT NOT NULL DEFAULT ''",
                 # --- Social media profile links (JSON object) ---
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS social_links JSONB DEFAULT '{}'::jsonb",
+                # --- SEO settings columns (admin-managed meta tags for the public site) ---
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS seo_meta_title TEXT DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS seo_meta_description TEXT DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS seo_keywords TEXT DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS seo_og_image TEXT DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS seo_twitter_handle TEXT DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS seo_canonical_url TEXT DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS seo_robots TEXT DEFAULT 'index, follow'",
             ]:
                 cur.execute(col_sql)
 
@@ -562,7 +631,8 @@ def init_db():
                     ('testimonials', 'Testimonials',    'built_in', 'testimonials', 3, False),
                     ('team',         'Our Team',        'built_in', 'team',         4, False),
                     ('faq',          'FAQ',             'built_in', 'faq',          5, False),
-                    ('footer',       'Footer',          'built_in', 'footer',       6, True),
+                    ('blog',         'Latest Stories',  'built_in', 'blog',         6, False),
+                    ('footer',       'Footer',          'built_in', 'footer',       7, True),
                 ]
                 for slug, title, stype, tmpl, order, enabled in built_in_sections:
                     cur.execute("""
@@ -570,6 +640,69 @@ def init_db():
                         VALUES (%s, %s, %s, %s, %s, %s)
                         ON CONFLICT (slug) DO NOTHING
                     """, (slug, title, stype, tmpl, order, enabled))
+
+            # =============================================================
+            # SEED: Insert the 'blog' page section if it doesn't exist yet
+            # (for databases that were initialized before blog support)
+            # =============================================================
+            cur.execute("""
+                INSERT INTO page_sections (slug, title, section_type, template, sort_order, enabled)
+                VALUES ('blog', 'Latest Stories', 'built_in', 'blog', 6, false)
+                ON CONFLICT (slug) DO NOTHING
+            """)
+
+            # =============================================================
+            # SEED: Sample blog post (industry-agnostic)
+            # =============================================================
+            # Insert one well-written sample blog post so the blog section
+            # has content to display immediately. Only inserted if no blog
+            # posts exist yet — admins can edit or delete from the dashboard.
+            cur.execute("SELECT COUNT(*) FROM blog_posts")
+            row = cur.fetchone()
+            blog_count = row[0] if row else 0
+            if blog_count == 0:
+                cur.execute("""
+                    INSERT INTO blog_posts (
+                        slug, title, subtitle, excerpt, content, cover_image,
+                        author, category, tags, status, seo_title, seo_description,
+                        published_at, sort_order
+                    ) VALUES (
+                        'the-art-of-first-impressions',
+                        'The Art of First Impressions: Why Every Detail Matters',
+                        'How thoughtful design transforms ordinary moments into lasting memories',
+                        'First impressions are formed in milliseconds, yet their impact endures for years. Discover how attention to detail — from the warmth of a greeting to the subtlety of ambient lighting — shapes the way people experience your space and your brand.',
+                        '<p>First impressions are formed in milliseconds, yet their impact endures for years. Whether you are welcoming a guest into a boutique hotel, greeting a client at your office, or launching a new product online, the initial moment of contact sets the tone for everything that follows.</p>
+
+<h2>The Science Behind First Impressions</h2>
+<p>Research in cognitive psychology shows that people make judgments about trustworthiness, competence, and likability within the first seven seconds of an encounter. These snap judgments are remarkably persistent — once formed, they color every subsequent interaction.</p>
+<p>This is not limited to face-to-face meetings. Digital experiences follow the same pattern. A website visitor decides whether to stay or leave in roughly 50 milliseconds, based on visual appeal alone. The implications for businesses are profound: every pixel, every word, and every interaction point is an opportunity to build — or erode — trust.</p>
+
+<h2>Details That Make the Difference</h2>
+<p>The most memorable experiences share a common thread: intentionality. Nothing feels accidental. Consider these elements that elevate an ordinary moment into something remarkable:</p>
+<ul>
+<li><strong>Consistency</strong> — Every touchpoint reflects the same values and aesthetic, from signage to staff demeanor to digital presence.</li>
+<li><strong>Sensory awareness</strong> — Lighting, temperature, scent, and sound are calibrated to create comfort without being obtrusive.</li>
+<li><strong>Personalization</strong> — Small gestures that acknowledge the individual — a remembered name, a tailored recommendation — signal genuine care.</li>
+<li><strong>Anticipation</strong> — Great hosts solve problems before they arise. The umbrella by the door on a cloudy day. The FAQ that answers the question before it is asked.</li>
+</ul>
+
+<h2>Translating This to Your Brand</h2>
+<p>Whether you run a physical space or a digital platform, the principle is the same: design every interaction as if it were the first and only chance to earn someone''s trust. Audit your customer journey from the outside in. What does a newcomer see, feel, and understand in those critical opening seconds?</p>
+<p>The brands that thrive are those that treat first impressions not as a marketing problem, but as a design philosophy — one that permeates every layer of the experience.</p>
+
+<h2>Start With One Thing</h2>
+<p>You do not need to overhaul everything at once. Pick the single most common entry point for your audience — your homepage, your front door, your opening email — and refine it until it feels effortless. Then move to the next. Excellence is built one detail at a time.</p>',
+                        '',
+                        'Editorial Team',
+                        'Insights',
+                        'branding, design, customer experience, first impressions',
+                        'published',
+                        'The Art of First Impressions: Why Every Detail Matters',
+                        'Discover how attention to detail shapes lasting impressions — from the warmth of a greeting to the subtlety of ambient design.',
+                        NOW(),
+                        0
+                    ) ON CONFLICT (slug) DO NOTHING
+                """)
     finally:
         conn.close()
 
@@ -649,16 +782,220 @@ def admin_logout():
 
 
 # =============================================================================
+# SEO HELPERS — Build meta tags and structured data from database settings
+# =============================================================================
+# These functions read SEO settings from the site_settings table and produce
+# HTML strings that are injected into index.html server-side, so search engine
+# crawlers see proper meta tags without needing JavaScript execution.
+
+def _esc(s):
+    """
+    HTML-escape a string for safe use in meta tag attributes.
+    Prevents XSS if SEO fields contain special characters.
+    """
+    return html_module.escape(str(s), quote=True)
+
+
+def _build_seo_meta_html():
+    """
+    Build the complete SEO meta tags HTML block from database settings.
+    Returns an HTML string containing: title, meta description, keywords,
+    robots directive, canonical URL, Open Graph tags, Twitter Card tags,
+    and favicon links. Falls back to site_settings values if SEO-specific
+    fields are empty.
+    """
+    settings = query_db("SELECT * FROM site_settings WHERE id = 1", fetchone=True)
+    if not settings:
+        settings = {}
+
+    # Determine SEO values with cascading fallbacks
+    title = (settings.get("seo_meta_title") or "").strip()
+    if not title:
+        # Fall back to site name + subtitle for the page title
+        site_name = settings.get("site_name", "My Site")
+        subtitle = settings.get("site_subtitle", "")
+        title = f"{site_name} — {subtitle}" if subtitle else site_name
+
+    description = (settings.get("seo_meta_description") or "").strip()
+    if not description:
+        # Fall back to the hero description text
+        description = settings.get("hero_description", "")
+
+    keywords = (settings.get("seo_keywords") or "").strip()
+    og_image = (settings.get("seo_og_image") or "").strip() or "/ai_concierge.png"
+    twitter_handle = (settings.get("seo_twitter_handle") or "").strip()
+    canonical_url = (settings.get("seo_canonical_url") or "").strip()
+    robots = (settings.get("seo_robots") or "").strip() or "index, follow"
+    site_name = settings.get("site_name", "My Site")
+
+    lines = []
+
+    # --- Core meta tags ---
+    lines.append('  <!-- SEO Meta Tags — Injected server-side from database settings -->')
+    lines.append(f'  <title>{_esc(title)}</title>')
+    lines.append(f'  <meta name="description" content="{_esc(description)}">')
+    if keywords:
+        lines.append(f'  <meta name="keywords" content="{_esc(keywords)}">')
+    lines.append(f'  <meta name="robots" content="{_esc(robots)}">')
+    if canonical_url:
+        lines.append(f'  <link rel="canonical" href="{_esc(canonical_url)}">')
+
+    # --- Favicon ---
+    lines.append('  <!-- Favicon — Shows next to the URL in browser tabs and on smartphone home screens -->')
+    lines.append('  <link rel="icon" type="image/png" href="/ai_concierge.png">')
+    lines.append('  <link rel="apple-touch-icon" href="/ai_concierge.png">')
+
+    # --- Open Graph tags (for Facebook, LinkedIn, etc.) ---
+    lines.append('  <!-- Open Graph Tags — For social media sharing -->')
+    lines.append(f'  <meta property="og:title" content="{_esc(title)}">')
+    lines.append(f'  <meta property="og:description" content="{_esc(description)}">')
+    lines.append('  <meta property="og:type" content="website">')
+    lines.append(f'  <meta property="og:image" content="{_esc(og_image)}">')
+    if canonical_url:
+        lines.append(f'  <meta property="og:url" content="{_esc(canonical_url)}">')
+    lines.append(f'  <meta property="og:site_name" content="{_esc(site_name)}">')
+
+    # --- Twitter Card tags ---
+    lines.append('  <!-- Twitter Card Tags -->')
+    lines.append('  <meta name="twitter:card" content="summary_large_image">')
+    lines.append(f'  <meta name="twitter:title" content="{_esc(title)}">')
+    lines.append(f'  <meta name="twitter:description" content="{_esc(description)}">')
+    lines.append(f'  <meta name="twitter:image" content="{_esc(og_image)}">')
+    if twitter_handle:
+        # Ensure handle starts with @
+        handle = twitter_handle if twitter_handle.startswith("@") else f"@{twitter_handle}"
+        lines.append(f'  <meta name="twitter:site" content="{_esc(handle)}">')
+
+    return "\n".join(lines)
+
+
+def _build_json_ld():
+    """
+    Build JSON-LD structured data for search engine rich results.
+    Returns an HTML string containing two <script type="application/ld+json"> blocks:
+      1. Organization schema — site name, URL, logo, and social profiles
+      2. WebSite schema — site name, URL, and description
+    These help Google and other search engines understand the site's identity
+    and display enhanced search results (knowledge panels, sitelinks, etc.).
+    """
+    settings = query_db("SELECT * FROM site_settings WHERE id = 1", fetchone=True) or {}
+
+    site_name = settings.get("site_name", "My Site")
+    canonical_url = (settings.get("seo_canonical_url") or "").strip()
+    og_image = (settings.get("seo_og_image") or "").strip() or "/ai_concierge.png"
+    description = (settings.get("seo_meta_description") or "").strip() or settings.get("hero_description", "")
+
+    # Build social profile URLs array from the social_links JSONB column
+    social_links = settings.get("social_links", {})
+    if isinstance(social_links, str):
+        try:
+            social_links = json.loads(social_links)
+        except Exception:
+            social_links = {}
+    same_as = [url for url in social_links.values() if url and isinstance(url, str)]
+
+    # Organization schema — tells search engines who operates this site
+    org_data = {
+        "@context": "https://schema.org",
+        "@type": "Organization",
+        "name": site_name,
+        "url": canonical_url or "/",
+        "logo": og_image,
+    }
+    if same_as:
+        org_data["sameAs"] = same_as
+
+    # WebSite schema — tells search engines about the site itself
+    website_data = {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": site_name,
+        "url": canonical_url or "/",
+        "description": description,
+    }
+
+    lines = []
+    lines.append('  <!-- JSON-LD Structured Data — Injected server-side for SEO -->')
+    lines.append(f'  <script type="application/ld+json">{json.dumps(org_data)}</script>')
+    lines.append(f'  <script type="application/ld+json">{json.dumps(website_data)}</script>')
+
+    return "\n".join(lines)
+
+
+# =============================================================================
 # PUBLIC ROUTES — Serve the static HTML site
 # =============================================================================
 
 @app.route("/")
 def serve_index():
     """
-    Serve the main public website (index.html).
-    This is the landing page visitors see.
+    Serve the main public website with SEO meta tags injected server-side.
+    Reads public/index.html and replaces placeholder markers with actual
+    meta tags from the database, so search engine crawlers see proper SEO
+    data (title, description, OG tags, Twitter Cards, JSON-LD) without
+    needing JavaScript execution.
     """
-    return send_from_directory("public", "index.html")
+    try:
+        # Read the base HTML template from the public directory
+        index_path = os.path.join(app.static_folder, "index.html")
+        with open(index_path, "r", encoding="utf-8") as f:
+            html_content = f.read()
+
+        # Inject SEO meta tags (replaces the <!-- SEO_META_INJECT --> placeholder in <head>)
+        seo_html = _build_seo_meta_html()
+        html_content = html_content.replace("<!-- SEO_META_INJECT -->", seo_html)
+
+        # Inject JSON-LD structured data (replaces the <!-- JSON_LD_INJECT --> placeholder before </head>)
+        json_ld_html = _build_json_ld()
+        html_content = html_content.replace("<!-- JSON_LD_INJECT -->", json_ld_html)
+
+        return Response(html_content, mimetype="text/html")
+    except Exception:
+        # Fallback: serve the raw file if SEO injection fails
+        return send_from_directory("public", "index.html")
+
+
+# =============================================================
+# PUBLIC BLOG PAGE — Individual blog post pages
+# =============================================================
+
+@app.route("/blog/<string:slug>")
+def serve_blog_post(slug):
+    """
+    GET /blog/<slug>
+    Serves a standalone blog post page with the same dark theme and
+    frosted glass aesthetic as the main site. Injects SEO meta tags
+    (seo_title, seo_description, cover_image as og:image) for each post.
+    Returns 404 if the post doesn't exist or isn't published.
+    """
+    # Fetch the blog post by slug — only published posts are visible
+    post = query_db(
+        "SELECT * FROM blog_posts WHERE slug = %s AND status = 'published'",
+        (slug,), fetchone=True
+    )
+    if not post:
+        return "Post not found", 404
+
+    # Fetch site settings for branding (site name, theme colors, etc.)
+    settings = query_db("SELECT * FROM site_settings WHERE id = 1", fetchone=True) or {}
+
+    # Build theme colors dict for the blog post template (mirrors chat theme injection)
+    theme_colors = {
+        "bg": settings.get("theme_bg", "#060b14") or "#060b14",
+        "accent": settings.get("theme_accent", "#c9a96e") or "#c9a96e",
+        "text": settings.get("theme_text", "#e4e4e7") or "#e4e4e7",
+        "glass_bg": settings.get("theme_glass_bg", "rgba(255,255,255,0.03)") or "rgba(255,255,255,0.03)",
+        "glass_border": settings.get("theme_glass_border", "rgba(255,255,255,0.08)") or "rgba(255,255,255,0.08)",
+        "font_serif": settings.get("theme_font_serif", "Playfair Display") or "Playfair Display",
+        "font_sans": settings.get("theme_font_sans", "DM Sans") or "DM Sans",
+    }
+
+    return render_template(
+        "blog_post.html",
+        post=post,
+        settings=settings,
+        theme=theme_colors
+    )
 
 
 @app.route("/<path:filename>")
@@ -666,12 +1003,13 @@ def serve_static(filename):
     """
     Serve any static file from the /public directory.
     This handles CSS, JS, images, fonts, etc.
-    Falls through to other routes if the file doesn't exist.
+    Falls through to serve_index() if the file doesn't exist (SPA-style fallback).
     """
     try:
         return send_from_directory("public", filename)
     except Exception:
-        return send_from_directory("public", "index.html")
+        # SPA fallback — serve the SEO-injected index for unknown paths
+        return serve_index()
 
 
 # =============================================================================
@@ -763,6 +1101,44 @@ def api_faq():
 
 
 # =============================================================
+# PUBLIC API — BLOG POSTS
+# =============================================================
+
+@app.route("/api/blog")
+def api_blog():
+    """
+    GET /api/blog
+    Returns all published blog posts, sorted by published_at DESC
+    (most recent first), with sort_order as a secondary sort.
+    Only published posts are returned to the public site.
+    """
+    posts = query_db(
+        """SELECT id, slug, title, subtitle, excerpt, cover_image,
+                  author, category, tags, published_at, sort_order
+           FROM blog_posts
+           WHERE status = 'published'
+           ORDER BY sort_order ASC, published_at DESC"""
+    )
+    return jsonify(posts or [])
+
+
+@app.route("/api/blog/<string:slug>")
+def api_blog_post(slug):
+    """
+    GET /api/blog/<slug>
+    Returns a single published blog post by its URL slug.
+    Used by the blog detail page and for preview cards.
+    """
+    post = query_db(
+        "SELECT * FROM blog_posts WHERE slug = %s AND status = 'published'",
+        (slug,), fetchone=True
+    )
+    if not post:
+        return jsonify({"error": "Blog post not found"}), 404
+    return jsonify(post)
+
+
+# =============================================================
 # PUBLIC API — BUSINESS INFO
 # =============================================================
 @app.route("/api/business-info")
@@ -780,6 +1156,145 @@ def api_business_info():
     if not info:
         return jsonify({})
     return jsonify(info)
+
+
+# =============================================================
+# PUBLIC API — SEO SETTINGS
+# =============================================================
+
+@app.route("/api/seo")
+def api_seo():
+    """
+    GET /api/seo
+    Returns the SEO settings for the public site. These are the values
+    injected into the <head> meta tags by serve_index(). This endpoint
+    is also available for any client-side JavaScript that needs SEO data.
+    """
+    settings = query_db("""
+        SELECT seo_meta_title, seo_meta_description, seo_keywords,
+               seo_og_image, seo_twitter_handle, seo_canonical_url,
+               seo_robots, site_name, site_subtitle, hero_description
+        FROM site_settings WHERE id = 1
+    """, fetchone=True)
+    if not settings:
+        return jsonify({})
+    return jsonify(settings)
+
+
+# =============================================================
+# PUBLIC — SITEMAP.XML (auto-generated from database content)
+# =============================================================
+
+@app.route("/sitemap.xml")
+def sitemap():
+    """
+    GET /sitemap.xml
+    Auto-generated XML sitemap including the home page, published blog
+    posts, and published AI-generated pages. Search engines use this to
+    discover and index all public URLs on the site.
+    """
+    # Determine the base URL from SEO settings or the request URL
+    settings = query_db(
+        "SELECT seo_canonical_url FROM site_settings WHERE id = 1",
+        fetchone=True
+    )
+    base_url = ""
+    if settings:
+        base_url = (settings.get("seo_canonical_url") or "").strip().rstrip("/")
+    if not base_url:
+        # Fall back to the request's host URL
+        base_url = request.url_root.rstrip("/")
+
+    urls = []
+
+    # Home page — highest priority, changes daily
+    urls.append({
+        "loc": base_url + "/",
+        "priority": "1.0",
+        "changefreq": "daily"
+    })
+
+    # Published blog posts — medium-high priority
+    posts = query_db(
+        "SELECT slug, updated_at FROM blog_posts WHERE status = 'published' ORDER BY published_at DESC"
+    )
+    for post in (posts or []):
+        lastmod = ""
+        if post.get("updated_at"):
+            lastmod = post["updated_at"].strftime("%Y-%m-%d")
+        urls.append({
+            "loc": f"{base_url}/blog/{post['slug']}",
+            "priority": "0.7",
+            "changefreq": "weekly",
+            "lastmod": lastmod
+        })
+
+    # Published AI-generated pages — lower priority
+    pages = query_db(
+        "SELECT slug, updated_at FROM generated_pages WHERE status = 'published' ORDER BY created_at DESC"
+    )
+    for page in (pages or []):
+        lastmod = ""
+        if page.get("updated_at"):
+            lastmod = page["updated_at"].strftime("%Y-%m-%d")
+        urls.append({
+            "loc": f"{base_url}/page/{page['slug']}",
+            "priority": "0.5",
+            "changefreq": "monthly",
+            "lastmod": lastmod
+        })
+
+    # Build the XML sitemap document
+    xml_parts = ['<?xml version="1.0" encoding="UTF-8"?>']
+    xml_parts.append('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">')
+    for url in urls:
+        xml_parts.append("  <url>")
+        xml_parts.append(f"    <loc>{_esc(url['loc'])}</loc>")
+        if url.get("lastmod"):
+            xml_parts.append(f"    <lastmod>{url['lastmod']}</lastmod>")
+        xml_parts.append(f"    <changefreq>{url.get('changefreq', 'weekly')}</changefreq>")
+        xml_parts.append(f"    <priority>{url.get('priority', '0.5')}</priority>")
+        xml_parts.append("  </url>")
+    xml_parts.append("</urlset>")
+
+    return Response("\n".join(xml_parts), mimetype="application/xml")
+
+
+# =============================================================
+# PUBLIC — ROBOTS.TXT (standard crawler directives)
+# =============================================================
+
+@app.route("/robots.txt")
+def robots_txt():
+    """
+    GET /robots.txt
+    Standard robots.txt file that allows all crawlers and points them
+    to the sitemap. The sitemap URL is derived from the canonical URL
+    in SEO settings, or from the current request's host.
+    """
+    # Determine sitemap URL
+    settings = query_db(
+        "SELECT seo_canonical_url FROM site_settings WHERE id = 1",
+        fetchone=True
+    )
+    base_url = ""
+    if settings:
+        base_url = (settings.get("seo_canonical_url") or "").strip().rstrip("/")
+    if not base_url:
+        base_url = request.url_root.rstrip("/")
+
+    # Standard robots.txt — allow all crawlers, point to sitemap
+    content = (
+        "User-agent: *\n"
+        "Allow: /\n"
+        "\n"
+        "# Disallow admin and API routes from indexing\n"
+        "Disallow: /admin/\n"
+        "Disallow: /api/\n"
+        "\n"
+        f"Sitemap: {base_url}/sitemap.xml\n"
+    )
+    return Response(content, mimetype="text/plain")
 
 
 # =============================================================
@@ -1071,7 +1586,7 @@ Send this after EVERY message where the visitor provides form field data. Includ
 ```command
 {"action": "scrollToSection", "target": "SECTION_ID"}
 ```
-Valid built-in section IDs: section-hero, section-highlights, section-experiences, section-pricing, section-testimonials, section-team, section-faq
+Valid built-in section IDs: section-hero, section-highlights, section-experiences, section-pricing, section-testimonials, section-team, section-faq, section-blog
 Custom sections use the format: section-custom-{id} (where {id} is the database ID shown in the custom section info below)
 Use this when the visitor asks about testimonials, reviews, the team, FAQ, pricing, or any custom section to scroll them directly to it. For example:
 - "Show me your reviews" → short reply + scrollToSection to section-testimonials
@@ -1410,7 +1925,23 @@ def api_chat():
             faq_lines = [f'  Q: {f["question"]}\n  A: {f["answer"]}' for f in faqs]
             active_prompt += f"\n\nFREQUENTLY ASKED QUESTIONS:\n" + "\n\n".join(faq_lines)
 
-        # ----- 9. BUSINESS INFO -----
+        # ----- 9. BLOG POSTS -----
+        # Published blog post titles and excerpts so the AI can reference
+        # them and suggest reading specific articles to visitors
+        blog_posts = query_db(
+            "SELECT title, slug, excerpt, category FROM blog_posts WHERE status = 'published' ORDER BY sort_order ASC, published_at DESC"
+        )
+        if blog_posts:
+            blog_lines = [
+                f'  - "{bp["title"]}" (slug: "{bp["slug"]}", category: {bp.get("category", "General")}): {bp.get("excerpt", "")}'
+                for bp in blog_posts
+            ]
+            active_prompt += (
+                f"\n\nBLOG POSTS (you can suggest visitors read these at /blog/<slug>):\n"
+                + "\n".join(blog_lines)
+            )
+
+        # ----- 10. BUSINESS INFO -----
         # Contact details, hours, and address so the AI can share them
         biz = query_db("""
             SELECT business_phone, business_email, business_address, business_hours
@@ -1429,7 +1960,7 @@ def api_chat():
             if biz_lines:
                 active_prompt += f"\n\nBUSINESS CONTACT INFO:\n" + "\n".join(biz_lines)
 
-        # ----- 10. CUSTOM SECTIONS -----
+        # ----- 11. CUSTOM SECTIONS -----
         # Content from admin-created custom sections so the AI knows about them.
         # Also includes the section ID so the AI can use scrollToSection.
         custom_sections = query_db("""
@@ -1900,6 +2431,140 @@ def admin_delete_faq(item_id):
 
 
 # =============================================================
+# ADMIN CRUD — BLOG POSTS
+# =============================================================
+# Manages blog posts with draft/published workflow.
+# Admin can create, edit, delete, and publish/unpublish posts.
+# Published posts appear on the public site and in the AI knowledge base.
+
+@app.route("/admin/api/blog", methods=["GET"])
+@admin_required
+def admin_get_blog_posts():
+    """
+    GET /admin/api/blog
+    Returns ALL blog posts (including drafts) for the admin panel,
+    sorted by sort_order and then by created_at descending.
+    """
+    posts = query_db(
+        "SELECT * FROM blog_posts ORDER BY sort_order ASC, created_at DESC"
+    )
+    return jsonify(posts or [])
+
+
+@app.route("/admin/api/blog", methods=["POST"])
+@admin_required
+def admin_create_blog_post():
+    """
+    POST /admin/api/blog
+    Create a new blog post. Auto-generates slug from title if not provided.
+    Sets published_at to NOW() if status is 'published'.
+    """
+    data = request.get_json()
+
+    # Auto-generate slug from title if not provided
+    slug = data.get("slug", "").strip()
+    if not slug:
+        slug = re.sub(r'[^a-z0-9]+', '-', data.get("title", "untitled").lower()).strip('-')
+
+    # Set published_at timestamp when publishing
+    published_at = None
+    if data.get("status") == "published":
+        published_at = datetime.now()
+
+    post = execute_db(
+        """INSERT INTO blog_posts
+             (slug, title, subtitle, excerpt, content, cover_image,
+              author, category, tags, status, seo_title, seo_description,
+              published_at, sort_order)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+           RETURNING *""",
+        (
+            slug,
+            data.get("title", ""),
+            data.get("subtitle", ""),
+            data.get("excerpt", ""),
+            data.get("content", ""),
+            data.get("cover_image", ""),
+            data.get("author", ""),
+            data.get("category", ""),
+            data.get("tags", ""),
+            data.get("status", "draft"),
+            data.get("seo_title", ""),
+            data.get("seo_description", ""),
+            published_at,
+            data.get("sort_order", 0)
+        )
+    )
+    return jsonify(post), 201
+
+
+@app.route("/admin/api/blog/<int:post_id>", methods=["PUT"])
+@admin_required
+def admin_update_blog_post(post_id):
+    """
+    PUT /admin/api/blog/<id>
+    Update an existing blog post. If status changes to 'published'
+    and published_at is not already set, it gets set to NOW().
+    """
+    data = request.get_json()
+
+    # Check if this is a newly published post (needs published_at timestamp)
+    existing = query_db(
+        "SELECT status, published_at FROM blog_posts WHERE id = %s",
+        (post_id,), fetchone=True
+    )
+    if not existing:
+        return jsonify({"error": "Blog post not found"}), 404
+
+    # Set published_at when first published, keep existing if re-saving
+    published_at = existing.get("published_at")
+    if data.get("status") == "published" and not published_at:
+        published_at = datetime.now()
+
+    post = execute_db(
+        """UPDATE blog_posts SET
+             slug = %s, title = %s, subtitle = %s, excerpt = %s,
+             content = %s, cover_image = %s, author = %s, category = %s,
+             tags = %s, status = %s, seo_title = %s, seo_description = %s,
+             published_at = %s, sort_order = %s, updated_at = NOW()
+           WHERE id = %s RETURNING *""",
+        (
+            data.get("slug", ""),
+            data.get("title", ""),
+            data.get("subtitle", ""),
+            data.get("excerpt", ""),
+            data.get("content", ""),
+            data.get("cover_image", ""),
+            data.get("author", ""),
+            data.get("category", ""),
+            data.get("tags", ""),
+            data.get("status", "draft"),
+            data.get("seo_title", ""),
+            data.get("seo_description", ""),
+            published_at,
+            data.get("sort_order", 0),
+            post_id
+        )
+    )
+    if not post:
+        return jsonify({"error": "Blog post not found"}), 404
+    return jsonify(post)
+
+
+@app.route("/admin/api/blog/<int:post_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_blog_post(post_id):
+    """
+    DELETE /admin/api/blog/<id>
+    Permanently remove a blog post from the database.
+    """
+    count = execute_db("DELETE FROM blog_posts WHERE id = %s", (post_id,))
+    if count == 0:
+        return jsonify({"error": "Blog post not found"}), 404
+    return jsonify({"success": True})
+
+
+# =============================================================
 # ADMIN CRUD — PAGE SECTIONS (Layout + Custom Sections)
 # =============================================================
 # Manages the section registry — controls page layout order,
@@ -2071,6 +2736,126 @@ def admin_delete_custom_item(section_id, item_id):
     if count == 0:
         return jsonify({"error": "Item not found"}), 404
     return jsonify({"success": True})
+
+
+# =============================================================
+# ADMIN — SEO SETTINGS
+# =============================================================
+# Manages the SEO meta tags, Open Graph, Twitter Cards, and other
+# search engine optimization settings stored on the site_settings table.
+
+@app.route("/admin/api/seo", methods=["GET"])
+@admin_required
+def admin_get_seo():
+    """
+    GET /admin/api/seo
+    Returns the current SEO settings for the admin panel.
+    """
+    settings = query_db("""
+        SELECT seo_meta_title, seo_meta_description, seo_keywords,
+               seo_og_image, seo_twitter_handle, seo_canonical_url, seo_robots
+        FROM site_settings WHERE id = 1
+    """, fetchone=True)
+    return jsonify(settings or {})
+
+
+@app.route("/admin/api/seo", methods=["PUT"])
+@admin_required
+def admin_update_seo():
+    """
+    PUT /admin/api/seo
+    Update SEO settings (meta title, description, keywords, OG image,
+    Twitter handle, canonical URL, robots directive).
+    """
+    data = request.get_json()
+    result = execute_db(
+        """UPDATE site_settings SET
+             seo_meta_title = %s, seo_meta_description = %s,
+             seo_keywords = %s, seo_og_image = %s,
+             seo_twitter_handle = %s, seo_canonical_url = %s,
+             seo_robots = %s, updated_at = NOW()
+           WHERE id = 1 RETURNING
+             seo_meta_title, seo_meta_description, seo_keywords,
+             seo_og_image, seo_twitter_handle, seo_canonical_url, seo_robots""",
+        (
+            data.get("seo_meta_title", ""),
+            data.get("seo_meta_description", ""),
+            data.get("seo_keywords", ""),
+            data.get("seo_og_image", ""),
+            data.get("seo_twitter_handle", ""),
+            data.get("seo_canonical_url", ""),
+            data.get("seo_robots", "index, follow")
+        )
+    )
+    return jsonify(result or {})
+
+
+@app.route("/admin/api/seo/generate", methods=["POST"])
+@admin_required
+def admin_generate_seo():
+    """
+    POST /admin/api/seo/generate
+    Uses OpenAI to analyze the site's actual content and generate
+    optimized SEO suggestions for meta title, description, and keywords.
+    The admin can review and apply these suggestions before saving.
+    """
+    # Gather site content to provide context for SEO generation
+    settings = query_db("SELECT * FROM site_settings WHERE id = 1", fetchone=True)
+    cards = query_db("SELECT title, subtitle, description FROM gallery_cards ORDER BY sort_order LIMIT 10")
+    experiences = query_db("SELECT name, description FROM experiences ORDER BY sort_order LIMIT 10")
+
+    site_name = settings.get("site_name", "My Site") if settings else "My Site"
+    site_subtitle = settings.get("site_subtitle", "") if settings else ""
+    hero_desc = settings.get("hero_description", "") if settings else ""
+
+    # Build a content summary for the AI to analyze
+    content_summary = f"Site name: {site_name}\n"
+    if site_subtitle:
+        content_summary += f"Tagline: {site_subtitle}\n"
+    if hero_desc:
+        content_summary += f"Main description: {hero_desc}\n"
+    if cards:
+        card_names = ", ".join([c["title"] for c in cards])
+        content_summary += f"Featured items: {card_names}\n"
+    if experiences:
+        exp_names = ", ".join([e["name"] for e in experiences])
+        content_summary += f"Services/experiences: {exp_names}\n"
+
+    try:
+        # Call OpenAI to generate SEO suggestions based on the site's actual content
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an SEO expert. Based on the website content provided, "
+                        "generate optimized SEO metadata. Respond with ONLY a JSON object "
+                        "(no markdown, no code fences) containing exactly these fields:\n"
+                        '  "meta_title": (max 60 characters, compelling and keyword-rich),\n'
+                        '  "meta_description": (max 160 characters, action-oriented summary),\n'
+                        '  "keywords": (comma-separated, max 10 relevant keywords)\n'
+                        "Make them compelling, search-engine friendly, and specific to the business."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": f"Generate SEO metadata for this website:\n\n{content_summary}"
+                }
+            ],
+            max_tokens=500,
+            temperature=0.7,
+        )
+
+        result_text = response.choices[0].message.content.strip()
+        # Remove markdown code fences if the AI wrapped the JSON
+        result_text = re.sub(r'^```(?:json)?\s*', '', result_text)
+        result_text = re.sub(r'\s*```$', '', result_text)
+
+        seo_data = json.loads(result_text)
+        return jsonify(seo_data)
+    except Exception as e:
+        return jsonify({"error": f"Failed to generate SEO suggestions: {str(e)}"}), 500
 
 
 # =============================================================
@@ -2293,7 +3078,9 @@ def admin_reorder(content_type):
         "team": "team_members",
         "faq": "faqs",
         "page-sections": "page_sections",
-        "custom-section-items": "custom_section_items"
+        "custom-section-items": "custom_section_items",
+        "blog-posts": "blog_posts",
+        "page-views": "page_views"
     }
     table = table_map.get(content_type)
     if not table:
@@ -3005,6 +3792,277 @@ def api_submit_form(slug):
             )
         )
     return jsonify({"success": True, "id": result["id"] if result else None}), 201
+
+
+# =============================================================================
+# VISITOR ANALYTICS — Tracking endpoints
+# =============================================================================
+# Public endpoints to record page views and time-on-page (duration).
+# Rate-limited: max 1 pageview per session_id + page_url per 30 seconds.
+# Duration is updated via sendBeacon on page unload.
+
+# In-memory rate-limit cache: { "session_id|page_url": last_insert_timestamp }
+_pv_rate_cache = {}
+
+@app.route("/api/track/pageview", methods=["POST"])
+def api_track_pageview():
+    """POST /api/track/pageview — Record a new page view.
+
+    Expected JSON body:
+      session_id, visitor_id, page_url, referrer_url,
+      utm_source, utm_medium, utm_campaign, utm_term, utm_content,
+      screen_resolution, language
+    """
+    data = request.get_json(silent=True) or {}
+    session_id = (data.get("session_id") or "").strip()
+    page_url   = (data.get("page_url") or "").strip()
+
+    if not session_id or not page_url:
+        return jsonify({"error": "session_id and page_url required"}), 400
+
+    # --- Rate-limit: 1 insert per session+page per 30 seconds ----------------
+    import time as _time
+    cache_key = f"{session_id}|{page_url}"
+    now = _time.time()
+    last = _pv_rate_cache.get(cache_key, 0)
+    if now - last < 30:
+        return jsonify({"ok": True, "rate_limited": True}), 200
+    _pv_rate_cache[cache_key] = now
+
+    # --- Parse User-Agent for browser / OS / device --------------------------
+    ua_string = request.headers.get("User-Agent", "")
+    browser, os_name, device = _parse_ua(ua_string)
+
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+
+    row = execute_db(
+        """INSERT INTO page_views
+               (session_id, visitor_id, page_url, referrer_url,
+                utm_source, utm_medium, utm_campaign, utm_term, utm_content,
+                ip_address, browser, os, device_type,
+                screen_resolution, language)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+           RETURNING id""",
+        (
+            session_id,
+            data.get("visitor_id", ""),
+            page_url,
+            data.get("referrer_url", ""),
+            data.get("utm_source", ""),
+            data.get("utm_medium", ""),
+            data.get("utm_campaign", ""),
+            data.get("utm_term", ""),
+            data.get("utm_content", ""),
+            ip,
+            browser,
+            os_name,
+            device,
+            data.get("screen_resolution", ""),
+            data.get("language", ""),
+        ),
+    )
+
+    return jsonify({"ok": True, "id": row["id"] if row else None}), 201
+
+
+@app.route("/api/track/duration", methods=["POST"])
+def api_track_duration():
+    """POST /api/track/duration — Update duration_seconds for the most recent
+    page-view matching the given session_id + page_url.
+
+    Called via navigator.sendBeacon on beforeunload.
+    Body may arrive as plain text (sendBeacon sends Blob), so we accept both
+    JSON content-type and plain text.
+    """
+    raw = request.get_data(as_text=True)
+    try:
+        data = json.loads(raw) if raw else {}
+    except Exception:
+        data = {}
+
+    session_id = (data.get("session_id") or "").strip()
+    page_url   = (data.get("page_url") or "").strip()
+    duration   = int(data.get("duration", 0) or 0)
+
+    if not session_id or not page_url or duration <= 0:
+        return jsonify({"ok": False}), 400
+
+    # Cap duration at 30 minutes to avoid bogus values
+    if duration > 1800:
+        duration = 1800
+
+    execute_db(
+        """UPDATE page_views
+              SET duration_seconds = %s
+            WHERE id = (
+                SELECT id FROM page_views
+                 WHERE session_id = %s AND page_url = %s
+                 ORDER BY created_at DESC LIMIT 1
+            )""",
+        (duration, session_id, page_url),
+    )
+    return jsonify({"ok": True}), 200
+
+
+# =============================================================================
+# ADMIN ANALYTICS API — Aggregated visitor stats for the dashboard
+# =============================================================================
+
+@app.route("/admin/api/analytics")
+@admin_required
+def admin_api_analytics():
+    """GET /admin/api/analytics — Return aggregated analytics data.
+
+    Query params:
+      days  — number of past days to include (default 30, max 365)
+    """
+    days = min(int(request.args.get("days", 30)), 365)
+
+    # --- Summary counts ------------------------------------------------------
+    summary = query_db(
+        """SELECT
+               COUNT(*)                                     AS total_views,
+               COUNT(DISTINCT visitor_id) FILTER (WHERE visitor_id != '') AS unique_visitors,
+               COUNT(DISTINCT session_id)                   AS total_sessions,
+               COALESCE(AVG(duration_seconds) FILTER (WHERE duration_seconds > 0), 0) AS avg_duration,
+               COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE) AS today_views,
+               COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE - INTERVAL '7 days') AS week_views
+           FROM page_views
+           WHERE created_at >= NOW() - MAKE_INTERVAL(days => %s)""",
+        (days,),
+        fetchone=True,
+    )
+
+    # --- Top pages -----------------------------------------------------------
+    top_pages = query_db(
+        """SELECT page_url, COUNT(*) AS views,
+                  COALESCE(AVG(duration_seconds) FILTER (WHERE duration_seconds > 0), 0) AS avg_dur
+             FROM page_views
+            WHERE created_at >= NOW() - MAKE_INTERVAL(days => %s)
+            GROUP BY page_url
+            ORDER BY views DESC
+            LIMIT 10""",
+        (days,),
+    )
+
+    # --- Browser breakdown ---------------------------------------------------
+    browsers = query_db(
+        """SELECT browser, COUNT(*) AS cnt
+             FROM page_views
+            WHERE created_at >= NOW() - MAKE_INTERVAL(days => %s) AND browser != ''
+            GROUP BY browser ORDER BY cnt DESC LIMIT 5""",
+        (days,),
+    )
+
+    # --- Device breakdown ----------------------------------------------------
+    devices = query_db(
+        """SELECT device_type, COUNT(*) AS cnt
+             FROM page_views
+            WHERE created_at >= NOW() - MAKE_INTERVAL(days => %s)
+            GROUP BY device_type ORDER BY cnt DESC""",
+        (days,),
+    )
+
+    # --- OS breakdown --------------------------------------------------------
+    os_stats = query_db(
+        """SELECT os, COUNT(*) AS cnt
+             FROM page_views
+            WHERE created_at >= NOW() - MAKE_INTERVAL(days => %s) AND os != ''
+            GROUP BY os ORDER BY cnt DESC LIMIT 5""",
+        (days,),
+    )
+
+    # --- Top referrers -------------------------------------------------------
+    referrers = query_db(
+        """SELECT referrer_url, COUNT(*) AS cnt
+             FROM page_views
+            WHERE created_at >= NOW() - MAKE_INTERVAL(days => %s) AND referrer_url != ''
+            GROUP BY referrer_url ORDER BY cnt DESC LIMIT 10""",
+        (days,),
+    )
+
+    # --- Top UTM sources -----------------------------------------------------
+    utm_sources = query_db(
+        """SELECT utm_source, COUNT(*) AS cnt
+             FROM page_views
+            WHERE created_at >= NOW() - MAKE_INTERVAL(days => %s) AND utm_source != ''
+            GROUP BY utm_source ORDER BY cnt DESC LIMIT 5""",
+        (days,),
+    )
+
+    # --- Recent page views (last 50) ----------------------------------------
+    recent = query_db(
+        """SELECT id, session_id, visitor_id, page_url, referrer_url,
+                  browser, os, device_type, duration_seconds,
+                  utm_source, created_at
+             FROM page_views
+            WHERE created_at >= NOW() - MAKE_INTERVAL(days => %s)
+            ORDER BY created_at DESC LIMIT 50""",
+        (days,),
+    )
+
+    def _row(r):
+        d = dict(r)
+        for k, v in d.items():
+            if hasattr(v, "isoformat"):
+                d[k] = v.isoformat()
+        return d
+
+    return jsonify({
+        "summary": {
+            "total_views": summary["total_views"],
+            "unique_visitors": summary["unique_visitors"],
+            "total_sessions": summary["total_sessions"],
+            "avg_duration": round(float(summary["avg_duration"]), 1),
+            "today_views": summary["today_views"],
+            "week_views": summary["week_views"],
+        },
+        "top_pages":   [_row(r) for r in top_pages],
+        "browsers":    [_row(r) for r in browsers],
+        "devices":     [_row(r) for r in devices],
+        "os_stats":    [_row(r) for r in os_stats],
+        "referrers":   [_row(r) for r in referrers],
+        "utm_sources": [_row(r) for r in utm_sources],
+        "recent":      [_row(r) for r in recent],
+    })
+
+
+@app.route("/admin/api/analytics/chart")
+@admin_required
+def admin_api_analytics_chart():
+    """GET /admin/api/analytics/chart — Daily pageview counts for bar chart.
+
+    Query params:
+      days — number of past days (default 30, max 90)
+    Returns JSON array of { date, views } objects.
+    """
+    days = min(int(request.args.get("days", 30)), 90)
+
+    rows = query_db(
+        """SELECT d::date AS date, COALESCE(pv.cnt, 0) AS views
+             FROM generate_series(
+                      (CURRENT_DATE - MAKE_INTERVAL(days => %s - 1)),
+                      CURRENT_DATE,
+                      '1 day'::interval
+                  ) AS d
+             LEFT JOIN (
+                 SELECT created_at::date AS day, COUNT(*) AS cnt
+                   FROM page_views
+                  WHERE created_at >= CURRENT_DATE - MAKE_INTERVAL(days => %s - 1)
+                  GROUP BY day
+             ) pv ON pv.day = d::date
+           ORDER BY d""",
+        (days, days),
+    )
+
+    result = []
+    for r in rows:
+        d = r["date"]
+        result.append({
+            "date": d.isoformat() if hasattr(d, "isoformat") else str(d),
+            "views": r["views"],
+        })
+    return jsonify(result)
 
 
 # =============================================================================

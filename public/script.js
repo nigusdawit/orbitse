@@ -65,6 +65,7 @@ let pricingSeasons = [];
 let testimonials = [];
 let teamMembers = [];
 let faqItems = [];
+let blogPosts = [];
 let businessInfo = {};
 let pageSections = [];
 let currentSlideIndex = 0;
@@ -92,7 +93,7 @@ let touchStartY = null;
 async function loadAllData() {
   try {
     /* Fetch all data sources in parallel for speed */
-    const [settingsRes, cardsRes, expRes, pricingRes, testimonialsRes, teamRes, faqRes, bizRes, sectionsRes] = await Promise.all([
+    const [settingsRes, cardsRes, expRes, pricingRes, testimonialsRes, teamRes, faqRes, blogRes, bizRes, sectionsRes] = await Promise.all([
       fetch('/api/site-settings'),
       fetch('/api/gallery-cards'),
       fetch('/api/experiences'),
@@ -100,6 +101,7 @@ async function loadAllData() {
       fetch('/api/testimonials'),
       fetch('/api/team'),
       fetch('/api/faq'),
+      fetch('/api/blog'),
       fetch('/api/business-info'),
       fetch('/api/page-sections')
     ]);
@@ -111,6 +113,7 @@ async function loadAllData() {
     testimonials = await testimonialsRes.json();
     teamMembers = await teamRes.json();
     faqItems = await faqRes.json();
+    blogPosts = await blogRes.json();
     businessInfo = await bizRes.json();
     pageSections = await sectionsRes.json();
 
@@ -121,6 +124,7 @@ async function loadAllData() {
     renderTestimonials();
     renderTeam();
     renderFAQ();
+    renderBlogSection();
     renderFooter();
     renderGallerySlides();
     renderDotNav();
@@ -202,6 +206,8 @@ function renderHighlights() {
   /* Show first 6 cards in the highlights grid (matching the original React app) */
   const cardsToShow = galleryCards.slice(0, 6);
 
+  /* Each highlight card gets role="article" and aria-label with the card title
+     so screen readers can announce each card meaningfully */
   grid.innerHTML = cardsToShow.map((card, index) => `
     <!--
       HIGHLIGHT CARD
@@ -211,6 +217,7 @@ function renderHighlights() {
     -->
     <div class="highlight-card fade-in-view stagger-${index + 1}"
          onclick="showGalleryAt(${index})"
+         role="article" aria-label="${escapeHtml(card.title)}"
          data-testid="card-highlight-${card.slug}">
       <div class="highlight-card-bg" style="background-image: url(${card.image_url})"></div>
       <div class="highlight-card-overlay"></div>
@@ -233,6 +240,8 @@ function renderExperiences() {
   const grid = document.getElementById('experiences-grid');
   if (!grid || !experiences.length) return;
 
+  /* Each experience card gets aria-label with the experience name
+     so screen readers can announce it meaningfully */
   grid.innerHTML = experiences.map((exp, index) => `
     <!--
       EXPERIENCE CARD
@@ -240,6 +249,7 @@ function renderExperiences() {
       - See getIconSvg() function below for the icon mapping
     -->
     <div class="experience-card fade-in-view stagger-${index + 1}"
+         aria-label="${escapeHtml(exp.name)}"
          data-testid="card-experience-${index}">
       <div class="experience-icon">${getIconSvg(exp.icon)}</div>
       <h3 class="experience-name">${exp.name}</h3>
@@ -257,8 +267,11 @@ function renderPricing() {
   const grid = document.getElementById('pricing-grid');
   if (!grid || !pricingSeasons.length) return;
 
+  /* Each pricing card gets aria-label with the season label
+     so screen readers can announce pricing tiers */
   grid.innerHTML = pricingSeasons.map((season, index) => `
     <div class="pricing-card fade-in-view stagger-${index + 1}"
+         aria-label="${escapeHtml(season.label)} Season pricing"
          data-testid="card-pricing-${season.label.toLowerCase()}">
       <p class="pricing-label">${season.label} Season</p>
       <p class="pricing-dates">${season.date_range}</p>
@@ -295,8 +308,10 @@ function renderTestimonials() {
       ? `<img src="${t.image_url}" alt="${t.reviewer_name}" class="testimonial-photo" data-testid="img-testimonial-${t.id}">`
       : `<div class="testimonial-photo-placeholder" data-testid="avatar-testimonial-${t.id}">${(t.reviewer_name || '?').charAt(0).toUpperCase()}</div>`;
 
+    /* role="article" and aria-label with the reviewer name let screen readers
+       announce each testimonial card with the reviewer's identity */
     return `
-      <div class="testimonial-card fade-in-view stagger-${(index % 3) + 1}" data-testid="card-testimonial-${t.id}">
+      <div class="testimonial-card fade-in-view stagger-${(index % 3) + 1}" role="article" aria-label="Testimonial from ${escapeHtml(t.reviewer_name)}" data-testid="card-testimonial-${t.id}">
         <div class="testimonial-stars" data-testid="rating-testimonial-${t.id}">${stars}</div>
         <p class="testimonial-content" data-testid="text-testimonial-${t.id}">"${t.content}"</p>
         <div class="testimonial-reviewer">
@@ -326,8 +341,10 @@ function renderTeam() {
       ? `<img src="${m.image_url}" alt="${m.name}" class="team-photo" data-testid="img-team-${m.id}">`
       : `<div class="team-photo-placeholder" data-testid="avatar-team-${m.id}">${(m.name || '?').charAt(0).toUpperCase()}</div>`;
 
+    /* role="article" and aria-label with the member name let screen readers
+       announce each team card with the member's identity */
     return `
-      <div class="team-card fade-in-view stagger-${(index % 3) + 1}" data-testid="card-team-${m.id}">
+      <div class="team-card fade-in-view stagger-${(index % 3) + 1}" role="article" aria-label="${escapeHtml(m.name)}" data-testid="card-team-${m.id}">
         ${photo}
         <h3 class="team-name" data-testid="name-team-${m.id}">${m.name}</h3>
         ${m.title ? `<p class="team-title" data-testid="title-team-${m.id}">${m.title}</p>` : ''}
@@ -346,13 +363,16 @@ function renderFAQ() {
   const list = document.getElementById('faq-list');
   if (!list || !faqItems.length) return;
 
+  /* FAQ items use role="button" with aria-expanded on the question toggle,
+     and role="region" with aria-labelledby on the answer panel so screen
+     readers announce the expanded/collapsed state and link question to answer */
   list.innerHTML = faqItems.map((f, index) => `
     <div class="faq-item fade-in-view stagger-${(index % 3) + 1}" data-testid="faq-item-${f.id}">
-      <button class="faq-question" data-testid="button-faq-${f.id}" onclick="toggleFAQ(this)">
+      <button class="faq-question" id="faq-q-${f.id}" data-testid="button-faq-${f.id}" onclick="toggleFAQ(this)" role="button" aria-expanded="false" aria-controls="faq-a-${f.id}">
         <span>${f.question}</span>
         <span class="faq-arrow">▸</span>
       </button>
-      <div class="faq-answer" data-testid="text-faq-answer-${f.id}">
+      <div class="faq-answer" id="faq-a-${f.id}" role="region" aria-labelledby="faq-q-${f.id}" data-testid="text-faq-answer-${f.id}">
         <p>${f.answer}</p>
       </div>
     </div>
@@ -368,15 +388,69 @@ function toggleFAQ(button) {
   const item = button.closest('.faq-item');
   const isActive = item.classList.contains('active');
 
-  /* Close all FAQ items first */
+  /* Close all FAQ items and update aria-expanded to false */
   document.querySelectorAll('.faq-item.active').forEach(el => {
     el.classList.remove('active');
+    const btn = el.querySelector('.faq-question');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
   });
 
   /* Toggle the clicked item (if it wasn't already open) */
   if (!isActive) {
     item.classList.add('active');
+    /* Update aria-expanded to reflect the open state for screen readers */
+    button.setAttribute('aria-expanded', 'true');
   }
+}
+
+
+/**
+ * Renders the Blog section with gallery-style preview cards.
+ * Each card shows a cover image with gradient overlay, category badge,
+ * title, excerpt, author, date, and a "Read More" link to /blog/<slug>.
+ * Blog posts are fetched from /api/blog (published posts only).
+ */
+function renderBlogSection() {
+  const grid = document.getElementById('blog-grid');
+  if (!grid || !blogPosts.length) return;
+
+  /* Each blog card gets role="article" and aria-label with the post title
+     so screen readers can announce each blog preview meaningfully */
+  grid.innerHTML = blogPosts.map((post, index) => {
+    /* Format the published date for display */
+    const dateStr = post.published_at
+      ? new Date(post.published_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+      : '';
+
+    return `
+      <a href="/blog/${encodeURIComponent(post.slug)}" class="blog-card fade-in-view stagger-${(index % 6) + 1}"
+         role="article" aria-label="${escapeHtml(post.title)}"
+         data-testid="card-blog-${post.slug}">
+        <!-- Cover image with gradient overlay -->
+        ${post.cover_image ? `
+          <div class="blog-card-image">
+            <div class="blog-card-image-bg" style="background-image: url(${post.cover_image})"></div>
+            <div class="blog-card-image-overlay"></div>
+            ${post.category ? `<span class="blog-card-category" data-testid="badge-blog-category-${post.slug}">${escapeHtml(post.category)}</span>` : ''}
+          </div>
+        ` : `
+          <div class="blog-card-image blog-card-image-empty">
+            ${post.category ? `<span class="blog-card-category" data-testid="badge-blog-category-${post.slug}">${escapeHtml(post.category)}</span>` : ''}
+          </div>
+        `}
+        <!-- Card body: title, excerpt, metadata -->
+        <div class="blog-card-body">
+          <h3 class="blog-card-title" data-testid="text-blog-title-${post.slug}">${escapeHtml(post.title)}</h3>
+          ${post.excerpt ? `<p class="blog-card-excerpt" data-testid="text-blog-excerpt-${post.slug}">${escapeHtml(post.excerpt)}</p>` : ''}
+          <div class="blog-card-meta">
+            ${post.author ? `<span class="blog-card-author" data-testid="text-blog-author-${post.slug}">${escapeHtml(post.author)}</span>` : ''}
+            ${dateStr ? `<span class="blog-card-date" data-testid="text-blog-date-${post.slug}">${dateStr}</span>` : ''}
+          </div>
+          <span class="blog-card-readmore" data-testid="link-blog-readmore-${post.slug}">Read More</span>
+        </div>
+      </a>
+    `;
+  }).join('');
 }
 
 
@@ -438,11 +512,14 @@ function renderFooter() {
       website: 'WEB'
     };
 
+    /* Each social link gets aria-label with the platform name so screen
+       readers announce e.g. "Visit us on Instagram" instead of just the icon text */
     const socialHTML = Object.entries(links)
       .filter(([_, url]) => url && url.trim())
       .map(([platform, url]) => `
         <a href="${url}" target="_blank" rel="noopener noreferrer"
            class="footer-social-link" data-testid="link-social-${platform}"
+           aria-label="Visit us on ${platform.charAt(0).toUpperCase() + platform.slice(1)}"
            title="${platform.charAt(0).toUpperCase() + platform.slice(1)}">
           <span class="social-icon">${socialLabels[platform] || 'LNK'}</span>
         </a>
@@ -483,6 +560,7 @@ const BUILTIN_SECTION_MAP = {
   'testimonials': 'section-testimonials',
   'team': 'section-team',
   'faq': 'section-faq',
+  'blog': 'section-blog',
   'footer': 'site-footer'
 };
 
@@ -563,6 +641,7 @@ function checkBuiltinHasData(slug) {
     case 'testimonials': return testimonials.length > 0;
     case 'team': return teamMembers.length > 0;
     case 'faq': return faqItems.length > 0;
+    case 'blog': return blogPosts.length > 0;
     case 'footer': return true;
     default: return true;
   }
@@ -578,6 +657,10 @@ function updateFooterQuickLinks() {
   if (footerLinkTestimonials) footerLinkTestimonials.style.display = enabledSlugs.has('testimonials') && testimonials.length ? '' : 'none';
   if (footerLinkTeam) footerLinkTeam.style.display = enabledSlugs.has('team') && teamMembers.length ? '' : 'none';
   if (footerLinkFaq) footerLinkFaq.style.display = enabledSlugs.has('faq') && faqItems.length ? '' : 'none';
+
+  /* Blog footer link — show if blog section is enabled and has published posts */
+  const footerLinkBlog = document.getElementById('footer-link-blog');
+  if (footerLinkBlog) footerLinkBlog.style.display = enabledSlugs.has('blog') && blogPosts.length ? '' : 'none';
 }
 
 function applySectionVisibilityFallback() {
@@ -586,6 +669,7 @@ function applySectionVisibilityFallback() {
     { id: 'section-testimonials', toggle: siteSettings.section_testimonials, hasData: testimonials.length > 0 },
     { id: 'section-team', toggle: siteSettings.section_team, hasData: teamMembers.length > 0 },
     { id: 'section-faq', toggle: siteSettings.section_faq, hasData: faqItems.length > 0 },
+    { id: 'section-blog', toggle: true, hasData: blogPosts.length > 0 },
     { id: 'site-footer', toggle: siteSettings.section_footer, hasData: true }
   ];
   sections.forEach(({ id, toggle, hasData }) => {
@@ -595,9 +679,11 @@ function applySectionVisibilityFallback() {
   const footerLinkTestimonials = document.getElementById('footer-link-testimonials');
   const footerLinkTeam = document.getElementById('footer-link-team');
   const footerLinkFaq = document.getElementById('footer-link-faq');
+  const footerLinkBlog = document.getElementById('footer-link-blog');
   if (footerLinkTestimonials) footerLinkTestimonials.style.display = siteSettings.section_testimonials && testimonials.length ? '' : 'none';
   if (footerLinkTeam) footerLinkTeam.style.display = siteSettings.section_team && teamMembers.length ? '' : 'none';
   if (footerLinkFaq) footerLinkFaq.style.display = siteSettings.section_faq && faqItems.length ? '' : 'none';
+  if (footerLinkBlog) footerLinkBlog.style.display = blogPosts.length ? '' : 'none';
 }
 
 /**
@@ -632,6 +718,28 @@ async function renderCustomSections() {
 }
 
 /**
+ * Applies accessibility attributes to a custom section item element.
+ * This modular helper ensures that ANY custom section created through admin
+ * automatically inherits proper ARIA labels and roles.
+ *
+ * @param {string} sectionTitle - The title of the parent section (used for context)
+ * @param {string} itemTitle - The title/name of the individual item
+ * @param {string} [sectionType] - The template type (cards_grid, text_content, etc.)
+ * @returns {string} A string of HTML attributes to add to the element
+ */
+function applyAccessibility(sectionTitle, itemTitle, sectionType) {
+  /* Default role is "article" — appropriate for self-contained content items.
+     The aria-label combines section context with item identity so screen readers
+     provide full context (e.g., "Our Services: Web Development") */
+  const role = 'article';
+  const label = itemTitle
+    ? `${escapeHtml(sectionTitle)}: ${escapeHtml(itemTitle)}`
+    : escapeHtml(sectionTitle);
+  return `role="${role}" aria-label="${label}"`;
+}
+
+
+/**
  * Generates HTML for a custom section based on its template type.
  */
 function renderCustomSectionHTML(section, items) {
@@ -653,31 +761,36 @@ function renderCustomSectionHTML(section, items) {
 
   let contentHTML = '';
 
+  /* Pass section title to each template so applyAccessibility can generate
+     meaningful aria-labels that combine section context with item identity */
+  const sTitle = section.title || '';
   switch (section.template) {
     case 'cards_grid':
-      contentHTML = renderCardsGridTemplate(items, section.id);
+      contentHTML = renderCardsGridTemplate(items, section.id, sTitle);
       break;
     case 'text_content':
-      contentHTML = renderTextContentTemplate(items, section.id);
+      contentHTML = renderTextContentTemplate(items, section.id, sTitle);
       break;
     case 'image_gallery':
-      contentHTML = renderImageGalleryTemplate(items, section.id);
+      contentHTML = renderImageGalleryTemplate(items, section.id, sTitle);
       break;
     case 'cta_banner':
-      contentHTML = renderCtaBannerTemplate(items, section.id, settings);
+      contentHTML = renderCtaBannerTemplate(items, section.id, settings, sTitle);
       break;
     case 'stats_counter':
-      contentHTML = renderStatsCounterTemplate(items, section.id);
+      contentHTML = renderStatsCounterTemplate(items, section.id, sTitle);
       break;
     case 'icon_features':
-      contentHTML = renderIconFeaturesTemplate(items, section.id);
+      contentHTML = renderIconFeaturesTemplate(items, section.id, sTitle);
       break;
     default:
-      contentHTML = renderCardsGridTemplate(items, section.id);
+      contentHTML = renderCardsGridTemplate(items, section.id, sTitle);
   }
 
+  /* Each custom section wrapper gets role="region" and aria-label set to the
+     section title, ensuring admin-created sections are accessible landmarks */
   return `
-    <section id="${sectionId}" class="snap-section landing-section" style="${bgStyle}" data-testid="${sectionId}">
+    <section id="${sectionId}" class="snap-section landing-section" style="${bgStyle}" role="region" aria-label="${escapeHtml(section.title)}" data-testid="${sectionId}">
       <div class="max-w-container">
         ${headerHTML}
         ${contentHTML}
@@ -686,11 +799,11 @@ function renderCustomSectionHTML(section, items) {
   `;
 }
 
-function renderCardsGridTemplate(items, sectionId) {
+function renderCardsGridTemplate(items, sectionId, sectionTitle) {
   if (!items.length) return '<p class="section-subtitle" style="text-align:center;">No items yet.</p>';
   return `<div class="custom-cards-grid" data-testid="grid-custom-${sectionId}">
     ${items.map((item, i) => `
-      <div class="custom-card fade-in-view stagger-${(i % 6) + 1}" data-testid="card-custom-${item.id}">
+      <div class="custom-card fade-in-view stagger-${(i % 6) + 1}" ${applyAccessibility(sectionTitle || '', item.title || '', 'cards_grid')} data-testid="card-custom-${item.id}">
         ${item.image_url ? `<div class="custom-card-img" style="background-image: url(${item.image_url})"></div>` : ''}
         <div class="custom-card-body">
           <h3 class="custom-card-title">${escapeHtml(item.title || '')}</h3>
@@ -703,10 +816,10 @@ function renderCardsGridTemplate(items, sectionId) {
   </div>`;
 }
 
-function renderTextContentTemplate(items, sectionId) {
+function renderTextContentTemplate(items, sectionId, sectionTitle) {
   if (!items.length) return '';
   return items.map((item, i) => `
-    <div class="custom-text-block fade-in-view stagger-${(i % 3) + 1}" data-testid="text-block-${item.id}">
+    <div class="custom-text-block fade-in-view stagger-${(i % 3) + 1}" ${applyAccessibility(sectionTitle || '', item.title || '', 'text_content')} data-testid="text-block-${item.id}">
       ${item.title ? `<h3 class="custom-text-heading">${escapeHtml(item.title)}</h3>` : ''}
       ${item.subtitle ? `<p class="custom-text-subtitle">${escapeHtml(item.subtitle)}</p>` : ''}
       ${item.content ? `<div class="custom-text-body">${escapeHtml(item.content)}</div>` : ''}
@@ -715,11 +828,11 @@ function renderTextContentTemplate(items, sectionId) {
   `).join('');
 }
 
-function renderImageGalleryTemplate(items, sectionId) {
+function renderImageGalleryTemplate(items, sectionId, sectionTitle) {
   if (!items.length) return '<p class="section-subtitle" style="text-align:center;">No images yet.</p>';
   return `<div class="custom-image-gallery" data-testid="gallery-custom-${sectionId}">
     ${items.map((item, i) => `
-      <div class="custom-gallery-item fade-in-view stagger-${(i % 6) + 1}" data-testid="img-gallery-${item.id}">
+      <div class="custom-gallery-item fade-in-view stagger-${(i % 6) + 1}" ${applyAccessibility(sectionTitle || '', item.title || '', 'image_gallery')} data-testid="img-gallery-${item.id}">
         <div class="custom-gallery-img" style="background-image: url(${item.image_url || ''})"></div>
         ${item.title ? `<p class="custom-gallery-caption">${escapeHtml(item.title)}</p>` : ''}
       </div>
@@ -727,26 +840,26 @@ function renderImageGalleryTemplate(items, sectionId) {
   </div>`;
 }
 
-function renderCtaBannerTemplate(items, sectionId, settings) {
+function renderCtaBannerTemplate(items, sectionId, settings, sectionTitle) {
   const item = items[0] || {};
   const btnText = item.link_text || settings.button_text || 'Get Started';
   const btnAction = item.link_url ? `window.open('${item.link_url}', '_blank')` : 'openModal()';
   return `
-    <div class="custom-cta-banner fade-in-view" data-testid="cta-banner-${sectionId}">
+    <div class="custom-cta-banner fade-in-view" ${applyAccessibility(sectionTitle || '', item.title || '', 'cta_banner')} data-testid="cta-banner-${sectionId}">
       ${item.title ? `<h3 class="custom-cta-title">${escapeHtml(item.title)}</h3>` : ''}
       ${item.content ? `<p class="custom-cta-description">${escapeHtml(item.content)}</p>` : ''}
-      <button class="btn-primary" onclick="${btnAction}" data-testid="button-cta-custom-${sectionId}">
+      <button class="btn-primary" onclick="${btnAction}" aria-label="${escapeHtml(btnText)}" data-testid="button-cta-custom-${sectionId}">
         ${escapeHtml(btnText)}
       </button>
     </div>
   `;
 }
 
-function renderStatsCounterTemplate(items, sectionId) {
+function renderStatsCounterTemplate(items, sectionId, sectionTitle) {
   if (!items.length) return '';
   return `<div class="custom-stats-grid" data-testid="stats-custom-${sectionId}">
     ${items.map((item, i) => `
-      <div class="custom-stat-item fade-in-view stagger-${(i % 6) + 1}" data-testid="stat-${item.id}">
+      <div class="custom-stat-item fade-in-view stagger-${(i % 6) + 1}" ${applyAccessibility(sectionTitle || '', item.subtitle || item.content || item.title || '', 'stats_counter')} data-testid="stat-${item.id}">
         <div class="custom-stat-number">${escapeHtml(item.title || '0')}</div>
         <div class="custom-stat-label">${escapeHtml(item.subtitle || item.content || '')}</div>
       </div>
@@ -754,11 +867,11 @@ function renderStatsCounterTemplate(items, sectionId) {
   </div>`;
 }
 
-function renderIconFeaturesTemplate(items, sectionId) {
+function renderIconFeaturesTemplate(items, sectionId, sectionTitle) {
   if (!items.length) return '';
   return `<div class="custom-icon-features-grid" data-testid="features-custom-${sectionId}">
     ${items.map((item, i) => `
-      <div class="custom-icon-feature fade-in-view stagger-${(i % 6) + 1}" data-testid="feature-${item.id}">
+      <div class="custom-icon-feature fade-in-view stagger-${(i % 6) + 1}" ${applyAccessibility(sectionTitle || '', item.title || '', 'icon_features')} data-testid="feature-${item.id}">
         <div class="custom-feature-icon">${getIconSvg(item.icon || 'star')}</div>
         <h3 class="custom-feature-title">${escapeHtml(item.title || '')}</h3>
         ${item.subtitle ? `<p class="custom-feature-subtitle">${escapeHtml(item.subtitle)}</p>` : ''}
@@ -783,6 +896,8 @@ function renderGallerySlides() {
   const container = document.getElementById('gallery-slides-container');
   if (!container || !galleryCards.length) return;
 
+  /* Each gallery slide gets role="group", aria-roledescription="slide",
+     and aria-label with the slide title for screen reader navigation */
   container.innerHTML = galleryCards.map((card, index) => {
     /* Parse details — stored as JSON array in the database */
     const details = Array.isArray(card.details) ? card.details : [];
@@ -796,6 +911,7 @@ function renderGallerySlides() {
       -->
       <div class="gallery-slide ${index === 0 ? 'slide-active' : ''}"
            data-slide-index="${index}"
+           role="group" aria-roledescription="slide" aria-label="${escapeHtml(card.title)}"
            data-testid="slide-${card.slug}">
 
         <!-- Fullscreen background image -->
@@ -2614,6 +2730,14 @@ function chatToggleExpand() {
   chatExpanded = !chatExpanded;
   container.classList.toggle('expanded', chatExpanded);
 
+  /* Update aria-expanded on the expand button so screen readers
+     announce the current open/closed state of the chat panel */
+  const expandBtn = document.getElementById('chatbot-expand-btn');
+  if (expandBtn) {
+    expandBtn.setAttribute('aria-expanded', String(chatExpanded));
+    expandBtn.setAttribute('aria-label', chatExpanded ? 'Collapse chat panel' : 'Expand chat panel');
+  }
+
   if (chatExpanded) {
     /* Rebuild main panel messages from chatHistory if panel is empty */
     const panelMessages = document.getElementById('chatbot-messages');
@@ -2840,14 +2964,16 @@ function executeCommand(cmd) {
       if (slideTitle) slideTitle.textContent = cmd.title || '';
       if (slideSubtitle) slideSubtitle.textContent = cmd.subtitle || '';
 
-      /* Render bullet points */
+      /* Render bullet points — sanitize each point through DOMPurify to prevent
+         XSS from AI-generated content before inserting into the DOM */
       if (slidePoints && cmd.points) {
-        slidePoints.innerHTML = cmd.points.map(point => `
+        const pointsHtml = cmd.points.map(point => `
           <li class="split-slide-point">
             <span class="split-slide-point-marker"></span>
             ${escapeHtml(point)}
           </li>
         `).join('');
+        slidePoints.innerHTML = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(pointsHtml) : pointsHtml;
       }
 
       if (slidePanel) slidePanel.style.display = 'block';
@@ -2882,6 +3008,10 @@ function executeCommand(cmd) {
          frame.srcdoc = cmd.html;
        And update the HTML to use an iframe element.
     */
+    /* generateVisual — Render structured AI data as a visual template.
+       The HTML produced by renderVisualTemplate() is passed through
+       openFullscreenCanvas() which sanitizes it via DOMPurify before
+       rendering, preventing XSS from any AI-supplied data. */
     case 'generateVisual': {
       const visualHtml = renderVisualTemplate(cmd);
       openFullscreenCanvas(visualHtml);
@@ -2889,6 +3019,9 @@ function executeCommand(cmd) {
       break;
     }
 
+    /* generateHTML — Render raw AI-generated HTML on a canvas.
+       The HTML is sanitized via DOMPurify inside openFullscreenCanvas()
+       to prevent XSS attacks from untrusted AI output. */
     case 'generateHTML': {
       openFullscreenCanvas(cmd.html || '');
       openSidePanel();
@@ -3137,6 +3270,11 @@ function openSidePanel() {
  * Open the fullscreen canvas with AI-generated HTML.
  * The canvas fills the entire screen behind the side panel.
  *
+ * SECURITY: All AI-generated HTML is sanitized through DOMPurify before
+ * rendering via innerHTML. This prevents XSS attacks from malicious or
+ * unexpected script tags, event handlers, or other dangerous markup that
+ * could appear in AI responses.
+ *
  * @param {string} html - The HTML content to render
  */
 function openFullscreenCanvas(html) {
@@ -3146,7 +3284,8 @@ function openFullscreenCanvas(html) {
   const content = document.getElementById('fullscreen-canvas-content');
   if (!canvas || !content) return;
 
-  content.innerHTML = html;
+  /* Sanitize AI-generated HTML to prevent XSS before rendering into the DOM */
+  content.innerHTML = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html) : html;
   canvas.classList.add('active');
 }
 
@@ -3425,3 +3564,75 @@ function syncSplitToChat() {
     panelMessages.scrollTop = panelMessages.scrollHeight;
   }
 }
+
+
+/* =========================================================================
+   VISITOR ANALYTICS — Page view tracking
+   =========================================================================
+   Sends a page-view event on every page load and updates duration on unload.
+   Uses the same session/visitor IDs already established for the chatbot.
+*/
+
+(function initVisitorTracking() {
+  /* Ensure session and visitor IDs exist (same ones the chat uses) */
+  if (!window._chatSessionId) {
+    window._chatSessionId = 'cs_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+  }
+  if (!localStorage.getItem('chat_visitor_id')) {
+    localStorage.setItem('chat_visitor_id', 'cv_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10));
+  }
+
+  /* Gather UTM params from the current URL query string */
+  var params = new URLSearchParams(window.location.search);
+
+  /* Build the tracking payload */
+  var payload = {
+    session_id:       window._chatSessionId,
+    visitor_id:       localStorage.getItem('chat_visitor_id') || '',
+    page_url:         window.location.pathname + window.location.search,
+    referrer_url:     document.referrer || '',
+    utm_source:       params.get('utm_source')   || '',
+    utm_medium:       params.get('utm_medium')   || '',
+    utm_campaign:     params.get('utm_campaign') || '',
+    utm_term:         params.get('utm_term')     || '',
+    utm_content:      params.get('utm_content')  || '',
+    screen_resolution: window.screen
+      ? window.screen.width + 'x' + window.screen.height
+      : '',
+    language: navigator.language || ''
+  };
+
+  /* Fire the page-view request (non-blocking) */
+  fetch('/api/track/pageview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  }).catch(function() { /* silently ignore tracking errors */ });
+
+  /* Track time-on-page and send duration on unload via sendBeacon */
+  var _pvStartTime = Date.now();
+
+  window.addEventListener('beforeunload', function() {
+    var durationSec = Math.round((Date.now() - _pvStartTime) / 1000);
+    if (durationSec <= 0) return;
+
+    var durPayload = JSON.stringify({
+      session_id: window._chatSessionId,
+      page_url:   window.location.pathname + window.location.search,
+      duration:   durationSec
+    });
+
+    /* navigator.sendBeacon is reliable for unload events */
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon('/api/track/duration', durPayload);
+    } else {
+      /* Fallback for very old browsers */
+      fetch('/api/track/duration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: durPayload,
+        keepalive: true
+      }).catch(function() {});
+    }
+  });
+})();
