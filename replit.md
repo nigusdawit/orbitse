@@ -66,7 +66,7 @@ Code should be fully commented and templatized for modular reuse.
 - `GET /api/chatbot-settings` — Returns chatbot configuration (enabled, mode, agent info, etc.)
 
 **Chat API:**
-- `POST /api/chat` — Handle chatbot messages. Accepts `{message, history}`, returns `{reply, command?}`
+- `POST /api/chat` — Streaming SSE chat. Accepts `{message, history}`, streams token/text/html/command/done events
 
 **Admin (CRUD, protected by session login):**
 - `GET/PUT /admin/api/site-settings` — Read and update site settings
@@ -141,11 +141,10 @@ See `app.py` → `SYSTEM_PROMPT` for a complete example that teaches an AI agent
 
 ### AI Integration (OpenAI)
 
-The chatbot connects to OpenAI GPT-4o-mini via Replit AI Integrations. Two endpoints:
-- `POST /api/chat` — Standard request/response (used for most interactions)
-- `POST /api/chat/stream` — SSE streaming (used for live visual building when user says "show me visually")
+The chatbot connects to OpenAI GPT-4o-mini via Replit AI Integrations. Single unified streaming endpoint:
+- `POST /api/chat` — SSE streaming for ALL messages. Tokens arrive live so the user sees text being typed out. After streaming completes, the server sends final `text`, `command`, and `html` events.
 
-The AI can generate rich HTML layouts in real-time, streaming the content into the split-screen canvas so the user watches it being built.
+The AI only uses `generateHTML` when the user explicitly asks to "show me visually" or "visualize" something. For normal questions it uses `navigate` and `showSlide` commands instead. Generated HTML uses frosted glass styling matching the site (rgba backgrounds, subtle borders, gold accents).
 
 ## How to Edit Content
 

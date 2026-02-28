@@ -552,21 +552,22 @@ chef-kitchen, wine-cellar, sunset-terrace, coastal-village
 {"action": "showSlide", "title": "TITLE", "subtitle": "SUBTITLE", "points": ["point1", "point2"]}
 ```
 
-3. Generate custom HTML content (tables, comparisons, etc.):
+3. Generate custom HTML content (ONLY when the user explicitly asks to "show me visually" or "visualize"):
 ```command
 {"action": "generateHTML", "html": "<div>YOUR HTML HERE</div>"}
 ```
-Use this for complex visual layouts: pricing tables, comparison charts,
-itineraries, timelines, or anything that benefits from rich formatting.
-Use inline styles (dark theme: white text on transparent/dark background).
-Use font-family: 'DM Sans', sans-serif for body and 'Playfair Display', serif for headings.
 
 RULES:
 - ALWAYS navigate when discussing a specific space. This IS the experience.
 - Keep text responses to 1-3 sentences. Let the visuals do the talking.
 - Use showSlide for comparisons, recommendations, and structured info.
-- Use generateHTML for complex layouts like pricing tables or itineraries.
-- When the user asks to "show me visually" or "visualize" something, ALWAYS use generateHTML to create a rich, beautiful HTML layout. Make it detailed and visually impressive.
+- Do NOT use generateHTML unless the user explicitly says "show me visually", "visualize", "create a visual", or similar. For normal questions about pricing, rooms, etc., just respond with text and use navigate or showSlide instead.
+- When the user DOES ask to "show me visually" or "visualize" something, use generateHTML. Keep the HTML simple and clean. Style rules for generateHTML:
+  * Use a frosted glass card look: background rgba(255,255,255,0.06), border 1px solid rgba(255,255,255,0.12), border-radius 16px, padding 2rem, backdrop-filter blur(12px)
+  * Font: 'DM Sans', sans-serif for body text, 'Playfair Display', serif for headings
+  * Colors: white text (#fff), muted labels (rgba(255,255,255,0.5)), accent color #c9a96e (warm gold) for highlights
+  * Tables: no heavy borders — use subtle bottom borders rgba(255,255,255,0.08) between rows, no outer borders
+  * Keep layouts simple and minimal — avoid clutter. Use plenty of whitespace/padding.
 - Only include ONE command block per response.
 """
 
@@ -607,55 +608,16 @@ def parse_command_from_text(text):
 def api_chat():
     """
     POST /api/chat
-    Handle incoming chat messages using OpenAI.
+    Unified streaming chat endpoint using Server-Sent Events (SSE).
 
-    Sends the user message + conversation history to GPT, parses the
-    response for visual commands (navigate, showSlide, generateHTML),
-    and returns both the text reply and any command.
-    """
-    data = request.get_json()
-    message = data.get("message", "").strip()
-    history = data.get("history", [])
-
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for h in history[-20:]:
-        role = "assistant" if h.get("role") == "agent" else "user"
-        messages.append({"role": role, "content": h.get("content", "")})
-    messages.append({"role": "user", "content": message})
-
-    try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            max_tokens=2048,
-            temperature=0.7,
-        )
-        full_text = response.choices[0].message.content or ""
-        reply, command = parse_command_from_text(full_text)
-
-        result = {"reply": reply}
-        if command:
-            result["command"] = command
-        return jsonify(result)
-
-    except Exception as e:
-        return jsonify({
-            "reply": f"I apologize, but I'm having trouble connecting right now. Please try again in a moment."
-        }), 500
-
-
-@app.route("/api/chat/stream", methods=["POST"])
-def api_chat_stream():
-    """
-    POST /api/chat/stream
-    Streaming version of the chat endpoint using Server-Sent Events (SSE).
-
-    Used for generateHTML commands where the user sees the HTML being
-    built live in the split-screen canvas. The stream sends:
-      - {"type": "text", "content": "..."} for reply text chunks
-      - {"type": "html_chunk", "content": "..."} for HTML chunks (live preview)
-      - {"type": "command", "command": {...}} for the final parsed command
-      - {"type": "done"} when streaming is complete
+    ALL messages use streaming so the user sees tokens appear live.
+    After the full response is collected, the server parses it and sends:
+      - {"type": "token", "content": "..."} for each token as it arrives
+      - {"type": "text", "content": "..."} for the final clean reply text
+      - {"type": "html", "content": "..."} if generateHTML was used
+      - {"type": "command", "command": {...}} for any parsed command
+      - {"type": "done"} when complete
+      - {"type": "error", "content": "..."} on failure
     """
     data = request.get_json()
     message = data.get("message", "").strip()

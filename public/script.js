@@ -1105,21 +1105,57 @@ async function chatSendMessage() {
   /* Show typing indicator */
   chatShowTyping(true);
 
-  /* Detect if user wants a visual/streaming response */
-  const wantsVisual = /show\s*(me\s*)?visually|visuali[sz]e|create\s*(a\s*)?visual|build\s*(me\s*)?a\s*(visual|chart|table|layout)/i.test(message);
-
-  if (wantsVisual) {
-    await chatSendStreaming(message);
-  } else {
-    await chatSendRegular(message);
-  }
+  await chatSendStreaming(message);
 }
 
 
 /**
- * Send a regular (non-streaming) chat message to the AI.
+ * Create a streaming agent message bubble that tokens can be appended to.
+ * Returns an object with an `append(text)` method and `finalize(fullText)` method.
  */
-async function chatSendRegular(message) {
+function chatCreateStreamBubble() {
+  const containers = ['chatbot-messages', 'split-chat-messages', 'side-chat-messages'];
+  const bubbles = [];
+
+  containers.forEach(id => {
+    const container = document.getElementById(id);
+    if (!container) return;
+    const div = document.createElement('div');
+    div.className = 'chat-msg chat-msg-agent chat-msg-streaming';
+    div.setAttribute('data-testid', 'msg-agent-streaming');
+    container.appendChild(div);
+    bubbles.push({ el: div, container });
+  });
+
+  return {
+    append(token) {
+      bubbles.forEach(({ el, container }) => {
+        el.textContent += token;
+        container.scrollTop = container.scrollHeight;
+      });
+    },
+    finalize(fullText) {
+      bubbles.forEach(({ el, container }) => {
+        el.textContent = fullText;
+        el.classList.remove('chat-msg-streaming');
+        container.scrollTop = container.scrollHeight;
+      });
+      updateSidePanelLatest(fullText);
+      updateMainPanelLatest(fullText);
+    },
+    remove() {
+      bubbles.forEach(({ el }) => el.remove());
+    }
+  };
+}
+
+
+/**
+ * Send a chat message using streaming (SSE).
+ * All messages use streaming — tokens appear live in the chat bubble.
+ * If the AI returns a generateHTML command, the canvas opens after streaming completes.
+ */
+async function chatSendStreaming(message) {
   try {
     const apiEndpoint = chatSettings.api_endpoint || '/api/chat';
     const res = await fetch(apiEndpoint, {
@@ -1131,62 +1167,24 @@ async function chatSendRegular(message) {
       })
     });
 
-    const data = await res.json();
-    chatShowTyping(false);
-
-    if (data.reply) {
-      chatAddMessage('agent', data.reply);
-      chatHistory.push({ role: 'assistant', content: data.reply });
-    }
-
-    if (data.command) {
-      executeCommand(data.command);
-    }
-
-  } catch (error) {
-    console.error('Chat error:', error);
-    chatShowTyping(false);
-    chatAddMessage('agent', 'I apologize, but I\'m having trouble connecting right now. Please try again in a moment.');
-  }
-}
-
-
-/**
- * Send a streaming chat message for live visual building.
- * Opens the split-screen canvas and streams HTML into it in real-time.
- */
-async function chatSendStreaming(message) {
-  try {
-    /* Open split screen with empty canvas right away */
-    hideAllSplitContent();
-    const canvasContent = document.getElementById('split-canvas-content');
-    const canvasPanel = document.getElementById('split-canvas');
-    if (canvasContent) {
-      canvasContent.innerHTML = '<div style="padding:2rem;color:rgba(255,255,255,0.4);font-style:italic;">Building your visual...</div>';
-    }
-    if (canvasPanel) canvasPanel.style.display = 'block';
-    openSplitScreen();
-
-    chatShowTyping(false);
-
-    const res = await fetch('/api/chat/stream', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: message,
-        history: chatHistory
-      })
-    });
-
     if (!res.ok) {
+      chatShowTyping(false);
       chatAddMessage('agent', 'I apologize, but I\'m having trouble connecting right now. Please try again.');
       return;
     }
 
+    chatShowTyping(false);
+
+    const streamBubble = chatCreateStreamBubble();
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let replyAdded = false;
+    let tokenText = '';
+    let displayTokens = '';
+    let finalReply = '';
+    let pendingCommand = null;
+    let pendingHtml = null;
+    let inCommandBlock = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -1201,32 +1199,56 @@ async function chatSendStreaming(message) {
         try {
           const event = JSON.parse(line.slice(6));
 
-          if (event.type === 'text' && !replyAdded) {
-            replyAdded = true;
-            chatAddMessage('agent', event.content);
-            chatHistory.push({ role: 'assistant', content: event.content });
+          if (event.type === 'token') {
+            tokenText += event.content;
+            if (tokenText.includes('```command') || tokenText.includes('```com')) {
+              inCommandBlock = true;
+            }
+            if (!inCommandBlock) {
+              displayTokens += event.content;
+              streamBubble.append(event.content);
+            }
+          } else if (event.type === 'text') {
+            finalReply = event.content;
           } else if (event.type === 'html') {
-            if (canvasContent) {
-              canvasContent.innerHTML = event.content;
-            }
+            pendingHtml = event.content;
           } else if (event.type === 'command') {
-            if (event.command && event.command.action !== 'generateHTML') {
-              executeCommand(event.command);
-            }
-          } else if (event.type === 'done') {
-            if (!replyAdded) {
-              chatAddMessage('agent', 'Here you go! I\'ve created that visual for you.');
-              chatHistory.push({ role: 'assistant', content: 'Here you go! I\'ve created that visual for you.' });
-            }
+            pendingCommand = event.command;
           } else if (event.type === 'error') {
+            streamBubble.remove();
             chatAddMessage('agent', event.content);
+            return;
           }
         } catch (e) { /* skip malformed SSE lines */ }
       }
     }
 
+    let displayText = finalReply || displayTokens.trim();
+    if (!displayText && tokenText.trim()) {
+      displayText = tokenText.replace(/```command[\s\S]*/i, '').trim();
+    }
+    if (displayText) {
+      streamBubble.finalize(displayText);
+      chatHistory.push({ role: 'assistant', content: displayText });
+    } else {
+      streamBubble.remove();
+    }
+
+    if (pendingHtml) {
+      hideAllSplitContent();
+      const canvasContent = document.getElementById('split-canvas-content');
+      const canvasPanel = document.getElementById('split-canvas');
+      if (canvasContent) canvasContent.innerHTML = pendingHtml;
+      if (canvasPanel) canvasPanel.style.display = 'block';
+      openSplitScreen();
+    }
+
+    if (pendingCommand && pendingCommand.action !== 'generateHTML') {
+      executeCommand(pendingCommand);
+    }
+
   } catch (error) {
-    console.error('Stream error:', error);
+    console.error('Chat error:', error);
     chatShowTyping(false);
     chatAddMessage('agent', 'I apologize, but I\'m having trouble connecting right now. Please try again in a moment.');
   }
