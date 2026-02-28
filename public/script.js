@@ -2858,14 +2858,15 @@ async function chatSendStreaming(message, wasCollapsed) {
           const heroEl = document.getElementById('hero-description');
           if (heroEl) typeHeroText(heroEl, shortText || displayText);
         } else {
-          /* No command — check if text is too long for the hero.
-             If the response has more than 4 sentences, more than 6 lines,
-             or contains structured markdown (headings, tables), open it
-             in the canvas instead of cramming it into the hero. */
+          /* No command — check if text should go to the canvas instead
+             of the hero. Force canvas when:
+             1. User explicitly asked for visual content
+             2. Response is too long (>4 sentences, >6 lines, or structured) */
+          const visualRequest = /show me|visually|visualize|make it visual|display it|let me see|can i see/i.test(message);
           const sentenceCount = (displayText.match(/[.!?:]+\s/g) || []).length + 1;
           const lineCount = (displayText.match(/\n/g) || []).length + 1;
           const hasStructuredContent = /^#{1,4}\s|^\|.+\|$|^[-*]\s.+\n[-*]\s/m.test(displayText);
-          const isLongContent = sentenceCount > 4 || lineCount > 6 || (displayText.length > 250 && hasStructuredContent);
+          const isLongContent = visualRequest || sentenceCount > 4 || lineCount > 6 || (displayText.length > 250 && hasStructuredContent);
           if (isLongContent) {
             try {
               /* Build a short hero preview from the first 1-2 sentences */
@@ -2888,7 +2889,8 @@ async function chatSendStreaming(message, wasCollapsed) {
               const hasList = /^[-*]\s/m.test(displayText) || /^\d+\.\s/m.test(displayText);
               const hasComparison = /compar|vs\.?|versus|differ/i.test(displayText);
               let eyebrowLabel = 'Overview';
-              if (hasComparison) eyebrowLabel = 'Comparison';
+              if (visualRequest) eyebrowLabel = 'Visual Overview';
+              else if (hasComparison) eyebrowLabel = 'Comparison';
               else if (hasTable) eyebrowLabel = 'Details';
               else if (hasList) eyebrowLabel = 'Highlights';
 
@@ -2901,14 +2903,17 @@ async function chatSendStreaming(message, wasCollapsed) {
               /* Render the markdown content */
               const renderedContent = renderMarkdown(displayText);
 
+              /* Sanitize helper — uses DOMPurify if loaded, otherwise escapeHtml */
+              const sanitize = (str) => typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(str) : escapeHtml(str);
+
               /* Build a premium frosted-glass canvas matching the design system */
               const autoHtml =
                 `<div style="max-width:900px;margin:0 auto;padding:2.5rem;width:100%;">` +
 
                   /* Header section with gradient accent background */
                   `<div style="background:linear-gradient(135deg,rgba(${hexToRgb(accent)},0.08),transparent);border-radius:1rem 1rem 0 0;padding:2rem 2rem 1.5rem;border:1px solid rgba(255,255,255,0.06);border-bottom:none;">` +
-                    `<div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.2em;color:${accent};margin-bottom:0.75rem;font-family:${sans};font-weight:500;">${DOMPurify.sanitize(eyebrowLabel)}</div>` +
-                    `<div style="font-family:${serif};font-size:clamp(1.4rem,3vw,2rem);font-weight:700;color:#fff;line-height:1.25;">${DOMPurify.sanitize(autoTitle)}</div>` +
+                    `<div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.2em;color:${accent};margin-bottom:0.75rem;font-family:${sans};font-weight:500;">${sanitize(eyebrowLabel)}</div>` +
+                    `<div style="font-family:${serif};font-size:clamp(1.4rem,3vw,2rem);font-weight:700;color:#fff;line-height:1.25;">${sanitize(autoTitle)}</div>` +
                     `<div style="width:3rem;height:2px;background:${accent};opacity:0.4;margin-top:1rem;border-radius:1px;"></div>` +
                   `</div>` +
 
