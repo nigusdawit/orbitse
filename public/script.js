@@ -1479,26 +1479,31 @@ async function chatSendMessage() {
 
   if (!message) return;
 
-  /* Auto-expand the chat panel if it's collapsed */
-  if (!chatExpanded && !splitScreenActive && !sidePanelActive) {
-    chatToggleExpand();
-  }
+  /* Track whether we need to defer the panel expansion until response arrives */
+  const wasCollapsed = !chatExpanded && !splitScreenActive && !sidePanelActive;
 
-  /* Add the user's message to the chat UI */
-  chatAddMessage('user', message);
+  if (!wasCollapsed) {
+    /* Panel is already open — add message and show typing normally */
+    chatAddMessage('user', message);
+  } else {
+    /* Panel is collapsed — show sleek inline thinking indicator instead of expanding */
+    showBarThinking(true);
+  }
 
   /* Add to history for context */
   chatHistory.push({ role: 'user', content: message });
 
   /* Show typing indicator in message areas and latest-text panels */
-  chatShowTyping(true);
+  if (!wasCollapsed) {
+    chatShowTyping(true);
+  }
   updateMainPanelLatest('');
   updateSidePanelLatest('');
   document.querySelectorAll('#panel-latest-text, #side-panel-latest-text').forEach(el => {
     el.setAttribute('data-thinking', 'true');
   });
 
-  await chatSendStreaming(message);
+  await chatSendStreaming(message, wasCollapsed);
 }
 
 
@@ -1548,7 +1553,7 @@ function chatCreateStreamBubble() {
  * All messages use streaming — tokens appear live in the chat bubble.
  * If the AI returns a generateHTML command, the canvas opens after streaming completes.
  */
-async function chatSendStreaming(message) {
+async function chatSendStreaming(message, wasCollapsed) {
   try {
     if (!sessionStorage.getItem('chat_session_id')) {
       sessionStorage.setItem('chat_session_id', 'cs_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10));
@@ -1565,6 +1570,7 @@ async function chatSendStreaming(message) {
     });
 
     if (!res.ok) {
+      showBarThinking(false);
       chatShowTyping(false);
       chatAddMessage('agent', 'I apologize, but I\'m having trouble connecting right now. Please try again.');
       return;
@@ -1580,6 +1586,7 @@ async function chatSendStreaming(message) {
     let inCommandBlock = false;
     let streamBubble = null;
     let bubbleFinalized = false;
+    let expandedForResponse = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -1595,6 +1602,13 @@ async function chatSendStreaming(message) {
           const event = JSON.parse(line.slice(6));
 
           if (event.type === 'token') {
+            /* Expand panel on first token if it was collapsed */
+            if (wasCollapsed && !expandedForResponse) {
+              showBarThinking(false);
+              chatToggleExpand();
+              chatAddMessage('user', message);
+              expandedForResponse = true;
+            }
             if (!streamBubble && !bubbleFinalized) {
               chatShowTyping(false);
               streamBubble = chatCreateStreamBubble();
@@ -1620,7 +1634,13 @@ async function chatSendStreaming(message) {
           } else if (event.type === 'command') {
             pendingCommand = event.command;
           } else if (event.type === 'error') {
+            showBarThinking(false);
             chatShowTyping(false);
+            if (wasCollapsed && !expandedForResponse) {
+              chatToggleExpand();
+              chatAddMessage('user', message);
+              expandedForResponse = true;
+            }
             if (streamBubble) streamBubble.remove();
             chatAddMessage('agent', event.content);
             return;
@@ -1629,12 +1649,22 @@ async function chatSendStreaming(message) {
       }
     }
 
+    showBarThinking(false);
     chatShowTyping(false);
 
     let displayText = finalReply || displayTokens.replace(/`{1,3}\s*$/, '').trim();
     if (!displayText && tokenText.trim()) {
       displayText = tokenText.replace(/```\s*command[\s\S]*/i, '').replace(/`{1,3}\s*$/, '').trim();
     }
+
+    /* If panel was collapsed, expand now to show the response (skip for heroMessage) */
+    const isHeroOnly = pendingCommand && pendingCommand.action === 'heroMessage' && !displayText;
+    if (wasCollapsed && !expandedForResponse && !isHeroOnly) {
+      chatToggleExpand();
+      chatAddMessage('user', message);
+      expandedForResponse = true;
+    }
+
     if (displayText && streamBubble) {
       streamBubble.finalize(displayText);
       chatHistory.push({ role: 'assistant', content: displayText });
@@ -1663,6 +1693,7 @@ async function chatSendStreaming(message) {
 
   } catch (error) {
     console.error('Chat error:', error);
+    showBarThinking(false);
     chatShowTyping(false);
     chatAddMessage('agent', 'I apologize, but I\'m having trouble connecting right now. Please try again in a moment.');
   }
@@ -1729,6 +1760,31 @@ function chatAddMessage(role, text) {
     updateSidePanelLatest(text);
     updateMainPanelLatest(text);
   }
+}
+
+
+/**
+ * Show or hide a sleek inline thinking indicator above the chat bar.
+ * Used when the panel is collapsed so we don't pop open the full panel.
+ *
+ * @param {boolean} show - Whether to show the thinking indicator
+ */
+function showBarThinking(show) {
+  const bar = document.querySelector('.chatbot-bar');
+  if (!bar) return;
+
+  let indicator = document.getElementById('bar-thinking-indicator');
+  if (!show) {
+    if (indicator) indicator.remove();
+    return;
+  }
+  if (indicator) return;
+
+  indicator = document.createElement('div');
+  indicator.id = 'bar-thinking-indicator';
+  indicator.className = 'bar-thinking';
+  indicator.innerHTML = '<div class="bar-thinking-dot"></div><div class="bar-thinking-dot"></div><div class="bar-thinking-dot"></div>';
+  bar.parentElement.insertBefore(indicator, bar);
 }
 
 

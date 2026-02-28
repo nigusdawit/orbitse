@@ -1807,6 +1807,43 @@ input, select, textarea {
 }
 
 /*
+  BAR THINKING INDICATOR — Sleek inline dots above the chat bar.
+  Shown while the AI is processing when the panel is collapsed.
+*/
+.bar-thinking {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  padding: 0.4rem 1rem;
+  margin-bottom: 0.35rem;
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 1.25rem;
+  width: fit-content;
+  margin-left: auto;
+  margin-right: auto;
+  animation: barThinkFadeIn 0.25s ease;
+}
+
+.bar-thinking-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent, #c9a96e);
+  animation: typingBounce 1.2s ease-in-out infinite;
+}
+
+.bar-thinking-dot:nth-child(2) { animation-delay: 0.2s; }
+.bar-thinking-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes barThinkFadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/*
   QUICK PROMPT CHIPS — Clickable suggestion pills.
   Shown above the input bar to help users start a conversation.
 */
