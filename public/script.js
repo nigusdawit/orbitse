@@ -1368,10 +1368,17 @@ function setupBuiltinChat() {
   const container = document.getElementById('chatbot-container');
   if (container) container.style.display = '';
 
-  /* Update agent avatar across all locations */
-  const avatarText = chatSettings.agent_avatar || 'M';
+  /* Update agent avatar across all locations.
+     If agent_avatar is a URL or path (starts with / or http), show it as an image.
+     Otherwise fall back to initials text (e.g. "M"). */
+  const avatarVal = chatSettings.agent_avatar || '/ai_concierge.png';
+  const isAvatarImage = avatarVal.startsWith('/') || avatarVal.startsWith('http');
   document.querySelectorAll('#chatbot-avatar, #chatbot-panel-avatar, #split-chat-avatar, #side-chat-avatar').forEach(el => {
-    el.textContent = avatarText;
+    if (isAvatarImage) {
+      el.innerHTML = `<img src="${avatarVal}" alt="AI Concierge" class="chatbot-avatar-img">`;
+    } else {
+      el.textContent = avatarVal;
+    }
   });
 
   /* Update agent name across all locations */

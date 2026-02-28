@@ -57,10 +57,15 @@ FONTS:
   <title>My Site — Website Template</title>
   <meta name="description" content="A beautiful, database-driven website template with AI assistant, dynamic forms, and full admin panel.">
 
+  <!-- Favicon — Shows next to the URL in browser tabs and on smartphone home screens -->
+  <link rel="icon" type="image/png" href="/ai_concierge.png">
+  <link rel="apple-touch-icon" href="/ai_concierge.png">
+
   <!-- Open Graph Tags — For social media sharing -->
   <meta property="og:title" content="My Site — Website Template">
   <meta property="og:description" content="A beautiful, database-driven website template.">
   <meta property="og:type" content="website">
+  <meta property="og:image" content="/ai_concierge.png">
 
   <!-- Stylesheet -->
   <link rel="stylesheet" href="/styles.css">
@@ -372,8 +377,10 @@ FONTS:
     Contains: avatar, agent name/role, inline text input, send + expand buttons.
     -->
     <div id="chatbot-bar" class="chatbot-bar" data-testid="chatbot-bar">
-      <!-- Agent avatar — shows initials or image -->
-      <div id="chatbot-avatar" class="chatbot-avatar" data-testid="chatbot-avatar">M</div>
+      <!-- Agent avatar — profile image for the AI concierge -->
+      <div id="chatbot-avatar" class="chatbot-avatar" data-testid="chatbot-avatar">
+        <img src="/ai_concierge.png" alt="AI Concierge" class="chatbot-avatar-img">
+      </div>
 
       <!-- Agent info (name + role) — visible on wider screens -->
       <div class="chatbot-agent-info">
@@ -421,7 +428,7 @@ FONTS:
       <div class="panel-latest" id="panel-latest">
         <div class="panel-latest-header">
           <div class="side-panel-agent-badge">
-            <div id="chatbot-panel-avatar" class="chatbot-avatar chatbot-avatar-sm">M</div>
+            <div id="chatbot-panel-avatar" class="chatbot-avatar chatbot-avatar-sm"><img src="/ai_concierge.png" alt="AI Concierge" class="chatbot-avatar-img"></div>
             <span id="chatbot-panel-name" class="side-panel-agent-name">AI Assistant</span>
           </div>
           <div class="side-panel-actions">
@@ -500,7 +507,7 @@ FONTS:
     <div class="split-chat" id="split-chat">
       <div class="chatbot-panel-header">
         <div class="chatbot-panel-header-info">
-          <div id="split-chat-avatar" class="chatbot-avatar chatbot-avatar-sm">M</div>
+          <div id="split-chat-avatar" class="chatbot-avatar chatbot-avatar-sm"><img src="/ai_concierge.png" alt="AI Concierge" class="chatbot-avatar-img"></div>
           <div>
             <span id="split-chat-name" class="chatbot-agent-name">AI Assistant</span>
             <span id="split-chat-role" class="chatbot-agent-role">Assistant</span>
@@ -645,7 +652,7 @@ FONTS:
     <div class="side-panel-latest" id="side-panel-latest">
       <div class="side-panel-latest-header">
         <div class="side-panel-agent-badge">
-          <div id="side-chat-avatar" class="chatbot-avatar chatbot-avatar-sm">M</div>
+          <div id="side-chat-avatar" class="chatbot-avatar chatbot-avatar-sm"><img src="/ai_concierge.png" alt="AI Concierge" class="chatbot-avatar-img"></div>
           <span id="side-chat-name" class="side-panel-agent-name">AI Assistant</span>
         </div>
         <div class="side-panel-actions">
