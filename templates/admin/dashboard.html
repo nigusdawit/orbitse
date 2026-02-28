@@ -948,6 +948,10 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
       Saved Pages
     </button>
+    <button class="tab-btn" onclick="switchTab('sphere', this)" data-testid="tab-sphere">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+      Sphere View
+    </button>
 
     <div class="sidebar-group-label">AI & Chat</div>
     <button class="tab-btn" onclick="switchTab('chatbot', this)" data-testid="tab-chatbot">
@@ -1741,6 +1745,147 @@ TO CUSTOMIZE THIS DASHBOARD:
     </table>
   </div>
 
+
+  <!--
+  ========================================================================
+  TAB: SPHERE VIEW
+  ========================================================================
+  Configure the immersive 3D rotating image sphere experience.
+  - Enable/disable the sphere view
+  - Set heading text, particle count, rotation speed, sphere size
+  - Choose image source: gallery cards or custom uploaded images
+  - Manage custom sphere images
+  -->
+  <div id="tab-sphere" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Sphere View</h2>
+        <p>Configure the immersive 3D rotating image sphere experience. When enabled, an "Immersive View" button appears on the landing page.</p>
+      </div>
+    </div>
+
+    <div class="form-card" id="sphere-settings-form">
+      <div class="form-row">
+        <div class="form-group" style="flex: 0 0 auto;">
+          <label>
+            <input type="checkbox" id="sphere-enabled" data-testid="checkbox-sphere-enabled">
+            Enable Sphere View
+          </label>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group" style="flex: 2;">
+          <label for="sphere-heading-text">Heading Text</label>
+          <input type="text" id="sphere-heading-text" placeholder="The cosmos is within us..." data-testid="input-sphere-heading">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="sphere-image-source">Image Source</label>
+          <select id="sphere-image-source" data-testid="select-sphere-image-source">
+            <option value="gallery">Use Gallery Card Images</option>
+            <option value="custom">Use Custom Images</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="sphere-particle-count">Particle Count</label>
+          <input type="number" id="sphere-particle-count" min="100" max="5000" step="100" data-testid="input-sphere-particles">
+        </div>
+        <div class="form-group">
+          <label for="sphere-rotation-speed">Rotation Speed</label>
+          <input type="number" id="sphere-rotation-speed" min="0" max="0.01" step="0.0001" data-testid="input-sphere-rotation">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="sphere-radius">Sphere Radius</label>
+          <input type="number" id="sphere-radius" min="3" max="20" step="0.5" data-testid="input-sphere-radius">
+        </div>
+        <div class="form-group">
+          <label for="sphere-image-size">Image Size</label>
+          <input type="number" id="sphere-image-size" min="0.5" max="5" step="0.1" data-testid="input-sphere-image-size">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="sphere-position-randomness">Position Randomness</label>
+          <input type="number" id="sphere-position-randomness" min="0" max="10" step="0.5" data-testid="input-sphere-randomness">
+        </div>
+        <div class="form-group">
+          <label for="sphere-particle-opacity">Particle Opacity</label>
+          <input type="number" id="sphere-particle-opacity" min="0.1" max="1" step="0.1" data-testid="input-sphere-opacity">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="sphere-zoom-min">Zoom Min (closest)</label>
+          <input type="number" id="sphere-zoom-min" min="1" max="15" step="0.5" data-testid="input-sphere-zoom-min">
+        </div>
+        <div class="form-group">
+          <label for="sphere-zoom-max">Zoom Max (farthest)</label>
+          <input type="number" id="sphere-zoom-max" min="15" max="60" step="1" data-testid="input-sphere-zoom-max">
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="saveSphereSettings()" data-testid="button-save-sphere">Save Sphere Settings</button>
+      </div>
+    </div>
+
+    <div id="sphere-custom-images-panel" style="display:none; margin-top: 1.5rem;">
+      <div class="section-header-admin">
+        <div>
+          <h3>Custom Sphere Images</h3>
+          <p>Add images that will orbit around the sphere. Use the upload button or paste a URL.</p>
+        </div>
+        <button class="btn btn-primary" onclick="showAddSphereImageForm()" data-testid="button-add-sphere-image">+ Add Image</button>
+      </div>
+
+      <div id="add-sphere-image-form" class="form-card" style="display:none; margin-bottom: 1rem;">
+        <div class="form-row">
+          <div class="form-group" style="flex: 2;">
+            <label for="sphere-new-image-url">Image URL</label>
+            <div style="display:flex; gap: 0.5rem;">
+              <input type="text" id="sphere-new-image-url" placeholder="/uploads/image.jpg" data-testid="input-sphere-new-image-url" style="flex:1;">
+              <label class="btn btn-secondary" style="cursor:pointer; margin:0; white-space:nowrap;">
+                Upload
+                <input type="file" accept="image/*" onchange="uploadSphereImage(this)" style="display:none;" data-testid="input-sphere-upload">
+              </label>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="sphere-new-image-caption">Caption (optional)</label>
+            <input type="text" id="sphere-new-image-caption" placeholder="Image description" data-testid="input-sphere-new-caption">
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-secondary" onclick="hideAddSphereImageForm()" data-testid="button-cancel-sphere-image">Cancel</button>
+          <button class="btn btn-primary" onclick="addSphereImage()" data-testid="button-save-sphere-image">Add Image</button>
+        </div>
+      </div>
+
+      <table class="data-table" id="sphere-images-table">
+        <thead>
+          <tr>
+            <th style="width:30px;"></th>
+            <th style="width:60px;">Preview</th>
+            <th>Image URL</th>
+            <th>Caption</th>
+            <th style="width:80px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="sphere-images-body" data-testid="sphere-images-body"></tbody>
+      </table>
+    </div>
+  </div>
 
   <!--
   ========================================================================
@@ -5811,6 +5956,159 @@ TO CUSTOMIZE THIS DASHBOARD:
       sidebar.classList.toggle('open');
       overlay.classList.toggle('active');
     }
+
+    /* ================================================================
+       SPHERE VIEW — Admin functions
+       ================================================================ */
+
+    async function loadSphereSettings() {
+      try {
+        const res = await fetch('/admin/api/sphere-settings');
+        const data = await res.json();
+
+        document.getElementById('sphere-enabled').checked = !!data.enabled;
+        document.getElementById('sphere-heading-text').value = data.heading_text || '';
+        document.getElementById('sphere-image-source').value = data.image_source || 'gallery';
+        document.getElementById('sphere-particle-count').value = data.particle_count || 1500;
+        document.getElementById('sphere-rotation-speed').value = data.rotation_speed || 0.0005;
+        document.getElementById('sphere-radius').value = data.sphere_radius || 9;
+        document.getElementById('sphere-image-size').value = data.image_size || 1.5;
+        document.getElementById('sphere-position-randomness').value = data.position_randomness || 4;
+        document.getElementById('sphere-particle-opacity').value = data.particle_opacity || 1;
+        document.getElementById('sphere-zoom-min').value = data.zoom_min || 5;
+        document.getElementById('sphere-zoom-max').value = data.zoom_max || 30;
+
+        toggleSphereImageSource();
+        renderSphereImages(data.custom_images || []);
+      } catch (err) {
+        console.error('Error loading sphere settings:', err);
+      }
+    }
+
+    async function saveSphereSettings() {
+      const body = {
+        enabled: document.getElementById('sphere-enabled').checked,
+        heading_text: document.getElementById('sphere-heading-text').value,
+        image_source: document.getElementById('sphere-image-source').value,
+        particle_count: parseInt(document.getElementById('sphere-particle-count').value) || 1500,
+        rotation_speed: parseFloat(document.getElementById('sphere-rotation-speed').value) || 0.0005,
+        sphere_radius: parseFloat(document.getElementById('sphere-radius').value) || 9,
+        image_size: parseFloat(document.getElementById('sphere-image-size').value) || 1.5,
+        position_randomness: parseFloat(document.getElementById('sphere-position-randomness').value) || 4,
+        particle_opacity: parseFloat(document.getElementById('sphere-particle-opacity').value) || 1,
+        zoom_min: parseFloat(document.getElementById('sphere-zoom-min').value) || 5,
+        zoom_max: parseFloat(document.getElementById('sphere-zoom-max').value) || 30,
+      };
+      try {
+        await fetch('/admin/api/sphere-settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        alert('Sphere settings saved!');
+      } catch (err) {
+        console.error('Error saving sphere settings:', err);
+        alert('Error saving sphere settings');
+      }
+    }
+
+    function toggleSphereImageSource() {
+      const source = document.getElementById('sphere-image-source').value;
+      const panel = document.getElementById('sphere-custom-images-panel');
+      if (panel) panel.style.display = source === 'custom' ? 'block' : 'none';
+    }
+
+    document.getElementById('sphere-image-source').addEventListener('change', toggleSphereImageSource);
+
+    function renderSphereImages(images) {
+      const tbody = document.getElementById('sphere-images-body');
+      if (!tbody) return;
+      if (!images.length) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:#888;">No custom images yet</td></tr>';
+        return;
+      }
+      tbody.innerHTML = images.map(img => `
+        <tr data-id="${img.id}" data-testid="row-sphere-image-${img.id}">
+          <td class="drag-handle" style="cursor:grab;">⠿</td>
+          <td><img src="${escapeHTML(img.image_url)}" style="width:50px; height:50px; object-fit:cover; border-radius:6px;" alt=""></td>
+          <td style="font-size:0.85rem; word-break:break-all;">${escapeHTML(img.image_url)}</td>
+          <td style="font-size:0.85rem;">${escapeHTML(img.caption || '')}</td>
+          <td>
+            <button class="btn btn-sm btn-danger" onclick="deleteSphereImage(${img.id})" data-testid="button-delete-sphere-image-${img.id}" title="Delete">🗑</button>
+          </td>
+        </tr>
+      `).join('');
+
+      if (typeof Sortable !== 'undefined') {
+        new Sortable(tbody, {
+          handle: '.drag-handle',
+          animation: 150,
+          onEnd: async function() {
+            const ids = Array.from(tbody.querySelectorAll('tr[data-id]')).map(r => parseInt(r.dataset.id));
+            await fetch('/admin/api/reorder/sphere-images', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ids })
+            });
+          }
+        });
+      }
+    }
+
+    function showAddSphereImageForm() {
+      document.getElementById('add-sphere-image-form').style.display = 'block';
+      document.getElementById('sphere-new-image-url').value = '';
+      document.getElementById('sphere-new-image-caption').value = '';
+    }
+
+    function hideAddSphereImageForm() {
+      document.getElementById('add-sphere-image-form').style.display = 'none';
+    }
+
+    async function addSphereImage() {
+      const url = document.getElementById('sphere-new-image-url').value.trim();
+      if (!url) return alert('Please enter an image URL');
+      const caption = document.getElementById('sphere-new-image-caption').value.trim();
+      try {
+        await fetch('/admin/api/sphere-images', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_url: url, caption: caption })
+        });
+        hideAddSphereImageForm();
+        loadSphereSettings();
+      } catch (err) {
+        console.error('Error adding sphere image:', err);
+      }
+    }
+
+    async function uploadSphereImage(input) {
+      if (!input.files || !input.files[0]) return;
+      const formData = new FormData();
+      formData.append('image', input.files[0]);
+      try {
+        const res = await fetch('/admin/api/upload-image', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (data.url) {
+          document.getElementById('sphere-new-image-url').value = data.url;
+        }
+      } catch (err) {
+        console.error('Error uploading image:', err);
+      }
+      input.value = '';
+    }
+
+    async function deleteSphereImage(imgId) {
+      if (!confirm('Delete this sphere image?')) return;
+      try {
+        await fetch(`/admin/api/sphere-images/${imgId}`, { method: 'DELETE' });
+        loadSphereSettings();
+      } catch (err) {
+        console.error('Error deleting sphere image:', err);
+      }
+    }
+
+    loadSphereSettings();
   </script>
   </main>
   </div>

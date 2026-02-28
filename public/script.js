@@ -68,6 +68,8 @@ let faqItems = [];
 let blogPosts = [];
 let businessInfo = {};
 let pageSections = [];
+let sphereSettings = null;
+let sphereInstance = null;
 let currentSlideIndex = 0;
 let scrollCooldown = false;
 let touchStartY = null;
@@ -93,7 +95,7 @@ let touchStartY = null;
 async function loadAllData() {
   try {
     /* Fetch all data sources in parallel for speed */
-    const [settingsRes, cardsRes, expRes, pricingRes, testimonialsRes, teamRes, faqRes, blogRes, bizRes, sectionsRes] = await Promise.all([
+    const [settingsRes, cardsRes, expRes, pricingRes, testimonialsRes, teamRes, faqRes, blogRes, bizRes, sectionsRes, sphereRes] = await Promise.all([
       fetch('/api/site-settings'),
       fetch('/api/gallery-cards'),
       fetch('/api/experiences'),
@@ -103,7 +105,8 @@ async function loadAllData() {
       fetch('/api/faq'),
       fetch('/api/blog'),
       fetch('/api/business-info'),
-      fetch('/api/page-sections')
+      fetch('/api/page-sections'),
+      fetch('/api/sphere-settings')
     ]);
 
     siteSettings = await settingsRes.json();
@@ -116,6 +119,7 @@ async function loadAllData() {
     blogPosts = await blogRes.json();
     businessInfo = await bizRes.json();
     pageSections = await sectionsRes.json();
+    sphereSettings = await sphereRes.json();
 
     renderHero();
     renderHighlights();
@@ -133,6 +137,7 @@ async function loadAllData() {
 
     await renderCustomSections();
     applySectionOrder();
+    initSphereButton();
 
     setupScrollAnimations();
 
@@ -1184,6 +1189,11 @@ function populateRoomDropdown() {
  * Hides the landing page and displays the fullscreen gallery.
  */
 function showGallery() {
+  /* Pause sphere animation if it's running */
+  if (sphereInstance) sphereInstance.pause();
+  const sv = document.getElementById('sphere-view');
+  if (sv) sv.classList.remove('active');
+
   document.getElementById('landing-view').style.display = 'none';
   document.getElementById('gallery-view').classList.add('active');
 
@@ -1210,11 +1220,421 @@ function showLanding() {
   /* Close side panel if open */
   if (sidePanelActive) closeSidePanel();
 
+  /* Pause sphere animation if it's running */
+  if (sphereInstance) sphereInstance.pause();
+  const sv = document.getElementById('sphere-view');
+  if (sv) sv.classList.remove('active');
+
   document.getElementById('landing-view').style.display = '';
   document.getElementById('gallery-view').classList.remove('active');
 
   /* Reset scroll position to the top of the landing page */
   document.getElementById('landing-view').scrollTop = 0;
+}
+
+
+/* =============================================================================
+   4B. SPHERE VIEW — Immersive 3D rotating image sphere
+   =============================================================================
+   A fullscreen Three.js experience with particles orbiting a sphere,
+   floating image planes, scroll-to-zoom, and drag-to-rotate interaction.
+   Managed by admin dashboard — settings stored in sphere_settings table.
+============================================================================= */
+
+/**
+ * Show/hide the "Immersive View" button based on sphere settings.
+ */
+function initSphereButton() {
+  const btn = document.getElementById('btn-sphere-view');
+  if (!btn) return;
+
+  if (sphereSettings && sphereSettings.enabled) {
+    btn.style.display = '';
+  } else {
+    btn.style.display = 'none';
+  }
+}
+
+/**
+ * Show the Sphere View and initialize the Three.js scene.
+ */
+function showSphereView() {
+  if (!sphereSettings || !sphereSettings.enabled) return;
+
+  const sphereView = document.getElementById('sphere-view');
+  const landingView = document.getElementById('landing-view');
+  if (!sphereView) return;
+
+  if (landingView) landingView.style.display = 'none';
+  document.getElementById('gallery-view').classList.remove('active');
+
+  /* Set heading text */
+  const headingEl = document.getElementById('sphere-heading');
+  if (headingEl) headingEl.textContent = sphereSettings.heading_text || '';
+
+  /* Copy site branding into sphere view */
+  if (siteSettings) {
+    const sn = document.getElementById('sphere-site-name');
+    const ss = document.getElementById('sphere-site-subtitle');
+    if (sn) sn.textContent = siteSettings.site_name || '';
+    if (ss) ss.textContent = siteSettings.site_subtitle || '';
+  }
+
+  sphereView.classList.add('active');
+
+  if (window.lucide) lucide.createIcons();
+
+  /* Initialize Three.js scene if not already done, or resume animation */
+  if (!sphereInstance) {
+    sphereInstance = createSphereScene(sphereSettings);
+  } else {
+    sphereInstance.resume();
+  }
+}
+
+/**
+ * Hide the Sphere View and return to landing.
+ */
+function hideSphereView() {
+  const sphereView = document.getElementById('sphere-view');
+  const landingView = document.getElementById('landing-view');
+
+  if (sphereView) sphereView.classList.remove('active');
+  if (landingView) {
+    landingView.style.display = '';
+    landingView.scrollTop = 0;
+  }
+
+  if (sphereInstance) sphereInstance.pause();
+}
+
+/**
+ * Creates the Three.js sphere scene with particles and orbiting images.
+ * Returns an object with pause/resume/dispose methods.
+ *
+ * @param {Object} settings - Sphere settings from the database
+ * @returns {Object} Controller with pause(), resume(), dispose()
+ */
+function createSphereScene(settings) {
+  if (typeof THREE === 'undefined') {
+    console.warn('Three.js not loaded — sphere view unavailable');
+    return null;
+  }
+
+  const canvas = document.getElementById('sphere-canvas');
+  if (!canvas) return null;
+
+  /* ── Settings from DB ── */
+  const PARTICLE_COUNT = settings.particle_count || 1500;
+  const SPHERE_RADIUS = settings.sphere_radius || 9;
+  const POSITION_RANDOMNESS = settings.position_randomness || 4;
+  const ROTATION_SPEED_Y = settings.rotation_speed || 0.0005;
+  const PARTICLE_OPACITY = settings.particle_opacity || 1;
+  const IMAGE_SIZE = settings.image_size || 1.5;
+  const ZOOM_MIN = settings.zoom_min || 5;
+  const ZOOM_MAX = settings.zoom_max || 30;
+  const images = settings.images || [];
+
+  /* ── Scene setup ── */
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x000000);
+
+  const camera = new THREE.PerspectiveCamera(50, canvas.clientWidth / canvas.clientHeight, 0.1, 100);
+  camera.position.set(-10, 1.5, 10);
+
+  const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+  renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+  /* ── Lighting ── */
+  scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+  const pointLight = new THREE.PointLight(0xffffff, 1);
+  pointLight.position.set(10, 10, 10);
+  scene.add(pointLight);
+
+  /* ── Main group (rotates as a unit) ── */
+  const group = new THREE.Group();
+  scene.add(group);
+
+  /* ── Particles (Fibonacci sphere distribution) ── */
+  const particleGeo = new THREE.SphereGeometry(1, 8, 6);
+  const PARTICLE_SIZE_MIN = 0.005;
+  const PARTICLE_SIZE_MAX = 0.010;
+
+  for (let i = 0; i < PARTICLE_COUNT; i++) {
+    const phi = Math.acos(-1 + (2 * i) / PARTICLE_COUNT);
+    const theta = Math.sqrt(PARTICLE_COUNT * Math.PI) * phi;
+
+    const radiusVariation = SPHERE_RADIUS + (Math.random() - 0.5) * POSITION_RANDOMNESS;
+
+    const x = radiusVariation * Math.cos(theta) * Math.sin(phi);
+    const y = radiusVariation * Math.cos(phi);
+    const z = radiusVariation * Math.sin(theta) * Math.sin(phi);
+
+    const color = new THREE.Color();
+    color.setHSL(
+      Math.random() * 0.1 + 0.05,
+      0.8,
+      0.6 + Math.random() * 0.3
+    );
+
+    const mat = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: PARTICLE_OPACITY });
+    const mesh = new THREE.Mesh(particleGeo, mat);
+    mesh.position.set(x, y, z);
+    mesh.scale.setScalar(Math.random() * (PARTICLE_SIZE_MAX - PARTICLE_SIZE_MIN) + PARTICLE_SIZE_MIN);
+    group.add(mesh);
+  }
+
+  /* ── Orbiting images ── */
+  const loader = new THREE.TextureLoader();
+  const imageCount = images.length;
+
+  if (imageCount > 0) {
+    const planeGeo = new THREE.PlaneGeometry(IMAGE_SIZE, IMAGE_SIZE);
+
+    for (let i = 0; i < imageCount; i++) {
+      const angle = (i / imageCount) * Math.PI * 2;
+      const ix = SPHERE_RADIUS * Math.cos(angle);
+      const iy = 0;
+      const iz = SPHERE_RADIUS * Math.sin(angle);
+
+      const position = new THREE.Vector3(ix, iy, iz);
+      const outward = position.clone().normalize();
+
+      const mat = new THREE.MeshBasicMaterial({
+        transparent: true,
+        opacity: 1,
+        side: THREE.DoubleSide
+      });
+
+      loader.load(images[i], function(texture) {
+        texture.wrapS = THREE.ClampToEdgeWrapping;
+        texture.wrapT = THREE.ClampToEdgeWrapping;
+        mat.map = texture;
+        mat.needsUpdate = true;
+      });
+
+      const plane = new THREE.Mesh(planeGeo, mat);
+      plane.position.copy(position);
+
+      /* Face outward from center */
+      const lookTarget = position.clone().add(outward);
+      const lookMatrix = new THREE.Matrix4();
+      lookMatrix.lookAt(position, lookTarget, new THREE.Vector3(0, 1, 0));
+      const euler = new THREE.Euler();
+      euler.setFromRotationMatrix(lookMatrix);
+      euler.z += Math.PI;
+      plane.rotation.copy(euler);
+
+      group.add(plane);
+    }
+  }
+
+  /* ── Animation state ── */
+  let animating = true;
+  let animationId = null;
+  let currentZoom = camera.position.length();
+  let targetZoom = currentZoom;
+
+  /* ── Drag-to-rotate state ── */
+  let isDragging = false;
+  let prevMouseX = 0;
+  let prevMouseY = 0;
+
+  function onMouseDown(e) {
+    isDragging = true;
+    prevMouseX = e.clientX;
+    prevMouseY = e.clientY;
+    canvas.style.cursor = 'grabbing';
+  }
+
+  function onMouseMove(e) {
+    if (!isDragging) return;
+    const dx = e.clientX - prevMouseX;
+    const dy = e.clientY - prevMouseY;
+    group.rotation.y += dx * 0.005;
+    group.rotation.x += dy * 0.005;
+    prevMouseX = e.clientX;
+    prevMouseY = e.clientY;
+  }
+
+  function onMouseUp() {
+    isDragging = false;
+    canvas.style.cursor = 'grab';
+  }
+
+  canvas.style.cursor = 'grab';
+  canvas.addEventListener('mousedown', onMouseDown);
+  window.addEventListener('mousemove', onMouseMove);
+  window.addEventListener('mouseup', onMouseUp);
+
+  /* ── Touch drag ── */
+  let touchPrevX = 0;
+  let touchPrevY = 0;
+
+  function onTouchStart(e) {
+    if (e.touches.length === 1) {
+      touchPrevX = e.touches[0].clientX;
+      touchPrevY = e.touches[0].clientY;
+    }
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      lastPinchDist = Math.sqrt(dx * dx + dy * dy);
+    }
+  }
+
+  function onTouchMove(e) {
+    /* Single-finger drag rotation */
+    if (e.touches.length === 1) {
+      const dx = e.touches[0].clientX - touchPrevX;
+      const dy = e.touches[0].clientY - touchPrevY;
+      group.rotation.y += dx * 0.005;
+      group.rotation.x += dy * 0.005;
+      touchPrevX = e.touches[0].clientX;
+      touchPrevY = e.touches[0].clientY;
+    }
+    /* Two-finger pinch-to-zoom */
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const delta = lastPinchDist - dist;
+      targetZoom += delta * 0.05;
+      targetZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, targetZoom));
+      lastPinchDist = dist;
+
+      if (!scrollHintHidden && scrollHint) {
+        scrollHint.classList.add('hidden');
+        scrollHintHidden = true;
+      }
+    }
+  }
+
+  canvas.addEventListener('touchstart', onTouchStart, { passive: true });
+  canvas.addEventListener('touchmove', onTouchMove, { passive: true });
+
+  /* ── Scroll-to-zoom ── */
+  const scrollHint = document.getElementById('sphere-scroll-hint');
+  let scrollHintHidden = false;
+
+  function onWheel(e) {
+    const sphereView = document.getElementById('sphere-view');
+    if (!sphereView || !sphereView.classList.contains('active')) return;
+    e.preventDefault();
+
+    targetZoom += e.deltaY * 0.01;
+    targetZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, targetZoom));
+
+    /* Hide scroll hint after first interaction */
+    if (!scrollHintHidden && scrollHint) {
+      scrollHint.classList.add('hidden');
+      scrollHintHidden = true;
+    }
+  }
+
+  canvas.addEventListener('wheel', onWheel, { passive: false });
+
+  /* ── Touch pinch-to-zoom ── */
+  let lastPinchDist = 0;
+
+  /* ── Resize handler ── */
+  function onResize() {
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+  }
+
+  window.addEventListener('resize', onResize);
+
+  /* ── Animation loop ── */
+  function animate() {
+    if (!animating) return;
+    animationId = requestAnimationFrame(animate);
+
+    /* Auto-rotate */
+    group.rotation.y += ROTATION_SPEED_Y;
+
+    /* Smooth zoom lerp */
+    currentZoom += (targetZoom - currentZoom) * 0.08;
+    const dir = camera.position.clone().normalize();
+    camera.position.copy(dir.multiplyScalar(currentZoom));
+    camera.lookAt(0, 0, 0);
+
+    renderer.render(scene, camera);
+  }
+
+  animate();
+
+  /* ── Tab visibility: pause when tab is hidden, resume when visible ── */
+  function onVisibilityChange() {
+    if (document.hidden) {
+      if (animating) {
+        animating = false;
+        if (animationId) cancelAnimationFrame(animationId);
+      }
+    } else {
+      const sv = document.getElementById('sphere-view');
+      if (sv && sv.classList.contains('active') && !animating) {
+        animating = true;
+        animate();
+      }
+    }
+  }
+
+  document.addEventListener('visibilitychange', onVisibilityChange);
+
+  /* ── Controller ── */
+  return {
+    pause: function() {
+      animating = false;
+      if (animationId) cancelAnimationFrame(animationId);
+    },
+    resume: function() {
+      if (!animating) {
+        animating = true;
+        onResize();
+        animate();
+      }
+      /* Reset scroll hint visibility */
+      if (scrollHint) {
+        scrollHint.classList.remove('hidden');
+        scrollHintHidden = false;
+      }
+    },
+    dispose: function() {
+      animating = false;
+      if (animationId) cancelAnimationFrame(animationId);
+
+      /* Remove all event listeners */
+      canvas.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      canvas.removeEventListener('wheel', onWheel);
+      canvas.removeEventListener('touchstart', onTouchStart);
+      canvas.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('resize', onResize);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+
+      /* Dispose Three.js GPU resources (geometries, materials, textures) */
+      group.traverse(function(child) {
+        if (child.isMesh) {
+          if (child.geometry) child.geometry.dispose();
+          if (child.material) {
+            if (child.material.map) child.material.map.dispose();
+            child.material.dispose();
+          }
+        }
+      });
+
+      /* Dispose shared particle geometry */
+      particleGeo.dispose();
+
+      renderer.dispose();
+    }
+  };
 }
 
 

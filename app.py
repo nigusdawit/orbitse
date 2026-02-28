@@ -533,6 +533,35 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_page_views_page ON page_views (page_url);
             """)
 
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS sphere_settings (
+                    id              INTEGER PRIMARY KEY DEFAULT 1,
+                    enabled         BOOLEAN DEFAULT false,
+                    heading_text    TEXT NOT NULL DEFAULT '',
+                    particle_count  INTEGER NOT NULL DEFAULT 1500,
+                    rotation_speed  REAL NOT NULL DEFAULT 0.0005,
+                    sphere_radius   REAL NOT NULL DEFAULT 9,
+                    image_size      REAL NOT NULL DEFAULT 1.5,
+                    image_source    TEXT NOT NULL DEFAULT 'gallery',
+                    position_randomness REAL NOT NULL DEFAULT 4,
+                    particle_opacity REAL NOT NULL DEFAULT 1,
+                    zoom_min        REAL NOT NULL DEFAULT 5,
+                    zoom_max        REAL NOT NULL DEFAULT 30,
+                    updated_at      TIMESTAMP DEFAULT NOW()
+                );
+
+                INSERT INTO sphere_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+                CREATE TABLE IF NOT EXISTS sphere_images (
+                    id          SERIAL PRIMARY KEY,
+                    image_url   TEXT NOT NULL DEFAULT '',
+                    caption     TEXT NOT NULL DEFAULT '',
+                    sort_order  INTEGER NOT NULL DEFAULT 0,
+                    created_at  TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_sphere_images_sort ON sphere_images (sort_order);
+            """)
+
             # Seed chatbot_settings singleton if it doesn't exist
             cur.execute("""
                 INSERT INTO chatbot_settings (id, enabled, mode, agent_name, agent_role, agent_avatar,
@@ -1331,6 +1360,30 @@ def robots_txt():
 # =============================================================
 # PUBLIC API — PAGE SECTIONS (controls section order on public site)
 # =============================================================
+@app.route("/api/sphere-settings")
+def api_sphere_settings():
+    """
+    GET /api/sphere-settings
+    Returns sphere view configuration and image URLs for the public site.
+    If image_source is 'gallery', images come from gallery_cards.
+    If image_source is 'custom', images come from sphere_images.
+    """
+    settings = query_db("SELECT * FROM sphere_settings WHERE id = 1", fetchone=True)
+    if not settings:
+        return jsonify({"enabled": False})
+
+    result = dict(settings)
+
+    if result.get("image_source") == "gallery":
+        cards = query_db("SELECT image_url FROM gallery_cards WHERE image_url != '' ORDER BY sort_order ASC")
+        result["images"] = [c["image_url"] for c in (cards or [])]
+    else:
+        imgs = query_db("SELECT id, image_url, caption, sort_order FROM sphere_images ORDER BY sort_order ASC")
+        result["images"] = [i["image_url"] for i in (imgs or [])]
+
+    return jsonify(result)
+
+
 @app.route("/api/page-sections")
 def api_page_sections():
     """
@@ -4135,6 +4188,94 @@ def admin_api_analytics_chart():
             "views": r["views"],
         })
     return jsonify(result)
+
+
+# =============================================================
+# ADMIN API — SPHERE VIEW SETTINGS
+# =============================================================
+
+@app.route("/admin/api/sphere-settings", methods=["GET"])
+@admin_required
+def admin_get_sphere_settings():
+    settings = query_db("SELECT * FROM sphere_settings WHERE id = 1", fetchone=True)
+    if not settings:
+        return jsonify({"enabled": False})
+    result = dict(settings)
+    imgs = query_db("SELECT id, image_url, caption, sort_order FROM sphere_images ORDER BY sort_order ASC")
+    result["custom_images"] = imgs or []
+    return jsonify(result)
+
+
+@app.route("/admin/api/sphere-settings", methods=["PUT"])
+@admin_required
+def admin_update_sphere_settings():
+    data = request.get_json(force=True)
+    execute_db("""
+        UPDATE sphere_settings SET
+            enabled = %s,
+            heading_text = %s,
+            particle_count = %s,
+            rotation_speed = %s,
+            sphere_radius = %s,
+            image_size = %s,
+            image_source = %s,
+            position_randomness = %s,
+            particle_opacity = %s,
+            zoom_min = %s,
+            zoom_max = %s,
+            updated_at = NOW()
+        WHERE id = 1
+    """, (
+        data.get("enabled", False),
+        data.get("heading_text", ""),
+        int(data.get("particle_count", 1500)),
+        float(data.get("rotation_speed", 0.0005)),
+        float(data.get("sphere_radius", 9)),
+        float(data.get("image_size", 1.5)),
+        data.get("image_source", "gallery"),
+        float(data.get("position_randomness", 4)),
+        float(data.get("particle_opacity", 1)),
+        float(data.get("zoom_min", 5)),
+        float(data.get("zoom_max", 30)),
+    ))
+    return jsonify({"status": "ok"})
+
+
+@app.route("/admin/api/sphere-images", methods=["GET"])
+@admin_required
+def admin_get_sphere_images():
+    imgs = query_db("SELECT * FROM sphere_images ORDER BY sort_order ASC")
+    return jsonify(imgs or [])
+
+
+@app.route("/admin/api/sphere-images", methods=["POST"])
+@admin_required
+def admin_create_sphere_image():
+    data = request.get_json(force=True)
+    max_order = query_db("SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM sphere_images", fetchone=True)
+    next_order = max_order["next_order"] if max_order else 0
+    execute_db(
+        "INSERT INTO sphere_images (image_url, caption, sort_order) VALUES (%s, %s, %s)",
+        (data.get("image_url", ""), data.get("caption", ""), next_order)
+    )
+    return jsonify({"status": "ok"})
+
+
+@app.route("/admin/api/sphere-images/<int:img_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_sphere_image(img_id):
+    execute_db("DELETE FROM sphere_images WHERE id = %s", (img_id,))
+    return jsonify({"status": "ok"})
+
+
+@app.route("/admin/api/reorder/sphere-images", methods=["PUT"])
+@admin_required
+def admin_reorder_sphere_images():
+    data = request.get_json(force=True)
+    ids = data.get("ids", [])
+    for i, img_id in enumerate(ids):
+        execute_db("UPDATE sphere_images SET sort_order = %s WHERE id = %s", (i, img_id))
+    return jsonify({"status": "ok"})
 
 
 # =============================================================================

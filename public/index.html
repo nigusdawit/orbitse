@@ -69,6 +69,10 @@ FONTS:
   <!-- TO CHANGE ICONS: Browse available icons at https://lucide.dev/icons -->
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 
+  <!-- Three.js — 3D rendering library for the Sphere View immersive experience.
+       Only used when the Sphere View feature is enabled in the admin dashboard. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
   <!-- DOMPurify — Sanitizes AI-generated HTML before rendering into the DOM.
        This prevents XSS (Cross-Site Scripting) attacks from malicious or
        unexpected HTML/JS in AI responses. All innerHTML assignments of
@@ -158,6 +162,9 @@ FONTS:
           <div class="hero-buttons">
             <button class="btn-secondary" onclick="showGallery()" aria-label="Explore the gallery" data-testid="button-explore-gallery">
               Explore Gallery
+            </button>
+            <button id="btn-sphere-view" class="btn-secondary" onclick="showSphereView()" aria-label="Open immersive sphere view" data-testid="button-explore-sphere" style="display:none;">
+              &#x2728; Immersive View
             </button>
             <button class="btn-primary" onclick="openModal()" aria-label="Get started — open inquiry form" data-testid="button-get-started">
               Get Started
@@ -504,6 +511,60 @@ FONTS:
     </div>
   </div>
   <!-- END GALLERY VIEW -->
+
+
+  <!--
+  ============================================================================
+  SPHERE VIEW — Immersive 3D rotating image sphere
+  ============================================================================
+  A fullscreen interactive experience similar to the Gallery View.
+  Uses Three.js to render a rotating sphere of particles with floating
+  images orbiting around it. Scroll controls the camera zoom (in/out),
+  and mouse drag rotates the sphere.
+
+  MANAGED BY:
+  - Admin dashboard: "Sphere View" tab — toggle on/off, set heading,
+    configure particle count, rotation speed, sphere size, image size
+  - Images: Either pulled from gallery cards or managed separately
+
+  HOW IT WORKS:
+  - JavaScript fetches sphere settings from /api/sphere-settings
+  - If enabled, the entry button appears on the landing page
+  - Clicking it shows this view and initializes the Three.js scene
+  - Scroll wheel controls camera zoom (closer/further from sphere)
+  - Mouse drag rotates the sphere group
+  - Back button returns to the landing page
+  ============================================================================
+  -->
+  <div id="sphere-view" class="sphere-view" data-testid="sphere-view">
+    <canvas id="sphere-canvas" class="sphere-canvas" data-testid="sphere-canvas"></canvas>
+
+    <div class="sphere-heading-container">
+      <h1 id="sphere-heading" class="sphere-heading" data-testid="text-sphere-heading"></h1>
+    </div>
+
+    <div class="sphere-top-left">
+      <button class="nav-circle-btn" onclick="hideSphereView()" aria-label="Back to landing page" data-testid="button-sphere-back">
+        <i data-lucide="arrow-left" style="width:16px;height:16px;"></i>
+      </button>
+      <div class="logo-text">
+        <p id="sphere-site-name" class="site-name">My Site</p>
+        <p id="sphere-site-subtitle" class="site-subtitle">Your Tagline Here</p>
+      </div>
+    </div>
+
+    <div class="sphere-top-right">
+      <button class="btn-reserve" onclick="openModal()" aria-label="Get started — open inquiry form" data-testid="button-cta-sphere">
+        &#x1f4c5; Get Started
+      </button>
+    </div>
+
+    <div class="sphere-scroll-hint" id="sphere-scroll-hint" data-testid="sphere-scroll-hint">
+      <i data-lucide="mouse" style="width:20px;height:20px;"></i>
+      <span>Scroll to zoom</span>
+    </div>
+  </div>
+  <!-- END SPHERE VIEW -->
 
 
   <!--
