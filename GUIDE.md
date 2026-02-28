@@ -620,4 +620,224 @@ Admin panel > Chatbot tab > Toggle "Enable Chatbot" to OFF > Save.
 | AI           | OpenAI GPT-4o-mini via streaming SSE          |
 | Fonts        | Google Fonts (Playfair Display, DM Sans)      |
 | Icons        | Lucide Icons (CDN)                            |
+| Error Track  | Sentry (optional, enabled via SENTRY_DSN)     |
 | Hosting      | Replit (with gunicorn for production)          |
+
+---
+
+## Self-Hosting & Deployment
+
+This project is a standard Python Flask app. You can deploy it anywhere that runs Python. Here's how.
+
+### What You Need
+
+No matter where you host, you'll need:
+- Python 3.11+
+- A PostgreSQL database
+- These environment variables set on the server:
+
+| Variable           | What It Is                                       |
+|--------------------|--------------------------------------------------|
+| `DATABASE_URL`     | PostgreSQL connection string                     |
+| `ADMIN_PASSWORD`   | Password for the admin dashboard                 |
+| `OPENAI_API_KEY`   | Your OpenAI API key (for the AI chatbot)         |
+| `FLASK_SECRET_KEY` | A random string for session security             |
+| `SENTRY_DSN`       | (Optional) Your Sentry project DSN               |
+
+### Option 1: Netlify
+
+Netlify is designed for static sites and serverless functions — it doesn't natively run a Python Flask server. You have two choices:
+
+**A) Netlify + a separate API server:**
+1. Put the `public/` folder contents on Netlify as a static site
+2. Host the Flask backend separately (Railway, Render, Fly.io, etc.)
+3. Update the API URLs in `script.js` to point to your backend server's URL
+4. Add CORS headers in `app.py` to allow requests from your Netlify domain
+
+**B) Better alternatives for full-stack Flask:**
+Netlify isn't the best fit for this project. These platforms are built for Python apps:
+
+### Option 2: Railway (Recommended)
+
+Railway is the easiest option — closest to Replit's experience.
+
+1. Push your code to a GitHub repository
+2. Go to [railway.app](https://railway.app) and create a new project from the repo
+3. Add a PostgreSQL database from Railway's dashboard (one click)
+4. Set your environment variables in the Railway dashboard
+5. Railway auto-detects Python and deploys. Add a `Procfile` to your project root:
+
+```
+web: gunicorn --bind=0.0.0.0:$PORT app:app
+```
+
+### Option 3: Render
+
+1. Push your code to GitHub
+2. Go to [render.com](https://render.com) and create a new Web Service
+3. Connect your GitHub repo
+4. Set the build command: `pip install -r requirements.txt`
+5. Set the start command: `gunicorn --bind=0.0.0.0:$PORT app:app`
+6. Add a PostgreSQL database from Render's dashboard
+7. Set your environment variables
+
+### Option 4: Fly.io
+
+1. Install the Fly CLI: `curl -L https://fly.io/install.sh | sh`
+2. Run `fly launch` in your project folder — it detects Python automatically
+3. Create a Postgres database: `fly postgres create`
+4. Attach it to your app: `fly postgres attach`
+5. Set secrets: `fly secrets set ADMIN_PASSWORD=yourpassword OPENAI_API_KEY=sk-...`
+6. Deploy: `fly deploy`
+
+### Option 5: VPS (DigitalOcean, Linode, AWS EC2)
+
+For full control on a Linux server:
+
+```bash
+# 1. Install dependencies
+sudo apt update && sudo apt install python3 python3-pip postgresql nginx
+
+# 2. Clone your project
+git clone https://github.com/your-repo.git
+cd your-repo
+
+# 3. Install Python packages
+pip3 install -r requirements.txt
+
+# 4. Set environment variables (add to ~/.bashrc or use a .env file)
+export DATABASE_URL="postgresql://user:pass@localhost:5432/mydb"
+export ADMIN_PASSWORD="your-secure-password"
+export OPENAI_API_KEY="sk-..."
+export FLASK_SECRET_KEY="random-secret-string"
+
+# 5. Run with gunicorn (production server)
+gunicorn --bind=0.0.0.0:5000 --workers=4 app:app
+
+# 6. Set up Nginx as a reverse proxy (recommended)
+# Point your domain to the server, proxy port 80 → 5000
+```
+
+### Generating requirements.txt
+
+If the hosting platform needs a `requirements.txt` file, generate one from the project:
+
+```bash
+pip freeze > requirements.txt
+```
+
+Or create it manually with the core packages:
+```
+flask
+psycopg2-binary
+openai
+gunicorn
+sentry-sdk[flask]
+```
+
+---
+
+## Error Tracking with Sentry
+
+Sentry is already integrated into `app.py`. It captures crashes, unhandled errors, and slow requests in production — so you know when something breaks before your users tell you.
+
+### How to Enable
+
+1. Create a free account at [sentry.io](https://sentry.io)
+2. Create a new project (choose "Flask" as the platform)
+3. Copy your DSN (it looks like `https://abc123@o123.ingest.sentry.io/456`)
+4. Set it as an environment variable:
+   - **On Replit:** Add `SENTRY_DSN` in the Secrets tab
+   - **On other hosts:** Set it in your environment variables
+
+That's it. Once the DSN is set, Sentry automatically captures:
+- Unhandled exceptions (500 errors)
+- Slow API responses (performance monitoring)
+- Error context (which URL, what request data, stack trace)
+
+### How to Disable
+
+Just don't set the `SENTRY_DSN` variable. If it's empty or missing, Sentry is completely inactive — no overhead, no network calls.
+
+### Optional Settings
+
+In `app.py`, you can tweak these values in the `sentry_sdk.init()` call:
+
+| Setting               | Default | What It Does                                    |
+|-----------------------|---------|--------------------------------------------------|
+| `traces_sample_rate`  | 0.2     | % of requests tracked for performance (0.0-1.0) |
+| `profiles_sample_rate`| 0.1     | % of traces that get CPU profiling               |
+| `environment`         | production | Tag for filtering (set via `SENTRY_ENV`)      |
+| `send_default_pii`    | False   | Whether to include user IPs/emails in reports    |
+
+---
+
+## Switching Databases
+
+The app uses PostgreSQL by default. Here's how to switch.
+
+### Moving to a Different PostgreSQL Host
+
+The app connects via the `DATABASE_URL` environment variable. To switch PostgreSQL providers (e.g., from Replit to Supabase, Neon, or AWS RDS):
+
+1. Create a database on your new provider
+2. Get the connection string (format: `postgresql://user:password@host:port/dbname`)
+3. Update the `DATABASE_URL` environment variable
+4. Restart the app — it automatically creates all tables on first run
+
+**Popular PostgreSQL providers:**
+- [Supabase](https://supabase.com) — free tier, easy dashboard
+- [Neon](https://neon.tech) — serverless PostgreSQL, generous free tier
+- [Railway](https://railway.app) — one-click PostgreSQL add-on
+- [AWS RDS](https://aws.amazon.com/rds/) — enterprise-grade, pay-as-you-go
+
+### Migrating Existing Data
+
+To move data from one PostgreSQL database to another:
+
+```bash
+# Export from old database
+pg_dump "old_database_url" > backup.sql
+
+# Import to new database
+psql "new_database_url" < backup.sql
+```
+
+### Switching to a Different Database Engine (MySQL, SQLite, etc.)
+
+The app uses raw SQL queries with `psycopg2` (PostgreSQL driver). To switch to a different database:
+
+1. **SQLite** (simplest, no server needed):
+   - Replace `psycopg2` with Python's built-in `sqlite3` module
+   - Change `%s` placeholders to `?` in all queries
+   - Remove PostgreSQL-specific syntax (e.g., `RETURNING id`, `SERIAL`, `JSONB`)
+   - Replace `JSONB` columns with `TEXT` and use `json.dumps()`/`json.loads()`
+
+2. **MySQL/MariaDB**:
+   - Replace `psycopg2` with `mysql-connector-python` or `pymysql`
+   - Change `%s` placeholders stay the same (MySQL uses `%s` too)
+   - Replace `SERIAL` with `INT AUTO_INCREMENT`
+   - Replace `JSONB` with `JSON`
+   - Replace `RETURNING id` with `cursor.lastrowid`
+
+3. **Using an ORM (SQLAlchemy)**:
+   - If you want database-agnostic code, consider adding SQLAlchemy
+   - This would require rewriting the `query_db()` and `execute_db()` functions
+   - But would let you switch databases by just changing the connection string
+
+The simplest migration path is staying on PostgreSQL but switching providers — just change the `DATABASE_URL` and you're done.
+
+---
+
+## Switching Web Servers
+
+The app runs on gunicorn in production. Alternatives:
+
+| Server    | Command                                          | Best For           |
+|-----------|--------------------------------------------------|--------------------|
+| Gunicorn  | `gunicorn --bind=0.0.0.0:5000 app:app`          | Linux production   |
+| Waitress  | `waitress-serve --port=5000 app:app`             | Windows production |
+| uWSGI     | `uwsgi --http :5000 --module app:app`            | High-traffic sites |
+| Flask dev | `python app.py`                                  | Development only   |
+
+To switch, install the new server (`pip install waitress`) and update your start command.

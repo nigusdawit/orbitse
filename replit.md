@@ -286,12 +286,15 @@ Add new sections inside the `.landing-container` div with classes `snap-section 
 - `FLASK_SECRET_KEY` — Session encryption key (auto-generated if not set)
 - `AI_INTEGRATIONS_OPENAI_API_KEY` — OpenAI API key (set by Replit AI Integrations)
 - `AI_INTEGRATIONS_OPENAI_BASE_URL` — OpenAI base URL (set by Replit AI Integrations)
+- `SENTRY_DSN` — (Optional) Sentry error tracking DSN
+- `SENTRY_ENV` — (Optional) Sentry environment tag (default: "production")
 
 ### Python Packages
 - `flask` — Web framework
 - `psycopg2-binary` — PostgreSQL driver
 - `openai` — OpenAI API client for the AI chatbot
 - `gunicorn` — Production WSGI server
+- `sentry-sdk[flask]` — Error tracking (optional, enabled via SENTRY_DSN)
 
 ### CDN Dependencies
 - Google Fonts (Playfair Display, DM Sans, plus dynamic fonts via Theme Editor)

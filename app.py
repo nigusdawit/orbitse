@@ -50,11 +50,29 @@ from functools import wraps
 
 import psycopg2
 import psycopg2.extras
+import sentry_sdk
 from flask import (
     Flask, request, jsonify, send_from_directory,
     render_template, session, redirect, url_for, Response, stream_with_context
 )
 from openai import OpenAI
+
+# =============================================================================
+# ERROR TRACKING — Sentry (optional)
+# =============================================================================
+# Sentry captures unhandled exceptions, slow requests, and errors in production.
+# To enable: set the SENTRY_DSN environment variable to your Sentry project DSN.
+# Get your DSN from https://sentry.io → Project Settings → Client Keys (DSN).
+# If SENTRY_DSN is not set, Sentry is silently disabled — no errors, no overhead.
+sentry_dsn = os.environ.get("SENTRY_DSN")
+if sentry_dsn:
+    sentry_sdk.init(
+        dsn=sentry_dsn,
+        traces_sample_rate=0.2,       # Capture 20% of transactions for performance monitoring
+        profiles_sample_rate=0.1,     # Profile 10% of sampled transactions
+        environment=os.environ.get("SENTRY_ENV", "production"),
+        send_default_pii=False,       # Don't send personally identifiable information
+    )
 
 # =============================================================================
 # APP CONFIGURATION

@@ -8,4 +8,5 @@ dependencies = [
     "gunicorn>=25.1.0",
     "openai>=2.24.0",
     "psycopg2-binary>=2.9.11",
+    "sentry-sdk[flask]>=2.53.0",
 ]
