@@ -1659,41 +1659,40 @@ async function chatSendStreaming(message, wasCollapsed) {
     /* Determine if this response navigates to a gallery card */
     const isNavigate = pendingCommand && pendingCommand.action === 'navigate';
 
-    if (wasCollapsed) {
-      /* ── COLLAPSED MODE: route response to hero or gallery ── */
+    /* Check if we're currently on the landing page (not in gallery view) */
+    const onLandingPage = !document.getElementById('gallery-view').classList.contains('active');
+
+    if (wasCollapsed && onLandingPage && !isNavigate) {
+      /* ── LANDING PAGE MODE: type response into the hero description ── */
       chatHistory.push({ role: 'assistant', content: displayText || '' });
 
-      if (isNavigate) {
-        /* Navigation — open gallery + side panel with the text reply */
+      if (displayText) {
+        const heroEl = document.getElementById('hero-description');
+        if (heroEl) {
+          const landingContainer = document.querySelector('.landing-container');
+          if (landingContainer) {
+            landingContainer.scrollTo({ top: 0, behavior: 'smooth' });
+          }
+          typeHeroText(heroEl, displayText);
+        }
+      }
+      /* Still execute non-navigate commands (showSlide, generateVisual, etc.) */
+      if (pendingCommand) {
         executeCommand(pendingCommand);
         pendingCommand = null;
-        if (displayText) {
-          updateSidePanelLatest(displayText);
-        }
-      } else {
-        /* Non-navigation — type the AI's reply into the hero description */
-        if (displayText) {
-          const heroEl = document.getElementById('hero-description');
-          if (heroEl) {
-            /* Scroll landing page to top so hero is visible */
-            const landingContainer = document.querySelector('.landing-container');
-            if (landingContainer) {
-              landingContainer.scrollTo({ top: 0, behavior: 'smooth' });
-            }
-            /* If in gallery view, go back to landing first */
-            if (document.getElementById('gallery-view').classList.contains('active')) {
-              showLanding();
-              setTimeout(() => typeHeroText(heroEl, displayText), 400);
-            } else {
-              typeHeroText(heroEl, displayText);
-            }
-          }
-        }
-        /* Still execute non-navigate commands (showSlide, generateVisual, etc.) */
-        if (pendingCommand) {
-          executeCommand(pendingCommand);
-          pendingCommand = null;
-        }
+      }
+    } else if (wasCollapsed) {
+      /* ── NOT ON LANDING (gallery/other) or NAVIGATE: use chat popup ── */
+      chatToggleExpand();
+      chatAddMessage('user', message);
+      chatHistory.push({ role: 'assistant', content: displayText || '' });
+
+      if (displayText) {
+        chatAddMessage('agent', displayText);
+      }
+      if (pendingCommand) {
+        executeCommand(pendingCommand);
+        pendingCommand = null;
       }
     } else {
       /* ── EXPANDED MODE: show response in chat panel as usual ── */
