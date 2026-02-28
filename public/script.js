@@ -3264,7 +3264,11 @@ function executeCommand(cmd) {
         if (data.error) {
           chatAddMessage('agent', `There was a small issue: ${data.error}. Could you double-check that detail?`);
         } else {
-          chatAddMessage('agent', '✓ Your information has been submitted successfully! We\'ll be in touch soon.');
+          const confNum = data.confirmation_number || '';
+          const confMsg = confNum
+            ? `Your booking has been confirmed! Your confirmation number is **${confNum}**. Please save this for your records. We'll be in touch soon!`
+            : `Your information has been submitted successfully! We'll be in touch soon.`;
+          chatAddMessage('agent', confMsg);
         }
       })
       .catch(err => {

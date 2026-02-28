@@ -3840,12 +3840,12 @@ TO CUSTOMIZE THIS DASHBOARD:
         currentSubsFields.forEach(f => {
           headerHtml += `<th>${esc(f.label)}</th>`;
         });
-        headerHtml += '<th>Status</th><th>Device</th><th>UTM</th><th>Submitted</th><th>Actions</th></tr>';
+        headerHtml += '<th>Confirmation #</th><th>Status</th><th>Device</th><th>UTM</th><th>Submitted</th><th>Actions</th></tr>';
         thead.innerHTML = headerHtml;
 
         const tbody = document.getElementById('submissions-tbody');
         if (!subs.length) {
-          tbody.innerHTML = `<tr><td colspan="${currentSubsFields.length + 5}" class="empty-state">No submissions yet.</td></tr>`;
+          tbody.innerHTML = `<tr><td colspan="${currentSubsFields.length + 6}" class="empty-state">No submissions yet.</td></tr>`;
           return;
         }
 
@@ -3856,6 +3856,7 @@ TO CUSTOMIZE THIS DASHBOARD:
             const val = d[f.name];
             row += `<td>${esc(val != null ? String(val) : '—')}</td>`;
           });
+          row += `<td><code style="font-size:0.75rem;color:var(--color-accent, #c9a96e);">${esc(s.confirmation_number || '—')}</code></td>`;
           row += `<td>
             <select class="status-select" onchange="updateSubmissionStatus(${s.id}, this.value)" data-testid="select-sub-status-${s.id}" style="background: transparent; border: 1px solid var(--admin-border); color: var(--admin-text); padding: 0.25rem 0.5rem; border-radius: var(--admin-radius); font-size: 0.75rem;">
               <option value="partial" ${s.status === 'partial' ? 'selected' : ''}>Partial (Abandoned)</option>
@@ -3920,6 +3921,9 @@ TO CUSTOMIZE THIS DASHBOARD:
         let html = '<div style="display:grid; grid-template-columns: 1fr 1fr; gap: 1rem;">';
 
         html += '<div><h4 style="margin-bottom:0.75rem; color:var(--admin-text-muted);">Form Data</h4>';
+        if (sub.confirmation_number) {
+          html += `<div style="margin-bottom:0.75rem; padding:0.5rem 0.75rem; background:rgba(201,169,110,0.1); border:1px solid rgba(201,169,110,0.3); border-radius:var(--admin-radius);"><span style="color:var(--admin-text-muted);font-size:0.75rem;text-transform:uppercase;">Confirmation #</span><br><strong style="color:var(--color-accent, #c9a96e);font-family:monospace;">${esc(sub.confirmation_number)}</strong></div>`;
+        }
         currentSubsFields.forEach(f => {
           html += `<div style="margin-bottom:0.5rem;"><span style="color:var(--admin-text-muted);font-size:0.75rem;text-transform:uppercase;">${esc(f.label)}</span><br><strong>${esc(d[f.name] != null ? String(d[f.name]) : '—')}</strong></div>`;
         });

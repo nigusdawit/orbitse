@@ -557,6 +557,7 @@ def init_db():
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_font_serif TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_font_sans TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE form_submissions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
+                "ALTER TABLE form_submissions ADD COLUMN IF NOT EXISTS confirmation_number VARCHAR(20) DEFAULT ''",
                 "ALTER TABLE form_fields ADD COLUMN IF NOT EXISTS step INTEGER NOT NULL DEFAULT 1",
                 "ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS visitor_id VARCHAR(100) DEFAULT ''",
                 # --- Section visibility toggles (admin can show/hide entire sections) ---
@@ -1580,6 +1581,8 @@ Example conversation flow:
 
 WRONG (does nothing): "I'll submit your booking now! Just a moment."
 RIGHT (actually submits): "Submitting your booking now!" followed by the submitForm command block with all field values.
+
+NOTE: When the form is submitted successfully, the system automatically generates a unique confirmation number (like BK-20260228-A3X9K) and displays it to the visitor. You do NOT need to generate or mention a confirmation number yourself — the system handles this automatically after the submitForm command executes.
 
 6. Save partial form data (auto-save during collection for lead recovery):
 ```command
@@ -3756,18 +3759,25 @@ def api_submit_form(slug):
             (form["id"], session_id), fetchone=True
         )
 
+    import random, string
+    from datetime import datetime as _dt
+    date_part = _dt.now().strftime("%Y%m%d")
+    rand_part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
+    conf_number = f"BK-{date_part}-{rand_part}"
+
     if existing:
         result = execute_db(
             """UPDATE form_submissions SET
                  submission_data = %s::jsonb, status = 'new', updated_at = NOW(),
-                 submitted_at = NOW(), device_type = %s, user_agent = %s,
+                 submitted_at = NOW(), confirmation_number = %s, device_type = %s, user_agent = %s,
                  referrer_url = %s, utm_source = %s, utm_medium = %s,
                  utm_campaign = %s, utm_term = %s, utm_content = %s,
                  page_url = %s, ip_address = %s, browser = %s, os = %s,
                  screen_resolution = %s, language = %s
-               WHERE id = %s RETURNING id""",
+               WHERE id = %s RETURNING id, confirmation_number""",
             (
                 json.dumps(form_data),
+                conf_number,
                 device, ua_string[:500],
                 data.get("referrer", ""), data.get("utm_source", ""),
                 data.get("utm_medium", ""), data.get("utm_campaign", ""),
@@ -3780,14 +3790,15 @@ def api_submit_form(slug):
     else:
         result = execute_db(
             """INSERT INTO form_submissions
-                (form_id, submission_data, status, device_type, user_agent,
+                (form_id, submission_data, status, confirmation_number, device_type, user_agent,
                  referrer_url, utm_source, utm_medium, utm_campaign, utm_term, utm_content,
                  page_url, ip_address, browser, os, screen_resolution, language, session_id)
-               VALUES (%s, %s::jsonb, 'new', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-               RETURNING id""",
+               VALUES (%s, %s::jsonb, 'new', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               RETURNING id, confirmation_number""",
             (
                 form["id"],
                 json.dumps(form_data),
+                conf_number,
                 device, ua_string[:500],
                 data.get("referrer", ""), data.get("utm_source", ""),
                 data.get("utm_medium", ""), data.get("utm_campaign", ""),
@@ -3797,7 +3808,11 @@ def api_submit_form(slug):
                 session_id
             )
         )
-    return jsonify({"success": True, "id": result["id"] if result else None}), 201
+    return jsonify({
+        "success": True,
+        "id": result["id"] if result else None,
+        "confirmation_number": result["confirmation_number"] if result else conf_number
+    }), 201
 
 
 # =============================================================================
