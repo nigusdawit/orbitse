@@ -2641,8 +2641,8 @@ async function chatSendStreaming(message, wasCollapsed) {
             const shortText = displayText.split(/(?<=[.!?])\s+/).slice(0, 2).join(' ');
             const heroEl = document.getElementById('hero-description');
             if (heroEl) typeHeroText(heroEl, shortText + ' Let me show you more…');
-            const safeText = displayText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-            const autoHtml = `<div style="max-width:900px;margin:auto;padding:2.5rem;color:#e4e4e7;font-family:'DM Sans',sans-serif;"><div style="font-family:'Playfair Display',Georgia,serif;font-size:1.8rem;color:#fff;margin-bottom:1.5rem;">Details</div><div style="line-height:1.8;font-size:1.05rem;white-space:pre-wrap;">${safeText}</div></div>`;
+            const renderedContent = renderMarkdown(displayText);
+            const autoHtml = `<div style="max-width:900px;margin:auto;padding:2.5rem;color:#e4e4e7;font-family:'DM Sans',sans-serif;"><div style="font-family:'Playfair Display',Georgia,serif;font-size:1.8rem;color:#fff;margin-bottom:1.5rem;">Details</div><div class="canvas-markdown" style="line-height:1.8;font-size:1.05rem;">${renderedContent}</div></div>`;
             openFullscreenCanvas(autoHtml);
             openSidePanel();
             saveGeneratedPage(autoHtml, 'AI Response');
