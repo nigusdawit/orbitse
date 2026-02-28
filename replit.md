@@ -39,7 +39,9 @@ The site features:
 - **Section Dividers** — subtle gold-tinted gradient lines between landing sections for visual breathing room
 - **Blog Rich Text Editor** — custom toolbar-based editor in admin (bold, italic, headings, lists, links, images) replaces raw HTML textarea
 - **Reading Progress Bar** — thin gold bar on blog post pages that fills as the reader scrolls
-- **Chat Markdown Rendering** — AI responses render with proper formatting (headings, bold, lists, code blocks) instead of raw markdown text; sanitized via DOMPurify
+- **Chat Markdown Rendering** — AI responses render with proper formatting (headings, bold, lists, code blocks, tables) instead of raw markdown text; sanitized via DOMPurify
+- **Auto-Canvas Fallback** — when AI sends long text without a generateHTML command, it auto-renders in a premium frosted-glass canvas with gradient header, contextual eyebrow labels, accent-colored list bullets, and styled tables
+- **Visual Request Priority** — system prompt enforces generateHTML for "show me visually" and similar phrases; fallback canvas ensures polished display even when AI skips the command
 
 ## User Preferences
 

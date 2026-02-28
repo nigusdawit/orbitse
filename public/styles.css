@@ -3766,6 +3766,8 @@ input, select, textarea {
   font-size: 1.3rem;
   color: #fff;
   margin: 1.75rem 0 0.75rem 0;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 .canvas-markdown h3:first-child { margin-top: 0; }
 .canvas-markdown h4 {
@@ -3779,33 +3781,82 @@ input, select, textarea {
   color: rgba(255, 255, 255, 0.85);
 }
 .canvas-markdown strong {
-  color: #fff;
+  color: var(--color-accent, #c9a96e);
   font-weight: 600;
 }
 .canvas-markdown em {
   font-style: italic;
+  color: rgba(255, 255, 255, 0.7);
 }
-.canvas-markdown ul,
+.canvas-markdown ul {
+  margin: 0.5rem 0 1rem 0;
+  padding-left: 0;
+  list-style: none;
+}
 .canvas-markdown ol {
   margin: 0.5rem 0 1rem 0;
   padding-left: 1.5rem;
 }
-.canvas-markdown li {
-  margin-bottom: 0.5rem;
+.canvas-markdown ul li {
+  margin-bottom: 0.6rem;
+  line-height: 1.7;
+  color: rgba(255, 255, 255, 0.85);
+  padding-left: 1.25rem;
+  position: relative;
+}
+.canvas-markdown ul li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.65em;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-accent, #c9a96e);
+  opacity: 0.7;
+}
+.canvas-markdown ol li {
+  margin-bottom: 0.6rem;
   line-height: 1.7;
   color: rgba(255, 255, 255, 0.85);
 }
 .canvas-markdown blockquote {
   border-left: 3px solid var(--color-accent, #c9a96e);
-  padding-left: 1.25rem;
+  padding: 0.75rem 1.25rem;
   margin: 1.25rem 0;
   color: rgba(255, 255, 255, 0.7);
   font-style: italic;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 0 0.5rem 0.5rem 0;
 }
 .canvas-markdown hr {
   border: none;
   border-top: 1px solid color-mix(in srgb, var(--color-accent, #c9a96e) 25%, transparent);
   margin: 1.5rem 0;
+}
+.canvas-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 0.9rem;
+}
+.canvas-markdown th {
+  text-align: left;
+  padding: 0.75rem 1rem;
+  font-weight: 600;
+  color: var(--color-accent, #c9a96e);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+.canvas-markdown td {
+  padding: 0.65rem 1rem;
+  color: rgba(255, 255, 255, 0.85);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.canvas-markdown tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.02);
 }
 .canvas-markdown code {
   background: rgba(255, 255, 255, 0.08);

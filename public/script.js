@@ -2560,6 +2560,22 @@ function renderMarkdown(text) {
     return '<ol>' + items + '</ol>';
   });
 
+  /* Markdown tables — require a header row, a separator row (|---|---|),
+     and at least one data row before converting to HTML <table> */
+  html = html.replace(/(^\|.+\|\s*\n^\|[\s\-:]+(?:\|[\s\-:]+)+\|?\s*\n(?:^\|.+\|\s*\n?)+)/gm, (block) => {
+    const rows = block.trim().split('\n').filter(r => r.trim());
+    if (rows.length < 3) return block;
+    /* Header row */
+    const headerCells = rows[0].split('|').filter((_, i, a) => i > 0 && i < a.length - 1);
+    const thead = '<thead><tr>' + headerCells.map(c => `<th>${c.trim()}</th>`).join('') + '</tr></thead>';
+    /* Body rows (skip the separator at index 1) */
+    const bodyRows = rows.slice(2).map(row => {
+      const cells = row.split('|').filter((_, i, a) => i > 0 && i < a.length - 1);
+      return '<tr>' + cells.map(c => `<td>${c.trim()}</td>`).join('') + '</tr>';
+    }).join('');
+    return `<table>${thead}<tbody>${bodyRows}</tbody></table>`;
+  });
+
   /* Convert double newlines to paragraph breaks */
   html = html.replace(/\n{2,}/g, '</p><p>');
 
@@ -2567,11 +2583,11 @@ function renderMarkdown(text) {
   html = html.replace(/\n/g, '<br>');
 
   /* Clean up — remove <br> immediately after block elements */
-  html = html.replace(/<\/(h[34]|ul|ol|pre|hr)><br>/g, '</$1>');
-  html = html.replace(/<br><(h[34]|ul|ol|pre|hr)/g, '<$1');
+  html = html.replace(/<\/(h[34]|ul|ol|pre|hr|table)><br>/g, '</$1>');
+  html = html.replace(/<br><(h[34]|ul|ol|pre|hr|table)/g, '<$1');
 
   /* Wrap in paragraph if not starting with a block element */
-  if (!html.match(/^<(h[34]|ul|ol|pre|hr)/)) {
+  if (!html.match(/^<(h[34]|ul|ol|pre|hr|table)/)) {
     html = '<p>' + html + '</p>';
   }
 
@@ -2851,33 +2867,67 @@ async function chatSendStreaming(message, wasCollapsed) {
           const hasStructuredContent = /^#{1,4}\s|^\|.+\|$|^[-*]\s.+\n[-*]\s/m.test(displayText);
           const isLongContent = sentenceCount > 4 || lineCount > 6 || (displayText.length > 250 && hasStructuredContent);
           if (isLongContent) {
-            const cleanedForPreview = displayText.replace(/^#{1,4}\s+/gm, '').replace(/\*\*(.+?)\*\*/g, '$1').replace(/^\s*[-*]\s/gm, '').trim();
-            const firstSentences = cleanedForPreview.split(/(?<=[.!?])\s+/).slice(0, 2).join(' ');
-            const shortText = firstSentences.length > 120 ? firstSentences.substring(0, 120) + '...' : firstSentences;
-            const heroEl = document.getElementById('hero-description');
-            if (heroEl) typeHeroText(heroEl, shortText + ' Let me show you more…');
-            const renderedContent = renderMarkdown(displayText);
+            try {
+              /* Build a short hero preview from the first 1-2 sentences */
+              const cleanedForPreview = displayText.replace(/^#{1,4}\s+/gm, '').replace(/\*\*(.+?)\*\*/g, '$1').replace(/^\s*[-*]\s/gm, '').trim();
+              const previewSentences = cleanedForPreview.split(/[.!?]\s+/).slice(0, 2).join('. ');
+              const shortText = previewSentences.length > 120 ? previewSentences.substring(0, 120) + '...' : previewSentences;
+              const heroEl = document.getElementById('hero-description');
+              if (heroEl) typeHeroText(heroEl, shortText + ' Let me show you more…');
 
-            const headingMatch = displayText.match(/^#{1,4}\s+(.+)/m);
-            const boldMatch = displayText.match(/\*\*(.+?)\*\*/);
-            const firstSentence = displayText.split(/[.!?]\s/)[0];
-            const autoTitle = headingMatch ? headingMatch[1] : (boldMatch ? boldMatch[1] : (firstSentence.length < 60 ? firstSentence : 'Details'));
+              /* Extract a meaningful title from the content */
+              const headingMatch = displayText.match(/^#{1,4}\s+(.+)/m);
+              const boldMatch = displayText.match(/\*\*(.+?)\*\*/);
+              const firstSentence = displayText.split(/[.!?]\s/)[0] || '';
+              const autoTitle = headingMatch
+                ? headingMatch[1].replace(/\*\*/g, '')
+                : (boldMatch ? boldMatch[1] : (firstSentence.length < 60 ? firstSentence : 'Overview'));
 
-            const accentColor = getComputedStyle(document.documentElement).getPropertyValue('--color-accent').trim() || '#c9a96e';
-            const fontSerif = getComputedStyle(document.documentElement).getPropertyValue('--font-serif').trim() || 'Playfair Display, serif';
-            const fontSans = getComputedStyle(document.documentElement).getPropertyValue('--font-sans').trim() || 'DM Sans, sans-serif';
+              /* Determine a contextual eyebrow label based on content type */
+              const hasTable = /\|.+\|/.test(displayText);
+              const hasList = /^[-*]\s/m.test(displayText) || /^\d+\.\s/m.test(displayText);
+              const hasComparison = /compar|vs\.?|versus|differ/i.test(displayText);
+              let eyebrowLabel = 'Overview';
+              if (hasComparison) eyebrowLabel = 'Comparison';
+              else if (hasTable) eyebrowLabel = 'Details';
+              else if (hasList) eyebrowLabel = 'Highlights';
 
-            const autoHtml = `<div style="max-width:900px;margin:0 auto;padding:2.5rem;width:100%;">` +
-              `<div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.2em;color:${accentColor};margin-bottom:0.75rem;font-family:${fontSans};">Overview</div>` +
-              `<div style="font-family:${fontSerif};font-size:clamp(1.5rem,3vw,2.25rem);font-weight:700;color:#fff;margin-bottom:1.5rem;line-height:1.2;">${DOMPurify.sanitize(autoTitle)}</div>` +
-              `<div style="width:3rem;height:2px;background:${accentColor};opacity:0.5;margin-bottom:2rem;border-radius:1px;"></div>` +
-              `<div style="background:rgba(255,255,255,0.03);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.08);border-radius:1rem;padding:2rem;">` +
-                `<div class="canvas-markdown" style="line-height:1.85;font-size:0.95rem;color:rgba(255,255,255,0.85);font-family:${fontSans};">${renderedContent}</div>` +
-              `</div>` +
-            `</div>`;
-            openFullscreenCanvas(autoHtml);
-            openSidePanel();
-            saveGeneratedPage(autoHtml, 'AI Response');
+              /* Grab the site's theme tokens */
+              const styles = getComputedStyle(document.documentElement);
+              const accent = styles.getPropertyValue('--color-accent').trim() || '#c9a96e';
+              const serif = styles.getPropertyValue('--font-serif').trim() || 'Playfair Display, serif';
+              const sans = styles.getPropertyValue('--font-sans').trim() || 'DM Sans, sans-serif';
+
+              /* Render the markdown content */
+              const renderedContent = renderMarkdown(displayText);
+
+              /* Build a premium frosted-glass canvas matching the design system */
+              const autoHtml =
+                `<div style="max-width:900px;margin:0 auto;padding:2.5rem;width:100%;">` +
+
+                  /* Header section with gradient accent background */
+                  `<div style="background:linear-gradient(135deg,rgba(${hexToRgb(accent)},0.08),transparent);border-radius:1rem 1rem 0 0;padding:2rem 2rem 1.5rem;border:1px solid rgba(255,255,255,0.06);border-bottom:none;">` +
+                    `<div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.2em;color:${accent};margin-bottom:0.75rem;font-family:${sans};font-weight:500;">${DOMPurify.sanitize(eyebrowLabel)}</div>` +
+                    `<div style="font-family:${serif};font-size:clamp(1.4rem,3vw,2rem);font-weight:700;color:#fff;line-height:1.25;">${DOMPurify.sanitize(autoTitle)}</div>` +
+                    `<div style="width:3rem;height:2px;background:${accent};opacity:0.4;margin-top:1rem;border-radius:1px;"></div>` +
+                  `</div>` +
+
+                  /* Content body in a frosted glass card */
+                  `<div style="background:rgba(255,255,255,0.03);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.08);border-radius:0 0 1rem 1rem;padding:2rem;box-shadow:0 8px 32px rgba(0,0,0,0.2),inset 0 1px 0 rgba(255,255,255,0.05);">` +
+                    `<div class="canvas-markdown" style="line-height:1.85;font-size:0.95rem;color:rgba(255,255,255,0.85);font-family:${sans};">${renderedContent}</div>` +
+                  `</div>` +
+
+                `</div>`;
+
+              openFullscreenCanvas(autoHtml);
+              openSidePanel();
+              saveGeneratedPage(autoHtml, autoTitle);
+            } catch (canvasErr) {
+              console.error('Canvas auto-open error:', canvasErr, canvasErr.stack);
+              /* Graceful fallback — just show a trimmed preview in the hero */
+              const heroEl = document.getElementById('hero-description');
+              if (heroEl) typeHeroText(heroEl, displayText.substring(0, 150) + '…');
+            }
           } else {
             const heroEl = document.getElementById('hero-description');
             if (heroEl) {
@@ -3085,6 +3135,30 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+/**
+ * Convert a hex color string to comma-separated RGB values.
+ * Used for building rgba() strings from theme accent colors.
+ * Falls back to a neutral warm tone if parsing fails.
+ *
+ * @param {string} hex - Color in #RGB, #RRGGBB, or raw hex format
+ * @returns {string} Comma-separated R,G,B values (e.g. "201,169,110")
+ */
+function hexToRgb(hex) {
+  const trimmed = (hex || '').trim();
+  /* If the value is already rgb/rgba/hsl, extract numbers or use fallback */
+  const rgbMatch = trimmed.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+  if (rgbMatch) return `${rgbMatch[1]},${rgbMatch[2]},${rgbMatch[3]}`;
+  /* Must look like a hex color — only digits and a-f after optional # */
+  const cleaned = trimmed.replace('#', '');
+  if (!/^[0-9a-fA-F]{3,8}$/.test(cleaned)) return '201,169,110';
+  const fullHex = cleaned.length === 3
+    ? cleaned.split('').map(c => c + c).join('')
+    : cleaned.substring(0, 6);
+  const num = parseInt(fullHex, 16);
+  if (isNaN(num)) return '201,169,110';
+  return `${(num >> 16) & 255},${(num >> 8) & 255},${num & 255}`;
 }
 
 
