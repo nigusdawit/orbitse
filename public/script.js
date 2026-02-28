@@ -3352,15 +3352,24 @@ let heroTypeTimer = null;
 function typeHeroText(el, text) {
   if (heroTypeTimer) clearInterval(heroTypeTimer);
   el.classList.add('hero-typing');
+
+  const plainText = text
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/(?<!\w)\*(.+?)\*(?!\w)/g, '$1')
+    .replace(/^#{1,4}\s+/gm, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^- /gm, '• ');
   el.textContent = '';
   let i = 0;
   heroTypeTimer = setInterval(() => {
-    if (i < text.length) {
-      el.textContent += text[i];
+    if (i < plainText.length) {
+      el.textContent += plainText[i];
       i++;
     } else {
       clearInterval(heroTypeTimer);
       heroTypeTimer = null;
+      el.innerHTML = renderMarkdown(text);
       setTimeout(() => el.classList.remove('hero-typing'), 300);
     }
   }, 25);
