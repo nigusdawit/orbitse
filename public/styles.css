@@ -1334,16 +1334,14 @@ input, select, textarea {
    14. BUTTONS & INTERACTIVE ELEMENTS
 ============================================================================= */
 
-/* Primary CTA — solid white/light button */
+/* Primary CTA — solid white button */
 .btn-primary {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
   padding: 0.75rem 2rem;
-  background: rgba(255, 255, 255, 0.12);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  color: #fff;
+  background: #fff;
+  color: #111;
   font-weight: 600;
   font-size: 0.75rem;
   text-transform: uppercase;
@@ -1355,7 +1353,7 @@ input, select, textarea {
 }
 
 .btn-primary:hover {
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.88);
   transform: translateY(-1px);
 }
 
