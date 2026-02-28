@@ -1187,6 +1187,7 @@ async function chatSendStreaming(message) {
     let pendingCommand = null;
     let inCommandBlock = false;
     let streamBubble = null;
+    let bubbleFinalized = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -1202,15 +1203,23 @@ async function chatSendStreaming(message) {
           const event = JSON.parse(line.slice(6));
 
           if (event.type === 'token') {
-            if (!streamBubble) {
+            if (!streamBubble && !bubbleFinalized) {
               chatShowTyping(false);
               streamBubble = chatCreateStreamBubble();
             }
             tokenText += event.content;
-            if (tokenText.includes('```command') || tokenText.includes('```com')) {
+            if (!inCommandBlock && /```\s*command/i.test(tokenText)) {
               inCommandBlock = true;
+              displayTokens = displayTokens.replace(/`{1,3}\s*$/, '').trimEnd();
+              if (streamBubble && displayTokens) {
+                streamBubble.finalize(displayTokens);
+                bubbleFinalized = true;
+              } else if (streamBubble) {
+                streamBubble.remove();
+              }
+              streamBubble = null;
             }
-            if (!inCommandBlock) {
+            if (!inCommandBlock && streamBubble) {
               displayTokens += event.content;
               streamBubble.append(event.content);
             }
@@ -1230,13 +1239,28 @@ async function chatSendStreaming(message) {
 
     chatShowTyping(false);
 
-    let displayText = finalReply || displayTokens.trim();
+    let displayText = finalReply || displayTokens.replace(/`{1,3}\s*$/, '').trim();
     if (!displayText && tokenText.trim()) {
-      displayText = tokenText.replace(/```command[\s\S]*/i, '').trim();
+      displayText = tokenText.replace(/```\s*command[\s\S]*/i, '').replace(/`{1,3}\s*$/, '').trim();
     }
     if (displayText && streamBubble) {
       streamBubble.finalize(displayText);
       chatHistory.push({ role: 'assistant', content: displayText });
+    } else if (displayText && !bubbleFinalized) {
+      chatAddMessage('agent', displayText);
+      chatHistory.push({ role: 'assistant', content: displayText });
+    } else if (bubbleFinalized) {
+      const finalContent = displayText || displayTokens.trim();
+      if (finalReply && finalReply !== displayTokens.trim()) {
+        document.querySelectorAll('.chat-msg-agent').forEach(el => {
+          if (el.textContent.trim() === displayTokens.trim()) {
+            el.textContent = finalReply;
+          }
+        });
+        updateSidePanelLatest(finalReply);
+        updateMainPanelLatest(finalReply);
+      }
+      chatHistory.push({ role: 'assistant', content: finalContent });
     } else if (streamBubble) {
       streamBubble.remove();
     }
