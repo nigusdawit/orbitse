@@ -387,6 +387,37 @@ TO CUSTOMIZE THIS DASHBOARD:
       color: #fff;
     }
 
+    .theme-color-input {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+    }
+    .theme-color-input input[type="text"] {
+      flex: 1;
+    }
+    .theme-swatch {
+      width: 36px;
+      height: 36px;
+      min-width: 36px;
+      border-radius: 6px;
+      border: 2px solid var(--admin-border);
+      cursor: pointer;
+      transition: border-color 0.2s, transform 0.15s;
+      background: #000;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+    .theme-swatch:hover {
+      border-color: rgba(255,255,255,0.3);
+      transform: scale(1.1);
+    }
+    .theme-picker-hidden {
+      position: absolute;
+      width: 0;
+      height: 0;
+      opacity: 0;
+      pointer-events: none;
+    }
+
     .form-row {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -2188,27 +2219,56 @@ TO CUSTOMIZE THIS DASHBOARD:
     </div>
 
     <div class="form-panel" id="theme-form-panel">
+
+      <div id="theme-preview" style="margin-bottom:1.5rem; border-radius:var(--admin-radius); overflow:hidden; border:1px solid var(--admin-border);">
+        <div id="tp-bg" style="padding:1.5rem; transition:background 0.3s;">
+          <div style="display:flex; gap:1rem; margin-bottom:1rem;">
+            <div id="tp-s1" style="flex:1; padding:1rem; border-radius:8px; transition:background 0.3s;">
+              <p id="tp-eyebrow" style="font-size:0.65rem; text-transform:uppercase; letter-spacing:0.1em; margin:0 0 0.25rem; transition:color 0.3s;">Section Title</p>
+              <p id="tp-heading" style="font-size:1.1rem; font-weight:700; margin:0 0 0.35rem; transition:color 0.3s, font-family 0.3s;">Heading Preview</p>
+              <p id="tp-body" style="font-size:0.8rem; margin:0; opacity:0.7; transition:color 0.3s, font-family 0.3s;">This is how your body text will look on the site.</p>
+            </div>
+            <div id="tp-s2" style="flex:1; padding:1rem; border-radius:8px; transition:background 0.3s;">
+              <div id="tp-glass" style="padding:0.75rem; border-radius:6px; backdrop-filter:blur(12px); transition:background 0.3s, border-color 0.3s;">
+                <p id="tp-glass-heading" style="font-size:0.85rem; font-weight:600; margin:0 0 0.25rem; transition:color 0.3s;">Glass Card</p>
+                <p id="tp-glass-body" style="font-size:0.75rem; margin:0; opacity:0.7; transition:color 0.3s;">Cards and panels use this frosted glass style.</p>
+              </div>
+            </div>
+          </div>
+          <div style="display:flex; gap:0.75rem; align-items:center;">
+            <button id="tp-btn" style="padding:0.4rem 1rem; border-radius:6px; border:none; font-size:0.75rem; font-weight:600; cursor:default; transition:background 0.3s, color 0.3s;">Accent Button</button>
+            <span id="tp-link" style="font-size:0.75rem; text-decoration:underline; transition:color 0.3s;">Accent Link</span>
+          </div>
+        </div>
+      </div>
+
       <h3>Colors</h3>
       <div class="form-row">
         <div class="form-group">
           <label for="theme-bg">Background Color</label>
-          <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <input type="color" id="theme-bg-picker" style="width:40px; height:34px; border:none; cursor:pointer; background:transparent;" onchange="document.getElementById('theme-bg').value=this.value" data-testid="picker-theme-bg">
-            <input type="text" id="theme-bg" placeholder="#0a0f1a" oninput="syncPicker('theme-bg')" data-testid="input-theme-bg" style="flex:1;">
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Main page background</span>
+          <div class="theme-color-input">
+            <div class="theme-swatch" id="swatch-theme-bg" onclick="document.getElementById('theme-bg-picker').click()"></div>
+            <input type="color" id="theme-bg-picker" class="theme-picker-hidden" onchange="document.getElementById('theme-bg').value=this.value;syncPickerSwatch('theme-bg');updateThemePreview()" data-testid="picker-theme-bg">
+            <input type="text" id="theme-bg" placeholder="#0a0f1a" oninput="syncPickerSwatch('theme-bg');updateThemePreview()" data-testid="input-theme-bg">
           </div>
         </div>
         <div class="form-group">
           <label for="theme-section1">Section Background 1</label>
-          <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <input type="color" id="theme-section1-picker" style="width:40px; height:34px; border:none; cursor:pointer; background:transparent;" onchange="document.getElementById('theme-section1').value=this.value" data-testid="picker-theme-section1">
-            <input type="text" id="theme-section1" placeholder="#060b14" oninput="syncPicker('theme-section1')" data-testid="input-theme-section1" style="flex:1;">
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Alternating section color</span>
+          <div class="theme-color-input">
+            <div class="theme-swatch" id="swatch-theme-section1" onclick="document.getElementById('theme-section1-picker').click()"></div>
+            <input type="color" id="theme-section1-picker" class="theme-picker-hidden" onchange="document.getElementById('theme-section1').value=this.value;syncPickerSwatch('theme-section1');updateThemePreview()" data-testid="picker-theme-section1">
+            <input type="text" id="theme-section1" placeholder="#060b14" oninput="syncPickerSwatch('theme-section1');updateThemePreview()" data-testid="input-theme-section1">
           </div>
         </div>
         <div class="form-group">
           <label for="theme-section2">Section Background 2</label>
-          <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <input type="color" id="theme-section2-picker" style="width:40px; height:34px; border:none; cursor:pointer; background:transparent;" onchange="document.getElementById('theme-section2').value=this.value" data-testid="picker-theme-section2">
-            <input type="text" id="theme-section2" placeholder="#0d1420" oninput="syncPicker('theme-section2')" data-testid="input-theme-section2" style="flex:1;">
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Other alternating color</span>
+          <div class="theme-color-input">
+            <div class="theme-swatch" id="swatch-theme-section2" onclick="document.getElementById('theme-section2-picker').click()"></div>
+            <input type="color" id="theme-section2-picker" class="theme-picker-hidden" onchange="document.getElementById('theme-section2').value=this.value;syncPickerSwatch('theme-section2');updateThemePreview()" data-testid="picker-theme-section2">
+            <input type="text" id="theme-section2" placeholder="#0d1420" oninput="syncPickerSwatch('theme-section2');updateThemePreview()" data-testid="input-theme-section2">
           </div>
         </div>
       </div>
@@ -2216,16 +2276,20 @@ TO CUSTOMIZE THIS DASHBOARD:
       <div class="form-row">
         <div class="form-group">
           <label for="theme-accent">Accent Color</label>
-          <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <input type="color" id="theme-accent-picker" style="width:40px; height:34px; border:none; cursor:pointer; background:transparent;" onchange="document.getElementById('theme-accent').value=this.value" data-testid="picker-theme-accent">
-            <input type="text" id="theme-accent" placeholder="#c9a96e" oninput="syncPicker('theme-accent')" data-testid="input-theme-accent" style="flex:1;">
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Buttons, links, highlights</span>
+          <div class="theme-color-input">
+            <div class="theme-swatch" id="swatch-theme-accent" onclick="document.getElementById('theme-accent-picker').click()"></div>
+            <input type="color" id="theme-accent-picker" class="theme-picker-hidden" onchange="document.getElementById('theme-accent').value=this.value;syncPickerSwatch('theme-accent');updateThemePreview()" data-testid="picker-theme-accent">
+            <input type="text" id="theme-accent" placeholder="#c9a96e" oninput="syncPickerSwatch('theme-accent');updateThemePreview()" data-testid="input-theme-accent">
           </div>
         </div>
         <div class="form-group">
           <label for="theme-text">Text Color</label>
-          <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <input type="color" id="theme-text-picker" style="width:40px; height:34px; border:none; cursor:pointer; background:transparent;" onchange="document.getElementById('theme-text').value=this.value" data-testid="picker-theme-text">
-            <input type="text" id="theme-text" placeholder="#e4e4e7" oninput="syncPicker('theme-text')" data-testid="input-theme-text" style="flex:1;">
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Headings and body text</span>
+          <div class="theme-color-input">
+            <div class="theme-swatch" id="swatch-theme-text" onclick="document.getElementById('theme-text-picker').click()"></div>
+            <input type="color" id="theme-text-picker" class="theme-picker-hidden" onchange="document.getElementById('theme-text').value=this.value;syncPickerSwatch('theme-text');updateThemePreview()" data-testid="picker-theme-text">
+            <input type="text" id="theme-text" placeholder="#e4e4e7" oninput="syncPickerSwatch('theme-text');updateThemePreview()" data-testid="input-theme-text">
           </div>
         </div>
       </div>
@@ -2234,16 +2298,20 @@ TO CUSTOMIZE THIS DASHBOARD:
       <div class="form-row">
         <div class="form-group">
           <label for="theme-glass-border">Glass Border Color</label>
-          <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <input type="color" id="theme-glass-border-picker" style="width:40px; height:34px; border:none; cursor:pointer; background:transparent;" onchange="document.getElementById('theme-glass-border').value=this.value" data-testid="picker-theme-glass-border">
-            <input type="text" id="theme-glass-border" placeholder="rgba(255,255,255,0.08)" oninput="syncPicker('theme-glass-border')" data-testid="input-theme-glass-border" style="flex:1;">
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Card and panel borders</span>
+          <div class="theme-color-input">
+            <div class="theme-swatch" id="swatch-theme-glass-border" onclick="document.getElementById('theme-glass-border-picker').click()" style="background:rgba(255,255,255,0.08);"></div>
+            <input type="color" id="theme-glass-border-picker" class="theme-picker-hidden" onchange="document.getElementById('theme-glass-border').value=this.value;syncPickerSwatch('theme-glass-border');updateThemePreview()" data-testid="picker-theme-glass-border">
+            <input type="text" id="theme-glass-border" placeholder="rgba(255,255,255,0.08)" oninput="syncPickerSwatch('theme-glass-border');updateThemePreview()" data-testid="input-theme-glass-border">
           </div>
         </div>
         <div class="form-group">
           <label for="theme-glass-bg">Glass Background Color</label>
-          <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <input type="color" id="theme-glass-bg-picker" style="width:40px; height:34px; border:none; cursor:pointer; background:transparent;" onchange="document.getElementById('theme-glass-bg').value=this.value" data-testid="picker-theme-glass-bg">
-            <input type="text" id="theme-glass-bg" placeholder="rgba(255,255,255,0.03)" oninput="syncPicker('theme-glass-bg')" data-testid="input-theme-glass-bg" style="flex:1;">
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Card and panel fill</span>
+          <div class="theme-color-input">
+            <div class="theme-swatch" id="swatch-theme-glass-bg" onclick="document.getElementById('theme-glass-bg-picker').click()" style="background:rgba(255,255,255,0.03);"></div>
+            <input type="color" id="theme-glass-bg-picker" class="theme-picker-hidden" onchange="document.getElementById('theme-glass-bg').value=this.value;syncPickerSwatch('theme-glass-bg');updateThemePreview()" data-testid="picker-theme-glass-bg">
+            <input type="text" id="theme-glass-bg" placeholder="rgba(255,255,255,0.03)" oninput="syncPickerSwatch('theme-glass-bg');updateThemePreview()" data-testid="input-theme-glass-bg">
           </div>
         </div>
       </div>
@@ -2252,7 +2320,8 @@ TO CUSTOMIZE THIS DASHBOARD:
       <div class="form-row">
         <div class="form-group">
           <label for="theme-font-serif">Heading Font (Serif)</label>
-          <select id="theme-font-serif" data-testid="select-theme-font-serif">
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Used for titles and section headings</span>
+          <select id="theme-font-serif" data-testid="select-theme-font-serif" onchange="updateThemePreview()">
             <option value="">Default (Playfair Display)</option>
             <option value="Playfair Display">Playfair Display</option>
             <option value="Cormorant Garamond">Cormorant Garamond</option>
@@ -2270,7 +2339,8 @@ TO CUSTOMIZE THIS DASHBOARD:
         </div>
         <div class="form-group">
           <label for="theme-font-sans">Body Font (Sans-Serif)</label>
-          <select id="theme-font-sans" data-testid="select-theme-font-sans">
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Used for paragraphs and descriptions</span>
+          <select id="theme-font-sans" data-testid="select-theme-font-sans" onchange="updateThemePreview()">
             <option value="">Default (DM Sans)</option>
             <option value="DM Sans">DM Sans</option>
             <option value="Inter">Inter</option>
@@ -3966,12 +4036,62 @@ TO CUSTOMIZE THIS DASHBOARD:
     THEME EDITOR
     ========================================================================
     */
-    function syncPicker(fieldId) {
-      const val = document.getElementById(fieldId).value;
+    function syncPickerSwatch(fieldId) {
+      const val = document.getElementById(fieldId).value.trim();
       const picker = document.getElementById(fieldId + '-picker');
-      if (picker && /^#[0-9a-f]{6}$/i.test(val)) {
-        picker.value = val;
+      const swatch = document.getElementById('swatch-' + fieldId);
+      if (picker && /^#[0-9a-f]{3,8}$/i.test(val)) {
+        picker.value = val.length === 4
+          ? '#' + val[1]+val[1] + val[2]+val[2] + val[3]+val[3]
+          : val;
       }
+      if (swatch) {
+        swatch.style.background = val || picker?.value || '#000';
+      }
+    }
+
+    /* Keep old name as alias for any existing calls */
+    function syncPicker(fieldId) { syncPickerSwatch(fieldId); }
+
+    const themeDefaults = {
+      bg: '#0a0f1a', section1: '#060b14', section2: '#0d1420',
+      accent: '#c9a96e', text: '#e4e4e7',
+      glassBorder: 'rgba(255,255,255,0.08)', glassBg: 'rgba(255,255,255,0.03)',
+      fontSerif: 'Playfair Display, Georgia, serif', fontSans: 'DM Sans, sans-serif'
+    };
+
+    function updateThemePreview() {
+      const bg = document.getElementById('theme-bg').value || themeDefaults.bg;
+      const s1 = document.getElementById('theme-section1').value || themeDefaults.section1;
+      const s2 = document.getElementById('theme-section2').value || themeDefaults.section2;
+      const accent = document.getElementById('theme-accent').value || themeDefaults.accent;
+      const text = document.getElementById('theme-text').value || themeDefaults.text;
+      const glassBorder = document.getElementById('theme-glass-border').value || themeDefaults.glassBorder;
+      const glassBg = document.getElementById('theme-glass-bg').value || themeDefaults.glassBg;
+      const serifVal = document.getElementById('theme-font-serif').value;
+      const sansVal = document.getElementById('theme-font-sans').value;
+      const serif = serifVal ? serifVal + ', Georgia, serif' : themeDefaults.fontSerif;
+      const sans = sansVal ? sansVal + ', sans-serif' : themeDefaults.fontSans;
+
+      const $ = id => document.getElementById(id);
+      if (!$('tp-bg')) return;
+      $('tp-bg').style.background = bg;
+      $('tp-s1').style.background = s1;
+      $('tp-s2').style.background = s2;
+      $('tp-eyebrow').style.color = accent;
+      $('tp-heading').style.color = text;
+      $('tp-heading').style.fontFamily = serif;
+      $('tp-body').style.color = text;
+      $('tp-body').style.fontFamily = sans;
+      $('tp-glass').style.background = glassBg;
+      $('tp-glass').style.border = '1px solid ' + glassBorder;
+      $('tp-glass-heading').style.color = text;
+      $('tp-glass-heading').style.fontFamily = serif;
+      $('tp-glass-body').style.color = text;
+      $('tp-glass-body').style.fontFamily = sans;
+      $('tp-btn').style.background = accent;
+      $('tp-btn').style.color = bg;
+      $('tp-link').style.color = accent;
     }
 
     async function loadTheme() {
@@ -3984,10 +4104,11 @@ TO CUSTOMIZE THIS DASHBOARD:
           const key = f.replace(/-/g, '_');
           const val = data[key] || '';
           document.getElementById(f).value = val;
-          syncPicker(f);
+          syncPickerSwatch(f);
         });
         document.getElementById('theme-font-serif').value = data.theme_font_serif || '';
         document.getElementById('theme-font-sans').value = data.theme_font_sans || '';
+        updateThemePreview();
       } catch (err) {
         showToast('Failed to load theme', 'error');
       }
