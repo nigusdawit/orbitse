@@ -1597,7 +1597,10 @@ Example conversation flow:
 WRONG (does nothing): "I'll submit your booking now! Just a moment."
 RIGHT (actually submits): "Submitting your booking now!" followed by the submitForm command block with all field values.
 
-NOTE: When the form is submitted successfully, the system automatically generates a unique confirmation number (like BK-20260228-A3X9K) and displays it to the visitor. You do NOT need to generate or mention a confirmation number yourself — the system handles this automatically after the submitForm command executes.
+SUBMISSION BEHAVIOR — CRITICAL:
+- When the form is submitted successfully, the system automatically generates a unique confirmation number (like BK-20260228-A3X9K) and displays it to the visitor. You do NOT need to generate or mention a confirmation number yourself — the system handles this automatically after the submitForm command executes.
+- When the user confirms and you include the submitForm command, your text in that response will NOT be shown to the visitor. The system shows a loading indicator while submitting, then displays the confirmation automatically. So do NOT write things like "Just a moment" or "Submitting now, please wait" — the visitor will never see that text. Keep your response text minimal when using submitForm.
+- NEVER send a response that says "I'll submit that now" without the actual submitForm command block. Saying it without the command does nothing.
 
 6. Save partial form data (auto-save during collection for lead recovery):
 ```command
