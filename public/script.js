@@ -2285,11 +2285,11 @@ function chatInjectVisualPrompt() {
     const current = target.value.trim();
     if (current) {
       target.value = current + ' — show me visually';
+      chatSendMessage();
     } else {
-      target.value = 'show me visually';
+      target.value = 'show me visually ';
+      target.focus();
     }
-    target.focus();
-    chatSendMessage();
   }
 }
 
