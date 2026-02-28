@@ -2843,13 +2843,17 @@ async function chatSendStreaming(message, wasCollapsed) {
           if (heroEl) typeHeroText(heroEl, shortText || displayText);
         } else {
           /* No command — check if text is too long for the hero.
-             If the response is longer than 4 sentences OR has many lines,
-             open it in the canvas instead of cramming it into the hero. */
-          const sentenceCount = (displayText.match(/[.!?]+\s/g) || []).length + 1;
+             If the response has more than 4 sentences, more than 6 lines,
+             or contains structured markdown (headings, tables), open it
+             in the canvas instead of cramming it into the hero. */
+          const sentenceCount = (displayText.match(/[.!?:]+\s/g) || []).length + 1;
           const lineCount = (displayText.match(/\n/g) || []).length + 1;
-          const isLongContent = sentenceCount > 4 || lineCount > 6;
+          const hasStructuredContent = /^#{1,4}\s|^\|.+\|$|^[-*]\s.+\n[-*]\s/m.test(displayText);
+          const isLongContent = sentenceCount > 4 || lineCount > 6 || (displayText.length > 250 && hasStructuredContent);
           if (isLongContent) {
-            const shortText = displayText.split(/(?<=[.!?])\s+/).slice(0, 2).join(' ');
+            const cleanedForPreview = displayText.replace(/^#{1,4}\s+/gm, '').replace(/\*\*(.+?)\*\*/g, '$1').replace(/^\s*[-*]\s/gm, '').trim();
+            const firstSentences = cleanedForPreview.split(/(?<=[.!?])\s+/).slice(0, 2).join(' ');
+            const shortText = firstSentences.length > 120 ? firstSentences.substring(0, 120) + '...' : firstSentences;
             const heroEl = document.getElementById('hero-description');
             if (heroEl) typeHeroText(heroEl, shortText + ' Let me show you more…');
             const renderedContent = renderMarkdown(displayText);
