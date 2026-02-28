@@ -244,9 +244,11 @@ FONTS:
           <p class="section-subtitle">Hear from those who have experienced what we offer.</p>
         </div>
 
-        <!-- Testimonial Cards — populated by JavaScript -->
-        <div id="testimonials-grid" class="testimonials-grid" data-testid="testimonials-grid">
-          <!-- Testimonial cards are inserted here dynamically -->
+        <!-- Testimonial Cards — horizontal auto-scrolling carousel -->
+        <div class="testimonials-track-wrapper">
+          <div id="testimonials-grid" class="testimonials-grid" data-testid="testimonials-grid">
+            <!-- Testimonial cards are inserted here dynamically and duplicated for infinite scroll -->
+          </div>
         </div>
       </div>
     </section>
@@ -267,9 +269,11 @@ FONTS:
           <p class="section-subtitle">Get to know the passionate individuals who make it all happen.</p>
         </div>
 
-        <!-- Team Member Cards — populated by JavaScript -->
-        <div id="team-grid" class="team-grid" data-testid="team-grid">
-          <!-- Team member cards are inserted here dynamically -->
+        <!-- Team Member Cards — horizontal auto-scrolling carousel (reverse direction) -->
+        <div class="team-track-wrapper">
+          <div id="team-grid" class="team-grid" data-testid="team-grid">
+            <!-- Team member cards are inserted here dynamically and duplicated for infinite scroll -->
+          </div>
         </div>
       </div>
     </section>
@@ -923,6 +927,40 @@ FONTS:
   -->
   <div id="chatbot-embed-container" data-testid="chatbot-embed-container">
     <!-- External embed code is injected here by script.js -->
+  </div>
+
+  <!--
+  ============================================================================
+  FULL-PAGE BLOG VIEW — Swipable blog reader
+  ============================================================================
+  Opens when a blog card is clicked. Shows full blog content in a
+  fullscreen slide-based reader, similar to the gallery experience.
+  Navigate between posts with scroll, arrows, or dots.
+  ============================================================================
+  -->
+  <div id="blog-view" class="blog-view" data-testid="blog-view">
+    <div class="blog-view-header">
+      <button class="blog-view-close" onclick="closeBlogView()" data-testid="button-blog-close" aria-label="Close blog reader">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="5" x2="5" y2="19"/><line x1="5" y1="5" x2="19" y2="19"/></svg>
+        Close
+      </button>
+      <span id="blog-view-counter" class="blog-view-counter" data-testid="text-blog-counter"></span>
+    </div>
+
+    <div id="blog-slides-container" class="blog-slides-container" data-testid="blog-slides-container">
+      <!-- Blog slides are rendered by JavaScript -->
+    </div>
+
+    <div class="blog-view-nav">
+      <button id="blog-btn-prev" onclick="goToBlogSlide(currentBlogIndex - 1)" data-testid="button-blog-prev" aria-label="Previous post">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+      </button>
+      <button id="blog-btn-next" onclick="goToBlogSlide(currentBlogIndex + 1)" data-testid="button-blog-next" aria-label="Next post">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+    </div>
+
+    <div id="blog-view-dots" class="blog-view-dots" data-testid="blog-dots"></div>
   </div>
 
 
