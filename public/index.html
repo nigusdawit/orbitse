@@ -333,10 +333,10 @@ FONTS:
   ============================================================================
   The footer sits outside the snap-scroll landing container.
   Content is populated dynamically from /api/business-info and site settings.
-  Hidden by default; shown when section_footer is enabled in site_settings.
+  Visible by default; hidden by applySectionOrder() if footer is disabled.
   -->
   <!-- role="contentinfo" identifies the footer as the page's contentinfo landmark -->
-  <footer id="site-footer" class="site-footer" role="contentinfo" style="display: none;" data-testid="site-footer">
+  <footer id="site-footer" class="site-footer" role="contentinfo" data-testid="site-footer">
     <div class="footer-container">
 
       <!-- Footer Column 1 — Brand + Description -->
