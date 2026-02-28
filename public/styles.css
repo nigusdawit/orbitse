@@ -2661,11 +2661,17 @@ input, select, textarea {
 ============================================================================= */
 
 @media (max-width: 768px) {
-  /* Full width bar on mobile */
+  /* Full width bar on mobile — sits close to the bottom edge */
   .chatbot-container {
     width: 94%;
     max-width: none;
-    bottom: var(--space-md);
+    bottom: 0.5rem;
+  }
+
+  /* Prevent iOS auto-zoom: inputs below 16px trigger Safari's zoom-on-focus.
+     Setting 16px here stops that while keeping the desktop size smaller. */
+  .chatbot-bar-input {
+    font-size: 16px;
   }
 
   /* Hide agent name/role on mobile to save space */
