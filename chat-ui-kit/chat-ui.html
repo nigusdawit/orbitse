@@ -1,0 +1,456 @@
+<!--
+============================================================================
+CHAT UI KIT — HTML Partial
+============================================================================
+This file contains all the HTML markup for the Chat UI system.
+Include this partial in your page where you want the chat components to appear.
+
+COMPONENTS INCLUDED:
+  1. Chatbot Container (collapsed bar + expanded panel)
+  2. Split-Screen Overlay (chat + content side-by-side)
+  3. Fullscreen Canvas (AI-generated HTML visuals)
+  4. Side Chat Panel (slides in from right)
+  5. Embed Container (for external chatbot widgets)
+
+DEPENDENCIES:
+  - chat-ui.css (styles)
+  - chat-ui.js (behavior)
+  - DOMPurify (XSS sanitization of AI-generated HTML)
+  - Lucide Icons (optional, for icon rendering)
+
+USAGE:
+  Include this partial in your HTML page, then call ChatUI.init(config)
+  from chat-ui.js to activate the chat system.
+============================================================================
+-->
+
+
+<!--
+============================================================================
+CHATBOT — AI Assistant Bar + Split-Screen Overlay
+============================================================================
+This section contains ALL chatbot UI elements. The chatbot is controlled
+by the admin dashboard — it can be enabled/disabled, and configured to
+use either a built-in chat UI or an external embed widget.
+
+ARCHITECTURE:
+The chatbot has THREE visual states:
+
+1. COLLAPSED BAR (default when enabled)
+   A sleek glass-panel pill at the bottom of the screen.
+   Shows the agent avatar, name, a text input, and expand button.
+   Users can type directly in the bar without expanding.
+
+2. EXPANDED CHAT PANEL
+   Slides up from the bar to show full chat history.
+   Contains message bubbles, quick prompt chips, and input bar.
+
+3. SPLIT-SCREEN MODE
+   When the AI sends a visual command, the screen splits:
+   - Left side (40%): Chat panel
+   - Right side (60%): Content area showing either:
+     a. A gallery slide (AI navigated the site)
+     b. A structured slide (AI-generated presentation)
+     c. A custom HTML canvas (AI-generated dynamic content)
+   On mobile, the content shows as an overlay instead of side-by-side.
+
+HOW TO CUSTOMIZE:
+- Styles are in chat-ui.css (search for "CHATBOT")
+- Behavior is in chat-ui.js (search for "CHATBOT")
+- Settings come from /api/chatbot-settings (configured in admin dashboard)
+
+HOW TO GIVE THE AI MORE CONTROL:
+- See chat-ui.js → executeCommand() function for all available commands
+- Each command type has a handler that manipulates the DOM
+- To add a new command, add a case in executeCommand() and document it
+============================================================================
+-->
+
+<!-- Chatbot Container — everything is inside this wrapper -->
+<!-- Hidden by default; shown by JavaScript when chatbot is enabled in admin -->
+<div id="chatbot-container" class="chatbot-container" style="display:none;" data-testid="chatbot-container">
+
+  <!--
+  ======================================================================
+  COLLAPSED BAR — Floating glass-panel pill at the bottom
+  ======================================================================
+  Always visible when the chatbot is enabled.
+  Contains: avatar, agent name/role, inline text input, send + expand buttons.
+  -->
+  <!-- aria-label identifies the chatbot bar for screen readers -->
+  <div id="chatbot-bar" class="chatbot-bar" aria-label="AI assistant chat bar" data-testid="chatbot-bar">
+    <!-- Agent avatar — profile image for the AI concierge -->
+    <div id="chatbot-avatar" class="chatbot-avatar" data-testid="chatbot-avatar">
+      <img src="/ai_concierge.png" alt="AI Concierge" class="chatbot-avatar-img">
+    </div>
+
+    <!-- Agent info (name + role) — visible on wider screens -->
+    <div class="chatbot-agent-info">
+      <span id="chatbot-agent-name" class="chatbot-agent-name" data-testid="text-agent-name">AI Assistant</span>
+      <span id="chatbot-agent-role" class="chatbot-agent-role" data-testid="text-agent-role">Assistant</span>
+    </div>
+
+    <!-- Inline text input — users can type here without expanding -->
+    <!-- aria-label provides accessible name for the chat input field -->
+    <input
+      id="chatbot-bar-input"
+      class="chatbot-bar-input"
+      type="text"
+      placeholder="Ask me anything..."
+      autocomplete="off"
+      aria-label="Type a message to the AI assistant"
+      data-testid="input-chatbot-bar"
+    >
+
+    <!-- Quick action pill — appends "show me visually" to the prompt -->
+    <button id="chatbot-visual-pill" class="chatbot-pill-btn" onclick="ChatUI.injectVisualPrompt()" aria-label="Show me visually" data-testid="button-chatbot-visual">
+      show me visually
+    </button>
+
+    <!-- Send button — submits the message -->
+    <button id="chatbot-send-btn" class="chatbot-bar-btn" onclick="ChatUI.sendMessage()" aria-label="Send message" data-testid="button-chatbot-send">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m22 2-7 20-4-9-9-4Z"/><path d="m22 2-11 11"/>
+      </svg>
+    </button>
+
+    <!-- Expand/collapse toggle — opens/closes the full chat panel -->
+    <!-- aria-expanded tracks whether the chat panel is open or closed for screen readers -->
+    <button id="chatbot-expand-btn" class="chatbot-bar-btn" onclick="ChatUI.toggleExpand()" aria-expanded="false" aria-label="Expand chat panel" data-testid="button-chatbot-expand">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m18 15-6-6-6 6"/>
+      </svg>
+    </button>
+  </div>
+
+  <!--
+  ======================================================================
+  EXPANDED CHAT PANEL — Full chat interface
+  ======================================================================
+  Slides up from the bar to reveal:
+  - Header with agent name/role and close button
+  - Message history (scrollable)
+  - Quick prompt chips (suggested questions)
+  - Input bar at the bottom
+  -->
+  <div id="chatbot-panel" class="chatbot-panel" data-testid="chatbot-panel">
+
+    <div class="panel-latest" id="panel-latest">
+      <div class="panel-latest-header">
+        <div class="side-panel-agent-badge">
+          <div id="chatbot-panel-avatar" class="chatbot-avatar chatbot-avatar-sm"><img src="/ai_concierge.png" alt="AI Concierge" class="chatbot-avatar-img"></div>
+          <span id="chatbot-panel-name" class="side-panel-agent-name">AI Assistant</span>
+        </div>
+        <div class="side-panel-actions">
+          <button class="side-panel-history-btn" onclick="ChatUI.toggleMainPanelHistory()" data-testid="button-panel-history">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+          </button>
+          <button class="side-panel-close-btn" onclick="ChatUI.toggleExpand()" data-testid="button-chatbot-close">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="side-panel-latest-text" id="panel-latest-text" data-testid="text-panel-latest"></div>
+      <div id="chatbot-quick-prompts" class="chatbot-quick-prompts" data-testid="chatbot-quick-prompts"></div>
+    </div>
+
+    <div class="panel-history" id="panel-history">
+      <div class="side-panel-history-header">
+        <span class="side-panel-history-title">Conversation</span>
+        <div class="side-panel-actions">
+          <button class="side-panel-close-btn" onclick="ChatUI.toggleMainPanelHistory()" data-testid="button-panel-history-collapse" title="Collapse history">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m19 12-7 7-7-7"/><path d="M12 19V5"/>
+            </svg>
+          </button>
+          <button class="side-panel-close-btn" onclick="ChatUI.toggleExpand()" data-testid="button-panel-history-close" title="Close panel">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <!-- role="log" and aria-live="polite" announce new chat messages to screen readers -->
+    <div id="chatbot-messages" class="chatbot-messages" role="log" aria-live="polite" data-testid="chatbot-messages"></div>
+    </div>
+
+  </div>
+
+</div>
+<!-- END CHATBOT CONTAINER -->
+
+
+<!--
+============================================================================
+SPLIT-SCREEN OVERLAY — AI-controlled visual display
+============================================================================
+When the AI sends a visual command (navigate, showSlide, generateHTML),
+this overlay appears and splits the screen:
+- Left: The chat panel (repositioned)
+- Right: Content area (gallery slide, structured slide, or HTML canvas)
+
+This overlay sits on top of everything (z-index: 60) and can be dismissed
+by the user at any time.
+
+THREE CONTENT MODES:
+1. NAVIGATE — Shows a gallery slide (image + text from the database)
+2. SHOW SLIDE — Shows a structured presentation (title, subtitle, bullet points)
+3. GENERATE HTML — Renders custom AI-generated HTML on a blank canvas
+
+HOW TO ADD MORE CONTENT MODES:
+1. Add a new <div> inside .split-content with a unique ID
+2. Add a handler in chat-ui.js → executeCommand()
+3. Show/hide the appropriate content div
+4. Document the new command in the system prompt
+============================================================================
+-->
+<div id="split-overlay" class="split-overlay" data-testid="split-overlay">
+
+  <!--
+  Left side — Chat panel (40% width)
+  When split-screen is active, the chat is repositioned here.
+  This is a separate instance — messages are cloned/synced from the main panel.
+  -->
+  <div class="split-chat" id="split-chat">
+    <div class="chatbot-panel-header">
+      <div class="chatbot-panel-header-info">
+        <div id="split-chat-avatar" class="chatbot-avatar chatbot-avatar-sm"><img src="/ai_concierge.png" alt="AI Concierge" class="chatbot-avatar-img"></div>
+        <div>
+          <span id="split-chat-name" class="chatbot-agent-name">AI Assistant</span>
+          <span id="split-chat-role" class="chatbot-agent-role">Assistant</span>
+        </div>
+      </div>
+      <button class="chatbot-close-btn" onclick="ChatUI.closeSplitScreen()" data-testid="button-split-close">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+        </svg>
+      </button>
+    </div>
+    <!-- role="log" and aria-live="polite" announce new chat messages to screen readers -->
+    <div id="split-chat-messages" class="chatbot-messages" role="log" aria-live="polite" data-testid="split-chat-messages">
+      <!-- Synced from main chat -->
+    </div>
+    <div class="chatbot-input-bar">
+      <input
+        id="split-chat-input"
+        class="chatbot-panel-input"
+        type="text"
+        placeholder="Type your message..."
+        autocomplete="off"
+        data-testid="input-split-chat"
+      >
+      <button class="chatbot-pill-btn chatbot-pill-inline" onclick="ChatUI.injectVisualPrompt()" aria-label="Show me visually" data-testid="button-split-visual">
+        show me visually
+      </button>
+      <button class="chatbot-send-panel-btn" onclick="ChatUI.sendMessage()" data-testid="button-split-send">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m22 2-7 20-4-9-9-4Z"/><path d="m22 2-11 11"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!--
+  Right side — Content area (60% width)
+  Displays one of three content types based on the AI's command.
+  -->
+  <div class="split-content" id="split-content">
+
+    <!-- Floating back button — visible on all content types -->
+    <button class="split-back-btn" onclick="ChatUI.closeSplitScreen()" data-testid="button-split-back">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m15 18-6-6 6-6"/>
+      </svg>
+      Back
+    </button>
+
+    <!--
+    NAVIGATE MODE — Shows a gallery slide
+    Displays the same fullscreen image + text as the gallery view,
+    but within the split-screen context.
+    -->
+    <div id="split-navigate" class="split-content-panel" style="display:none;" data-testid="split-navigate">
+      <div id="split-nav-bg" class="split-nav-bg"></div>
+      <div class="split-nav-overlay"></div>
+      <div class="split-nav-content">
+        <span id="split-nav-category" class="slide-category-badge"></span>
+        <h2 id="split-nav-title" class="split-nav-title"></h2>
+        <p id="split-nav-subtitle" class="split-nav-subtitle"></p>
+        <p id="split-nav-description" class="split-nav-description"></p>
+      </div>
+    </div>
+
+    <!--
+    SHOW SLIDE MODE — Structured presentation
+    The AI provides title, subtitle, bullet points, and optional image.
+    Rendered as an elegant card-style presentation.
+    -->
+    <div id="split-slide" class="split-content-panel" style="display:none;" data-testid="split-slide">
+      <div class="split-slide-inner">
+        <div class="split-slide-eyebrow">AI Recommendation</div>
+        <h2 id="split-slide-title" class="split-slide-title"></h2>
+        <p id="split-slide-subtitle" class="split-slide-subtitle"></p>
+        <ul id="split-slide-points" class="split-slide-points">
+          <!-- Points are inserted dynamically -->
+        </ul>
+      </div>
+    </div>
+
+    <!--
+    GENERATE HTML MODE — AI-created content canvas
+    ============================================================
+    This is the most powerful mode. The AI can generate ANY HTML
+    and it will be rendered here on a blank canvas.
+
+    USE CASES:
+    - Comparison tables (item vs item)
+    - Pricing breakdowns with custom formatting
+    - Interactive itineraries
+    - Custom charts or visual data
+    - Any content the AI can express in HTML
+
+    SECURITY NOTE:
+    The HTML is rendered directly in a div (not an iframe).
+    In a production environment, you may want to use an iframe
+    with sandbox attribute for additional security, or sanitize
+    the HTML before rendering.
+
+    TO USE AN IFRAME INSTEAD (more secure):
+    Replace the div below with:
+    <iframe id="split-canvas-frame" class="split-canvas-frame"
+            sandbox="allow-scripts" srcdoc=""></iframe>
+    Then in chat-ui.js, set: frame.srcdoc = html;
+    ============================================================
+    -->
+    <div id="split-canvas" class="split-content-panel split-canvas" style="display:none;" data-testid="split-canvas">
+      <div id="split-canvas-content" class="split-canvas-content">
+        <!-- AI-generated HTML is rendered here -->
+      </div>
+    </div>
+
+  </div>
+</div>
+<!-- END SPLIT-SCREEN OVERLAY -->
+
+
+<!--
+============================================================================
+FULLSCREEN CANVAS — Background for AI-generated HTML visuals
+============================================================================
+When the AI uses generateHTML, the custom HTML is displayed fullscreen
+behind the side chat panel — matching the gallery layout exactly.
+Content on the left, frosted glass chat on the right.
+-->
+<div id="fullscreen-canvas" class="fullscreen-canvas" data-testid="fullscreen-canvas">
+  <button class="canvas-close-btn" onclick="ChatUI.closeFullscreenCanvas(); ChatUI.closeSidePanel();" data-testid="button-canvas-close">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="m15 18-6-6 6-6"/>
+    </svg>
+    Back
+  </button>
+  <div id="fullscreen-canvas-content" class="fullscreen-canvas-content"></div>
+</div>
+
+<!--
+============================================================================
+SIDE CHAT PANEL — Slides in from the right for navigate/generateHTML
+============================================================================
+When the AI navigates to a gallery slide or generates custom HTML, this
+panel slides in from the right while the content stays behind it.
+-->
+<div id="side-chat-panel" class="side-chat-panel" data-testid="side-chat-panel">
+
+  <div class="side-panel-latest" id="side-panel-latest">
+    <div class="side-panel-latest-header">
+      <div class="side-panel-agent-badge">
+        <div id="side-chat-avatar" class="chatbot-avatar chatbot-avatar-sm"><img src="/ai_concierge.png" alt="AI Concierge" class="chatbot-avatar-img"></div>
+        <span id="side-chat-name" class="side-panel-agent-name">AI Assistant</span>
+      </div>
+      <div class="side-panel-actions">
+        <button class="side-panel-history-btn" onclick="ChatUI.toggleSidePanelHistory()" data-testid="button-side-history" title="Chat history">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          </svg>
+        </button>
+        <button class="side-panel-minimize-btn" onclick="ChatUI.toggleSidePanelMinimize()" data-testid="button-side-minimize" title="Minimize">
+          <svg id="side-minimize-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>
+          </svg>
+        </button>
+        <button class="side-panel-close-btn" onclick="ChatUI.closeSidePanel()" data-testid="button-side-panel-close" title="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <div class="side-panel-latest-text" id="side-panel-latest-text" data-testid="text-side-latest"></div>
+    <div class="side-panel-input-row">
+      <input
+        id="side-chat-input"
+        class="side-panel-input"
+        type="text"
+        placeholder="Ask anything..."
+        autocomplete="off"
+        data-testid="input-side-chat"
+      >
+      <button class="chatbot-pill-btn chatbot-pill-inline" onclick="ChatUI.injectVisualPrompt()" aria-label="Show me visually" data-testid="button-side-visual">
+        show me visually
+      </button>
+      <button class="side-panel-send-btn" onclick="ChatUI.sendMessage()" data-testid="button-side-send">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m22 2-7 20-4-9-9-4Z"/><path d="m22 2-11 11"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="side-panel-history" id="side-panel-history">
+    <div class="side-panel-history-header">
+      <span class="side-panel-history-title">Conversation</span>
+      <div class="side-panel-actions">
+        <button class="side-panel-close-btn" onclick="ChatUI.toggleSidePanelHistory()" data-testid="button-side-history-collapse" title="Collapse history">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m19 12-7 7-7-7"/><path d="M12 19V5"/>
+          </svg>
+        </button>
+        <button class="side-panel-close-btn" onclick="ChatUI.closeSidePanel()" data-testid="button-side-history-close" title="Close panel">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <!-- role="log" and aria-live="polite" announce new chat messages to screen readers -->
+    <div id="side-chat-messages" class="chatbot-messages" role="log" aria-live="polite" data-testid="side-chat-messages"></div>
+  </div>
+
+</div>
+<!-- END SIDE CHAT PANEL -->
+
+
+<!--
+============================================================================
+EMBED CONTAINER — For external chatbot widgets
+============================================================================
+When the admin sets mode="embed" and pastes an external chatbot script
+(e.g., Intercom, Drift, Tidio, or a custom widget), the script/HTML
+is injected into this container.
+
+HOW IT WORKS:
+- JavaScript reads the embed_code from chatbot_settings
+- It injects the raw HTML/script into this div
+- The external widget takes over from there
+
+SECURITY NOTE:
+Only paste embed code from trusted sources. The code runs with
+full page access, just like any other script on the page.
+============================================================================
+-->
+<div id="chatbot-embed-container" data-testid="chatbot-embed-container">
+  <!-- External embed code is injected here by chat-ui.js -->
+</div>

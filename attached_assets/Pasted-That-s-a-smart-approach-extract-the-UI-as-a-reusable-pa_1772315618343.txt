@@ -1,0 +1,36 @@
+That's a smart approach — extract the UI as a reusable package you can plug into any AI engine. Let me map out exactly what pieces make up the chat UI so I can create a proper plan for the extraction.
+
+Now I have the full picture. Here's what your chat UI consists of — it's a substantial system:
+
+What You'd Be Extracting
+HTML (6 major components):
+
+Chat Bar — the floating glass pill at the bottom (avatar, input, pill button, send, expand)
+Expanded Panel — slides up with latest message view, history view, quick prompts
+Side Panel — the mini chat that slides in from the right, can minimize/expand/show history
+Split-Screen Overlay — full overlay with chat on left, content (gallery slide, structured slide, or canvas) on right
+Fullscreen Canvas — background layer for AI-generated HTML visuals
+Embed Container — for external widget injection
+JavaScript (~40 functions):
+
+Core: initChatbot, setupBuiltinChat, chatSendMessage, chatSendStreaming, chatAddMessage
+Streaming: chatCreateStreamBubble, renderMarkdown, showBarThinking, chatShowTyping
+Hero typing: typeHeroText, restoreHeroDescription
+Panels: chatToggleExpand, toggleMainPanelHistory, openSidePanel, closeSidePanel, toggleSidePanelMinimize, toggleSidePanelHistory
+Split screen: openSplitScreen, closeSplitScreen, hideAllSplitContent
+Canvas: openFullscreenCanvas, closeFullscreenCanvas, saveGeneratedPage
+Commands: executeCommand, renderVisualTemplate
+Sync: syncChatToSidePanel, syncSidePanelToChat, syncChatToSplit, syncSplitToChat
+Helpers: updateMainPanelLatest, updateSidePanelLatest, chatInjectVisualPrompt, persistChatHistory
+CSS (~8 sections, ~600 lines):
+
+Chat bar, expanded panel, messages/bubbles, side panel, split screen, canvas, typing indicators, quick prompts, glass effects
+Best Approach
+The cleanest way is to create a standalone package — three files (chat-ui.html, chat-ui.js, chat-ui.css) — that contain only the chat UI code, separated from the site template. I'd:
+
+Extract all chat HTML into a partial you can drop into any page
+Pull all ~40 JS functions into a self-contained module with a clean init() entry point and configurable API endpoint
+Extract all chat CSS into its own stylesheet
+Make the dependencies explicit (DOMPurify, Lucide icons)
+Add a small config object so you can point it at any AI backend
+Want me to create this extraction as a session plan? I'd put the standalone files in a folder like chat-ui-kit/ without touching the template at all.
