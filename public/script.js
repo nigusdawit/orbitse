@@ -1285,6 +1285,8 @@ document.addEventListener('DOMContentLoaded', () => {
 */
 let chatSettings = null;
 let chatHistory = [];
+/* Tracks the last user prompt so we can store it alongside saved pages */
+let lastUserPrompt = '';
 let chatExpanded = false;
 let splitScreenActive = false;
 let sidePanelActive = false;
@@ -1478,6 +1480,9 @@ async function chatSendMessage() {
   }
 
   if (!message) return;
+
+  /* Remember the prompt so we can attach it to saved pages */
+  lastUserPrompt = message;
 
   /* Track whether we need to defer the panel expansion until response arrives */
   const wasCollapsed = !chatExpanded && !splitScreenActive && !sidePanelActive;
@@ -2146,6 +2151,7 @@ function executeCommand(cmd) {
     case 'generateHTML': {
       openFullscreenCanvas(cmd.html || '');
       openSidePanel();
+      saveGeneratedPage(cmd.html || '', cmd.title || '');
       break;
     }
 
@@ -2289,6 +2295,30 @@ function closeFullscreenCanvas() {
 
   const content = document.getElementById('fullscreen-canvas-content');
   if (content) content.innerHTML = '';
+}
+
+/**
+ * Auto-save an AI-generated HTML page to the database.
+ * Called whenever the AI issues a generateHTML command.
+ */
+function saveGeneratedPage(html, title) {
+  if (!html || !html.trim()) return;
+  fetch('/api/generated-pages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      html: html,
+      title: title || 'AI Generated Page',
+      prompt: lastUserPrompt || ''
+    })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      console.log('Page saved:', data.id);
+    }
+  })
+  .catch(err => console.warn('Could not save page:', err));
 }
 
 /**

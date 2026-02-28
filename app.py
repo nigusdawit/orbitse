@@ -344,6 +344,19 @@ def init_db():
                 );
                 CREATE INDEX IF NOT EXISTS idx_form_sub_form ON form_submissions (form_id);
                 CREATE INDEX IF NOT EXISTS idx_form_sub_status ON form_submissions (status);
+
+                -- AI-generated HTML pages (saved from the chatbot)
+                CREATE TABLE IF NOT EXISTS generated_pages (
+                    id          SERIAL PRIMARY KEY,
+                    title       TEXT NOT NULL DEFAULT 'Untitled Page',
+                    html        TEXT NOT NULL DEFAULT '',
+                    prompt      TEXT NOT NULL DEFAULT '',
+                    slug        VARCHAR(200) UNIQUE,
+                    status      VARCHAR(20) NOT NULL DEFAULT 'draft',
+                    created_at  TIMESTAMP DEFAULT NOW(),
+                    updated_at  TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_generated_pages_status ON generated_pages (status);
             """)
 
             # Seed chatbot_settings singleton if it doesn't exist
@@ -615,6 +628,7 @@ def api_chatbot_settings():
 #     "reply": "I've created a pricing breakdown for you.",
 #     "command": {
 #       "action": "generateHTML",
+#       "title": "Pricing Breakdown",
 #       "html": "<div style='padding:2rem;'><h2>Pricing</h2><table>...</table></div>"
 #     }
 #   }
@@ -631,8 +645,9 @@ def api_chatbot_settings():
 #        "points": ["point 1", "point 2"], "image": "optional URL" }
 #
 #   3. generateHTML — Renders custom AI-generated HTML in a canvas
-#      { "action": "generateHTML", "html": "<div>Any valid HTML</div>" }
+#      { "action": "generateHTML", "title": "Page Title", "html": "<div>Any valid HTML</div>" }
 #      The AI can generate comparison tables, charts, custom layouts, etc.
+#      Generated pages are auto-saved to the database for admin review.
 #
 # HOW TO ADD MORE COMMANDS:
 #   1. Define the command format in this comment block
@@ -708,7 +723,7 @@ Use this for quick, simple data. For anything more creative or complex, use gene
 
 4. Generate fully custom HTML (FULL CREATIVE FREEDOM):
 ```command
-{"action": "generateHTML", "html": "<div style='...'>YOUR COMPLETE HTML HERE</div>"}
+{"action": "generateHTML", "title": "Short descriptive title", "html": "<div style='...'>YOUR COMPLETE HTML HERE</div>"}
 ```
 This renders your HTML on a fullscreen canvas. You have COMPLETE design freedom — create anything:
 - Comparison tables, pricing breakdowns, itineraries, timelines
@@ -1459,6 +1474,105 @@ def admin_update_theme():
         )
     )
     return jsonify(result)
+
+
+# =============================================================================
+# GENERATED PAGES — Save & manage AI-created HTML pages
+# =============================================================================
+
+@app.route("/api/generated-pages", methods=["POST"])
+def api_save_generated_page():
+    """POST /api/generated-pages — Save an AI-generated HTML page (called from frontend)."""
+    data = request.get_json()
+    html = data.get("html", "").strip()
+    title = data.get("title", "Untitled Page").strip()
+    prompt = data.get("prompt", "").strip()
+
+    if not html:
+        return jsonify({"error": "No HTML content provided"}), 400
+
+    slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')
+    slug = slug[:180] + '-' + str(int(__import__('time').time()))
+
+    result = execute_db(
+        """INSERT INTO generated_pages (title, html, prompt, slug, status)
+           VALUES (%s, %s, %s, %s, 'draft') RETURNING id""",
+        (title, html, prompt, slug)
+    )
+    page_id = result['id'] if isinstance(result, dict) else result
+    return jsonify({"success": True, "id": page_id, "slug": slug})
+
+
+@app.route("/admin/api/generated-pages", methods=["GET"])
+@admin_required
+def admin_list_generated_pages():
+    """GET /admin/api/generated-pages — List all saved AI-generated pages."""
+    pages = query_db(
+        "SELECT id, title, slug, status, prompt, created_at, updated_at FROM generated_pages ORDER BY created_at DESC"
+    )
+    return jsonify(pages or [])
+
+
+@app.route("/admin/api/generated-pages/<int:page_id>", methods=["GET"])
+@admin_required
+def admin_get_generated_page(page_id):
+    """GET /admin/api/generated-pages/<id> — Get a single page with full HTML."""
+    page = query_db("SELECT * FROM generated_pages WHERE id = %s", (page_id,), fetchone=True)
+    if not page:
+        return jsonify({"error": "Page not found"}), 404
+    return jsonify(page)
+
+
+@app.route("/admin/api/generated-pages/<int:page_id>", methods=["PUT"])
+@admin_required
+def admin_update_generated_page(page_id):
+    """PUT /admin/api/generated-pages/<id> — Update page title, status, or HTML."""
+    data = request.get_json()
+    fields, values = [], []
+    for key in ['title', 'html']:
+        if key in data:
+            fields.append(f"{key} = %s")
+            values.append(data[key])
+    if 'status' in data and data['status'] in ('draft', 'published'):
+        fields.append("status = %s")
+        values.append(data['status'])
+    if not fields:
+        return jsonify({"error": "No fields to update"}), 400
+    fields.append("updated_at = NOW()")
+    values.append(page_id)
+    execute_db(f"UPDATE generated_pages SET {', '.join(fields)} WHERE id = %s", tuple(values))
+    return jsonify({"success": True})
+
+
+@app.route("/admin/api/generated-pages/<int:page_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_generated_page(page_id):
+    """DELETE /admin/api/generated-pages/<id> — Delete a saved page."""
+    execute_db("DELETE FROM generated_pages WHERE id = %s", (page_id,))
+    return jsonify({"success": True})
+
+
+@app.route("/page/<slug>")
+def public_generated_page(slug):
+    """GET /page/<slug> — Render a published AI-generated page."""
+    page = query_db("SELECT * FROM generated_pages WHERE slug = %s AND status = 'published'", (slug,), fetchone=True)
+    if not page:
+        return "Page not found", 404
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{page['title'].replace('&','&amp;').replace('<','&lt;').replace('>','&gt;').replace('"','&quot;')}</title>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=DM+Sans:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {{ margin: 0; padding: 0; background: #060b14; color: #e4e4e7; font-family: 'DM Sans', sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; }}
+    </style>
+</head>
+<body>
+    {page['html']}
+</body>
+</html>"""
 
 
 # =============================================================================

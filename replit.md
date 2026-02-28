@@ -54,7 +54,7 @@ The entire template is industry-agnostic — naming, comments, and instructions 
 - **Login**: `/admin/login` — password set via `ADMIN_PASSWORD` environment variable (default: "admin")
 - **Logout**: `/admin/logout`
 - **Location**: `templates/admin/dashboard.html`, `templates/admin/login.html`
-- **Tabs**: Site Settings, Gallery Cards, Experiences, Pricing, Chatbot, Chat History, Forms, Theme
+- **Tabs**: Site Settings, Gallery Cards, Experiences, Pricing, Chatbot, Chat History, Forms, Theme, Saved Pages
 
 ### Database (PostgreSQL)
 - **Connection**: `DATABASE_URL` environment variable
@@ -70,6 +70,7 @@ The entire template is industry-agnostic — naming, comments, and instructions 
   - `form_fields` — Form field definitions (form_id FK, field_type, label, name, placeholder, required, options JSONB, default_value, sort_order, width, help_text, step). The `step` column controls multi-step form grouping (default 1).
   - `form_submissions` — Dynamic form submissions (form_id FK, submission_data JSONB, status, device_type, browser, os, screen_resolution, language, UTM params, referrer, IP, session_id, updated_at).
   - `uploaded_images` — Record of uploaded image files (filename, original_name, file_size).
+  - `generated_pages` — AI-generated HTML pages saved from chatbot interactions. Has title, html (full content), prompt (user's original question), slug (unique URL), status (draft/published), created_at, updated_at.
 
 ### API Endpoints
 
@@ -112,6 +113,10 @@ The entire template is industry-agnostic — naming, comments, and instructions 
 - `PUT /admin/api/submissions/<id>/status` — Update submission status
 - `DELETE /admin/api/submissions/<id>` — Delete a submission
 - `GET /admin/api/forms/<id>/analytics` — Marketing analytics (device, browser, OS, UTM, status, referrer, language breakdowns)
+- `POST /api/generated-pages` — Auto-save AI-generated HTML page (called from frontend)
+- `GET/PUT/DELETE /admin/api/generated-pages/<id>` — View, update, or delete a saved page
+- `GET /admin/api/generated-pages` — List all saved AI-generated pages
+- `GET /page/<slug>` — Public URL for published AI-generated pages
 - `GET /admin/api/bookings` — Legacy submissions list
 - `PUT /admin/api/bookings/<id>/status` — Legacy submission status update
 - `GET/PUT /admin/api/theme` — Read and update theme colors/fonts
