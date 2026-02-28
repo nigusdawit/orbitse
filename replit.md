@@ -1,16 +1,17 @@
-# Casa Serena — Database-Driven HTML Website Template
+# Casa Serena — Immersive AI-Driven Website Template
 
 ## Overview
 
-Casa Serena is a luxury Mediterranean villa website built as a reusable, database-driven HTML template. All content (gallery slides, experiences, pricing, site settings, chatbot) is managed through a PostgreSQL database and a password-protected admin dashboard — no code editing needed to change content.
+Casa Serena is a luxury Mediterranean villa website built as a reusable, immersive template with embedded AI chat. The site features two frontends: a React-based primary app (Express + Vite) and a legacy Flask-based static version.
 
 The site features:
 - **Snap-scroll landing page** with hero, highlights, experiences, and pricing sections
 - **Immersive fullscreen gallery** with swipe/wheel/keyboard navigation
-- **AI chatbot with site control** — enable/disable from admin, supports built-in chat or external embed
-- **Split-screen AI display** — the AI can navigate the gallery, show structured slides, or render custom HTML
+- **Embedded AI chat** — conversations appear seamlessly overlaid in the hero area (transparent glass background, not a separate chatbot widget)
+- **Split-screen AI display** — when the AI triggers visual commands, a panel slides in from the right while the live site stays interactive on the left
+- **Voice AI** — mic input with real-time voice streaming and TTS playback
+- **Multi-site support** — template supports switching between site themes (Casa Serena / Velocity)
 - **Admin dashboard** at `/admin` (password-protected) for editing all content via a web interface
-- **Database-driven content** — changes in admin are instantly visible on the public site
 
 ## User Preferences
 
@@ -19,25 +20,36 @@ Code should be fully commented and templatized for modular reuse.
 
 ## System Architecture
 
-### Backend (Python Flask)
+### Primary Frontend (React + Vite)
+- **Framework**: React with Express backend, served via Vite dev server
+- **Entry point**: `npm run dev` → `server/index.ts`
+- **Port**: 5000 (required for Replit webview)
+- **Key components**:
+  - `client/src/pages/home.tsx` — Main orchestrator (view state, chat state, split-screen state)
+  - `client/src/components/agent-bar.tsx` — Embedded AI chat (hero overlay + bottom input strip)
+  - `client/src/components/split-screen-overlay.tsx` — AI-driven split-screen visual presentation
+  - `client/src/components/landing-page.tsx` — Casa Serena landing page
+  - `client/src/components/velocity-landing.tsx` — Velocity landing page
+  - `client/src/components/immersive-gallery.tsx` — Fullscreen room/card gallery
+  - `client/src/components/booking-modal.tsx` — Reservation/signup modal
+
+### AI Chat Architecture
+The chat experience has two visual layers:
+1. **Bottom Input Strip** — A frosted-glass pill bar always visible at the bottom of the screen with mic + text input + send button. Always full-width, never shifts.
+2. **Hero Chat Overlay** — When the user starts chatting, messages appear overlaid in the center of the viewport with a transparent glass background. This creates an immersive feel where the conversation blends into the page.
+
+### Split-Screen Overlay
+When the AI triggers a visual command (navigate, showSlide, generateHTML), a panel slides in from the right:
+- **Left side**: The live, interactive site content (landing or gallery) remains visible and clickable
+- **Right side**: AI-presented content (room image, structured slide, or custom HTML)
+- Managed via `splitCommand` state in `home.tsx`, rendered by `split-screen-overlay.tsx`
+
+### Legacy Frontend (Flask + Static HTML)
 - **Framework**: Flask (Python)
 - **Entry point**: `app.py`
-- **Port**: 5000 (required for Replit webview)
-- **Serves**:
-  - Static files from `public/` (HTML, CSS, JS for the public site)
-  - Admin dashboard templates from `templates/admin/`
-  - REST API endpoints for both public reads and admin CRUD
-  - Chat API endpoint for the AI chatbot
-
-### Public Site (Static HTML/CSS/JS)
-- **Location**: `public/` directory
-- **Files**:
-  - `index.html` — Main page structure (landing + gallery + modal + chatbot + split-screen)
-  - `styles.css` — All visual styles, fully commented (18 sections + chatbot + split-screen)
-  - `script.js` — All interactivity (API fetches, navigation, animations, chatbot, AI site control)
-- **Fonts**: Google Fonts (Playfair Display + DM Sans)
-- **Icons**: Lucide Icons (loaded via CDN)
-- **No build step** — plain HTML/CSS/JS, works directly in any browser
+- **Location**: `public/` directory (index.html, styles.css, script.js)
+- **Admin dashboard**: `templates/admin/` — still functional for database content management
+- **Note**: The Flask app is the legacy version. The React app is the primary frontend.
 
 ### Admin Dashboard
 - **URL**: `/admin` (redirects to `/admin/login` if not authenticated)
@@ -129,18 +141,15 @@ The AI chatbot can control what the user sees on the website through special com
 
 ### Adding New Commands
 
-1. Define the command format (JSON structure)
-2. Add a handler in `script.js` → `executeCommand()` function
-3. Update the system prompt (in `app.py` → `SAMPLE_SYSTEM_PROMPT`) to teach the AI about the command
-4. Test with a sample API response
-
-### Sample System Prompt
-
-See `app.py` → `SAMPLE_SYSTEM_PROMPT` for a complete example that teaches an AI agent about all available commands.
+1. Define the command format — add the action to `SplitCommand` type in `client/src/components/agent-bar.tsx`
+2. Add a rendering block in `client/src/components/split-screen-overlay.tsx` for the new action type
+3. Update keyword parsing in `parseNavigationCommands()` in `agent-bar.tsx` if needed
+4. Update the system prompt to teach the AI about the new command
+5. Test with a sample API response
 
 ### Connecting to OpenAI
 
-Replace the placeholder logic in the `/api/chat` endpoint with OpenAI API calls. See the extensive comments in `app.py` for step-by-step instructions including function calling setup.
+The React app's chat endpoint is in `server/routes.ts`. The legacy Flask endpoint is in `app.py`. Both support streaming SSE responses.
 
 ## How to Edit Content
 
