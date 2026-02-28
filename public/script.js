@@ -2213,6 +2213,54 @@ function executeCommand(cmd) {
       break;
     }
 
+    /* ─────────────────────────────────────────────────────────────────
+       SUBMIT FORM — Submit a form with data collected by the AI in chat
+       ─────────────────────────────────────────────────────────────────
+       The AI collects form field values through natural conversation,
+       then issues this command with the form slug and all gathered data.
+       We submit it to the existing form API endpoint.
+    */
+    case 'submitForm': {
+      const formSlug = cmd.slug;
+      const formFields = cmd.fields || {};
+
+      if (!formSlug || Object.keys(formFields).length === 0) {
+        chatAddMessage('agent', 'I wasn\'t able to submit the form. Let me try collecting your information again.');
+        break;
+      }
+
+      fetch(`/api/forms/${formSlug}/submit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fields: formFields,
+          session_id: sessionStorage.getItem('chat_session_id') || '',
+          page_url: window.location.href,
+          referrer: document.referrer || '',
+          screen_resolution: `${window.screen.width}x${window.screen.height}`,
+          language: navigator.language || '',
+          utm_source: new URLSearchParams(window.location.search).get('utm_source') || '',
+          utm_medium: new URLSearchParams(window.location.search).get('utm_medium') || '',
+          utm_campaign: new URLSearchParams(window.location.search).get('utm_campaign') || '',
+          utm_term: new URLSearchParams(window.location.search).get('utm_term') || '',
+          utm_content: new URLSearchParams(window.location.search).get('utm_content') || ''
+        })
+      })
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) {
+          chatAddMessage('agent', `There was a small issue: ${data.error}. Could you double-check that detail?`);
+        } else {
+          chatAddMessage('agent', '✓ Your information has been submitted successfully! We\'ll be in touch soon.');
+        }
+      })
+      .catch(err => {
+        console.error('Form submission error:', err);
+        chatAddMessage('agent', 'I had trouble submitting your information. Please try again in a moment.');
+      });
+      break;
+    }
+
     case 'heroMessage': {
       const heroEl = document.getElementById('hero-description');
       if (!heroEl) break;

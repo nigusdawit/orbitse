@@ -84,7 +84,7 @@ The entire template is industry-agnostic — naming, comments, and instructions 
 - `GET /api/forms/<slug>` — Returns form config (fields, types, options) for dynamic rendering
 
 **Chat API:**
-- `POST /api/chat` — Streaming SSE chat. Accepts `{message, history, session_id}`, streams token/text/html/command/done events. Saves messages to chat_conversations/chat_messages.
+- `POST /api/chat` — Streaming SSE chat. Accepts `{message, history, session_id}`, streams token/text/html/command/done events. Saves messages to chat_conversations/chat_messages. AI commands include: navigate, showSlide, generateVisual, generateHTML, submitForm, heroMessage. The AI can also collect form data conversationally and submit via the submitForm command.
 
 **Form Submission API:**
 - `POST /api/forms/<slug>/submit` — Submit a dynamic form with auto-captured marketing data (UTM, device, browser, OS, screen resolution, language, referrer, IP, session ID)

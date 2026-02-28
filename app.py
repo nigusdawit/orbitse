@@ -649,6 +649,10 @@ def api_chatbot_settings():
 #      The AI can generate comparison tables, charts, custom layouts, etc.
 #      Generated pages are auto-saved to the database for admin review.
 #
+#   4. submitForm — Submit a form with data collected in conversation
+#      { "action": "submitForm", "slug": "form-slug", "fields": {"name": "value"} }
+#      The AI collects form field values through conversation, then submits them.
+#
 # HOW TO ADD MORE COMMANDS:
 #   1. Define the command format in this comment block
 #   2. Add handling logic in script.js (see the executeCommand function)
@@ -749,7 +753,19 @@ Design tips:
 - Add padding (2-3rem) and max-width (900px) for readability
 - Make your HTML self-contained with all styles inline
 
-5. Display a message on the hero section:
+5. Submit a form with data collected in conversation:
+```command
+{"action": "submitForm", "slug": "FORM_SLUG", "fields": {"field_name": "value", "another_field": "value"}}
+```
+Use this when you have collected all the required information from the visitor through conversation.
+HOW TO COLLECT FORM DATA:
+- When a visitor wants to book, inquire, get started, or fill out a form, check the AVAILABLE FORMS section for matching forms.
+- Ask the visitor for each required field naturally in conversation, one or two at a time.
+- Once you have all required fields, submit using the submitForm command above.
+- Keep track of what the visitor has told you throughout the conversation.
+- Example flow: "I'd love to help you with that! Could I get your name?" → "And your email?" → "What service are you interested in?" → then submit with all collected data.
+
+6. Display a message on the hero section:
 ```command
 {"action": "heroMessage", "message": "YOUR MESSAGE HERE"}
 ```
@@ -774,6 +790,7 @@ RULES:
 - Only include ONE command block per response. Make sure the JSON in your command block is valid — no trailing backslashes or line breaks inside the JSON string.
 - Reference real names, prices, and details from the site data. Never make up information.
 - If the visitor seems interested, proactively suggest related items or experiences they might enjoy.
+- When a visitor wants to book, inquire, get started, contact, or shows intent to take action, start collecting their information for the appropriate form. Ask for 1-2 fields at a time in a natural conversational way. Once you have all required fields, use the submitForm command to submit. Always confirm what you collected before submitting.
 """
 
 
@@ -973,13 +990,40 @@ def api_chat():
                 price_lines.append(line)
             active_prompt += f"\n\nPRICING:\n" + "\n".join(price_lines)
 
+        # ----- 5. AVAILABLE FORMS -----
+        # Lets the AI know which forms exist and what fields they have,
+        # so it can collect information conversationally and submit
+        forms = query_db("SELECT id, name, slug, description FROM custom_forms WHERE status = 'active' ORDER BY sort_order ASC")
+        if forms:
+            form_lines = []
+            for frm in forms:
+                fields = query_db(
+                    "SELECT name, label, field_type, required, options, help_text FROM form_fields WHERE form_id = %s ORDER BY step, sort_order ASC",
+                    (frm["id"],)
+                )
+                field_descs = []
+                for fld in (fields or []):
+                    desc = f'    - "{fld["name"]}" ({fld["field_type"]}): "{fld["label"]}"'
+                    if fld.get("required"): desc += " [REQUIRED]"
+                    if fld.get("options") and fld["options"]:
+                        import json as _json
+                        try:
+                            opts = _json.loads(fld["options"]) if isinstance(fld["options"], str) else fld["options"]
+                            if isinstance(opts, list) and opts:
+                                desc += f' options: {opts}'
+                        except Exception:
+                            pass
+                    if fld.get("help_text"): desc += f' — {fld["help_text"]}'
+                    field_descs.append(desc)
+                form_lines.append(
+                    f'  Form: "{frm["name"]}" (slug: "{frm["slug"]}")\n'
+                    f'  Description: {frm.get("description", "")}\n'
+                    f'  Fields:\n' + "\n".join(field_descs)
+                )
+            active_prompt += f"\n\nAVAILABLE FORMS (you can collect this info in chat and submit):\n" + "\n\n".join(form_lines)
+
         # ----- ADD MORE SECTIONS BELOW -----
         # Follow the same pattern: query → format → append to active_prompt
-        # Example:
-        #   faq = query_db("SELECT question, answer FROM faq ORDER BY sort_order ASC")
-        #   if faq:
-        #       faq_lines = [f'  Q: {f["question"]}\n  A: {f["answer"]}' for f in faq]
-        #       active_prompt += f"\n\nFREQUENTLY ASKED QUESTIONS:\n" + "\n".join(faq_lines)
 
     except Exception:
         pass
