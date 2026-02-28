@@ -1272,3 +1272,645 @@ input, select, textarea {
     left: 6rem;
   }
 }
+
+
+/* =============================================================================
+   18. CHATBOT — AI Concierge Bar & Chat Panel
+   =============================================================================
+   The chatbot UI consists of:
+   1. A collapsed glass-panel bar (always visible at the bottom)
+   2. An expanded chat panel (slides up from the bar)
+   3. A split-screen overlay (for AI-controlled visuals)
+
+   DESIGN PHILOSOPHY:
+   - Uses backdrop-filter for the frosted glass effect
+   - Dark translucent backgrounds to match the villa's luxury aesthetic
+   - Smooth transitions for expand/collapse and split-screen
+   - Responsive: full-width on mobile, centered on desktop
+
+   TO CHANGE THE CHATBOT APPEARANCE:
+   - Colors: Modify the rgba values below
+   - Size: Change max-width and height values
+   - Position: Change bottom/left/right in .chatbot-container
+   - Glass effect: Adjust backdrop-filter blur amount
+============================================================================= */
+
+/* Container — positions the chatbot at the bottom center of the screen */
+.chatbot-container {
+  position: fixed;
+  bottom: var(--space-lg);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  width: 92%;
+  max-width: 540px;
+  font-family: var(--font-sans);
+}
+
+/*
+  COLLAPSED BAR — The floating pill that's always visible.
+  Uses backdrop-filter for a frosted glass look.
+  Contents: avatar, agent info, text input, send button, expand button.
+*/
+.chatbot-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0.625rem 0.5rem 0.75rem;
+  background: rgba(15, 17, 23, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 9999px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  transition: border-color var(--transition-fast);
+}
+
+.chatbot-bar:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+/* Agent avatar — circular badge with initials or image */
+.chatbot-avatar {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.6), rgba(139, 92, 246, 0.6));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-serif);
+  font-weight: 700;
+  font-size: 0.875rem;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.chatbot-avatar-sm {
+  width: 1.75rem;
+  height: 1.75rem;
+  font-size: 0.75rem;
+}
+
+/* Agent name and role text next to the avatar */
+.chatbot-agent-info {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.chatbot-agent-name {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #fff;
+  line-height: 1.2;
+}
+
+.chatbot-agent-role {
+  font-size: 0.625rem;
+  color: rgba(255, 255, 255, 0.45);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  line-height: 1.2;
+}
+
+/* Text input inside the collapsed bar */
+.chatbot-bar-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.375rem 0.75rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9999px;
+  color: #fff;
+  font-size: 0.8125rem;
+  font-family: inherit;
+  outline: none;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.chatbot-bar-input::placeholder {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.chatbot-bar-input:focus {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Small circular buttons in the bar (send, expand) */
+.chatbot-bar-btn {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.6);
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.chatbot-bar-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/*
+  EXPANDED CHAT PANEL — Full chat interface that slides up from the bar.
+  Hidden by default; shown when chatbot-container has .expanded class.
+*/
+.chatbot-panel {
+  position: absolute;
+  bottom: calc(100% + 0.5rem);
+  left: 0;
+  right: 0;
+  height: 0;
+  max-height: 70vh;
+  background: rgba(15, 17, 23, 0.92);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 1rem;
+  box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: height var(--transition-medium) var(--ease-smooth),
+              opacity var(--transition-fast) ease;
+}
+
+/* When expanded, the panel becomes visible and takes height */
+.chatbot-container.expanded .chatbot-panel {
+  height: 60vh;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Rotate the expand arrow when panel is open */
+.chatbot-container.expanded .chatbot-bar-btn:last-child svg {
+  transform: rotate(180deg);
+  transition: transform var(--transition-fast);
+}
+
+/* Panel header — agent info and close button */
+.chatbot-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.875rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.chatbot-panel-header-info {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+/* Close button */
+.chatbot-close-btn {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.5);
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.chatbot-close-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/*
+  MESSAGE AREA — Scrollable container for chat bubbles.
+  Uses flex-direction: column so messages stack top-to-bottom.
+  Auto-scrolls to the bottom when new messages arrive.
+*/
+.chatbot-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+.chatbot-messages::-webkit-scrollbar {
+  width: 4px;
+}
+
+.chatbot-messages::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+}
+
+/*
+  MESSAGE BUBBLES — Two types:
+  - .chat-msg-user: User messages (right-aligned, solid background)
+  - .chat-msg-agent: Agent messages (left-aligned, subtle background)
+*/
+.chat-msg {
+  max-width: 85%;
+  padding: 0.625rem 0.875rem;
+  border-radius: 1rem;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  animation: fadeInUp 0.3s ease-out;
+}
+
+/* User message — right-aligned with solid white background */
+.chat-msg-user {
+  align-self: flex-end;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border-bottom-right-radius: 0.25rem;
+}
+
+/* Agent message — left-aligned with subtle dark background */
+.chat-msg-agent {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.9);
+  border-bottom-left-radius: 0.25rem;
+}
+
+/*
+  TYPING INDICATOR — Three animated dots shown while waiting for a response.
+  Uses a bouncing animation with staggered delays.
+*/
+.chat-typing {
+  align-self: flex-start;
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.75rem 1rem;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 1rem;
+  border-bottom-left-radius: 0.25rem;
+}
+
+.chat-typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.4);
+  animation: typingBounce 1.2s ease-in-out infinite;
+}
+
+.chat-typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.chat-typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes typingBounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-4px); opacity: 1; }
+}
+
+/*
+  QUICK PROMPT CHIPS — Clickable suggestion pills.
+  Shown above the input bar to help users start a conversation.
+*/
+.chatbot-quick-prompts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  padding: 0 1rem 0.5rem;
+  flex-shrink: 0;
+}
+
+.chatbot-quick-prompt {
+  padding: 0.3125rem 0.75rem;
+  font-size: 0.6875rem;
+  color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9999px;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+  white-space: nowrap;
+  font-family: inherit;
+}
+
+.chatbot-quick-prompt:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+/* Input bar at the bottom of the expanded panel */
+.chatbot-input-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.chatbot-panel-input {
+  flex: 1;
+  padding: 0.5rem 0.875rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9999px;
+  color: #fff;
+  font-size: 0.8125rem;
+  font-family: inherit;
+  outline: none;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.chatbot-panel-input::placeholder {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.chatbot-panel-input:focus {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Send button in the expanded panel */
+.chatbot-send-panel-btn {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: rgba(59, 130, 246, 0.6);
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--transition-fast);
+}
+
+.chatbot-send-panel-btn:hover {
+  background: rgba(59, 130, 246, 0.8);
+}
+
+
+/* =============================================================================
+   19. SPLIT-SCREEN OVERLAY — AI-Controlled Visual Display
+   =============================================================================
+   When the AI sends a visual command, this overlay takes over the screen.
+
+   LAYOUT:
+   - Desktop: Side-by-side (40% chat / 60% content)
+   - Mobile: Stacked (content overlays the chat)
+
+   THREE CONTENT TYPES:
+   1. Navigate: Shows a gallery slide (image + text overlay)
+   2. Show Slide: Structured presentation (title, points, etc.)
+   3. Generate HTML: AI-created content on a blank canvas
+
+   TO MODIFY THE SPLIT RATIO:
+   - Change the flex values in .split-chat (2 = 40%) and .split-content (3 = 60%)
+
+   TO CHANGE THE TRANSITION:
+   - Modify the opacity/transform transition in .split-overlay
+============================================================================= */
+
+.split-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  background: rgba(0, 0, 0, 0.95);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-medium) ease;
+}
+
+/* Active state — overlay becomes visible */
+.split-overlay.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Left side — Chat panel in split mode */
+.split-chat {
+  flex: 2;
+  display: flex;
+  flex-direction: column;
+  background: rgba(15, 17, 23, 0.95);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  min-width: 0;
+}
+
+/* Right side — Content display area */
+.split-content {
+  flex: 3;
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* Each content panel fills the entire right side */
+.split-content-panel {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/*
+  NAVIGATE MODE — Gallery slide in split-screen.
+  Shows the card's background image with overlay text.
+*/
+.split-nav-bg {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  animation: kenBurns var(--ken-burns-duration) ease-in-out infinite alternate;
+}
+
+.split-nav-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top,
+    rgba(0, 0, 0, 0.7) 0%,
+    rgba(0, 0, 0, 0.3) 50%,
+    transparent 100%
+  );
+}
+
+.split-nav-content {
+  position: absolute;
+  bottom: 3rem;
+  left: 2rem;
+  right: 2rem;
+  z-index: 5;
+  color: #fff;
+}
+
+.split-nav-title {
+  font-size: clamp(1.5rem, 3vw, 2.5rem);
+  font-weight: 700;
+  margin: 0.5rem 0;
+  line-height: 1.1;
+}
+
+.split-nav-subtitle {
+  font-size: 1rem;
+  color: rgba(255, 255, 255, 0.8);
+  font-weight: 300;
+  margin-bottom: 0.75rem;
+  border-left: 2px solid rgba(255, 255, 255, 0.4);
+  padding-left: 0.75rem;
+}
+
+.split-nav-description {
+  font-size: 0.875rem;
+  color: rgba(255, 255, 255, 0.7);
+  line-height: 1.6;
+  max-width: 32rem;
+}
+
+/*
+  SHOW SLIDE MODE — Structured presentation in split-screen.
+  Elegant card with eyebrow text, title, subtitle, and bullet points.
+*/
+.split-slide-inner {
+  padding: 3rem 2.5rem;
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.split-slide-eyebrow {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: rgba(59, 130, 246, 0.8);
+  font-weight: 700;
+  margin-bottom: 1rem;
+}
+
+.split-slide-title {
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 0.5rem;
+  line-height: 1.2;
+}
+
+.split-slide-subtitle {
+  font-size: 0.9375rem;
+  color: rgba(255, 255, 255, 0.6);
+  margin-bottom: 1.5rem;
+}
+
+.split-slide-points {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.split-slide-point {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  font-size: 0.875rem;
+  color: rgba(255, 255, 255, 0.8);
+  line-height: 1.5;
+}
+
+.split-slide-point-marker {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(59, 130, 246, 0.6);
+  flex-shrink: 0;
+  margin-top: 0.4rem;
+}
+
+/*
+  GENERATE HTML MODE — AI-created content canvas.
+  A clean surface where the AI can render any HTML.
+  Dark background matches the site theme.
+*/
+.split-canvas {
+  background: #0a0f1a;
+}
+
+.split-canvas-content {
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  padding: 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+.split-canvas-content::-webkit-scrollbar {
+  width: 4px;
+}
+
+.split-canvas-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+}
+
+
+/* =============================================================================
+   20. CHATBOT RESPONSIVE — Mobile adjustments
+   =============================================================================
+   On mobile screens:
+   - Chatbot bar spans full width
+   - Agent info text is hidden (just shows avatar)
+   - Split-screen stacks vertically instead of side-by-side
+   - Content area overlays the entire screen
+============================================================================= */
+
+@media (max-width: 768px) {
+  /* Full width bar on mobile */
+  .chatbot-container {
+    width: 94%;
+    max-width: none;
+    bottom: var(--space-md);
+  }
+
+  /* Hide agent name/role on mobile to save space */
+  .chatbot-agent-info {
+    display: none;
+  }
+
+  /* Expanded panel takes more space on mobile */
+  .chatbot-container.expanded .chatbot-panel {
+    height: 70vh;
+  }
+
+  /* Split-screen stacks vertically on mobile */
+  .split-overlay {
+    flex-direction: column-reverse;
+  }
+
+  .split-chat {
+    flex: 1;
+    border-right: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .split-content {
+    flex: 1;
+  }
+}

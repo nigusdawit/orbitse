@@ -7,16 +7,24 @@ PURPOSE:
   This is the main backend server for the Casa Serena website template.
   It connects to a PostgreSQL database and serves:
     1. A public-facing HTML/CSS/JS website (from the /public folder)
-    2. An admin dashboard for editing all site content (from /templates/admin)
-    3. REST API endpoints for both public reads and admin CRUD operations
+    2. A password-protected admin dashboard (from /templates/admin)
+    3. REST API endpoints for public reads and admin CRUD operations
+    4. A chat API endpoint for the AI chatbot (configurable)
 
 HOW IT WORKS:
   - The public site (index.html) calls GET /api/* endpoints to fetch content
     from the database, then renders it client-side with JavaScript.
   - The admin dashboard calls GET/POST/PUT/DELETE /admin/api/* endpoints
     to create, read, update, and delete content in the database.
+  - The chatbot can be enabled/disabled from the admin dashboard.
   - Both share the same PostgreSQL database, so changes in the admin panel
     are immediately visible on the public site.
+
+ADMIN AUTHENTICATION:
+  - The admin dashboard is protected by a password.
+  - Set the password via the ADMIN_PASSWORD environment variable.
+  - Default password for development: "admin"
+  - To change: set ADMIN_PASSWORD in your environment variables.
 
 TO CUSTOMIZE:
   - To add a new content type (e.g., "testimonials"), follow these steps:
@@ -35,11 +43,16 @@ TO RUN:
 
 import os
 import json
+import secrets
 from datetime import datetime
+from functools import wraps
 
 import psycopg2
 import psycopg2.extras
-from flask import Flask, request, jsonify, send_from_directory, render_template
+from flask import (
+    Flask, request, jsonify, send_from_directory,
+    render_template, session, redirect, url_for
+)
 
 # =============================================================================
 # APP CONFIGURATION
@@ -50,6 +63,19 @@ app = Flask(
     static_folder="public",       # Serve public site files from /public
     template_folder="templates"   # Jinja2 templates for admin dashboard
 )
+
+# Secret key for Flask sessions (used for admin login persistence)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", secrets.token_hex(32))
+
+# Session cookie security settings
+# SESSION_COOKIE_HTTPONLY: Prevents JavaScript from accessing the session cookie
+# SESSION_COOKIE_SAMESITE: Prevents CSRF by limiting cross-site cookie sending
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
+# Admin password — set via environment variable, defaults to "admin" for development
+# IMPORTANT: Change this in production by setting the ADMIN_PASSWORD env var
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")
 
 # Database connection string from environment variable
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -88,7 +114,6 @@ def query_db(sql, params=None, fetchone=False):
             cur.execute(sql, params)
             if cur.description:
                 rows = cur.fetchall()
-                # Convert RealDictRow objects to plain dicts for JSON serialization
                 result = [dict(row) for row in rows]
                 return result[0] if fetchone and result else result
             return None
@@ -127,7 +152,7 @@ def init_db():
     """
     Create all required tables if they don't already exist.
     This runs on every app startup to ensure the schema is ready.
-    Existing data is never touched (IF NOT EXISTS).
+    Existing data is never touched (IF NOT EXISTS / ON CONFLICT).
     """
     conn = get_db()
     try:
@@ -187,6 +212,49 @@ def init_db():
                     updated_at  TIMESTAMP DEFAULT NOW()
                 );
                 CREATE INDEX IF NOT EXISTS idx_pricing_sort ON pricing_seasons (sort_order);
+
+                -- =============================================================
+                -- CHATBOT SETTINGS (singleton row with id=1)
+                -- =============================================================
+                -- Controls whether the AI chatbot is shown on the public site,
+                -- and how it connects to an AI agent.
+                --
+                -- enabled: Master on/off toggle. When false, no chatbot appears.
+                -- mode: 'builtin' uses the template's built-in chat UI.
+                --        'embed' loads an external chatbot widget via embed_code.
+                -- agent_name: Display name shown in the chat bar.
+                -- agent_role: Role label (e.g., "Concierge", "Assistant").
+                -- agent_avatar: Text initials or image URL for the avatar.
+                -- greeting: First message the bot sends when chat opens.
+                -- quick_prompts: JSON array of suggested prompt strings.
+                -- api_endpoint: URL to POST messages to (for builtin mode).
+                -- embed_code: External HTML/script snippet (for embed mode).
+                -- =============================================================
+                CREATE TABLE IF NOT EXISTS chatbot_settings (
+                    id            SERIAL PRIMARY KEY,
+                    enabled       BOOLEAN NOT NULL DEFAULT false,
+                    mode          TEXT NOT NULL DEFAULT 'builtin',
+                    agent_name    TEXT NOT NULL DEFAULT 'Marco',
+                    agent_role    TEXT NOT NULL DEFAULT 'Concierge',
+                    agent_avatar  TEXT NOT NULL DEFAULT 'M',
+                    greeting      TEXT NOT NULL DEFAULT 'Welcome! I''m Marco, your personal concierge. How can I help you explore Casa Serena today?',
+                    quick_prompts JSONB DEFAULT '["Tour the villa", "Show me the rooms", "What experiences do you offer?", "Tell me about pricing"]'::jsonb,
+                    api_endpoint  TEXT NOT NULL DEFAULT '/api/chat',
+                    embed_code    TEXT NOT NULL DEFAULT '',
+                    created_at    TIMESTAMP DEFAULT NOW(),
+                    updated_at    TIMESTAMP DEFAULT NOW()
+                );
+            """)
+
+            # Seed chatbot_settings singleton if it doesn't exist
+            cur.execute("""
+                INSERT INTO chatbot_settings (id, enabled, mode, agent_name, agent_role, agent_avatar,
+                    greeting, quick_prompts, api_endpoint, embed_code)
+                VALUES (1, false, 'builtin', 'Marco', 'Concierge', 'M',
+                    'Welcome! I''m Marco, your personal concierge. How can I help you explore Casa Serena today?',
+                    '["Tour the villa", "Show me the rooms", "What experiences do you offer?", "Tell me about pricing"]'::jsonb,
+                    '/api/chat', '')
+                ON CONFLICT (id) DO NOTHING
             """)
     finally:
         conn.close()
@@ -197,13 +265,73 @@ def init_db():
 # =============================================================================
 
 class CustomJSONEncoder(json.JSONEncoder):
-    """Handle datetime serialization for JSON responses."""
+    """Handle datetime and boolean serialization for JSON responses."""
     def default(self, obj):
         if isinstance(obj, datetime):
             return obj.isoformat()
         return super().default(obj)
 
 app.json_encoder = CustomJSONEncoder
+
+
+# =============================================================================
+# ADMIN AUTHENTICATION
+# =============================================================================
+# Protects the admin dashboard with a simple password login.
+# The password is set via the ADMIN_PASSWORD environment variable.
+#
+# HOW IT WORKS:
+# - When a user visits /admin, they're redirected to /admin/login if not logged in.
+# - After entering the correct password, a session cookie is set.
+# - The session persists until the user logs out or closes the browser.
+#
+# TO CHANGE THE PASSWORD:
+# - Set the ADMIN_PASSWORD environment variable to your desired password.
+# - Default is "admin" for development only.
+#
+# FOR STRONGER SECURITY:
+# - Use a long, random password in production.
+# - Consider adding rate limiting to prevent brute-force attacks.
+# - Consider adding HTTPS-only cookie flags.
+# =============================================================================
+
+def admin_required(f):
+    """
+    Decorator that protects a route with admin authentication.
+    Redirects to the login page if the user isn't logged in.
+    Use this on any route that should be admin-only.
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get("admin_logged_in"):
+            return redirect(url_for("admin_login"))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+    """
+    GET: Show the login form.
+    POST: Validate the password and log in.
+    """
+    error = None
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        if password == ADMIN_PASSWORD:
+            session["admin_logged_in"] = True
+            return redirect(url_for("admin_dashboard"))
+        else:
+            error = "Invalid password. Please try again."
+
+    return render_template("admin/login.html", error=error)
+
+
+@app.route("/admin/logout")
+def admin_logout():
+    """Log out of the admin dashboard and redirect to login."""
+    session.pop("admin_logged_in", None)
+    return redirect(url_for("admin_login"))
 
 
 # =============================================================================
@@ -235,16 +363,12 @@ def serve_static(filename):
 # =============================================================================
 # PUBLIC API — Read-only endpoints for the public site
 # =============================================================================
-# These endpoints are called by the public site's JavaScript (script.js)
-# to load content from the database and render it on the page.
-# They are read-only (GET) — no modifications allowed from the public site.
 
 @app.route("/api/site-settings")
 def api_site_settings():
     """
     GET /api/site-settings
     Returns the site-wide configuration (name, tagline, hero content, etc.).
-    The public site uses this to populate the hero section and navigation.
     """
     settings = query_db("SELECT * FROM site_settings WHERE id = 1", fetchone=True)
     if not settings:
@@ -257,8 +381,6 @@ def api_gallery_cards():
     """
     GET /api/gallery-cards
     Returns all gallery cards ordered by sort_order.
-    Used for both the Highlights grid on the landing page
-    and the fullscreen slides in the Explore/Gallery view.
     """
     cards = query_db("SELECT * FROM gallery_cards ORDER BY sort_order ASC")
     return jsonify(cards or [])
@@ -269,7 +391,6 @@ def api_experiences():
     """
     GET /api/experiences
     Returns all curated experiences ordered by sort_order.
-    Used in the Experiences section of the landing page.
     """
     exps = query_db("SELECT * FROM experiences ORDER BY sort_order ASC")
     return jsonify(exps or [])
@@ -280,36 +401,329 @@ def api_pricing():
     """
     GET /api/pricing
     Returns all pricing seasons ordered by sort_order.
-    Used in the Pricing section of the landing page.
     """
     pricing = query_db("SELECT * FROM pricing_seasons ORDER BY sort_order ASC")
     return jsonify(pricing or [])
 
 
+@app.route("/api/chatbot-settings")
+def api_chatbot_settings():
+    """
+    GET /api/chatbot-settings
+    Returns the chatbot configuration for the public site.
+    The public site JavaScript uses this to decide whether to show
+    the chatbot and how to configure it.
+    """
+    settings = query_db("SELECT * FROM chatbot_settings WHERE id = 1", fetchone=True)
+    if not settings:
+        return jsonify({"enabled": False})
+    return jsonify(settings)
+
+
 # =============================================================================
-# ADMIN DASHBOARD — HTML pages
+# CHAT API — AI Chatbot Endpoint
+# =============================================================================
+# This endpoint receives messages from the chatbot and returns responses.
+#
+# REQUEST FORMAT:
+#   POST /api/chat
+#   Content-Type: application/json
+#   Body: {
+#     "message": "Show me the pool",
+#     "history": [
+#       { "role": "assistant", "content": "Welcome! How can I help?" },
+#       { "role": "user", "content": "Show me the pool" }
+#     ]
+#   }
+#
+# RESPONSE FORMAT:
+#   The response can include a text reply AND optional commands:
+#
+#   Plain text reply:
+#   { "reply": "Here's what I found..." }
+#
+#   Reply with navigation command (scroll to a gallery slide):
+#   {
+#     "reply": "Let me show you our stunning infinity pool!",
+#     "command": { "action": "navigate", "target": "infinity-pool" }
+#   }
+#
+#   Reply with structured slide (presentation-style):
+#   {
+#     "reply": "Here's a comparison of our rooms.",
+#     "command": {
+#       "action": "showSlide",
+#       "title": "Room Comparison",
+#       "subtitle": "Finding your perfect suite",
+#       "points": ["Master Suite: $1,800/night", "Ocean Room: $1,200/night"]
+#     }
+#   }
+#
+#   Reply with custom HTML (AI-generated dynamic content):
+#   {
+#     "reply": "I've created a pricing breakdown for you.",
+#     "command": {
+#       "action": "generateHTML",
+#       "html": "<div style='padding:2rem;'><h2>Pricing</h2><table>...</table></div>"
+#     }
+#   }
+#
+# AVAILABLE COMMANDS (the AI can send these to control the website):
+#
+#   1. navigate — Scrolls the site to a specific gallery slide
+#      { "action": "navigate", "target": "<card-slug>" }
+#      Valid targets: any slug from the gallery_cards table
+#      (e.g., "hero-villa", "master-suite", "infinity-pool", etc.)
+#
+#   2. showSlide — Shows a structured presentation overlay
+#      { "action": "showSlide", "title": "...", "subtitle": "...",
+#        "points": ["point 1", "point 2"], "image": "optional URL" }
+#
+#   3. generateHTML — Renders custom AI-generated HTML in a canvas
+#      { "action": "generateHTML", "html": "<div>Any valid HTML</div>" }
+#      The AI can generate comparison tables, charts, custom layouts, etc.
+#
+# HOW TO ADD MORE COMMANDS:
+#   1. Define the command format in this comment block
+#   2. Add handling logic in script.js (see the executeCommand function)
+#   3. Update the system prompt to teach the AI about the new command
+#   4. Test with a sample response
+#
+# HOW TO CONNECT TO OPENAI:
+#   Install the openai package: pip install openai
+#   Then replace the placeholder logic below with:
+#
+#   from openai import OpenAI
+#   client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+#
+#   # In the chat endpoint:
+#   completion = client.chat.completions.create(
+#       model="gpt-4o-mini",
+#       messages=[
+#           {"role": "system", "content": SYSTEM_PROMPT},
+#           *history
+#       ],
+#       tools=[...],  # Define your function calling tools here
+#   )
+#
+# HOW TO CONNECT TO A CUSTOM MULTI-AGENT API:
+#   Replace the placeholder logic with a request to your agent's API:
+#
+#   import requests
+#   response = requests.post("https://your-agent-api.com/chat",
+#       json={"message": message, "history": history},
+#       headers={"Authorization": f"Bearer {os.environ.get('AGENT_API_KEY')}"}
+#   )
+#   return jsonify(response.json())
+#
+# SAMPLE SYSTEM PROMPT (teach your AI about site control commands):
+#   See the SAMPLE_SYSTEM_PROMPT variable below.
+# =============================================================================
+
+# This sample system prompt teaches an AI agent how to control the website.
+# Copy and customize this when connecting to your own AI provider.
+SAMPLE_SYSTEM_PROMPT = """
+You are Marco, a luxury concierge for Casa Serena, a Mediterranean villa.
+You help guests explore the property and plan their stay.
+
+IMPORTANT: You can control what the user sees on the website by including
+a JSON command block in your response. Always wrap commands in ```command``` blocks.
+
+AVAILABLE COMMANDS:
+
+1. Navigate to a section of the property:
+```command
+{"action": "navigate", "target": "CARD_SLUG"}
+```
+Valid targets: hero-villa, master-suite, ocean-room, infinity-pool,
+chef-kitchen, wine-cellar, sunset-terrace, coastal-village
+
+2. Show a structured slide with information:
+```command
+{"action": "showSlide", "title": "TITLE", "subtitle": "SUBTITLE", "points": ["point1", "point2"]}
+```
+
+3. Generate custom HTML content (tables, comparisons, etc.):
+```command
+{"action": "generateHTML", "html": "<div>YOUR HTML HERE</div>"}
+```
+
+RULES:
+- ALWAYS navigate when discussing a specific space. This IS the experience.
+- Keep text responses to 1-3 sentences. Let the visuals do the talking.
+- Use showSlide for comparisons, recommendations, and structured info.
+- Use generateHTML for complex layouts like pricing tables or itineraries.
+"""
+
+
+@app.route("/api/chat", methods=["POST"])
+def api_chat():
+    """
+    POST /api/chat
+    Handle incoming chat messages from the chatbot.
+
+    This is a TEMPLATE endpoint that returns placeholder responses.
+    Replace the logic below with your own AI provider integration.
+
+    The response format supports both text replies and visual commands
+    that control the website (navigate, showSlide, generateHTML).
+    """
+    data = request.get_json()
+    message = data.get("message", "").strip().lower()
+    history = data.get("history", [])
+
+    # =========================================================================
+    # PLACEHOLDER RESPONSES — Replace this section with your AI provider
+    # =========================================================================
+    # This demo logic shows how the response format works.
+    # In production, you'd send the message + history to your AI and
+    # return its response in the format shown above.
+
+    # Check for navigation keywords and respond with commands
+    if any(word in message for word in ["pool", "swim"]):
+        return jsonify({
+            "reply": "Our infinity pool is truly breathtaking — it seems to pour directly into the Aegean. Let me show you!",
+            "command": {"action": "navigate", "target": "infinity-pool"}
+        })
+
+    elif any(word in message for word in ["master", "suite", "bedroom"]):
+        return jsonify({
+            "reply": "The Master Suite is our crown jewel — private terrace, ocean views, and a freestanding copper bathtub. Take a look!",
+            "command": {"action": "navigate", "target": "master-suite"}
+        })
+
+    elif any(word in message for word in ["kitchen", "cook", "chef"]):
+        return jsonify({
+            "reply": "Our chef's kitchen is a culinary dream. Professional Viking range, wood-fired pizza oven, and a herb garden steps away.",
+            "command": {"action": "navigate", "target": "chef-kitchen"}
+        })
+
+    elif any(word in message for word in ["wine", "cellar"]):
+        return jsonify({
+            "reply": "Our stone-vaulted wine cellar houses over 400 labels. Private tastings can be arranged with our sommelier.",
+            "command": {"action": "navigate", "target": "wine-cellar"}
+        })
+
+    elif any(word in message for word in ["sunset", "terrace", "dinner", "dining"]):
+        return jsonify({
+            "reply": "The Sunset Terrace transforms each evening into an open-air restaurant with the most spectacular views.",
+            "command": {"action": "navigate", "target": "sunset-terrace"}
+        })
+
+    elif any(word in message for word in ["village", "local", "town"]):
+        return jsonify({
+            "reply": "San Lorenzo is just a 10-minute walk — cobblestone streets, family tavernas, and a morning fish market!",
+            "command": {"action": "navigate", "target": "coastal-village"}
+        })
+
+    elif any(word in message for word in ["ocean", "sea", "view", "room"]):
+        return jsonify({
+            "reply": "Our Ocean View Room features floor-to-ceiling windows framing the endless blue. Let me show you!",
+            "command": {"action": "navigate", "target": "ocean-room"}
+        })
+
+    elif any(word in message for word in ["tour", "villa", "property", "explore", "show"]):
+        return jsonify({
+            "reply": "Welcome to Casa Serena! Let me start with an overview of this magnificent property.",
+            "command": {"action": "navigate", "target": "hero-villa"}
+        })
+
+    elif any(word in message for word in ["compare", "difference", "which"]):
+        return jsonify({
+            "reply": "Great question! Here's a comparison of our accommodations.",
+            "command": {
+                "action": "showSlide",
+                "title": "Room Comparison",
+                "subtitle": "Finding your perfect suite at Casa Serena",
+                "points": [
+                    "Master Suite — King bed, private terrace, copper bathtub — From $1,800/night",
+                    "Ocean View Room — Queen bed, juliet balcony, marble bath — From $1,200/night",
+                    "Both rooms include daily housekeeping and breakfast",
+                    "The Master Suite is ideal for honeymoons and special occasions"
+                ]
+            }
+        })
+
+    elif any(word in message for word in ["price", "cost", "rate", "pricing", "expensive"]):
+        return jsonify({
+            "reply": "Here's our seasonal pricing breakdown. I've created a detailed view for you!",
+            "command": {
+                "action": "generateHTML",
+                "html": """
+                <div style="font-family: 'DM Sans', sans-serif; padding: 2rem; color: #fff;">
+                    <h2 style="font-family: 'Playfair Display', serif; font-size: 1.75rem; margin-bottom: 0.5rem;">Seasonal Pricing</h2>
+                    <p style="color: rgba(255,255,255,0.6); margin-bottom: 1.5rem;">Casa Serena rates by season</p>
+                    <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+                        <thead>
+                            <tr style="border-bottom: 1px solid rgba(255,255,255,0.2);">
+                                <th style="text-align: left; padding: 0.75rem; color: rgba(255,255,255,0.5); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Season</th>
+                                <th style="text-align: left; padding: 0.75rem; color: rgba(255,255,255,0.5); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Dates</th>
+                                <th style="text-align: left; padding: 0.75rem; color: rgba(255,255,255,0.5); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Nightly Rate</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
+                                <td style="padding: 0.75rem; font-weight: 600;">High Season</td>
+                                <td style="padding: 0.75rem; color: rgba(255,255,255,0.7);">Jun — Sep</td>
+                                <td style="padding: 0.75rem; font-weight: 600;">$1,200 — $1,800</td>
+                            </tr>
+                            <tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
+                                <td style="padding: 0.75rem; font-weight: 600;">Mid Season</td>
+                                <td style="padding: 0.75rem; color: rgba(255,255,255,0.7);">Apr — May, Oct</td>
+                                <td style="padding: 0.75rem; font-weight: 600;">$800 — $1,400</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 0.75rem; font-weight: 600;">Low Season</td>
+                                <td style="padding: 0.75rem; color: rgba(255,255,255,0.7);">Nov — Mar</td>
+                                <td style="padding: 0.75rem; font-weight: 600;">$600 — $1,000</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p style="color: rgba(255,255,255,0.5); margin-top: 1rem; font-size: 0.8rem;">All rates include daily housekeeping, breakfast, and airport transfer.</p>
+                </div>
+                """
+            }
+        })
+
+    elif any(word in message for word in ["book", "reserve", "stay"]):
+        return jsonify({
+            "reply": "I'd love to help you book your stay! Click the 'Reserve' button to fill out our booking form, or tell me which room interests you and I'll help guide you through the options."
+        })
+
+    elif any(word in message for word in ["hello", "hi", "hey"]):
+        return jsonify({
+            "reply": "Hello! Welcome to Casa Serena. I'm here to help you explore our Mediterranean retreat. Would you like a tour of the villa, or is there something specific you'd like to see?"
+        })
+
+    else:
+        return jsonify({
+            "reply": "I'd be happy to help! I can show you around the villa, compare our rooms, share pricing details, or help you plan your perfect Mediterranean getaway. What would you like to explore?"
+        })
+
+
+# =============================================================================
+# ADMIN DASHBOARD — HTML pages (protected by login)
 # =============================================================================
 
 @app.route("/admin")
+@admin_required
 def admin_dashboard():
     """
     GET /admin
     Render the admin dashboard HTML page.
-    This is where site owners can edit all content.
+    Protected by password authentication.
     """
     return render_template("admin/dashboard.html")
 
 
 # =============================================================================
-# ADMIN API — CRUD endpoints for the admin dashboard
+# ADMIN API — CRUD endpoints (protected by login)
 # =============================================================================
-# These endpoints are called by the admin dashboard's JavaScript
-# to create, read, update, and delete content in the database.
-# In a production app, you would protect these with authentication.
 
 # --------------- Gallery Cards CRUD ---------------
 
 @app.route("/admin/api/gallery-cards", methods=["GET"])
+@admin_required
 def admin_get_cards():
     """GET all gallery cards for the admin panel."""
     cards = query_db("SELECT * FROM gallery_cards ORDER BY sort_order ASC")
@@ -317,11 +731,11 @@ def admin_get_cards():
 
 
 @app.route("/admin/api/gallery-cards", methods=["POST"])
+@admin_required
 def admin_create_card():
     """
     POST /admin/api/gallery-cards
-    Create a new gallery card. Expects JSON body with:
-      slug, title, subtitle, image_url, category, description, details, price, sort_order
+    Create a new gallery card.
     """
     data = request.get_json()
     card = execute_db(
@@ -339,11 +753,9 @@ def admin_create_card():
 
 
 @app.route("/admin/api/gallery-cards/<int:card_id>", methods=["PUT"])
+@admin_required
 def admin_update_card(card_id):
-    """
-    PUT /admin/api/gallery-cards/<id>
-    Update an existing gallery card. Expects JSON body with fields to update.
-    """
+    """PUT /admin/api/gallery-cards/<id> — Update a gallery card."""
     data = request.get_json()
     card = execute_db(
         """UPDATE gallery_cards SET
@@ -365,11 +777,9 @@ def admin_update_card(card_id):
 
 
 @app.route("/admin/api/gallery-cards/<int:card_id>", methods=["DELETE"])
+@admin_required
 def admin_delete_card(card_id):
-    """
-    DELETE /admin/api/gallery-cards/<id>
-    Remove a gallery card from the database.
-    """
+    """DELETE /admin/api/gallery-cards/<id> — Remove a gallery card."""
     count = execute_db("DELETE FROM gallery_cards WHERE id = %s", (card_id,))
     if count == 0:
         return jsonify({"error": "Card not found"}), 404
@@ -379,19 +789,17 @@ def admin_delete_card(card_id):
 # --------------- Experiences CRUD ---------------
 
 @app.route("/admin/api/experiences", methods=["GET"])
+@admin_required
 def admin_get_experiences():
-    """GET all experiences for the admin panel."""
+    """GET all experiences."""
     exps = query_db("SELECT * FROM experiences ORDER BY sort_order ASC")
     return jsonify(exps or [])
 
 
 @app.route("/admin/api/experiences", methods=["POST"])
+@admin_required
 def admin_create_experience():
-    """
-    POST /admin/api/experiences
-    Create a new experience. Expects JSON body with:
-      name, description, icon, sort_order
-    """
+    """POST /admin/api/experiences — Create a new experience."""
     data = request.get_json()
     exp = execute_db(
         """INSERT INTO experiences (name, description, icon, sort_order)
@@ -402,11 +810,9 @@ def admin_create_experience():
 
 
 @app.route("/admin/api/experiences/<int:exp_id>", methods=["PUT"])
+@admin_required
 def admin_update_experience(exp_id):
-    """
-    PUT /admin/api/experiences/<id>
-    Update an existing experience.
-    """
+    """PUT /admin/api/experiences/<id> — Update an experience."""
     data = request.get_json()
     exp = execute_db(
         """UPDATE experiences SET
@@ -421,11 +827,9 @@ def admin_update_experience(exp_id):
 
 
 @app.route("/admin/api/experiences/<int:exp_id>", methods=["DELETE"])
+@admin_required
 def admin_delete_experience(exp_id):
-    """
-    DELETE /admin/api/experiences/<id>
-    Remove an experience from the database.
-    """
+    """DELETE /admin/api/experiences/<id> — Remove an experience."""
     count = execute_db("DELETE FROM experiences WHERE id = %s", (exp_id,))
     if count == 0:
         return jsonify({"error": "Experience not found"}), 404
@@ -435,19 +839,17 @@ def admin_delete_experience(exp_id):
 # --------------- Pricing CRUD ---------------
 
 @app.route("/admin/api/pricing", methods=["GET"])
+@admin_required
 def admin_get_pricing():
-    """GET all pricing seasons for the admin panel."""
+    """GET all pricing seasons."""
     pricing = query_db("SELECT * FROM pricing_seasons ORDER BY sort_order ASC")
     return jsonify(pricing or [])
 
 
 @app.route("/admin/api/pricing", methods=["POST"])
+@admin_required
 def admin_create_pricing():
-    """
-    POST /admin/api/pricing
-    Create a new pricing season. Expects JSON body with:
-      label, date_range, price_range, sort_order
-    """
+    """POST /admin/api/pricing — Create a new pricing season."""
     data = request.get_json()
     p = execute_db(
         """INSERT INTO pricing_seasons (label, date_range, price_range, sort_order)
@@ -458,11 +860,9 @@ def admin_create_pricing():
 
 
 @app.route("/admin/api/pricing/<int:price_id>", methods=["PUT"])
+@admin_required
 def admin_update_pricing(price_id):
-    """
-    PUT /admin/api/pricing/<id>
-    Update an existing pricing season.
-    """
+    """PUT /admin/api/pricing/<id> — Update a pricing season."""
     data = request.get_json()
     p = execute_db(
         """UPDATE pricing_seasons SET
@@ -477,11 +877,9 @@ def admin_update_pricing(price_id):
 
 
 @app.route("/admin/api/pricing/<int:price_id>", methods=["DELETE"])
+@admin_required
 def admin_delete_pricing(price_id):
-    """
-    DELETE /admin/api/pricing/<id>
-    Remove a pricing season from the database.
-    """
+    """DELETE /admin/api/pricing/<id> — Remove a pricing season."""
     count = execute_db("DELETE FROM pricing_seasons WHERE id = %s", (price_id,))
     if count == 0:
         return jsonify({"error": "Pricing not found"}), 404
@@ -491,6 +889,7 @@ def admin_delete_pricing(price_id):
 # --------------- Site Settings CRUD ---------------
 
 @app.route("/admin/api/site-settings", methods=["GET"])
+@admin_required
 def admin_get_settings():
     """GET the current site settings."""
     settings = query_db("SELECT * FROM site_settings WHERE id = 1", fetchone=True)
@@ -498,13 +897,9 @@ def admin_get_settings():
 
 
 @app.route("/admin/api/site-settings", methods=["PUT"])
+@admin_required
 def admin_update_settings():
-    """
-    PUT /admin/api/site-settings
-    Update the site-wide settings. Expects JSON body with:
-      site_name, site_subtitle, hero_tagline, hero_title, hero_description,
-      hero_image, logo_initials
-    """
+    """PUT /admin/api/site-settings — Update site-wide settings."""
     data = request.get_json()
     settings = execute_db(
         """UPDATE site_settings SET
@@ -521,15 +916,51 @@ def admin_update_settings():
     return jsonify(settings)
 
 
+# --------------- Chatbot Settings CRUD ---------------
+
+@app.route("/admin/api/chatbot-settings", methods=["GET"])
+@admin_required
+def admin_get_chatbot():
+    """GET the current chatbot settings."""
+    settings = query_db("SELECT * FROM chatbot_settings WHERE id = 1", fetchone=True)
+    return jsonify(settings or {})
+
+
+@app.route("/admin/api/chatbot-settings", methods=["PUT"])
+@admin_required
+def admin_update_chatbot():
+    """
+    PUT /admin/api/chatbot-settings
+    Update the chatbot configuration. Expects JSON body with:
+      enabled, mode, agent_name, agent_role, agent_avatar,
+      greeting, quick_prompts, api_endpoint, embed_code
+    """
+    data = request.get_json()
+    settings = execute_db(
+        """UPDATE chatbot_settings SET
+             enabled = %s, mode = %s, agent_name = %s, agent_role = %s,
+             agent_avatar = %s, greeting = %s, quick_prompts = %s::jsonb,
+             api_endpoint = %s, embed_code = %s, updated_at = NOW()
+           WHERE id = 1 RETURNING *""",
+        (
+            data.get("enabled", False),
+            data.get("mode", "builtin"),
+            data.get("agent_name", "Marco"),
+            data.get("agent_role", "Concierge"),
+            data.get("agent_avatar", "M"),
+            data.get("greeting", ""),
+            json.dumps(data.get("quick_prompts", [])),
+            data.get("api_endpoint", "/api/chat"),
+            data.get("embed_code", "")
+        )
+    )
+    return jsonify(settings)
+
+
 # =============================================================================
 # APP ENTRY POINT
 # =============================================================================
 
 if __name__ == "__main__":
-    # Initialize database tables on startup
     init_db()
-
-    # Start the Flask development server
-    # Host 0.0.0.0 makes it accessible externally (required for Replit)
-    # Port 5000 matches the Replit workflow configuration
     app.run(host="0.0.0.0", port=5000, debug=True)

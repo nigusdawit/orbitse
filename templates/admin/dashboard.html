@@ -352,6 +352,50 @@ TO CUSTOMIZE THIS DASHBOARD:
       color: var(--admin-text-muted);
     }
 
+    /* Toggle switch for enable/disable */
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 52px;
+      height: 28px;
+      flex-shrink: 0;
+    }
+
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      inset: 0;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 9999px;
+      transition: background 0.3s;
+    }
+
+    .toggle-slider::before {
+      content: '';
+      position: absolute;
+      height: 22px;
+      width: 22px;
+      left: 3px;
+      bottom: 3px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.3s;
+    }
+
+    .toggle-switch input:checked + .toggle-slider {
+      background: var(--admin-success);
+    }
+
+    .toggle-switch input:checked + .toggle-slider::before {
+      transform: translateX(24px);
+    }
+
     /* Responsive */
     @media (max-width: 768px) {
       .tab-nav { overflow-x: auto; }
@@ -376,6 +420,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     </div>
     <div style="display: flex; gap: 1rem; align-items: center;">
       <a href="/" target="_blank">&#x2197; View Public Site</a>
+      <a href="/admin/logout" style="color: var(--admin-danger);">Logout</a>
     </div>
   </header>
 
@@ -391,6 +436,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     <button class="tab-btn" onclick="switchTab('cards')" data-testid="tab-cards">Gallery Cards</button>
     <button class="tab-btn" onclick="switchTab('experiences')" data-testid="tab-experiences">Experiences</button>
     <button class="tab-btn" onclick="switchTab('pricing')" data-testid="tab-pricing">Pricing</button>
+    <button class="tab-btn" onclick="switchTab('chatbot')" data-testid="tab-chatbot">Chatbot</button>
   </nav>
 
 
@@ -692,10 +738,121 @@ TO CUSTOMIZE THIS DASHBOARD:
 
   <!--
   ========================================================================
+  TAB: CHATBOT
+  ========================================================================
+  Manage the AI chatbot settings:
+  - Master enable/disable toggle
+  - Mode selection (built-in chat vs. external embed)
+  - Built-in mode: Agent name, role, avatar, greeting, prompts, API endpoint
+  - Embed mode: Paste external widget code
+
+  HOW IT WORKS:
+  - All settings are stored in the chatbot_settings table (singleton row, id=1)
+  - The public site reads these settings via GET /api/chatbot-settings
+  - When enabled=false, the chatbot is completely hidden from the site
+  -->
+  <div id="tab-chatbot" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Chatbot Settings</h2>
+        <p>Configure the AI concierge chatbot shown on the public site.</p>
+      </div>
+    </div>
+
+    <div class="form-panel" id="chatbot-form-panel">
+
+      <!-- Master Enable/Disable Toggle -->
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.5rem; padding: 1rem; background: var(--admin-bg); border-radius: var(--admin-radius); border: 1px solid var(--admin-border);">
+        <div>
+          <h3 style="font-size: 1rem; margin-bottom: 0.25rem;">Enable Chatbot</h3>
+          <p style="color: var(--admin-text-muted); font-size: 0.8125rem;">When disabled, the chatbot is completely hidden from the public site.</p>
+        </div>
+        <label class="toggle-switch" data-testid="toggle-chatbot-enabled">
+          <input type="checkbox" id="chatbot-enabled">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      <!-- Mode Selector -->
+      <h3>Connection Mode</h3>
+      <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 1rem;">Choose how the chatbot connects to an AI agent.</p>
+      <div class="form-row" style="margin-bottom: 1.5rem;">
+        <div class="form-group">
+          <label for="chatbot-mode">Mode</label>
+          <select id="chatbot-mode" onchange="toggleChatbotMode()" data-testid="select-chatbot-mode">
+            <option value="builtin">Built-in Chat (use your own API)</option>
+            <option value="embed">External Embed (paste widget code)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Built-in Mode Settings -->
+      <div id="chatbot-builtin-settings">
+        <h3>Agent Appearance</h3>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="chatbot-agent-name">Agent Name</label>
+            <input type="text" id="chatbot-agent-name" placeholder="Marco" data-testid="input-chatbot-name">
+          </div>
+          <div class="form-group">
+            <label for="chatbot-agent-role">Agent Role</label>
+            <input type="text" id="chatbot-agent-role" placeholder="Concierge" data-testid="input-chatbot-role">
+          </div>
+          <div class="form-group">
+            <label for="chatbot-agent-avatar">Avatar (initials or URL)</label>
+            <input type="text" id="chatbot-agent-avatar" placeholder="M" data-testid="input-chatbot-avatar">
+          </div>
+        </div>
+
+        <h3 style="margin-top: 1.5rem;">Greeting &amp; Prompts</h3>
+        <div class="form-row">
+          <div class="form-group" style="grid-column: 1 / -1;">
+            <label for="chatbot-greeting">Greeting Message (first message the bot sends)</label>
+            <textarea id="chatbot-greeting" rows="2" placeholder="Welcome! How can I help you today?" data-testid="input-chatbot-greeting"></textarea>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="grid-column: 1 / -1;">
+            <label for="chatbot-quick-prompts">Quick Prompts (one per line — shown as clickable chips)</label>
+            <textarea id="chatbot-quick-prompts" rows="4" placeholder="Tour the villa&#10;Show me the rooms&#10;What experiences do you offer?&#10;Tell me about pricing" data-testid="input-chatbot-prompts"></textarea>
+          </div>
+        </div>
+
+        <h3 style="margin-top: 1.5rem;">API Connection</h3>
+        <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 1rem;">The endpoint where chat messages are sent via POST. Default: /api/chat (built-in demo). Change this to your own AI API endpoint.</p>
+        <div class="form-row">
+          <div class="form-group" style="grid-column: 1 / -1;">
+            <label for="chatbot-api-endpoint">API Endpoint URL</label>
+            <input type="text" id="chatbot-api-endpoint" placeholder="/api/chat" data-testid="input-chatbot-endpoint">
+          </div>
+        </div>
+      </div>
+
+      <!-- Embed Mode Settings -->
+      <div id="chatbot-embed-settings" style="display:none;">
+        <h3>External Widget Code</h3>
+        <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 1rem;">Paste the embed code from your external chatbot provider (e.g., Intercom, Drift, Tidio, or any custom widget). This code will be injected into the public site.</p>
+        <div class="form-row">
+          <div class="form-group" style="grid-column: 1 / -1;">
+            <label for="chatbot-embed-code">Embed Code (HTML/Script)</label>
+            <textarea id="chatbot-embed-code" rows="8" placeholder='<script src="https://your-chatbot-provider.com/widget.js"></script>' data-testid="input-chatbot-embed" style="font-family: monospace; font-size: 0.8125rem;"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="saveChatbotSettings()" data-testid="button-save-chatbot">Save Chatbot Settings</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!--
+  ========================================================================
   ADMIN JAVASCRIPT
   ========================================================================
   Handles all CRUD operations for the admin dashboard.
-  Each section (Settings, Cards, Experiences, Pricing) has its own
+  Each section (Settings, Cards, Experiences, Pricing, Chatbot) has its own
   set of functions: load, show form, hide form, save, edit, delete.
   -->
   <script>
@@ -1139,6 +1296,83 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     /*
     ========================================================================
+    CHATBOT — Settings CRUD
+    ========================================================================
+    Load and save chatbot configuration.
+    The chatbot_settings table is a singleton (id=1).
+    */
+
+    async function loadChatbotSettings() {
+      try {
+        const res = await fetch('/admin/api/chatbot-settings');
+        const settings = await res.json();
+
+        document.getElementById('chatbot-enabled').checked = settings.enabled || false;
+        document.getElementById('chatbot-mode').value = settings.mode || 'builtin';
+        document.getElementById('chatbot-agent-name').value = settings.agent_name || '';
+        document.getElementById('chatbot-agent-role').value = settings.agent_role || '';
+        document.getElementById('chatbot-agent-avatar').value = settings.agent_avatar || '';
+        document.getElementById('chatbot-greeting').value = settings.greeting || '';
+        document.getElementById('chatbot-api-endpoint').value = settings.api_endpoint || '/api/chat';
+        document.getElementById('chatbot-embed-code').value = settings.embed_code || '';
+
+        /* Convert quick_prompts array to newline-separated text */
+        const prompts = settings.quick_prompts || [];
+        document.getElementById('chatbot-quick-prompts').value = prompts.join('\n');
+
+        /* Show/hide mode-specific fields */
+        toggleChatbotMode();
+      } catch (err) {
+        showToast('Failed to load chatbot settings', 'error');
+      }
+    }
+
+    function toggleChatbotMode() {
+      const mode = document.getElementById('chatbot-mode').value;
+      document.getElementById('chatbot-builtin-settings').style.display = mode === 'builtin' ? 'block' : 'none';
+      document.getElementById('chatbot-embed-settings').style.display = mode === 'embed' ? 'block' : 'none';
+    }
+
+    async function saveChatbotSettings() {
+      /* Convert newline-separated prompts to array */
+      const promptsText = document.getElementById('chatbot-quick-prompts').value;
+      const quickPrompts = promptsText
+        .split('\n')
+        .map(p => p.trim())
+        .filter(p => p.length > 0);
+
+      const data = {
+        enabled: document.getElementById('chatbot-enabled').checked,
+        mode: document.getElementById('chatbot-mode').value,
+        agent_name: document.getElementById('chatbot-agent-name').value,
+        agent_role: document.getElementById('chatbot-agent-role').value,
+        agent_avatar: document.getElementById('chatbot-agent-avatar').value,
+        greeting: document.getElementById('chatbot-greeting').value,
+        quick_prompts: quickPrompts,
+        api_endpoint: document.getElementById('chatbot-api-endpoint').value,
+        embed_code: document.getElementById('chatbot-embed-code').value
+      };
+
+      try {
+        const res = await fetch('/admin/api/chatbot-settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+
+        if (res.ok) {
+          showToast('Chatbot settings saved!');
+        } else {
+          showToast('Failed to save chatbot settings', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save chatbot settings', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
     INITIALIZATION — Load all data on page load
     ========================================================================
     */
@@ -1147,6 +1381,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       loadCards();
       loadExperiences();
       loadPricing();
+      loadChatbotSettings();
     });
   </script>
 </body>

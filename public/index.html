@@ -359,6 +359,324 @@ FONTS:
   <!-- END BOOKING MODAL -->
 
 
+  <!--
+  ============================================================================
+  CHATBOT — AI Concierge Bar + Split-Screen Overlay
+  ============================================================================
+  This section contains ALL chatbot UI elements. The chatbot is controlled
+  by the admin dashboard — it can be enabled/disabled, and configured to
+  use either a built-in chat UI or an external embed widget.
+
+  ARCHITECTURE:
+  The chatbot has THREE visual states:
+
+  1. COLLAPSED BAR (default when enabled)
+     A sleek glass-panel pill at the bottom of the screen.
+     Shows the agent avatar, name, a text input, and expand button.
+     Users can type directly in the bar without expanding.
+
+  2. EXPANDED CHAT PANEL
+     Slides up from the bar to show full chat history.
+     Contains message bubbles, quick prompt chips, and input bar.
+
+  3. SPLIT-SCREEN MODE
+     When the AI sends a visual command, the screen splits:
+     - Left side (40%): Chat panel
+     - Right side (60%): Content area showing either:
+       a. A gallery slide (AI navigated the site)
+       b. A structured slide (AI-generated presentation)
+       c. A custom HTML canvas (AI-generated dynamic content)
+     On mobile, the content shows as an overlay instead of side-by-side.
+
+  HOW TO CUSTOMIZE:
+  - Styles are in styles.css (search for "CHATBOT")
+  - Behavior is in script.js (search for "CHATBOT")
+  - Settings come from /api/chatbot-settings (configured in admin dashboard)
+
+  HOW TO GIVE THE AI MORE CONTROL:
+  - See script.js → executeCommand() function for all available commands
+  - Each command type has a handler that manipulates the DOM
+  - To add a new command, add a case in executeCommand() and document it
+  ============================================================================
+  -->
+
+  <!-- Chatbot Container — everything is inside this wrapper -->
+  <!-- Hidden by default; shown by JavaScript when chatbot is enabled in admin -->
+  <div id="chatbot-container" class="chatbot-container" style="display:none;" data-testid="chatbot-container">
+
+    <!--
+    ======================================================================
+    COLLAPSED BAR — Floating glass-panel pill at the bottom
+    ======================================================================
+    Always visible when the chatbot is enabled.
+    Contains: avatar, agent name/role, inline text input, send + expand buttons.
+    -->
+    <div id="chatbot-bar" class="chatbot-bar" data-testid="chatbot-bar">
+      <!-- Agent avatar — shows initials or image -->
+      <div id="chatbot-avatar" class="chatbot-avatar" data-testid="chatbot-avatar">M</div>
+
+      <!-- Agent info (name + role) — visible on wider screens -->
+      <div class="chatbot-agent-info">
+        <span id="chatbot-agent-name" class="chatbot-agent-name" data-testid="text-agent-name">Marco</span>
+        <span id="chatbot-agent-role" class="chatbot-agent-role" data-testid="text-agent-role">Concierge</span>
+      </div>
+
+      <!-- Inline text input — users can type here without expanding -->
+      <input
+        id="chatbot-bar-input"
+        class="chatbot-bar-input"
+        type="text"
+        placeholder="Ask me anything..."
+        autocomplete="off"
+        data-testid="input-chatbot-bar"
+      >
+
+      <!-- Send button — submits the message -->
+      <button id="chatbot-send-btn" class="chatbot-bar-btn" onclick="chatSendMessage()" data-testid="button-chatbot-send">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m22 2-7 20-4-9-9-4Z"/><path d="m22 2-11 11"/>
+        </svg>
+      </button>
+
+      <!-- Expand/collapse toggle — opens/closes the full chat panel -->
+      <button id="chatbot-expand-btn" class="chatbot-bar-btn" onclick="chatToggleExpand()" data-testid="button-chatbot-expand">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m18 15-6-6-6 6"/>
+        </svg>
+      </button>
+    </div>
+
+    <!--
+    ======================================================================
+    EXPANDED CHAT PANEL — Full chat interface
+    ======================================================================
+    Slides up from the bar to reveal:
+    - Header with agent name/role and close button
+    - Message history (scrollable)
+    - Quick prompt chips (suggested questions)
+    - Input bar at the bottom
+    -->
+    <div id="chatbot-panel" class="chatbot-panel" data-testid="chatbot-panel">
+
+      <!-- Panel header -->
+      <div class="chatbot-panel-header">
+        <div class="chatbot-panel-header-info">
+          <div id="chatbot-panel-avatar" class="chatbot-avatar chatbot-avatar-sm">M</div>
+          <div>
+            <span id="chatbot-panel-name" class="chatbot-agent-name">Marco</span>
+            <span id="chatbot-panel-role" class="chatbot-agent-role">Concierge</span>
+          </div>
+        </div>
+        <button class="chatbot-close-btn" onclick="chatToggleExpand()" data-testid="button-chatbot-close">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m6 9 6 6 6-6"/>
+          </svg>
+        </button>
+      </div>
+
+      <!--
+      Message history — scrollable area for chat bubbles.
+      Messages are appended here by JavaScript.
+      User messages align right, agent messages align left.
+      -->
+      <div id="chatbot-messages" class="chatbot-messages" data-testid="chatbot-messages">
+        <!-- Messages are inserted here dynamically by script.js -->
+      </div>
+
+      <!--
+      Quick prompt chips — suggested questions the user can click.
+      These come from the chatbot_settings.quick_prompts field in the database.
+      -->
+      <div id="chatbot-quick-prompts" class="chatbot-quick-prompts" data-testid="chatbot-quick-prompts">
+        <!-- Quick prompt buttons are inserted here dynamically -->
+      </div>
+
+      <!-- Input bar at the bottom of the expanded panel -->
+      <div class="chatbot-input-bar">
+        <input
+          id="chatbot-panel-input"
+          class="chatbot-panel-input"
+          type="text"
+          placeholder="Type your message..."
+          autocomplete="off"
+          data-testid="input-chatbot-panel"
+        >
+        <button class="chatbot-send-panel-btn" onclick="chatSendMessage()" data-testid="button-chatbot-panel-send">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m22 2-7 20-4-9-9-4Z"/><path d="m22 2-11 11"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+  </div>
+  <!-- END CHATBOT CONTAINER -->
+
+
+  <!--
+  ============================================================================
+  SPLIT-SCREEN OVERLAY — AI-controlled visual display
+  ============================================================================
+  When the AI sends a visual command (navigate, showSlide, generateHTML),
+  this overlay appears and splits the screen:
+  - Left: The chat panel (repositioned)
+  - Right: Content area (gallery slide, structured slide, or HTML canvas)
+
+  This overlay sits on top of everything (z-index: 60) and can be dismissed
+  by the user at any time.
+
+  THREE CONTENT MODES:
+  1. NAVIGATE — Shows a gallery slide (image + text from the database)
+  2. SHOW SLIDE — Shows a structured presentation (title, subtitle, bullet points)
+  3. GENERATE HTML — Renders custom AI-generated HTML on a blank canvas
+
+  HOW TO ADD MORE CONTENT MODES:
+  1. Add a new <div> inside .split-content with a unique ID
+  2. Add a handler in script.js → executeCommand()
+  3. Show/hide the appropriate content div
+  4. Document the new command in the system prompt
+  ============================================================================
+  -->
+  <div id="split-overlay" class="split-overlay" data-testid="split-overlay">
+
+    <!--
+    Left side — Chat panel (40% width)
+    When split-screen is active, the chat is repositioned here.
+    This is a separate instance — messages are cloned/synced from the main panel.
+    -->
+    <div class="split-chat" id="split-chat">
+      <div class="chatbot-panel-header">
+        <div class="chatbot-panel-header-info">
+          <div id="split-chat-avatar" class="chatbot-avatar chatbot-avatar-sm">M</div>
+          <div>
+            <span id="split-chat-name" class="chatbot-agent-name">Marco</span>
+            <span id="split-chat-role" class="chatbot-agent-role">Concierge</span>
+          </div>
+        </div>
+        <button class="chatbot-close-btn" onclick="closeSplitScreen()" data-testid="button-split-close">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+          </svg>
+        </button>
+      </div>
+      <div id="split-chat-messages" class="chatbot-messages" data-testid="split-chat-messages">
+        <!-- Synced from main chat -->
+      </div>
+      <div class="chatbot-input-bar">
+        <input
+          id="split-chat-input"
+          class="chatbot-panel-input"
+          type="text"
+          placeholder="Type your message..."
+          autocomplete="off"
+          data-testid="input-split-chat"
+        >
+        <button class="chatbot-send-panel-btn" onclick="chatSendMessage()" data-testid="button-split-send">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m22 2-7 20-4-9-9-4Z"/><path d="m22 2-11 11"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!--
+    Right side — Content area (60% width)
+    Displays one of three content types based on the AI's command.
+    -->
+    <div class="split-content" id="split-content">
+
+      <!--
+      NAVIGATE MODE — Shows a gallery slide
+      Displays the same fullscreen image + text as the gallery view,
+      but within the split-screen context.
+      -->
+      <div id="split-navigate" class="split-content-panel" style="display:none;" data-testid="split-navigate">
+        <div id="split-nav-bg" class="split-nav-bg"></div>
+        <div class="split-nav-overlay"></div>
+        <div class="split-nav-content">
+          <span id="split-nav-category" class="slide-category-badge"></span>
+          <h2 id="split-nav-title" class="split-nav-title"></h2>
+          <p id="split-nav-subtitle" class="split-nav-subtitle"></p>
+          <p id="split-nav-description" class="split-nav-description"></p>
+        </div>
+      </div>
+
+      <!--
+      SHOW SLIDE MODE — Structured presentation
+      The AI provides title, subtitle, bullet points, and optional image.
+      Rendered as an elegant card-style presentation.
+      -->
+      <div id="split-slide" class="split-content-panel" style="display:none;" data-testid="split-slide">
+        <div class="split-slide-inner">
+          <div class="split-slide-eyebrow">Concierge Recommendation</div>
+          <h2 id="split-slide-title" class="split-slide-title"></h2>
+          <p id="split-slide-subtitle" class="split-slide-subtitle"></p>
+          <ul id="split-slide-points" class="split-slide-points">
+            <!-- Points are inserted dynamically -->
+          </ul>
+        </div>
+      </div>
+
+      <!--
+      GENERATE HTML MODE — AI-created content canvas
+      ============================================================
+      This is the most powerful mode. The AI can generate ANY HTML
+      and it will be rendered here on a blank canvas.
+
+      USE CASES:
+      - Comparison tables (room vs room)
+      - Pricing breakdowns with custom formatting
+      - Interactive itineraries
+      - Custom charts or visual data
+      - Any content the AI can express in HTML
+
+      SECURITY NOTE:
+      The HTML is rendered directly in a div (not an iframe).
+      In a production environment, you may want to use an iframe
+      with sandbox attribute for additional security, or sanitize
+      the HTML before rendering.
+
+      TO USE AN IFRAME INSTEAD (more secure):
+      Replace the div below with:
+      <iframe id="split-canvas-frame" class="split-canvas-frame"
+              sandbox="allow-scripts" srcdoc=""></iframe>
+      Then in script.js, set: frame.srcdoc = html;
+      ============================================================
+      -->
+      <div id="split-canvas" class="split-content-panel split-canvas" style="display:none;" data-testid="split-canvas">
+        <div id="split-canvas-content" class="split-canvas-content">
+          <!-- AI-generated HTML is rendered here -->
+        </div>
+      </div>
+
+    </div>
+  </div>
+  <!-- END SPLIT-SCREEN OVERLAY -->
+
+
+  <!--
+  ============================================================================
+  EMBED CONTAINER — For external chatbot widgets
+  ============================================================================
+  When the admin sets mode="embed" and pastes an external chatbot script
+  (e.g., Intercom, Drift, Tidio, or a custom widget), the script/HTML
+  is injected into this container.
+
+  HOW IT WORKS:
+  - JavaScript reads the embed_code from chatbot_settings
+  - It injects the raw HTML/script into this div
+  - The external widget takes over from there
+
+  SECURITY NOTE:
+  Only paste embed code from trusted sources. The code runs with
+  full page access, just like any other script on the page.
+  ============================================================================
+  -->
+  <div id="chatbot-embed-container" data-testid="chatbot-embed-container">
+    <!-- External embed code is injected here by script.js -->
+  </div>
+
+
   <!-- Main JavaScript — handles all interactivity -->
   <script src="/script.js"></script>
 </body>

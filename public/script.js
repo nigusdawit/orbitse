@@ -779,4 +779,760 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('booking-modal').addEventListener('click', (e) => {
     if (e.target === e.currentTarget) closeModal();
   });
+
+  /* Initialize the chatbot system */
+  initChatbot();
 });
+
+
+/* =============================================================================
+   11. CHATBOT — AI Concierge System
+   =============================================================================
+   This section implements the entire chatbot system:
+   - Initialization from database settings
+   - Built-in chat with message history
+   - AI site control (navigate, showSlide, generateHTML)
+   - Split-screen overlay management
+
+   ┌─────────────────────────────────────────────────────────────────┐
+   │ CHATBOT ARCHITECTURE OVERVIEW                                   │
+   │                                                                 │
+   │  User types message                                             │
+   │       ↓                                                         │
+   │  POST to api_endpoint with {message, history}                   │
+   │       ↓                                                         │
+   │  Server returns {reply, command?}                               │
+   │       ↓                                                         │
+   │  Display reply as message bubble                                │
+   │       ↓                                                         │
+   │  If command exists → executeCommand(command)                    │
+   │       ↓                                                         │
+   │  ┌─ "navigate"    → Open split-screen, show gallery slide      │
+   │  ├─ "showSlide"   → Open split-screen, show structured slide   │
+   │  └─ "generateHTML"→ Open split-screen, render HTML on canvas   │
+   └─────────────────────────────────────────────────────────────────┘
+
+   HOW THE AI CONTROLS THE SITE:
+   The API returns JSON responses. When a response includes a "command"
+   field, the frontend parses and executes it. This gives the AI agent
+   the ability to control what the user sees on the website.
+
+   Example API response with a command:
+   {
+     "reply": "Let me show you our infinity pool!",
+     "command": { "action": "navigate", "target": "infinity-pool" }
+   }
+
+   The frontend then:
+   1. Shows the reply as a message bubble
+   2. Opens the split-screen overlay
+   3. Navigates the content area to the specified gallery slide
+
+   HOW TO ADD NEW COMMANDS:
+   To give the AI even more control over the site, you can add new commands:
+
+   1. Define the command format:
+      { "action": "yourNewCommand", "param1": "value1", ... }
+
+   2. Add a handler in the executeCommand() function below:
+      case 'yourNewCommand':
+        // Your logic here — show/hide elements, update content, etc.
+        break;
+
+   3. Update the system prompt (in app.py) to teach the AI about the new command.
+
+   4. Test by making the API return a response with the new command.
+
+   EXAMPLE: Adding a "highlightSection" command that scrolls the landing
+   page to a specific section:
+
+   // In executeCommand():
+   case 'highlightSection':
+     showLanding();
+     document.getElementById(cmd.sectionId).scrollIntoView({ behavior: 'smooth' });
+     break;
+
+   // In the system prompt:
+   // {"action": "highlightSection", "sectionId": "section-experiences"}
+
+   SAMPLE SYSTEM PROMPT FOR YOUR AI AGENT:
+   ──────────────────────────────────────────
+   You are Marco, a luxury concierge for Casa Serena, a Mediterranean villa.
+   You can control the website by including commands in your responses.
+
+   Available commands (include in the "command" field of your JSON response):
+
+   1. Navigate to a property area:
+      {"action": "navigate", "target": "CARD_SLUG"}
+      Slugs: hero-villa, master-suite, ocean-room, infinity-pool,
+             chef-kitchen, wine-cellar, sunset-terrace, coastal-village
+
+   2. Show a structured presentation:
+      {"action": "showSlide", "title": "...", "subtitle": "...",
+       "points": ["point 1", "point 2", ...]}
+
+   3. Generate custom HTML content:
+      {"action": "generateHTML", "html": "<div>Your HTML here</div>"}
+      Use this for comparison tables, pricing breakdowns, or custom layouts.
+
+   Rules:
+   - ALWAYS navigate when discussing a specific space
+   - Use showSlide for structured comparisons and recommendations
+   - Use generateHTML for complex visual content (tables, charts, etc.)
+   - Keep text replies to 1-3 sentences — let visuals do the talking
+   ──────────────────────────────────────────
+============================================================================= */
+
+
+/* --------------- Chatbot State ---------------
+   These variables track the chatbot's current state.
+   chatSettings: Configuration from the database (/api/chatbot-settings)
+   chatHistory: Array of {role, content} messages for context
+   chatExpanded: Whether the chat panel is currently expanded
+   splitScreenActive: Whether the split-screen overlay is open
+   chatInitialized: Prevents re-initialization
+*/
+let chatSettings = null;
+let chatHistory = [];
+let chatExpanded = false;
+let splitScreenActive = false;
+let chatInitialized = false;
+
+
+/**
+ * Initialize the chatbot system.
+ * Fetches settings from the database and sets up the appropriate mode.
+ *
+ * FLOW:
+ * 1. Fetch /api/chatbot-settings
+ * 2. If enabled=false → do nothing (site works cleanly without chatbot)
+ * 3. If mode='embed' → inject the external embed code
+ * 4. If mode='builtin' → set up the built-in chat UI
+ */
+async function initChatbot() {
+  try {
+    const res = await fetch('/api/chatbot-settings');
+    chatSettings = await res.json();
+
+    /* If chatbot is disabled, don't show anything — clean site */
+    if (!chatSettings || !chatSettings.enabled) {
+      return;
+    }
+
+    /* MODE: EMBED — Inject external chatbot widget */
+    if (chatSettings.mode === 'embed' && chatSettings.embed_code) {
+      const embedContainer = document.getElementById('chatbot-embed-container');
+      if (embedContainer) {
+        /*
+         * Inject the external embed code.
+         * The code can contain <script> tags, <div> containers, etc.
+         * We use a Range + createContextualFragment to execute scripts.
+         */
+        const range = document.createRange();
+        range.setStart(embedContainer, 0);
+        embedContainer.appendChild(
+          range.createContextualFragment(chatSettings.embed_code)
+        );
+      }
+      return;
+    }
+
+    /* MODE: BUILTIN — Set up the built-in chat interface */
+    if (chatSettings.mode === 'builtin') {
+      setupBuiltinChat();
+    }
+
+  } catch (error) {
+    console.error('Failed to initialize chatbot:', error);
+  }
+}
+
+
+/**
+ * Set up the built-in chat interface.
+ * Configures the UI with settings from the database:
+ * - Agent name, role, avatar
+ * - Quick prompt chips
+ * - Event listeners for input fields
+ */
+function setupBuiltinChat() {
+  /* Show the chatbot container */
+  const container = document.getElementById('chatbot-container');
+  if (container) container.style.display = '';
+
+  /* Update agent avatar across all locations */
+  const avatarText = chatSettings.agent_avatar || 'M';
+  document.querySelectorAll('#chatbot-avatar, #chatbot-panel-avatar, #split-chat-avatar').forEach(el => {
+    el.textContent = avatarText;
+  });
+
+  /* Update agent name across all locations */
+  const agentName = chatSettings.agent_name || 'Marco';
+  document.querySelectorAll('#chatbot-agent-name, #chatbot-panel-name, #split-chat-name').forEach(el => {
+    el.textContent = agentName;
+  });
+
+  /* Update agent role across all locations */
+  const agentRole = chatSettings.agent_role || 'Concierge';
+  document.querySelectorAll('#chatbot-agent-role, #chatbot-panel-role, #split-chat-role').forEach(el => {
+    el.textContent = agentRole;
+  });
+
+  /* Render quick prompt chips */
+  const promptsContainer = document.getElementById('chatbot-quick-prompts');
+  const prompts = chatSettings.quick_prompts || [];
+  if (promptsContainer && prompts.length > 0) {
+    promptsContainer.innerHTML = prompts.map(prompt => `
+      <button class="chatbot-quick-prompt" onclick="chatSendQuickPrompt('${prompt.replace(/'/g, "\\'")}')" data-testid="button-quick-prompt">
+        ${prompt}
+      </button>
+    `).join('');
+  }
+
+  /* Set up Enter key handler for bar input */
+  const barInput = document.getElementById('chatbot-bar-input');
+  if (barInput) {
+    barInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && barInput.value.trim()) {
+        e.preventDefault();
+        chatSendMessage();
+      }
+    });
+  }
+
+  /* Set up Enter key handler for panel input */
+  const panelInput = document.getElementById('chatbot-panel-input');
+  if (panelInput) {
+    panelInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && panelInput.value.trim()) {
+        e.preventDefault();
+        chatSendMessage();
+      }
+    });
+  }
+
+  /* Set up Enter key handler for split-screen chat input */
+  const splitInput = document.getElementById('split-chat-input');
+  if (splitInput) {
+    splitInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && splitInput.value.trim()) {
+        e.preventDefault();
+        chatSendMessage();
+      }
+    });
+  }
+
+  /* Show greeting message when initialized */
+  if (chatSettings.greeting) {
+    chatAddMessage('agent', chatSettings.greeting);
+  }
+
+  chatInitialized = true;
+}
+
+
+/* =============================================================================
+   11a. CHAT MESSAGING — Send and receive messages
+   =============================================================================
+   Handles the flow of sending user messages to the API and displaying
+   responses (text and commands) from the AI.
+============================================================================= */
+
+/**
+ * Send a message from the user to the chat API.
+ * Reads the message from whichever input is currently active
+ * (bar input, panel input, or split-screen input).
+ *
+ * FLOW:
+ * 1. Get the message text from the active input
+ * 2. Add user message to the chat UI
+ * 3. Show typing indicator
+ * 4. POST to the API endpoint
+ * 5. Display the AI's text reply
+ * 6. Execute any command the AI included
+ */
+async function chatSendMessage() {
+  /* Get the message from the currently active input */
+  let message = '';
+  const barInput = document.getElementById('chatbot-bar-input');
+  const panelInput = document.getElementById('chatbot-panel-input');
+  const splitInput = document.getElementById('split-chat-input');
+
+  if (splitScreenActive && splitInput && splitInput.value.trim()) {
+    message = splitInput.value.trim();
+    splitInput.value = '';
+  } else if (chatExpanded && panelInput && panelInput.value.trim()) {
+    message = panelInput.value.trim();
+    panelInput.value = '';
+  } else if (barInput && barInput.value.trim()) {
+    message = barInput.value.trim();
+    barInput.value = '';
+  }
+
+  if (!message) return;
+
+  /* Auto-expand the chat panel if it's collapsed */
+  if (!chatExpanded && !splitScreenActive) {
+    chatToggleExpand();
+  }
+
+  /* Add the user's message to the chat UI */
+  chatAddMessage('user', message);
+
+  /* Add to history for context */
+  chatHistory.push({ role: 'user', content: message });
+
+  /* Show typing indicator */
+  chatShowTyping(true);
+
+  try {
+    /* POST the message to the configured API endpoint */
+    const apiEndpoint = chatSettings.api_endpoint || '/api/chat';
+    const res = await fetch(apiEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: message,
+        history: chatHistory
+      })
+    });
+
+    const data = await res.json();
+
+    /* Hide typing indicator */
+    chatShowTyping(false);
+
+    /* Display the AI's text reply */
+    if (data.reply) {
+      chatAddMessage('agent', data.reply);
+      chatHistory.push({ role: 'assistant', content: data.reply });
+    }
+
+    /*
+     * Execute any command the AI included in its response.
+     * This is where the AI controls the website!
+     * See executeCommand() below for all available commands.
+     */
+    if (data.command) {
+      executeCommand(data.command);
+    }
+
+  } catch (error) {
+    console.error('Chat error:', error);
+    chatShowTyping(false);
+    chatAddMessage('agent', 'I apologize, but I\'m having trouble connecting right now. Please try again in a moment.');
+  }
+}
+
+
+/**
+ * Send a quick prompt message.
+ * Called when the user clicks one of the quick prompt chips.
+ *
+ * @param {string} prompt - The prompt text to send
+ */
+function chatSendQuickPrompt(prompt) {
+  /* Set the message in the appropriate input and send */
+  if (splitScreenActive) {
+    const splitInput = document.getElementById('split-chat-input');
+    if (splitInput) splitInput.value = prompt;
+  } else if (chatExpanded) {
+    const panelInput = document.getElementById('chatbot-panel-input');
+    if (panelInput) panelInput.value = prompt;
+  } else {
+    const barInput = document.getElementById('chatbot-bar-input');
+    if (barInput) barInput.value = prompt;
+  }
+  chatSendMessage();
+}
+
+
+/**
+ * Add a message bubble to the chat UI.
+ * Messages are added to all three message containers
+ * (panel, split-screen) to keep them in sync.
+ *
+ * @param {string} role - 'user' or 'agent'
+ * @param {string} text - The message text
+ */
+function chatAddMessage(role, text) {
+  const className = role === 'user' ? 'chat-msg chat-msg-user' : 'chat-msg chat-msg-agent';
+  const html = `<div class="${className}" data-testid="msg-${role}">${escapeHtml(text)}</div>`;
+
+  /* Add to the main panel messages */
+  const panelMessages = document.getElementById('chatbot-messages');
+  if (panelMessages) {
+    panelMessages.insertAdjacentHTML('beforeend', html);
+    panelMessages.scrollTop = panelMessages.scrollHeight;
+  }
+
+  /* Also add to split-screen chat messages to keep them in sync */
+  const splitMessages = document.getElementById('split-chat-messages');
+  if (splitMessages) {
+    splitMessages.insertAdjacentHTML('beforeend', html);
+    splitMessages.scrollTop = splitMessages.scrollHeight;
+  }
+}
+
+
+/**
+ * Show or hide the typing indicator (three animated dots).
+ *
+ * @param {boolean} show - Whether to show the typing indicator
+ */
+function chatShowTyping(show) {
+  const typingHtml = `
+    <div class="chat-typing" id="chat-typing-indicator">
+      <div class="chat-typing-dot"></div>
+      <div class="chat-typing-dot"></div>
+      <div class="chat-typing-dot"></div>
+    </div>
+  `;
+
+  /* Add/remove from both panel and split-screen message areas */
+  ['chatbot-messages', 'split-chat-messages'].forEach(containerId => {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+
+    /* Remove existing typing indicator */
+    const existing = container.querySelector('.chat-typing');
+    if (existing) existing.remove();
+
+    /* Add new typing indicator if showing */
+    if (show) {
+      container.insertAdjacentHTML('beforeend', typingHtml);
+      container.scrollTop = container.scrollHeight;
+    }
+  });
+}
+
+
+/**
+ * Escape HTML entities in text to prevent XSS.
+ * Used when rendering user messages.
+ *
+ * @param {string} text - The raw text to escape
+ * @returns {string} The escaped text safe for innerHTML
+ */
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+
+/* =============================================================================
+   11b. CHAT UI — Expand/Collapse Panel
+============================================================================= */
+
+/**
+ * Toggle the expanded chat panel open or closed.
+ * When expanding, auto-scrolls to the latest message.
+ */
+function chatToggleExpand() {
+  const container = document.getElementById('chatbot-container');
+  if (!container) return;
+
+  chatExpanded = !chatExpanded;
+  container.classList.toggle('expanded', chatExpanded);
+
+  /* Auto-scroll to latest message when expanding */
+  if (chatExpanded) {
+    setTimeout(() => {
+      const messages = document.getElementById('chatbot-messages');
+      if (messages) messages.scrollTop = messages.scrollHeight;
+    }, 350);
+  }
+}
+
+
+/* =============================================================================
+   11c. AI SITE CONTROL — Execute visual commands from the AI
+   =============================================================================
+   This is the core of the AI site control system.
+   The executeCommand() function receives a command object from the API
+   and performs the corresponding action on the website.
+
+   CURRENT COMMANDS:
+
+   1. "navigate" — Navigate to a gallery slide
+      Input:  { action: "navigate", target: "infinity-pool" }
+      Effect: Opens split-screen, shows the gallery slide for that card
+
+   2. "showSlide" — Show a structured presentation
+      Input:  { action: "showSlide", title: "...", subtitle: "...",
+                points: ["...", "..."], image: "optional URL" }
+      Effect: Opens split-screen, shows a presentation-style slide
+
+   3. "generateHTML" — Render AI-generated HTML on a canvas
+      Input:  { action: "generateHTML", html: "<div>...</div>" }
+      Effect: Opens split-screen, renders the HTML in a blank canvas
+
+   HOW TO ADD MORE COMMANDS:
+   Simply add a new case to the switch statement in executeCommand().
+   The pattern is:
+   1. Prepare the content (find data, create DOM elements, etc.)
+   2. Call openSplitScreen() to open the overlay
+   3. Show the appropriate content panel inside the split-screen
+
+   GIVING THE AI MORE CONTROL:
+   You can extend this system to control virtually any aspect of the site:
+   - Open/close the booking modal
+   - Change the landing page scroll position
+   - Show/hide sections
+   - Trigger animations
+   - Play audio/video
+   - Anything you can do with JavaScript!
+
+   EXAMPLE — Adding a "bookRoom" command:
+   case 'bookRoom':
+     // Pre-fill the booking form with the specified room
+     document.getElementById('booking-room').value = cmd.roomSlug;
+     openModal();
+     break;
+============================================================================= */
+
+/**
+ * Execute a visual command from the AI.
+ * This is the main dispatcher for all AI site control actions.
+ *
+ * @param {Object} cmd - The command object from the API response
+ * @param {string} cmd.action - The command type (navigate, showSlide, generateHTML)
+ * @param {string} [cmd.target] - Target slug for navigate commands
+ * @param {string} [cmd.title] - Title for showSlide commands
+ * @param {string} [cmd.subtitle] - Subtitle for showSlide commands
+ * @param {string[]} [cmd.points] - Bullet points for showSlide commands
+ * @param {string} [cmd.html] - HTML content for generateHTML commands
+ */
+function executeCommand(cmd) {
+  if (!cmd || !cmd.action) return;
+
+  switch (cmd.action) {
+
+    /* ─────────────────────────────────────────────────────────────────
+       NAVIGATE — Scroll to a gallery card and show it in split-screen
+       ─────────────────────────────────────────────────────────────────
+       The AI specifies a card slug (e.g., "infinity-pool").
+       We find that card in the galleryCards array and display its
+       image + text in the split-screen content area.
+
+       This effectively lets the AI "point at" any part of the property
+       and show it to the user while continuing the conversation.
+    */
+    case 'navigate': {
+      const card = galleryCards.find(c => c.slug === cmd.target);
+      if (!card) {
+        console.warn('Navigate command: card not found for slug:', cmd.target);
+        return;
+      }
+
+      /* Hide other content panels */
+      hideAllSplitContent();
+
+      /* Set up the navigate panel with the card's data */
+      const navPanel = document.getElementById('split-navigate');
+      const navBg = document.getElementById('split-nav-bg');
+      const navCategory = document.getElementById('split-nav-category');
+      const navTitle = document.getElementById('split-nav-title');
+      const navSubtitle = document.getElementById('split-nav-subtitle');
+      const navDesc = document.getElementById('split-nav-description');
+
+      if (navBg) navBg.style.backgroundImage = `url(${card.image_url})`;
+      if (navCategory) navCategory.textContent = card.category;
+      if (navTitle) navTitle.textContent = card.title;
+      if (navSubtitle) navSubtitle.textContent = card.subtitle;
+      if (navDesc) navDesc.textContent = card.description;
+      if (navPanel) navPanel.style.display = 'block';
+
+      /* Also update the main gallery to this slide (so the site is in sync) */
+      const cardIndex = galleryCards.findIndex(c => c.slug === cmd.target);
+      if (cardIndex >= 0) {
+        goToSlide(cardIndex);
+      }
+
+      openSplitScreen();
+      break;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────
+       SHOW SLIDE — Display a structured presentation
+       ─────────────────────────────────────────────────────────────────
+       The AI provides structured data (title, subtitle, bullet points)
+       and we render it as an elegant presentation slide.
+
+       Use cases:
+       - Room comparisons ("Which room is best for families?")
+       - Activity recommendations ("Plan my day")
+       - Pricing breakdowns ("Compare the seasons")
+    */
+    case 'showSlide': {
+      /* Hide other content panels */
+      hideAllSplitContent();
+
+      /* Populate the slide panel */
+      const slidePanel = document.getElementById('split-slide');
+      const slideTitle = document.getElementById('split-slide-title');
+      const slideSubtitle = document.getElementById('split-slide-subtitle');
+      const slidePoints = document.getElementById('split-slide-points');
+
+      if (slideTitle) slideTitle.textContent = cmd.title || '';
+      if (slideSubtitle) slideSubtitle.textContent = cmd.subtitle || '';
+
+      /* Render bullet points */
+      if (slidePoints && cmd.points) {
+        slidePoints.innerHTML = cmd.points.map(point => `
+          <li class="split-slide-point">
+            <span class="split-slide-point-marker"></span>
+            ${escapeHtml(point)}
+          </li>
+        `).join('');
+      }
+
+      if (slidePanel) slidePanel.style.display = 'block';
+
+      openSplitScreen();
+      break;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────
+       GENERATE HTML — Render AI-created content on a blank canvas
+       ─────────────────────────────────────────────────────────────────
+       This is the most powerful command. The AI can generate ANY HTML
+       and it will be rendered on a clean canvas in the split-screen.
+
+       The AI can create:
+       - Comparison tables
+       - Pricing breakdowns with custom formatting
+       - Interactive itineraries
+       - Visual data displays
+       - Any content expressible in HTML + inline CSS
+
+       SECURITY CONSIDERATIONS:
+       The HTML is rendered directly in a div with innerHTML. In a
+       production environment with untrusted AI responses, consider:
+       1. Using an iframe with sandbox attribute
+       2. Sanitizing the HTML with a library like DOMPurify
+       3. Using a Content Security Policy (CSP)
+
+       TO USE AN IFRAME INSTEAD (more secure):
+       Replace the innerHTML line with:
+         const frame = document.getElementById('split-canvas-frame');
+         frame.srcdoc = cmd.html;
+       And update the HTML to use an iframe element.
+    */
+    case 'generateHTML': {
+      /* Hide other content panels */
+      hideAllSplitContent();
+
+      /* Render the AI-generated HTML on the canvas */
+      const canvasPanel = document.getElementById('split-canvas');
+      const canvasContent = document.getElementById('split-canvas-content');
+
+      if (canvasContent) {
+        canvasContent.innerHTML = cmd.html || '';
+      }
+
+      if (canvasPanel) canvasPanel.style.display = 'block';
+
+      openSplitScreen();
+      break;
+    }
+
+    default:
+      console.warn('Unknown chatbot command:', cmd.action);
+      break;
+  }
+}
+
+
+/* =============================================================================
+   11d. SPLIT-SCREEN MANAGEMENT
+   =============================================================================
+   Controls the split-screen overlay that shows AI-controlled content.
+   When the AI sends a visual command, the overlay appears:
+   - Desktop: Chat on the left (40%), content on the right (60%)
+   - Mobile: Content stacked above the chat
+============================================================================= */
+
+/**
+ * Open the split-screen overlay.
+ * Syncs the chat messages into the split-screen chat panel
+ * and shows the overlay.
+ */
+function openSplitScreen() {
+  const overlay = document.getElementById('split-overlay');
+  if (!overlay) return;
+
+  /* Sync messages from the main panel to the split-screen panel */
+  syncChatToSplit();
+
+  /* Close the regular expanded panel if it's open */
+  if (chatExpanded) {
+    chatExpanded = false;
+    const container = document.getElementById('chatbot-container');
+    if (container) container.classList.remove('expanded');
+  }
+
+  /* Show the overlay */
+  splitScreenActive = true;
+  overlay.classList.add('active');
+}
+
+
+/**
+ * Close the split-screen overlay.
+ * Returns the user to the normal site view with the chatbot bar.
+ */
+function closeSplitScreen() {
+  const overlay = document.getElementById('split-overlay');
+  if (!overlay) return;
+
+  splitScreenActive = false;
+  overlay.classList.remove('active');
+
+  /* Hide all content panels */
+  hideAllSplitContent();
+
+  /* Sync messages back to the main chat panel */
+  syncSplitToChat();
+}
+
+
+/**
+ * Hide all content panels inside the split-screen.
+ * Called before showing a new content type.
+ */
+function hideAllSplitContent() {
+  ['split-navigate', 'split-slide', 'split-canvas'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+}
+
+
+/**
+ * Sync messages from the main chat panel to the split-screen chat.
+ * This ensures the split-screen shows the full conversation history.
+ */
+function syncChatToSplit() {
+  const panelMessages = document.getElementById('chatbot-messages');
+  const splitMessages = document.getElementById('split-chat-messages');
+  if (panelMessages && splitMessages) {
+    splitMessages.innerHTML = panelMessages.innerHTML;
+    splitMessages.scrollTop = splitMessages.scrollHeight;
+  }
+}
+
+
+/**
+ * Sync messages from the split-screen chat back to the main panel.
+ * Called when the split-screen is closed.
+ */
+function syncSplitToChat() {
+  const panelMessages = document.getElementById('chatbot-messages');
+  const splitMessages = document.getElementById('split-chat-messages');
+  if (panelMessages && splitMessages) {
+    panelMessages.innerHTML = splitMessages.innerHTML;
+    panelMessages.scrollTop = panelMessages.scrollHeight;
+  }
+}
