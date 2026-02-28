@@ -2149,7 +2149,10 @@ TO CUSTOMIZE THIS DASHBOARD:
         }
 
         tbody.innerHTML = convs.map(c => {
-          /* Show a short visitor label — truncate the ID for display */
+          /* Show a short visitor label — the full visitor_id is a persistent
+             identifier stored in the visitor's localStorage, so the same visitor
+             across multiple page loads (conversations) will show the same tag.
+             We truncate it to 10 chars for display; hover shows the full ID. */
           const vid = c.visitor_id || '';
           const visitorLabel = vid ? vid.replace('cv_', '').substring(0, 10) : '—';
           return `

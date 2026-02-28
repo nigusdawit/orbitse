@@ -255,7 +255,9 @@ def init_db():
                     updated_at    TIMESTAMP DEFAULT NOW()
                 );
 
-                -- Chat conversations (one per page load / session)
+                -- Chat conversations (one per page load / session).
+                -- session_id: unique per page load (new conversation each refresh).
+                -- visitor_id: persistent across reloads (tracks returning visitors via localStorage).
                 CREATE TABLE IF NOT EXISTS chat_conversations (
                     id          SERIAL PRIMARY KEY,
                     session_id  VARCHAR(100) NOT NULL,
@@ -955,6 +957,9 @@ def api_chat():
     message = data.get("message", "").strip()
     history = data.get("history", [])
     session_id = data.get("session_id", "")
+    # visitor_id persists across page reloads (stored in localStorage on the frontend).
+    # session_id is unique per page load — each refresh starts a new conversation.
+    # Together they let the admin track both individual conversations and returning visitors.
     visitor_id = data.get("visitor_id", "")
 
     # Use database system prompt if available, otherwise fall back to hardcoded
@@ -1177,11 +1182,17 @@ def api_chat():
                     device = "mobile" if any(m in ua.lower() for m in ["mobile", "android", "iphone"]) else "desktop"
                     ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
 
+                    # Look up an existing conversation by session_id.
+                    # Since session_id is unique per page load, this naturally
+                    # groups messages from the same page session together while
+                    # creating a new conversation after each refresh.
                     conv = query_db(
                         "SELECT id FROM chat_conversations WHERE session_id = %s ORDER BY id DESC LIMIT 1",
                         (session_id,), fetchone=True
                     )
                     if not conv:
+                        # First message in this page session — create a new conversation.
+                        # visitor_id is stored alongside to track returning visitors.
                         conv = execute_db(
                             "INSERT INTO chat_conversations (session_id, visitor_id, visitor_ip, device_type, user_agent) VALUES (%s, %s, %s, %s, %s) RETURNING id",
                             (session_id, visitor_id, ip, device, ua[:500])
@@ -1572,6 +1583,11 @@ def admin_chat_history():
         LIMIT %s OFFSET %s
     """, (per_page, offset))
 
+    # Chat analytics stats:
+    # - total_conversations: one per page load (each refresh = new conversation)
+    # - messages_today: all messages sent today across all conversations
+    # - avg_messages: average messages per conversation
+    # - unique_visitors: distinct visitor_ids (tracks returning visitors across sessions)
     stats = query_db("""
         SELECT
             (SELECT COUNT(*) FROM chat_conversations) as total_conversations,
