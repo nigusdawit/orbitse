@@ -784,6 +784,15 @@ def api_chat():
     except Exception:
         pass
 
+    # Inject actual gallery card slugs so the AI navigates correctly
+    try:
+        cards = query_db("SELECT slug, title FROM gallery_cards ORDER BY sort_order ASC")
+        if cards:
+            card_list = ", ".join([f'"{c["slug"]}" ({c["title"]})' for c in cards])
+            active_prompt += f"\n\nAVAILABLE GALLERY CARD SLUGS (use these exact values for navigate targets): {card_list}"
+    except Exception:
+        pass
+
     messages = [{"role": "system", "content": active_prompt}]
     for h in history[-20:]:
         role = "assistant" if h.get("role") == "agent" else "user"
