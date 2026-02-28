@@ -1872,6 +1872,56 @@ input, select, textarea {
 
 
 /* =============================================================================
+   20a. NAVIGATE SIDE-PANEL MODE
+   =============================================================================
+   When the AI uses a "navigate" command, the gallery stays interactive
+   and a chat panel slides in from the right instead of covering the screen.
+============================================================================= */
+
+.gallery-view {
+  inset: 0;
+  transition: right 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.gallery-view.side-panel-active {
+  right: 380px !important;
+}
+
+.landing-container {
+  transition: margin-right 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.landing-container.side-panel-active {
+  margin-right: 380px;
+}
+
+.side-chat-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 380px;
+  z-index: 55;
+  display: flex;
+  flex-direction: column;
+  background: rgba(10, 15, 26, 0.98);
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  transform: translateX(100%);
+  transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.side-chat-panel.active {
+  transform: translateX(0);
+}
+
+.chatbot-container.side-panel-hidden {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+
+/* =============================================================================
    20. CHATBOT RESPONSIVE — Mobile adjustments
    =============================================================================
    On mobile screens:
@@ -1912,5 +1962,21 @@ input, select, textarea {
 
   .split-content {
     flex: 1;
+  }
+
+  .side-chat-panel {
+    width: 100%;
+    top: 50%;
+    height: 50%;
+  }
+
+  .gallery-view.side-panel-active {
+    right: 0 !important;
+    bottom: 50% !important;
+  }
+
+  .landing-container.side-panel-active {
+    margin-right: 0;
+    margin-bottom: 50%;
   }
 }

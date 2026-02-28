@@ -8,7 +8,8 @@ The site features:
 - **Snap-scroll landing page** with hero, highlights, experiences, and pricing sections
 - **Immersive fullscreen gallery** with swipe/wheel/keyboard navigation
 - **AI chatbot with site control** — enable/disable from admin, supports built-in chat or external embed
-- **Split-screen AI display** — the AI can navigate the gallery, show structured slides, or render custom HTML
+- **Side-panel AI chat** — when the AI navigates gallery slides, a chat panel slides in from the right while the gallery stays fully interactive
+- **Split-screen AI display** — for custom slides (showSlide, generateHTML), a full overlay with chat + content is used
 - **Admin dashboard** at `/admin` (password-protected) for editing all content via a web interface
 - **Database-driven content** — changes in admin are instantly visible on the public site
 

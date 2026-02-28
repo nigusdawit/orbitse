@@ -393,6 +393,9 @@ function showGalleryAt(index) {
  * Resets the gallery to the first slide.
  */
 function showLanding() {
+  /* Close side panel if open */
+  if (sidePanelActive) closeSidePanel();
+
   document.getElementById('landing-view').style.display = '';
   document.getElementById('gallery-view').classList.remove('active');
 
@@ -896,6 +899,7 @@ let chatSettings = null;
 let chatHistory = [];
 let chatExpanded = false;
 let splitScreenActive = false;
+let sidePanelActive = false;
 let chatInitialized = false;
 
 
@@ -962,19 +966,19 @@ function setupBuiltinChat() {
 
   /* Update agent avatar across all locations */
   const avatarText = chatSettings.agent_avatar || 'M';
-  document.querySelectorAll('#chatbot-avatar, #chatbot-panel-avatar, #split-chat-avatar').forEach(el => {
+  document.querySelectorAll('#chatbot-avatar, #chatbot-panel-avatar, #split-chat-avatar, #side-chat-avatar').forEach(el => {
     el.textContent = avatarText;
   });
 
   /* Update agent name across all locations */
   const agentName = chatSettings.agent_name || 'Marco';
-  document.querySelectorAll('#chatbot-agent-name, #chatbot-panel-name, #split-chat-name').forEach(el => {
+  document.querySelectorAll('#chatbot-agent-name, #chatbot-panel-name, #split-chat-name, #side-chat-name').forEach(el => {
     el.textContent = agentName;
   });
 
   /* Update agent role across all locations */
   const agentRole = chatSettings.agent_role || 'Concierge';
-  document.querySelectorAll('#chatbot-agent-role, #chatbot-panel-role, #split-chat-role').forEach(el => {
+  document.querySelectorAll('#chatbot-agent-role, #chatbot-panel-role, #split-chat-role, #side-chat-role').forEach(el => {
     el.textContent = agentRole;
   });
 
@@ -1022,6 +1026,17 @@ function setupBuiltinChat() {
     });
   }
 
+  /* Set up Enter key handler for side panel chat input */
+  const sideInput = document.getElementById('side-chat-input');
+  if (sideInput) {
+    sideInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && sideInput.value.trim()) {
+        e.preventDefault();
+        chatSendMessage();
+      }
+    });
+  }
+
   /* Show greeting message when initialized */
   if (chatSettings.greeting) {
     chatAddMessage('agent', chatSettings.greeting);
@@ -1058,7 +1073,12 @@ async function chatSendMessage() {
   const panelInput = document.getElementById('chatbot-panel-input');
   const splitInput = document.getElementById('split-chat-input');
 
-  if (splitScreenActive && splitInput && splitInput.value.trim()) {
+  const sideInput = document.getElementById('side-chat-input');
+
+  if (sidePanelActive && sideInput && sideInput.value.trim()) {
+    message = sideInput.value.trim();
+    sideInput.value = '';
+  } else if (splitScreenActive && splitInput && splitInput.value.trim()) {
     message = splitInput.value.trim();
     splitInput.value = '';
   } else if (chatExpanded && panelInput && panelInput.value.trim()) {
@@ -1072,7 +1092,7 @@ async function chatSendMessage() {
   if (!message) return;
 
   /* Auto-expand the chat panel if it's collapsed */
-  if (!chatExpanded && !splitScreenActive) {
+  if (!chatExpanded && !splitScreenActive && !sidePanelActive) {
     chatToggleExpand();
   }
 
@@ -1133,7 +1153,10 @@ async function chatSendMessage() {
  */
 function chatSendQuickPrompt(prompt) {
   /* Set the message in the appropriate input and send */
-  if (splitScreenActive) {
+  if (sidePanelActive) {
+    const sideInput = document.getElementById('side-chat-input');
+    if (sideInput) sideInput.value = prompt;
+  } else if (splitScreenActive) {
     const splitInput = document.getElementById('split-chat-input');
     if (splitInput) splitInput.value = prompt;
   } else if (chatExpanded) {
@@ -1172,6 +1195,13 @@ function chatAddMessage(role, text) {
     splitMessages.insertAdjacentHTML('beforeend', html);
     splitMessages.scrollTop = splitMessages.scrollHeight;
   }
+
+  /* Also add to side panel chat messages */
+  const sideMessages = document.getElementById('side-chat-messages');
+  if (sideMessages) {
+    sideMessages.insertAdjacentHTML('beforeend', html);
+    sideMessages.scrollTop = sideMessages.scrollHeight;
+  }
 }
 
 
@@ -1189,8 +1219,8 @@ function chatShowTyping(show) {
     </div>
   `;
 
-  /* Add/remove from both panel and split-screen message areas */
-  ['chatbot-messages', 'split-chat-messages'].forEach(containerId => {
+  /* Add/remove from panel, split-screen, and side panel message areas */
+  ['chatbot-messages', 'split-chat-messages', 'side-chat-messages'].forEach(containerId => {
     const container = document.getElementById(containerId);
     if (!container) return;
 
@@ -1326,31 +1356,19 @@ function executeCommand(cmd) {
         return;
       }
 
-      /* Hide other content panels */
-      hideAllSplitContent();
-
-      /* Set up the navigate panel with the card's data */
-      const navPanel = document.getElementById('split-navigate');
-      const navBg = document.getElementById('split-nav-bg');
-      const navCategory = document.getElementById('split-nav-category');
-      const navTitle = document.getElementById('split-nav-title');
-      const navSubtitle = document.getElementById('split-nav-subtitle');
-      const navDesc = document.getElementById('split-nav-description');
-
-      if (navBg) navBg.style.backgroundImage = `url(${card.image_url})`;
-      if (navCategory) navCategory.textContent = card.category;
-      if (navTitle) navTitle.textContent = card.title;
-      if (navSubtitle) navSubtitle.textContent = card.subtitle;
-      if (navDesc) navDesc.textContent = card.description;
-      if (navPanel) navPanel.style.display = 'block';
-
-      /* Also update the main gallery to this slide (so the site is in sync) */
+      /* Navigate the actual gallery to this slide */
       const cardIndex = galleryCards.findIndex(c => c.slug === cmd.target);
       if (cardIndex >= 0) {
         goToSlide(cardIndex);
       }
 
-      openSplitScreen();
+      /* Make sure the gallery is visible */
+      if (document.getElementById('gallery-view') && !document.getElementById('gallery-view').classList.contains('active')) {
+        showGallery();
+      }
+
+      /* Open the side panel with chat (gallery stays interactive) */
+      openSidePanel();
       break;
     }
 
@@ -1455,6 +1473,100 @@ function executeCommand(cmd) {
 ============================================================================= */
 
 /**
+ * Open the side chat panel.
+ * The gallery/landing stays visible and interactive while the chat
+ * panel slides in from the right.
+ */
+function openSidePanel() {
+  if (sidePanelActive) return;
+
+  const panel = document.getElementById('side-chat-panel');
+  if (!panel) return;
+
+  /* Sync messages from the main panel to the side panel */
+  syncChatToSidePanel();
+
+  /* Close the regular expanded panel if it's open */
+  if (chatExpanded) {
+    chatExpanded = false;
+    const container = document.getElementById('chatbot-container');
+    if (container) container.classList.remove('expanded');
+  }
+
+  /* Close split screen if it's open */
+  if (splitScreenActive) {
+    closeSplitScreen();
+  }
+
+  /* Hide the chatbot bar */
+  const chatContainer = document.getElementById('chatbot-container');
+  if (chatContainer) chatContainer.classList.add('side-panel-hidden');
+
+  /* Push the gallery/landing content to the left */
+  const galleryView = document.getElementById('gallery-view');
+  const landingView = document.getElementById('landing-view');
+  if (galleryView) galleryView.classList.add('side-panel-active');
+  if (landingView) landingView.classList.add('side-panel-active');
+
+  /* Show the side panel */
+  sidePanelActive = true;
+  panel.classList.add('active');
+}
+
+
+/**
+ * Close the side chat panel.
+ * Returns the gallery/landing to full width.
+ */
+function closeSidePanel() {
+  const panel = document.getElementById('side-chat-panel');
+  if (!panel) return;
+
+  sidePanelActive = false;
+  panel.classList.remove('active');
+
+  /* Restore the gallery/landing to full width */
+  const galleryView = document.getElementById('gallery-view');
+  const landingView = document.getElementById('landing-view');
+  if (galleryView) galleryView.classList.remove('side-panel-active');
+  if (landingView) landingView.classList.remove('side-panel-active');
+
+  /* Show the chatbot bar again */
+  const chatContainer = document.getElementById('chatbot-container');
+  if (chatContainer) chatContainer.classList.remove('side-panel-hidden');
+
+  /* Sync messages back to the main panel */
+  syncSidePanelToChat();
+}
+
+
+/**
+ * Sync messages from the main chat panel to the side panel.
+ */
+function syncChatToSidePanel() {
+  const panelMessages = document.getElementById('chatbot-messages');
+  const sideMessages = document.getElementById('side-chat-messages');
+  if (panelMessages && sideMessages) {
+    sideMessages.innerHTML = panelMessages.innerHTML;
+    sideMessages.scrollTop = sideMessages.scrollHeight;
+  }
+}
+
+
+/**
+ * Sync messages from the side panel back to the main chat panel.
+ */
+function syncSidePanelToChat() {
+  const panelMessages = document.getElementById('chatbot-messages');
+  const sideMessages = document.getElementById('side-chat-messages');
+  if (panelMessages && sideMessages) {
+    panelMessages.innerHTML = sideMessages.innerHTML;
+    panelMessages.scrollTop = panelMessages.scrollHeight;
+  }
+}
+
+
+/**
  * Open the split-screen overlay.
  * Syncs the chat messages into the split-screen chat panel
  * and shows the overlay.
@@ -1462,6 +1574,11 @@ function executeCommand(cmd) {
 function openSplitScreen() {
   const overlay = document.getElementById('split-overlay');
   if (!overlay) return;
+
+  /* Close side panel if it's open */
+  if (sidePanelActive) {
+    closeSidePanel();
+  }
 
   /* Sync messages from the main panel to the split-screen panel */
   syncChatToSplit();

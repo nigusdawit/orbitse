@@ -656,6 +656,48 @@ FONTS:
 
   <!--
   ============================================================================
+  SIDE CHAT PANEL — Slides in from the right for navigate commands
+  ============================================================================
+  When the AI navigates to a gallery slide, this panel slides in from the
+  right while the gallery stays fully interactive behind it.
+  -->
+  <div id="side-chat-panel" class="side-chat-panel" data-testid="side-chat-panel">
+    <div class="chatbot-panel-header">
+      <div class="chatbot-panel-header-info">
+        <div id="side-chat-avatar" class="chatbot-avatar chatbot-avatar-sm">M</div>
+        <div>
+          <span id="side-chat-name" class="chatbot-agent-name">Marco</span>
+          <span id="side-chat-role" class="chatbot-agent-role">Concierge</span>
+        </div>
+      </div>
+      <button class="chatbot-close-btn" onclick="closeSidePanel()" data-testid="button-side-panel-close">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+        </svg>
+      </button>
+    </div>
+    <div id="side-chat-messages" class="chatbot-messages" data-testid="side-chat-messages"></div>
+    <div class="chatbot-input-bar">
+      <input
+        id="side-chat-input"
+        class="chatbot-panel-input"
+        type="text"
+        placeholder="Type your message..."
+        autocomplete="off"
+        data-testid="input-side-chat"
+      >
+      <button class="chatbot-send-panel-btn" onclick="chatSendMessage()" data-testid="button-side-send">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m22 2-7 20-4-9-9-4Z"/><path d="m22 2-11 11"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+  <!-- END SIDE CHAT PANEL -->
+
+
+  <!--
+  ============================================================================
   EMBED CONTAINER — For external chatbot widgets
   ============================================================================
   When the admin sets mode="embed" and pastes an external chatbot script
