@@ -653,6 +653,10 @@ def api_chatbot_settings():
 #      { "action": "submitForm", "slug": "form-slug", "fields": {"name": "value"} }
 #      The AI collects form field values through conversation, then submits them.
 #
+#   5. partialFormSave — Auto-save partial form data during collection
+#      { "action": "partialFormSave", "slug": "form-slug", "fields": {"name": "value"} }
+#      Sent after each field is collected for abandon/lead recovery.
+#
 # HOW TO ADD MORE COMMANDS:
 #   1. Define the command format in this comment block
 #   2. Add handling logic in script.js (see the executeCommand function)
@@ -757,15 +761,28 @@ Design tips:
 ```command
 {"action": "submitForm", "slug": "FORM_SLUG", "fields": {"field_name": "value", "another_field": "value"}}
 ```
-Use this when you have collected all the required information from the visitor through conversation.
+Use this when you have collected ALL required information from the visitor through conversation.
 HOW TO COLLECT FORM DATA:
 - When a visitor wants to book, inquire, get started, or fill out a form, check the AVAILABLE FORMS section for matching forms.
 - Ask the visitor for each required field naturally in conversation, one or two at a time.
-- Once you have all required fields, submit using the submitForm command above.
+- IMPORTANT: After EACH reply where the visitor gives you field data, send a partialFormSave command to save what you have so far. This way if they leave mid-conversation, we still capture their info for follow-up.
+- Once you have ALL required fields, confirm with the visitor, then use submitForm to finalize.
 - Keep track of what the visitor has told you throughout the conversation.
-- Example flow: "I'd love to help you with that! Could I get your name?" → "And your email?" → "What service are you interested in?" → then submit with all collected data.
 
-6. Display a message on the hero section:
+Example conversation flow:
+1. Visitor: "I'd like to book" → You: "I'd love to help! Could I get your name?"
+2. Visitor: "John Smith" → You: "Thanks John! And your email?" + partialFormSave with {"name": "John Smith"}
+3. Visitor: "john@email.com" → You: "Great! What service interests you?" + partialFormSave with {"name": "John Smith", "email": "john@email.com"}
+4. Visitor: "The wine tasting" → You: "Perfect! Let me confirm: John Smith, john@email.com, wine tasting. Shall I submit?" + partialFormSave with all fields
+5. Visitor: "Yes" → submitForm with all collected data
+
+6. Save partial form data (auto-save during collection for lead recovery):
+```command
+{"action": "partialFormSave", "slug": "FORM_SLUG", "fields": {"field_name": "value"}}
+```
+Send this after EVERY message where the visitor provides form field data. Include ALL fields collected so far (not just the new one). This enables abandon capture — if the visitor leaves before completing the form, we still have their partial data for follow-up.
+
+7. Display a message on the hero section:
 ```command
 {"action": "heroMessage", "message": "YOUR MESSAGE HERE"}
 ```

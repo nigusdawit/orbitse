@@ -2220,6 +2220,49 @@ function executeCommand(cmd) {
        then issues this command with the form slug and all gathered data.
        We submit it to the existing form API endpoint.
     */
+    /* ─────────────────────────────────────────────────────────────────
+       PARTIAL FORM SAVE — Auto-save collected fields for lead recovery
+       ─────────────────────────────────────────────────────────────────
+       Sent by the AI after each reply where the visitor provides a
+       form field value. Saves all collected fields so far as a
+       'partial' submission. If the visitor abandons, we still have
+       their info for follow-up.
+    */
+    case 'partialFormSave': {
+      const partialSlug = cmd.slug;
+      const partialFields = cmd.fields || {};
+
+      if (!partialSlug || Object.keys(partialFields).length === 0) break;
+
+      fetch(`/api/forms/${partialSlug}/partial`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fields: partialFields,
+          session_id: sessionStorage.getItem('chat_session_id') || '',
+          page_url: window.location.href,
+          referrer: document.referrer || '',
+          screen_resolution: `${window.screen.width}x${window.screen.height}`,
+          language: navigator.language || '',
+          utm_source: new URLSearchParams(window.location.search).get('utm_source') || '',
+          utm_medium: new URLSearchParams(window.location.search).get('utm_medium') || '',
+          utm_campaign: new URLSearchParams(window.location.search).get('utm_campaign') || '',
+          utm_term: new URLSearchParams(window.location.search).get('utm_term') || '',
+          utm_content: new URLSearchParams(window.location.search).get('utm_content') || ''
+        })
+      })
+      .then(r => r.json())
+      .then(data => {
+        if (data.success) console.log('Partial form saved:', data.action, partialSlug);
+      })
+      .catch(err => console.warn('Partial save failed:', err));
+      break;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────
+       SUBMIT FORM — Submit a form with data collected by the AI in chat
+       ─────────────────────────────────────────────────────────────────
+    */
     case 'submitForm': {
       const formSlug = cmd.slug;
       const formFields = cmd.fields || {};
