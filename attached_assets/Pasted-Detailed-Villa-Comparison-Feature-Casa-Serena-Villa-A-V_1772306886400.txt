@@ -1,0 +1,22 @@
+Detailed Villa Comparison
+| Feature | Casa Serena | Villa A | Villa B | Villa C | Villa D |
+|---------------------------|----------------------------------------------|--------------------------------------|-------------------------------------|--------------------------------------|--------------------------------------|
+| Size | 4,500 sq ft | 3,200 sq ft | 5,000 sq ft | 2,800 sq ft | 4,000 sq ft |
+| Bedrooms | 4 | 3 | 5 | 2 | 4 |
+| Bathrooms | 4.5 | 2.5 | 5 | 2 | 3 |
+| Private Pool | Yes | Yes | Yes | No | Yes |
+| Ocean View | Yes | Partial | Yes | Yes | Partial |
+| Dining Options | Chef's Kitchen, Sunset Terrace | Outdoor BBQ, Kitchenette | Dining Room, Full Kitchen | Local dining options nearby | Outdoor dining area |
+| Unique Features | Wine cellar with 400+ labels, private beach access | Large garden, close to town center | Infinity pool, spa facilities | Rooftop terrace with sunset views | Near hiking trails, family-friendly amenities |
+| Nearby Attractions | San Lorenzo Village, local vineyards, beach | Local shops, parks | Nature reserves, beaches | Nearby cultural sites | Hiking trails, family attractions |
+| Recommended Dining | Sunset Terrace (private chef) | Taverna di San Lorenzo | Local seafood restaurants | Café del Mare | Family-friendly restaurants |
+| Distance to Beach | 15-minute walk | 10-minute drive | 5-minute drive | 20-minute walk | 10-minute drive |
+| Ideal For | Large groups, wine enthusiasts | Families, small groups | Big gatherings, luxury seekers | Couples or small families | Active guests, families |
+| Pricing Estimate | $$$ | $$ | $$$$ | $ | $$ |
+
+Key Highlights
+Casa Serena: Offers luxury with a focus on wine and culinary experiences, perfect for larger groups.
+Villa A: Family-friendly with a large garden and close proximity to local attractions.
+Villa B: Ideal for larger gatherings, featuring a spa and expansive amenities.
+Villa C: Cozy for couples but lacks a private pool; offers beautiful views.
+Villa D: Perfect for active gues

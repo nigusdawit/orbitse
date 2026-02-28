@@ -2513,18 +2513,14 @@ async function chatSendStreaming(message, wasCollapsed) {
           const event = JSON.parse(line.slice(6));
 
           if (event.type === 'token') {
-            /* When collapsed, don't expand — we'll route text to hero later */
-            if (!wasCollapsed) {
-              if (!streamBubble && !bubbleFinalized) {
-                chatShowTyping(false);
-                streamBubble = chatCreateStreamBubble();
-              }
-            } else {
-              /* Hide bar thinking on first token */
-              if (!expandedForResponse) {
-                showBarThinking(false);
-                expandedForResponse = true;
-              }
+            /* Always create a stream bubble on first token so the
+               response streams live in chat/side panel regardless
+               of whether we started collapsed or expanded. */
+            if (!streamBubble && !bubbleFinalized) {
+              chatShowTyping(false);
+              showBarThinking(false);
+              streamBubble = chatCreateStreamBubble();
+              expandedForResponse = true;
             }
             tokenText += event.content;
             /* Detect command block start: backtick-fenced OR bare JSON with "action" key */
@@ -2633,6 +2629,14 @@ async function chatSendStreaming(message, wasCollapsed) {
 
     if (wasCollapsed && onLandingPage && !isNavigate) {
       /* ── LANDING PAGE MODE: type response into the hero description ── */
+      /* Finalize the stream bubble in the chat panels so the rendered
+         markdown replaces the raw streaming text */
+      if (displayText && streamBubble && !bubbleFinalized) {
+        streamBubble.finalize(displayText);
+        bubbleFinalized = true;
+      } else if (!displayText && streamBubble) {
+        streamBubble.remove();
+      }
       chatHistory.push({ role: 'assistant', content: displayText || '' });
       persistChatHistory();
 
@@ -2685,7 +2689,9 @@ async function chatSendStreaming(message, wasCollapsed) {
       chatHistory.push({ role: 'assistant', content: displayText || '' });
       persistChatHistory();
 
-      if (displayText) {
+      if (displayText && streamBubble) {
+        streamBubble.finalize(displayText);
+      } else if (displayText && !bubbleFinalized) {
         chatAddMessage('agent', displayText);
       }
       if (pendingCommand) {
