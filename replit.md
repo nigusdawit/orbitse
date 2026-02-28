@@ -184,10 +184,13 @@ The AI chatbot can control what the user sees on the website through special com
    - **Table**: `columns` + `rows` for comparisons, pricing, schedules
    - **List**: `items` [{label, value}] for key-value pairs
 
-4. **generateHTML** (fallback) — Render raw custom HTML on a blank canvas
+4. **generateHTML** — Render fully custom, theme-matched HTML on a fullscreen canvas
    ```json
-   {"action": "generateHTML", "html": "<div>...</div>"}
+   {"action": "generateHTML", "title": "Title", "html": "<div style='...'>...</div>"}
    ```
+   The AI has full creative freedom — comparison tables, itineraries, pricing cards, timelines, etc.
+   Theme colors, fonts, and glass effects are injected into the system prompt so output always matches the brand.
+   Generated pages are auto-saved to the database for admin review (Saved Pages tab).
 
 ### Adding New Commands
 
@@ -201,7 +204,7 @@ The AI chatbot can control what the user sees on the website through special com
 The chatbot connects to OpenAI GPT-4o-mini via Replit AI Integrations. Single unified streaming endpoint:
 - `POST /api/chat` — SSE streaming for ALL messages. Tokens arrive live so the user sees text being typed out. After streaming completes, the server sends final `text`, `command`, and `done` events. Messages are saved to chat_conversations/chat_messages for analytics.
 
-The AI only uses `generateVisual` when the user explicitly asks to "show me visually" or "visualize" something. It sends structured JSON data (title, columns, rows) and the frontend renders it using a built-in frosted glass template — this is faster and always matches the site design. For normal questions it uses `navigate` and `showSlide` commands instead.
+The AI uses `generateVisual` for simple data displays and `generateHTML` for rich, creative content (comparisons, itineraries, schedules, multi-section layouts). Theme colors, fonts, and glass styling are injected into the system prompt so all generated HTML matches the brand automatically. The command parser handles multiple JSON block formats (standard fenced blocks, backtick-adjacent format, bare JSON fallback) to maximize reliability.
 
 ## Admin Features
 

@@ -748,14 +748,18 @@ This renders your HTML on a fullscreen canvas. You have COMPLETE design freedom 
 THEME YOU MUST MATCH (use these exact values in your inline CSS):
 {THEME_PLACEHOLDER}
 
-Design tips:
-- Use backdrop-filter: blur(20px) with semi-transparent backgrounds for the frosted glass look
-- Use border: 1px solid rgba(255,255,255,0.08) for subtle glass borders
-- Use border-radius: 1rem for rounded containers
-- Keep text light (rgba(255,255,255,0.85) for body, #fff for headings)
-- Use the accent color for highlights, borders, and decorative elements
-- Add padding (2-3rem) and max-width (900px) for readability
-- Make your HTML self-contained with all styles inline
+YOU HAVE FULL CREATIVE FREEDOM. Generate any HTML layout you can imagine — the only rule is to match the theme above. Your HTML should be self-contained with ALL styles inline.
+
+Design system to follow:
+- FROSTED GLASS CARDS: background: rgba(255,255,255,0.03); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.08); border-radius: 1rem;
+- TEXT HIERARCHY: Headings in #fff using the heading font. Body text in rgba(255,255,255,0.85) using the body font. Muted/secondary text in rgba(255,255,255,0.5).
+- ACCENT USAGE: Use the accent color for highlights, decorative borders, badges, icons, and emphasis. Example: border-left: 3px solid {accent}; or color: {accent};
+- SPACING: Padding 2-3rem on containers. Gap 1-1.5rem between items. max-width: 900px with margin: 0 auto for centered layouts.
+- LAYOUT PATTERNS: Use CSS Grid or Flexbox. Two-column grids for comparisons, single-column for timelines/itineraries, card grids for features.
+- DECORATIVE TOUCHES: Subtle gradients (linear-gradient with very transparent colors), thin dividers (1px solid rgba(255,255,255,0.06)), and the frosted glass effect make content feel premium.
+- RESPONSIVE: Use max-width with percentage fallbacks so content looks good at any screen size.
+
+You can create: comparison tables, itineraries, pricing breakdowns, feature grids, timelines, step-by-step guides, image galleries, multi-section pages, FAQ layouts, testimonial cards — ANYTHING expressible in HTML.
 
 5. Submit a form with data collected in conversation:
 ```command
@@ -820,11 +824,20 @@ def parse_command_from_text(text):
     Handles both properly closed ```command...``` blocks and cases where
     the closing fence is missing (model truncation).
     """
+    # Pattern 1: Standard ```command\n{json}\n```
     pattern = r'```command\s*\n?(.*?)\n?\s*```'
     match = re.search(pattern, text, re.DOTALL)
 
+    # Pattern 2: AI sometimes writes ```command```{json}``` (backticks right after "command")
     if not match:
-        unclosed = re.search(r'```command\s*\n?(.*)', text, re.DOTALL)
+        alt_pattern = r'```command```\s*(\{.*\})\s*`*'
+        match = re.search(alt_pattern, text, re.DOTALL)
+        if match:
+            pattern = alt_pattern
+
+    # Pattern 3: Unclosed block (model truncation)
+    if not match:
+        unclosed = re.search(r'```command[`]*\s*\n?(.*)', text, re.DOTALL)
         if unclosed:
             try:
                 raw = unclosed.group(1).strip().rstrip('`').strip()
@@ -833,7 +846,19 @@ def parse_command_from_text(text):
                 clean = text[:unclosed.start()].strip()
                 return clean, cmd
             except json.JSONDecodeError:
-                return text.strip(), None
+                pass
+
+    # Pattern 4: Bare JSON with "action" key anywhere in text (last resort)
+    if not match:
+        bare_json = re.search(r'(\{"action"\s*:\s*"[^"]+?"[\s\S]*?\})\s*`*\s*$', text)
+        if bare_json:
+            try:
+                raw = bare_json.group(1).strip()
+                cmd = json.loads(raw)
+                clean = text[:bare_json.start()].strip().rstrip('`').strip()
+                return clean, cmd
+            except json.JSONDecodeError:
+                pass
         return text.strip(), None
 
     try:
@@ -904,14 +929,15 @@ def api_chat():
         pass
 
     theme_block = (
-        f"- Background: {theme_colors['background']}\n"
-        f"- Dark section: {theme_colors['section_dark']}\n"
-        f"- Accent/gold: {theme_colors['accent_gold']}\n"
-        f"- Text color: {theme_colors['text']}\n"
-        f"- Heading font: {theme_colors['heading_font']}\n"
-        f"- Body font: {theme_colors['body_font']}\n"
-        f"- Glass background: {theme_colors['glass_bg']}\n"
-        f"- Glass border: {theme_colors['glass_border']}"
+        f"- Page background: {theme_colors['background']}\n"
+        f"- Section background (alternate): {theme_colors['section_dark']}\n"
+        f"- Accent color (gold): {theme_colors['accent_gold']} — use for highlights, badges, decorative borders, emphasis\n"
+        f"- Primary text: {theme_colors['text']}\n"
+        f"- Heading font: font-family: '{theme_colors['heading_font']}'\n"
+        f"- Body font: font-family: '{theme_colors['body_font']}'\n"
+        f"- Glass card background: {theme_colors['glass_bg']}\n"
+        f"- Glass card border: {theme_colors['glass_border']}\n"
+        f"- Frosted glass effect: backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);"
     )
     active_prompt = active_prompt.replace("{THEME_PLACEHOLDER}", theme_block)
 

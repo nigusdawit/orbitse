@@ -1679,11 +1679,22 @@ async function chatSendStreaming(message, wasCollapsed) {
     /* Fallback: if backend didn't parse the command, try client-side extraction */
     if (!pendingCommand && inCommandBlock && tokenText) {
       try {
-        const cmdMatch = tokenText.match(/```\s*command\s*\n?([\s\S]*?)(?:\n?\s*```|$)/i);
+        /* Try standard format: ```command\n{json}\n``` */
+        let cmdMatch = tokenText.match(/```\s*command\s*\n?([\s\S]*?)(?:\n?\s*```|$)/i);
+        if (!cmdMatch) {
+          /* Try ```command```{json}``` format */
+          cmdMatch = tokenText.match(/```\s*command\s*```\s*([\s\S]*?)(?:```|$)/i);
+        }
         if (cmdMatch) {
           let raw = cmdMatch[1].trim().replace(/`+$/, '').trim();
           raw = raw.replace(/\\\n/g, '').replace(/\\ \n/g, '');
           pendingCommand = JSON.parse(raw);
+        } else {
+          /* Last resort: find bare JSON with "action" key */
+          const bareMatch = tokenText.match(/(\{"action"\s*:\s*"[^"]+?"[\s\S]*?\})\s*`*\s*$/);
+          if (bareMatch) {
+            pendingCommand = JSON.parse(bareMatch[1].trim());
+          }
         }
       } catch (e) { /* couldn't parse, skip */ }
     }

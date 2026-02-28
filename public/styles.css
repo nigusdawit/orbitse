@@ -2104,7 +2104,7 @@ input, select, textarea {
   Elegant card with eyebrow text, title, subtitle, and bullet points.
 */
 .split-slide-inner {
-  padding: 3rem 6rem 3rem 3rem;
+  padding: 3rem 3rem 3rem 3rem;
   height: 100%;
   overflow-y: auto;
   display: flex;
@@ -2368,7 +2368,7 @@ input, select, textarea {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 3rem 6rem 6rem 3rem;
+  padding: 3rem 3rem 6rem 3rem;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
 }
