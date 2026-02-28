@@ -649,12 +649,17 @@ FONTS:
           <span id="side-chat-name" class="side-panel-agent-name">AI Assistant</span>
         </div>
         <div class="side-panel-actions">
-          <button class="side-panel-history-btn" onclick="toggleSidePanelHistory()" data-testid="button-side-history">
+          <button class="side-panel-history-btn" onclick="toggleSidePanelHistory()" data-testid="button-side-history" title="Chat history">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
             </svg>
           </button>
-          <button class="side-panel-close-btn" onclick="closeSidePanel()" data-testid="button-side-panel-close">
+          <button class="side-panel-minimize-btn" onclick="toggleSidePanelMinimize()" data-testid="button-side-minimize" title="Minimize">
+            <svg id="side-minimize-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>
+            </svg>
+          </button>
+          <button class="side-panel-close-btn" onclick="closeSidePanel()" data-testid="button-side-panel-close" title="Close">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
             </svg>

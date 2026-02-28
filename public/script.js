@@ -2450,7 +2450,11 @@ function openSidePanel() {
   if (galleryView) galleryView.classList.add('side-panel-active');
   if (landingView) landingView.classList.add('side-panel-active');
 
-  /* Show the side panel */
+  /* Reset minimized state and show the side panel */
+  panel.classList.remove('minimized');
+  const minIcon = document.getElementById('side-minimize-icon');
+  if (minIcon) minIcon.innerHTML = '<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>';
+
   sidePanelActive = true;
   panel.classList.add('active');
 }
@@ -2545,6 +2549,29 @@ function closeSidePanel() {
 
   /* Sync messages back to the main panel */
   syncSidePanelToChat();
+}
+
+
+/**
+ * Toggle minimize/expand on the side chat panel.
+ * Minimized: shows only the header bar (avatar, name, buttons).
+ * Expanded: shows the full panel with latest text, input, and history.
+ */
+function toggleSidePanelMinimize() {
+  const panel = document.getElementById('side-chat-panel');
+  if (!panel) return;
+
+  const isMinimized = panel.classList.toggle('minimized');
+  const icon = document.getElementById('side-minimize-icon');
+  if (!icon) return;
+
+  if (isMinimized) {
+    /* Switch icon to "expand" (maximize) arrows pointing outward */
+    icon.innerHTML = '<path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/>';
+  } else {
+    /* Switch icon back to "minimize" (shrink) arrows pointing inward */
+    icon.innerHTML = '<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>';
+  }
 }
 
 

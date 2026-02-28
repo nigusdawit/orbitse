@@ -2438,6 +2438,32 @@ input, select, textarea {
   max-height: 70vh;
 }
 
+/* Minimized state — collapses panel to just the header bar */
+.side-chat-panel.minimized .side-panel-latest-text,
+.side-chat-panel.minimized .side-panel-input-row,
+.side-chat-panel.minimized .side-panel-history {
+  display: none;
+}
+
+.side-panel-minimize-btn {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.5);
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: color 0.2s, background 0.2s;
+}
+
+.side-panel-minimize-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
 .chatbot-container.side-panel-hidden {
   opacity: 0;
   pointer-events: none;
