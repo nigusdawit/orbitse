@@ -1636,11 +1636,13 @@ async function chatSendStreaming(message, wasCollapsed) {
               }
             }
             tokenText += event.content;
-            if (!inCommandBlock && /```\s*command/i.test(tokenText)) {
+            /* Detect command block start: backtick-fenced OR bare JSON with "action" key */
+            if (!inCommandBlock && (/```\s*command/i.test(tokenText) || /\{"action"\s*:/i.test(tokenText))) {
               inCommandBlock = true;
-              /* Strip any trailing backticks and the start of the command block from display */
+              /* Strip trailing command markers and backticks from display text */
               displayTokens = displayTokens
-                .replace(/`{1,3}\s*command\s*`{0,3}\s*$/, '')
+                .replace(/`{1,3}\s*command\s*`{0,3}\s*$/i, '')
+                .replace(/\{"action"[\s\S]*$/i, '')
                 .replace(/`{1,3}\s*$/, '')
                 .trimEnd();
               if (streamBubble && displayTokens) {
@@ -1680,44 +1682,47 @@ async function chatSendStreaming(message, wasCollapsed) {
       displayText = tokenText.replace(/```\s*command[\s\S]*/i, '').replace(/`{1,3}\s*$/, '').trim();
     }
 
-    /* Strip any leaked command block text from displayText.
-       Only strip when we detected a command block during streaming (inCommandBlock)
-       or when the text contains backtick-fenced command markers. */
-    if (displayText && (inCommandBlock || /```\s*command/i.test(displayText))) {
-      const beforeStrip = displayText;
-      displayText = displayText
-        .replace(/```\s*command\s*```\s*\{[\s\S]*$/i, '')
-        .replace(/```\s*command\s*\n?[\s\S]*?```/gi, '')
-        .replace(/```\s*command[\s\S]*$/i, '')
-        .replace(/`{1,3}\s*$/, '')
-        .trim();
-      /* Safety: if stripping removed everything, fall back to what we had before */
-      if (!displayText && beforeStrip) {
-        displayText = beforeStrip.split(/```/)[0].trim();
+    /* Strip any leaked command/JSON from displayText.
+       Uses the same approach as the backend: find {"action": and remove
+       everything from that point onward, plus any surrounding backtick markers. */
+    if (displayText && /\{"action"\s*:/i.test(displayText)) {
+      const actionIdx = displayText.search(/\{"action"\s*:/i);
+      if (actionIdx !== -1) {
+        displayText = displayText.substring(0, actionIdx)
+          .replace(/`{1,3}\s*command\s*`{0,3}\s*$/i, '')
+          .replace(/`{1,3}\s*$/i, '')
+          .trim();
       }
     }
+    /* Also clean any backtick-fenced command blocks that didn't contain JSON */
+    if (displayText && /```\s*command/i.test(displayText)) {
+      displayText = displayText.replace(/```\s*command[\s\S]*$/i, '').replace(/`{1,3}\s*$/, '').trim();
+    }
 
-    /* Fallback: if backend didn't parse the command, try client-side extraction */
+    /* Fallback: if backend didn't parse the command, extract it client-side.
+       Uses the same robust approach: find {"action": in the full token text
+       and parse the JSON from there. */
     if (!pendingCommand && inCommandBlock && tokenText) {
-      try {
-        /* Try standard format: ```command\n{json}\n``` */
-        let cmdMatch = tokenText.match(/```\s*command\s*\n?([\s\S]*?)(?:\n?\s*```|$)/i);
-        if (!cmdMatch) {
-          /* Try ```command```{json}``` format */
-          cmdMatch = tokenText.match(/```\s*command\s*```\s*([\s\S]*?)(?:```|$)/i);
-        }
-        if (cmdMatch) {
-          let raw = cmdMatch[1].trim().replace(/`+$/, '').trim();
-          raw = raw.replace(/\\\n/g, '').replace(/\\ \n/g, '');
-          pendingCommand = JSON.parse(raw);
-        } else {
-          /* Last resort: find bare JSON with "action" key */
-          const bareMatch = tokenText.match(/(\{"action"\s*:\s*"[^"]+?"[\s\S]*?\})\s*`*\s*$/);
-          if (bareMatch) {
-            pendingCommand = JSON.parse(bareMatch[1].trim());
+      const actionIdx = tokenText.search(/\{"action"\s*:/i);
+      if (actionIdx !== -1) {
+        try {
+          const jsonPart = tokenText.substring(actionIdx);
+          /* Walk braces to find the complete JSON object */
+          let depth = 0, end = 0, inStr = false, esc = false;
+          for (let i = 0; i < jsonPart.length; i++) {
+            const ch = jsonPart[i];
+            if (esc) { esc = false; continue; }
+            if (ch === '\\' && inStr) { esc = true; continue; }
+            if (ch === '"') { inStr = !inStr; continue; }
+            if (inStr) continue;
+            if (ch === '{') depth++;
+            else if (ch === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
           }
-        }
-      } catch (e) { /* couldn't parse, skip */ }
+          if (end > 0) {
+            pendingCommand = JSON.parse(jsonPart.substring(0, end));
+          }
+        } catch (e) { /* couldn't parse, skip */ }
+      }
     }
 
     /* Determine if this response navigates to a gallery card */

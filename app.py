@@ -817,58 +817,76 @@ RULES:
 
 def parse_command_from_text(text):
     """
-    Extract a ```command``` block from the AI's response text.
-    Returns (clean_text, command_dict) — the text with the block removed,
+    Extract a command JSON block from the AI's response text.
+    Returns (clean_text, command_dict) — the text with the command removed,
     and the parsed command (or None if no command was found).
 
-    Handles both properly closed ```command...``` blocks and cases where
-    the closing fence is missing (model truncation).
+    APPROACH: Find the JSON object containing "action" directly, regardless
+    of how the AI wrapped it (fenced block, backtick-adjacent, bare, etc.).
+    This is robust against all formatting variations the model might produce.
     """
-    # Pattern 1: Standard ```command\n{json}\n```
-    pattern = r'```command\s*\n?(.*?)\n?\s*```'
-    match = re.search(pattern, text, re.DOTALL)
-
-    # Pattern 2: AI sometimes writes ```command```{json}``` (backticks right after "command")
-    if not match:
-        alt_pattern = r'```command```\s*(\{.*\})\s*`*'
-        match = re.search(alt_pattern, text, re.DOTALL)
-        if match:
-            pattern = alt_pattern
-
-    # Pattern 3: Unclosed block (model truncation)
-    if not match:
-        unclosed = re.search(r'```command[`]*\s*\n?(.*)', text, re.DOTALL)
-        if unclosed:
-            try:
-                raw = unclosed.group(1).strip().rstrip('`').strip()
-                raw = raw.replace('\\\n', '').replace('\\ \n', '')
-                cmd = json.loads(raw)
-                clean = text[:unclosed.start()].strip()
-                return clean, cmd
-            except json.JSONDecodeError:
-                pass
-
-    # Pattern 4: Bare JSON with "action" key anywhere in text (last resort)
-    if not match:
-        bare_json = re.search(r'(\{"action"\s*:\s*"[^"]+?"[\s\S]*?\})\s*`*\s*$', text)
-        if bare_json:
-            try:
-                raw = bare_json.group(1).strip()
-                cmd = json.loads(raw)
-                clean = text[:bare_json.start()].strip().rstrip('`').strip()
-                return clean, cmd
-            except json.JSONDecodeError:
-                pass
+    # Step 1: Look for a JSON object containing "action" in the text.
+    # Find the first occurrence of {"action" and extract the full JSON object.
+    action_pos = text.find('{"action"')
+    if action_pos == -1:
+        action_pos = text.find('{ "action"')
+    if action_pos == -1:
         return text.strip(), None
+
+    # Step 2: Extract the JSON by finding the matching closing brace.
+    json_str = text[action_pos:]
+    # Walk through the string counting braces to find the complete JSON object.
+    depth = 0
+    end_pos = 0
+    in_string = False
+    escape_next = False
+    for i, ch in enumerate(json_str):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\' and in_string:
+            escape_next = True
+            continue
+        if ch == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                end_pos = i + 1
+                break
+
+    if end_pos == 0:
+        return text.strip(), None
+
+    raw_json = json_str[:end_pos].strip()
+    # Clean up common formatting issues
+    raw_json = raw_json.replace('\\\n', '').replace('\\ \n', '')
 
     try:
-        raw = match.group(1).strip()
-        raw = raw.replace('\\\n', '').replace('\\ \n', '')
-        cmd = json.loads(raw)
-        clean = re.sub(pattern, '', text, flags=re.DOTALL).strip()
-        return clean, cmd
+        cmd = json.loads(raw_json)
     except json.JSONDecodeError:
         return text.strip(), None
+
+    # Step 3: Build the clean display text by removing the command + any
+    # surrounding backtick markers (```command```, ```command\n...\n```, etc.)
+    before = text[:action_pos]
+    after = text[action_pos + end_pos:]
+
+    # Strip backtick fencing that precedes the JSON
+    before = re.sub(r'`{1,3}\s*command\s*`{0,3}\s*$', '', before, flags=re.IGNORECASE).strip()
+    # Strip trailing backticks after the JSON
+    after = re.sub(r'^\s*`{1,3}', '', after).strip()
+
+    clean = (before + ' ' + after).strip()
+    # Remove any leftover isolated backticks
+    clean = re.sub(r'`{1,3}', '', clean).strip()
+
+    return clean, cmd
 
 
 @app.route("/api/chat", methods=["POST"])
