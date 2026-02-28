@@ -1638,7 +1638,11 @@ async function chatSendStreaming(message, wasCollapsed) {
             tokenText += event.content;
             if (!inCommandBlock && /```\s*command/i.test(tokenText)) {
               inCommandBlock = true;
-              displayTokens = displayTokens.replace(/`{1,3}\s*$/, '').trimEnd();
+              /* Strip any trailing backticks and the start of the command block from display */
+              displayTokens = displayTokens
+                .replace(/`{1,3}\s*command\s*`{0,3}\s*$/, '')
+                .replace(/`{1,3}\s*$/, '')
+                .trimEnd();
               if (streamBubble && displayTokens) {
                 streamBubble.finalize(displayTokens);
                 bubbleFinalized = true;
@@ -1676,6 +1680,23 @@ async function chatSendStreaming(message, wasCollapsed) {
       displayText = tokenText.replace(/```\s*command[\s\S]*/i, '').replace(/`{1,3}\s*$/, '').trim();
     }
 
+    /* Strip any leaked command block text from displayText.
+       Only strip when we detected a command block during streaming (inCommandBlock)
+       or when the text contains backtick-fenced command markers. */
+    if (displayText && (inCommandBlock || /```\s*command/i.test(displayText))) {
+      const beforeStrip = displayText;
+      displayText = displayText
+        .replace(/```\s*command\s*```\s*\{[\s\S]*$/i, '')
+        .replace(/```\s*command\s*\n?[\s\S]*?```/gi, '')
+        .replace(/```\s*command[\s\S]*$/i, '')
+        .replace(/`{1,3}\s*$/, '')
+        .trim();
+      /* Safety: if stripping removed everything, fall back to what we had before */
+      if (!displayText && beforeStrip) {
+        displayText = beforeStrip.split(/```/)[0].trim();
+      }
+    }
+
     /* Fallback: if backend didn't parse the command, try client-side extraction */
     if (!pendingCommand && inCommandBlock && tokenText) {
       try {
@@ -1711,29 +1732,37 @@ async function chatSendStreaming(message, wasCollapsed) {
       persistChatHistory();
 
       if (displayText) {
-        /* Cap landing page text: if >4 sentences and no command, auto-create a visual */
-        const sentenceCount = (displayText.match(/[.!?]+\s/g) || []).length + 1;
-        if (sentenceCount > 4 && !pendingCommand) {
+        /* If the AI sent a command (showSlide, generateVisual, generateHTML, etc.),
+           let the command handle the visual — just show a short hero preview */
+        if (pendingCommand) {
           const shortText = displayText.split(/(?<=[.!?])\s+/).slice(0, 2).join(' ');
           const heroEl = document.getElementById('hero-description');
-          if (heroEl) typeHeroText(heroEl, shortText + ' Let me show you more…');
-          const safeText = displayText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-          const autoHtml = `<div style="max-width:900px;margin:auto;padding:2.5rem;color:#e4e4e7;font-family:'DM Sans',sans-serif;"><div style="font-family:'Playfair Display',Georgia,serif;font-size:1.8rem;color:#fff;margin-bottom:1.5rem;">Details</div><div style="line-height:1.8;font-size:1.05rem;white-space:pre-wrap;">${safeText}</div></div>`;
-          openFullscreenCanvas(autoHtml);
-          openSidePanel();
-          saveGeneratedPage(autoHtml, 'AI Response');
+          if (heroEl) typeHeroText(heroEl, shortText || displayText);
         } else {
-          const heroEl = document.getElementById('hero-description');
-          if (heroEl) {
-            const landingContainer = document.querySelector('.landing-container');
-            if (landingContainer) {
-              landingContainer.scrollTo({ top: 0, behavior: 'smooth' });
+          /* No command — check if text is too long for the hero */
+          const sentenceCount = (displayText.match(/[.!?]+\s/g) || []).length + 1;
+          if (sentenceCount > 4) {
+            const shortText = displayText.split(/(?<=[.!?])\s+/).slice(0, 2).join(' ');
+            const heroEl = document.getElementById('hero-description');
+            if (heroEl) typeHeroText(heroEl, shortText + ' Let me show you more…');
+            const safeText = displayText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+            const autoHtml = `<div style="max-width:900px;margin:auto;padding:2.5rem;color:#e4e4e7;font-family:'DM Sans',sans-serif;"><div style="font-family:'Playfair Display',Georgia,serif;font-size:1.8rem;color:#fff;margin-bottom:1.5rem;">Details</div><div style="line-height:1.8;font-size:1.05rem;white-space:pre-wrap;">${safeText}</div></div>`;
+            openFullscreenCanvas(autoHtml);
+            openSidePanel();
+            saveGeneratedPage(autoHtml, 'AI Response');
+          } else {
+            const heroEl = document.getElementById('hero-description');
+            if (heroEl) {
+              const landingContainer = document.querySelector('.landing-container');
+              if (landingContainer) {
+                landingContainer.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+              typeHeroText(heroEl, displayText);
             }
-            typeHeroText(heroEl, displayText);
           }
         }
       }
-      /* Still execute non-navigate commands (showSlide, generateVisual, etc.) */
+      /* Execute any pending command (showSlide, generateVisual, generateHTML, etc.) */
       if (pendingCommand) {
         executeCommand(pendingCommand);
         pendingCommand = null;
