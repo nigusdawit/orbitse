@@ -557,6 +557,10 @@ TO CUSTOMIZE THIS DASHBOARD:
     <button class="tab-btn" onclick="switchTab('cards')" data-testid="tab-cards">Gallery Cards</button>
     <button class="tab-btn" onclick="switchTab('experiences')" data-testid="tab-experiences">Experiences</button>
     <button class="tab-btn" onclick="switchTab('pricing')" data-testid="tab-pricing">Pricing</button>
+    <button class="tab-btn" onclick="switchTab('business-info')" data-testid="tab-business-info">Business Info</button>
+    <button class="tab-btn" onclick="switchTab('testimonials')" data-testid="tab-testimonials">Testimonials</button>
+    <button class="tab-btn" onclick="switchTab('team')" data-testid="tab-team">Team</button>
+    <button class="tab-btn" onclick="switchTab('faq')" data-testid="tab-faq">FAQ</button>
     <button class="tab-btn" onclick="switchTab('chatbot')" data-testid="tab-chatbot">Chatbot</button>
     <button class="tab-btn" onclick="switchTab('chat-history')" data-testid="tab-chat-history">Chat History</button>
     <button class="tab-btn" onclick="switchTab('forms')" data-testid="tab-forms">Forms</button>
@@ -626,6 +630,64 @@ TO CUSTOMIZE THIS DASHBOARD:
 
       <div class="form-actions">
         <button class="btn btn-primary" onclick="saveSettings()" data-testid="button-save-settings">Save Settings</button>
+      </div>
+    </div>
+
+    <!--
+    ========================================================================
+    SECTION VISIBILITY TOGGLES
+    ========================================================================
+    Toggle which content sections are visible on the public site.
+    Changes save immediately when toggled.
+    -->
+    <div class="form-panel" id="section-visibility-panel">
+      <h3>Section Visibility</h3>
+      <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 1.5rem;">Control which sections are shown on the public site. Changes save immediately.</p>
+
+      <div style="display: flex; flex-direction: column; gap: 1rem;">
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; background: var(--admin-bg); border-radius: var(--admin-radius); border: 1px solid var(--admin-border);">
+          <div>
+            <div style="font-weight: 500; color: #fff;">Testimonials / Reviews</div>
+            <div style="color: var(--admin-text-muted); font-size: 0.8125rem;">Show client reviews and ratings on the public site.</div>
+          </div>
+          <label class="toggle-switch" data-testid="toggle-section-testimonials">
+            <input type="checkbox" id="section-testimonials" onchange="saveSectionVisibility()">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; background: var(--admin-bg); border-radius: var(--admin-radius); border: 1px solid var(--admin-border);">
+          <div>
+            <div style="font-weight: 500; color: #fff;">Team / About</div>
+            <div style="color: var(--admin-text-muted); font-size: 0.8125rem;">Show team member cards on the public site.</div>
+          </div>
+          <label class="toggle-switch" data-testid="toggle-section-team">
+            <input type="checkbox" id="section-team" onchange="saveSectionVisibility()">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; background: var(--admin-bg); border-radius: var(--admin-radius); border: 1px solid var(--admin-border);">
+          <div>
+            <div style="font-weight: 500; color: #fff;">FAQ</div>
+            <div style="color: var(--admin-text-muted); font-size: 0.8125rem;">Show frequently asked questions on the public site.</div>
+          </div>
+          <label class="toggle-switch" data-testid="toggle-section-faq">
+            <input type="checkbox" id="section-faq" onchange="saveSectionVisibility()">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; background: var(--admin-bg); border-radius: var(--admin-radius); border: 1px solid var(--admin-border);">
+          <div>
+            <div style="font-weight: 500; color: #fff;">Footer</div>
+            <div style="color: var(--admin-text-muted); font-size: 0.8125rem;">Show the footer with business info and social links.</div>
+          </div>
+          <label class="toggle-switch" data-testid="toggle-section-footer">
+            <input type="checkbox" id="section-footer" onchange="saveSectionVisibility()">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
       </div>
     </div>
   </div>
@@ -862,6 +924,312 @@ TO CUSTOMIZE THIS DASHBOARD:
       </thead>
       <tbody id="pricing-tbody">
         <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+
+  <!--
+  ========================================================================
+  TAB: BUSINESS INFO
+  ========================================================================
+  Manage business contact information, hours, and social media links.
+  This data is stored in the site_settings table (singleton row).
+  -->
+  <div id="tab-business-info" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Business Info &amp; Social Links</h2>
+        <p>Manage contact information, business hours, and social media profile links.</p>
+      </div>
+    </div>
+
+    <div class="form-panel" id="business-info-form-panel">
+      <h3>Contact Information</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="biz-phone">Phone Number</label>
+          <input type="tel" id="biz-phone" placeholder="+1 (555) 123-4567" data-testid="input-biz-phone">
+        </div>
+        <div class="form-group">
+          <label for="biz-email">Email Address</label>
+          <input type="email" id="biz-email" placeholder="hello@example.com" data-testid="input-biz-email">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="biz-address">Address</label>
+          <input type="text" id="biz-address" placeholder="123 Main Street, City, State, Zip" data-testid="input-biz-address">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="biz-map-embed">Google Maps Embed URL</label>
+          <textarea id="biz-map-embed" rows="3" placeholder='<iframe src="https://www.google.com/maps/embed?..." ...></iframe>' data-testid="input-biz-map-embed" style="font-family: monospace; font-size: 0.8125rem;"></textarea>
+        </div>
+      </div>
+
+      <h3 style="margin-top: 1.5rem;">Business Hours</h3>
+      <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 1rem;">Set your opening and closing times for each day. Leave both fields empty if closed.</p>
+      <div id="biz-hours-container">
+        <!-- Business hours rows generated by JavaScript -->
+      </div>
+
+      <h3 style="margin-top: 1.5rem;">Social Media Links</h3>
+      <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 1rem;">Enter the full URL for each social media profile. Leave empty to hide.</p>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="social-instagram">Instagram</label>
+          <input type="url" id="social-instagram" placeholder="https://instagram.com/yourbrand" data-testid="input-social-instagram">
+        </div>
+        <div class="form-group">
+          <label for="social-facebook">Facebook</label>
+          <input type="url" id="social-facebook" placeholder="https://facebook.com/yourbrand" data-testid="input-social-facebook">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="social-twitter">Twitter / X</label>
+          <input type="url" id="social-twitter" placeholder="https://x.com/yourbrand" data-testid="input-social-twitter">
+        </div>
+        <div class="form-group">
+          <label for="social-linkedin">LinkedIn</label>
+          <input type="url" id="social-linkedin" placeholder="https://linkedin.com/company/yourbrand" data-testid="input-social-linkedin">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="social-tiktok">TikTok</label>
+          <input type="url" id="social-tiktok" placeholder="https://tiktok.com/@yourbrand" data-testid="input-social-tiktok">
+        </div>
+        <div class="form-group">
+          <label for="social-youtube">YouTube</label>
+          <input type="url" id="social-youtube" placeholder="https://youtube.com/@yourbrand" data-testid="input-social-youtube">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="social-website">Website</label>
+          <input type="url" id="social-website" placeholder="https://yourbrand.com" data-testid="input-social-website">
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="saveBusinessInfo()" data-testid="button-save-business-info">Save Business Info</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!--
+  ========================================================================
+  TAB: TESTIMONIALS
+  ========================================================================
+  Manage client reviews and testimonials shown on the public site.
+  Each testimonial has a reviewer name, role, content, rating, and optional image.
+  -->
+  <div id="tab-testimonials" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Testimonials</h2>
+        <p>Manage client reviews and ratings displayed on the public site.</p>
+      </div>
+      <button class="btn btn-primary" onclick="showTestimonialForm()" data-testid="button-add-testimonial">+ Add Testimonial</button>
+    </div>
+
+    <div id="testimonial-form-panel" class="form-panel" style="display:none;">
+      <h3 id="testimonial-form-title">Add New Testimonial</h3>
+      <input type="hidden" id="testimonial-form-id">
+      <div class="form-row">
+        <div class="form-group">
+          <label for="testimonial-reviewer-name">Reviewer Name</label>
+          <input type="text" id="testimonial-reviewer-name" placeholder="Jane Smith" data-testid="input-testimonial-name">
+        </div>
+        <div class="form-group">
+          <label for="testimonial-reviewer-role">Role / Company</label>
+          <input type="text" id="testimonial-reviewer-role" placeholder="CEO, Acme Corp" data-testid="input-testimonial-role">
+        </div>
+        <div class="form-group">
+          <label for="testimonial-rating">Rating</label>
+          <select id="testimonial-rating" data-testid="select-testimonial-rating">
+            <option value="5">5 Stars</option>
+            <option value="4">4 Stars</option>
+            <option value="3">3 Stars</option>
+            <option value="2">2 Stars</option>
+            <option value="1">1 Star</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="testimonial-content">Review Content</label>
+          <textarea id="testimonial-content" rows="3" placeholder="Write the client's review here..." data-testid="input-testimonial-content"></textarea>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="testimonial-image">Image URL (optional)</label>
+          <div style="display: flex; gap: 0.5rem;">
+            <input type="url" id="testimonial-image" placeholder="https://..." data-testid="input-testimonial-image" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('testimonial-image')" data-testid="button-upload-testimonial-image">Upload</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="testimonial-sort-order">Sort Order</label>
+          <input type="number" id="testimonial-sort-order" placeholder="0" value="0" data-testid="input-testimonial-sort">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="hideTestimonialForm()" data-testid="button-cancel-testimonial">Cancel</button>
+        <button class="btn btn-primary" onclick="saveTestimonial()" data-testid="button-save-testimonial">Save Testimonial</button>
+      </div>
+    </div>
+
+    <table class="data-table" id="testimonials-table">
+      <thead>
+        <tr>
+          <th style="width:30px;"></th>
+          <th>Image</th>
+          <th>Reviewer</th>
+          <th>Role</th>
+          <th>Rating</th>
+          <th>Content</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="testimonials-tbody">
+        <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+
+  <!--
+  ========================================================================
+  TAB: TEAM
+  ========================================================================
+  Manage team member cards displayed on the public site.
+  Each member has a name, title, bio, and optional photo.
+  -->
+  <div id="tab-team" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Team Members</h2>
+        <p>Manage team member cards displayed on the public site.</p>
+      </div>
+      <button class="btn btn-primary" onclick="showTeamForm()" data-testid="button-add-team">+ Add Member</button>
+    </div>
+
+    <div id="team-form-panel" class="form-panel" style="display:none;">
+      <h3 id="team-form-title">Add New Team Member</h3>
+      <input type="hidden" id="team-form-id">
+      <div class="form-row">
+        <div class="form-group">
+          <label for="team-name">Name</label>
+          <input type="text" id="team-name" placeholder="John Doe" data-testid="input-team-name">
+        </div>
+        <div class="form-group">
+          <label for="team-title">Title / Position</label>
+          <input type="text" id="team-title" placeholder="Head Chef" data-testid="input-team-title">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="team-bio">Bio</label>
+          <textarea id="team-bio" rows="3" placeholder="A short biography..." data-testid="input-team-bio"></textarea>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="team-image">Image URL (optional)</label>
+          <div style="display: flex; gap: 0.5rem;">
+            <input type="url" id="team-image" placeholder="https://..." data-testid="input-team-image" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('team-image')" data-testid="button-upload-team-image">Upload</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="team-sort-order">Sort Order</label>
+          <input type="number" id="team-sort-order" placeholder="0" value="0" data-testid="input-team-sort">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="hideTeamForm()" data-testid="button-cancel-team">Cancel</button>
+        <button class="btn btn-primary" onclick="saveTeamMember()" data-testid="button-save-team">Save Member</button>
+      </div>
+    </div>
+
+    <table class="data-table" id="team-table">
+      <thead>
+        <tr>
+          <th style="width:30px;"></th>
+          <th>Image</th>
+          <th>Name</th>
+          <th>Title</th>
+          <th>Bio</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="team-tbody">
+        <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+
+  <!--
+  ========================================================================
+  TAB: FAQ
+  ========================================================================
+  Manage frequently asked questions displayed on the public site.
+  Each FAQ has a question and answer pair.
+  -->
+  <div id="tab-faq" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Frequently Asked Questions</h2>
+        <p>Manage the FAQ section displayed on the public site.</p>
+      </div>
+      <button class="btn btn-primary" onclick="showFaqForm()" data-testid="button-add-faq">+ Add FAQ</button>
+    </div>
+
+    <div id="faq-form-panel" class="form-panel" style="display:none;">
+      <h3 id="faq-form-title">Add New FAQ</h3>
+      <input type="hidden" id="faq-form-id">
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="faq-question">Question</label>
+          <input type="text" id="faq-question" placeholder="What are your check-in hours?" data-testid="input-faq-question">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="faq-answer">Answer</label>
+          <textarea id="faq-answer" rows="4" placeholder="Our check-in time is 3:00 PM..." data-testid="input-faq-answer"></textarea>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="faq-sort-order">Sort Order</label>
+          <input type="number" id="faq-sort-order" placeholder="0" value="0" data-testid="input-faq-sort">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="hideFaqForm()" data-testid="button-cancel-faq">Cancel</button>
+        <button class="btn btn-primary" onclick="saveFaq()" data-testid="button-save-faq">Save FAQ</button>
+      </div>
+    </div>
+
+    <table class="data-table" id="faq-table">
+      <thead>
+        <tr>
+          <th style="width:30px;"></th>
+          <th>Question</th>
+          <th>Answer</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="faq-tbody">
+        <tr><td colspan="4" class="empty-state">Loading...</td></tr>
       </tbody>
     </table>
   </div>
@@ -2791,14 +3159,522 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     /*
     ========================================================================
+    SECTION VISIBILITY — Load and save toggle states
+    ========================================================================
+    Controls which sections are shown on the public site.
+    Changes save immediately when a toggle is switched.
+    */
+
+    async function loadSectionVisibility() {
+      try {
+        const res = await fetch('/admin/api/section-visibility');
+        const data = await res.json();
+        document.getElementById('section-testimonials').checked = !!data.section_testimonials;
+        document.getElementById('section-team').checked = !!data.section_team;
+        document.getElementById('section-faq').checked = !!data.section_faq;
+        document.getElementById('section-footer').checked = data.section_footer !== false;
+      } catch (err) {
+        showToast('Failed to load section visibility', 'error');
+      }
+    }
+
+    async function saveSectionVisibility() {
+      const data = {
+        section_testimonials: document.getElementById('section-testimonials').checked,
+        section_team: document.getElementById('section-team').checked,
+        section_faq: document.getElementById('section-faq').checked,
+        section_footer: document.getElementById('section-footer').checked
+      };
+
+      try {
+        const res = await fetch('/admin/api/section-visibility', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+        if (res.ok) {
+          showToast('Section visibility saved!');
+        } else {
+          showToast('Failed to save visibility', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save visibility', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
+    BUSINESS INFO — Load and save contact info, hours, and social links
+    ========================================================================
+    Manages business contact information, hours of operation, and social
+    media profile URLs. All stored in the site_settings singleton row.
+    */
+
+    const DAYS_OF_WEEK = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+    function renderBusinessHours(hours) {
+      const container = document.getElementById('biz-hours-container');
+      const hoursMap = {};
+      if (Array.isArray(hours)) {
+        hours.forEach(h => { hoursMap[h.day] = h; });
+      }
+
+      container.innerHTML = DAYS_OF_WEEK.map(day => {
+        const h = hoursMap[day] || {};
+        return `
+          <div class="form-row" style="margin-bottom: 0.5rem; align-items: center;">
+            <div class="form-group" style="min-width: 100px;">
+              <label style="font-size: 0.875rem; text-transform: none; letter-spacing: normal; font-weight: 500; color: var(--admin-text);">${day}</label>
+            </div>
+            <div class="form-group">
+              <input type="text" id="hours-${day}-open" placeholder="9:00 AM" value="${esc(h.open || '')}" data-testid="input-hours-${day.toLowerCase()}-open" style="max-width: 140px;">
+            </div>
+            <div style="color: var(--admin-text-muted); padding-top: 0.25rem;">to</div>
+            <div class="form-group">
+              <input type="text" id="hours-${day}-close" placeholder="5:00 PM" value="${esc(h.close || '')}" data-testid="input-hours-${day.toLowerCase()}-close" style="max-width: 140px;">
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function loadBusinessInfo() {
+      try {
+        const [bizRes, socialRes] = await Promise.all([
+          fetch('/admin/api/business-info'),
+          fetch('/admin/api/social-links')
+        ]);
+        const biz = await bizRes.json();
+        const social = await socialRes.json();
+
+        document.getElementById('biz-phone').value = biz.business_phone || '';
+        document.getElementById('biz-email').value = biz.business_email || '';
+        document.getElementById('biz-address').value = biz.business_address || '';
+        document.getElementById('biz-map-embed').value = biz.business_map_embed || '';
+
+        renderBusinessHours(biz.business_hours || []);
+
+        const links = social.social_links || {};
+        document.getElementById('social-instagram').value = links.instagram || '';
+        document.getElementById('social-facebook').value = links.facebook || '';
+        document.getElementById('social-twitter').value = links.twitter || '';
+        document.getElementById('social-linkedin').value = links.linkedin || '';
+        document.getElementById('social-tiktok').value = links.tiktok || '';
+        document.getElementById('social-youtube').value = links.youtube || '';
+        document.getElementById('social-website').value = links.website || '';
+      } catch (err) {
+        showToast('Failed to load business info', 'error');
+      }
+    }
+
+    async function saveBusinessInfo() {
+      const hours = DAYS_OF_WEEK.map(day => ({
+        day,
+        open: document.getElementById(`hours-${day}-open`).value.trim(),
+        close: document.getElementById(`hours-${day}-close`).value.trim()
+      })).filter(h => h.open || h.close);
+
+      const bizData = {
+        business_phone: document.getElementById('biz-phone').value.trim(),
+        business_email: document.getElementById('biz-email').value.trim(),
+        business_address: document.getElementById('biz-address').value.trim(),
+        business_map_embed: document.getElementById('biz-map-embed').value.trim(),
+        business_hours: hours
+      };
+
+      const socialData = {
+        instagram: document.getElementById('social-instagram').value.trim(),
+        facebook: document.getElementById('social-facebook').value.trim(),
+        twitter: document.getElementById('social-twitter').value.trim(),
+        linkedin: document.getElementById('social-linkedin').value.trim(),
+        tiktok: document.getElementById('social-tiktok').value.trim(),
+        youtube: document.getElementById('social-youtube').value.trim(),
+        website: document.getElementById('social-website').value.trim()
+      };
+
+      try {
+        const [bizRes, socialRes] = await Promise.all([
+          fetch('/admin/api/business-info', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(bizData)
+          }),
+          fetch('/admin/api/social-links', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(socialData)
+          })
+        ]);
+
+        if (bizRes.ok && socialRes.ok) {
+          showToast('Business info and social links saved!');
+        } else {
+          showToast('Failed to save some settings', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save business info', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
+    TESTIMONIALS — CRUD Operations
+    ========================================================================
+    Manage client reviews and ratings displayed on the public site.
+    Each testimonial has a reviewer name, role, content, star rating, and
+    optional image. Supports drag-to-reorder.
+    */
+
+    async function loadTestimonials() {
+      try {
+        const res = await fetch('/admin/api/testimonials');
+        const items = await res.json();
+        const tbody = document.getElementById('testimonials-tbody');
+
+        if (!items.length) {
+          tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No testimonials yet. Click "+ Add Testimonial" to create one.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = items.map(item => {
+          const stars = '\u2605'.repeat(item.rating || 5) + '\u2606'.repeat(5 - (item.rating || 5));
+          const imgCell = item.image_url
+            ? `<img src="${esc(item.image_url)}" alt="${esc(item.reviewer_name)}" class="cell-image" style="border-radius: 50%; width: 40px; height: 40px;">`
+            : '<span style="color: var(--admin-text-muted);">\u2014</span>';
+          return `
+            <tr data-id="${item.id}">
+              <td><span class="drag-handle" title="Drag to reorder">&#x2630;</span></td>
+              <td>${imgCell}</td>
+              <td><strong>${esc(item.reviewer_name)}</strong></td>
+              <td>${esc(item.reviewer_role)}</td>
+              <td style="color: #fbbf24;">${stars}</td>
+              <td class="cell-truncate">${esc(item.content)}</td>
+              <td class="cell-actions">
+                <button class="btn btn-secondary btn-sm" onclick='editTestimonial(${JSON.stringify(item).replace(/'/g, "&#39;")})' data-testid="button-edit-testimonial-${item.id}">Edit</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteTestimonial(${item.id})" data-testid="button-delete-testimonial-${item.id}">Delete</button>
+              </td>
+            </tr>
+          `;
+        }).join('');
+        initSortable('testimonials-tbody', 'testimonials');
+      } catch (err) {
+        showToast('Failed to load testimonials', 'error');
+      }
+    }
+
+    function showTestimonialForm() {
+      document.getElementById('testimonial-form-panel').style.display = 'block';
+      document.getElementById('testimonial-form-title').textContent = 'Add New Testimonial';
+      document.getElementById('testimonial-form-id').value = '';
+      document.getElementById('testimonial-reviewer-name').value = '';
+      document.getElementById('testimonial-reviewer-role').value = '';
+      document.getElementById('testimonial-rating').value = '5';
+      document.getElementById('testimonial-content').value = '';
+      document.getElementById('testimonial-image').value = '';
+      document.getElementById('testimonial-sort-order').value = '0';
+    }
+
+    function hideTestimonialForm() {
+      document.getElementById('testimonial-form-panel').style.display = 'none';
+    }
+
+    function editTestimonial(item) {
+      document.getElementById('testimonial-form-panel').style.display = 'block';
+      document.getElementById('testimonial-form-title').textContent = 'Edit: ' + item.reviewer_name;
+      document.getElementById('testimonial-form-id').value = item.id;
+      document.getElementById('testimonial-reviewer-name').value = item.reviewer_name || '';
+      document.getElementById('testimonial-reviewer-role').value = item.reviewer_role || '';
+      document.getElementById('testimonial-rating').value = item.rating || 5;
+      document.getElementById('testimonial-content').value = item.content || '';
+      document.getElementById('testimonial-image').value = item.image_url || '';
+      document.getElementById('testimonial-sort-order').value = item.sort_order || 0;
+    }
+
+    async function saveTestimonial() {
+      const id = document.getElementById('testimonial-form-id').value;
+      const data = {
+        reviewer_name: document.getElementById('testimonial-reviewer-name').value,
+        reviewer_role: document.getElementById('testimonial-reviewer-role').value,
+        rating: parseInt(document.getElementById('testimonial-rating').value) || 5,
+        content: document.getElementById('testimonial-content').value,
+        image_url: document.getElementById('testimonial-image').value,
+        sort_order: parseInt(document.getElementById('testimonial-sort-order').value) || 0
+      };
+
+      try {
+        const url = id ? `/admin/api/testimonials/${id}` : '/admin/api/testimonials';
+        const method = id ? 'PUT' : 'POST';
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+
+        if (res.ok) {
+          showToast(id ? 'Testimonial updated!' : 'Testimonial created!');
+          hideTestimonialForm();
+          loadTestimonials();
+        } else {
+          showToast('Failed to save testimonial', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save testimonial', 'error');
+      }
+    }
+
+    async function deleteTestimonial(id) {
+      if (!confirm('Delete this testimonial?')) return;
+      try {
+        const res = await fetch(`/admin/api/testimonials/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('Testimonial deleted');
+          loadTestimonials();
+        } else {
+          showToast('Failed to delete', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to delete', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
+    TEAM MEMBERS — CRUD Operations
+    ========================================================================
+    Manage team member cards displayed on the public site.
+    Each member has a name, title/position, bio, and optional photo.
+    Supports drag-to-reorder.
+    */
+
+    async function loadTeam() {
+      try {
+        const res = await fetch('/admin/api/team');
+        const items = await res.json();
+        const tbody = document.getElementById('team-tbody');
+
+        if (!items.length) {
+          tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No team members yet. Click "+ Add Member" to create one.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = items.map(item => {
+          const imgCell = item.image_url
+            ? `<img src="${esc(item.image_url)}" alt="${esc(item.name)}" class="cell-image" style="border-radius: 50%; width: 40px; height: 40px;">`
+            : '<span style="color: var(--admin-text-muted);">\u2014</span>';
+          return `
+            <tr data-id="${item.id}">
+              <td><span class="drag-handle" title="Drag to reorder">&#x2630;</span></td>
+              <td>${imgCell}</td>
+              <td><strong>${esc(item.name)}</strong></td>
+              <td>${esc(item.title)}</td>
+              <td class="cell-truncate">${esc(item.bio)}</td>
+              <td class="cell-actions">
+                <button class="btn btn-secondary btn-sm" onclick='editTeamMember(${JSON.stringify(item).replace(/'/g, "&#39;")})' data-testid="button-edit-team-${item.id}">Edit</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteTeamMember(${item.id})" data-testid="button-delete-team-${item.id}">Delete</button>
+              </td>
+            </tr>
+          `;
+        }).join('');
+        initSortable('team-tbody', 'team');
+      } catch (err) {
+        showToast('Failed to load team members', 'error');
+      }
+    }
+
+    function showTeamForm() {
+      document.getElementById('team-form-panel').style.display = 'block';
+      document.getElementById('team-form-title').textContent = 'Add New Team Member';
+      document.getElementById('team-form-id').value = '';
+      document.getElementById('team-name').value = '';
+      document.getElementById('team-title').value = '';
+      document.getElementById('team-bio').value = '';
+      document.getElementById('team-image').value = '';
+      document.getElementById('team-sort-order').value = '0';
+    }
+
+    function hideTeamForm() {
+      document.getElementById('team-form-panel').style.display = 'none';
+    }
+
+    function editTeamMember(item) {
+      document.getElementById('team-form-panel').style.display = 'block';
+      document.getElementById('team-form-title').textContent = 'Edit: ' + item.name;
+      document.getElementById('team-form-id').value = item.id;
+      document.getElementById('team-name').value = item.name || '';
+      document.getElementById('team-title').value = item.title || '';
+      document.getElementById('team-bio').value = item.bio || '';
+      document.getElementById('team-image').value = item.image_url || '';
+      document.getElementById('team-sort-order').value = item.sort_order || 0;
+    }
+
+    async function saveTeamMember() {
+      const id = document.getElementById('team-form-id').value;
+      const data = {
+        name: document.getElementById('team-name').value,
+        title: document.getElementById('team-title').value,
+        bio: document.getElementById('team-bio').value,
+        image_url: document.getElementById('team-image').value,
+        sort_order: parseInt(document.getElementById('team-sort-order').value) || 0
+      };
+
+      try {
+        const url = id ? `/admin/api/team/${id}` : '/admin/api/team';
+        const method = id ? 'PUT' : 'POST';
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+
+        if (res.ok) {
+          showToast(id ? 'Team member updated!' : 'Team member added!');
+          hideTeamForm();
+          loadTeam();
+        } else {
+          showToast('Failed to save team member', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save team member', 'error');
+      }
+    }
+
+    async function deleteTeamMember(id) {
+      if (!confirm('Delete this team member?')) return;
+      try {
+        const res = await fetch(`/admin/api/team/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('Team member deleted');
+          loadTeam();
+        } else {
+          showToast('Failed to delete', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to delete', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
+    FAQ — CRUD Operations
+    ========================================================================
+    Manage frequently asked questions displayed on the public site.
+    Each FAQ has a question and answer pair. Supports drag-to-reorder.
+    */
+
+    async function loadFaq() {
+      try {
+        const res = await fetch('/admin/api/faq');
+        const items = await res.json();
+        const tbody = document.getElementById('faq-tbody');
+
+        if (!items.length) {
+          tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No FAQs yet. Click "+ Add FAQ" to create one.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = items.map(item => `
+          <tr data-id="${item.id}">
+            <td><span class="drag-handle" title="Drag to reorder">&#x2630;</span></td>
+            <td><strong>${esc(item.question)}</strong></td>
+            <td class="cell-truncate">${esc(item.answer)}</td>
+            <td class="cell-actions">
+              <button class="btn btn-secondary btn-sm" onclick='editFaq(${JSON.stringify(item).replace(/'/g, "&#39;")})' data-testid="button-edit-faq-${item.id}">Edit</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteFaq(${item.id})" data-testid="button-delete-faq-${item.id}">Delete</button>
+            </td>
+          </tr>
+        `).join('');
+        initSortable('faq-tbody', 'faq');
+      } catch (err) {
+        showToast('Failed to load FAQs', 'error');
+      }
+    }
+
+    function showFaqForm() {
+      document.getElementById('faq-form-panel').style.display = 'block';
+      document.getElementById('faq-form-title').textContent = 'Add New FAQ';
+      document.getElementById('faq-form-id').value = '';
+      document.getElementById('faq-question').value = '';
+      document.getElementById('faq-answer').value = '';
+      document.getElementById('faq-sort-order').value = '0';
+    }
+
+    function hideFaqForm() {
+      document.getElementById('faq-form-panel').style.display = 'none';
+    }
+
+    function editFaq(item) {
+      document.getElementById('faq-form-panel').style.display = 'block';
+      document.getElementById('faq-form-title').textContent = 'Edit FAQ';
+      document.getElementById('faq-form-id').value = item.id;
+      document.getElementById('faq-question').value = item.question || '';
+      document.getElementById('faq-answer').value = item.answer || '';
+      document.getElementById('faq-sort-order').value = item.sort_order || 0;
+    }
+
+    async function saveFaq() {
+      const id = document.getElementById('faq-form-id').value;
+      const data = {
+        question: document.getElementById('faq-question').value,
+        answer: document.getElementById('faq-answer').value,
+        sort_order: parseInt(document.getElementById('faq-sort-order').value) || 0
+      };
+
+      try {
+        const url = id ? `/admin/api/faq/${id}` : '/admin/api/faq';
+        const method = id ? 'PUT' : 'POST';
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+
+        if (res.ok) {
+          showToast(id ? 'FAQ updated!' : 'FAQ created!');
+          hideFaqForm();
+          loadFaq();
+        } else {
+          showToast('Failed to save FAQ', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save FAQ', 'error');
+      }
+    }
+
+    async function deleteFaq(id) {
+      if (!confirm('Delete this FAQ?')) return;
+      try {
+        const res = await fetch(`/admin/api/faq/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('FAQ deleted');
+          loadFaq();
+        } else {
+          showToast('Failed to delete', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to delete', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
     INITIALIZATION — Load all data on page load
     ========================================================================
     */
     document.addEventListener('DOMContentLoaded', () => {
       loadSettings();
+      loadSectionVisibility();
       loadCards();
       loadExperiences();
       loadPricing();
+      loadBusinessInfo();
+      loadTestimonials();
+      loadTeam();
+      loadFaq();
       loadChatbotSettings();
       loadChatHistory();
       loadForms();

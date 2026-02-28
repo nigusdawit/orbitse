@@ -378,6 +378,54 @@ def init_db():
                     updated_at  TIMESTAMP DEFAULT NOW()
                 );
                 CREATE INDEX IF NOT EXISTS idx_generated_pages_status ON generated_pages (status);
+
+                -- =============================================================
+                -- TESTIMONIALS / REVIEWS
+                -- =============================================================
+                -- Client reviews displayed on the public site.
+                -- Each has a star rating (1-5), reviewer info, and optional photo.
+                -- Enabled/disabled via section_testimonials toggle in site_settings.
+                CREATE TABLE IF NOT EXISTS testimonials (
+                    id            SERIAL PRIMARY KEY,
+                    reviewer_name TEXT NOT NULL DEFAULT '',
+                    reviewer_role TEXT NOT NULL DEFAULT '',
+                    content       TEXT NOT NULL DEFAULT '',
+                    rating        INTEGER NOT NULL DEFAULT 5,
+                    image_url     TEXT NOT NULL DEFAULT '',
+                    sort_order    INTEGER NOT NULL DEFAULT 0,
+                    created_at    TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_testimonials_sort ON testimonials (sort_order);
+
+                -- =============================================================
+                -- TEAM MEMBERS
+                -- =============================================================
+                -- Staff/team member cards displayed on the public site.
+                -- Enabled/disabled via section_team toggle in site_settings.
+                CREATE TABLE IF NOT EXISTS team_members (
+                    id          SERIAL PRIMARY KEY,
+                    name        TEXT NOT NULL DEFAULT '',
+                    title       TEXT NOT NULL DEFAULT '',
+                    bio         TEXT NOT NULL DEFAULT '',
+                    image_url   TEXT NOT NULL DEFAULT '',
+                    sort_order  INTEGER NOT NULL DEFAULT 0,
+                    created_at  TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_team_sort ON team_members (sort_order);
+
+                -- =============================================================
+                -- FREQUENTLY ASKED QUESTIONS
+                -- =============================================================
+                -- FAQ pairs shown in an accordion on the public site.
+                -- Enabled/disabled via section_faq toggle in site_settings.
+                CREATE TABLE IF NOT EXISTS faqs (
+                    id          SERIAL PRIMARY KEY,
+                    question    TEXT NOT NULL DEFAULT '',
+                    answer      TEXT NOT NULL DEFAULT '',
+                    sort_order  INTEGER NOT NULL DEFAULT 0,
+                    created_at  TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_faqs_sort ON faqs (sort_order);
             """)
 
             # Seed chatbot_settings singleton if it doesn't exist
@@ -406,6 +454,19 @@ def init_db():
                 "ALTER TABLE form_submissions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
                 "ALTER TABLE form_fields ADD COLUMN IF NOT EXISTS step INTEGER NOT NULL DEFAULT 1",
                 "ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS visitor_id VARCHAR(100) DEFAULT ''",
+                # --- Section visibility toggles (admin can show/hide entire sections) ---
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS section_testimonials BOOLEAN DEFAULT false",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS section_team BOOLEAN DEFAULT false",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS section_faq BOOLEAN DEFAULT false",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS section_footer BOOLEAN DEFAULT true",
+                # --- Business contact information ---
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS business_phone TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS business_email TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS business_address TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS business_hours JSONB DEFAULT '[]'::jsonb",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS business_map_embed TEXT NOT NULL DEFAULT ''",
+                # --- Social media profile links (JSON object) ---
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS social_links JSONB DEFAULT '{}'::jsonb",
             ]:
                 cur.execute(col_sql)
 
@@ -590,6 +651,68 @@ def api_pricing():
     """
     pricing = query_db("SELECT * FROM pricing_seasons ORDER BY sort_order ASC")
     return jsonify(pricing or [])
+
+
+# =============================================================
+# PUBLIC API — TESTIMONIALS
+# =============================================================
+@app.route("/api/testimonials")
+def api_testimonials():
+    """
+    GET /api/testimonials
+    Returns all testimonials ordered by sort_order.
+    Only returned if the section is enabled in site_settings.
+    """
+    testimonials = query_db("SELECT * FROM testimonials ORDER BY sort_order ASC")
+    return jsonify(testimonials or [])
+
+
+# =============================================================
+# PUBLIC API — TEAM MEMBERS
+# =============================================================
+@app.route("/api/team")
+def api_team():
+    """
+    GET /api/team
+    Returns all team members ordered by sort_order.
+    Only returned if the section is enabled in site_settings.
+    """
+    team = query_db("SELECT * FROM team_members ORDER BY sort_order ASC")
+    return jsonify(team or [])
+
+
+# =============================================================
+# PUBLIC API — FAQ
+# =============================================================
+@app.route("/api/faq")
+def api_faq():
+    """
+    GET /api/faq
+    Returns all FAQ entries ordered by sort_order.
+    Only returned if the section is enabled in site_settings.
+    """
+    faqs = query_db("SELECT * FROM faqs ORDER BY sort_order ASC")
+    return jsonify(faqs or [])
+
+
+# =============================================================
+# PUBLIC API — BUSINESS INFO
+# =============================================================
+@app.route("/api/business-info")
+def api_business_info():
+    """
+    GET /api/business-info
+    Returns business contact info, hours, and social links
+    from the site_settings table (single-row config).
+    """
+    info = query_db("""
+        SELECT business_phone, business_email, business_address,
+               business_hours, business_map_embed, social_links
+        FROM site_settings WHERE id = 1
+    """, fetchone=True)
+    if not info:
+        return jsonify({})
+    return jsonify(info)
 
 
 @app.route("/api/chatbot-settings")
@@ -844,7 +967,17 @@ Example conversation flow:
 ```
 Send this after EVERY message where the visitor provides form field data. Include ALL fields collected so far (not just the new one). This enables abandon capture — if the visitor leaves before completing the form, we still have their partial data for follow-up.
 
-7. Display a message on the hero section:
+7. Scroll to a specific page section:
+```command
+{"action": "scrollToSection", "target": "SECTION_ID"}
+```
+Valid section IDs: section-hero, section-highlights, section-experiences, section-pricing, section-testimonials, section-team, section-faq
+Use this when the visitor asks about testimonials, reviews, the team, FAQ, pricing, etc. to scroll them directly to that section. For example:
+- "Show me your reviews" → short reply + scrollToSection to section-testimonials
+- "Who's on your team?" → short reply + scrollToSection to section-team
+- "Do you have a FAQ?" → short reply + scrollToSection to section-faq
+
+8. Display a message on the hero section:
 ```command
 {"action": "heroMessage", "message": "YOUR MESSAGE HERE"}
 ```
@@ -1155,8 +1288,45 @@ def api_chat():
                 )
             active_prompt += f"\n\nAVAILABLE FORMS (you can collect this info in chat and submit):\n" + "\n\n".join(form_lines)
 
-        # ----- ADD MORE SECTIONS BELOW -----
-        # Follow the same pattern: query → format → append to active_prompt
+        # ----- 6. TESTIMONIALS / REVIEWS -----
+        # Customer reviews with star ratings so the AI can reference real feedback
+        testimonials = query_db("SELECT reviewer_name, reviewer_role, content, rating FROM testimonials ORDER BY sort_order ASC")
+        if testimonials:
+            test_lines = [f'  - {t["reviewer_name"]} ({t.get("reviewer_role", "")}): "{t["content"]}" — {t.get("rating", 5)}★' for t in testimonials]
+            active_prompt += f"\n\nCUSTOMER TESTIMONIALS:\n" + "\n".join(test_lines)
+
+        # ----- 7. TEAM / ABOUT -----
+        # Staff bios so the AI can tell visitors about the team
+        team = query_db("SELECT name, title, bio FROM team_members ORDER BY sort_order ASC")
+        if team:
+            team_lines = [f'  - {m["name"]} — {m.get("title", "")}: {m.get("bio", "")}' for m in team]
+            active_prompt += f"\n\nOUR TEAM:\n" + "\n".join(team_lines)
+
+        # ----- 8. FAQ -----
+        # Common questions and answers the AI should know by heart
+        faqs = query_db("SELECT question, answer FROM faqs ORDER BY sort_order ASC")
+        if faqs:
+            faq_lines = [f'  Q: {f["question"]}\n  A: {f["answer"]}' for f in faqs]
+            active_prompt += f"\n\nFREQUENTLY ASKED QUESTIONS:\n" + "\n\n".join(faq_lines)
+
+        # ----- 9. BUSINESS INFO -----
+        # Contact details, hours, and address so the AI can share them
+        biz = query_db("""
+            SELECT business_phone, business_email, business_address, business_hours
+            FROM site_settings WHERE id = 1
+        """, fetchone=True)
+        if biz:
+            biz_lines = []
+            if biz.get("business_phone"): biz_lines.append(f"  - Phone: {biz['business_phone']}")
+            if biz.get("business_email"): biz_lines.append(f"  - Email: {biz['business_email']}")
+            if biz.get("business_address"): biz_lines.append(f"  - Address: {biz['business_address']}")
+            hours = biz.get("business_hours")
+            if hours and isinstance(hours, list) and len(hours) > 0:
+                hours_str = ", ".join([f'{h.get("day", "")}: {h.get("open", "")}–{h.get("close", "")}' for h in hours if h.get("day")])
+                if hours_str:
+                    biz_lines.append(f"  - Hours: {hours_str}")
+            if biz_lines:
+                active_prompt += f"\n\nBUSINESS CONTACT INFO:\n" + "\n".join(biz_lines)
 
     except Exception:
         pass
@@ -1430,6 +1600,262 @@ def admin_delete_pricing(price_id):
     return jsonify({"success": True})
 
 
+# =============================================================
+# ADMIN CRUD — TESTIMONIALS
+# =============================================================
+# Manages client reviews / testimonials displayed on the public site.
+
+@app.route("/admin/api/testimonials", methods=["GET"])
+@admin_required
+def admin_get_testimonials():
+    """GET all testimonials for the admin panel."""
+    items = query_db("SELECT * FROM testimonials ORDER BY sort_order ASC")
+    return jsonify(items or [])
+
+
+@app.route("/admin/api/testimonials", methods=["POST"])
+@admin_required
+def admin_create_testimonial():
+    """POST /admin/api/testimonials — Create a new testimonial."""
+    data = request.get_json()
+    item = execute_db(
+        """INSERT INTO testimonials (reviewer_name, reviewer_role, content, rating, image_url, sort_order)
+           VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
+        (data.get("reviewer_name", ""), data.get("reviewer_role", ""),
+         data.get("content", ""), data.get("rating", 5),
+         data.get("image_url", ""), data.get("sort_order", 0))
+    )
+    return jsonify(item), 201
+
+
+@app.route("/admin/api/testimonials/<int:item_id>", methods=["PUT"])
+@admin_required
+def admin_update_testimonial(item_id):
+    """PUT /admin/api/testimonials/<id> — Update a testimonial."""
+    data = request.get_json()
+    item = execute_db(
+        """UPDATE testimonials SET
+             reviewer_name = %s, reviewer_role = %s, content = %s,
+             rating = %s, image_url = %s, sort_order = %s
+           WHERE id = %s RETURNING *""",
+        (data.get("reviewer_name", ""), data.get("reviewer_role", ""),
+         data.get("content", ""), data.get("rating", 5),
+         data.get("image_url", ""), data.get("sort_order", 0), item_id)
+    )
+    if not item:
+        return jsonify({"error": "Testimonial not found"}), 404
+    return jsonify(item)
+
+
+@app.route("/admin/api/testimonials/<int:item_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_testimonial(item_id):
+    """DELETE /admin/api/testimonials/<id> — Remove a testimonial."""
+    count = execute_db("DELETE FROM testimonials WHERE id = %s", (item_id,))
+    if count == 0:
+        return jsonify({"error": "Testimonial not found"}), 404
+    return jsonify({"success": True})
+
+
+# =============================================================
+# ADMIN CRUD — TEAM MEMBERS
+# =============================================================
+# Manages team/staff member cards displayed on the public site.
+
+@app.route("/admin/api/team", methods=["GET"])
+@admin_required
+def admin_get_team():
+    """GET all team members for the admin panel."""
+    items = query_db("SELECT * FROM team_members ORDER BY sort_order ASC")
+    return jsonify(items or [])
+
+
+@app.route("/admin/api/team", methods=["POST"])
+@admin_required
+def admin_create_team_member():
+    """POST /admin/api/team — Create a new team member."""
+    data = request.get_json()
+    item = execute_db(
+        """INSERT INTO team_members (name, title, bio, image_url, sort_order)
+           VALUES (%s, %s, %s, %s, %s) RETURNING *""",
+        (data.get("name", ""), data.get("title", ""),
+         data.get("bio", ""), data.get("image_url", ""),
+         data.get("sort_order", 0))
+    )
+    return jsonify(item), 201
+
+
+@app.route("/admin/api/team/<int:item_id>", methods=["PUT"])
+@admin_required
+def admin_update_team_member(item_id):
+    """PUT /admin/api/team/<id> — Update a team member."""
+    data = request.get_json()
+    item = execute_db(
+        """UPDATE team_members SET
+             name = %s, title = %s, bio = %s,
+             image_url = %s, sort_order = %s
+           WHERE id = %s RETURNING *""",
+        (data.get("name", ""), data.get("title", ""),
+         data.get("bio", ""), data.get("image_url", ""),
+         data.get("sort_order", 0), item_id)
+    )
+    if not item:
+        return jsonify({"error": "Team member not found"}), 404
+    return jsonify(item)
+
+
+@app.route("/admin/api/team/<int:item_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_team_member(item_id):
+    """DELETE /admin/api/team/<id> — Remove a team member."""
+    count = execute_db("DELETE FROM team_members WHERE id = %s", (item_id,))
+    if count == 0:
+        return jsonify({"error": "Team member not found"}), 404
+    return jsonify({"success": True})
+
+
+# =============================================================
+# ADMIN CRUD — FAQ
+# =============================================================
+# Manages frequently asked questions displayed on the public site.
+
+@app.route("/admin/api/faq", methods=["GET"])
+@admin_required
+def admin_get_faq():
+    """GET all FAQ entries for the admin panel."""
+    items = query_db("SELECT * FROM faqs ORDER BY sort_order ASC")
+    return jsonify(items or [])
+
+
+@app.route("/admin/api/faq", methods=["POST"])
+@admin_required
+def admin_create_faq():
+    """POST /admin/api/faq — Create a new FAQ entry."""
+    data = request.get_json()
+    item = execute_db(
+        """INSERT INTO faqs (question, answer, sort_order)
+           VALUES (%s, %s, %s) RETURNING *""",
+        (data.get("question", ""), data.get("answer", ""),
+         data.get("sort_order", 0))
+    )
+    return jsonify(item), 201
+
+
+@app.route("/admin/api/faq/<int:item_id>", methods=["PUT"])
+@admin_required
+def admin_update_faq(item_id):
+    """PUT /admin/api/faq/<id> — Update a FAQ entry."""
+    data = request.get_json()
+    item = execute_db(
+        """UPDATE faqs SET
+             question = %s, answer = %s, sort_order = %s
+           WHERE id = %s RETURNING *""",
+        (data.get("question", ""), data.get("answer", ""),
+         data.get("sort_order", 0), item_id)
+    )
+    if not item:
+        return jsonify({"error": "FAQ not found"}), 404
+    return jsonify(item)
+
+
+@app.route("/admin/api/faq/<int:item_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_faq(item_id):
+    """DELETE /admin/api/faq/<id> — Remove a FAQ entry."""
+    count = execute_db("DELETE FROM faqs WHERE id = %s", (item_id,))
+    if count == 0:
+        return jsonify({"error": "FAQ not found"}), 404
+    return jsonify({"success": True})
+
+
+# =============================================================
+# ADMIN — BUSINESS INFO + SOCIAL LINKS + SECTION VISIBILITY
+# =============================================================
+# These endpoints update columns on the single-row site_settings table
+# rather than managing separate tables.
+
+@app.route("/admin/api/business-info", methods=["GET"])
+@admin_required
+def admin_get_business_info():
+    """GET business contact info for the admin panel."""
+    info = query_db("""
+        SELECT business_phone, business_email, business_address,
+               business_hours, business_map_embed
+        FROM site_settings WHERE id = 1
+    """, fetchone=True)
+    return jsonify(info or {})
+
+
+@app.route("/admin/api/business-info", methods=["PUT"])
+@admin_required
+def admin_update_business_info():
+    """PUT /admin/api/business-info — Update business contact info."""
+    data = request.get_json()
+    info = execute_db(
+        """UPDATE site_settings SET
+             business_phone = %s, business_email = %s,
+             business_address = %s, business_hours = %s::jsonb,
+             business_map_embed = %s, updated_at = NOW()
+           WHERE id = 1 RETURNING
+             business_phone, business_email, business_address,
+             business_hours, business_map_embed""",
+        (data.get("business_phone", ""), data.get("business_email", ""),
+         data.get("business_address", ""),
+         json.dumps(data.get("business_hours", [])),
+         data.get("business_map_embed", ""))
+    )
+    return jsonify(info or {})
+
+
+@app.route("/admin/api/social-links", methods=["GET"])
+@admin_required
+def admin_get_social_links():
+    """GET social media links for the admin panel."""
+    info = query_db("SELECT social_links FROM site_settings WHERE id = 1", fetchone=True)
+    return jsonify(info.get("social_links", {}) if info else {})
+
+
+@app.route("/admin/api/social-links", methods=["PUT"])
+@admin_required
+def admin_update_social_links():
+    """PUT /admin/api/social-links — Update social media profile URLs."""
+    data = request.get_json()
+    execute_db(
+        "UPDATE site_settings SET social_links = %s::jsonb, updated_at = NOW() WHERE id = 1",
+        (json.dumps(data),)
+    )
+    return jsonify(data)
+
+
+@app.route("/admin/api/section-visibility", methods=["GET"])
+@admin_required
+def admin_get_section_visibility():
+    """GET section visibility toggles for the admin panel."""
+    info = query_db("""
+        SELECT section_testimonials, section_team, section_faq, section_footer
+        FROM site_settings WHERE id = 1
+    """, fetchone=True)
+    return jsonify(info or {})
+
+
+@app.route("/admin/api/section-visibility", methods=["PUT"])
+@admin_required
+def admin_update_section_visibility():
+    """PUT /admin/api/section-visibility — Toggle sections on/off."""
+    data = request.get_json()
+    info = execute_db(
+        """UPDATE site_settings SET
+             section_testimonials = %s, section_team = %s,
+             section_faq = %s, section_footer = %s,
+             updated_at = NOW()
+           WHERE id = 1 RETURNING
+             section_testimonials, section_team, section_faq, section_footer""",
+        (data.get("section_testimonials", False), data.get("section_team", False),
+         data.get("section_faq", False), data.get("section_footer", True))
+    )
+    return jsonify(info or {})
+
+
 # --------------- Site Settings CRUD ---------------
 
 @app.route("/admin/api/site-settings", methods=["GET"])
@@ -1557,7 +1983,10 @@ def admin_reorder(content_type):
     table_map = {
         "gallery-cards": "gallery_cards",
         "experiences": "experiences",
-        "pricing": "pricing_seasons"
+        "pricing": "pricing_seasons",
+        "testimonials": "testimonials",
+        "team": "team_members",
+        "faq": "faqs"
     }
     table = table_map.get(content_type)
     if not table:
@@ -1567,14 +1996,23 @@ def admin_reorder(content_type):
     if not isinstance(items, list):
         return jsonify({"error": "Expected array of {id, sort_order}"}), 400
 
+    # Tables that have an updated_at column get it refreshed on reorder
+    tables_with_updated_at = {"gallery_cards", "experiences", "pricing_seasons"}
+
     conn = get_db()
     try:
         with conn.cursor() as cur:
             for item in items:
-                cur.execute(
-                    f"UPDATE {table} SET sort_order = %s, updated_at = NOW() WHERE id = %s",
-                    (item["sort_order"], item["id"])
-                )
+                if table in tables_with_updated_at:
+                    cur.execute(
+                        f"UPDATE {table} SET sort_order = %s, updated_at = NOW() WHERE id = %s",
+                        (item["sort_order"], item["id"])
+                    )
+                else:
+                    cur.execute(
+                        f"UPDATE {table} SET sort_order = %s WHERE id = %s",
+                        (item["sort_order"], item["id"])
+                    )
     finally:
         conn.close()
 

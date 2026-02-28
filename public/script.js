@@ -62,6 +62,10 @@ let siteSettings = null;
 let galleryCards = [];
 let experiences = [];
 let pricingSeasons = [];
+let testimonials = [];
+let teamMembers = [];
+let faqItems = [];
+let businessInfo = {};
 let currentSlideIndex = 0;
 let scrollCooldown = false;
 let touchStartY = null;
@@ -86,27 +90,40 @@ let touchStartY = null;
  */
 async function loadAllData() {
   try {
-    /* Fetch all four data sources in parallel for speed */
-    const [settingsRes, cardsRes, expRes, pricingRes] = await Promise.all([
+    /* Fetch all data sources in parallel for speed */
+    const [settingsRes, cardsRes, expRes, pricingRes, testimonialsRes, teamRes, faqRes, bizRes] = await Promise.all([
       fetch('/api/site-settings'),
       fetch('/api/gallery-cards'),
       fetch('/api/experiences'),
-      fetch('/api/pricing')
+      fetch('/api/pricing'),
+      fetch('/api/testimonials'),
+      fetch('/api/team'),
+      fetch('/api/faq'),
+      fetch('/api/business-info')
     ]);
 
     siteSettings = await settingsRes.json();
     galleryCards = await cardsRes.json();
     experiences = await expRes.json();
     pricingSeasons = await pricingRes.json();
+    testimonials = await testimonialsRes.json();
+    teamMembers = await teamRes.json();
+    faqItems = await faqRes.json();
+    businessInfo = await bizRes.json();
 
     /* Render each section with the fetched data */
     renderHero();
     renderHighlights();
     renderExperiences();
     renderPricing();
+    renderTestimonials();
+    renderTeam();
+    renderFAQ();
+    renderFooter();
     renderGallerySlides();
     renderDotNav();
     populateRoomDropdown();
+    applySectionVisibility();
 
     /* Initialize scroll-triggered fade-in animations */
     setupScrollAnimations();
@@ -245,6 +262,243 @@ function renderPricing() {
       <p class="pricing-price">${season.price_range}</p>
     </div>
   `).join('');
+}
+
+
+/* =============================================================================
+   3b. RENDERING — New Toggleable Sections (Testimonials, Team, FAQ, Footer)
+   =============================================================================
+   These sections are database-driven and admin-toggled.
+   Each renders only if data exists; visibility is controlled by
+   section toggle flags in site_settings.
+============================================================================= */
+
+/**
+ * Renders testimonial/review cards from database data.
+ * Each card shows a star rating, quote text, reviewer name/role, and optional photo.
+ */
+function renderTestimonials() {
+  const grid = document.getElementById('testimonials-grid');
+  if (!grid || !testimonials.length) return;
+
+  grid.innerHTML = testimonials.map((t, index) => {
+    /* Build star rating display (filled stars up to rating, empty for the rest) */
+    const stars = Array.from({ length: 5 }, (_, i) =>
+      `<span class="testimonial-star ${i >= t.rating ? 'empty' : ''}" data-testid="star-${t.id}-${i}">★</span>`
+    ).join('');
+
+    /* Optional reviewer photo — show initials circle if no image */
+    const avatar = t.image_url
+      ? `<img src="${t.image_url}" alt="${t.reviewer_name}" class="testimonial-photo" data-testid="img-testimonial-${t.id}">`
+      : `<div class="testimonial-photo-placeholder" data-testid="avatar-testimonial-${t.id}">${(t.reviewer_name || '?').charAt(0).toUpperCase()}</div>`;
+
+    return `
+      <div class="testimonial-card fade-in-view stagger-${(index % 3) + 1}" data-testid="card-testimonial-${t.id}">
+        <div class="testimonial-stars" data-testid="rating-testimonial-${t.id}">${stars}</div>
+        <p class="testimonial-content" data-testid="text-testimonial-${t.id}">"${t.content}"</p>
+        <div class="testimonial-reviewer">
+          ${avatar}
+          <div class="testimonial-reviewer-info">
+            <span class="testimonial-name" data-testid="name-testimonial-${t.id}">${t.reviewer_name}</span>
+            ${t.reviewer_role ? `<span class="testimonial-role" data-testid="role-testimonial-${t.id}">${t.reviewer_role}</span>` : ''}
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+
+/**
+ * Renders team member cards from database data.
+ * Each card shows a photo (or initials), name, title, and bio.
+ */
+function renderTeam() {
+  const grid = document.getElementById('team-grid');
+  if (!grid || !teamMembers.length) return;
+
+  grid.innerHTML = teamMembers.map((m, index) => {
+    /* Optional member photo — show initials circle if no image */
+    const photo = m.image_url
+      ? `<img src="${m.image_url}" alt="${m.name}" class="team-photo" data-testid="img-team-${m.id}">`
+      : `<div class="team-photo-placeholder" data-testid="avatar-team-${m.id}">${(m.name || '?').charAt(0).toUpperCase()}</div>`;
+
+    return `
+      <div class="team-card fade-in-view stagger-${(index % 3) + 1}" data-testid="card-team-${m.id}">
+        ${photo}
+        <h3 class="team-name" data-testid="name-team-${m.id}">${m.name}</h3>
+        ${m.title ? `<p class="team-title" data-testid="title-team-${m.id}">${m.title}</p>` : ''}
+        ${m.bio ? `<p class="team-bio" data-testid="bio-team-${m.id}">${m.bio}</p>` : ''}
+      </div>
+    `;
+  }).join('');
+}
+
+
+/**
+ * Renders FAQ accordion items from database data.
+ * Each item is a clickable question that expands to reveal the answer.
+ */
+function renderFAQ() {
+  const list = document.getElementById('faq-list');
+  if (!list || !faqItems.length) return;
+
+  list.innerHTML = faqItems.map((f, index) => `
+    <div class="faq-item fade-in-view stagger-${(index % 3) + 1}" data-testid="faq-item-${f.id}">
+      <button class="faq-question" data-testid="button-faq-${f.id}" onclick="toggleFAQ(this)">
+        <span>${f.question}</span>
+        <span class="faq-arrow">▸</span>
+      </button>
+      <div class="faq-answer" data-testid="text-faq-answer-${f.id}">
+        <p>${f.answer}</p>
+      </div>
+    </div>
+  `).join('');
+}
+
+
+/**
+ * Toggles a FAQ accordion item open/closed.
+ * Only one item can be open at a time.
+ */
+function toggleFAQ(button) {
+  const item = button.closest('.faq-item');
+  const isActive = item.classList.contains('active');
+
+  /* Close all FAQ items first */
+  document.querySelectorAll('.faq-item.active').forEach(el => {
+    el.classList.remove('active');
+  });
+
+  /* Toggle the clicked item (if it wasn't already open) */
+  if (!isActive) {
+    item.classList.add('active');
+  }
+}
+
+
+/**
+ * Renders the site footer with business info, social links, and navigation.
+ * Pulls data from siteSettings and businessInfo.
+ */
+function renderFooter() {
+  const footer = document.getElementById('site-footer');
+  if (!footer) return;
+
+  /* Site name from settings */
+  const siteName = siteSettings?.site_name || '';
+  const siteSubtitle = siteSettings?.site_subtitle || '';
+
+  /* Footer brand column — matches IDs in index.html */
+  const brandNameEl = document.getElementById('footer-site-name');
+  const brandSubEl = document.getElementById('footer-site-subtitle');
+  const brandDescEl = document.getElementById('footer-description');
+  const footerLogoBadge = document.getElementById('footer-logo-badge');
+  if (brandNameEl) brandNameEl.textContent = siteName;
+  if (brandSubEl) brandSubEl.textContent = siteSubtitle;
+  if (brandDescEl) brandDescEl.textContent = siteSettings?.hero_description || '';
+  if (footerLogoBadge && siteSettings?.logo_initials) footerLogoBadge.textContent = siteSettings.logo_initials;
+
+  /* Contact info column — each <li> is hidden by default, show if data exists */
+  const phoneItem = document.getElementById('footer-phone');
+  const emailItem = document.getElementById('footer-email');
+  const addressItem = document.getElementById('footer-address');
+
+  if (phoneItem && businessInfo.business_phone) {
+    const phoneText = document.getElementById('footer-phone-text');
+    if (phoneText) phoneText.textContent = businessInfo.business_phone;
+    phoneItem.style.display = '';
+  }
+  if (emailItem && businessInfo.business_email) {
+    const emailText = document.getElementById('footer-email-text');
+    if (emailText) emailText.textContent = businessInfo.business_email;
+    emailItem.style.display = '';
+  }
+  if (addressItem && businessInfo.business_address) {
+    const addressText = document.getElementById('footer-address-text');
+    if (addressText) addressText.textContent = businessInfo.business_address;
+    addressItem.style.display = '';
+  }
+
+  /* Social links column */
+  const socialContainer = document.getElementById('footer-social-links');
+  if (socialContainer && businessInfo.social_links) {
+    const links = businessInfo.social_links;
+    /* Map of platform → display label (used as text inside circle buttons) */
+    const socialLabels = {
+      instagram: 'IG',
+      facebook: 'FB',
+      twitter: 'X',
+      linkedin: 'IN',
+      tiktok: 'TT',
+      youtube: 'YT',
+      website: 'WEB'
+    };
+
+    const socialHTML = Object.entries(links)
+      .filter(([_, url]) => url && url.trim())
+      .map(([platform, url]) => `
+        <a href="${url}" target="_blank" rel="noopener noreferrer"
+           class="footer-social-link" data-testid="link-social-${platform}"
+           title="${platform.charAt(0).toUpperCase() + platform.slice(1)}">
+          <span class="social-icon">${socialLabels[platform] || 'LNK'}</span>
+        </a>
+      `).join('');
+
+    if (socialHTML) {
+      socialContainer.innerHTML = socialHTML;
+    }
+  }
+
+  /* Copyright line — update with current year and site name */
+  const copyrightEl = document.getElementById('footer-copyright');
+  if (copyrightEl) {
+    copyrightEl.innerHTML = `&copy; ${new Date().getFullYear()} ${siteName}. All rights reserved.`;
+  }
+}
+
+
+/**
+ * Scrolls the page to a specific section by ID.
+ * Used by footer navigation links and the AI scrollToSection command.
+ */
+function scrollToSection(sectionId) {
+  const target = document.getElementById(sectionId);
+  if (target) {
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+
+/**
+ * Shows or hides new sections based on section visibility toggles
+ * from site_settings (section_testimonials, section_team, etc.)
+ */
+function applySectionVisibility() {
+  if (!siteSettings) return;
+
+  /* Each section is shown only if its toggle is true AND it has data */
+  const sections = [
+    { id: 'section-testimonials', toggle: siteSettings.section_testimonials, hasData: testimonials.length > 0 },
+    { id: 'section-team', toggle: siteSettings.section_team, hasData: teamMembers.length > 0 },
+    { id: 'section-faq', toggle: siteSettings.section_faq, hasData: faqItems.length > 0 },
+    { id: 'site-footer', toggle: siteSettings.section_footer, hasData: true }
+  ];
+
+  sections.forEach(({ id, toggle, hasData }) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.style.display = (toggle && hasData) ? '' : 'none';
+    }
+  });
+
+  /* Show/hide footer quick links based on which sections are enabled */
+  const footerLinkTestimonials = document.getElementById('footer-link-testimonials');
+  const footerLinkTeam = document.getElementById('footer-link-team');
+  const footerLinkFaq = document.getElementById('footer-link-faq');
+  if (footerLinkTestimonials) footerLinkTestimonials.style.display = siteSettings.section_testimonials && testimonials.length ? '' : 'none';
+  if (footerLinkTeam) footerLinkTeam.style.display = siteSettings.section_team && teamMembers.length ? '' : 'none';
+  if (footerLinkFaq) footerLinkFaq.style.display = siteSettings.section_faq && faqItems.length ? '' : 'none';
 }
 
 
@@ -2369,6 +2623,36 @@ function executeCommand(cmd) {
         console.error('Form submission error:', err);
         chatAddMessage('agent', 'I had trouble submitting your information. Please try again in a moment.');
       });
+      break;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────
+       SCROLL TO SECTION — Smoothly scroll the landing page to a section
+       ─────────────────────────────────────────────────────────────────
+       The AI specifies a section ID (e.g., "section-testimonials").
+       We scroll the landing page to that section so the visitor can see it.
+       Valid targets: section-hero, section-highlights, section-experiences,
+       section-pricing, section-testimonials, section-team, section-faq
+    */
+    case 'scrollToSection': {
+      const target = document.getElementById(cmd.target);
+      if (!target) {
+        console.warn('scrollToSection: section not found:', cmd.target);
+        break;
+      }
+
+      /* Make sure we're on the landing page, not the gallery */
+      if (document.getElementById('gallery-view') && document.getElementById('gallery-view').classList.contains('active')) {
+        showLanding();
+      }
+
+      /* Close fullscreen canvas if showing */
+      closeFullscreenCanvas();
+
+      /* Scroll the landing container to the target section */
+      setTimeout(() => {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 300);
       break;
     }
 

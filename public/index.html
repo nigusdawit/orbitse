@@ -221,8 +221,151 @@ FONTS:
       </div>
     </section>
 
+    <!--
+    ========================================================================
+    TESTIMONIALS SECTION — Client reviews and star ratings
+    ========================================================================
+    Testimonials are loaded from /api/testimonials.
+    Each card displays a star rating, quote text, reviewer name/role,
+    and an optional photo. Hidden by default; shown when
+    section_testimonials is enabled in site_settings.
+    -->
+    <section id="section-testimonials" class="snap-section landing-section" style="background: var(--bg-section-1); display: none;" data-testid="section-testimonials">
+      <div class="max-w-container">
+        <div class="section-header fade-in-view">
+          <p class="section-eyebrow">What People Say</p>
+          <h2 class="section-title" data-testid="text-testimonials-title">Testimonials</h2>
+          <p class="section-subtitle">Hear from those who have experienced what we offer.</p>
+        </div>
+
+        <!-- Testimonial Cards — populated by JavaScript -->
+        <div id="testimonials-grid" class="testimonials-grid" data-testid="testimonials-grid">
+          <!-- Testimonial cards are inserted here dynamically -->
+        </div>
+      </div>
+    </section>
+
+    <!--
+    ========================================================================
+    TEAM SECTION — Team member cards with photo, name, title, bio
+    ========================================================================
+    Team members are loaded from /api/team.
+    Each card shows a photo, name, title/position, and short bio.
+    Hidden by default; shown when section_team is enabled in site_settings.
+    -->
+    <section id="section-team" class="snap-section landing-section" style="background: var(--bg-section-2); display: none;" data-testid="section-team">
+      <div class="max-w-container">
+        <div class="section-header fade-in-view">
+          <p class="section-eyebrow">Meet Our Team</p>
+          <h2 class="section-title" data-testid="text-team-title">The People Behind It All</h2>
+          <p class="section-subtitle">Get to know the passionate individuals who make it all happen.</p>
+        </div>
+
+        <!-- Team Member Cards — populated by JavaScript -->
+        <div id="team-grid" class="team-grid" data-testid="team-grid">
+          <!-- Team member cards are inserted here dynamically -->
+        </div>
+      </div>
+    </section>
+
+    <!--
+    ========================================================================
+    FAQ SECTION — Frequently asked questions with accordion behavior
+    ========================================================================
+    FAQ items are loaded from /api/faq.
+    Each item is a collapsible question/answer pair. Clicking a question
+    toggles the answer visibility. Hidden by default; shown when
+    section_faq is enabled in site_settings.
+    -->
+    <section id="section-faq" class="snap-section landing-section" style="background: var(--bg-section-1); display: none;" data-testid="section-faq">
+      <div class="max-w-container" style="max-width: 48rem;">
+        <div class="section-header fade-in-view">
+          <p class="section-eyebrow">Common Questions</p>
+          <h2 class="section-title" data-testid="text-faq-title">Frequently Asked Questions</h2>
+          <p class="section-subtitle">Find answers to the most common questions about what we offer.</p>
+        </div>
+
+        <!-- FAQ Accordion Items — populated by JavaScript -->
+        <div id="faq-list" class="faq-list" data-testid="faq-list">
+          <!-- FAQ items are inserted here dynamically -->
+        </div>
+      </div>
+    </section>
+
   </div>
   <!-- END LANDING VIEW -->
+
+  <!--
+  ============================================================================
+  SITE FOOTER — Business info, contact details, social links, copyright
+  ============================================================================
+  The footer sits outside the snap-scroll landing container.
+  Content is populated dynamically from /api/business-info and site settings.
+  Hidden by default; shown when section_footer is enabled in site_settings.
+  -->
+  <footer id="site-footer" class="site-footer" style="display: none;" data-testid="site-footer">
+    <div class="footer-container">
+
+      <!-- Footer Column 1 — Brand + Description -->
+      <div class="footer-column" data-testid="footer-brand">
+        <div class="footer-brand">
+          <div id="footer-logo-badge" class="logo-badge">CS</div>
+          <div class="logo-text">
+            <p id="footer-site-name" class="site-name" data-testid="text-footer-site-name">My Site</p>
+            <p id="footer-site-subtitle" class="site-subtitle" data-testid="text-footer-subtitle">Your Tagline Here</p>
+          </div>
+        </div>
+        <p id="footer-description" class="footer-description" data-testid="text-footer-description"></p>
+      </div>
+
+      <!-- Footer Column 2 — Quick Links -->
+      <div class="footer-column" data-testid="footer-links">
+        <h3 class="footer-heading">Quick Links</h3>
+        <ul class="footer-links">
+          <li><a href="#section-hero" onclick="scrollToSection('section-hero')" data-testid="link-footer-home">Home</a></li>
+          <li><a href="#section-highlights" onclick="scrollToSection('section-highlights')" data-testid="link-footer-highlights">Gallery</a></li>
+          <li><a href="#section-experiences" onclick="scrollToSection('section-experiences')" data-testid="link-footer-experiences">Experiences</a></li>
+          <li id="footer-link-testimonials" style="display:none;"><a href="#section-testimonials" onclick="scrollToSection('section-testimonials')" data-testid="link-footer-testimonials">Testimonials</a></li>
+          <li id="footer-link-team" style="display:none;"><a href="#section-team" onclick="scrollToSection('section-team')" data-testid="link-footer-team">Team</a></li>
+          <li id="footer-link-faq" style="display:none;"><a href="#section-faq" onclick="scrollToSection('section-faq')" data-testid="link-footer-faq">FAQ</a></li>
+        </ul>
+      </div>
+
+      <!-- Footer Column 3 — Contact Info -->
+      <div class="footer-column" data-testid="footer-contact">
+        <h3 class="footer-heading">Contact</h3>
+        <ul class="footer-contact-list">
+          <li id="footer-phone" style="display:none;" data-testid="text-footer-phone">
+            <i data-lucide="phone" style="width:16px;height:16px;"></i>
+            <span id="footer-phone-text"></span>
+          </li>
+          <li id="footer-email" style="display:none;" data-testid="text-footer-email">
+            <i data-lucide="mail" style="width:16px;height:16px;"></i>
+            <span id="footer-email-text"></span>
+          </li>
+          <li id="footer-address" style="display:none;" data-testid="text-footer-address">
+            <i data-lucide="map-pin" style="width:16px;height:16px;"></i>
+            <span id="footer-address-text"></span>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Footer Column 4 — Social Links -->
+      <div class="footer-column" data-testid="footer-social">
+        <h3 class="footer-heading">Follow Us</h3>
+        <div id="footer-social-links" class="footer-social-links" data-testid="footer-social-links">
+          <!-- Social link icons are inserted here dynamically -->
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Footer Bottom — Copyright -->
+    <div class="footer-bottom" data-testid="footer-bottom">
+      <p id="footer-copyright" data-testid="text-footer-copyright">&copy; 2025 My Site. All rights reserved.</p>
+    </div>
+  </footer>
+  <!-- END SITE FOOTER -->
 
 
   <!--

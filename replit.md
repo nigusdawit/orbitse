@@ -5,7 +5,7 @@
 A database-driven website template built as a reusable, industry-agnostic HTML/CSS/JS application. All content (gallery slides, experiences, pricing, site settings, chatbot) is managed through a PostgreSQL database and a password-protected admin dashboard — no code editing needed to change content. Suitable for any business type: hospitality, real estate, restaurants, portfolios, agencies, and more.
 
 The site features:
-- **Snap-scroll landing page** with hero, highlights, experiences, and pricing sections
+- **Snap-scroll landing page** with hero, highlights, experiences, pricing, testimonials, team, and FAQ sections
 - **Immersive fullscreen gallery** with swipe/wheel/keyboard navigation
 - **AI chatbot with site control** — enable/disable from admin, supports built-in chat or external embed
 - **Side-panel AI chat** — frosted glass panel slides in from the right when AI navigates gallery slides; shows only the agent's latest message by default with a toggle to reveal full conversation history; on mobile, appears as a compact bottom strip that expands when history is opened
@@ -14,7 +14,12 @@ The site features:
 - **Database-driven content** — changes in admin are instantly visible on the public site
 - **AI System Prompt Editor** — edit the AI's system prompt from admin without touching code
 - **Image Upload System** — upload images directly from admin, stored in `/uploads/`
-- **Drag-and-Drop Reordering** — reorder gallery cards, experiences, and pricing by dragging rows
+- **Drag-and-Drop Reordering** — reorder gallery cards, experiences, pricing, testimonials, team, and FAQ by dragging rows
+- **Toggleable Sections** — enable/disable Testimonials, Team, FAQ, and Footer from admin
+- **Business Info & Social Links** — manage contact details, hours, and social media profiles from admin
+- **Testimonials/Reviews** — client quotes with star ratings, reviewer names/roles
+- **Team/About** — team member cards with photo, name, title, bio
+- **FAQ** — collapsible question/answer pairs
 - **Chat History & Analytics** — view all AI conversations, message counts, device types
 - **Dynamic Form Builder** — create custom forms from admin, add/remove/reorder fields, assign fields to steps for multi-step forms, view submissions with full marketing analytics
 - **Partial/Abandon Capture** — auto-saves incomplete form data for lead recovery
@@ -43,8 +48,8 @@ The entire template is industry-agnostic — naming, comments, and instructions 
 - **Location**: `public/` directory
 - **Files**:
   - `index.html` — Main page structure (landing + gallery + modal + chatbot + split-screen)
-  - `styles.css` — All visual styles, fully commented (18 sections + chatbot + split-screen)
-  - `script.js` — All interactivity (API fetches, navigation, animations, chatbot, AI site control, theme loading, dynamic form rendering)
+  - `styles.css` — All visual styles, fully commented (18+ sections + chatbot + split-screen + testimonials + team + FAQ + footer)
+  - `script.js` — All interactivity (API fetches, navigation, animations, chatbot, AI site control, theme loading, dynamic form rendering, section visibility, testimonials/team/FAQ/footer rendering)
 - **Fonts**: Google Fonts (Playfair Display + DM Sans, dynamically swappable via Theme Editor)
 - **Icons**: Lucide Icons (loaded via CDN)
 - **No build step** — plain HTML/CSS/JS, works directly in any browser
@@ -54,15 +59,18 @@ The entire template is industry-agnostic — naming, comments, and instructions 
 - **Login**: `/admin/login` — password set via `ADMIN_PASSWORD` environment variable (default: "admin")
 - **Logout**: `/admin/logout`
 - **Location**: `templates/admin/dashboard.html`, `templates/admin/login.html`
-- **Tabs**: Site Settings, Gallery Cards, Experiences, Pricing, Chatbot, Chat History, Forms, Theme, Saved Pages
+- **Tabs**: Site Settings (with Section Visibility toggles), Gallery Cards, Experiences, Pricing, Business Info (contact + hours + social links), Testimonials, Team, FAQ, Chatbot, Chat History, Forms, Theme, Saved Pages
 
 ### Database (PostgreSQL)
 - **Connection**: `DATABASE_URL` environment variable
 - **Tables**:
-  - `site_settings` — Global config (site name, tagline, hero content, logo initials, theme colors/fonts). Singleton row (id=1).
+  - `site_settings` — Global config (site name, tagline, hero content, logo initials, theme colors/fonts, section visibility toggles, business info, social links). Singleton row (id=1). Section toggles: section_testimonials, section_team, section_faq, section_footer (booleans). Business info: business_phone, business_email, business_address, business_hours (JSONB array of {day, open, close}), business_map_embed. Social links: social_links (JSONB object with platform keys).
   - `gallery_cards` — Slides for the gallery view and highlight cards on the landing page. Has slug (unique URL-friendly ID), title, subtitle, image_url, category, description, details (JSONB array), price, and sort_order.
   - `experiences` — Activity/service cards on the landing page. Has name, description, icon name, and sort_order.
   - `pricing_seasons` — Pricing tiers. Has label, date_range, price_range, and sort_order.
+  - `testimonials` — Client reviews/testimonials. Has reviewer_name, reviewer_role, content, rating (1-5), image_url, sort_order.
+  - `team_members` — Staff/team member profiles. Has name, title, bio, image_url, sort_order.
+  - `faqs` — Frequently asked questions. Has question, answer, sort_order.
   - `chatbot_settings` — AI chatbot configuration. Singleton row (id=1). Has enabled, mode, agent_name, agent_role, agent_avatar, greeting, quick_prompts (JSONB), api_endpoint, embed_code, system_prompt.
   - `chat_conversations` — Chat sessions with visitor info (session_id, ip, device_type, user_agent).
   - `chat_messages` — Individual chat messages linked to conversations (role, content, command_json).
@@ -79,12 +87,16 @@ The entire template is industry-agnostic — naming, comments, and instructions 
 - `GET /api/gallery-cards` — Returns all gallery cards ordered by sort_order
 - `GET /api/experiences` — Returns all experiences ordered by sort_order
 - `GET /api/pricing` — Returns all pricing seasons ordered by sort_order
+- `GET /api/testimonials` — Returns all testimonials ordered by sort_order
+- `GET /api/team` — Returns all team members ordered by sort_order
+- `GET /api/faq` — Returns all FAQ entries ordered by sort_order
+- `GET /api/business-info` — Returns business contact info, hours, and social links
 - `GET /api/chatbot-settings` — Returns chatbot configuration (enabled, mode, agent info, etc.)
 - `GET /api/theme` — Returns theme customization values (colors, fonts)
 - `GET /api/forms/<slug>` — Returns form config (fields, types, options) for dynamic rendering
 
 **Chat API:**
-- `POST /api/chat` — Streaming SSE chat. Accepts `{message, history, session_id}`, streams token/text/html/command/done events. Saves messages to chat_conversations/chat_messages. AI commands include: navigate, showSlide, generateVisual, generateHTML, submitForm, heroMessage. The AI can also collect form data conversationally and submit via the submitForm command.
+- `POST /api/chat` — Streaming SSE chat. Accepts `{message, history, session_id}`, streams token/text/html/command/done events. Saves messages to chat_conversations/chat_messages. AI commands include: navigate, showSlide, generateVisual, generateHTML, submitForm, scrollToSection, heroMessage. The AI can also collect form data conversationally and submit via the submitForm command.
 
 **Form Submission API:**
 - `POST /api/forms/<slug>/submit` — Submit a dynamic form with auto-captured marketing data (UTM, device, browser, OS, screen resolution, language, referrer, IP, session ID)
@@ -100,7 +112,13 @@ The entire template is industry-agnostic — naming, comments, and instructions 
 - `GET/PUT /admin/api/chatbot-settings` — Chatbot configuration (includes system_prompt)
 - `GET /admin/api/default-system-prompt` — Get the hardcoded default system prompt
 - `POST /admin/api/upload-image` — Upload an image file, returns URL
-- `PUT /admin/api/reorder/<type>` — Batch reorder gallery-cards, experiences, or pricing
+- `GET/POST/PUT/DELETE /admin/api/testimonials[/<id>]` — Testimonial management
+- `GET/POST/PUT/DELETE /admin/api/team[/<id>]` — Team member management
+- `GET/POST/PUT/DELETE /admin/api/faq[/<id>]` — FAQ management
+- `GET/PUT /admin/api/business-info` — Business contact info (phone, email, address, hours, map embed)
+- `GET/PUT /admin/api/social-links` — Social media profile URLs
+- `GET/PUT /admin/api/section-visibility` — Toggle sections on/off (testimonials, team, faq, footer)
+- `PUT /admin/api/reorder/<type>` — Batch reorder gallery-cards, experiences, pricing, testimonials, team, or faq
 - `GET /admin/api/chat-history` — List conversations with stats
 - `GET /admin/api/chat-history/<id>` — Full conversation detail with messages
 - `GET/POST /admin/api/forms` — List all forms / create new form
@@ -165,7 +183,13 @@ The AI chatbot can control what the user sees on the website through special com
 
 **Available commands:**
 
-1. **navigate** — Scroll to a gallery card and show it in split-screen
+1. **scrollToSection** — Scroll to a page section (testimonials, team, faq, etc.)
+   ```json
+   {"action": "scrollToSection", "target": "section-testimonials"}
+   ```
+   Valid targets: section-hero, section-highlights, section-experiences, section-pricing, section-testimonials, section-team, section-faq
+
+2. **navigate** — Scroll to a gallery card and show it in split-screen
    ```json
    {"action": "navigate", "target": "gallery-item-slug"}
    ```
