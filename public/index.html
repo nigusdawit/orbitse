@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<!--
+===============================================================================
+CASA SERENA — Public Website Template (index.html)
+===============================================================================
+
+PURPOSE:
+  This is the main public-facing HTML page for the Casa Serena website.
+  All content is loaded dynamically from the database via API endpoints,
+  so you don't need to edit this file to change text, images, or pricing.
+
+STRUCTURE:
+  The page has TWO main views that toggle visibility:
+
+  1. LANDING VIEW (class: .landing-container)
+     - Hero Section: Fullscreen background image with title + CTA buttons
+     - Highlights Section: Grid of property cards (rooms, amenities, etc.)
+     - Experiences Section: Grid of curated activity cards
+     - Pricing Section: Seasonal pricing cards + final CTA
+     Each section snaps into place when scrolling (CSS scroll-snap).
+
+  2. GALLERY VIEW (class: .gallery-view)
+     - Fullscreen immersive slides with swipe/wheel/keyboard navigation
+     - Each slide shows one gallery card with image, title, description, details
+     - Includes dot navigation, arrow buttons, and slide counter
+
+  3. BOOKING MODAL
+     - Overlay form for reservations
+     - Opens when user clicks any "Reserve" / "Book Your Stay" button
+
+HOW TO CUSTOMIZE THE LAYOUT:
+  - To add a new landing section: Add a new <section> with classes
+    "snap-section landing-section" inside the .landing-container div.
+  - To change the gallery layout: Modify the .gallery-slide structure
+    inside the gallery-slides-container div.
+  - All content (text, images, prices) comes from the database — edit it
+    via the admin dashboard at /admin, not in this file.
+
+HOW TO ADD NEW SECTIONS:
+  1. Add the HTML structure in the landing-container
+  2. Add corresponding CSS styles in styles.css
+  3. If the section needs data, add an API endpoint in app.py and
+     fetch the data in script.js
+
+FONTS:
+  Uses Google Fonts: Playfair Display (serif headings) and DM Sans (body text).
+  To change fonts, update the <link> tag below and the CSS variables in styles.css.
+
+===============================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- SEO Meta Tags — Update these for your own property -->
+  <title>Casa Serena — Mediterranean Villa</title>
+  <meta name="description" content="A private Mediterranean retreat on the Aegean coast. Four ensuite bedrooms, infinity pool, private chef's kitchen, and unforgettable sunsets.">
+
+  <!-- Open Graph Tags — For social media sharing -->
+  <meta property="og:title" content="Casa Serena — Mediterranean Villa">
+  <meta property="og:description" content="A private Mediterranean retreat on the Aegean coast.">
+  <meta property="og:type" content="website">
+
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="/styles.css">
+
+  <!-- Lucide Icons — Lightweight icon library (used for arrows, calendar, etc.) -->
+  <!-- TO CHANGE ICONS: Browse available icons at https://lucide.dev/icons -->
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+</head>
+
+<body>
+  <!--
+  ============================================================================
+  LANDING VIEW — The main scrollable landing page
+  ============================================================================
+  This container uses CSS scroll-snap for a "page-by-page" scroll experience.
+  Each child <section> with class "snap-section" will snap into view.
+  -->
+  <div id="landing-view" class="landing-container scrollbar-hide">
+
+    <!--
+    ========================================================================
+    HERO SECTION — Fullscreen intro with background image and CTA
+    ========================================================================
+    Content is populated dynamically from /api/site-settings by script.js.
+    The background image, title, tagline, and description all come from the database.
+    -->
+    <section id="section-hero" class="snap-section hero-section" data-testid="section-hero">
+
+      <!-- Background image — set dynamically by JavaScript -->
+      <div id="hero-bg" class="hero-bg"></div>
+
+      <!-- Gradient overlay — makes text readable over the image -->
+      <div class="hero-overlay"></div>
+
+      <!-- Top Navigation Bar -->
+      <div class="hero-nav">
+        <!-- Logo / Brand -->
+        <div class="flex items-center gap-md">
+          <div id="logo-badge" class="logo-badge" data-testid="logo-badge">CS</div>
+          <div class="logo-text">
+            <p id="nav-site-name" class="site-name" data-testid="text-site-name">Casa Serena</p>
+            <p id="nav-site-subtitle" class="site-subtitle" data-testid="text-site-subtitle">Mediterranean Villa</p>
+          </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="flex items-center gap-md">
+          <button id="btn-reserve-hero" class="btn-reserve" onclick="openModal()" data-testid="button-reserve-hero">
+            &#x1f4c5; Reserve
+          </button>
+        </div>
+      </div>
+
+      <!-- Hero Content — Centered text and CTA buttons -->
+      <div class="hero-content">
+        <div class="fade-in-view visible" style="max-width: 48rem;">
+          <p id="hero-tagline" class="hero-tagline" data-testid="text-hero-tagline">
+            A Private Mediterranean Retreat
+          </p>
+          <h1 id="hero-title" class="hero-title" data-testid="text-hero-title">
+            Casa Serena
+          </h1>
+          <p id="hero-description" class="hero-description" data-testid="text-hero-description">
+            Loading...
+          </p>
+          <div class="hero-buttons">
+            <button class="btn-secondary" onclick="showGallery()" data-testid="button-explore-villa">
+              Explore the Villa
+            </button>
+            <button class="btn-primary" onclick="openModal()" data-testid="button-book-stay">
+              Book Your Stay
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Scroll Indicator — Bouncing arrow at bottom of hero -->
+      <div class="scroll-indicator">
+        <i data-lucide="chevron-down" style="width:24px;height:24px;"></i>
+      </div>
+    </section>
+
+    <!--
+    ========================================================================
+    HIGHLIGHTS SECTION — Grid of property rooms / spaces
+    ========================================================================
+    Cards are generated dynamically by script.js from /api/gallery-cards.
+    Each card shows an image, category, title, subtitle, and optional price.
+    Clicking a card opens the Gallery view at that specific slide.
+    -->
+    <section id="section-highlights" class="snap-section landing-section" style="background: var(--bg-section-1);" data-testid="section-highlights">
+      <div class="max-w-container">
+        <div class="section-header fade-in-view">
+          <p class="section-eyebrow">Discover</p>
+          <h2 class="section-title" data-testid="text-highlights-title">The Villa Experience</h2>
+          <p class="section-subtitle">Every corner of Casa Serena has been designed for timeless comfort and Mediterranean elegance.</p>
+        </div>
+
+        <!-- Card grid — populated by JavaScript -->
+        <div id="highlights-grid" class="highlights-grid" data-testid="highlights-grid">
+          <!-- Cards are inserted here dynamically -->
+        </div>
+
+        <div class="text-center mt-xl">
+          <button class="btn-secondary" onclick="showGallery()" data-testid="button-view-all-rooms">
+            View All Rooms &amp; Spaces
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!--
+    ========================================================================
+    EXPERIENCES SECTION — Curated activities + Seasonal Pricing
+    ========================================================================
+    Experiences and pricing are loaded from /api/experiences and /api/pricing.
+    -->
+    <section id="section-experiences" class="snap-section landing-section" style="background: var(--bg-section-2);" data-testid="section-experiences">
+      <div class="max-w-container" style="max-width: 60rem;">
+
+        <!-- Experiences Header -->
+        <div class="section-header fade-in-view">
+          <p class="section-eyebrow">Curated For You</p>
+          <h2 class="section-title" data-testid="text-experiences-title">Unforgettable Experiences</h2>
+          <p class="section-subtitle">From private boat tours to cooking classes with local chefs, every day is an adventure.</p>
+        </div>
+
+        <!-- Experience Cards — populated by JavaScript -->
+        <div id="experiences-grid" class="experiences-grid" data-testid="experiences-grid">
+          <!-- Experience cards are inserted here dynamically -->
+        </div>
+
+        <!-- Pricing Header -->
+        <div class="section-header fade-in-view mt-2xl">
+          <p class="section-eyebrow">Seasonal Rates</p>
+          <h2 class="section-title" data-testid="text-pricing-title">Plan Your Visit</h2>
+        </div>
+
+        <!-- Pricing Cards — populated by JavaScript -->
+        <div id="pricing-grid" class="pricing-grid" data-testid="pricing-grid">
+          <!-- Pricing cards are inserted here dynamically -->
+        </div>
+
+        <!-- Final CTA -->
+        <div class="text-center mt-2xl" style="padding-bottom: 8rem;">
+          <button class="btn-primary" onclick="openModal()" data-testid="button-reserve-bottom">
+            Reserve Your Stay
+          </button>
+        </div>
+      </div>
+    </section>
+
+  </div>
+  <!-- END LANDING VIEW -->
+
+
+  <!--
+  ============================================================================
+  GALLERY / EXPLORE VIEW — Fullscreen immersive slide presentation
+  ============================================================================
+  This view is hidden by default and shown when the user clicks "Explore".
+  Each slide fills the entire screen with a background image and text overlay.
+
+  NAVIGATION:
+  - Mouse wheel: scroll up/down to change slides (with 800ms cooldown)
+  - Touch swipe: swipe up/down on mobile devices
+  - Keyboard: Arrow keys (up/down/left/right)
+  - Dot navigation: Click dots on the right side
+  - Arrow buttons: Click up/down arrows
+
+  HOW SLIDES ARE BUILT:
+  - JavaScript fetches gallery cards from the API
+  - For each card, it creates a .gallery-slide element
+  - Only one slide has the .slide-active class at a time
+  - Transitions are handled by adding/removing CSS classes
+  -->
+  <div id="gallery-view" class="gallery-view" data-testid="gallery-view">
+
+    <!-- Slides container — slides are inserted here by JavaScript -->
+    <div id="gallery-slides-container"></div>
+
+    <!-- Back button + Branding (top-left) -->
+    <div class="gallery-top-left">
+      <button class="nav-circle-btn" onclick="showLanding()" data-testid="button-back-landing">
+        <i data-lucide="arrow-left" style="width:16px;height:16px;"></i>
+      </button>
+      <div class="logo-text">
+        <p id="gallery-site-name" class="site-name">Casa Serena</p>
+        <p id="gallery-site-subtitle" class="site-subtitle">Mediterranean Villa</p>
+      </div>
+    </div>
+
+    <!-- Reserve button (top-right) -->
+    <div class="gallery-top-right">
+      <button class="btn-reserve" onclick="openModal()" data-testid="button-reserve-gallery">
+        &#x1f4c5; Reserve
+      </button>
+    </div>
+
+    <!-- Up Arrow (top-center) -->
+    <div class="gallery-nav-up">
+      <button id="btn-prev" class="nav-circle-btn" onclick="galleryPrev()" data-testid="button-gallery-prev">
+        <i data-lucide="chevron-up" style="width:20px;height:20px;"></i>
+      </button>
+    </div>
+
+    <!-- Down Arrow + Slide Counter (bottom-center) -->
+    <div class="gallery-nav-down">
+      <span id="slide-counter" class="slide-counter" data-testid="text-slide-counter">1 / 8</span>
+      <button id="btn-next" class="nav-circle-btn" onclick="galleryNext()" data-testid="button-gallery-next">
+        <i data-lucide="chevron-down" style="width:20px;height:20px;"></i>
+      </button>
+    </div>
+
+    <!-- Dot Navigation (right-side) — one dot per slide -->
+    <div id="dot-nav" class="dot-nav" data-testid="dot-nav">
+      <!-- Dots are inserted here by JavaScript -->
+    </div>
+  </div>
+  <!-- END GALLERY VIEW -->
+
+
+  <!--
+  ============================================================================
+  BOOKING MODAL — Reservation form overlay
+  ============================================================================
+  This modal appears when the user clicks any "Reserve" or "Book Your Stay" button.
+  The form collects name, email, room selection, dates, and guest count.
+
+  TO CUSTOMIZE THE FORM:
+  - Add/remove form fields in the HTML below
+  - Update the form submission handler in script.js (handleBookingSubmit function)
+  - The room dropdown is populated dynamically from the gallery cards data
+  -->
+  <div id="booking-modal" class="modal-backdrop" data-testid="booking-modal">
+    <div class="modal-content">
+
+      <!-- Modal Header -->
+      <div class="modal-header">
+        <div>
+          <h2 class="modal-title" data-testid="text-modal-title">Reserve Your Stay</h2>
+          <p class="modal-subtitle">Experience the serenity of Casa Serena</p>
+        </div>
+        <button class="modal-close" onclick="closeModal()" data-testid="button-close-modal">&times;</button>
+      </div>
+
+      <!-- Modal Body — Reservation Form -->
+      <div class="modal-body">
+        <form id="booking-form" class="form-grid" onsubmit="handleBookingSubmit(event)" data-testid="form-booking">
+
+          <!-- Name + Email (2-column row) -->
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="booking-name">Full Name</label>
+              <input type="text" id="booking-name" name="name" placeholder="John Doe" required data-testid="input-name">
+            </div>
+            <div class="form-group">
+              <label for="booking-email">Email</label>
+              <input type="email" id="booking-email" name="email" placeholder="john@example.com" required data-testid="input-email">
+            </div>
+          </div>
+
+          <!-- Room Selection -->
+          <div class="form-group">
+            <label for="booking-room">Select Room</label>
+            <select id="booking-room" name="roomId" data-testid="select-room">
+              <!-- Options populated by JavaScript from gallery cards data -->
+            </select>
+          </div>
+
+          <!-- Check-in, Check-out, Guests (3-column row) -->
+          <div class="form-grid-3">
+            <div class="form-group">
+              <label for="booking-checkin">Check In</label>
+              <input type="date" id="booking-checkin" name="checkIn" required data-testid="input-checkin">
+            </div>
+            <div class="form-group">
+              <label for="booking-checkout">Check Out</label>
+              <input type="date" id="booking-checkout" name="checkOut" required data-testid="input-checkout">
+            </div>
+            <div class="form-group">
+              <label for="booking-guests">Guests</label>
+              <input type="number" id="booking-guests" name="guests" min="1" max="8" value="2" data-testid="input-guests">
+            </div>
+          </div>
+
+          <!-- Form Actions -->
+          <div class="modal-footer">
+            <button type="button" class="btn-text" onclick="closeModal()" data-testid="button-cancel-booking">Cancel</button>
+            <button type="submit" class="btn-submit" data-testid="button-submit-booking">Confirm Reservation</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+  <!-- END BOOKING MODAL -->
+
+
+  <!-- Main JavaScript — handles all interactivity -->
+  <script src="/script.js"></script>
+</body>
+</html>

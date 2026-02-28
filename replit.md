@@ -1,109 +1,104 @@
-# Casa Serena - Luxury Villa Booking Platform
+# Casa Serena — Database-Driven HTML Website Template
 
 ## Overview
 
-Casa Serena is an AI-powered luxury Mediterranean villa booking platform. It presents an immersive, full-screen gallery experience of a fictional luxury villa on the Aegean coast, with an AI concierge named "Marco" that can chat with guests, provide voice interactions, and help with bookings. The application was ported from a Next.js prototype (found in `attached_assets/`) into a Vite + Express full-stack architecture on Replit.
+Casa Serena is a luxury Mediterranean villa website built as a reusable, database-driven HTML template. All content (gallery slides, experiences, pricing, site settings) is managed through a PostgreSQL database and an admin dashboard — no code editing needed to change content.
 
-Key features:
-- **Immersive Gallery**: Full-bleed image transitions between villa rooms/spaces using Framer Motion
-- **AI Concierge (Marco)**: Text and voice chat powered by OpenAI via Replit AI Integrations
-- **Booking System**: Room reservation with form validation and database persistence
-- **Replit Auth**: OpenID Connect authentication via Replit's identity system
-- **Voice Features**: Speech-to-text and text-to-speech via Replit Audio integration
+The site features:
+- **Snap-scroll landing page** with hero, highlights, experiences, and pricing sections
+- **Immersive fullscreen gallery** with swipe/wheel/keyboard navigation
+- **Admin dashboard** at `/admin` for editing all content via a web interface
+- **Database-driven content** — changes in admin are instantly visible on the public site
 
 ## User Preferences
 
 Preferred communication style: Simple, everyday language.
+Code should be fully commented and templatized for modular reuse.
 
 ## System Architecture
 
-### Frontend (client/)
-- **Framework**: React 18 with TypeScript, bundled by Vite
-- **Routing**: Wouter (lightweight client-side router)
-- **State/Data Fetching**: TanStack React Query for server state management
-- **UI Components**: shadcn/ui (new-york style) built on Radix UI primitives
-- **Styling**: Tailwind CSS with CSS variables for theming (Mediterranean luxury palette with DM Sans + Playfair Display fonts)
-- **Animations**: Framer Motion for gallery transitions, overlays, and page animations
-- **Forms**: React Hook Form + Zod for booking form validation
-- **Path aliases**: `@/` maps to `client/src/`, `@shared/` maps to `shared/`
+### Backend (Python Flask)
+- **Framework**: Flask (Python)
+- **Entry point**: `app.py`
+- **Port**: 5000 (required for Replit webview)
+- **Serves**:
+  - Static files from `public/` (HTML, CSS, JS for the public site)
+  - Admin dashboard templates from `templates/admin/`
+  - REST API endpoints for both public reads and admin CRUD
 
-The app has two main views:
-1. **Landing Page** (`landing-page.tsx`): Scrollable marketing page with hero, rooms, experiences, and pricing sections
-2. **Gallery View** (`immersive-gallery.tsx`): Full-screen room-by-room exploration with the AI concierge bar at the bottom
+### Public Site (Static HTML/CSS/JS)
+- **Location**: `public/` directory
+- **Files**:
+  - `index.html` — Main page structure (landing + gallery + modal)
+  - `styles.css` — All visual styles, fully commented
+  - `script.js` — All interactivity (API fetches, navigation, animations)
+- **Fonts**: Google Fonts (Playfair Display + DM Sans)
+- **Icons**: Lucide Icons (loaded via CDN)
+- **No build step** — plain HTML/CSS/JS, works directly in any browser
 
-### Backend (server/)
-- **Framework**: Express.js on Node with TypeScript (run via `tsx`)
-- **API Pattern**: RESTful JSON APIs under `/api/`
-- **Build**: Vite for client, esbuild for server (see `script/build.ts`). Dev mode uses Vite middleware for HMR
-- **Entry point**: `server/index.ts` creates HTTP server, registers routes, sets up Vite (dev) or static serving (prod)
+### Admin Dashboard
+- **URL**: `/admin`
+- **Location**: `templates/admin/dashboard.html`
+- **Features**: Tabbed interface for editing site settings, gallery cards, experiences, and pricing
+- **Note**: Not password-protected (add authentication for production use)
 
-### Database
-- **Database**: PostgreSQL (required, via `DATABASE_URL` env var)
-- **ORM**: Drizzle ORM with `drizzle-zod` for schema-to-validation integration
-- **Schema location**: `shared/schema.ts` (re-exports from `shared/models/`)
-- **Migrations**: Drizzle Kit with `drizzle-kit push` command
+### Database (PostgreSQL)
+- **Connection**: `DATABASE_URL` environment variable
 - **Tables**:
-  - `users` - Replit Auth user profiles (id, email, name, profile image)
-  - `sessions` - Express session storage for Replit Auth (required, don't drop)
-  - `bookings` - Room reservations (name, email, room, dates, guests, price, status)
-  - `conversations` - Chat conversation metadata
-  - `messages` - Individual chat messages linked to conversations
+  - `site_settings` — Global config (site name, tagline, hero content, logo initials). Singleton row (id=1).
+  - `gallery_cards` — Slides for the gallery view and highlight cards on the landing page. Has slug (unique URL-friendly ID), title, subtitle, image_url, category, description, details (JSONB array), price, and sort_order.
+  - `experiences` — Activity cards on the landing page. Has name, description, icon name, and sort_order.
+  - `pricing_seasons` — Seasonal pricing tiers. Has label, date_range, price_range, and sort_order.
+  - `users`, `sessions`, `bookings`, `conversations`, `messages` — Legacy tables from the previous React app (kept intact).
 
-### Authentication
-- **Method**: Replit Auth (OpenID Connect)
-- **Implementation**: `server/replit_integrations/auth/` - uses `openid-client` + Passport.js
-- **Session storage**: PostgreSQL via `connect-pg-simple`
-- **Client hook**: `client/src/hooks/use-auth.ts` queries `/api/auth/user`
+### API Endpoints
 
-### Replit Integrations (server/replit_integrations/)
-These are modular integration packages:
+**Public (read-only, used by the public site's JavaScript):**
+- `GET /api/site-settings` — Returns site configuration
+- `GET /api/gallery-cards` — Returns all gallery cards ordered by sort_order
+- `GET /api/experiences` — Returns all experiences ordered by sort_order
+- `GET /api/pricing` — Returns all pricing seasons ordered by sort_order
 
-1. **Auth** (`auth/`): Replit OIDC authentication with Passport.js
-2. **Audio** (`audio/`): Voice chat using OpenAI TTS/STT via Replit AI Integrations. Includes audio format detection, ffmpeg conversion, and streaming endpoints
-3. **Image** (`image/`): Image generation using `gpt-image-1` model
-4. **Chat** (`chat/`): Conversation persistence (CRUD for conversations and messages)
-5. **Batch** (`batch/`): Generic batch processing utility with rate limiting and retries
+**Admin (CRUD, used by the admin dashboard):**
+- `GET/PUT /admin/api/site-settings` — Read and update site settings
+- `GET/POST/PUT/DELETE /admin/api/gallery-cards` — Gallery card management
+- `GET/POST/PUT/DELETE /admin/api/experiences` — Experience management
+- `GET/POST/PUT/DELETE /admin/api/pricing` — Pricing management
 
-### Shared Code (shared/)
-- `schema.ts` - Drizzle table definitions and Zod schemas (single source of truth)
-- `routes.ts` - API route contracts with Zod validation schemas (used by both client and server)
-- `models/auth.ts` - User and session table definitions
-- `models/chat.ts` - Conversation and message table definitions
+## How to Edit Content
 
-### Key Design Decisions
+1. Go to `/admin` in your browser
+2. Use the tabs to switch between Site Settings, Gallery Cards, Experiences, and Pricing
+3. Click "Edit" on any item to modify it, or "+ Add" to create a new one
+4. Changes are saved to the database immediately
+5. Reload the public site to see your changes
 
-**Monorepo with shared types**: The `shared/` directory contains database schemas and API contracts used by both frontend and backend, ensuring type safety across the stack.
+## How to Customize the Template
 
-**AI Concierge system prompt**: Defined in `server/routes.ts` with detailed property knowledge, personality guidelines, and pricing information for the "Marco" character.
+### Change the visual style
+Edit `public/styles.css` — every section is commented with what it controls.
+Key variables are in the `:root` block at the top (fonts, colors, spacing, animation timing).
 
-**Image strategy**: Uses Unsplash URLs for gallery images rather than local files, avoiding asset management complexity.
+### Change the page structure
+Edit `public/index.html` — the HTML structure is fully commented.
+Add new sections inside the `.landing-container` div with classes `snap-section landing-section`.
 
-**Voice architecture**: Client-side uses Web Audio API with a custom AudioWorklet (`audio-playback-worklet.js`) for PCM16 streaming playback. Server-side handles format conversion via ffmpeg.
+### Add a new content type
+1. Create a new database table in the `init_db()` function in `app.py`
+2. Add public API route (GET) and admin API routes (GET/POST/PUT/DELETE) in `app.py`
+3. Add rendering code in `public/script.js`
+4. Add the admin form and table in `templates/admin/dashboard.html`
 
 ## External Dependencies
 
 ### Required Environment Variables
-- `DATABASE_URL` - PostgreSQL connection string (provisioned by Replit)
-- `SESSION_SECRET` - Secret for Express session encryption
-- `REPL_ID` - Replit environment identifier (set automatically)
-- `ISSUER_URL` - OIDC issuer URL for Replit Auth (defaults to `https://replit.com/oidc`)
-- `AI_INTEGRATIONS_OPENAI_API_KEY` - OpenAI API key via Replit AI Integrations
-- `AI_INTEGRATIONS_OPENAI_BASE_URL` - OpenAI base URL via Replit AI Integrations
+- `DATABASE_URL` — PostgreSQL connection string (provisioned by Replit)
 
-### Third-Party Services
-- **PostgreSQL** - Primary database (Replit-provisioned)
-- **OpenAI API** (via Replit AI Integrations) - Powers the AI concierge chat, voice (TTS/STT), and image generation
-- **Unsplash** - Gallery images served from CDN URLs
-- **Google Fonts** - DM Sans, Playfair Display, Fira Code, Geist Mono, Architects Daughter
+### Python Packages
+- `flask` — Web framework
+- `psycopg2-binary` — PostgreSQL driver
+- `gunicorn` — Production WSGI server
 
-### Key NPM Packages
-- `drizzle-orm` + `drizzle-kit` - Database ORM and migrations
-- `express` + `express-session` - HTTP server and session management
-- `passport` + `openid-client` - Authentication
-- `openai` - AI API client
-- `framer-motion` - Animations
-- `wouter` - Client routing
-- `@tanstack/react-query` - Data fetching
-- `react-hook-form` + `zod` - Form handling and validation
-- `lucide-react` - Icons
-- shadcn/ui component library (Radix UI primitives)
+### CDN Dependencies
+- Google Fonts (Playfair Display, DM Sans)
+- Lucide Icons

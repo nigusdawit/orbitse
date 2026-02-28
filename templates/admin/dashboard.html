@@ -1,0 +1,1153 @@
+<!DOCTYPE html>
+<!--
+===============================================================================
+CASA SERENA — Admin Dashboard (dashboard.html)
+===============================================================================
+
+PURPOSE:
+  This is the admin panel for managing all content on the Casa Serena website.
+  Every change you make here is saved to the PostgreSQL database and
+  immediately visible on the public site (on page reload).
+
+SECTIONS:
+  1. Site Settings — Edit the site name, tagline, hero content, and logo
+  2. Gallery Cards — Add, edit, delete, and reorder the gallery/explore slides
+  3. Experiences — Add, edit, delete curated activity cards
+  4. Pricing — Add, edit, delete seasonal pricing tiers
+
+HOW IT WORKS:
+  - Each section loads data from the admin API (GET requests)
+  - Editing a row opens a form; saving sends a PUT request
+  - Creating a new item sends a POST request
+  - Deleting an item sends a DELETE request
+  - All changes are reflected on the public site immediately
+
+TO CUSTOMIZE THIS DASHBOARD:
+  - To add a new content section (e.g., testimonials):
+    1. Create the database table and API routes in app.py
+    2. Add a new tab button in the nav below
+    3. Add a new section div with the table and form
+    4. Add the JavaScript functions to load, save, and delete items
+
+===============================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Dashboard — Casa Serena</title>
+
+  <!-- Google Fonts — same as the main site for visual consistency -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,100..1000&family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap">
+
+  <style>
+    /*
+    ========================================================================
+    ADMIN DASHBOARD STYLES
+    ========================================================================
+    Self-contained styles for the admin panel.
+    Uses a clean, minimal design optimized for content management.
+    */
+
+    :root {
+      --admin-bg: #0f1117;
+      --admin-surface: #1a1d27;
+      --admin-surface-hover: #22252f;
+      --admin-border: rgba(255, 255, 255, 0.08);
+      --admin-text: #e4e4e7;
+      --admin-text-muted: #71717a;
+      --admin-primary: #3b82f6;
+      --admin-primary-hover: #2563eb;
+      --admin-danger: #ef4444;
+      --admin-danger-hover: #dc2626;
+      --admin-success: #22c55e;
+      --admin-radius: 0.5rem;
+      --font-sans: 'DM Sans', -apple-system, sans-serif;
+      --font-serif: 'Playfair Display', Georgia, serif;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--admin-bg);
+      color: var(--admin-text);
+      min-height: 100vh;
+    }
+
+    /* Top header bar */
+    .admin-header {
+      background: var(--admin-surface);
+      border-bottom: 1px solid var(--admin-border);
+      padding: 1rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+
+    .admin-header h1 {
+      font-family: var(--font-serif);
+      font-size: 1.25rem;
+      font-weight: 600;
+    }
+
+    .admin-header a {
+      color: var(--admin-primary);
+      text-decoration: none;
+      font-size: 0.875rem;
+    }
+
+    .admin-header a:hover { text-decoration: underline; }
+
+    /* Tab navigation */
+    .tab-nav {
+      display: flex;
+      gap: 0.25rem;
+      padding: 1rem 2rem 0;
+      border-bottom: 1px solid var(--admin-border);
+      background: var(--admin-surface);
+    }
+
+    .tab-btn {
+      padding: 0.75rem 1.25rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--admin-text-muted);
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      transition: color 0.2s, border-color 0.2s;
+      font-family: inherit;
+    }
+
+    .tab-btn:hover { color: var(--admin-text); }
+
+    .tab-btn.active {
+      color: var(--admin-primary);
+      border-bottom-color: var(--admin-primary);
+    }
+
+    /* Tab content panels */
+    .tab-content { display: none; padding: 2rem; }
+    .tab-content.active { display: block; }
+
+    /* Section headers within tabs */
+    .section-header-admin {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1.5rem;
+    }
+
+    .section-header-admin h2 {
+      font-family: var(--font-serif);
+      font-size: 1.5rem;
+    }
+
+    .section-header-admin p {
+      color: var(--admin-text-muted);
+      font-size: 0.875rem;
+      margin-top: 0.25rem;
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      border: none;
+      border-radius: var(--admin-radius);
+      cursor: pointer;
+      transition: background 0.2s;
+      font-family: inherit;
+    }
+
+    .btn-primary {
+      background: var(--admin-primary);
+      color: #fff;
+    }
+    .btn-primary:hover { background: var(--admin-primary-hover); }
+
+    .btn-danger {
+      background: var(--admin-danger);
+      color: #fff;
+    }
+    .btn-danger:hover { background: var(--admin-danger-hover); }
+
+    .btn-secondary {
+      background: var(--admin-surface-hover);
+      color: var(--admin-text);
+      border: 1px solid var(--admin-border);
+    }
+    .btn-secondary:hover { background: rgba(255,255,255,0.1); }
+
+    .btn-sm {
+      padding: 0.375rem 0.75rem;
+      font-size: 0.8125rem;
+    }
+
+    /* Data table */
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.875rem;
+    }
+
+    .data-table th {
+      text-align: left;
+      padding: 0.75rem 1rem;
+      font-weight: 600;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--admin-text-muted);
+      border-bottom: 1px solid var(--admin-border);
+      background: var(--admin-surface);
+    }
+
+    .data-table td {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--admin-border);
+      vertical-align: top;
+    }
+
+    .data-table tr:hover td {
+      background: var(--admin-surface-hover);
+    }
+
+    .data-table .cell-image {
+      width: 80px;
+      height: 60px;
+      object-fit: cover;
+      border-radius: 0.25rem;
+    }
+
+    .data-table .cell-actions {
+      display: flex;
+      gap: 0.5rem;
+      white-space: nowrap;
+    }
+
+    .cell-truncate {
+      max-width: 200px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Forms */
+    .form-panel {
+      background: var(--admin-surface);
+      border: 1px solid var(--admin-border);
+      border-radius: var(--admin-radius);
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .form-panel h3 {
+      font-family: var(--font-serif);
+      font-size: 1.125rem;
+      margin-bottom: 1rem;
+    }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.375rem;
+    }
+
+    .form-group label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--admin-text-muted);
+    }
+
+    .form-group input,
+    .form-group select,
+    .form-group textarea {
+      padding: 0.5rem 0.75rem;
+      background: var(--admin-bg);
+      border: 1px solid var(--admin-border);
+      border-radius: var(--admin-radius);
+      color: var(--admin-text);
+      font-size: 0.875rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .form-group input:focus,
+    .form-group select:focus,
+    .form-group textarea:focus {
+      border-color: var(--admin-primary);
+    }
+
+    .form-group textarea {
+      resize: vertical;
+      min-height: 80px;
+    }
+
+    .form-actions {
+      display: flex;
+      gap: 0.75rem;
+      justify-content: flex-end;
+      margin-top: 1rem;
+    }
+
+    /* Toast notification */
+    .toast {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      padding: 0.75rem 1.25rem;
+      border-radius: var(--admin-radius);
+      font-size: 0.875rem;
+      font-weight: 500;
+      z-index: 100;
+      animation: slideInUp 0.3s ease-out;
+      color: #fff;
+    }
+
+    .toast-success { background: var(--admin-success); }
+    .toast-error { background: var(--admin-danger); }
+
+    @keyframes slideInUp {
+      from { opacity: 0; transform: translateY(1rem); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Badge for category */
+    .badge {
+      display: inline-block;
+      padding: 0.125rem 0.5rem;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-radius: 9999px;
+      background: rgba(59, 130, 246, 0.15);
+      color: var(--admin-primary);
+    }
+
+    /* Empty state */
+    .empty-state {
+      text-align: center;
+      padding: 3rem;
+      color: var(--admin-text-muted);
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .tab-nav { overflow-x: auto; }
+      .form-row { grid-template-columns: 1fr; }
+      .data-table { font-size: 0.8125rem; }
+      .admin-header { padding: 1rem; }
+      .tab-content { padding: 1rem; }
+    }
+  </style>
+</head>
+
+<body>
+  <!--
+  ========================================================================
+  ADMIN HEADER
+  ========================================================================
+  Shows the dashboard title and a link back to the public site.
+  -->
+  <header class="admin-header">
+    <div>
+      <h1>Admin Dashboard</h1>
+    </div>
+    <div style="display: flex; gap: 1rem; align-items: center;">
+      <a href="/" target="_blank">&#x2197; View Public Site</a>
+    </div>
+  </header>
+
+  <!--
+  ========================================================================
+  TAB NAVIGATION
+  ========================================================================
+  Each tab corresponds to a different content type in the database.
+  Clicking a tab shows its content panel and hides the others.
+  -->
+  <nav class="tab-nav">
+    <button class="tab-btn active" onclick="switchTab('settings')" data-testid="tab-settings">Site Settings</button>
+    <button class="tab-btn" onclick="switchTab('cards')" data-testid="tab-cards">Gallery Cards</button>
+    <button class="tab-btn" onclick="switchTab('experiences')" data-testid="tab-experiences">Experiences</button>
+    <button class="tab-btn" onclick="switchTab('pricing')" data-testid="tab-pricing">Pricing</button>
+  </nav>
+
+
+  <!--
+  ========================================================================
+  TAB: SITE SETTINGS
+  ========================================================================
+  Edit the global site configuration: name, tagline, hero content, logo.
+  This is a single form that updates the one settings row in the database.
+  -->
+  <div id="tab-settings" class="tab-content active">
+    <div class="section-header-admin">
+      <div>
+        <h2>Site Settings</h2>
+        <p>Edit the site name, hero section content, and branding.</p>
+      </div>
+    </div>
+
+    <div class="form-panel" id="settings-form-panel">
+      <h3>General Settings</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="setting-site-name">Site Name</label>
+          <input type="text" id="setting-site-name" placeholder="Casa Serena" data-testid="input-setting-site-name">
+        </div>
+        <div class="form-group">
+          <label for="setting-site-subtitle">Subtitle</label>
+          <input type="text" id="setting-site-subtitle" placeholder="Mediterranean Villa" data-testid="input-setting-subtitle">
+        </div>
+        <div class="form-group">
+          <label for="setting-logo-initials">Logo Initials</label>
+          <input type="text" id="setting-logo-initials" placeholder="CS" maxlength="3" data-testid="input-setting-initials">
+        </div>
+      </div>
+
+      <h3 style="margin-top: 1.5rem;">Hero Section</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="setting-hero-tagline">Tagline</label>
+          <input type="text" id="setting-hero-tagline" placeholder="A Private Mediterranean Retreat" data-testid="input-setting-tagline">
+        </div>
+        <div class="form-group">
+          <label for="setting-hero-title">Hero Title</label>
+          <input type="text" id="setting-hero-title" placeholder="Casa Serena" data-testid="input-setting-hero-title">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="setting-hero-description">Hero Description</label>
+          <textarea id="setting-hero-description" rows="3" placeholder="A description of the property..." data-testid="input-setting-description"></textarea>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="setting-hero-image">Hero Background Image URL</label>
+          <input type="url" id="setting-hero-image" placeholder="https://images.unsplash.com/..." data-testid="input-setting-hero-image">
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="saveSettings()" data-testid="button-save-settings">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!--
+  ========================================================================
+  TAB: GALLERY CARDS
+  ========================================================================
+  Manage the gallery slides / explore cards.
+  Each row represents one fullscreen slide in the gallery view
+  and one card in the highlights grid on the landing page.
+  -->
+  <div id="tab-cards" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Gallery Cards</h2>
+        <p>Manage the slides shown in the Explore gallery and the Highlights grid.</p>
+      </div>
+      <button class="btn btn-primary" onclick="showCardForm()" data-testid="button-add-card">+ Add Card</button>
+    </div>
+
+    <!-- Card form (hidden by default, shown when adding/editing) -->
+    <div id="card-form-panel" class="form-panel" style="display:none;">
+      <h3 id="card-form-title">Add New Card</h3>
+      <input type="hidden" id="card-form-id">
+      <div class="form-row">
+        <div class="form-group">
+          <label for="card-slug">Slug (URL-friendly ID)</label>
+          <input type="text" id="card-slug" placeholder="master-suite" data-testid="input-card-slug">
+        </div>
+        <div class="form-group">
+          <label for="card-title">Title</label>
+          <input type="text" id="card-title" placeholder="Master Suite" data-testid="input-card-title">
+        </div>
+        <div class="form-group">
+          <label for="card-subtitle">Subtitle</label>
+          <input type="text" id="card-subtitle" placeholder="Private Terrace & Ocean Views" data-testid="input-card-subtitle">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="card-category">Category</label>
+          <select id="card-category" data-testid="select-card-category">
+            <option value="property">Property</option>
+            <option value="rooms">Rooms</option>
+            <option value="amenities">Amenities</option>
+            <option value="dining">Dining</option>
+            <option value="experiences">Experiences</option>
+            <option value="location">Location</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="card-price">Price (optional)</label>
+          <input type="text" id="card-price" placeholder="From $1,800/night" data-testid="input-card-price">
+        </div>
+        <div class="form-group">
+          <label for="card-sort-order">Sort Order</label>
+          <input type="number" id="card-sort-order" placeholder="1" value="0" data-testid="input-card-sort">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="card-image">Image URL</label>
+          <input type="url" id="card-image" placeholder="https://images.unsplash.com/..." data-testid="input-card-image">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="card-description">Description</label>
+          <textarea id="card-description" rows="3" placeholder="A description of this space..." data-testid="input-card-description"></textarea>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="card-details">Details (one per line — these appear as bullet points)</label>
+          <textarea id="card-details" rows="4" placeholder="King bed with Italian linens&#10;Private ocean-view terrace&#10;Walk-in rain shower" data-testid="input-card-details"></textarea>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="hideCardForm()" data-testid="button-cancel-card">Cancel</button>
+        <button class="btn btn-primary" onclick="saveCard()" data-testid="button-save-card">Save Card</button>
+      </div>
+    </div>
+
+    <!-- Cards data table -->
+    <table class="data-table" id="cards-table">
+      <thead>
+        <tr>
+          <th>Image</th>
+          <th>Title</th>
+          <th>Category</th>
+          <th>Subtitle</th>
+          <th>Price</th>
+          <th>Order</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="cards-tbody">
+        <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+
+  <!--
+  ========================================================================
+  TAB: EXPERIENCES
+  ========================================================================
+  Manage the curated experiences shown on the landing page.
+  -->
+  <div id="tab-experiences" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Experiences</h2>
+        <p>Manage the curated activity cards on the landing page.</p>
+      </div>
+      <button class="btn btn-primary" onclick="showExpForm()" data-testid="button-add-experience">+ Add Experience</button>
+    </div>
+
+    <!-- Experience form -->
+    <div id="exp-form-panel" class="form-panel" style="display:none;">
+      <h3 id="exp-form-title">Add New Experience</h3>
+      <input type="hidden" id="exp-form-id">
+      <div class="form-row">
+        <div class="form-group">
+          <label for="exp-name">Name</label>
+          <input type="text" id="exp-name" placeholder="Private Boat Tours" data-testid="input-exp-name">
+        </div>
+        <div class="form-group">
+          <label for="exp-icon">Icon</label>
+          <select id="exp-icon" data-testid="select-exp-icon">
+            <option value="waves">Waves</option>
+            <option value="wine">Wine</option>
+            <option value="utensils">Utensils</option>
+            <option value="map-pin">Map Pin</option>
+            <option value="star">Star</option>
+            <option value="compass">Compass</option>
+            <option value="anchor">Anchor</option>
+            <option value="sun">Sun</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="exp-sort-order">Sort Order</label>
+          <input type="number" id="exp-sort-order" placeholder="1" value="0" data-testid="input-exp-sort">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="exp-description">Description</label>
+          <textarea id="exp-description" rows="2" placeholder="A short description of this experience..." data-testid="input-exp-description"></textarea>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="hideExpForm()" data-testid="button-cancel-exp">Cancel</button>
+        <button class="btn btn-primary" onclick="saveExperience()" data-testid="button-save-exp">Save Experience</button>
+      </div>
+    </div>
+
+    <!-- Experiences data table -->
+    <table class="data-table" id="exp-table">
+      <thead>
+        <tr>
+          <th>Icon</th>
+          <th>Name</th>
+          <th>Description</th>
+          <th>Order</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="exp-tbody">
+        <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+
+  <!--
+  ========================================================================
+  TAB: PRICING
+  ========================================================================
+  Manage seasonal pricing tiers shown on the landing page.
+  -->
+  <div id="tab-pricing" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Pricing Seasons</h2>
+        <p>Manage the seasonal pricing tiers on the landing page.</p>
+      </div>
+      <button class="btn btn-primary" onclick="showPricingForm()" data-testid="button-add-pricing">+ Add Season</button>
+    </div>
+
+    <!-- Pricing form -->
+    <div id="pricing-form-panel" class="form-panel" style="display:none;">
+      <h3 id="pricing-form-title">Add New Season</h3>
+      <input type="hidden" id="pricing-form-id">
+      <div class="form-row">
+        <div class="form-group">
+          <label for="pricing-label">Label</label>
+          <input type="text" id="pricing-label" placeholder="High" data-testid="input-pricing-label">
+        </div>
+        <div class="form-group">
+          <label for="pricing-date-range">Date Range</label>
+          <input type="text" id="pricing-date-range" placeholder="Jun - Sep" data-testid="input-pricing-dates">
+        </div>
+        <div class="form-group">
+          <label for="pricing-price-range">Price Range</label>
+          <input type="text" id="pricing-price-range" placeholder="$1,200 - $1,800/night" data-testid="input-pricing-price">
+        </div>
+        <div class="form-group">
+          <label for="pricing-sort-order">Sort Order</label>
+          <input type="number" id="pricing-sort-order" placeholder="1" value="0" data-testid="input-pricing-sort">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="hidePricingForm()" data-testid="button-cancel-pricing">Cancel</button>
+        <button class="btn btn-primary" onclick="savePricing()" data-testid="button-save-pricing">Save Season</button>
+      </div>
+    </div>
+
+    <!-- Pricing data table -->
+    <table class="data-table" id="pricing-table">
+      <thead>
+        <tr>
+          <th>Label</th>
+          <th>Date Range</th>
+          <th>Price Range</th>
+          <th>Order</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="pricing-tbody">
+        <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+
+  <!--
+  ========================================================================
+  ADMIN JAVASCRIPT
+  ========================================================================
+  Handles all CRUD operations for the admin dashboard.
+  Each section (Settings, Cards, Experiences, Pricing) has its own
+  set of functions: load, show form, hide form, save, edit, delete.
+  -->
+  <script>
+    /*
+    ========================================================================
+    TAB SWITCHING
+    ========================================================================
+    Toggles which tab content panel is visible.
+    */
+    function switchTab(tabId) {
+      /* Hide all tab content panels */
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+
+      /* Show the selected tab */
+      document.getElementById('tab-' + tabId).classList.add('active');
+      event.target.classList.add('active');
+    }
+
+
+    /*
+    ========================================================================
+    TOAST NOTIFICATIONS
+    ========================================================================
+    Shows a temporary success/error message at the bottom-right of the screen.
+    */
+    function showToast(message, type = 'success') {
+      /* Remove any existing toast */
+      const existing = document.querySelector('.toast');
+      if (existing) existing.remove();
+
+      /* Create and show new toast */
+      const toast = document.createElement('div');
+      toast.className = `toast toast-${type}`;
+      toast.textContent = message;
+      document.body.appendChild(toast);
+
+      /* Auto-remove after 3 seconds */
+      setTimeout(() => toast.remove(), 3000);
+    }
+
+
+    /*
+    ========================================================================
+    SITE SETTINGS — Load and Save
+    ========================================================================
+    */
+
+    /** Load current settings into the form */
+    async function loadSettings() {
+      try {
+        const res = await fetch('/admin/api/site-settings');
+        const data = await res.json();
+
+        document.getElementById('setting-site-name').value = data.site_name || '';
+        document.getElementById('setting-site-subtitle').value = data.site_subtitle || '';
+        document.getElementById('setting-logo-initials').value = data.logo_initials || '';
+        document.getElementById('setting-hero-tagline').value = data.hero_tagline || '';
+        document.getElementById('setting-hero-title').value = data.hero_title || '';
+        document.getElementById('setting-hero-description').value = data.hero_description || '';
+        document.getElementById('setting-hero-image').value = data.hero_image || '';
+      } catch (err) {
+        showToast('Failed to load settings', 'error');
+      }
+    }
+
+    /** Save settings to the database */
+    async function saveSettings() {
+      const data = {
+        site_name: document.getElementById('setting-site-name').value,
+        site_subtitle: document.getElementById('setting-site-subtitle').value,
+        logo_initials: document.getElementById('setting-logo-initials').value,
+        hero_tagline: document.getElementById('setting-hero-tagline').value,
+        hero_title: document.getElementById('setting-hero-title').value,
+        hero_description: document.getElementById('setting-hero-description').value,
+        hero_image: document.getElementById('setting-hero-image').value
+      };
+
+      try {
+        const res = await fetch('/admin/api/site-settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+
+        if (res.ok) {
+          showToast('Settings saved successfully!');
+        } else {
+          showToast('Failed to save settings', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save settings', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
+    GALLERY CARDS — CRUD Operations
+    ========================================================================
+    */
+
+    /** Load all gallery cards and render the table */
+    async function loadCards() {
+      try {
+        const res = await fetch('/admin/api/gallery-cards');
+        const cards = await res.json();
+        const tbody = document.getElementById('cards-tbody');
+
+        if (!cards.length) {
+          tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No gallery cards yet. Click "+ Add Card" to create one.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = cards.map(card => `
+          <tr>
+            <td><img src="${card.image_url}" alt="${card.title}" class="cell-image"></td>
+            <td><strong>${card.title}</strong></td>
+            <td><span class="badge">${card.category}</span></td>
+            <td class="cell-truncate">${card.subtitle}</td>
+            <td>${card.price || '—'}</td>
+            <td>${card.sort_order}</td>
+            <td class="cell-actions">
+              <button class="btn btn-secondary btn-sm" onclick='editCard(${JSON.stringify(card).replace(/'/g, "&#39;")})' data-testid="button-edit-card-${card.id}">Edit</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteCard(${card.id})" data-testid="button-delete-card-${card.id}">Delete</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showToast('Failed to load cards', 'error');
+      }
+    }
+
+    /** Show the card form for adding a new card */
+    function showCardForm() {
+      document.getElementById('card-form-panel').style.display = 'block';
+      document.getElementById('card-form-title').textContent = 'Add New Card';
+      document.getElementById('card-form-id').value = '';
+      document.getElementById('card-slug').value = '';
+      document.getElementById('card-title').value = '';
+      document.getElementById('card-subtitle').value = '';
+      document.getElementById('card-category').value = 'rooms';
+      document.getElementById('card-price').value = '';
+      document.getElementById('card-sort-order').value = '0';
+      document.getElementById('card-image').value = '';
+      document.getElementById('card-description').value = '';
+      document.getElementById('card-details').value = '';
+    }
+
+    /** Hide the card form */
+    function hideCardForm() {
+      document.getElementById('card-form-panel').style.display = 'none';
+    }
+
+    /** Populate the card form for editing an existing card */
+    function editCard(card) {
+      document.getElementById('card-form-panel').style.display = 'block';
+      document.getElementById('card-form-title').textContent = 'Edit Card: ' + card.title;
+      document.getElementById('card-form-id').value = card.id;
+      document.getElementById('card-slug').value = card.slug;
+      document.getElementById('card-title').value = card.title;
+      document.getElementById('card-subtitle').value = card.subtitle;
+      document.getElementById('card-category').value = card.category;
+      document.getElementById('card-price').value = card.price || '';
+      document.getElementById('card-sort-order').value = card.sort_order;
+      document.getElementById('card-image').value = card.image_url;
+      document.getElementById('card-description').value = card.description;
+
+      /* Convert details array back to newline-separated text */
+      const details = Array.isArray(card.details) ? card.details : [];
+      document.getElementById('card-details').value = details.join('\n');
+    }
+
+    /** Save a card (create new or update existing) */
+    async function saveCard() {
+      const id = document.getElementById('card-form-id').value;
+      const detailsText = document.getElementById('card-details').value;
+      /* Convert newline-separated text to array, filtering empty lines */
+      const details = detailsText.split('\n').map(d => d.trim()).filter(d => d);
+
+      const data = {
+        slug: document.getElementById('card-slug').value,
+        title: document.getElementById('card-title').value,
+        subtitle: document.getElementById('card-subtitle').value,
+        category: document.getElementById('card-category').value,
+        price: document.getElementById('card-price').value || null,
+        sort_order: parseInt(document.getElementById('card-sort-order').value) || 0,
+        image_url: document.getElementById('card-image').value,
+        description: document.getElementById('card-description').value,
+        details: details
+      };
+
+      try {
+        const url = id ? `/admin/api/gallery-cards/${id}` : '/admin/api/gallery-cards';
+        const method = id ? 'PUT' : 'POST';
+
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+
+        if (res.ok) {
+          showToast(id ? 'Card updated!' : 'Card created!');
+          hideCardForm();
+          loadCards();
+        } else {
+          const err = await res.json();
+          showToast(err.error || 'Failed to save card', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save card', 'error');
+      }
+    }
+
+    /** Delete a card after confirmation */
+    async function deleteCard(id) {
+      if (!confirm('Are you sure you want to delete this card?')) return;
+
+      try {
+        const res = await fetch(`/admin/api/gallery-cards/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('Card deleted');
+          loadCards();
+        } else {
+          showToast('Failed to delete card', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to delete card', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
+    EXPERIENCES — CRUD Operations
+    ========================================================================
+    */
+
+    async function loadExperiences() {
+      try {
+        const res = await fetch('/admin/api/experiences');
+        const exps = await res.json();
+        const tbody = document.getElementById('exp-tbody');
+
+        if (!exps.length) {
+          tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No experiences yet. Click "+ Add Experience" to create one.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = exps.map(exp => `
+          <tr>
+            <td>${exp.icon}</td>
+            <td><strong>${exp.name}</strong></td>
+            <td class="cell-truncate">${exp.description}</td>
+            <td>${exp.sort_order}</td>
+            <td class="cell-actions">
+              <button class="btn btn-secondary btn-sm" onclick='editExperience(${JSON.stringify(exp).replace(/'/g, "&#39;")})' data-testid="button-edit-exp-${exp.id}">Edit</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteExperience(${exp.id})" data-testid="button-delete-exp-${exp.id}">Delete</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showToast('Failed to load experiences', 'error');
+      }
+    }
+
+    function showExpForm() {
+      document.getElementById('exp-form-panel').style.display = 'block';
+      document.getElementById('exp-form-title').textContent = 'Add New Experience';
+      document.getElementById('exp-form-id').value = '';
+      document.getElementById('exp-name').value = '';
+      document.getElementById('exp-icon').value = 'star';
+      document.getElementById('exp-sort-order').value = '0';
+      document.getElementById('exp-description').value = '';
+    }
+
+    function hideExpForm() {
+      document.getElementById('exp-form-panel').style.display = 'none';
+    }
+
+    function editExperience(exp) {
+      document.getElementById('exp-form-panel').style.display = 'block';
+      document.getElementById('exp-form-title').textContent = 'Edit: ' + exp.name;
+      document.getElementById('exp-form-id').value = exp.id;
+      document.getElementById('exp-name').value = exp.name;
+      document.getElementById('exp-icon').value = exp.icon;
+      document.getElementById('exp-sort-order').value = exp.sort_order;
+      document.getElementById('exp-description').value = exp.description;
+    }
+
+    async function saveExperience() {
+      const id = document.getElementById('exp-form-id').value;
+      const data = {
+        name: document.getElementById('exp-name').value,
+        description: document.getElementById('exp-description').value,
+        icon: document.getElementById('exp-icon').value,
+        sort_order: parseInt(document.getElementById('exp-sort-order').value) || 0
+      };
+
+      try {
+        const url = id ? `/admin/api/experiences/${id}` : '/admin/api/experiences';
+        const method = id ? 'PUT' : 'POST';
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+
+        if (res.ok) {
+          showToast(id ? 'Experience updated!' : 'Experience created!');
+          hideExpForm();
+          loadExperiences();
+        } else {
+          showToast('Failed to save experience', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save experience', 'error');
+      }
+    }
+
+    async function deleteExperience(id) {
+      if (!confirm('Delete this experience?')) return;
+      try {
+        const res = await fetch(`/admin/api/experiences/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('Experience deleted');
+          loadExperiences();
+        } else {
+          showToast('Failed to delete', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to delete', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
+    PRICING — CRUD Operations
+    ========================================================================
+    */
+
+    async function loadPricing() {
+      try {
+        const res = await fetch('/admin/api/pricing');
+        const seasons = await res.json();
+        const tbody = document.getElementById('pricing-tbody');
+
+        if (!seasons.length) {
+          tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No pricing seasons yet. Click "+ Add Season" to create one.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = seasons.map(s => `
+          <tr>
+            <td><strong>${s.label}</strong></td>
+            <td>${s.date_range}</td>
+            <td>${s.price_range}</td>
+            <td>${s.sort_order}</td>
+            <td class="cell-actions">
+              <button class="btn btn-secondary btn-sm" onclick='editPricing(${JSON.stringify(s).replace(/'/g, "&#39;")})' data-testid="button-edit-pricing-${s.id}">Edit</button>
+              <button class="btn btn-danger btn-sm" onclick="deletePricing(${s.id})" data-testid="button-delete-pricing-${s.id}">Delete</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showToast('Failed to load pricing', 'error');
+      }
+    }
+
+    function showPricingForm() {
+      document.getElementById('pricing-form-panel').style.display = 'block';
+      document.getElementById('pricing-form-title').textContent = 'Add New Season';
+      document.getElementById('pricing-form-id').value = '';
+      document.getElementById('pricing-label').value = '';
+      document.getElementById('pricing-date-range').value = '';
+      document.getElementById('pricing-price-range').value = '';
+      document.getElementById('pricing-sort-order').value = '0';
+    }
+
+    function hidePricingForm() {
+      document.getElementById('pricing-form-panel').style.display = 'none';
+    }
+
+    function editPricing(season) {
+      document.getElementById('pricing-form-panel').style.display = 'block';
+      document.getElementById('pricing-form-title').textContent = 'Edit: ' + season.label;
+      document.getElementById('pricing-form-id').value = season.id;
+      document.getElementById('pricing-label').value = season.label;
+      document.getElementById('pricing-date-range').value = season.date_range;
+      document.getElementById('pricing-price-range').value = season.price_range;
+      document.getElementById('pricing-sort-order').value = season.sort_order;
+    }
+
+    async function savePricing() {
+      const id = document.getElementById('pricing-form-id').value;
+      const data = {
+        label: document.getElementById('pricing-label').value,
+        date_range: document.getElementById('pricing-date-range').value,
+        price_range: document.getElementById('pricing-price-range').value,
+        sort_order: parseInt(document.getElementById('pricing-sort-order').value) || 0
+      };
+
+      try {
+        const url = id ? `/admin/api/pricing/${id}` : '/admin/api/pricing';
+        const method = id ? 'PUT' : 'POST';
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+
+        if (res.ok) {
+          showToast(id ? 'Pricing updated!' : 'Pricing created!');
+          hidePricingForm();
+          loadPricing();
+        } else {
+          showToast('Failed to save pricing', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save pricing', 'error');
+      }
+    }
+
+    async function deletePricing(id) {
+      if (!confirm('Delete this pricing season?')) return;
+      try {
+        const res = await fetch(`/admin/api/pricing/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('Pricing deleted');
+          loadPricing();
+        } else {
+          showToast('Failed to delete', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to delete', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
+    INITIALIZATION — Load all data on page load
+    ========================================================================
+    */
+    document.addEventListener('DOMContentLoaded', () => {
+      loadSettings();
+      loadCards();
+      loadExperiences();
+      loadPricing();
+    });
+  </script>
+</body>
+</html>
