@@ -702,11 +702,17 @@ a JSON command block in your response. Always wrap commands in ```command``` blo
 
 AVAILABLE COMMANDS:
 
-1. Navigate to a specific gallery item:
+1. Navigate to a specific gallery item (USE THIS WHENEVER a visitor asks about a specific item):
 ```command
 {"action": "navigate", "target": "CARD_SLUG"}
 ```
-Valid targets: use slugs from the gallery cards (the site owner configures these).
+Valid targets: use slugs from the gallery cards listed below.
+EXAMPLES of when to navigate:
+- "Tell me about the wine cellar" → reply 1-2 sentences + navigate to "wine-cellar"
+- "Show me the pool" → reply 1 sentence + navigate to "infinity-pool"
+- "What rooms do you have?" → navigate to the first room
+- "I'm interested in dining" → navigate to "chef-kitchen"
+You MUST include the navigate command — do NOT just describe the item in text.
 
 2. Show a structured slide with information:
 ```command
