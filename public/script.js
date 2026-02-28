@@ -1534,6 +1534,9 @@ function executeCommand(cmd) {
         return;
       }
 
+      /* Close the fullscreen canvas if a visual was showing */
+      closeFullscreenCanvas();
+
       /* Navigate the actual gallery to this slide */
       const cardIndex = galleryCards.findIndex(c => c.slug === cmd.target);
       if (cardIndex >= 0) {
@@ -1562,6 +1565,9 @@ function executeCommand(cmd) {
        - Pricing breakdowns ("Compare the seasons")
     */
     case 'showSlide': {
+      /* Close the fullscreen canvas if a visual was showing */
+      closeFullscreenCanvas();
+
       /* Hide other content panels */
       hideAllSplitContent();
 
