@@ -38,6 +38,7 @@ The site features:
 - **Section Dividers** — subtle gold-tinted gradient lines between landing sections for visual breathing room
 - **Blog Rich Text Editor** — custom toolbar-based editor in admin (bold, italic, headings, lists, links, images) replaces raw HTML textarea
 - **Reading Progress Bar** — thin gold bar on blog post pages that fills as the reader scrolls
+- **Chat Markdown Rendering** — AI responses render with proper formatting (headings, bold, lists, code blocks) instead of raw markdown text; sanitized via DOMPurify
 
 ## User Preferences
 

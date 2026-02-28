@@ -2328,6 +2328,88 @@ async function chatSendMessage() {
 
 
 /**
+ * Lightweight markdown-to-HTML renderer for AI chat responses.
+ * Converts common markdown patterns into styled HTML so agent
+ * messages look professional instead of showing raw markdown.
+ *
+ * Supported: headings (###), bold (**), italic (*), unordered lists (-),
+ * ordered lists (1.), inline code (`), code blocks (```), line breaks.
+ *
+ * Output is sanitized through DOMPurify if available.
+ */
+function renderMarkdown(text) {
+  if (!text) return '';
+
+  let html = text;
+
+  /* Code blocks (```) — must be processed first to protect inner content */
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    return `<pre><code>${escapeHtml(code.trim())}</code></pre>`;
+  });
+
+  /* Inline code (`) */
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  /* Headings — ### H3, ## H2 (process before bold which also uses *) */
+  html = html.replace(/^### (.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^## (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^# (.+)$/gm, '<h3>$1</h3>');
+
+  /* Bold (**text** or __text__) */
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
+
+  /* Italic (*text* or _text_ — but not inside words) */
+  html = html.replace(/(?<!\w)\*([^*]+?)\*(?!\w)/g, '<em>$1</em>');
+  html = html.replace(/(?<!\w)_([^_]+?)_(?!\w)/g, '<em>$1</em>');
+
+  /* Horizontal rules (--- or ***) */
+  html = html.replace(/^[-*]{3,}$/gm, '<hr>');
+
+  /* Unordered lists (- item or * item) — group consecutive list items */
+  html = html.replace(/((?:^[-*] .+\n?)+)/gm, (match) => {
+    const items = match.trim().split('\n').map(line =>
+      '<li>' + line.replace(/^[-*] /, '') + '</li>'
+    ).join('');
+    return '<ul>' + items + '</ul>';
+  });
+
+  /* Ordered lists (1. item) — group consecutive numbered items */
+  html = html.replace(/((?:^\d+\. .+\n?)+)/gm, (match) => {
+    const items = match.trim().split('\n').map(line =>
+      '<li>' + line.replace(/^\d+\. /, '') + '</li>'
+    ).join('');
+    return '<ol>' + items + '</ol>';
+  });
+
+  /* Convert double newlines to paragraph breaks */
+  html = html.replace(/\n{2,}/g, '</p><p>');
+
+  /* Convert single newlines to line breaks (but not inside block elements) */
+  html = html.replace(/\n/g, '<br>');
+
+  /* Clean up — remove <br> immediately after block elements */
+  html = html.replace(/<\/(h[34]|ul|ol|pre|hr)><br>/g, '</$1>');
+  html = html.replace(/<br><(h[34]|ul|ol|pre|hr)/g, '<$1');
+
+  /* Wrap in paragraph if not starting with a block element */
+  if (!html.match(/^<(h[34]|ul|ol|pre|hr)/)) {
+    html = '<p>' + html + '</p>';
+  }
+
+  /* Clean up empty paragraphs */
+  html = html.replace(/<p><\/p>/g, '');
+
+  /* Sanitize through DOMPurify if available */
+  if (typeof DOMPurify !== 'undefined') {
+    html = DOMPurify.sanitize(html);
+  }
+
+  return html;
+}
+
+
+/**
  * Create a streaming agent message bubble that tokens can be appended to.
  * Returns an object with an `append(text)` method and `finalize(fullText)` method.
  */
@@ -2353,8 +2435,9 @@ function chatCreateStreamBubble() {
       });
     },
     finalize(fullText) {
+      const rendered = renderMarkdown(fullText);
       bubbles.forEach(({ el, container }) => {
-        el.textContent = fullText;
+        el.innerHTML = rendered;
         el.classList.remove('chat-msg-streaming');
         container.scrollTop = container.scrollHeight;
       });
@@ -2667,7 +2750,8 @@ function chatSendQuickPrompt(prompt) {
  */
 function chatAddMessage(role, text) {
   const className = role === 'user' ? 'chat-msg chat-msg-user' : 'chat-msg chat-msg-agent';
-  const html = `<div class="${className}" data-testid="msg-${role}">${escapeHtml(text)}</div>`;
+  const content = role === 'user' ? escapeHtml(text) : renderMarkdown(text);
+  const html = `<div class="${className}" data-testid="msg-${role}">${content}</div>`;
 
   /* Add to the main panel messages */
   const panelMessages = document.getElementById('chatbot-messages');
@@ -2799,8 +2883,9 @@ function chatToggleExpand() {
     if (!hasUserMessages && chatHistory.length > 0 && panelMessages) {
       chatHistory.forEach(msg => {
         const cls = msg.role === 'user' ? 'chat-msg-user' : 'chat-msg-agent';
+        const rendered = msg.role === 'user' ? escapeHtml(msg.content) : renderMarkdown(msg.content);
         panelMessages.insertAdjacentHTML('beforeend',
-          `<div class="chat-msg ${cls}">${msg.content}</div>`
+          `<div class="chat-msg ${cls}">${rendered}</div>`
         );
       });
       panelMessages.scrollTop = panelMessages.scrollHeight;
@@ -2839,7 +2924,7 @@ function updateMainPanelLatest(text) {
   const latestText = document.getElementById('panel-latest-text');
   if (latestText) {
     latestText.removeAttribute('data-thinking');
-    latestText.textContent = text;
+    latestText.innerHTML = renderMarkdown(text);
   }
 }
 
@@ -3470,7 +3555,7 @@ function updateSidePanelLatest(text) {
   const latestText = document.getElementById('side-panel-latest-text');
   if (latestText) {
     latestText.removeAttribute('data-thinking');
-    latestText.textContent = text;
+    latestText.innerHTML = renderMarkdown(text);
   }
 }
 
@@ -3500,8 +3585,9 @@ function syncChatToSidePanel() {
     }
     chatHistory.forEach(msg => {
       const cls = msg.role === 'user' ? 'chat-msg-user' : 'chat-msg-agent';
+      const rendered = msg.role === 'user' ? escapeHtml(msg.content) : renderMarkdown(msg.content);
       sideMessages.insertAdjacentHTML('beforeend',
-        `<div class="chat-msg ${cls}">${msg.content}</div>`
+        `<div class="chat-msg ${cls}">${rendered}</div>`
       );
     });
   } else if (panelMessages) {
