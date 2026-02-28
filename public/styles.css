@@ -2654,6 +2654,11 @@ input, select, textarea {
   color: var(--color-accent, #c9a96e);
 }
 
+.chatbot-pill-inline {
+  padding: 0.25rem 0.65rem;
+  font-size: 0.65rem;
+}
+
 /* Small circular buttons in the bar (send, expand) */
 .chatbot-bar-btn {
   width: 2rem;
