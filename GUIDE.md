@@ -266,6 +266,67 @@ Replaces the hero description text with a typing animation. The page scrolls to 
 ```
 The most powerful command. The AI can generate any HTML and it renders on a canvas. Use for custom layouts that don't fit the other formats.
 
+### AI Knowledge Base — Teaching the AI About Your Business
+
+The AI assistant gets its knowledge from the database, not from hardcoded text. Every time a visitor sends a message, the system pulls fresh content from your database tables and injects it into the AI's prompt. This means:
+
+- Any changes you make in the admin panel are **instantly** reflected in the AI's answers
+- The AI references **real** names, prices, descriptions, and details — never generic filler
+- You don't need to restart anything after updating content
+
+#### What the AI Currently Knows
+
+| Section | Source Table | Fields Used |
+|---------|------------|-------------|
+| Site Identity | `site_settings` | site name, subtitle, tagline, hero title, hero description |
+| Gallery Cards | `gallery_cards` | slug, title, subtitle, category, description, details, price |
+| Experiences | `experiences` | name, description, duration, price |
+| Pricing | `pricing_seasons` | label, price, description, features |
+
+#### How to Add More Knowledge
+
+To teach the AI about something new (FAQs, team bios, policies, menu items, etc.), open `app.py` and find the **AI KNOWLEDGE BASE** section inside the `api_chat()` function. Follow this 3-step pattern:
+
+**Step 1:** Query your database table
+```python
+data = query_db("SELECT question, answer FROM faq ORDER BY sort_order ASC")
+```
+
+**Step 2:** Format the results as readable text
+```python
+lines = [f'  Q: {row["question"]}\n  A: {row["answer"]}' for row in data]
+```
+
+**Step 3:** Append to the AI prompt with a clear header
+```python
+active_prompt += f"\n\nFREQUENTLY ASKED QUESTIONS:\n" + "\n".join(lines)
+```
+
+#### Tips for Good Knowledge Injection
+
+- **Use clear section headers** — The AI uses these to locate relevant information
+- **Only include fields the AI would reference** — No need for internal IDs or timestamps
+- **Be specific** — "Master Suite: $450/night, sleeps 4, ocean view" beats "Room: available"
+- **Keep it concise** — Everything counts toward the AI's context window; summarize long text
+- **Wrap in try/except** — A missing table should never break the chat functionality
+
+#### Example: Adding FAQ Knowledge
+
+If you have a `faq` table with `question` and `answer` columns:
+
+```python
+# ----- 5. FAQ -----
+# Common questions so the AI can answer without making things up
+faq = query_db("SELECT question, answer FROM faq ORDER BY sort_order ASC")
+if faq:
+    faq_lines = [f'  Q: {f["question"]}\n  A: {f["answer"]}' for f in faq]
+    active_prompt += f"\n\nFREQUENTLY ASKED QUESTIONS:\n" + "\n".join(faq_lines)
+```
+
+Now the AI can accurately answer "What's your cancellation policy?" or "Do you allow pets?" using your real FAQ data.
+
+---
+
 ### Adding a New AI Command
 
 1. **Define the command format** — Decide on the JSON structure

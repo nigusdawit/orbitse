@@ -791,14 +791,66 @@ def api_chat():
     except Exception:
         pass
 
-    # Inject real site content so the AI has full awareness of the business
+    # =========================================================================
+    # AI KNOWLEDGE BASE — Dynamic Content Injection
+    # =========================================================================
+    #
+    # HOW IT WORKS:
+    # Every time a visitor sends a chat message, the AI receives a system
+    # prompt that includes ALL of the site's real content. This is what makes
+    # the AI feel "alive" — it knows the actual business name, room names,
+    # prices, experiences, and descriptions rather than giving generic answers.
+    #
+    # The content is pulled fresh from the database on each request, so any
+    # changes made in the admin panel are immediately reflected in the AI's
+    # knowledge without restarting the server.
+    #
+    # WHAT'S CURRENTLY INJECTED:
+    #   1. SITE IDENTITY    — site name, subtitle, tagline, hero title/description
+    #   2. GALLERY CARDS    — slug, title, subtitle, category, description, details, price
+    #   3. EXPERIENCES      — name, description, duration, price
+    #   4. PRICING          — label, price, description, features
+    #
+    # HOW TO ADD MORE KNOWLEDGE:
+    # To teach the AI about a new type of content, follow this pattern:
+    #
+    #   Step 1: Query your database table
+    #       data = query_db("SELECT column1, column2 FROM your_table ORDER BY sort_order ASC")
+    #
+    #   Step 2: Format the results as readable text lines
+    #       lines = [f'  - {row["column1"]}: {row["column2"]}' for row in data]
+    #
+    #   Step 3: Append to the active prompt with a clear section header
+    #       active_prompt += f"\n\nYOUR SECTION NAME:\n" + "\n".join(lines)
+    #
+    # EXAMPLES OF THINGS YOU COULD ADD:
+    #   - FAQ entries:        query faq table, format as Q&A pairs
+    #   - Team/staff bios:    query staff table, include name/role/bio
+    #   - Location/hours:     query settings for address, phone, hours
+    #   - Testimonials:       query reviews table, include name/quote/rating
+    #   - Policies:           query policies table (cancellation, check-in, etc.)
+    #   - Menu items:         query menu table with names, descriptions, prices
+    #   - Blog/news posts:    query posts table for recent titles and summaries
+    #
+    # TIPS:
+    #   - Keep each section clearly labeled (the AI uses headers to find info)
+    #   - Only include fields the AI would actually reference in conversation
+    #   - The more specific the data, the more natural the AI sounds
+    #   - All injected content counts toward the AI's context window, so
+    #     avoid dumping huge text blocks — summarize where possible
+    #   - Wrap everything in try/except so a missing table won't break chat
+    # =========================================================================
+
     try:
-        # Site identity
+        # ----- 1. SITE IDENTITY -----
+        # Gives the AI awareness of the business name, branding, and messaging
         settings = query_db("SELECT site_name, site_subtitle, hero_tagline, hero_title, hero_description FROM site_settings WHERE id = 1", fetchone=True)
         if settings:
             active_prompt += f"\n\nSITE IDENTITY:\n- Name: {settings.get('site_name', '')}\n- Subtitle: {settings.get('site_subtitle', '')}\n- Tagline: {settings.get('hero_tagline', '')}\n- Title: {settings.get('hero_title', '')}\n- Description: {settings.get('hero_description', '')}"
 
-        # Gallery cards with full details
+        # ----- 2. GALLERY CARDS -----
+        # Each card represents a key item (room, product, service, etc.)
+        # The slug is critical — the AI uses it for the navigate command
         cards = query_db("SELECT slug, title, subtitle, category, description, details, price FROM gallery_cards ORDER BY sort_order ASC")
         if cards:
             card_lines = []
@@ -812,13 +864,15 @@ def api_chat():
                 card_lines.append(line)
             active_prompt += f"\n\nGALLERY CARDS (use exact slug values for navigate targets):\n" + "\n".join(card_lines)
 
-        # Experiences
+        # ----- 3. EXPERIENCES -----
+        # Activities, services, or add-ons the business offers
         experiences = query_db("SELECT name, description, duration, price FROM experiences ORDER BY sort_order ASC")
         if experiences:
             exp_lines = [f'  - {e["name"]}: {e.get("description", "")} (duration: {e.get("duration", "N/A")}, price: {e.get("price", "N/A")})' for e in experiences]
             active_prompt += f"\n\nEXPERIENCES OFFERED:\n" + "\n".join(exp_lines)
 
-        # Pricing
+        # ----- 4. PRICING -----
+        # Seasonal tiers, packages, or rate information
         pricing = query_db("SELECT label, price, description, features FROM pricing_seasons ORDER BY sort_order ASC")
         if pricing:
             price_lines = []
@@ -828,6 +882,14 @@ def api_chat():
                 if p.get("features"): line += f' | Features: {p["features"]}'
                 price_lines.append(line)
             active_prompt += f"\n\nPRICING:\n" + "\n".join(price_lines)
+
+        # ----- ADD MORE SECTIONS BELOW -----
+        # Follow the same pattern: query → format → append to active_prompt
+        # Example:
+        #   faq = query_db("SELECT question, answer FROM faq ORDER BY sort_order ASC")
+        #   if faq:
+        #       faq_lines = [f'  Q: {f["question"]}\n  A: {f["answer"]}' for f in faq]
+        #       active_prompt += f"\n\nFREQUENTLY ASKED QUESTIONS:\n" + "\n".join(faq_lines)
 
     except Exception:
         pass
