@@ -141,6 +141,8 @@ async function loadAllData() {
  * Renders the Hero section with site settings data.
  * Updates the background image, title, tagline, description, and logo.
  */
+let originalHeroDescription = '';
+
 function renderHero() {
   if (!siteSettings) return;
 
@@ -154,6 +156,7 @@ function renderHero() {
   setText('hero-tagline', siteSettings.hero_tagline);
   setText('hero-title', siteSettings.hero_title);
   setText('hero-description', siteSettings.hero_description);
+  originalHeroDescription = siteSettings.hero_description || '';
 
   /* Update navigation branding */
   setText('nav-site-name', siteSettings.site_name);
@@ -2058,9 +2061,55 @@ function executeCommand(cmd) {
       break;
     }
 
+    case 'heroMessage': {
+      const heroEl = document.getElementById('hero-description');
+      if (!heroEl) break;
+
+      const landingContainer = document.querySelector('.landing-container');
+      if (landingContainer) {
+        landingContainer.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+
+      if (!document.getElementById('gallery-view').classList.contains('active')) {
+        typeHeroText(heroEl, cmd.message || '');
+      } else {
+        showLanding();
+        setTimeout(() => typeHeroText(heroEl, cmd.message || ''), 400);
+      }
+      break;
+    }
+
     default:
       console.warn('Unknown chatbot command:', cmd.action);
       break;
+  }
+}
+
+let heroTypeTimer = null;
+
+function typeHeroText(el, text) {
+  if (heroTypeTimer) clearInterval(heroTypeTimer);
+  el.classList.add('hero-typing');
+  el.textContent = '';
+  let i = 0;
+  heroTypeTimer = setInterval(() => {
+    if (i < text.length) {
+      el.textContent += text[i];
+      i++;
+    } else {
+      clearInterval(heroTypeTimer);
+      heroTypeTimer = null;
+      setTimeout(() => el.classList.remove('hero-typing'), 300);
+    }
+  }, 25);
+}
+
+function restoreHeroDescription() {
+  const heroEl = document.getElementById('hero-description');
+  if (heroEl && originalHeroDescription && heroEl.textContent !== originalHeroDescription) {
+    if (heroTypeTimer) clearInterval(heroTypeTimer);
+    heroEl.classList.remove('hero-typing');
+    heroEl.textContent = originalHeroDescription;
   }
 }
 

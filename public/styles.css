@@ -313,6 +313,18 @@ input, select, textarea {
   max-width: 36rem;
   margin: 0 auto var(--space-xl);
   line-height: 1.6;
+  transition: opacity 0.3s ease;
+  min-height: 1.6em;
+}
+
+.hero-description.hero-typing {
+  border-right: 2px solid var(--accent, #c9a96e);
+  animation: heroCursorBlink 0.7s steps(1) infinite;
+}
+
+@keyframes heroCursorBlink {
+  0%, 50% { border-right-color: var(--accent, #c9a96e); }
+  51%, 100% { border-right-color: transparent; }
 }
 
 .hero-buttons {

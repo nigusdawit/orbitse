@@ -254,7 +254,13 @@ Two layout options:
 - **Table layout**: Use `columns` (array of headers) + `rows` (array of arrays)
 - **List layout**: Use `items` (array of `{label, value}` objects)
 
-#### 4. Generate HTML — Render custom content
+#### 4. Hero Message — Display a message on the landing page
+```json
+{"action": "heroMessage", "message": "Welcome! Let me help you find exactly what you're looking for."}
+```
+Replaces the hero description text with a typing animation. The page scrolls to the top automatically. The original description restores on page reload. Great for personalized greetings or highlighting key information prominently.
+
+#### 5. Generate HTML — Render custom content
 ```json
 {"action": "generateHTML", "html": "<div style='padding:2rem'><h2>Custom Content</h2><p>Anything goes here.</p></div>"}
 ```
