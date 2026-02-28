@@ -1602,16 +1602,18 @@ async function chatSendStreaming(message, wasCollapsed) {
           const event = JSON.parse(line.slice(6));
 
           if (event.type === 'token') {
-            /* Expand panel on first token if it was collapsed */
-            if (wasCollapsed && !expandedForResponse) {
-              showBarThinking(false);
-              chatToggleExpand();
-              chatAddMessage('user', message);
-              expandedForResponse = true;
-            }
-            if (!streamBubble && !bubbleFinalized) {
-              chatShowTyping(false);
-              streamBubble = chatCreateStreamBubble();
+            /* When collapsed, don't expand — we'll route text to hero later */
+            if (!wasCollapsed) {
+              if (!streamBubble && !bubbleFinalized) {
+                chatShowTyping(false);
+                streamBubble = chatCreateStreamBubble();
+              }
+            } else {
+              /* Hide bar thinking on first token */
+              if (!expandedForResponse) {
+                showBarThinking(false);
+                expandedForResponse = true;
+              }
             }
             tokenText += event.content;
             if (!inCommandBlock && /```\s*command/i.test(tokenText)) {
@@ -1625,9 +1627,11 @@ async function chatSendStreaming(message, wasCollapsed) {
               }
               streamBubble = null;
             }
-            if (!inCommandBlock && streamBubble) {
+            if (!inCommandBlock) {
               displayTokens += event.content;
-              streamBubble.append(event.content);
+              if (streamBubble) {
+                streamBubble.append(event.content);
+              }
             }
           } else if (event.type === 'text') {
             finalReply = event.content;
@@ -1636,11 +1640,6 @@ async function chatSendStreaming(message, wasCollapsed) {
           } else if (event.type === 'error') {
             showBarThinking(false);
             chatShowTyping(false);
-            if (wasCollapsed && !expandedForResponse) {
-              chatToggleExpand();
-              chatAddMessage('user', message);
-              expandedForResponse = true;
-            }
             if (streamBubble) streamBubble.remove();
             chatAddMessage('agent', event.content);
             return;
@@ -1657,38 +1656,72 @@ async function chatSendStreaming(message, wasCollapsed) {
       displayText = tokenText.replace(/```\s*command[\s\S]*/i, '').replace(/`{1,3}\s*$/, '').trim();
     }
 
-    /* If panel was collapsed, expand now to show the response (skip for heroMessage) */
-    const isHeroOnly = pendingCommand && pendingCommand.action === 'heroMessage' && !displayText;
-    if (wasCollapsed && !expandedForResponse && !isHeroOnly) {
-      chatToggleExpand();
-      chatAddMessage('user', message);
-      expandedForResponse = true;
-    }
+    /* Determine if this response navigates to a gallery card */
+    const isNavigate = pendingCommand && pendingCommand.action === 'navigate';
 
-    if (displayText && streamBubble) {
-      streamBubble.finalize(displayText);
-      chatHistory.push({ role: 'assistant', content: displayText });
-    } else if (displayText && !bubbleFinalized) {
-      chatAddMessage('agent', displayText);
-      chatHistory.push({ role: 'assistant', content: displayText });
-    } else if (bubbleFinalized) {
-      const finalContent = displayText || displayTokens.trim();
-      if (finalReply && finalReply !== displayTokens.trim()) {
-        document.querySelectorAll('.chat-msg-agent').forEach(el => {
-          if (el.textContent.trim() === displayTokens.trim()) {
-            el.textContent = finalReply;
+    if (wasCollapsed) {
+      /* ── COLLAPSED MODE: route response to hero or gallery ── */
+      chatHistory.push({ role: 'assistant', content: displayText || '' });
+
+      if (isNavigate) {
+        /* Navigation — open gallery + side panel with the text reply */
+        executeCommand(pendingCommand);
+        pendingCommand = null;
+        if (displayText) {
+          updateSidePanelLatest(displayText);
+        }
+      } else {
+        /* Non-navigation — type the AI's reply into the hero description */
+        if (displayText) {
+          const heroEl = document.getElementById('hero-description');
+          if (heroEl) {
+            /* Scroll landing page to top so hero is visible */
+            const landingContainer = document.querySelector('.landing-container');
+            if (landingContainer) {
+              landingContainer.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+            /* If in gallery view, go back to landing first */
+            if (document.getElementById('gallery-view').classList.contains('active')) {
+              showLanding();
+              setTimeout(() => typeHeroText(heroEl, displayText), 400);
+            } else {
+              typeHeroText(heroEl, displayText);
+            }
           }
-        });
-        updateSidePanelLatest(finalReply);
-        updateMainPanelLatest(finalReply);
+        }
+        /* Still execute non-navigate commands (showSlide, generateVisual, etc.) */
+        if (pendingCommand) {
+          executeCommand(pendingCommand);
+          pendingCommand = null;
+        }
       }
-      chatHistory.push({ role: 'assistant', content: finalContent });
-    } else if (streamBubble) {
-      streamBubble.remove();
-    }
+    } else {
+      /* ── EXPANDED MODE: show response in chat panel as usual ── */
+      if (displayText && streamBubble) {
+        streamBubble.finalize(displayText);
+        chatHistory.push({ role: 'assistant', content: displayText });
+      } else if (displayText && !bubbleFinalized) {
+        chatAddMessage('agent', displayText);
+        chatHistory.push({ role: 'assistant', content: displayText });
+      } else if (bubbleFinalized) {
+        const finalContent = displayText || displayTokens.trim();
+        if (finalReply && finalReply !== displayTokens.trim()) {
+          document.querySelectorAll('.chat-msg-agent').forEach(el => {
+            if (el.textContent.trim() === displayTokens.trim()) {
+              el.textContent = finalReply;
+            }
+          });
+          updateSidePanelLatest(finalReply);
+          updateMainPanelLatest(finalReply);
+        }
+        chatHistory.push({ role: 'assistant', content: finalContent });
+      } else if (streamBubble) {
+        streamBubble.remove();
+      }
 
-    if (pendingCommand) {
-      executeCommand(pendingCommand);
+      if (pendingCommand) {
+        executeCommand(pendingCommand);
+      }
     }
 
   } catch (error) {
