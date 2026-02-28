@@ -1174,7 +1174,10 @@ def api_chat():
                     device = "mobile" if any(m in ua.lower() for m in ["mobile", "android", "iphone"]) else "desktop"
                     ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
 
-                    conv = query_db("SELECT id FROM chat_conversations WHERE session_id = %s ORDER BY id DESC LIMIT 1", (session_id,), fetchone=True)
+                    conv = query_db(
+                        "SELECT id FROM chat_conversations WHERE session_id = %s AND updated_at > NOW() - INTERVAL '30 minutes' ORDER BY id DESC LIMIT 1",
+                        (session_id,), fetchone=True
+                    )
                     if not conv:
                         conv = execute_db(
                             "INSERT INTO chat_conversations (session_id, visitor_ip, device_type, user_agent) VALUES (%s, %s, %s, %s) RETURNING id",
