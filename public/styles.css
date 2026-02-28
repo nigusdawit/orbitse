@@ -2104,7 +2104,7 @@ input, select, textarea {
   Elegant card with eyebrow text, title, subtitle, and bullet points.
 */
 .split-slide-inner {
-  padding: 3rem 3rem 3rem 3rem;
+  padding: 3rem 4rem 3rem 3rem;
   height: 100%;
   overflow-y: auto;
   display: flex;
@@ -2366,11 +2366,12 @@ input, select, textarea {
   height: 100%;
   overflow-y: auto;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  padding: 3rem 3rem 6rem 3rem;
+  padding: 4rem 26rem 6rem 4rem;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+  transition: padding 0.5s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .fullscreen-canvas-content::-webkit-scrollbar {
@@ -2700,6 +2701,11 @@ input, select, textarea {
 
   .side-chat-panel.history-open {
     max-height: 55%;
+  }
+
+  .fullscreen-canvas-content {
+    padding: 3rem 1.5rem 5rem 1.5rem;
+    align-items: flex-start;
   }
 
   .side-panel-latest-text {

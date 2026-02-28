@@ -190,7 +190,9 @@ The AI chatbot can control what the user sees on the website through special com
    ```
    The AI has full creative freedom — comparison tables, itineraries, pricing cards, timelines, etc.
    Theme colors, fonts, and glass effects are injected into the system prompt so output always matches the brand.
+   A comprehensive design system (containers, typography, accent usage, layout patterns, decorative touches) is included in the prompt.
    Generated pages are auto-saved to the database for admin review (Saved Pages tab).
+   Content is displayed on a fullscreen canvas with right padding to clear the side chat panel (26rem on desktop, responsive on mobile).
 
 ### Adding New Commands
 
