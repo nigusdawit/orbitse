@@ -2641,10 +2641,18 @@ async function chatSendStreaming(message, wasCollapsed) {
     const isSubmitForm = pendingCommand && pendingCommand.action === 'submitForm';
 
     /* When submitting a form, suppress the AI's interim text (e.g. "Submitting now!")
-       and let the submitForm handler show loading + confirmation instead. */
+       and let the submitForm handler show loading + confirmation instead.
+       Also clear the hero description if the text was typed there during streaming. */
     if (isSubmitForm) {
       if (streamBubble) { streamBubble.remove(); streamBubble = null; }
       displayText = '';
+      const heroEl = document.getElementById('hero-description');
+      if (heroEl) {
+        heroEl.textContent = '';
+        heroEl.innerHTML = '';
+      }
+      updateSidePanelLatest('');
+      updateMainPanelLatest('');
     }
 
     /* Safety check: warn if the AI said it would submit but no command was parsed.
