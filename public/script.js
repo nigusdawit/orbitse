@@ -2685,7 +2685,24 @@ async function chatSendStreaming(message, wasCollapsed) {
             const heroEl = document.getElementById('hero-description');
             if (heroEl) typeHeroText(heroEl, shortText + ' Let me show you more…');
             const renderedContent = renderMarkdown(displayText);
-            const autoHtml = `<div style="max-width:900px;margin:auto;padding:2.5rem;color:var(--color-text, #e4e4e7);font-family:var(--font-sans);"><div style="font-family:var(--font-serif);font-size:1.8rem;color:#fff;margin-bottom:1.5rem;">Details</div><div class="canvas-markdown" style="line-height:1.8;font-size:1.05rem;">${renderedContent}</div></div>`;
+
+            const headingMatch = displayText.match(/^#{1,4}\s+(.+)/m);
+            const boldMatch = displayText.match(/\*\*(.+?)\*\*/);
+            const firstSentence = displayText.split(/[.!?]\s/)[0];
+            const autoTitle = headingMatch ? headingMatch[1] : (boldMatch ? boldMatch[1] : (firstSentence.length < 60 ? firstSentence : 'Details'));
+
+            const accentColor = getComputedStyle(document.documentElement).getPropertyValue('--color-accent').trim() || '#c9a96e';
+            const fontSerif = getComputedStyle(document.documentElement).getPropertyValue('--font-serif').trim() || 'Playfair Display, serif';
+            const fontSans = getComputedStyle(document.documentElement).getPropertyValue('--font-sans').trim() || 'DM Sans, sans-serif';
+
+            const autoHtml = `<div style="max-width:900px;margin:0 auto;padding:2.5rem;width:100%;">` +
+              `<div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.2em;color:${accentColor};margin-bottom:0.75rem;font-family:${fontSans};">Overview</div>` +
+              `<div style="font-family:${fontSerif};font-size:clamp(1.5rem,3vw,2.25rem);font-weight:700;color:#fff;margin-bottom:1.5rem;line-height:1.2;">${DOMPurify.sanitize(autoTitle)}</div>` +
+              `<div style="width:3rem;height:2px;background:${accentColor};opacity:0.5;margin-bottom:2rem;border-radius:1px;"></div>` +
+              `<div style="background:rgba(255,255,255,0.03);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.08);border-radius:1rem;padding:2rem;">` +
+                `<div class="canvas-markdown" style="line-height:1.85;font-size:0.95rem;color:rgba(255,255,255,0.85);font-family:${fontSans};">${renderedContent}</div>` +
+              `</div>` +
+            `</div>`;
             openFullscreenCanvas(autoHtml);
             openSidePanel();
             saveGeneratedPage(autoHtml, 'AI Response');
