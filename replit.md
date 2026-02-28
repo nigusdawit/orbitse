@@ -66,7 +66,6 @@ The entire template is industry-agnostic — naming, comments, and instructions 
   - `chatbot_settings` — AI chatbot configuration. Singleton row (id=1). Has enabled, mode, agent_name, agent_role, agent_avatar, greeting, quick_prompts (JSONB), api_endpoint, embed_code, system_prompt.
   - `chat_conversations` — Chat sessions with visitor info (session_id, ip, device_type, user_agent).
   - `chat_messages` — Individual chat messages linked to conversations (role, content, command_json).
-  - `booking_submissions` — Legacy form submissions (kept for backward compatibility).
   - `custom_forms` — Dynamic form definitions (name, slug, description, status, submit_button_text, success_message).
   - `form_fields` — Form field definitions (form_id FK, field_type, label, name, placeholder, required, options JSONB, default_value, sort_order, width, help_text, step). The `step` column controls multi-step form grouping (default 1).
   - `form_submissions` — Dynamic form submissions (form_id FK, submission_data JSONB, status, device_type, browser, os, screen_resolution, language, UTM params, referrer, IP, session_id, updated_at).

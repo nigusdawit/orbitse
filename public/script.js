@@ -677,19 +677,6 @@ function attachPartialSaveListeners() {
   });
 }
 
-function trackBookingStep(step) {
-  const key = 'booking_tracked_' + step;
-  if (sessionStorage.getItem(key)) return;
-  sessionStorage.setItem(key, '1');
-  try {
-    fetch('/api/booking-step', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ step, ...getTrackingData() })
-    });
-  } catch (e) { /* silent */ }
-}
-
 let currentFormStep = 1;
 let totalFormSteps = 1;
 
@@ -698,7 +685,6 @@ function openModal(slug) {
   currentFormSlug = formSlug;
   currentFormStep = 1;
   document.getElementById('booking-modal').classList.add('active');
-  trackBookingStep('opened_modal');
   loadDynamicForm(formSlug);
 }
 
