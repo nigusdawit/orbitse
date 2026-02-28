@@ -761,10 +761,11 @@ RULES:
 - For general questions (pricing, info, recommendations), just reply with text. It will appear on the hero.
 - Keep text responses concise but natural (1-4 sentences). Be conversational, not robotic.
 - Use showSlide for quick structured comparisons and bullet-point recommendations.
-- Use generateHTML for rich, detailed, or creative content — comparison tables, itineraries, schedules, detailed breakdowns, multi-section layouts. You have full design freedom here.
+- IMPORTANT: Keep plain text replies SHORT — 1 to 4 sentences maximum. If your answer needs more detail, create a generateHTML visual instead of writing a long text reply. The visitor sees short text on the landing page hero; anything longer should become a beautiful visual slide.
+- Use generateHTML for rich, detailed, or creative content — comparison tables, itineraries, schedules, detailed breakdowns, multi-section layouts, or ANY answer that would be more than 4 sentences. You have full design freedom here.
 - Use generateVisual only for simple quick data cards.
 - Only use heroMessage for special greetings or announcements, not for regular Q&A.
-- Only include ONE command block per response.
+- Only include ONE command block per response. Make sure the JSON in your command block is valid — no trailing backslashes or line breaks inside the JSON string.
 - Reference real names, prices, and details from the site data. Never make up information.
 - If the visitor seems interested, proactively suggest related items or experiences they might enjoy.
 """
@@ -787,6 +788,7 @@ def parse_command_from_text(text):
         if unclosed:
             try:
                 raw = unclosed.group(1).strip().rstrip('`').strip()
+                raw = raw.replace('\\\n', '').replace('\\ \n', '')
                 cmd = json.loads(raw)
                 clean = text[:unclosed.start()].strip()
                 return clean, cmd
@@ -795,7 +797,9 @@ def parse_command_from_text(text):
         return text.strip(), None
 
     try:
-        cmd = json.loads(match.group(1).strip())
+        raw = match.group(1).strip()
+        raw = raw.replace('\\\n', '').replace('\\ \n', '')
+        cmd = json.loads(raw)
         clean = re.sub(pattern, '', text, flags=re.DOTALL).strip()
         return clean, cmd
     except json.JSONDecodeError:
@@ -844,13 +848,18 @@ def api_chat():
         "glass_border": "rgba(255, 255, 255, 0.08)",
     }
     try:
-        theme = query_db("SELECT * FROM theme_settings WHERE id = 1", fetchone=True)
+        theme = query_db(
+            "SELECT theme_bg, theme_accent, theme_text, theme_glass_border, theme_glass_bg, theme_font_serif, theme_font_sans FROM site_settings WHERE id = 1",
+            fetchone=True
+        )
         if theme:
-            if theme.get("accent_color"): theme_colors["accent_gold"] = theme["accent_color"]
-            if theme.get("bg_color"): theme_colors["background"] = theme["bg_color"]
-            if theme.get("text_color"): theme_colors["text"] = theme["text_color"]
-            if theme.get("heading_font"): theme_colors["heading_font"] = theme["heading_font"]
-            if theme.get("body_font"): theme_colors["body_font"] = theme["body_font"]
+            if theme.get("theme_accent"): theme_colors["accent_gold"] = theme["theme_accent"]
+            if theme.get("theme_bg"): theme_colors["background"] = theme["theme_bg"]
+            if theme.get("theme_text"): theme_colors["text"] = theme["theme_text"]
+            if theme.get("theme_font_serif"): theme_colors["heading_font"] = theme["theme_font_serif"] + ", Georgia, serif"
+            if theme.get("theme_font_sans"): theme_colors["body_font"] = theme["theme_font_sans"] + ", sans-serif"
+            if theme.get("theme_glass_bg"): theme_colors["glass_bg"] = theme["theme_glass_bg"]
+            if theme.get("theme_glass_border"): theme_colors["glass_border"] = theme["theme_glass_border"]
     except Exception:
         pass
 

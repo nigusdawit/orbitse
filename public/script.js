@@ -1287,6 +1287,20 @@ let chatSettings = null;
 let chatHistory = [];
 /* Tracks the last user prompt so we can store it alongside saved pages */
 let lastUserPrompt = '';
+
+/* ── Restore chat history from sessionStorage (persists across page views) ── */
+try {
+  const savedHistory = sessionStorage.getItem('chatHistory');
+  if (savedHistory) {
+    const parsed = JSON.parse(savedHistory);
+    if (Array.isArray(parsed)) chatHistory = parsed;
+  }
+} catch (e) { /* ignore parse errors */ }
+
+/* Save chat history to sessionStorage so it persists across landing/gallery/slide views */
+function persistChatHistory() {
+  try { sessionStorage.setItem('chatHistory', JSON.stringify(chatHistory.slice(-40))); } catch (e) {}
+}
 let chatExpanded = false;
 let splitScreenActive = false;
 let sidePanelActive = false;
@@ -1497,6 +1511,7 @@ async function chatSendMessage() {
 
   /* Add to history for context */
   chatHistory.push({ role: 'user', content: message });
+  persistChatHistory();
 
   /* Show typing indicator in message areas and latest-text panels */
   if (!wasCollapsed) {
@@ -1661,6 +1676,18 @@ async function chatSendStreaming(message, wasCollapsed) {
       displayText = tokenText.replace(/```\s*command[\s\S]*/i, '').replace(/`{1,3}\s*$/, '').trim();
     }
 
+    /* Fallback: if backend didn't parse the command, try client-side extraction */
+    if (!pendingCommand && inCommandBlock && tokenText) {
+      try {
+        const cmdMatch = tokenText.match(/```\s*command\s*\n?([\s\S]*?)(?:\n?\s*```|$)/i);
+        if (cmdMatch) {
+          let raw = cmdMatch[1].trim().replace(/`+$/, '').trim();
+          raw = raw.replace(/\\\n/g, '').replace(/\\ \n/g, '');
+          pendingCommand = JSON.parse(raw);
+        }
+      } catch (e) { /* couldn't parse, skip */ }
+    }
+
     /* Determine if this response navigates to a gallery card */
     const isNavigate = pendingCommand && pendingCommand.action === 'navigate';
 
@@ -1670,15 +1697,29 @@ async function chatSendStreaming(message, wasCollapsed) {
     if (wasCollapsed && onLandingPage && !isNavigate) {
       /* ── LANDING PAGE MODE: type response into the hero description ── */
       chatHistory.push({ role: 'assistant', content: displayText || '' });
+      persistChatHistory();
 
       if (displayText) {
-        const heroEl = document.getElementById('hero-description');
-        if (heroEl) {
-          const landingContainer = document.querySelector('.landing-container');
-          if (landingContainer) {
-            landingContainer.scrollTo({ top: 0, behavior: 'smooth' });
+        /* Cap landing page text: if >4 sentences and no command, auto-create a visual */
+        const sentenceCount = (displayText.match(/[.!?]+\s/g) || []).length + 1;
+        if (sentenceCount > 4 && !pendingCommand) {
+          const shortText = displayText.split(/(?<=[.!?])\s+/).slice(0, 2).join(' ');
+          const heroEl = document.getElementById('hero-description');
+          if (heroEl) typeHeroText(heroEl, shortText + ' Let me show you more…');
+          const safeText = displayText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+          const autoHtml = `<div style="max-width:900px;margin:auto;padding:2.5rem;color:#e4e4e7;font-family:'DM Sans',sans-serif;"><div style="font-family:'Playfair Display',Georgia,serif;font-size:1.8rem;color:#fff;margin-bottom:1.5rem;">Details</div><div style="line-height:1.8;font-size:1.05rem;white-space:pre-wrap;">${safeText}</div></div>`;
+          openFullscreenCanvas(autoHtml);
+          openSidePanel();
+          saveGeneratedPage(autoHtml, 'AI Response');
+        } else {
+          const heroEl = document.getElementById('hero-description');
+          if (heroEl) {
+            const landingContainer = document.querySelector('.landing-container');
+            if (landingContainer) {
+              landingContainer.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+            typeHeroText(heroEl, displayText);
           }
-          typeHeroText(heroEl, displayText);
         }
       }
       /* Still execute non-navigate commands (showSlide, generateVisual, etc.) */
@@ -1691,6 +1732,7 @@ async function chatSendStreaming(message, wasCollapsed) {
       chatToggleExpand();
       chatAddMessage('user', message);
       chatHistory.push({ role: 'assistant', content: displayText || '' });
+      persistChatHistory();
 
       if (displayText) {
         chatAddMessage('agent', displayText);
@@ -1704,9 +1746,11 @@ async function chatSendStreaming(message, wasCollapsed) {
       if (displayText && streamBubble) {
         streamBubble.finalize(displayText);
         chatHistory.push({ role: 'assistant', content: displayText });
+        persistChatHistory();
       } else if (displayText && !bubbleFinalized) {
         chatAddMessage('agent', displayText);
         chatHistory.push({ role: 'assistant', content: displayText });
+        persistChatHistory();
       } else if (bubbleFinalized) {
         const finalContent = displayText || displayTokens.trim();
         if (finalReply && finalReply !== displayTokens.trim()) {
@@ -1719,6 +1763,7 @@ async function chatSendStreaming(message, wasCollapsed) {
           updateMainPanelLatest(finalReply);
         }
         chatHistory.push({ role: 'assistant', content: finalContent });
+        persistChatHistory();
       } else if (streamBubble) {
         streamBubble.remove();
       }
