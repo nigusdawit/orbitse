@@ -1889,7 +1889,7 @@ input, select, textarea {
 }
 
 .gallery-view.side-panel-active {
-  right: 380px !important;
+  right: 0 !important;
 }
 
 .landing-container {
@@ -1897,14 +1897,13 @@ input, select, textarea {
 }
 
 .landing-container.side-panel-active {
-  margin-right: 380px;
+  margin-right: 0;
 }
 
 .side-chat-panel {
   position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
+  bottom: 1.25rem;
+  right: 1.25rem;
   width: 380px;
   z-index: 55;
   display: flex;
@@ -1912,13 +1911,24 @@ input, select, textarea {
   background: rgba(255, 255, 255, 0.06);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
-  border-left: 1px solid rgba(255, 255, 255, 0.12);
-  transform: translateX(100%);
-  transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 1rem;
+  opacity: 0;
+  transform: translateY(12px) scale(0.97);
+  pointer-events: none;
+  transition: opacity 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
 
 .side-chat-panel.active {
-  transform: translateX(0);
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+.side-chat-panel.history-open {
+  max-height: 70vh;
 }
 
 .chatbot-container.side-panel-hidden {
@@ -2133,25 +2143,17 @@ input, select, textarea {
 
   .side-chat-panel {
     width: 100%;
-    top: auto;
     bottom: 0;
-    height: auto;
+    right: 0;
     max-height: 40%;
-    border-left: none;
+    border-radius: 1rem 1rem 0 0;
+    border: none;
     border-top: 1px solid rgba(255, 255, 255, 0.12);
-    transform: translateY(100%);
-  }
-
-  .side-chat-panel.active {
-    transform: translateY(0);
+    box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.3);
   }
 
   .side-chat-panel.history-open {
-    height: 55%;
     max-height: 55%;
-    transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1),
-                height 0.4s cubic-bezier(0.22, 1, 0.36, 1),
-                max-height 0.4s cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   .side-panel-latest-text {
