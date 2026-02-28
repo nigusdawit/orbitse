@@ -426,6 +426,50 @@ def init_db():
                     created_at  TIMESTAMP DEFAULT NOW()
                 );
                 CREATE INDEX IF NOT EXISTS idx_faqs_sort ON faqs (sort_order);
+
+                -- =============================================================
+                -- PAGE SECTIONS REGISTRY
+                -- =============================================================
+                -- Master list of ALL page sections (built-in + custom).
+                -- Controls the order sections appear on the public site,
+                -- which ones are enabled/disabled, and what template to use.
+                -- Built-in sections (hero, highlights, etc.) are seeded on first run.
+                -- Custom sections are created by the admin and use templates.
+                CREATE TABLE IF NOT EXISTS page_sections (
+                    id            SERIAL PRIMARY KEY,
+                    slug          TEXT UNIQUE NOT NULL,
+                    title         TEXT NOT NULL DEFAULT '',
+                    section_type  TEXT NOT NULL DEFAULT 'built_in',
+                    template      TEXT NOT NULL DEFAULT '',
+                    sort_order    INTEGER NOT NULL DEFAULT 0,
+                    enabled       BOOLEAN DEFAULT true,
+                    settings      JSONB DEFAULT '{}'::jsonb,
+                    created_at    TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_page_sections_sort ON page_sections (sort_order);
+
+                -- =============================================================
+                -- CUSTOM SECTION ITEMS
+                -- =============================================================
+                -- Content items for custom sections. Each item belongs to a
+                -- page_section via section_id. The fields used depend on the
+                -- section's template (cards_grid uses title/image/content,
+                -- stats_counter uses title/subtitle for number/label, etc.)
+                CREATE TABLE IF NOT EXISTS custom_section_items (
+                    id          SERIAL PRIMARY KEY,
+                    section_id  INTEGER NOT NULL REFERENCES page_sections(id) ON DELETE CASCADE,
+                    title       TEXT NOT NULL DEFAULT '',
+                    subtitle    TEXT NOT NULL DEFAULT '',
+                    content     TEXT NOT NULL DEFAULT '',
+                    image_url   TEXT NOT NULL DEFAULT '',
+                    link_url    TEXT NOT NULL DEFAULT '',
+                    link_text   TEXT NOT NULL DEFAULT '',
+                    icon        TEXT NOT NULL DEFAULT '',
+                    sort_order  INTEGER NOT NULL DEFAULT 0,
+                    extra_data  JSONB DEFAULT '{}'::jsonb,
+                    created_at  TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_custom_items_section ON custom_section_items (section_id, sort_order);
             """)
 
             # Seed chatbot_settings singleton if it doesn't exist
@@ -503,6 +547,29 @@ def init_db():
                             INSERT INTO form_fields (form_id, field_type, label, name, placeholder, required, options, default_value, sort_order, width, validation_regex, help_text, step)
                             VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)
                         """, f)
+
+            # Seed built-in page sections if the table is empty
+            # These represent the hardcoded sections that exist in index.html.
+            # The admin can reorder them but not delete them.
+            cur.execute("SELECT COUNT(*) FROM page_sections")
+            row = cur.fetchone()
+            section_count = row[0] if row else 0
+            if section_count == 0:
+                built_in_sections = [
+                    ('hero',         'Hero',            'built_in', 'hero',         0, True),
+                    ('highlights',   'Gallery Highlights', 'built_in', 'highlights', 1, True),
+                    ('experiences',  'Experiences & Pricing', 'built_in', 'experiences', 2, True),
+                    ('testimonials', 'Testimonials',    'built_in', 'testimonials', 3, False),
+                    ('team',         'Our Team',        'built_in', 'team',         4, False),
+                    ('faq',          'FAQ',             'built_in', 'faq',          5, False),
+                    ('footer',       'Footer',          'built_in', 'footer',       6, True),
+                ]
+                for slug, title, stype, tmpl, order, enabled in built_in_sections:
+                    cur.execute("""
+                        INSERT INTO page_sections (slug, title, section_type, template, sort_order, enabled)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (slug) DO NOTHING
+                    """, (slug, title, stype, tmpl, order, enabled))
     finally:
         conn.close()
 
@@ -713,6 +780,39 @@ def api_business_info():
     if not info:
         return jsonify({})
     return jsonify(info)
+
+
+# =============================================================
+# PUBLIC API — PAGE SECTIONS (controls section order on public site)
+# =============================================================
+@app.route("/api/page-sections")
+def api_page_sections():
+    """
+    GET /api/page-sections
+    Returns ALL sections (enabled and disabled) ordered by sort_order.
+    The frontend uses this to determine section order AND visibility —
+    it needs disabled sections in the list so it can hide them properly.
+    """
+    sections = query_db(
+        "SELECT * FROM page_sections ORDER BY sort_order ASC"
+    )
+    return jsonify(sections or [])
+
+
+# =============================================================
+# PUBLIC API — CUSTOM SECTION ITEMS
+# =============================================================
+@app.route("/api/custom-section/<int:section_id>/items")
+def api_custom_section_items(section_id):
+    """
+    GET /api/custom-section/<section_id>/items
+    Returns all items for a specific custom section, ordered by sort_order.
+    """
+    items = query_db(
+        "SELECT * FROM custom_section_items WHERE section_id = %s ORDER BY sort_order ASC",
+        (section_id,)
+    )
+    return jsonify(items or [])
 
 
 @app.route("/api/chatbot-settings")
@@ -971,8 +1071,9 @@ Send this after EVERY message where the visitor provides form field data. Includ
 ```command
 {"action": "scrollToSection", "target": "SECTION_ID"}
 ```
-Valid section IDs: section-hero, section-highlights, section-experiences, section-pricing, section-testimonials, section-team, section-faq
-Use this when the visitor asks about testimonials, reviews, the team, FAQ, pricing, etc. to scroll them directly to that section. For example:
+Valid built-in section IDs: section-hero, section-highlights, section-experiences, section-pricing, section-testimonials, section-team, section-faq
+Custom sections use the format: section-custom-{id} (where {id} is the database ID shown in the custom section info below)
+Use this when the visitor asks about testimonials, reviews, the team, FAQ, pricing, or any custom section to scroll them directly to it. For example:
 - "Show me your reviews" → short reply + scrollToSection to section-testimonials
 - "Who's on your team?" → short reply + scrollToSection to section-team
 - "Do you have a FAQ?" → short reply + scrollToSection to section-faq
@@ -1327,6 +1428,36 @@ def api_chat():
                     biz_lines.append(f"  - Hours: {hours_str}")
             if biz_lines:
                 active_prompt += f"\n\nBUSINESS CONTACT INFO:\n" + "\n".join(biz_lines)
+
+        # ----- 10. CUSTOM SECTIONS -----
+        # Content from admin-created custom sections so the AI knows about them.
+        # Also includes the section ID so the AI can use scrollToSection.
+        custom_sections = query_db("""
+            SELECT ps.id as section_id, ps.slug, ps.title, ps.template,
+                   csi.title as item_title, csi.subtitle as item_subtitle,
+                   csi.content as item_content
+            FROM page_sections ps
+            JOIN custom_section_items csi ON csi.section_id = ps.id
+            WHERE ps.enabled = true AND ps.section_type = 'custom'
+            ORDER BY ps.sort_order, csi.sort_order
+        """)
+        if custom_sections:
+            current_section = None
+            current_section_id = None
+            section_lines = []
+            for row in custom_sections:
+                if row["slug"] != current_section:
+                    if current_section and section_lines:
+                        active_prompt += f"\n\nCUSTOM SECTION — {current_section.upper().replace('-', ' ')} (scrollToSection target: section-custom-{current_section_id}):\n" + "\n".join(section_lines)
+                    current_section = row["slug"]
+                    current_section_id = row["section_id"]
+                    section_lines = []
+                line = f'  - {row["item_title"]}'
+                if row.get("item_subtitle"): line += f' — {row["item_subtitle"]}'
+                if row.get("item_content"): line += f': {row["item_content"]}'
+                section_lines.append(line)
+            if current_section and section_lines:
+                active_prompt += f"\n\nCUSTOM SECTION — {current_section.upper().replace('-', ' ')} (scrollToSection target: section-custom-{current_section_id}):\n" + "\n".join(section_lines)
 
     except Exception:
         pass
@@ -1769,6 +1900,180 @@ def admin_delete_faq(item_id):
 
 
 # =============================================================
+# ADMIN CRUD — PAGE SECTIONS (Layout + Custom Sections)
+# =============================================================
+# Manages the section registry — controls page layout order,
+# section visibility, and custom section creation.
+
+@app.route("/admin/api/page-sections", methods=["GET"])
+@admin_required
+def admin_get_page_sections():
+    """GET all page sections (built-in + custom) for the admin panel."""
+    sections = query_db("SELECT * FROM page_sections ORDER BY sort_order ASC")
+    return jsonify(sections or [])
+
+
+@app.route("/admin/api/page-sections", methods=["POST"])
+@admin_required
+def admin_create_page_section():
+    """POST /admin/api/page-sections — Create a new custom section."""
+    data = request.get_json()
+    slug = data.get("slug", "").strip().lower()
+    slug = re.sub(r'[^a-z0-9-]', '-', slug)
+    slug = re.sub(r'-+', '-', slug).strip('-')
+    if not slug:
+        return jsonify({"error": "Slug is required"}), 400
+
+    # Get the next sort_order (add to the end, before footer)
+    max_order = query_db(
+        "SELECT COALESCE(MAX(sort_order), 0) + 1 as next_order FROM page_sections",
+        fetchone=True
+    )
+    next_order = max_order["next_order"] if max_order else 0
+
+    item = execute_db(
+        """INSERT INTO page_sections (slug, title, section_type, template, sort_order, enabled, settings)
+           VALUES (%s, %s, 'custom', %s, %s, %s, %s::jsonb) RETURNING *""",
+        (slug, data.get("title", "New Section"),
+         data.get("template", "cards_grid"), next_order,
+         data.get("enabled", True), json.dumps(data.get("settings", {})))
+    )
+    return jsonify(item), 201
+
+
+@app.route("/admin/api/page-sections/<int:section_id>", methods=["PUT"])
+@admin_required
+def admin_update_page_section(section_id):
+    """PUT /admin/api/page-sections/<id> — Update a section's title, enabled, settings."""
+    data = request.get_json()
+    item = execute_db(
+        """UPDATE page_sections SET
+             title = %s, enabled = %s, settings = %s::jsonb
+           WHERE id = %s RETURNING *""",
+        (data.get("title", ""), data.get("enabled", True),
+         json.dumps(data.get("settings", {})), section_id)
+    )
+    if not item:
+        return jsonify({"error": "Section not found"}), 404
+    return jsonify(item)
+
+
+@app.route("/admin/api/page-sections/<int:section_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_page_section(section_id):
+    """DELETE /admin/api/page-sections/<id> — Delete a custom section (built-in protected)."""
+    section = query_db("SELECT * FROM page_sections WHERE id = %s", (section_id,), fetchone=True)
+    if not section:
+        return jsonify({"error": "Section not found"}), 404
+    if section.get("section_type") == "built_in":
+        return jsonify({"error": "Cannot delete built-in sections"}), 400
+    execute_db("DELETE FROM page_sections WHERE id = %s", (section_id,))
+    return jsonify({"success": True})
+
+
+@app.route("/admin/api/page-sections/<int:section_id>/toggle", methods=["PUT"])
+@admin_required
+def admin_toggle_page_section(section_id):
+    """PUT /admin/api/page-sections/<id>/toggle — Quick toggle enabled/disabled."""
+    data = request.get_json()
+    enabled = data.get("enabled", True)
+    item = execute_db(
+        "UPDATE page_sections SET enabled = %s WHERE id = %s RETURNING *",
+        (enabled, section_id)
+    )
+    if not item:
+        return jsonify({"error": "Section not found"}), 404
+
+    # Sync the old section_testimonials/team/faq/footer toggles in site_settings
+    # so existing code that reads those columns stays in sync
+    section = query_db("SELECT slug FROM page_sections WHERE id = %s", (section_id,), fetchone=True)
+    if section:
+        toggle_map = {
+            "testimonials": "section_testimonials",
+            "team": "section_team",
+            "faq": "section_faq",
+            "footer": "section_footer"
+        }
+        col = toggle_map.get(section["slug"])
+        if col:
+            execute_db(
+                f"UPDATE site_settings SET {col} = %s WHERE id = 1",
+                (enabled,)
+            )
+
+    return jsonify(item)
+
+
+# =============================================================
+# ADMIN CRUD — CUSTOM SECTION ITEMS
+# =============================================================
+# Manages the content items inside custom sections.
+
+@app.route("/admin/api/custom-sections/<int:section_id>/items", methods=["GET"])
+@admin_required
+def admin_get_custom_items(section_id):
+    """GET all items for a specific custom section."""
+    items = query_db(
+        "SELECT * FROM custom_section_items WHERE section_id = %s ORDER BY sort_order ASC",
+        (section_id,)
+    )
+    return jsonify(items or [])
+
+
+@app.route("/admin/api/custom-sections/<int:section_id>/items", methods=["POST"])
+@admin_required
+def admin_create_custom_item(section_id):
+    """POST /admin/api/custom-sections/<section_id>/items — Add an item to a custom section."""
+    data = request.get_json()
+    item = execute_db(
+        """INSERT INTO custom_section_items
+           (section_id, title, subtitle, content, image_url, link_url, link_text, icon, sort_order, extra_data)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb) RETURNING *""",
+        (section_id, data.get("title", ""), data.get("subtitle", ""),
+         data.get("content", ""), data.get("image_url", ""),
+         data.get("link_url", ""), data.get("link_text", ""),
+         data.get("icon", ""), data.get("sort_order", 0),
+         json.dumps(data.get("extra_data", {})))
+    )
+    return jsonify(item), 201
+
+
+@app.route("/admin/api/custom-sections/<int:section_id>/items/<int:item_id>", methods=["PUT"])
+@admin_required
+def admin_update_custom_item(section_id, item_id):
+    """PUT /admin/api/custom-sections/<section_id>/items/<item_id> — Update an item."""
+    data = request.get_json()
+    item = execute_db(
+        """UPDATE custom_section_items SET
+             title = %s, subtitle = %s, content = %s, image_url = %s,
+             link_url = %s, link_text = %s, icon = %s, sort_order = %s,
+             extra_data = %s::jsonb
+           WHERE id = %s AND section_id = %s RETURNING *""",
+        (data.get("title", ""), data.get("subtitle", ""),
+         data.get("content", ""), data.get("image_url", ""),
+         data.get("link_url", ""), data.get("link_text", ""),
+         data.get("icon", ""), data.get("sort_order", 0),
+         json.dumps(data.get("extra_data", {})), item_id, section_id)
+    )
+    if not item:
+        return jsonify({"error": "Item not found"}), 404
+    return jsonify(item)
+
+
+@app.route("/admin/api/custom-sections/<int:section_id>/items/<int:item_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_custom_item(section_id, item_id):
+    """DELETE /admin/api/custom-sections/<section_id>/items/<item_id> — Remove an item."""
+    count = execute_db(
+        "DELETE FROM custom_section_items WHERE id = %s AND section_id = %s",
+        (item_id, section_id)
+    )
+    if count == 0:
+        return jsonify({"error": "Item not found"}), 404
+    return jsonify({"success": True})
+
+
+# =============================================================
 # ADMIN — BUSINESS INFO + SOCIAL LINKS + SECTION VISIBILITY
 # =============================================================
 # These endpoints update columns on the single-row site_settings table
@@ -1986,7 +2291,9 @@ def admin_reorder(content_type):
         "pricing": "pricing_seasons",
         "testimonials": "testimonials",
         "team": "team_members",
-        "faq": "faqs"
+        "faq": "faqs",
+        "page-sections": "page_sections",
+        "custom-section-items": "custom_section_items"
     }
     table = table_map.get(content_type)
     if not table:

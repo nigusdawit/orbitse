@@ -553,7 +553,8 @@ TO CUSTOMIZE THIS DASHBOARD:
   Clicking a tab shows its content panel and hides the others.
   -->
   <nav class="tab-nav">
-    <button class="tab-btn active" onclick="switchTab('settings')" data-testid="tab-settings">Site Settings</button>
+    <button class="tab-btn active" onclick="switchTab('page-layout')" data-testid="tab-page-layout">Page Layout</button>
+    <button class="tab-btn" onclick="switchTab('settings')" data-testid="tab-settings">Site Settings</button>
     <button class="tab-btn" onclick="switchTab('cards')" data-testid="tab-cards">Gallery Cards</button>
     <button class="tab-btn" onclick="switchTab('experiences')" data-testid="tab-experiences">Experiences</button>
     <button class="tab-btn" onclick="switchTab('pricing')" data-testid="tab-pricing">Pricing</button>
@@ -571,12 +572,112 @@ TO CUSTOMIZE THIS DASHBOARD:
 
   <!--
   ========================================================================
+  TAB: PAGE LAYOUT
+  ========================================================================
+  Drag-and-drop section ordering for the public site.
+  Shows all sections (built-in and custom) as draggable rows.
+  Admins can reorder, toggle visibility, and create custom sections.
+  -->
+  <div id="tab-page-layout" class="tab-content active">
+    <div class="section-header-admin">
+      <div>
+        <h2>Page Layout</h2>
+        <p>Drag to reorder sections on the public site. Toggle visibility and manage custom sections.</p>
+      </div>
+      <button class="btn btn-primary" onclick="showAddSectionForm()" data-testid="button-add-section">+ Add Section</button>
+    </div>
+
+    <div id="add-section-form-panel" class="form-panel" style="display:none;">
+      <h3>Add Custom Section</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="new-section-title">Section Title</label>
+          <input type="text" id="new-section-title" placeholder="Our Partners" data-testid="input-new-section-title" oninput="autoGenerateSectionSlug()">
+        </div>
+        <div class="form-group">
+          <label for="new-section-slug">Slug (auto-generated)</label>
+          <input type="text" id="new-section-slug" placeholder="our-partners" data-testid="input-new-section-slug">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="new-section-template">Template</label>
+          <select id="new-section-template" data-testid="select-new-section-template">
+            <option value="cards_grid">Cards Grid</option>
+            <option value="text_content">Text Content</option>
+            <option value="image_gallery">Image Gallery</option>
+            <option value="cta_banner">CTA Banner</option>
+            <option value="stats_counter">Stats / Counters</option>
+            <option value="icon_features">Icon Features</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="hideAddSectionForm()" data-testid="button-cancel-add-section">Cancel</button>
+        <button class="btn btn-primary" onclick="createPageSection()" data-testid="button-save-new-section">Create Section</button>
+      </div>
+    </div>
+
+    <table class="data-table" id="page-sections-table">
+      <thead>
+        <tr>
+          <th style="width:30px;"></th>
+          <th>Section</th>
+          <th>Type</th>
+          <th>Enabled</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="page-sections-tbody">
+        <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+
+    <div id="section-items-panel" class="form-panel" style="display:none; margin-top: 1.5rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <h3 id="section-items-title">Section Items</h3>
+        <div style="display: flex; gap: 0.5rem;">
+          <button class="btn btn-primary btn-sm" onclick="showSectionItemForm()" data-testid="button-add-section-item">+ Add Item</button>
+          <button class="btn btn-secondary btn-sm" onclick="closeSectionItemsPanel()" data-testid="button-close-section-items">Close</button>
+        </div>
+      </div>
+
+      <div id="section-item-form-panel" class="form-panel" style="display:none; margin-bottom: 1rem; background: var(--admin-bg); border: 1px solid var(--admin-border);">
+        <h3 id="section-item-form-title" style="font-size: 1rem;">Add Item</h3>
+        <input type="hidden" id="section-item-form-id">
+        <div id="section-item-fields"></div>
+        <div class="form-actions">
+          <button class="btn btn-secondary btn-sm" onclick="hideSectionItemForm()" data-testid="button-cancel-section-item">Cancel</button>
+          <button class="btn btn-primary btn-sm" onclick="saveSectionItem()" data-testid="button-save-section-item">Save Item</button>
+        </div>
+      </div>
+
+      <table class="data-table" id="section-items-table">
+        <thead>
+          <tr>
+            <th style="width:30px;"></th>
+            <th>Title</th>
+            <th>Subtitle</th>
+            <th>Content</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="section-items-tbody">
+          <tr><td colspan="5" class="empty-state">No items yet.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+
+  <!--
+  ========================================================================
   TAB: SITE SETTINGS
   ========================================================================
   Edit the global site configuration: name, tagline, hero content, logo.
   This is a single form that updates the one settings row in the database.
   -->
-  <div id="tab-settings" class="tab-content active">
+  <div id="tab-settings" class="tab-content">
     <div class="section-header-admin">
       <div>
         <h2>Site Settings</h2>
@@ -3662,10 +3763,408 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     /*
     ========================================================================
+    PAGE LAYOUT — Section ordering and custom section management
+    ========================================================================
+    */
+
+    let currentSectionId = null;
+    let currentSectionTemplate = null;
+
+    const TEMPLATE_LABELS = {
+      built_in: 'Built-in',
+      cards_grid: 'Cards Grid',
+      text_content: 'Text Content',
+      image_gallery: 'Image Gallery',
+      cta_banner: 'CTA Banner',
+      stats_counter: 'Stats / Counters',
+      icon_features: 'Icon Features'
+    };
+
+    async function loadPageSections() {
+      try {
+        const res = await fetch('/admin/api/page-sections');
+        const sections = await res.json();
+        const tbody = document.getElementById('page-sections-tbody');
+
+        if (!sections.length) {
+          tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No sections found.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = sections.map(s => {
+          const isBuiltIn = s.section_type === 'built_in';
+          const typeBadge = isBuiltIn
+            ? '<span class="badge" style="background:rgba(59,130,246,0.15); color:#93c5fd; border-color:rgba(59,130,246,0.3);">Built-in</span>'
+            : `<span class="badge" style="background:rgba(139,92,246,0.15); color:#c4b5fd; border-color:rgba(139,92,246,0.3);">${esc(TEMPLATE_LABELS[s.template] || s.template)}</span>`;
+
+          const toggleChecked = s.enabled ? 'checked' : '';
+
+          let actions = '';
+          if (!isBuiltIn) {
+            actions += `<button class="btn btn-secondary btn-sm" onclick="manageSectionItems(${s.id}, '${esc(s.template)}', '${esc(s.title)}')" data-testid="button-manage-section-${s.id}">Items</button>`;
+            actions += ` <button class="btn btn-secondary btn-sm" onclick="editPageSection(${s.id})" data-testid="button-edit-section-${s.id}">Edit</button>`;
+            actions += ` <button class="btn btn-danger btn-sm" onclick="deletePageSection(${s.id})" data-testid="button-delete-section-${s.id}">Delete</button>`;
+          }
+
+          return `
+            <tr data-id="${s.id}">
+              <td><span class="drag-handle" title="Drag to reorder">&#x2630;</span></td>
+              <td><strong>${esc(s.title)}</strong> <span style="color:var(--admin-text-muted); font-size:0.75rem; margin-left:0.5rem;">${esc(s.slug)}</span></td>
+              <td>${typeBadge}</td>
+              <td>
+                <label class="toggle-switch" data-testid="toggle-section-${s.id}">
+                  <input type="checkbox" ${toggleChecked} onchange="togglePageSection(${s.id}, this.checked)">
+                  <span class="toggle-slider"></span>
+                </label>
+              </td>
+              <td class="cell-actions">${actions}</td>
+            </tr>
+          `;
+        }).join('');
+
+        initSortable('page-sections-tbody', 'page-sections');
+      } catch (err) {
+        showToast('Failed to load page sections', 'error');
+      }
+    }
+
+    function autoGenerateSectionSlug() {
+      const title = document.getElementById('new-section-title').value;
+      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      document.getElementById('new-section-slug').value = slug;
+    }
+
+    function showAddSectionForm() {
+      document.getElementById('add-section-form-panel').style.display = 'block';
+      document.getElementById('new-section-title').value = '';
+      document.getElementById('new-section-slug').value = '';
+      document.getElementById('new-section-template').value = 'cards_grid';
+    }
+
+    function hideAddSectionForm() {
+      document.getElementById('add-section-form-panel').style.display = 'none';
+    }
+
+    async function createPageSection() {
+      const title = document.getElementById('new-section-title').value.trim();
+      const slug = document.getElementById('new-section-slug').value.trim();
+      const template = document.getElementById('new-section-template').value;
+
+      if (!title) { showToast('Section title is required', 'error'); return; }
+      if (!slug) { showToast('Section slug is required', 'error'); return; }
+
+      try {
+        const res = await fetch('/admin/api/page-sections', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, slug, template, section_type: template, settings: {} })
+        });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || 'Failed to create section', 'error'); return; }
+        showToast('Section created!');
+        hideAddSectionForm();
+        loadPageSections();
+      } catch (err) {
+        showToast('Failed to create section', 'error');
+      }
+    }
+
+    async function togglePageSection(id, enabled) {
+      try {
+        const res = await fetch(`/admin/api/page-sections/${id}/toggle`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled })
+        });
+        if (res.ok) {
+          showToast('Section visibility updated!');
+        } else {
+          showToast('Failed to update section', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to update section', 'error');
+      }
+    }
+
+    async function editPageSection(id) {
+      try {
+        const res = await fetch('/admin/api/page-sections');
+        const sections = await res.json();
+        const section = sections.find(s => s.id === id);
+        if (!section) { showToast('Section not found', 'error'); return; }
+
+        const newTitle = prompt('Section Title:', section.title);
+        if (newTitle === null) return;
+
+        const updateRes = await fetch(`/admin/api/page-sections/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: newTitle })
+        });
+        if (updateRes.ok) {
+          showToast('Section updated!');
+          loadPageSections();
+        } else {
+          showToast('Failed to update section', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to update section', 'error');
+      }
+    }
+
+    async function deletePageSection(id) {
+      if (!confirm('Delete this custom section and all its items? This cannot be undone.')) return;
+      try {
+        const res = await fetch(`/admin/api/page-sections/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('Section deleted');
+          if (currentSectionId === id) closeSectionItemsPanel();
+          loadPageSections();
+        } else {
+          const data = await res.json();
+          showToast(data.error || 'Failed to delete section', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to delete section', 'error');
+      }
+    }
+
+    function manageSectionItems(sectionId, template, title) {
+      currentSectionId = sectionId;
+      currentSectionTemplate = template;
+      document.getElementById('section-items-title').textContent = 'Items: ' + title;
+      document.getElementById('section-items-panel').style.display = 'block';
+      hideSectionItemForm();
+      loadSectionItems();
+    }
+
+    function closeSectionItemsPanel() {
+      document.getElementById('section-items-panel').style.display = 'none';
+      currentSectionId = null;
+      currentSectionTemplate = null;
+    }
+
+    async function loadSectionItems() {
+      if (!currentSectionId) return;
+      try {
+        const res = await fetch(`/admin/api/custom-sections/${currentSectionId}/items`);
+        const items = await res.json();
+        const tbody = document.getElementById('section-items-tbody');
+
+        if (!items.length) {
+          tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No items yet. Click "+ Add Item" to create one.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = items.map(item => `
+          <tr data-id="${item.id}">
+            <td><span class="drag-handle" title="Drag to reorder">&#x2630;</span></td>
+            <td><strong>${esc(item.title)}</strong></td>
+            <td class="cell-truncate">${esc(item.subtitle)}</td>
+            <td class="cell-truncate">${esc(item.content || item.image_url || '')}</td>
+            <td class="cell-actions">
+              <button class="btn btn-secondary btn-sm" onclick='editSectionItem(${JSON.stringify(item).replace(/'/g, "&#39;")})' data-testid="button-edit-item-${item.id}">Edit</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteSectionItem(${item.id})" data-testid="button-delete-item-${item.id}">Delete</button>
+            </td>
+          </tr>
+        `).join('');
+
+        initSectionItemsSortable();
+      } catch (err) {
+        showToast('Failed to load section items', 'error');
+      }
+    }
+
+    function initSectionItemsSortable() {
+      const el = document.getElementById('section-items-tbody');
+      if (!el || !window.Sortable) return;
+      if (el._sortableInstance) el._sortableInstance.destroy();
+      el._sortableInstance = Sortable.create(el, {
+        handle: '.drag-handle',
+        animation: 150,
+        ghostClass: 'sortable-ghost',
+        chosenClass: 'sortable-chosen',
+        onEnd: async function() {
+          const rows = el.querySelectorAll('tr[data-id]');
+          const order = Array.from(rows).map((row, idx) => ({
+            id: parseInt(row.dataset.id),
+            sort_order: idx
+          }));
+          try {
+            await fetch(`/admin/api/reorder/custom-section-items`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(order)
+            });
+            showToast('Item order saved!');
+          } catch (err) {
+            showToast('Failed to save item order', 'error');
+          }
+        }
+      });
+    }
+
+    function getTemplateFields(template) {
+      switch (template) {
+        case 'cards_grid':
+          return [
+            { id: 'title', label: 'Title', type: 'text' },
+            { id: 'subtitle', label: 'Subtitle', type: 'text' },
+            { id: 'content', label: 'Description', type: 'textarea' },
+            { id: 'image_url', label: 'Image URL', type: 'url' },
+            { id: 'link_url', label: 'Link URL', type: 'url' },
+            { id: 'link_text', label: 'Link Text', type: 'text' }
+          ];
+        case 'text_content':
+          return [
+            { id: 'title', label: 'Heading', type: 'text' },
+            { id: 'subtitle', label: 'Subtitle', type: 'text' },
+            { id: 'content', label: 'Body Text', type: 'textarea' }
+          ];
+        case 'image_gallery':
+          return [
+            { id: 'title', label: 'Caption', type: 'text' },
+            { id: 'image_url', label: 'Image URL', type: 'url' },
+            { id: 'subtitle', label: 'Alt Text', type: 'text' }
+          ];
+        case 'cta_banner':
+          return [
+            { id: 'title', label: 'Heading', type: 'text' },
+            { id: 'content', label: 'Description', type: 'textarea' },
+            { id: 'link_url', label: 'Button URL', type: 'url' },
+            { id: 'link_text', label: 'Button Text', type: 'text' }
+          ];
+        case 'stats_counter':
+          return [
+            { id: 'title', label: 'Number / Value', type: 'text' },
+            { id: 'subtitle', label: 'Label', type: 'text' }
+          ];
+        case 'icon_features':
+          return [
+            { id: 'icon', label: 'Icon Name', type: 'text' },
+            { id: 'title', label: 'Title', type: 'text' },
+            { id: 'content', label: 'Description', type: 'textarea' }
+          ];
+        default:
+          return [
+            { id: 'title', label: 'Title', type: 'text' },
+            { id: 'subtitle', label: 'Subtitle', type: 'text' },
+            { id: 'content', label: 'Content', type: 'textarea' },
+            { id: 'image_url', label: 'Image URL', type: 'url' }
+          ];
+      }
+    }
+
+    function renderSectionItemFormFields(template, data) {
+      const fields = getTemplateFields(template);
+      const container = document.getElementById('section-item-fields');
+      data = data || {};
+
+      container.innerHTML = fields.map(f => {
+        const val = esc(data[f.id] || '');
+        if (f.type === 'textarea') {
+          return `
+            <div class="form-row">
+              <div class="form-group" style="grid-column: 1 / -1;">
+                <label for="si-${f.id}">${f.label}</label>
+                <textarea id="si-${f.id}" rows="3" data-testid="input-si-${f.id}">${val}</textarea>
+              </div>
+            </div>`;
+        }
+        if (f.type === 'url') {
+          return `
+            <div class="form-row">
+              <div class="form-group" style="grid-column: 1 / -1;">
+                <label for="si-${f.id}">${f.label}</label>
+                <div style="display: flex; gap: 0.5rem;">
+                  <input type="url" id="si-${f.id}" value="${val}" data-testid="input-si-${f.id}" style="flex:1;">
+                  ${f.id === 'image_url' ? `<button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('si-${f.id}')" data-testid="button-upload-si-${f.id}">Upload</button>` : ''}
+                </div>
+              </div>
+            </div>`;
+        }
+        return `
+          <div class="form-row">
+            <div class="form-group">
+              <label for="si-${f.id}">${f.label}</label>
+              <input type="text" id="si-${f.id}" value="${val}" data-testid="input-si-${f.id}">
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    function showSectionItemForm(data) {
+      document.getElementById('section-item-form-panel').style.display = 'block';
+      document.getElementById('section-item-form-id').value = '';
+      document.getElementById('section-item-form-title').textContent = 'Add Item';
+      renderSectionItemFormFields(currentSectionTemplate, data);
+    }
+
+    function hideSectionItemForm() {
+      document.getElementById('section-item-form-panel').style.display = 'none';
+    }
+
+    function editSectionItem(item) {
+      document.getElementById('section-item-form-panel').style.display = 'block';
+      document.getElementById('section-item-form-id').value = item.id;
+      document.getElementById('section-item-form-title').textContent = 'Edit Item';
+      renderSectionItemFormFields(currentSectionTemplate, item);
+    }
+
+    async function saveSectionItem() {
+      const id = document.getElementById('section-item-form-id').value;
+      const fields = getTemplateFields(currentSectionTemplate);
+      const data = {};
+      fields.forEach(f => {
+        data[f.id] = document.getElementById('si-' + f.id).value;
+      });
+
+      try {
+        const url = id
+          ? `/admin/api/custom-sections/${currentSectionId}/items/${id}`
+          : `/admin/api/custom-sections/${currentSectionId}/items`;
+        const method = id ? 'PUT' : 'POST';
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+        if (res.ok) {
+          showToast(id ? 'Item updated!' : 'Item created!');
+          hideSectionItemForm();
+          loadSectionItems();
+        } else {
+          const err = await res.json();
+          showToast(err.error || 'Failed to save item', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save item', 'error');
+      }
+    }
+
+    async function deleteSectionItem(itemId) {
+      if (!confirm('Delete this item?')) return;
+      try {
+        const res = await fetch(`/admin/api/custom-sections/${currentSectionId}/items/${itemId}`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('Item deleted');
+          loadSectionItems();
+        } else {
+          showToast('Failed to delete item', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to delete item', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
     INITIALIZATION — Load all data on page load
     ========================================================================
     */
     document.addEventListener('DOMContentLoaded', () => {
+      loadPageSections();
       loadSettings();
       loadSectionVisibility();
       loadCards();

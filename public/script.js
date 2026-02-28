@@ -66,6 +66,7 @@ let testimonials = [];
 let teamMembers = [];
 let faqItems = [];
 let businessInfo = {};
+let pageSections = [];
 let currentSlideIndex = 0;
 let scrollCooldown = false;
 let touchStartY = null;
@@ -91,7 +92,7 @@ let touchStartY = null;
 async function loadAllData() {
   try {
     /* Fetch all data sources in parallel for speed */
-    const [settingsRes, cardsRes, expRes, pricingRes, testimonialsRes, teamRes, faqRes, bizRes] = await Promise.all([
+    const [settingsRes, cardsRes, expRes, pricingRes, testimonialsRes, teamRes, faqRes, bizRes, sectionsRes] = await Promise.all([
       fetch('/api/site-settings'),
       fetch('/api/gallery-cards'),
       fetch('/api/experiences'),
@@ -99,7 +100,8 @@ async function loadAllData() {
       fetch('/api/testimonials'),
       fetch('/api/team'),
       fetch('/api/faq'),
-      fetch('/api/business-info')
+      fetch('/api/business-info'),
+      fetch('/api/page-sections')
     ]);
 
     siteSettings = await settingsRes.json();
@@ -110,8 +112,8 @@ async function loadAllData() {
     teamMembers = await teamRes.json();
     faqItems = await faqRes.json();
     businessInfo = await bizRes.json();
+    pageSections = await sectionsRes.json();
 
-    /* Render each section with the fetched data */
     renderHero();
     renderHighlights();
     renderExperiences();
@@ -123,9 +125,10 @@ async function loadAllData() {
     renderGallerySlides();
     renderDotNav();
     populateRoomDropdown();
-    applySectionVisibility();
 
-    /* Initialize scroll-triggered fade-in animations */
+    await renderCustomSections();
+    applySectionOrder();
+
     setupScrollAnimations();
 
     /* Initialize Lucide icons (replaces <i data-lucide="..."> with SVGs) */
@@ -471,34 +474,298 @@ function scrollToSection(sectionId) {
 
 
 /**
- * Shows or hides new sections based on section visibility toggles
- * from site_settings (section_testimonials, section_team, etc.)
+ * Maps built-in section slugs to their DOM element IDs.
  */
-function applySectionVisibility() {
-  if (!siteSettings) return;
+const BUILTIN_SECTION_MAP = {
+  'hero': 'section-hero',
+  'highlights': 'section-highlights',
+  'experiences': 'section-experiences',
+  'testimonials': 'section-testimonials',
+  'team': 'section-team',
+  'faq': 'section-faq',
+  'footer': 'site-footer'
+};
 
-  /* Each section is shown only if its toggle is true AND it has data */
+/**
+ * Reorders all DOM sections according to the page_sections sort_order
+ * from the API, and shows/hides based on the enabled flag.
+ * Replaces the old applySectionVisibility().
+ *
+ * HOW IT WORKS:
+ * 1. Walk through pageSections in sort_order
+ * 2. For each section, find its DOM element
+ * 3. Re-append it to the landing container (appendChild moves existing nodes)
+ * 4. Set display based on enabled flag + whether data exists
+ * 5. Footer is special — it lives outside the landing container,
+ *    so we only toggle its visibility (it always stays at the bottom)
+ */
+function applySectionOrder() {
+  const landingContainer = document.getElementById('landing-view');
+  if (!landingContainer) return;
+
+  /* Fall back to old toggle system if page_sections API returned nothing */
+  if (pageSections.length === 0) {
+    applySectionVisibilityFallback();
+    return;
+  }
+
+  /* Walk through ALL sections (enabled + disabled) in sort_order */
+  pageSections.forEach(section => {
+    const slug = section.slug;
+    const enabled = section.enabled;
+
+    if (section.section_type === 'built_in') {
+      const elId = BUILTIN_SECTION_MAP[slug];
+      if (!elId) {
+        console.warn('applySectionOrder: no DOM mapping for built-in slug:', slug);
+        return;
+      }
+      const el = document.getElementById(elId);
+      if (!el) return;
+
+      /* Footer lives outside the landing container — just toggle visibility */
+      if (slug === 'footer') {
+        el.style.display = enabled ? '' : 'none';
+        return;
+      }
+
+      /* For other built-in sections: check if they have data, show/hide, and reorder */
+      const hasData = checkBuiltinHasData(slug);
+      el.style.display = (enabled && hasData) ? '' : 'none';
+      /* Re-append to move it to the correct position in the container */
+      landingContainer.appendChild(el);
+
+    } else {
+      /* Custom sections — find by generated ID */
+      const customEl = document.getElementById('section-custom-' + section.id);
+      if (customEl) {
+        customEl.style.display = enabled ? '' : 'none';
+        landingContainer.appendChild(customEl);
+      }
+    }
+  });
+
+  /* Clean up the temporary custom-sections-container (items have been moved) */
+  const customContainer = document.getElementById('custom-sections-container');
+  if (customContainer && customContainer.parentNode) {
+    customContainer.parentNode.removeChild(customContainer);
+  }
+
+  /* Update footer quick links based on which sections are enabled */
+  updateFooterQuickLinks();
+}
+
+function checkBuiltinHasData(slug) {
+  switch (slug) {
+    case 'hero': return true;
+    case 'highlights': return galleryCards.length > 0;
+    case 'experiences': return experiences.length > 0 || pricingSeasons.length > 0;
+    case 'testimonials': return testimonials.length > 0;
+    case 'team': return teamMembers.length > 0;
+    case 'faq': return faqItems.length > 0;
+    case 'footer': return true;
+    default: return true;
+  }
+}
+
+function updateFooterQuickLinks() {
+  const enabledSlugs = new Set(pageSections.filter(s => s.enabled).map(s => s.slug));
+
+  const footerLinkTestimonials = document.getElementById('footer-link-testimonials');
+  const footerLinkTeam = document.getElementById('footer-link-team');
+  const footerLinkFaq = document.getElementById('footer-link-faq');
+
+  if (footerLinkTestimonials) footerLinkTestimonials.style.display = enabledSlugs.has('testimonials') && testimonials.length ? '' : 'none';
+  if (footerLinkTeam) footerLinkTeam.style.display = enabledSlugs.has('team') && teamMembers.length ? '' : 'none';
+  if (footerLinkFaq) footerLinkFaq.style.display = enabledSlugs.has('faq') && faqItems.length ? '' : 'none';
+}
+
+function applySectionVisibilityFallback() {
+  if (!siteSettings) return;
   const sections = [
     { id: 'section-testimonials', toggle: siteSettings.section_testimonials, hasData: testimonials.length > 0 },
     { id: 'section-team', toggle: siteSettings.section_team, hasData: teamMembers.length > 0 },
     { id: 'section-faq', toggle: siteSettings.section_faq, hasData: faqItems.length > 0 },
     { id: 'site-footer', toggle: siteSettings.section_footer, hasData: true }
   ];
-
   sections.forEach(({ id, toggle, hasData }) => {
     const el = document.getElementById(id);
-    if (el) {
-      el.style.display = (toggle && hasData) ? '' : 'none';
-    }
+    if (el) el.style.display = (toggle && hasData) ? '' : 'none';
   });
-
-  /* Show/hide footer quick links based on which sections are enabled */
   const footerLinkTestimonials = document.getElementById('footer-link-testimonials');
   const footerLinkTeam = document.getElementById('footer-link-team');
   const footerLinkFaq = document.getElementById('footer-link-faq');
   if (footerLinkTestimonials) footerLinkTestimonials.style.display = siteSettings.section_testimonials && testimonials.length ? '' : 'none';
   if (footerLinkTeam) footerLinkTeam.style.display = siteSettings.section_team && teamMembers.length ? '' : 'none';
   if (footerLinkFaq) footerLinkFaq.style.display = siteSettings.section_faq && faqItems.length ? '' : 'none';
+}
+
+/**
+ * Fetches items for each custom section and renders them into the DOM.
+ */
+async function renderCustomSections() {
+  const customSections = pageSections.filter(s => s.section_type !== 'built_in');
+  if (!customSections.length) return;
+
+  const landingContainer = document.getElementById('landing-view');
+  if (!landingContainer) return;
+
+  const itemFetches = customSections.map(section =>
+    fetch(`/api/custom-section/${section.id}/items`)
+      .then(r => r.ok ? r.json() : [])
+      .catch(() => [])
+  );
+  const allItems = await Promise.all(itemFetches);
+
+  customSections.forEach((section, index) => {
+    const items = allItems[index];
+    const html = renderCustomSectionHTML(section, items);
+    if (html) {
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = html;
+      const sectionEl = wrapper.firstElementChild;
+      if (sectionEl) {
+        landingContainer.appendChild(sectionEl);
+      }
+    }
+  });
+}
+
+/**
+ * Generates HTML for a custom section based on its template type.
+ */
+function renderCustomSectionHTML(section, items) {
+  const sectionId = 'section-custom-' + section.id;
+  const settings = section.settings || {};
+  const bgIndex = (section.sort_order || 0) % 2 === 0 ? 1 : 2;
+  const bgStyle = `background: var(--bg-section-${bgIndex});`;
+
+  const eyebrow = settings.eyebrow || '';
+  const subtitle = settings.subtitle || '';
+
+  const headerHTML = `
+    <div class="section-header fade-in-view">
+      ${eyebrow ? `<p class="section-eyebrow">${escapeHtml(eyebrow)}</p>` : ''}
+      <h2 class="section-title" data-testid="text-custom-title-${section.id}">${escapeHtml(section.title)}</h2>
+      ${subtitle ? `<p class="section-subtitle">${escapeHtml(subtitle)}</p>` : ''}
+    </div>
+  `;
+
+  let contentHTML = '';
+
+  switch (section.template) {
+    case 'cards_grid':
+      contentHTML = renderCardsGridTemplate(items, section.id);
+      break;
+    case 'text_content':
+      contentHTML = renderTextContentTemplate(items, section.id);
+      break;
+    case 'image_gallery':
+      contentHTML = renderImageGalleryTemplate(items, section.id);
+      break;
+    case 'cta_banner':
+      contentHTML = renderCtaBannerTemplate(items, section.id, settings);
+      break;
+    case 'stats_counter':
+      contentHTML = renderStatsCounterTemplate(items, section.id);
+      break;
+    case 'icon_features':
+      contentHTML = renderIconFeaturesTemplate(items, section.id);
+      break;
+    default:
+      contentHTML = renderCardsGridTemplate(items, section.id);
+  }
+
+  return `
+    <section id="${sectionId}" class="snap-section landing-section" style="${bgStyle}" data-testid="${sectionId}">
+      <div class="max-w-container">
+        ${headerHTML}
+        ${contentHTML}
+      </div>
+    </section>
+  `;
+}
+
+function renderCardsGridTemplate(items, sectionId) {
+  if (!items.length) return '<p class="section-subtitle" style="text-align:center;">No items yet.</p>';
+  return `<div class="custom-cards-grid" data-testid="grid-custom-${sectionId}">
+    ${items.map((item, i) => `
+      <div class="custom-card fade-in-view stagger-${(i % 6) + 1}" data-testid="card-custom-${item.id}">
+        ${item.image_url ? `<div class="custom-card-img" style="background-image: url(${item.image_url})"></div>` : ''}
+        <div class="custom-card-body">
+          <h3 class="custom-card-title">${escapeHtml(item.title || '')}</h3>
+          ${item.subtitle ? `<p class="custom-card-subtitle">${escapeHtml(item.subtitle)}</p>` : ''}
+          ${item.content ? `<p class="custom-card-content">${escapeHtml(item.content)}</p>` : ''}
+          ${item.link_url ? `<a href="${item.link_url}" class="custom-card-link" data-testid="link-custom-${item.id}">${escapeHtml(item.link_text || 'Learn More')}</a>` : ''}
+        </div>
+      </div>
+    `).join('')}
+  </div>`;
+}
+
+function renderTextContentTemplate(items, sectionId) {
+  if (!items.length) return '';
+  return items.map((item, i) => `
+    <div class="custom-text-block fade-in-view stagger-${(i % 3) + 1}" data-testid="text-block-${item.id}">
+      ${item.title ? `<h3 class="custom-text-heading">${escapeHtml(item.title)}</h3>` : ''}
+      ${item.subtitle ? `<p class="custom-text-subtitle">${escapeHtml(item.subtitle)}</p>` : ''}
+      ${item.content ? `<div class="custom-text-body">${escapeHtml(item.content)}</div>` : ''}
+      ${item.image_url ? `<img src="${item.image_url}" alt="${escapeHtml(item.title || '')}" class="custom-text-image" data-testid="img-text-${item.id}">` : ''}
+    </div>
+  `).join('');
+}
+
+function renderImageGalleryTemplate(items, sectionId) {
+  if (!items.length) return '<p class="section-subtitle" style="text-align:center;">No images yet.</p>';
+  return `<div class="custom-image-gallery" data-testid="gallery-custom-${sectionId}">
+    ${items.map((item, i) => `
+      <div class="custom-gallery-item fade-in-view stagger-${(i % 6) + 1}" data-testid="img-gallery-${item.id}">
+        <div class="custom-gallery-img" style="background-image: url(${item.image_url || ''})"></div>
+        ${item.title ? `<p class="custom-gallery-caption">${escapeHtml(item.title)}</p>` : ''}
+      </div>
+    `).join('')}
+  </div>`;
+}
+
+function renderCtaBannerTemplate(items, sectionId, settings) {
+  const item = items[0] || {};
+  const btnText = item.link_text || settings.button_text || 'Get Started';
+  const btnAction = item.link_url ? `window.open('${item.link_url}', '_blank')` : 'openModal()';
+  return `
+    <div class="custom-cta-banner fade-in-view" data-testid="cta-banner-${sectionId}">
+      ${item.title ? `<h3 class="custom-cta-title">${escapeHtml(item.title)}</h3>` : ''}
+      ${item.content ? `<p class="custom-cta-description">${escapeHtml(item.content)}</p>` : ''}
+      <button class="btn-primary" onclick="${btnAction}" data-testid="button-cta-custom-${sectionId}">
+        ${escapeHtml(btnText)}
+      </button>
+    </div>
+  `;
+}
+
+function renderStatsCounterTemplate(items, sectionId) {
+  if (!items.length) return '';
+  return `<div class="custom-stats-grid" data-testid="stats-custom-${sectionId}">
+    ${items.map((item, i) => `
+      <div class="custom-stat-item fade-in-view stagger-${(i % 6) + 1}" data-testid="stat-${item.id}">
+        <div class="custom-stat-number">${escapeHtml(item.title || '0')}</div>
+        <div class="custom-stat-label">${escapeHtml(item.subtitle || item.content || '')}</div>
+      </div>
+    `).join('')}
+  </div>`;
+}
+
+function renderIconFeaturesTemplate(items, sectionId) {
+  if (!items.length) return '';
+  return `<div class="custom-icon-features-grid" data-testid="features-custom-${sectionId}">
+    ${items.map((item, i) => `
+      <div class="custom-icon-feature fade-in-view stagger-${(i % 6) + 1}" data-testid="feature-${item.id}">
+        <div class="custom-feature-icon">${getIconSvg(item.icon || 'star')}</div>
+        <h3 class="custom-feature-title">${escapeHtml(item.title || '')}</h3>
+        ${item.subtitle ? `<p class="custom-feature-subtitle">${escapeHtml(item.subtitle)}</p>` : ''}
+        ${item.content ? `<p class="custom-feature-description">${escapeHtml(item.content)}</p>` : ''}
+      </div>
+    `).join('')}
+  </div>`;
 }
 
 
