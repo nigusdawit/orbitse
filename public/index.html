@@ -458,55 +458,48 @@ FONTS:
     -->
     <div id="chatbot-panel" class="chatbot-panel" data-testid="chatbot-panel">
 
-      <!-- Panel header -->
-      <div class="chatbot-panel-header">
-        <div class="chatbot-panel-header-info">
-          <div id="chatbot-panel-avatar" class="chatbot-avatar chatbot-avatar-sm">M</div>
-          <div>
-            <span id="chatbot-panel-name" class="chatbot-agent-name">Marco</span>
-            <span id="chatbot-panel-role" class="chatbot-agent-role">Concierge</span>
+      <div class="panel-latest" id="panel-latest">
+        <div class="panel-latest-header">
+          <div class="side-panel-agent-badge">
+            <div id="chatbot-panel-avatar" class="chatbot-avatar chatbot-avatar-sm">M</div>
+            <span id="chatbot-panel-name" class="side-panel-agent-name">Marco</span>
+          </div>
+          <div class="side-panel-actions">
+            <button class="side-panel-history-btn" onclick="toggleMainPanelHistory()" data-testid="button-panel-history">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+            </button>
+            <button class="side-panel-close-btn" onclick="chatToggleExpand()" data-testid="button-chatbot-close">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+              </svg>
+            </button>
           </div>
         </div>
-        <button class="chatbot-close-btn" onclick="chatToggleExpand()" data-testid="button-chatbot-close">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="m6 9 6 6 6-6"/>
-          </svg>
-        </button>
+        <div class="side-panel-latest-text" id="panel-latest-text" data-testid="text-panel-latest"></div>
+        <div id="chatbot-quick-prompts" class="chatbot-quick-prompts" data-testid="chatbot-quick-prompts"></div>
       </div>
 
-      <!--
-      Message history — scrollable area for chat bubbles.
-      Messages are appended here by JavaScript.
-      User messages align right, agent messages align left.
-      -->
-      <div id="chatbot-messages" class="chatbot-messages" data-testid="chatbot-messages">
-        <!-- Messages are inserted here dynamically by script.js -->
+      <div class="panel-history" id="panel-history">
+        <div class="side-panel-history-header">
+          <span class="side-panel-history-title">Conversation</span>
+          <div class="side-panel-actions">
+            <button class="side-panel-close-btn" onclick="toggleMainPanelHistory()" data-testid="button-panel-history-collapse" title="Collapse history">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="m19 12-7 7-7-7"/><path d="M12 19V5"/>
+              </svg>
+            </button>
+            <button class="side-panel-close-btn" onclick="chatToggleExpand()" data-testid="button-panel-history-close" title="Close panel">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div id="chatbot-messages" class="chatbot-messages" data-testid="chatbot-messages"></div>
       </div>
 
-      <!--
-      Quick prompt chips — suggested questions the user can click.
-      These come from the chatbot_settings.quick_prompts field in the database.
-      -->
-      <div id="chatbot-quick-prompts" class="chatbot-quick-prompts" data-testid="chatbot-quick-prompts">
-        <!-- Quick prompt buttons are inserted here dynamically -->
-      </div>
-
-      <!-- Input bar at the bottom of the expanded panel -->
-      <div class="chatbot-input-bar">
-        <input
-          id="chatbot-panel-input"
-          class="chatbot-panel-input"
-          type="text"
-          placeholder="Type your message..."
-          autocomplete="off"
-          data-testid="input-chatbot-panel"
-        >
-        <button class="chatbot-send-panel-btn" onclick="chatSendMessage()" data-testid="button-chatbot-panel-send">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="m22 2-7 20-4-9-9-4Z"/><path d="m22 2-11 11"/>
-          </svg>
-        </button>
-      </div>
     </div>
 
   </div>

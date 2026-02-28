@@ -1159,9 +1159,6 @@ function chatSendQuickPrompt(prompt) {
   } else if (splitScreenActive) {
     const splitInput = document.getElementById('split-chat-input');
     if (splitInput) splitInput.value = prompt;
-  } else if (chatExpanded) {
-    const panelInput = document.getElementById('chatbot-panel-input');
-    if (panelInput) panelInput.value = prompt;
   } else {
     const barInput = document.getElementById('chatbot-bar-input');
     if (barInput) barInput.value = prompt;
@@ -1203,9 +1200,10 @@ function chatAddMessage(role, text) {
     sideMessages.scrollTop = sideMessages.scrollHeight;
   }
 
-  /* Update the latest agent message display in the side panel */
+  /* Update the latest agent message display in both panels */
   if (role === 'agent') {
     updateSidePanelLatest(text);
+    updateMainPanelLatest(text);
   }
 }
 
@@ -1271,12 +1269,40 @@ function chatToggleExpand() {
   chatExpanded = !chatExpanded;
   container.classList.toggle('expanded', chatExpanded);
 
-  /* Auto-scroll to latest message when expanding */
-  if (chatExpanded) {
+  /* Collapse history when closing the panel */
+  if (!chatExpanded) {
+    const history = document.getElementById('panel-history');
+    if (history) history.classList.remove('visible');
+  }
+}
+
+
+/**
+ * Toggle the full conversation history in the main expanded panel.
+ */
+function toggleMainPanelHistory() {
+  const history = document.getElementById('panel-history');
+  if (!history) return;
+
+  const isVisible = history.classList.contains('visible');
+  history.classList.toggle('visible', !isVisible);
+
+  if (!isVisible) {
     setTimeout(() => {
       const messages = document.getElementById('chatbot-messages');
       if (messages) messages.scrollTop = messages.scrollHeight;
-    }, 350);
+    }, 100);
+  }
+}
+
+
+/**
+ * Update the latest agent message display in the main expanded panel.
+ */
+function updateMainPanelLatest(text) {
+  const latestText = document.getElementById('panel-latest-text');
+  if (latestText) {
+    latestText.textContent = text;
   }
 }
 
