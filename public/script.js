@@ -3572,7 +3572,11 @@ function typeHeroText(el, text) {
     .replace(/^#{1,4}\s+/gm, '')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
-    .replace(/^- /gm, '• ');
+    .replace(/^- /gm, '• ')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/^\|[-:| ]+\|$/gm, '')
+    .replace(/^\|(.+)\|$/gm, (_, row) => row.replace(/\|/g, ' — ').trim())
+    .replace(/\n{2,}/g, '\n');
   el.textContent = '';
   let i = 0;
   heroTypeTimer = setInterval(() => {
