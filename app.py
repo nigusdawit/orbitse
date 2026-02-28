@@ -394,6 +394,7 @@ def init_db():
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_glass_bg TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_font_serif TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_font_sans TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE form_submissions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
             ]:
                 cur.execute(col_sql)
 
@@ -1713,6 +1714,102 @@ def api_get_form(slug):
     return jsonify(form)
 
 
+def _parse_ua(ua_string):
+    """Extract browser and OS from a User-Agent string."""
+    ua_lower = ua_string.lower()
+    browser = ""
+    if "firefox" in ua_lower:
+        browser = "Firefox"
+    elif "edg" in ua_lower:
+        browser = "Edge"
+    elif "chrome" in ua_lower:
+        browser = "Chrome"
+    elif "safari" in ua_lower:
+        browser = "Safari"
+    elif "opera" in ua_lower or "opr" in ua_lower:
+        browser = "Opera"
+    os_name = ""
+    if "windows" in ua_lower:
+        os_name = "Windows"
+    elif "mac os" in ua_lower or "macintosh" in ua_lower:
+        os_name = "macOS"
+    elif "linux" in ua_lower:
+        os_name = "Linux"
+    elif "android" in ua_lower:
+        os_name = "Android"
+    elif "iphone" in ua_lower or "ipad" in ua_lower:
+        os_name = "iOS"
+    device = "mobile" if any(m in ua_lower for m in ["mobile", "android", "iphone"]) else "desktop"
+    return browser, os_name, device
+
+
+@app.route("/api/forms/<slug>/partial", methods=["POST"])
+def api_partial_save(slug):
+    """POST /api/forms/<slug>/partial — Auto-save partial form data for abandon recovery."""
+    form = query_db(
+        "SELECT id FROM custom_forms WHERE slug = %s AND status = 'active'",
+        (slug,), fetchone=True
+    )
+    if not form:
+        return jsonify({"error": "Form not found"}), 404
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return jsonify({"error": "session_id required"}), 400
+
+    form_data = data.get("fields", {})
+    ua_string = request.headers.get("User-Agent", "")
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+    browser, os_name, device = _parse_ua(ua_string)
+
+    existing = query_db(
+        "SELECT id, status FROM form_submissions WHERE form_id = %s AND session_id = %s ORDER BY submitted_at DESC LIMIT 1",
+        (form["id"], session_id), fetchone=True
+    )
+
+    if existing and existing["status"] == "partial":
+        execute_db(
+            "UPDATE form_submissions SET submission_data = %s::jsonb, updated_at = NOW() WHERE id = %s",
+            (json.dumps(form_data), existing["id"])
+        )
+        return jsonify({"success": True, "id": existing["id"], "action": "updated"})
+    elif existing and existing["status"] != "partial":
+        return jsonify({"success": True, "id": existing["id"], "action": "already_submitted"})
+    else:
+        result = execute_db(
+            """INSERT INTO form_submissions
+                (form_id, submission_data, status, device_type, user_agent,
+                 referrer_url, utm_source, utm_medium, utm_campaign, utm_term, utm_content,
+                 page_url, ip_address, browser, os, screen_resolution, language, session_id)
+               VALUES (%s, %s::jsonb, 'partial', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               RETURNING id""",
+            (
+                form["id"],
+                json.dumps(form_data),
+                device,
+                ua_string[:500],
+                data.get("referrer", ""),
+                data.get("utm_source", ""),
+                data.get("utm_medium", ""),
+                data.get("utm_campaign", ""),
+                data.get("utm_term", ""),
+                data.get("utm_content", ""),
+                data.get("page_url", ""),
+                ip,
+                browser,
+                os_name,
+                data.get("screen_resolution", ""),
+                data.get("language", ""),
+                session_id
+            )
+        )
+        return jsonify({"success": True, "id": result["id"] if result else None, "action": "created"}), 201
+
+
 @app.route("/api/forms/<slug>/submit", methods=["POST"])
 def api_submit_form(slug):
     """POST /api/forms/<slug>/submit — Accept a dynamic form submission."""
@@ -1737,61 +1834,58 @@ def api_submit_form(slug):
             return jsonify({"error": f"{f['label']} is required"}), 400
 
     ua_string = request.headers.get("User-Agent", "")
-    ua_lower = ua_string.lower()
-    device = "mobile" if any(m in ua_lower for m in ["mobile", "android", "iphone"]) else "desktop"
     ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+    browser, os_name, device = _parse_ua(ua_string)
 
-    browser = ""
-    if "firefox" in ua_lower:
-        browser = "Firefox"
-    elif "edg" in ua_lower:
-        browser = "Edge"
-    elif "chrome" in ua_lower:
-        browser = "Chrome"
-    elif "safari" in ua_lower:
-        browser = "Safari"
-    elif "opera" in ua_lower or "opr" in ua_lower:
-        browser = "Opera"
-
-    os_name = ""
-    if "windows" in ua_lower:
-        os_name = "Windows"
-    elif "mac os" in ua_lower or "macintosh" in ua_lower:
-        os_name = "macOS"
-    elif "linux" in ua_lower:
-        os_name = "Linux"
-    elif "android" in ua_lower:
-        os_name = "Android"
-    elif "iphone" in ua_lower or "ipad" in ua_lower:
-        os_name = "iOS"
-
-    result = execute_db(
-        """INSERT INTO form_submissions
-            (form_id, submission_data, status, device_type, user_agent,
-             referrer_url, utm_source, utm_medium, utm_campaign, utm_term, utm_content,
-             page_url, ip_address, browser, os, screen_resolution, language, session_id)
-           VALUES (%s, %s::jsonb, 'new', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-           RETURNING id""",
-        (
-            form["id"],
-            json.dumps(form_data),
-            device,
-            ua_string[:500],
-            data.get("referrer", ""),
-            data.get("utm_source", ""),
-            data.get("utm_medium", ""),
-            data.get("utm_campaign", ""),
-            data.get("utm_term", ""),
-            data.get("utm_content", ""),
-            data.get("page_url", ""),
-            ip,
-            browser,
-            os_name,
-            data.get("screen_resolution", ""),
-            data.get("language", ""),
-            data.get("session_id", "")
+    session_id = data.get("session_id", "")
+    existing = None
+    if session_id:
+        existing = query_db(
+            "SELECT id FROM form_submissions WHERE form_id = %s AND session_id = %s AND status = 'partial' ORDER BY submitted_at DESC LIMIT 1",
+            (form["id"], session_id), fetchone=True
         )
-    )
+
+    if existing:
+        result = execute_db(
+            """UPDATE form_submissions SET
+                 submission_data = %s::jsonb, status = 'new', updated_at = NOW(),
+                 submitted_at = NOW(), device_type = %s, user_agent = %s,
+                 referrer_url = %s, utm_source = %s, utm_medium = %s,
+                 utm_campaign = %s, utm_term = %s, utm_content = %s,
+                 page_url = %s, ip_address = %s, browser = %s, os = %s,
+                 screen_resolution = %s, language = %s
+               WHERE id = %s RETURNING id""",
+            (
+                json.dumps(form_data),
+                device, ua_string[:500],
+                data.get("referrer", ""), data.get("utm_source", ""),
+                data.get("utm_medium", ""), data.get("utm_campaign", ""),
+                data.get("utm_term", ""), data.get("utm_content", ""),
+                data.get("page_url", ""), ip, browser, os_name,
+                data.get("screen_resolution", ""), data.get("language", ""),
+                existing["id"]
+            )
+        )
+    else:
+        result = execute_db(
+            """INSERT INTO form_submissions
+                (form_id, submission_data, status, device_type, user_agent,
+                 referrer_url, utm_source, utm_medium, utm_campaign, utm_term, utm_content,
+                 page_url, ip_address, browser, os, screen_resolution, language, session_id)
+               VALUES (%s, %s::jsonb, 'new', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               RETURNING id""",
+            (
+                form["id"],
+                json.dumps(form_data),
+                device, ua_string[:500],
+                data.get("referrer", ""), data.get("utm_source", ""),
+                data.get("utm_medium", ""), data.get("utm_campaign", ""),
+                data.get("utm_term", ""), data.get("utm_content", ""),
+                data.get("page_url", ""), ip, browser, os_name,
+                data.get("screen_resolution", ""), data.get("language", ""),
+                session_id
+            )
+        )
     return jsonify({"success": True, "id": result["id"] if result else None}), 201
 
 

@@ -1259,6 +1259,14 @@ TO CUSTOMIZE THIS DASHBOARD:
           <div id="analytics-today" style="font-size: 1.5rem; font-weight: 600; color: #fff;" data-testid="text-analytics-today">0</div>
         </div>
         <div>
+          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Abandoned</div>
+          <div id="analytics-abandoned" style="font-size: 1.5rem; font-weight: 600; color: #f59e0b;" data-testid="text-analytics-abandoned">0</div>
+        </div>
+        <div>
+          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Abandon Rate</div>
+          <div id="analytics-abandon-rate" style="font-size: 1.5rem; font-weight: 600; color: #f59e0b;" data-testid="text-analytics-abandon-rate">0%</div>
+        </div>
+        <div>
           <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Devices</div>
           <div id="analytics-devices" style="font-size: 0.8rem; color: rgba(255,255,255,0.7);" data-testid="text-analytics-devices">—</div>
         </div>
@@ -2468,6 +2476,13 @@ TO CUSTOMIZE THIS DASHBOARD:
 
         document.getElementById('analytics-total').textContent = analytics.total || 0;
         document.getElementById('analytics-today').textContent = analytics.today || 0;
+
+        const statusBreakdown = analytics.by_status || [];
+        const partialCount = (statusBreakdown.find(s => s.status === 'partial') || {}).cnt || 0;
+        const totalCount = analytics.total || 0;
+        const abandonRate = totalCount > 0 ? ((partialCount / totalCount) * 100).toFixed(1) : 0;
+        document.getElementById('analytics-abandoned').textContent = partialCount;
+        document.getElementById('analytics-abandon-rate').textContent = abandonRate + '%';
         document.getElementById('analytics-devices').textContent =
           (analytics.by_device || []).map(d => `${d.device_type}: ${d.cnt}`).join(', ') || '—';
         document.getElementById('analytics-utm').textContent =
@@ -2496,13 +2511,14 @@ TO CUSTOMIZE THIS DASHBOARD:
 
         tbody.innerHTML = subs.map(s => {
           const d = s.submission_data || {};
-          let row = '<tr>';
+          let row = `<tr style="${s.status === 'partial' ? 'opacity:0.7; border-left: 3px solid #f59e0b;' : ''}">`;
           currentSubsFields.forEach(f => {
             const val = d[f.name];
             row += `<td>${esc(val != null ? String(val) : '—')}</td>`;
           });
           row += `<td>
             <select class="status-select" onchange="updateSubmissionStatus(${s.id}, this.value)" data-testid="select-sub-status-${s.id}" style="background: transparent; border: 1px solid var(--admin-border); color: var(--admin-text); padding: 0.25rem 0.5rem; border-radius: var(--admin-radius); font-size: 0.75rem;">
+              <option value="partial" ${s.status === 'partial' ? 'selected' : ''}>Partial (Abandoned)</option>
               <option value="new" ${s.status === 'new' ? 'selected' : ''}>New</option>
               <option value="reviewed" ${s.status === 'reviewed' ? 'selected' : ''}>Reviewed</option>
               <option value="contacted" ${s.status === 'contacted' ? 'selected' : ''}>Contacted</option>

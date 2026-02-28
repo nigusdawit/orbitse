@@ -621,6 +621,65 @@ function getTrackingData() {
  */
 let currentFormSlug = null;
 let currentFormConfig = null;
+let partialSaveTimer = null;
+
+function getFormSessionId() {
+  let sid = sessionStorage.getItem('form_session_id');
+  if (!sid) {
+    sid = 'fs_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
+    sessionStorage.setItem('form_session_id', sid);
+  }
+  return sid;
+}
+
+function collectFormFields() {
+  const container = document.getElementById('booking-form-fields');
+  if (!container) return {};
+  const fields = {};
+  container.querySelectorAll('input, select, textarea').forEach(el => {
+    if (!el.name) return;
+    if (el.type === 'checkbox') {
+      fields[el.name] = el.checked ? 'yes' : '';
+    } else if (el.type === 'radio') {
+      if (el.checked) fields[el.name] = el.value;
+    } else {
+      fields[el.name] = el.value;
+    }
+  });
+  return fields;
+}
+
+function schedulePartialSave() {
+  if (!currentFormSlug) return;
+  if (partialSaveTimer) clearTimeout(partialSaveTimer);
+  partialSaveTimer = setTimeout(() => {
+    const fields = collectFormFields();
+    const hasAnyValue = Object.values(fields).some(v => v && v.trim());
+    if (!hasAnyValue) return;
+    try {
+      fetch(`/api/forms/${currentFormSlug}/partial`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fields,
+          session_id: getFormSessionId(),
+          ...getTrackingData(),
+          screen_resolution: `${window.screen.width}x${window.screen.height}`,
+          language: navigator.language || ''
+        })
+      });
+    } catch (e) { /* silent */ }
+  }, 1500);
+}
+
+function attachPartialSaveListeners() {
+  const container = document.getElementById('booking-form-fields');
+  if (!container) return;
+  container.querySelectorAll('input, select, textarea').forEach(el => {
+    el.addEventListener('blur', schedulePartialSave);
+    el.addEventListener('change', schedulePartialSave);
+  });
+}
 
 function trackBookingStep(step) {
   const key = 'booking_tracked_' + step;
@@ -704,6 +763,7 @@ async function loadDynamicForm(slug) {
     container.innerHTML = html;
 
     populateDynamicRoomDropdown();
+    attachPartialSaveListeners();
   } catch (err) {
     container.innerHTML = '<p style="text-align:center; color: #ef4444; padding: 2rem;">Failed to load form.</p>';
   }
@@ -791,11 +851,12 @@ async function handleDynamicFormSubmit(e) {
         ...getTrackingData(),
         screen_resolution: `${window.screen.width}x${window.screen.height}`,
         language: navigator.language || '',
-        session_id: sessionStorage.getItem('chat_session_id') || ''
+        session_id: getFormSessionId()
       })
     });
 
     if (res.ok) {
+      if (partialSaveTimer) clearTimeout(partialSaveTimer);
       const container = document.getElementById('booking-form-fields');
       const conf = document.getElementById('booking-confirmation');
       if (container) container.style.display = 'none';
