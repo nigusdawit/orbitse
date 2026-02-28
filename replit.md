@@ -31,6 +31,13 @@ The site features:
 - **Dynamic Form Builder** — create custom forms from admin, add/remove/reorder fields, assign fields to steps for multi-step forms, view submissions with full marketing analytics
 - **Partial/Abandon Capture** — auto-saves incomplete form data for lead recovery
 - **Theme / Color Editor** — customize site colors, fonts, and glass effects from admin
+- **Loading Experience** — elegant glassmorphic loading screen with shimmer animation, fades out to reveal content
+- **Smooth Scroll Transitions** — enhanced snap-scroll with per-section entrance animations using IntersectionObserver
+- **Card Micro-Interactions** — hover lift + white border glow on testimonial, team, experience, pricing, and FAQ cards
+- **Gold Accent System** — `#c9a96e` accent strategically applied to section eyebrows, nav dots, footer headings, blog badges, chatbot border
+- **Section Dividers** — subtle gold-tinted gradient lines between landing sections for visual breathing room
+- **Blog Rich Text Editor** — custom toolbar-based editor in admin (bold, italic, headings, lists, links, images) replaces raw HTML textarea
+- **Reading Progress Bar** — thin gold bar on blog post pages that fills as the reader scrolls
 
 ## User Preferences
 

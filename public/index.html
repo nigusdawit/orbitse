@@ -84,13 +84,28 @@ FONTS:
 <body>
   <!--
   ============================================================================
+  LOADING SCREEN — Elegant glassmorphic overlay shown while data loads
+  ============================================================================
+  -->
+  <div id="loading-screen" class="loading-screen" data-testid="loading-screen">
+    <div class="loading-panel" data-testid="loading-panel">
+      <div id="loading-logo-badge" class="loading-logo-badge" data-testid="loading-logo">CS</div>
+      <p id="loading-site-name" class="loading-site-name" data-testid="loading-site-name">Loading</p>
+      <div class="loading-shimmer" data-testid="loading-shimmer">
+        <div class="loading-shimmer-bar"></div>
+      </div>
+    </div>
+  </div>
+
+  <!--
+  ============================================================================
   LANDING VIEW — The main scrollable landing page
   ============================================================================
   This container uses CSS scroll-snap for a "page-by-page" scroll experience.
   Each child <section> with class "snap-section" will snap into view.
   -->
   <!-- role="main" identifies this as the primary content area of the page -->
-  <div id="landing-view" class="landing-container scrollbar-hide" role="main">
+  <div id="landing-view" class="landing-container scrollbar-hide" role="main" style="opacity: 0;">
 
     <!--
     ========================================================================
@@ -336,7 +351,7 @@ FONTS:
   Visible by default; hidden by applySectionOrder() if footer is disabled.
   -->
   <!-- role="contentinfo" identifies the footer as the page's contentinfo landmark -->
-  <footer id="site-footer" class="site-footer" role="contentinfo" data-testid="site-footer">
+  <footer id="site-footer" class="site-footer snap-section" role="contentinfo" data-testid="site-footer">
     <div class="footer-container">
 
       <!-- Footer Column 1 — Brand + Description -->

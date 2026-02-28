@@ -97,14 +97,6 @@ VARIABLES AVAILABLE:
     </script>
 
     <style>
-        /* =============================================================
-           BLOG POST PAGE STYLES
-           =============================================================
-           Uses the same design tokens as the main site (dark theme,
-           frosted glass cards, accent color highlights, elegant typography).
-        */
-
-        /* Reset and base styles */
         *, *::before, *::after {
             margin: 0;
             padding: 0;
@@ -121,7 +113,17 @@ VARIABLES AVAILABLE:
             -moz-osx-font-smoothing: grayscale;
         }
 
-        /* ---- Top navigation bar ---- */
+        .reading-progress-bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 0%;
+            height: 3px;
+            background: linear-gradient(90deg, {{ theme.accent }}, rgba(201, 169, 110, 0.6));
+            z-index: 200;
+            transition: width 0.1s linear;
+        }
+
         .blog-nav {
             position: fixed;
             top: 0;
@@ -139,22 +141,29 @@ VARIABLES AVAILABLE:
             border-bottom: 1px solid {{ theme.glass_border }};
         }
 
-        .blog-nav a {
+        .blog-nav .back-link {
             color: rgba(255, 255, 255, 0.7);
             text-decoration: none;
             font-size: 0.85rem;
             letter-spacing: 0.05em;
-            transition: color 0.3s ease;
+            transition: all 0.3s ease;
             display: flex;
             align-items: center;
             gap: 0.5rem;
+            padding: 0.4rem 1rem;
+            border-radius: 9999px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
         }
 
-        .blog-nav a:hover {
+        .blog-nav .back-link:hover {
             color: {{ theme.accent }};
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(201, 169, 110, 0.25);
         }
 
-        /* Arrow icon for back link */
         .blog-nav .back-arrow {
             font-size: 1.1rem;
         }
@@ -167,58 +176,57 @@ VARIABLES AVAILABLE:
             letter-spacing: 0.05em;
         }
 
-        /* ---- Cover image hero section ---- */
         .blog-hero {
             position: relative;
             width: 100%;
-            height: 50vh;
-            min-height: 350px;
-            max-height: 550px;
+            height: 65vh;
+            min-height: 420px;
+            max-height: 700px;
             overflow: hidden;
-            margin-top: 56px; /* Height of fixed nav */
+            margin-top: 56px;
         }
 
         .blog-hero img {
             width: 100%;
             height: 100%;
             object-fit: cover;
+            position: fixed;
+            top: 0;
+            left: 0;
         }
 
-        /* Dark gradient wash over hero image for text readability */
         .blog-hero::after {
             content: '';
             position: absolute;
             inset: 0;
             background: linear-gradient(
                 to bottom,
-                rgba(6, 11, 20, 0.3) 0%,
-                rgba(6, 11, 20, 0.6) 60%,
+                rgba(6, 11, 20, 0.2) 0%,
+                rgba(6, 11, 20, 0.45) 40%,
+                rgba(6, 11, 20, 0.75) 70%,
                 {{ theme.bg }} 100%
             );
+            z-index: 1;
         }
 
-        /* No-image hero placeholder (when no cover image is set) */
         .blog-hero-empty {
             margin-top: 56px;
             height: 120px;
             background: linear-gradient(135deg, rgba(255,255,255,0.02), rgba(255,255,255,0.05));
         }
 
-        /* ---- Main content area ---- */
         .blog-content-wrapper {
-            max-width: 780px;
+            max-width: 680px;
             margin: 0 auto;
             padding: 0 2rem 4rem;
             position: relative;
-            z-index: 1;
+            z-index: 2;
         }
 
-        /* Pull content up over the hero image gradient */
         .blog-content-wrapper.has-hero {
-            margin-top: -80px;
+            margin-top: -100px;
         }
 
-        /* ---- Post header (title, meta, category) ---- */
         .blog-post-header {
             margin-bottom: 2.5rem;
         }
@@ -252,36 +260,32 @@ VARIABLES AVAILABLE:
             margin-bottom: 1.5rem;
         }
 
-        /* ---- Author and date metadata row ---- */
         .blog-meta {
             display: flex;
             align-items: center;
             gap: 1rem;
             flex-wrap: wrap;
             font-size: 0.85rem;
-            color: rgba(255, 255, 255, 0.45);
+            color: rgba(255, 255, 255, 0.55);
         }
 
         .blog-meta-divider {
             width: 3px;
             height: 3px;
             border-radius: 50%;
-            background: rgba(255, 255, 255, 0.25);
+            background: rgba(255, 255, 255, 0.3);
         }
 
-        /* ---- Horizontal rule divider ---- */
         .blog-divider {
             border: none;
             border-top: 1px solid {{ theme.glass_border }};
             margin: 2rem 0;
         }
 
-        /* ---- Blog post body content ---- */
-        /* Styles for the HTML content rendered from the database */
         .blog-body {
-            font-size: 1.05rem;
+            font-size: 1.08rem;
             color: rgba(255, 255, 255, 0.85);
-            line-height: 1.8;
+            line-height: 1.9;
         }
 
         .blog-body h2 {
@@ -301,15 +305,15 @@ VARIABLES AVAILABLE:
         }
 
         .blog-body p {
-            margin-bottom: 1.25rem;
+            margin-bottom: 1.5rem;
         }
 
         .blog-body ul, .blog-body ol {
-            margin: 1rem 0 1.5rem 1.5rem;
+            margin: 1rem 0 1.75rem 1.5rem;
         }
 
         .blog-body li {
-            margin-bottom: 0.5rem;
+            margin-bottom: 0.6rem;
         }
 
         .blog-body li strong {
@@ -319,7 +323,7 @@ VARIABLES AVAILABLE:
         .blog-body blockquote {
             border-left: 3px solid {{ theme.accent }};
             padding-left: 1.5rem;
-            margin: 1.5rem 0;
+            margin: 2rem 0;
             color: rgba(255, 255, 255, 0.7);
             font-style: italic;
         }
@@ -357,7 +361,6 @@ VARIABLES AVAILABLE:
             padding: 0;
         }
 
-        /* ---- Tags section at the bottom of the post ---- */
         .blog-tags {
             display: flex;
             flex-wrap: wrap;
@@ -369,14 +372,22 @@ VARIABLES AVAILABLE:
             font-size: 0.72rem;
             text-transform: uppercase;
             letter-spacing: 0.1em;
-            color: rgba(255, 255, 255, 0.5);
+            color: rgba(255, 255, 255, 0.6);
             background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            padding: 0.3rem 0.75rem;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 0.35rem 0.85rem;
             border-radius: 9999px;
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
         }
 
-        /* ---- Back-to-blog footer link ---- */
+        .blog-tag:hover {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(201, 169, 110, 0.25);
+            color: rgba(255, 255, 255, 0.75);
+        }
+
         .blog-footer-nav {
             text-align: center;
             margin-top: 3rem;
@@ -385,18 +396,28 @@ VARIABLES AVAILABLE:
         }
 
         .blog-footer-nav a {
-            color: {{ theme.accent }};
+            color: rgba(255, 255, 255, 0.7);
             text-decoration: none;
             font-size: 0.9rem;
             letter-spacing: 0.05em;
-            transition: opacity 0.3s ease;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1.25rem;
+            border-radius: 9999px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
         }
 
         .blog-footer-nav a:hover {
-            opacity: 0.8;
+            color: {{ theme.accent }};
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(201, 169, 110, 0.25);
         }
 
-        /* ---- Responsive adjustments ---- */
         @media (max-width: 768px) {
             .blog-nav {
                 padding: 0.75rem 1rem;
@@ -407,28 +428,33 @@ VARIABLES AVAILABLE:
             }
 
             .blog-hero {
-                height: 40vh;
-                min-height: 250px;
+                height: 45vh;
+                min-height: 280px;
+            }
+
+            .blog-hero img {
+                position: relative;
             }
 
             .blog-body {
                 font-size: 1rem;
+                line-height: 1.85;
             }
         }
     </style>
 </head>
 <body>
 
-    <!-- Fixed top navigation bar with back-to-site link and site branding -->
+    <div class="reading-progress-bar" id="readingProgress" data-testid="progress-reading"></div>
+
     <nav class="blog-nav" role="navigation" aria-label="Blog post navigation">
-        <a href="/" data-testid="link-back-home" aria-label="Back to home page">
+        <a href="/" class="back-link" data-testid="link-back-home" aria-label="Back to home page">
             <span class="back-arrow" aria-hidden="true">&larr;</span>
             Back
         </a>
         <span class="site-name" data-testid="text-site-name">{{ settings.site_name or 'Blog' }}</span>
     </nav>
 
-    <!-- Cover image hero section (only shown if the post has a cover image) -->
     {% if post.cover_image %}
     <div class="blog-hero" role="img" aria-label="Cover image for {{ post.title }}">
         <img src="{{ post.cover_image }}" alt="{{ post.title }}" loading="eager">
@@ -437,10 +463,8 @@ VARIABLES AVAILABLE:
     <div class="blog-hero-empty" aria-hidden="true"></div>
     {% endif %}
 
-    <!-- Main blog post content area -->
     <article class="blog-content-wrapper {{ 'has-hero' if post.cover_image else '' }}" role="article" aria-label="{{ post.title }}">
 
-        <!-- Post header: category badge, title, subtitle, and author/date metadata -->
         <header class="blog-post-header">
             {% if post.category %}
             <span class="blog-category-badge" data-testid="text-blog-category">{{ post.category }}</span>
@@ -469,12 +493,10 @@ VARIABLES AVAILABLE:
 
         <hr class="blog-divider" aria-hidden="true">
 
-        <!-- Full blog post body content (HTML from database) -->
         <div class="blog-body" data-testid="text-blog-content">
             {{ post.content | safe }}
         </div>
 
-        <!-- Tags displayed as pills at the bottom of the post -->
         {% if post.tags %}
         <div class="blog-tags" data-testid="text-blog-tags" aria-label="Post tags">
             {% for tag in post.tags.split(',') %}
@@ -485,12 +507,25 @@ VARIABLES AVAILABLE:
         </div>
         {% endif %}
 
-        <!-- Footer navigation link back to the main site -->
         <nav class="blog-footer-nav" aria-label="Return to main site">
             <a href="/" data-testid="link-back-to-site">&larr; Back to {{ settings.site_name or 'Home' }}</a>
         </nav>
 
     </article>
+
+    <script>
+        (function() {
+            var progressBar = document.getElementById('readingProgress');
+            window.addEventListener('scroll', function() {
+                var scrollTop = window.scrollY || document.documentElement.scrollTop;
+                var docHeight = document.documentElement.scrollHeight - window.innerHeight;
+                if (docHeight > 0) {
+                    var progress = (scrollTop / docHeight) * 100;
+                    progressBar.style.width = Math.min(progress, 100) + '%';
+                }
+            }, { passive: true });
+        })();
+    </script>
 
 </body>
 </html>

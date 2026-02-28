@@ -140,8 +140,34 @@ async function loadAllData() {
       lucide.createIcons();
     }
 
+    /* Hide loading screen and reveal landing content */
+    hideLoadingScreen();
+
   } catch (error) {
     console.error('Failed to load site data:', error);
+    hideLoadingScreen();
+  }
+}
+
+/**
+ * Hides the loading screen with a fade-out transition and reveals the landing content.
+ * The loading screen scales up slightly while fading out for an elegant exit.
+ * The landing container fades in simultaneously.
+ */
+function hideLoadingScreen() {
+  const loadingScreen = document.getElementById('loading-screen');
+  const landingView = document.getElementById('landing-view');
+
+  if (loadingScreen) {
+    loadingScreen.classList.add('fade-out');
+    setTimeout(() => {
+      loadingScreen.style.display = 'none';
+    }, 600);
+  }
+
+  if (landingView) {
+    landingView.style.transition = 'opacity 0.6s cubic-bezier(0.22, 1, 0.36, 1)';
+    landingView.style.opacity = '1';
   }
 }
 
@@ -1658,22 +1684,50 @@ async function handleDynamicFormSubmit(e) {
 ============================================================================= */
 
 function setupScrollAnimations() {
+  const landingView = document.getElementById('landing-view');
+
   const observer = new IntersectionObserver((entries) => {
     entries.forEach(entry => {
       if (entry.isIntersecting) {
         entry.target.classList.add('visible');
-        observer.unobserve(entry.target); /* Only animate once */
+        observer.unobserve(entry.target);
       }
     });
   }, {
-    threshold: 0.1,                              /* Trigger when 10% of element is visible */
-    root: document.getElementById('landing-view') /* Observe within the scroll container */
+    threshold: 0.1,
+    root: landingView
   });
 
-  /* Observe all elements with the fade-in-view class */
   document.querySelectorAll('.fade-in-view').forEach(el => {
     observer.observe(el);
   });
+
+  const sectionObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add('section-in-view');
+      }
+    });
+  }, {
+    threshold: 0.25,
+    root: landingView
+  });
+
+  document.querySelectorAll('.snap-section').forEach(section => {
+    sectionObserver.observe(section);
+  });
+
+  const heroSection = document.getElementById('section-hero');
+  if (heroSection) {
+    heroSection.classList.add('section-in-view');
+  }
+
+  const footer = document.getElementById('site-footer');
+  if (footer) {
+    setTimeout(() => {
+      footer.classList.add('section-in-view');
+    }, 300);
+  }
 }
 
 
