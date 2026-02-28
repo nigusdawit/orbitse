@@ -260,11 +260,18 @@ Two layout options:
 ```
 Replaces the hero description text with a typing animation. The page scrolls to the top automatically. The original description restores on page reload. Great for personalized greetings or highlighting key information prominently.
 
-#### 5. Generate HTML — Render custom content
+#### 5. Generate HTML — Full creative freedom
 ```json
-{"action": "generateHTML", "html": "<div style='padding:2rem'><h2>Custom Content</h2><p>Anything goes here.</p></div>"}
+{"action": "generateHTML", "html": "<div style='max-width:900px;margin:0 auto;padding:2rem;'>YOUR COMPLETE HTML</div>"}
 ```
-The most powerful command. The AI can generate any HTML and it renders on a canvas. Use for custom layouts that don't fit the other formats.
+The most powerful command. The AI can generate any HTML with inline CSS and it renders on a fullscreen canvas. The AI receives the site's exact theme (colors, fonts, glass effects) so its output always matches the brand. Use for:
+- Detailed comparison tables, pricing breakdowns
+- Multi-column layouts, feature grids
+- Itineraries, schedules, timelines
+- Step-by-step guides, custom cards
+- Any content that needs more flexibility than showSlide or generateVisual
+
+The theme values (accent color, fonts, background, glass effects) are automatically injected from the Theme Editor settings into the system prompt, so any admin changes are reflected in the AI's output.
 
 ### AI Knowledge Base — Teaching the AI About Your Business
 

@@ -698,25 +698,42 @@ Valid targets: use slugs from the gallery cards (the site owner configures these
 {"action": "showSlide", "title": "TITLE", "subtitle": "SUBTITLE", "points": ["point1", "point2"]}
 ```
 
-3. Generate a visual slide (ONLY when user explicitly asks to "show me visually" or "visualize"):
+3. Generate a quick visual data card (for simple data displays):
 ```command
 {"action": "generateVisual", "title": "TITLE", "subtitle": "optional subtitle", "columns": ["Col1", "Col2", "Col3"], "rows": [["Cell1", "Cell2", "Cell3"], ["Cell4", "Cell5", "Cell6"]], "footer": "optional footnote"}
 ```
-The frontend renders this as a beautiful frosted-glass card automatically. You just provide the data.
-- "title" (required): The heading of the visual
-- "subtitle" (optional): A line below the title
-- "columns" (optional): Column headers for a table layout
-- "rows" (optional): Array of arrays — each inner array is one row of data matching the columns
-- "items" (optional): Use INSTEAD of columns/rows for a simple list: [{"label": "Label", "value": "Value"}, ...]
-- "footer" (optional): A footnote at the bottom
+The frontend renders this as a frosted-glass card automatically. You just provide the data.
+- "title" (required), "subtitle" (optional), "columns" + "rows" for tables, "items" for simple lists, "footer" (optional)
+Use this for quick, simple data. For anything more creative or complex, use generateHTML instead.
 
-4. Display a message on the hero section (replaces the hero description text with a typing animation):
+4. Generate fully custom HTML (FULL CREATIVE FREEDOM):
+```command
+{"action": "generateHTML", "html": "<div style='...'>YOUR COMPLETE HTML HERE</div>"}
+```
+This renders your HTML on a fullscreen canvas. You have COMPLETE design freedom — create anything:
+- Comparison tables, pricing breakdowns, itineraries, timelines
+- Multi-column layouts, feature grids, photo galleries
+- Interactive-looking cards, step-by-step guides, schedules
+- Any content expressible in HTML + inline CSS
+
+THEME YOU MUST MATCH (use these exact values in your inline CSS):
+{THEME_PLACEHOLDER}
+
+Design tips:
+- Use backdrop-filter: blur(20px) with semi-transparent backgrounds for the frosted glass look
+- Use border: 1px solid rgba(255,255,255,0.08) for subtle glass borders
+- Use border-radius: 1rem for rounded containers
+- Keep text light (rgba(255,255,255,0.85) for body, #fff for headings)
+- Use the accent color for highlights, borders, and decorative elements
+- Add padding (2-3rem) and max-width (900px) for readability
+- Make your HTML self-contained with all styles inline
+
+5. Display a message on the hero section:
 ```command
 {"action": "heroMessage", "message": "YOUR MESSAGE HERE"}
 ```
-This updates the large hero text on the landing page. Use it ONLY for special welcome messages
-or dramatic announcements. For normal Q&A, your text reply is automatically displayed on the
-hero section — you don't need this command for regular conversation.
+Use ONLY for special welcome messages or dramatic announcements. Normal Q&A text
+automatically appears on the hero section — you don't need this command for regular conversation.
 
 IMPORTANT BEHAVIOR:
 When the visitor asks a question from the chat bar (not from an expanded chat panel), your
@@ -728,9 +745,10 @@ RULES:
 - ALWAYS navigate when discussing a specific gallery item. This IS the experience — show, don't just tell.
 - For general questions (pricing, info, recommendations), just reply with text. It will appear on the hero.
 - Keep text responses concise but natural (1-4 sentences). Be conversational, not robotic.
-- Use showSlide for comparisons, recommendations, and structured info.
+- Use showSlide for quick structured comparisons and bullet-point recommendations.
+- Use generateHTML for rich, detailed, or creative content — comparison tables, itineraries, schedules, detailed breakdowns, multi-section layouts. You have full design freedom here.
+- Use generateVisual only for simple quick data cards.
 - Only use heroMessage for special greetings or announcements, not for regular Q&A.
-- Do NOT use generateVisual unless the user explicitly says "show me visually", "visualize", "create a visual", or similar.
 - Only include ONE command block per response.
 - Reference real names, prices, and details from the site data. Never make up information.
 - If the visitor seems interested, proactively suggest related items or experiences they might enjoy.
@@ -797,6 +815,41 @@ def api_chat():
             active_prompt = cs["system_prompt"]
     except Exception:
         pass
+
+    # ----- THEME INJECTION -----
+    # Build the theme string from defaults + any admin overrides
+    theme_colors = {
+        "background": "#060b14",
+        "section_dark": "#0a0f1a",
+        "accent_gold": "#c9a96e",
+        "text": "#e4e4e7",
+        "heading_font": "Playfair Display, Georgia, serif",
+        "body_font": "DM Sans, sans-serif",
+        "glass_bg": "rgba(255, 255, 255, 0.03)",
+        "glass_border": "rgba(255, 255, 255, 0.08)",
+    }
+    try:
+        theme = query_db("SELECT * FROM theme_settings WHERE id = 1", fetchone=True)
+        if theme:
+            if theme.get("accent_color"): theme_colors["accent_gold"] = theme["accent_color"]
+            if theme.get("bg_color"): theme_colors["background"] = theme["bg_color"]
+            if theme.get("text_color"): theme_colors["text"] = theme["text_color"]
+            if theme.get("heading_font"): theme_colors["heading_font"] = theme["heading_font"]
+            if theme.get("body_font"): theme_colors["body_font"] = theme["body_font"]
+    except Exception:
+        pass
+
+    theme_block = (
+        f"- Background: {theme_colors['background']}\n"
+        f"- Dark section: {theme_colors['section_dark']}\n"
+        f"- Accent/gold: {theme_colors['accent_gold']}\n"
+        f"- Text color: {theme_colors['text']}\n"
+        f"- Heading font: {theme_colors['heading_font']}\n"
+        f"- Body font: {theme_colors['body_font']}\n"
+        f"- Glass background: {theme_colors['glass_bg']}\n"
+        f"- Glass border: {theme_colors['glass_border']}"
+    )
+    active_prompt = active_prompt.replace("{THEME_PLACEHOLDER}", theme_block)
 
     # =========================================================================
     # AI KNOWLEDGE BASE — Dynamic Content Injection
