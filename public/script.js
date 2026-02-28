@@ -1931,8 +1931,21 @@ function chatToggleExpand() {
   chatExpanded = !chatExpanded;
   container.classList.toggle('expanded', chatExpanded);
 
-  /* Collapse history when closing the panel */
-  if (!chatExpanded) {
+  if (chatExpanded) {
+    /* Rebuild main panel messages from chatHistory if panel is empty */
+    const panelMessages = document.getElementById('chatbot-messages');
+    const hasUserMessages = panelMessages && panelMessages.querySelector('.chat-msg-user');
+    if (!hasUserMessages && chatHistory.length > 0 && panelMessages) {
+      chatHistory.forEach(msg => {
+        const cls = msg.role === 'user' ? 'chat-msg-user' : 'chat-msg-agent';
+        panelMessages.insertAdjacentHTML('beforeend',
+          `<div class="chat-msg ${cls}">${msg.content}</div>`
+        );
+      });
+      panelMessages.scrollTop = panelMessages.scrollHeight;
+    }
+  } else {
+    /* Collapse history when closing the panel */
     const history = document.getElementById('panel-history');
     if (history) history.classList.remove('visible');
   }
@@ -2444,13 +2457,37 @@ function updateSidePanelLatest(text) {
 function syncChatToSidePanel() {
   const panelMessages = document.getElementById('chatbot-messages');
   const sideMessages = document.getElementById('side-chat-messages');
-  if (panelMessages && sideMessages) {
+  if (!sideMessages) return;
+
+  /* Check if the main panel has real user messages (not just the greeting) */
+  const hasUserMessages = panelMessages && panelMessages.querySelector('.chat-msg-user');
+
+  if (hasUserMessages) {
+    /* Main panel has conversation — copy it directly */
     sideMessages.innerHTML = panelMessages.innerHTML;
-    sideMessages.scrollTop = sideMessages.scrollHeight;
+  } else if (chatHistory.length > 0) {
+    /* Main panel is empty/only greeting but chatHistory has data — rebuild from history */
+    sideMessages.innerHTML = '';
+    const greeting = chatSettings && chatSettings.greeting;
+    if (greeting) {
+      sideMessages.insertAdjacentHTML('beforeend',
+        `<div class="chat-msg chat-msg-agent">${greeting}</div>`
+      );
+    }
+    chatHistory.forEach(msg => {
+      const cls = msg.role === 'user' ? 'chat-msg-user' : 'chat-msg-agent';
+      sideMessages.insertAdjacentHTML('beforeend',
+        `<div class="chat-msg ${cls}">${msg.content}</div>`
+      );
+    });
+  } else if (panelMessages) {
+    sideMessages.innerHTML = panelMessages.innerHTML;
   }
 
+  sideMessages.scrollTop = sideMessages.scrollHeight;
+
   /* Also update the latest agent message */
-  const agentMsgs = panelMessages ? panelMessages.querySelectorAll('.chat-msg-agent') : [];
+  const agentMsgs = sideMessages.querySelectorAll('.chat-msg-agent');
   if (agentMsgs.length > 0) {
     updateSidePanelLatest(agentMsgs[agentMsgs.length - 1].textContent);
   }
