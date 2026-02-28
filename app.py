@@ -1,10 +1,10 @@
 """
 ===============================================================================
-CASA SERENA — Flask Backend (app.py)
+SITE TEMPLATE — Flask Backend (app.py)
 ===============================================================================
 
 PURPOSE:
-  This is the main backend server for the Casa Serena website template.
+  This is the main backend server for a database-driven website template.
   It connects to a PostgreSQL database and serves:
     1. A public-facing HTML/CSS/JS website (from the /public folder)
     2. A password-protected admin dashboard (from /templates/admin)
@@ -170,10 +170,10 @@ def init_db():
                 -- Site-wide settings (singleton row with id=1)
                 CREATE TABLE IF NOT EXISTS site_settings (
                     id            SERIAL PRIMARY KEY,
-                    site_name     TEXT NOT NULL DEFAULT 'Casa Serena',
-                    site_subtitle TEXT NOT NULL DEFAULT 'Mediterranean Villa',
-                    hero_tagline  TEXT NOT NULL DEFAULT 'A Private Mediterranean Retreat',
-                    hero_title    TEXT NOT NULL DEFAULT 'Casa Serena',
+                    site_name     TEXT NOT NULL DEFAULT 'My Site',
+                    site_subtitle TEXT NOT NULL DEFAULT 'Your Tagline Here',
+                    hero_tagline  TEXT NOT NULL DEFAULT 'Welcome to Our Website',
+                    hero_title    TEXT NOT NULL DEFAULT 'My Site',
                     hero_description TEXT NOT NULL DEFAULT '',
                     hero_image    TEXT NOT NULL DEFAULT '',
                     logo_initials TEXT NOT NULL DEFAULT 'CS',
@@ -243,11 +243,11 @@ def init_db():
                     id            SERIAL PRIMARY KEY,
                     enabled       BOOLEAN NOT NULL DEFAULT false,
                     mode          TEXT NOT NULL DEFAULT 'builtin',
-                    agent_name    TEXT NOT NULL DEFAULT 'Marco',
-                    agent_role    TEXT NOT NULL DEFAULT 'Concierge',
-                    agent_avatar  TEXT NOT NULL DEFAULT 'M',
-                    greeting      TEXT NOT NULL DEFAULT 'Welcome! I''m Marco, your personal concierge. How can I help you explore Casa Serena today?',
-                    quick_prompts JSONB DEFAULT '["Tour the villa", "Show me the rooms", "What experiences do you offer?", "Tell me about pricing"]'::jsonb,
+                    agent_name    TEXT NOT NULL DEFAULT 'AI Assistant',
+                    agent_role    TEXT NOT NULL DEFAULT 'Assistant',
+                    agent_avatar  TEXT NOT NULL DEFAULT 'A',
+                    greeting      TEXT NOT NULL DEFAULT 'Welcome! I''m your AI assistant. How can I help you today?',
+                    quick_prompts JSONB DEFAULT '["Browse our gallery", "Tell me more", "What do you offer?", "Show me pricing"]'::jsonb,
                     api_endpoint  TEXT NOT NULL DEFAULT '/api/chat',
                     embed_code    TEXT NOT NULL DEFAULT '',
                     system_prompt TEXT NOT NULL DEFAULT '',
@@ -375,9 +375,9 @@ def init_db():
             cur.execute("""
                 INSERT INTO chatbot_settings (id, enabled, mode, agent_name, agent_role, agent_avatar,
                     greeting, quick_prompts, api_endpoint, embed_code)
-                VALUES (1, false, 'builtin', 'Marco', 'Concierge', 'M',
-                    'Welcome! I''m Marco, your personal concierge. How can I help you explore Casa Serena today?',
-                    '["Tour the villa", "Show me the rooms", "What experiences do you offer?", "Tell me about pricing"]'::jsonb,
+                VALUES (1, false, 'builtin', 'AI Assistant', 'Assistant', 'A',
+                    'Welcome! I''m your AI assistant. How can I help you today?',
+                    '["Browse our gallery", "Tell me more", "What do you offer?", "Show me pricing"]'::jsonb,
                     '/api/chat', '')
                 ON CONFLICT (id) DO NOTHING
             """)
@@ -398,17 +398,18 @@ def init_db():
             ]:
                 cur.execute(col_sql)
 
-            # Seed default "Booking Request" form if no forms exist yet
+            # Seed a default "Contact / Inquiry" form if no forms exist yet
+            # This is sample data — customize it from the admin panel for your industry
             cur.execute("SELECT COUNT(*) FROM custom_forms")
             row = cur.fetchone()
             form_count = row[0] if row else 0
             if form_count == 0:
                 cur.execute("""
                     INSERT INTO custom_forms (name, slug, description, status, submit_button_text, success_message, sort_order)
-                    VALUES ('Booking Request', 'booking-request',
-                            'Reserve your stay at Casa Serena',
-                            'active', 'Confirm Reservation',
-                            'Thank you! Your reservation request has been received. We will confirm your booking within 24 hours.',
+                    VALUES ('Contact Request', 'contact-request',
+                            'Get in touch with us',
+                            'active', 'Submit Request',
+                            'Thank you! Your request has been received. We will get back to you within 24 hours.',
                             0)
                     RETURNING id
                 """)
@@ -418,12 +419,12 @@ def init_db():
                     fields = [
                         (fid, 'text',   'Full Name',    'name',      'Enter your full name', True,  None, '', 0, 'full', '', ''),
                         (fid, 'email',  'Email',        'email',     'your@email.com',       True,  None, '', 1, 'full', '', ''),
-                        (fid, 'select', 'Room',         'room',      '',                     True,  '[]', '', 2, 'full', '', 'Select your preferred room'),
-                        (fid, 'date',   'Check-In',     'check_in',  '',                     True,  None, '', 3, 'half', '', ''),
-                        (fid, 'date',   'Check-Out',    'check_out', '',                     True,  None, '', 4, 'half', '', ''),
-                        (fid, 'number', 'Guests',       'guests',    '',                     False, None, '2', 5, 'half', '', 'Number of guests (1-8)'),
+                        (fid, 'select', 'Service',      'service',   '',                     True,  '[]', '', 2, 'full', '', 'Select your preferred option'),
+                        (fid, 'date',   'Start Date',   'start_date','',                     True,  None, '', 3, 'half', '', ''),
+                        (fid, 'date',   'End Date',     'end_date',  '',                     True,  None, '', 4, 'half', '', ''),
+                        (fid, 'number', 'Quantity',     'quantity',  '',                     False, None, '1', 5, 'half', '', 'How many?'),
                         (fid, 'tel',    'Phone',        'phone',     '+1 (555) 000-0000',    False, None, '', 6, 'half', '', ''),
-                        (fid, 'textarea','Special Requests','special_requests','Any dietary needs, celebrations, or preferences...', False, None, '', 7, 'full', '', ''),
+                        (fid, 'textarea','Additional Details','details','Any special requirements or preferences...', False, None, '', 7, 'full', '', ''),
                     ]
                     for f in fields:
                         cur.execute("""
@@ -624,12 +625,12 @@ def api_chatbot_settings():
 #
 #   Reply with structured slide (presentation-style):
 #   {
-#     "reply": "Here's a comparison of our rooms.",
+#     "reply": "Here's a comparison of our options.",
 #     "command": {
 #       "action": "showSlide",
-#       "title": "Room Comparison",
-#       "subtitle": "Finding your perfect suite",
-#       "points": ["Master Suite: $1,800/night", "Ocean Room: $1,200/night"]
+#       "title": "Options Comparison",
+#       "subtitle": "Finding your perfect match",
+#       "points": ["Option A: $1,800", "Option B: $1,200"]
 #     }
 #   }
 #
@@ -647,7 +648,7 @@ def api_chatbot_settings():
 #   1. navigate — Scrolls the site to a specific gallery slide
 #      { "action": "navigate", "target": "<card-slug>" }
 #      Valid targets: any slug from the gallery_cards table
-#      (e.g., "hero-villa", "master-suite", "infinity-pool", etc.)
+#      (e.g., "hero-image", "featured-item", "gallery-item-1", etc.)
 #
 #   2. showSlide — Shows a structured presentation overlay
 #      { "action": "showSlide", "title": "...", "subtitle": "...",
@@ -697,20 +698,19 @@ def api_chatbot_settings():
 # This sample system prompt teaches an AI agent how to control the website.
 # Copy and customize this when connecting to your own AI provider.
 SYSTEM_PROMPT = """
-You are Marco, a luxury concierge for Casa Serena, a Mediterranean villa.
-You help guests explore the property and plan their stay.
+You are an AI assistant for this website.
+You help visitors explore the site and learn about what's offered.
 
 IMPORTANT: You can control what the user sees on the website by including
 a JSON command block in your response. Always wrap commands in ```command``` blocks.
 
 AVAILABLE COMMANDS:
 
-1. Navigate to a section of the property:
+1. Navigate to a specific gallery item:
 ```command
 {"action": "navigate", "target": "CARD_SLUG"}
 ```
-Valid targets: hero-villa, master-suite, ocean-room, infinity-pool,
-chef-kitchen, wine-cellar, sunset-terrace, coastal-village
+Valid targets: use slugs from the gallery cards (the site owner configures these).
 
 2. Show a structured slide with information:
 ```command
@@ -730,10 +730,10 @@ The frontend renders this as a beautiful frosted-glass card automatically. You j
 - "footer" (optional): A footnote at the bottom
 
 RULES:
-- ALWAYS navigate when discussing a specific space. This IS the experience.
+- ALWAYS navigate when discussing a specific item. This IS the experience.
 - Keep text responses to 1-3 sentences. Let the visuals do the talking.
 - Use showSlide for comparisons, recommendations, and structured info.
-- Do NOT use generateVisual unless the user explicitly says "show me visually", "visualize", "create a visual", or similar. For normal questions about pricing, rooms, etc., just respond with text and use navigate or showSlide instead.
+- Do NOT use generateVisual unless the user explicitly says "show me visually", "visualize", "create a visual", or similar. For normal questions about pricing, services, etc., just respond with text and use navigate or showSlide instead.
 - Only include ONE command block per response.
 """
 
@@ -1252,11 +1252,11 @@ def admin_chat_detail(conv_id):
     return jsonify({"conversation": conv, "messages": messages or []})
 
 
-# --------------- Booking Submissions ---------------
+# --------------- Legacy Form Submissions (backward compatibility) ---------------
 
 @app.route("/api/bookings", methods=["POST"])
 def api_create_booking():
-    """POST /api/bookings — Save a booking form submission with funnel tracking."""
+    """POST /api/bookings — Legacy: Save a form submission with funnel tracking."""
     data = request.get_json()
     if not data or not data.get("name") or not data.get("email"):
         return jsonify({"error": "Name and email are required"}), 400
@@ -1298,7 +1298,7 @@ def api_create_booking():
 
 @app.route("/api/booking-step", methods=["POST"])
 def api_booking_step():
-    """POST /api/booking-step — Log a funnel step (opened_modal, filling_form, etc.)."""
+    """POST /api/booking-step — Legacy: Log a funnel step (opened_modal, filling_form, etc.)."""
     data = request.get_json()
     ua = request.headers.get("User-Agent", "")
     device = "mobile" if any(m in ua.lower() for m in ["mobile", "android", "iphone"]) else "desktop"
@@ -1328,7 +1328,7 @@ def api_booking_step():
 @app.route("/admin/api/bookings", methods=["GET"])
 @admin_required
 def admin_list_bookings():
-    """GET /admin/api/bookings — List all booking submissions with funnel stats."""
+    """GET /admin/api/bookings — Legacy: List all form submissions with funnel stats."""
     bookings = query_db(
         "SELECT * FROM booking_submissions ORDER BY submitted_at DESC"
     )
@@ -1348,7 +1348,7 @@ def admin_list_bookings():
 @app.route("/admin/api/bookings/<int:booking_id>/status", methods=["PUT"])
 @admin_required
 def admin_update_booking_status(booking_id):
-    """PUT /admin/api/bookings/<id>/status — Change a booking's status."""
+    """PUT /admin/api/bookings/<id>/status — Legacy: Change a submission's status."""
     data = request.get_json()
     status = data.get("status", "new")
     result = execute_db(

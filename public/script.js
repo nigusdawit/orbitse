@@ -1,12 +1,12 @@
 /*
 ===============================================================================
-CASA SERENA — Main JavaScript (script.js)
+SITE TEMPLATE — Main JavaScript (script.js)
 ===============================================================================
 
 PURPOSE:
-  This file handles ALL interactivity for the public-facing Casa Serena website.
+  This file handles ALL interactivity for the public-facing website template.
   It fetches content from the database via API endpoints, renders it into HTML,
-  and manages navigation, animations, and the booking modal.
+  and manages navigation, animations, and the inquiry modal.
 
 HOW IT WORKS:
   1. On page load, it fetches data from four API endpoints:
@@ -38,7 +38,7 @@ SECTIONS:
   3. Rendering Functions (DOM updates)
   4. View Switching (Landing ↔ Gallery)
   5. Gallery Navigation (Wheel, Touch, Keyboard, Click)
-  6. Booking Modal
+  6. Inquiry Modal
   7. Scroll Animations (IntersectionObserver)
   8. Icon Mapping
   9. Initialization
@@ -170,7 +170,7 @@ function renderHero() {
 /**
  * Renders the Highlights grid on the landing page.
  * Creates a card for each gallery item (up to the first 6).
- * Each card shows the room/space image with overlay text.
+ * Each card shows the gallery item image with overlay text.
  */
 function renderHighlights() {
   const grid = document.getElementById('highlights-grid');
@@ -336,17 +336,14 @@ function renderDotNav() {
 
 
 /**
- * Populates the room dropdown in the booking modal.
- * Only shows rooms and the main property (filtered by category).
+ * Populates a select dropdown from gallery cards data (legacy).
+ * Filters by category to show relevant options.
  */
 function populateRoomDropdown() {
   const select = document.getElementById('booking-room');
   if (!select || !galleryCards.length) return;
-  const rooms = galleryCards.filter(c =>
-    c.category === 'rooms' || c.slug === 'hero-villa' || c.category === 'property'
-  );
-  select.innerHTML = rooms.map(room =>
-    `<option value="${room.slug}">${room.title}${room.price ? ' - ' + room.price : ''}</option>`
+  select.innerHTML = galleryCards.map(item =>
+    `<option value="${item.slug}">${item.title}${item.price ? ' - ' + item.price : ''}</option>`
   ).join('');
 }
 
@@ -589,16 +586,15 @@ function handleTouchEnd(e) {
 
 
 /* =============================================================================
-   6. BOOKING MODAL
+   6. INQUIRY MODAL
    =============================================================================
-   Simple modal open/close and form submission.
-   The form currently shows an alert on submit — in a production app,
-   you would POST the data to a backend API endpoint.
+   Dynamic form modal — loads form config from the database and renders
+   fields dynamically. Submissions are POSTed to /api/forms/<slug>/submit.
 
-   TO CONNECT TO A REAL BOOKING SYSTEM:
-   1. Create a POST /api/bookings endpoint in app.py
-   2. In handleBookingSubmit(), replace the alert with a fetch() POST call
-   3. Handle success/error responses
+   TO CUSTOMIZE THE FORM:
+   1. Edit the form fields from the admin panel (Forms tab)
+   2. The modal auto-renders all field types from the form config
+   3. Partial/abandon capture saves incomplete form data automatically
 ============================================================================= */
 
 /**
@@ -695,7 +691,7 @@ function trackBookingStep(step) {
 }
 
 function openModal(slug) {
-  const formSlug = slug || 'booking-request';
+  const formSlug = slug || 'contact-request';
   currentFormSlug = formSlug;
   document.getElementById('booking-modal').classList.add('active');
   trackBookingStep('opened_modal');
@@ -719,7 +715,11 @@ async function loadDynamicForm(slug) {
   container.innerHTML = '<p style="text-align:center; color: rgba(255,255,255,0.5); padding: 2rem;">Loading form...</p>';
 
   try {
-    const res = await fetch(`/api/forms/${slug}`);
+    let res = await fetch(`/api/forms/${slug}`);
+    if (!res.ok && slug === 'contact-request') {
+      res = await fetch('/api/forms/booking-request');
+      if (res.ok) currentFormSlug = 'booking-request';
+    }
     if (!res.ok) {
       container.innerHTML = '<p style="text-align:center; color: #ef4444; padding: 2rem;">Form not found.</p>';
       return;
@@ -727,7 +727,7 @@ async function loadDynamicForm(slug) {
     const form = await res.json();
     currentFormConfig = form;
 
-    document.getElementById('dynamic-form-title').textContent = form.name || 'Reserve Your Stay';
+    document.getElementById('dynamic-form-title').textContent = form.name || 'Get In Touch';
     document.getElementById('dynamic-form-subtitle').textContent = form.description || '';
 
     let html = '';
@@ -771,16 +771,15 @@ async function loadDynamicForm(slug) {
 
 function populateDynamicRoomDropdown() {
   if (!currentFormConfig || !galleryCards.length) return;
-  const roomFields = (currentFormConfig.fields || []).filter(f => f.name === 'room' && f.field_type === 'select');
-  roomFields.forEach(field => {
+  const selectFields = (currentFormConfig.fields || []).filter(f =>
+    f.field_type === 'select' && (!f.options || !f.options.length || (Array.isArray(f.options) && f.options.length === 0))
+  );
+  selectFields.forEach(field => {
     const select = document.getElementById(`form-field-${field.name}`);
     if (!select) return;
-    const rooms = galleryCards.filter(c =>
-      c.category === 'rooms' || c.slug === 'hero-villa' || c.category === 'property'
-    );
-    if (rooms.length) {
-      select.innerHTML = '<option value="">Select a room...</option>' + rooms.map(room =>
-        `<option value="${room.slug}">${room.title}${room.price ? ' - ' + room.price : ''}</option>`
+    if (galleryCards.length) {
+      select.innerHTML = '<option value="">Select an option...</option>' + galleryCards.map(item =>
+        `<option value="${item.slug}">${item.title}${item.price ? ' - ' + item.price : ''}</option>`
       ).join('');
     }
   });
@@ -1132,15 +1131,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
    SAMPLE SYSTEM PROMPT FOR YOUR AI AGENT:
    ──────────────────────────────────────────
-   You are Marco, a luxury concierge for Casa Serena, a Mediterranean villa.
+   You are an AI assistant for this website.
    You can control the website by including commands in your responses.
 
    Available commands (include in the "command" field of your JSON response):
 
-   1. Navigate to a property area:
+   1. Navigate to a gallery item:
       {"action": "navigate", "target": "CARD_SLUG"}
-      Slugs: hero-villa, master-suite, ocean-room, infinity-pool,
-             chef-kitchen, wine-cellar, sunset-terrace, coastal-village
+      Slugs: use the slugs from your gallery_cards table
 
    2. Show a structured presentation:
       {"action": "showSlide", "title": "...", "subtitle": "...",
@@ -1747,18 +1745,17 @@ function updateMainPanelLatest(text) {
 
    GIVING THE AI MORE CONTROL:
    You can extend this system to control virtually any aspect of the site:
-   - Open/close the booking modal
+   - Open/close the inquiry modal
    - Change the landing page scroll position
    - Show/hide sections
    - Trigger animations
    - Play audio/video
    - Anything you can do with JavaScript!
 
-   EXAMPLE — Adding a "bookRoom" command:
-   case 'bookRoom':
-     // Pre-fill the booking form with the specified room
-     document.getElementById('booking-room').value = cmd.roomSlug;
-     openModal();
+   EXAMPLE — Adding an "openForm" command:
+   case 'openForm':
+     // Open a specific form by slug
+     openModal(cmd.formSlug);
      break;
 ============================================================================= */
 
@@ -1775,7 +1772,7 @@ function updateMainPanelLatest(text) {
  * @returns {string} Rendered HTML string
  */
 function renderVisualTemplate(data) {
-  const title = escapeHtml(data.title || 'Casa Serena');
+  const title = escapeHtml(data.title || 'Information');
   const subtitle = data.subtitle ? `<p class="visual-subtitle">${escapeHtml(data.subtitle)}</p>` : '';
   const footer = data.footer ? `<p class="visual-footer">${escapeHtml(data.footer)}</p>` : '';
 
@@ -1871,9 +1868,9 @@ function executeCommand(cmd) {
        and we render it as an elegant presentation slide.
 
        Use cases:
-       - Room comparisons ("Which room is best for families?")
-       - Activity recommendations ("Plan my day")
-       - Pricing breakdowns ("Compare the seasons")
+       - Item comparisons ("Which option is best?")
+       - Activity recommendations ("What do you suggest?")
+       - Pricing breakdowns ("Compare the options")
     */
     case 'showSlide': {
       /* Close the fullscreen canvas if a visual was showing */

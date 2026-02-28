@@ -1,4 +1,4 @@
-# Casa Serena Template Guide
+# Website Template Guide
 
 A complete guide to understanding, customizing, and extending this template.
 
@@ -6,9 +6,9 @@ A complete guide to understanding, customizing, and extending this template.
 
 ## What Is This?
 
-Casa Serena is a ready-to-use luxury property website powered by a database and an AI concierge. Everything on the site — text, images, pricing, even the chatbot — is managed through a password-protected admin panel. No code editing needed to change content.
+This is a ready-to-use, database-driven website template powered by an AI assistant. Everything on the site — text, images, pricing, even the chatbot — is managed through a password-protected admin panel. No code editing needed to change content. It works for any industry: hospitality, real estate, restaurants, portfolios, agencies, and more.
 
-The AI concierge (named "Marco" by default) can actually control what the visitor sees on the website: navigating to gallery slides, showing comparison tables, and generating custom data visuals — all through a conversation.
+The AI assistant can control what the visitor sees on the website: navigating to gallery slides, showing comparison tables, and generating custom data visuals — all through a conversation.
 
 ---
 
@@ -39,8 +39,8 @@ The public site (`index.html`) loads with empty placeholders. On page load, `scr
 |-------------------------|------------------------------------|
 | `/api/site-settings`    | Site name, tagline, hero image     |
 | `/api/gallery-cards`    | Gallery slides and highlight cards |
-| `/api/experiences`      | Curated activity cards             |
-| `/api/pricing`          | Seasonal pricing tiers             |
+| `/api/experiences`      | Activity/service cards             |
+| `/api/pricing`          | Pricing tiers                      |
 | `/api/chatbot-settings` | AI chatbot configuration           |
 
 JavaScript renders all of this into the HTML. The admin panel writes to the same database, so any changes you make in the admin are instantly visible on the public site after a page reload.
@@ -54,12 +54,12 @@ The site has two main views that the visitor toggles between:
 ### 1. Landing Page
 A vertical snap-scroll page with four sections:
 - **Hero** — Fullscreen background image with title and call-to-action buttons
-- **Highlights** — Grid of property cards (clicking one opens the gallery)
-- **Experiences** — Grid of curated activity cards
-- **Pricing** — Seasonal pricing cards and a final call-to-action
+- **Highlights** — Grid of feature/portfolio cards (clicking one opens the gallery)
+- **Experiences** — Grid of curated activity/service cards
+- **Pricing** — Pricing cards and a final call-to-action
 
 ### 2. Gallery
-A fullscreen immersive slideshow. Each slide shows one property card with its image, title, description, and details. Visitors navigate with mouse wheel, touch swipe, keyboard arrows, or dot/arrow buttons.
+A fullscreen immersive slideshow. Each slide shows one gallery card with its image, title, description, and details. Visitors navigate with mouse wheel, touch swipe, keyboard arrows, or dot/arrow buttons.
 
 ---
 
@@ -68,15 +68,18 @@ A fullscreen immersive slideshow. Each slide shows one property card with its im
 **URL:** `/admin`
 **Default password:** `admin` (change it by setting the `ADMIN_PASSWORD` environment variable)
 
-The admin has five tabs:
+The admin has eight tabs:
 
 | Tab             | What You Edit                                          |
 |-----------------|--------------------------------------------------------|
 | Site Settings   | Site name, tagline, hero image, logo initials          |
 | Gallery Cards   | Add/edit/delete/reorder gallery slides                 |
-| Experiences     | Add/edit/delete curated activity cards                 |
-| Pricing         | Add/edit/delete seasonal pricing tiers                 |
+| Experiences     | Add/edit/delete activity/service cards                 |
+| Pricing         | Add/edit/delete pricing tiers                          |
 | Chatbot         | Enable/disable AI, set name, greeting, quick prompts   |
+| Chat History    | View AI conversations and analytics                    |
+| Forms           | Create/edit forms, manage fields, view submissions     |
+| Theme           | Customize colors, fonts, and glass effects             |
 
 ---
 
@@ -86,9 +89,12 @@ The admin has five tabs:
 |--------------------|------------------------------------------|-------------------------------------------------|
 | `site_settings`    | Global config (one row, id=1)            | site_name, site_subtitle, hero_tagline, hero_title, hero_description, hero_image, logo_initials |
 | `gallery_cards`    | Gallery slides and highlight cards       | slug, title, subtitle, image_url, category, description, details (JSON), price, sort_order |
-| `experiences`      | Activity cards on the landing page       | name, description, icon, sort_order             |
-| `pricing_seasons`  | Seasonal pricing tiers                   | label, date_range, price_range, sort_order      |
+| `experiences`      | Activity/service cards on the landing page | name, description, icon, sort_order           |
+| `pricing_seasons`  | Pricing tiers                            | label, date_range, price_range, sort_order      |
 | `chatbot_settings` | AI chatbot configuration (one row, id=1) | enabled, mode, agent_name, greeting, quick_prompts (JSON), api_endpoint |
+| `custom_forms`     | Dynamic form definitions                 | name, slug, description, status, submit_button_text, success_message |
+| `form_fields`      | Form field definitions                   | form_id, field_type, label, name, placeholder, required, options (JSON), width |
+| `form_submissions` | Form submissions with marketing data     | form_id, submission_data (JSON), status, UTM params, device, browser, session_id |
 
 ---
 
@@ -98,12 +104,12 @@ The admin has five tabs:
 Admin panel > Site Settings tab. No code needed.
 
 ### Change colors
-Open `public/styles.css` and find section 2 ("CSS Custom Properties"). All colors are defined as CSS variables in the `:root` block near the top. Change these variables to restyle the entire site.
+Use the Theme Editor in admin, or open `public/styles.css` and find section 2 ("CSS Custom Properties"). All colors are defined as CSS variables in the `:root` block near the top.
 
 ### Change fonts
+Use the Theme Editor in admin to select from 12+ Google Fonts, or:
 1. Replace the Google Fonts `@import` URL at the top of `styles.css`
 2. Update the `--font-serif` and `--font-sans` variables in the `:root` block
-3. Update the Google Fonts `<link>` tag in the `<head>` section of `index.html`
 
 ### Change animations
 In `styles.css`, find section 15 ("Animations & Transitions"). All keyframe animations and transition timings are there.
@@ -167,12 +173,12 @@ Add a new tab button and section (follow the pattern of the existing Experiences
 ### Adding a new gallery card
 Admin panel > Gallery Cards > click "+ Add Card". Fill in the slug (URL-friendly ID like `rooftop-lounge`), title, subtitle, image URL, category, description, and details.
 
-### Adding a booking form field
-In `public/index.html`, find the `.modal-body` section and add your input field. Then update `script.js` to include the new field in the form submission logic.
+### Adding or editing form fields
+Admin panel > Forms tab > click "Edit" on any form. Add fields with the "Add Field" section — choose type, label, placeholder, width, and more. Drag to reorder.
 
 ---
 
-## AI Concierge System
+## AI Assistant System
 
 This is the most powerful feature of the template. The AI chatbot doesn't just answer questions — it controls the website itself.
 
@@ -217,7 +223,7 @@ The AI's behavior is defined by the `SYSTEM_PROMPT` variable in `app.py` (search
 - When to use each command
 - Rules for behavior
 
-To change the AI's personality, name, or behavior, edit this prompt.
+To change the AI's personality, name, or behavior, edit this prompt from the admin panel (Chatbot tab > AI System Prompt) or directly in `app.py`.
 
 ### AI Commands — How the AI Controls the Website
 
@@ -225,24 +231,21 @@ The AI includes special command blocks in its responses. The backend strips thes
 
 #### 1. Navigate — Show a gallery card
 ```json
-{"action": "navigate", "target": "wine-cellar"}
+{"action": "navigate", "target": "gallery-card-slug"}
 ```
-The gallery slides to the specified card and a side panel opens with the chat. The visitor sees the property image fullscreen with the conversation in a frosted glass panel on the right.
+The gallery slides to the specified card and a side panel opens with the chat. The visitor sees the image fullscreen with the conversation in a frosted glass panel on the right.
 
-**Valid targets** (these are the slugs of your gallery cards):
-`hero-villa`, `master-suite`, `ocean-room`, `infinity-pool`, `chef-kitchen`, `wine-cellar`, `sunset-terrace`, `coastal-village`
-
-When you add a new gallery card in the admin panel, the AI can navigate to it by using the card's slug.
+**Valid targets**: Any slug from your gallery_cards table. When you add a new gallery card in the admin panel, the AI can navigate to it by using the card's slug.
 
 #### 2. Show Slide — Display structured information
 ```json
-{"action": "showSlide", "title": "Room Comparison", "subtitle": "Finding your perfect suite", "points": ["Master Suite: $1,800/night", "Ocean Room: $1,200/night"]}
+{"action": "showSlide", "title": "Comparison", "subtitle": "Finding the best option", "points": ["Option A: $1,800", "Option B: $1,200"]}
 ```
 A presentation-style overlay appears with a title, subtitle, and bullet points. Good for comparisons, recommendations, and organized information.
 
 #### 3. Generate Visual — Create a data card
 ```json
-{"action": "generateVisual", "title": "Weekly Pricing", "columns": ["Season", "Price"], "rows": [["Summer", "$800/night"], ["Winter", "$500/night"]], "footer": "Minimum 3-night stay"}
+{"action": "generateVisual", "title": "Pricing", "columns": ["Option", "Price"], "rows": [["Premium", "$800"], ["Standard", "$500"]], "footer": "Prices vary by season"}
 ```
 A frosted-glass data card fills the screen with a table or list layout. The AI only uses this when the visitor explicitly asks to "show me visually" or "visualize" something.
 
@@ -259,13 +262,13 @@ The most powerful command. The AI can generate any HTML and it renders on a canv
 ### Adding a New AI Command
 
 1. **Define the command format** — Decide on the JSON structure
-2. **Add to the system prompt** — Edit `SYSTEM_PROMPT` in `app.py` to teach the AI about the new command
+2. **Add to the system prompt** — Edit the system prompt in admin (Chatbot tab) to teach the AI about the new command
 3. **Add frontend handler** — In `script.js`, find the `executeCommand()` function and add a new `case` in the switch statement
 4. **Test** — Ask the AI something that should trigger your new command
 
 Example — adding a "playVideo" command:
 
-In `app.py`, add to `SYSTEM_PROMPT`:
+In the system prompt, add:
 ```
 4. Play a video:
 {"action": "playVideo", "url": "VIDEO_URL", "title": "VIDEO_TITLE"}
@@ -338,6 +341,34 @@ The chat interface adapts depending on what the AI is showing:
 
 ---
 
+## Dynamic Form Builder
+
+Create custom forms for any purpose — contact forms, inquiry forms, registration forms, quote requests, etc.
+
+### Creating a Form
+Admin panel > Forms tab > "+ New Form". Set the name, description, submit button text, and success message.
+
+### Adding Fields
+Click "Edit" on any form, then use "Add Field" to add fields. Supported types:
+- **text** — Single-line text input
+- **email** — Email input with validation
+- **tel** — Phone number input
+- **number** — Numeric input
+- **date** — Date picker
+- **select** — Dropdown menu (configure options)
+- **textarea** — Multi-line text area
+- **checkbox** — Single checkbox
+- **radio** — Radio button group (configure options)
+- **hidden** — Hidden field (for tracking)
+
+### Partial/Abandon Capture
+When a visitor starts filling out a form but leaves before submitting, their partial data is automatically saved. This helps with lead recovery — you can see what fields they filled in and reach out to them.
+
+### Marketing Analytics
+Every submission automatically captures: UTM parameters, device type, browser, OS, screen resolution, language, referrer URL, page URL, IP address, and session ID.
+
+---
+
 ## Environment Variables
 
 | Variable                            | Purpose                              | Default            |
@@ -367,35 +398,32 @@ gunicorn --bind 0.0.0.0:5000 app:app
 
 ## Quick Recipes
 
-### Change the property name from "Casa Serena" to something else
+### Change the site name
 1. Admin panel > Site Settings > Change "Site Name" and "Hero Title"
-2. Optionally update the `SYSTEM_PROMPT` in `app.py` to match
+2. Optionally update the system prompt in admin > Chatbot tab to match
 
 ### Make the AI more formal / casual / funny
-Edit the `SYSTEM_PROMPT` in `app.py`. The first line sets the personality:
-```
-You are Marco, a luxury concierge for Casa Serena, a Mediterranean villa.
-```
-Change this to whatever personality you want. The AI will follow the tone you set.
+Edit the system prompt in admin > Chatbot tab. The first line sets the personality. Change it to whatever tone you want.
 
-### Add a new room to the gallery
+### Add a new gallery item
 Admin panel > Gallery Cards > "+ Add Card":
 - **Slug**: `rooftop-lounge` (URL-friendly, used by AI to navigate)
 - **Title**: `The Rooftop Lounge`
 - **Image URL**: Your image URL
-- **Category**: `Suite` or `Amenity`
+- **Category**: Choose from the dropdown
 - Fill in description and details
 
-Then update the `SYSTEM_PROMPT` in `app.py` to add `rooftop-lounge` to the list of valid navigation targets so the AI knows about it.
+Then update the system prompt to add the new slug to the list of valid navigation targets so the AI knows about it.
 
 ### Disable the AI chatbot entirely
 Admin panel > Chatbot tab > Toggle "Enable Chatbot" to OFF > Save.
 
-### Use this template for a restaurant, hotel, or real estate listing
-1. Change the content through the admin panel (site name, images, descriptions)
-2. Update the `SYSTEM_PROMPT` in `app.py` to match the new context
-3. Optionally rename the experience categories and pricing labels
-4. Change colors in `styles.css` (section 2, CSS Custom Properties)
+### Use this template for any industry
+1. Change all content through the admin panel (site name, images, descriptions)
+2. Update the system prompt (admin > Chatbot tab) to match your business context
+3. Create custom forms for your specific needs (contact, booking, quote request, etc.)
+4. Customize colors and fonts via the Theme Editor
+5. Optionally edit experience categories and pricing labels
 
 ---
 

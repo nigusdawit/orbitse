@@ -1,11 +1,11 @@
 <!DOCTYPE html>
 <!--
 ===============================================================================
-CASA SERENA — Public Website Template (index.html)
+SITE TEMPLATE — Public Website (index.html)
 ===============================================================================
 
 PURPOSE:
-  This is the main public-facing HTML page for the Casa Serena website.
+  This is the main public-facing HTML page for the website template.
   All content is loaded dynamically from the database via API endpoints,
   so you don't need to edit this file to change text, images, or pricing.
 
@@ -14,8 +14,8 @@ STRUCTURE:
 
   1. LANDING VIEW (class: .landing-container)
      - Hero Section: Fullscreen background image with title + CTA buttons
-     - Highlights Section: Grid of property cards (rooms, amenities, etc.)
-     - Experiences Section: Grid of curated activity cards
+     - Highlights Section: Grid of portfolio/feature cards
+     - Experiences Section: Grid of curated activity/service cards
      - Pricing Section: Seasonal pricing cards + final CTA
      Each section snaps into place when scrolling (CSS scroll-snap).
 
@@ -24,9 +24,9 @@ STRUCTURE:
      - Each slide shows one gallery card with image, title, description, details
      - Includes dot navigation, arrow buttons, and slide counter
 
-  3. BOOKING MODAL
-     - Overlay form for reservations
-     - Opens when user clicks any "Reserve" / "Book Your Stay" button
+  3. INQUIRY MODAL
+     - Overlay form for contact/inquiry submissions
+     - Opens when user clicks any CTA button
 
 HOW TO CUSTOMIZE THE LAYOUT:
   - To add a new landing section: Add a new <section> with classes
@@ -53,13 +53,13 @@ FONTS:
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <!-- SEO Meta Tags — Update these for your own property -->
-  <title>Casa Serena — Mediterranean Villa</title>
-  <meta name="description" content="A private Mediterranean retreat on the Aegean coast. Four ensuite bedrooms, infinity pool, private chef's kitchen, and unforgettable sunsets.">
+  <!-- SEO Meta Tags — Update these for your own site -->
+  <title>My Site — Website Template</title>
+  <meta name="description" content="A beautiful, database-driven website template with AI assistant, dynamic forms, and full admin panel.">
 
   <!-- Open Graph Tags — For social media sharing -->
-  <meta property="og:title" content="Casa Serena — Mediterranean Villa">
-  <meta property="og:description" content="A private Mediterranean retreat on the Aegean coast.">
+  <meta property="og:title" content="My Site — Website Template">
+  <meta property="og:description" content="A beautiful, database-driven website template.">
   <meta property="og:type" content="website">
 
   <!-- Stylesheet -->
@@ -101,15 +101,15 @@ FONTS:
         <div class="flex items-center gap-md">
           <div id="logo-badge" class="logo-badge" data-testid="logo-badge">CS</div>
           <div class="logo-text">
-            <p id="nav-site-name" class="site-name" data-testid="text-site-name">Casa Serena</p>
-            <p id="nav-site-subtitle" class="site-subtitle" data-testid="text-site-subtitle">Mediterranean Villa</p>
+            <p id="nav-site-name" class="site-name" data-testid="text-site-name">My Site</p>
+            <p id="nav-site-subtitle" class="site-subtitle" data-testid="text-site-subtitle">Your Tagline Here</p>
           </div>
         </div>
 
         <!-- Action Buttons -->
         <div class="flex items-center gap-md">
           <button id="btn-reserve-hero" class="btn-reserve" onclick="openModal()" data-testid="button-reserve-hero">
-            &#x1f4c5; Reserve
+            &#x1f4c5; Get Started
           </button>
         </div>
       </div>
@@ -118,20 +118,20 @@ FONTS:
       <div class="hero-content">
         <div class="fade-in-view visible" style="max-width: 48rem;">
           <p id="hero-tagline" class="hero-tagline" data-testid="text-hero-tagline">
-            A Private Mediterranean Retreat
+            Welcome to Our Website
           </p>
           <h1 id="hero-title" class="hero-title" data-testid="text-hero-title">
-            Casa Serena
+            My Site
           </h1>
           <p id="hero-description" class="hero-description" data-testid="text-hero-description">
             Loading...
           </p>
           <div class="hero-buttons">
-            <button class="btn-secondary" onclick="showGallery()" data-testid="button-explore-villa">
-              Explore the Villa
+            <button class="btn-secondary" onclick="showGallery()" data-testid="button-explore-gallery">
+              Explore Gallery
             </button>
-            <button class="btn-primary" onclick="openModal()" data-testid="button-book-stay">
-              Book Your Stay
+            <button class="btn-primary" onclick="openModal()" data-testid="button-get-started">
+              Get Started
             </button>
           </div>
         </div>
@@ -145,7 +145,7 @@ FONTS:
 
     <!--
     ========================================================================
-    HIGHLIGHTS SECTION — Grid of property rooms / spaces
+    HIGHLIGHTS SECTION — Grid of portfolio / feature cards
     ========================================================================
     Cards are generated dynamically by script.js from /api/gallery-cards.
     Each card shows an image, category, title, subtitle, and optional price.
@@ -155,8 +155,8 @@ FONTS:
       <div class="max-w-container">
         <div class="section-header fade-in-view">
           <p class="section-eyebrow">Discover</p>
-          <h2 class="section-title" data-testid="text-highlights-title">The Villa Experience</h2>
-          <p class="section-subtitle">Every corner of Casa Serena has been designed for timeless comfort and Mediterranean elegance.</p>
+          <h2 class="section-title" data-testid="text-highlights-title">What We Offer</h2>
+          <p class="section-subtitle">Explore our featured items and discover what makes us unique.</p>
         </div>
 
         <!-- Card grid — populated by JavaScript -->
@@ -165,8 +165,8 @@ FONTS:
         </div>
 
         <div class="text-center mt-xl">
-          <button class="btn-secondary" onclick="showGallery()" data-testid="button-view-all-rooms">
-            View All Rooms &amp; Spaces
+          <button class="btn-secondary" onclick="showGallery()" data-testid="button-view-all-gallery">
+            View All Gallery Items
           </button>
         </div>
       </div>
@@ -184,8 +184,8 @@ FONTS:
         <!-- Experiences Header -->
         <div class="section-header fade-in-view">
           <p class="section-eyebrow">Curated For You</p>
-          <h2 class="section-title" data-testid="text-experiences-title">Unforgettable Experiences</h2>
-          <p class="section-subtitle">From private boat tours to cooking classes with local chefs, every day is an adventure.</p>
+          <h2 class="section-title" data-testid="text-experiences-title">What We Provide</h2>
+          <p class="section-subtitle">Discover our curated selection of services and experiences designed just for you.</p>
         </div>
 
         <!-- Experience Cards — populated by JavaScript -->
@@ -206,8 +206,8 @@ FONTS:
 
         <!-- Final CTA -->
         <div class="text-center mt-2xl" style="padding-bottom: 8rem;">
-          <button class="btn-primary" onclick="openModal()" data-testid="button-reserve-bottom">
-            Reserve Your Stay
+          <button class="btn-primary" onclick="openModal()" data-testid="button-cta-bottom">
+            Get Started
           </button>
         </div>
       </div>
@@ -248,15 +248,15 @@ FONTS:
         <i data-lucide="arrow-left" style="width:16px;height:16px;"></i>
       </button>
       <div class="logo-text">
-        <p id="gallery-site-name" class="site-name">Casa Serena</p>
-        <p id="gallery-site-subtitle" class="site-subtitle">Mediterranean Villa</p>
+        <p id="gallery-site-name" class="site-name">My Site</p>
+        <p id="gallery-site-subtitle" class="site-subtitle">Your Tagline Here</p>
       </div>
     </div>
 
-    <!-- Reserve button (top-right) -->
+    <!-- CTA button (top-right) -->
     <div class="gallery-top-right">
-      <button class="btn-reserve" onclick="openModal()" data-testid="button-reserve-gallery">
-        &#x1f4c5; Reserve
+      <button class="btn-reserve" onclick="openModal()" data-testid="button-cta-gallery">
+        &#x1f4c5; Get Started
       </button>
     </div>
 
@@ -285,23 +285,23 @@ FONTS:
 
   <!--
   ============================================================================
-  BOOKING MODAL — Reservation form overlay
+  INQUIRY MODAL — Dynamic form overlay
   ============================================================================
-  This modal appears when the user clicks any "Reserve" or "Book Your Stay" button.
-  The form collects name, email, room selection, dates, and guest count.
+  This modal appears when the user clicks any CTA button.
+  The form fields are loaded dynamically from the database via the Forms API.
 
   TO CUSTOMIZE THE FORM:
-  - Add/remove form fields in the HTML below
-  - Update the form submission handler in script.js (handleBookingSubmit function)
-  - The room dropdown is populated dynamically from the gallery cards data
+  - Edit the form fields in the admin panel (Forms tab)
+  - The form is rendered dynamically by script.js (loadDynamicForm function)
+  - Select fields can be auto-populated from gallery cards data
   -->
   <div id="booking-modal" class="modal-backdrop" data-testid="booking-modal">
     <div class="modal-content">
 
       <div class="modal-header">
         <div>
-          <h2 class="modal-title" id="dynamic-form-title" data-testid="text-modal-title">Reserve Your Stay</h2>
-          <p class="modal-subtitle" id="dynamic-form-subtitle">Experience the serenity of Casa Serena</p>
+          <h2 class="modal-title" id="dynamic-form-title" data-testid="text-modal-title">Get In Touch</h2>
+          <p class="modal-subtitle" id="dynamic-form-subtitle">We'd love to hear from you</p>
         </div>
         <button class="modal-close" onclick="closeModal()" data-testid="button-close-modal">&times;</button>
       </div>
@@ -319,7 +319,7 @@ FONTS:
 
   <!--
   ============================================================================
-  CHATBOT — AI Concierge Bar + Split-Screen Overlay
+  CHATBOT — AI Assistant Bar + Split-Screen Overlay
   ============================================================================
   This section contains ALL chatbot UI elements. The chatbot is controlled
   by the admin dashboard — it can be enabled/disabled, and configured to
@@ -375,8 +375,8 @@ FONTS:
 
       <!-- Agent info (name + role) — visible on wider screens -->
       <div class="chatbot-agent-info">
-        <span id="chatbot-agent-name" class="chatbot-agent-name" data-testid="text-agent-name">Marco</span>
-        <span id="chatbot-agent-role" class="chatbot-agent-role" data-testid="text-agent-role">Concierge</span>
+        <span id="chatbot-agent-name" class="chatbot-agent-name" data-testid="text-agent-name">AI Assistant</span>
+        <span id="chatbot-agent-role" class="chatbot-agent-role" data-testid="text-agent-role">Assistant</span>
       </div>
 
       <!-- Inline text input — users can type here without expanding -->
@@ -420,7 +420,7 @@ FONTS:
         <div class="panel-latest-header">
           <div class="side-panel-agent-badge">
             <div id="chatbot-panel-avatar" class="chatbot-avatar chatbot-avatar-sm">M</div>
-            <span id="chatbot-panel-name" class="side-panel-agent-name">Marco</span>
+            <span id="chatbot-panel-name" class="side-panel-agent-name">AI Assistant</span>
           </div>
           <div class="side-panel-actions">
             <button class="side-panel-history-btn" onclick="toggleMainPanelHistory()" data-testid="button-panel-history">
@@ -500,8 +500,8 @@ FONTS:
         <div class="chatbot-panel-header-info">
           <div id="split-chat-avatar" class="chatbot-avatar chatbot-avatar-sm">M</div>
           <div>
-            <span id="split-chat-name" class="chatbot-agent-name">Marco</span>
-            <span id="split-chat-role" class="chatbot-agent-role">Concierge</span>
+            <span id="split-chat-name" class="chatbot-agent-name">AI Assistant</span>
+            <span id="split-chat-role" class="chatbot-agent-role">Assistant</span>
           </div>
         </div>
         <button class="chatbot-close-btn" onclick="closeSplitScreen()" data-testid="button-split-close">
@@ -559,7 +559,7 @@ FONTS:
       -->
       <div id="split-slide" class="split-content-panel" style="display:none;" data-testid="split-slide">
         <div class="split-slide-inner">
-          <div class="split-slide-eyebrow">Concierge Recommendation</div>
+          <div class="split-slide-eyebrow">AI Recommendation</div>
           <h2 id="split-slide-title" class="split-slide-title"></h2>
           <p id="split-slide-subtitle" class="split-slide-subtitle"></p>
           <ul id="split-slide-points" class="split-slide-points">
@@ -575,7 +575,7 @@ FONTS:
       and it will be rendered here on a blank canvas.
 
       USE CASES:
-      - Comparison tables (room vs room)
+      - Comparison tables (item vs item)
       - Pricing breakdowns with custom formatting
       - Interactive itineraries
       - Custom charts or visual data
@@ -630,7 +630,7 @@ FONTS:
       <div class="side-panel-latest-header">
         <div class="side-panel-agent-badge">
           <div id="side-chat-avatar" class="chatbot-avatar chatbot-avatar-sm">M</div>
-          <span id="side-chat-name" class="side-panel-agent-name">Marco</span>
+          <span id="side-chat-name" class="side-panel-agent-name">AI Assistant</span>
         </div>
         <div class="side-panel-actions">
           <button class="side-panel-history-btn" onclick="toggleSidePanelHistory()" data-testid="button-side-history">

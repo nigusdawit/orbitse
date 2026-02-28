@@ -1,11 +1,11 @@
 <!DOCTYPE html>
 <!--
 ===============================================================================
-CASA SERENA — Admin Dashboard (dashboard.html)
+SITE TEMPLATE — Admin Dashboard (dashboard.html)
 ===============================================================================
 
 PURPOSE:
-  This is the admin panel for managing all content on the Casa Serena website.
+  This is the admin panel for managing all content on the website.
   Every change you make here is saved to the PostgreSQL database and
   immediately visible on the public site (on page reload).
 
@@ -35,7 +35,7 @@ TO CUSTOMIZE THIS DASHBOARD:
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Admin Dashboard — Casa Serena</title>
+  <title>Admin Dashboard</title>
 
   <!-- Google Fonts — same as the main site for visual consistency -->
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,100..1000&family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap">
@@ -576,11 +576,11 @@ TO CUSTOMIZE THIS DASHBOARD:
       <div class="form-row">
         <div class="form-group">
           <label for="setting-site-name">Site Name</label>
-          <input type="text" id="setting-site-name" placeholder="Casa Serena" data-testid="input-setting-site-name">
+          <input type="text" id="setting-site-name" placeholder="My Site Name" data-testid="input-setting-site-name">
         </div>
         <div class="form-group">
           <label for="setting-site-subtitle">Subtitle</label>
-          <input type="text" id="setting-site-subtitle" placeholder="Mediterranean Villa" data-testid="input-setting-subtitle">
+          <input type="text" id="setting-site-subtitle" placeholder="Your tagline here" data-testid="input-setting-subtitle">
         </div>
         <div class="form-group">
           <label for="setting-logo-initials">Logo Initials</label>
@@ -592,11 +592,11 @@ TO CUSTOMIZE THIS DASHBOARD:
       <div class="form-row">
         <div class="form-group">
           <label for="setting-hero-tagline">Tagline</label>
-          <input type="text" id="setting-hero-tagline" placeholder="A Private Mediterranean Retreat" data-testid="input-setting-tagline">
+          <input type="text" id="setting-hero-tagline" placeholder="Welcome to Our Website" data-testid="input-setting-tagline">
         </div>
         <div class="form-group">
           <label for="setting-hero-title">Hero Title</label>
-          <input type="text" id="setting-hero-title" placeholder="Casa Serena" data-testid="input-setting-hero-title">
+          <input type="text" id="setting-hero-title" placeholder="My Site Name" data-testid="input-setting-hero-title">
         </div>
       </div>
       <div class="form-row">
@@ -662,7 +662,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           <label for="card-category">Category</label>
           <select id="card-category" data-testid="select-card-category">
             <option value="property">Property</option>
-            <option value="rooms">Rooms</option>
+            <option value="rooms">Featured</option>
             <option value="amenities">Amenities</option>
             <option value="dining">Dining</option>
             <option value="experiences">Experiences</option>
@@ -877,7 +877,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     <div class="section-header-admin">
       <div>
         <h2>Chatbot Settings</h2>
-        <p>Configure the AI concierge chatbot shown on the public site.</p>
+        <p>Configure the AI assistant chatbot shown on the public site.</p>
       </div>
     </div>
 
@@ -918,7 +918,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           </div>
           <div class="form-group">
             <label for="chatbot-agent-role">Agent Role</label>
-            <input type="text" id="chatbot-agent-role" placeholder="Concierge" data-testid="input-chatbot-role">
+            <input type="text" id="chatbot-agent-role" placeholder="Assistant" data-testid="input-chatbot-role">
           </div>
           <div class="form-group">
             <label for="chatbot-agent-avatar">Avatar (initials or URL)</label>
@@ -936,7 +936,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         <div class="form-row">
           <div class="form-group" style="grid-column: 1 / -1;">
             <label for="chatbot-quick-prompts">Quick Prompts (one per line — shown as clickable chips)</label>
-            <textarea id="chatbot-quick-prompts" rows="4" placeholder="Tour the villa&#10;Show me the rooms&#10;What experiences do you offer?&#10;Tell me about pricing" data-testid="input-chatbot-prompts"></textarea>
+            <textarea id="chatbot-quick-prompts" rows="4" placeholder="Browse our gallery&#10;Tell me more&#10;What do you offer?&#10;Show me pricing" data-testid="input-chatbot-prompts"></textarea>
           </div>
         </div>
 
@@ -972,7 +972,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         <div class="form-row">
           <div class="form-group" style="grid-column: 1 / -1;">
             <label for="chatbot-system-prompt">System Prompt</label>
-            <textarea id="chatbot-system-prompt" rows="12" placeholder="You are Marco, a luxury concierge..." data-testid="input-chatbot-system-prompt" style="font-family: monospace; font-size: 0.8125rem;"></textarea>
+            <textarea id="chatbot-system-prompt" rows="12" placeholder="You are an AI assistant for this website..." data-testid="input-chatbot-system-prompt" style="font-family: monospace; font-size: 0.8125rem;"></textarea>
           </div>
         </div>
         <div style="margin-bottom: 1rem;">
@@ -992,7 +992,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     <div class="section-header-admin">
       <div>
         <h2>Chat History</h2>
-        <p>View AI concierge conversations and analytics.</p>
+        <p>View AI assistant conversations and analytics.</p>
       </div>
     </div>
 
@@ -1036,7 +1036,7 @@ TO CUSTOMIZE THIS DASHBOARD:
   </div>
 
 
-  <!-- Bookings Tab -->
+  <!-- Forms Tab -->
   <div id="tab-forms" class="tab-content">
 
     <!-- Form List View -->
@@ -1583,7 +1583,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('card-slug').value = '';
       document.getElementById('card-title').value = '';
       document.getElementById('card-subtitle').value = '';
-      document.getElementById('card-category').value = 'rooms';
+      document.getElementById('card-category').value = 'featured';
       document.getElementById('card-price').value = '';
       document.getElementById('card-sort-order').value = '0';
       document.getElementById('card-image').value = '';
@@ -2129,7 +2129,7 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     /*
     ========================================================================
-    BOOKINGS
+    LEGACY SUBMISSIONS (backward compatibility)
     ========================================================================
     */
     /*

@@ -1,10 +1,10 @@
 /*
 ===============================================================================
-CASA SERENA — Main Stylesheet (styles.css)
+SITE TEMPLATE — Main Stylesheet (styles.css)
 ===============================================================================
 
 PURPOSE:
-  This file contains ALL styles for the public-facing Casa Serena website.
+  This file contains ALL styles for the public-facing website template.
   It is organized into clearly labeled sections so you can find and modify
   any visual element quickly.
 
@@ -32,7 +32,7 @@ SECTIONS:
   10. Gallery / Explore View
   11. Gallery — Slide Content Overlay
   12. Gallery — Navigation (Dots, Arrows, Counter)
-  13. Booking Modal
+  13. Inquiry Modal
   14. Buttons & Interactive Elements
   15. Animations & Transitions
   16. Utility Classes
@@ -727,7 +727,7 @@ input, select, textarea {
    =============================================================================
    Navigation elements for the gallery view:
    - Back button (top-left, returns to landing page)
-   - Reserve button (top-right, opens booking modal)
+   - CTA button (top-right, opens inquiry modal)
    - Up arrow (top-center)
    - Down arrow + slide counter (bottom-center)
    - Dot navigation (right-side, one dot per slide)
@@ -875,10 +875,10 @@ input, select, textarea {
 
 
 /* =============================================================================
-   13. BOOKING MODAL
+   13. INQUIRY MODAL
    =============================================================================
-   A centered modal overlay with a reservation form.
-   Opens when user clicks "Reserve" / "Book Your Stay".
+   A centered modal overlay with a dynamic form.
+   Opens when user clicks any CTA button on the site.
 ============================================================================= */
 
 .modal-backdrop {
@@ -1297,7 +1297,7 @@ input, select, textarea {
 
    DESIGN PHILOSOPHY:
    - Uses backdrop-filter for the frosted glass effect
-   - Dark translucent backgrounds to match the villa's luxury aesthetic
+   - Dark translucent backgrounds to match the site's premium aesthetic
    - Smooth transitions for expand/collapse and split-screen
    - Responsive: full-width on mobile, centered on desktop
 
@@ -2254,7 +2254,7 @@ input, select, textarea {
 }
 
 .side-panel-latest-text:empty::before {
-  content: "Ask me anything about Casa Serena...";
+  content: "Ask me anything...";
   color: rgba(255, 255, 255, 0.35);
   font-style: italic;
 }

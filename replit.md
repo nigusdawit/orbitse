@@ -1,8 +1,8 @@
-# Casa Serena — Database-Driven HTML Website Template
+# Database-Driven Website Template
 
 ## Overview
 
-Casa Serena is a luxury Mediterranean villa website built as a reusable, database-driven HTML template. All content (gallery slides, experiences, pricing, site settings, chatbot) is managed through a PostgreSQL database and a password-protected admin dashboard — no code editing needed to change content.
+A database-driven website template built as a reusable, industry-agnostic HTML/CSS/JS application. All content (gallery slides, experiences, pricing, site settings, chatbot) is managed through a PostgreSQL database and a password-protected admin dashboard — no code editing needed to change content. Suitable for any business type: hospitality, real estate, restaurants, portfolios, agencies, and more.
 
 The site features:
 - **Snap-scroll landing page** with hero, highlights, experiences, and pricing sections
@@ -17,12 +17,14 @@ The site features:
 - **Drag-and-Drop Reordering** — reorder gallery cards, experiences, and pricing by dragging rows
 - **Chat History & Analytics** — view all AI conversations, message counts, device types
 - **Dynamic Form Builder** — create custom forms from admin, add/remove/reorder fields, view submissions with full marketing analytics
+- **Partial/Abandon Capture** — auto-saves incomplete form data for lead recovery
 - **Theme / Color Editor** — customize site colors, fonts, and glass effects from admin
 
 ## User Preferences
 
 Preferred communication style: Simple, everyday language.
 Code should be fully commented and templatized for modular reuse.
+The entire template is industry-agnostic — naming, comments, and instructions avoid hotel/villa-specific language.
 
 ## System Architecture
 
@@ -59,15 +61,15 @@ Code should be fully commented and templatized for modular reuse.
 - **Tables**:
   - `site_settings` — Global config (site name, tagline, hero content, logo initials, theme colors/fonts). Singleton row (id=1).
   - `gallery_cards` — Slides for the gallery view and highlight cards on the landing page. Has slug (unique URL-friendly ID), title, subtitle, image_url, category, description, details (JSONB array), price, and sort_order.
-  - `experiences` — Activity cards on the landing page. Has name, description, icon name, and sort_order.
-  - `pricing_seasons` — Seasonal pricing tiers. Has label, date_range, price_range, and sort_order.
+  - `experiences` — Activity/service cards on the landing page. Has name, description, icon name, and sort_order.
+  - `pricing_seasons` — Pricing tiers. Has label, date_range, price_range, and sort_order.
   - `chatbot_settings` — AI chatbot configuration. Singleton row (id=1). Has enabled, mode, agent_name, agent_role, agent_avatar, greeting, quick_prompts (JSONB), api_endpoint, embed_code, system_prompt.
   - `chat_conversations` — Chat sessions with visitor info (session_id, ip, device_type, user_agent).
   - `chat_messages` — Individual chat messages linked to conversations (role, content, command_json).
-  - `booking_submissions` — Legacy booking form submissions (kept for backward compatibility).
+  - `booking_submissions` — Legacy form submissions (kept for backward compatibility).
   - `custom_forms` — Dynamic form definitions (name, slug, description, status, submit_button_text, success_message).
   - `form_fields` — Form field definitions (form_id FK, field_type, label, name, placeholder, required, options JSONB, default_value, sort_order, width, help_text).
-  - `form_submissions` — Dynamic form submissions (form_id FK, submission_data JSONB, status, device_type, browser, os, screen_resolution, language, UTM params, referrer, IP, session_id).
+  - `form_submissions` — Dynamic form submissions (form_id FK, submission_data JSONB, status, device_type, browser, os, screen_resolution, language, UTM params, referrer, IP, session_id, updated_at).
   - `uploaded_images` — Record of uploaded image files (filename, original_name, file_size).
 
 ### API Endpoints
@@ -86,7 +88,8 @@ Code should be fully commented and templatized for modular reuse.
 
 **Form Submission API:**
 - `POST /api/forms/<slug>/submit` — Submit a dynamic form with auto-captured marketing data (UTM, device, browser, OS, screen resolution, language, referrer, IP, session ID)
-- `POST /api/bookings` — Legacy booking submission (still works)
+- `POST /api/forms/<slug>/partial` — Auto-save partial/abandoned form data (upserts by session_id)
+- `POST /api/bookings` — Legacy form submission (still works)
 - `POST /api/booking-step` — Legacy funnel tracking
 
 **Admin (CRUD, protected by session login):**
@@ -110,8 +113,8 @@ Code should be fully commented and templatized for modular reuse.
 - `PUT /admin/api/submissions/<id>/status` — Update submission status
 - `DELETE /admin/api/submissions/<id>` — Delete a submission
 - `GET /admin/api/forms/<id>/analytics` — Marketing analytics (device, browser, OS, UTM, status, referrer, language breakdowns)
-- `GET /admin/api/bookings` — Legacy bookings list
-- `PUT /admin/api/bookings/<id>/status` — Legacy booking status update
+- `GET /admin/api/bookings` — Legacy submissions list
+- `PUT /admin/api/bookings/<id>/status` — Legacy submission status update
 - `GET/PUT /admin/api/theme` — Read and update theme colors/fonts
 
 **Static files:**
@@ -160,18 +163,18 @@ The AI chatbot can control what the user sees on the website through special com
 
 1. **navigate** — Scroll to a gallery card and show it in split-screen
    ```json
-   {"action": "navigate", "target": "infinity-pool"}
+   {"action": "navigate", "target": "gallery-item-slug"}
    ```
-   Valid targets: any slug from the gallery_cards table (hero-villa, master-suite, ocean-room, infinity-pool, chef-kitchen, wine-cellar, sunset-terrace, coastal-village)
+   Valid targets: any slug from the gallery_cards table
 
 2. **showSlide** — Show a structured presentation slide
    ```json
-   {"action": "showSlide", "title": "Room Comparison", "subtitle": "Finding your perfect suite", "points": ["Master Suite: $1,800/night", "Ocean Room: $1,200/night"]}
+   {"action": "showSlide", "title": "Title", "subtitle": "Subtitle", "points": ["Point 1", "Point 2"]}
    ```
 
 3. **generateVisual** — Render a templated visual slide (table or list)
    ```json
-   {"action": "generateVisual", "title": "Room Pricing", "columns": ["Room", "Price"], "rows": [["Master Suite", "$600/night"]], "footer": "Prices vary by season"}
+   {"action": "generateVisual", "title": "Pricing", "columns": ["Item", "Price"], "rows": [["Item A", "$600"]], "footer": "Prices vary"}
    ```
    The AI sends structured data and the frontend renders it using a pre-built frosted glass template. Supports two layouts:
    - **Table**: `columns` + `rows` for comparisons, pricing, schedules
@@ -221,13 +224,14 @@ The AI only uses `generateVisual` when the user explicitly asks to "show me visu
 - **Field options**: Label, name (slug), placeholder, required toggle, width (full/half), options (for select/radio), default value, help text
 - **Dynamic rendering**: Public site fetches form config from `/api/forms/<slug>` and renders fields dynamically
 - **Half-width fields**: Two half-width fields are displayed side-by-side in a 2-column grid
-- **Room dropdown**: The "room" select field is auto-populated with gallery cards data
+- **Select field auto-population**: Select fields named "service" are auto-populated with gallery cards data
 - **Auto-captured marketing data**: UTM params (source/medium/campaign/term/content), device type, browser, OS, screen resolution, language, referrer, page URL, IP address, session ID
+- **Partial/Abandon Capture**: Auto-saves incomplete form data on field blur/change with 1.5s debounce; upserts by session_id; final submit upgrades partial to new status
 - **Submissions**: JSONB storage for flexible field data; viewed in admin with dynamic table headers
 - **Submission detail**: Expandable view showing all form data + marketing metadata
-- **Analytics dashboard**: Total submissions, today's count, device breakdown, top UTM sources, browser/OS stats, status distribution
-- **Status tracking**: new → reviewed → contacted → archived
-- Default "Booking Request" form is seeded on first run with 8 fields (name, email, room, check-in, check-out, guests, phone, special requests)
+- **Analytics dashboard**: Total submissions, today's count, abandoned count, abandon rate, device breakdown, top UTM sources, browser/OS stats, status distribution
+- **Status tracking**: partial (abandoned) → new → reviewed → contacted → archived
+- Default "Contact Request" form is seeded on first run with 8 fields (name, email, service, start date, end date, quantity, phone, details)
 
 ### Theme / Color Editor
 - Admin → Theme tab with color pickers + text inputs for: background, section 1, section 2, accent, text, glass border, glass background
