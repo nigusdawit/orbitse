@@ -1575,8 +1575,15 @@ function chatCreateStreamBubble() {
  */
 async function chatSendStreaming(message, wasCollapsed) {
   try {
-    if (!sessionStorage.getItem('chat_session_id')) {
-      sessionStorage.setItem('chat_session_id', 'cs_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10));
+    /* Chat session ID — generated fresh on each page load so every
+       refresh starts a new conversation in the admin dashboard.
+       A persistent visitor ID is stored in localStorage so the admin
+       can still track returning visitors across sessions. */
+    if (!window._chatSessionId) {
+      window._chatSessionId = 'cs_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+    }
+    if (!localStorage.getItem('chat_visitor_id')) {
+      localStorage.setItem('chat_visitor_id', 'cv_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10));
     }
     const apiEndpoint = chatSettings.api_endpoint || '/api/chat';
     const res = await fetch(apiEndpoint, {
@@ -1585,7 +1592,8 @@ async function chatSendStreaming(message, wasCollapsed) {
       body: JSON.stringify({
         message: message,
         history: chatHistory,
-        session_id: sessionStorage.getItem('chat_session_id')
+        session_id: window._chatSessionId,
+        visitor_id: localStorage.getItem('chat_visitor_id')
       })
     });
 
@@ -2284,7 +2292,7 @@ function executeCommand(cmd) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fields: partialFields,
-          session_id: sessionStorage.getItem('chat_session_id') || '',
+          session_id: window._chatSessionId || '',
           page_url: window.location.href,
           referrer: document.referrer || '',
           screen_resolution: `${window.screen.width}x${window.screen.height}`,
@@ -2322,7 +2330,7 @@ function executeCommand(cmd) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fields: formFields,
-          session_id: sessionStorage.getItem('chat_session_id') || '',
+          session_id: window._chatSessionId || '',
           page_url: window.location.href,
           referrer: document.referrer || '',
           screen_resolution: `${window.screen.width}x${window.screen.height}`,

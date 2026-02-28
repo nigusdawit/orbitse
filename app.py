@@ -255,10 +255,11 @@ def init_db():
                     updated_at    TIMESTAMP DEFAULT NOW()
                 );
 
-                -- Chat conversations (one per visitor session)
+                -- Chat conversations (one per page load / session)
                 CREATE TABLE IF NOT EXISTS chat_conversations (
                     id          SERIAL PRIMARY KEY,
                     session_id  VARCHAR(100) NOT NULL,
+                    visitor_id  VARCHAR(100) DEFAULT '',
                     visitor_ip  VARCHAR(45) DEFAULT '',
                     device_type VARCHAR(20) DEFAULT 'desktop',
                     user_agent  TEXT DEFAULT '',
@@ -384,6 +385,7 @@ def init_db():
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_font_sans TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE form_submissions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
                 "ALTER TABLE form_fields ADD COLUMN IF NOT EXISTS step INTEGER NOT NULL DEFAULT 1",
+                "ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS visitor_id VARCHAR(100) DEFAULT ''",
             ]:
                 cur.execute(col_sql)
 
@@ -953,6 +955,7 @@ def api_chat():
     message = data.get("message", "").strip()
     history = data.get("history", [])
     session_id = data.get("session_id", "")
+    visitor_id = data.get("visitor_id", "")
 
     # Use database system prompt if available, otherwise fall back to hardcoded
     active_prompt = SYSTEM_PROMPT
@@ -1175,13 +1178,13 @@ def api_chat():
                     ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
 
                     conv = query_db(
-                        "SELECT id FROM chat_conversations WHERE session_id = %s AND updated_at > NOW() - INTERVAL '30 minutes' ORDER BY id DESC LIMIT 1",
+                        "SELECT id FROM chat_conversations WHERE session_id = %s ORDER BY id DESC LIMIT 1",
                         (session_id,), fetchone=True
                     )
                     if not conv:
                         conv = execute_db(
-                            "INSERT INTO chat_conversations (session_id, visitor_ip, device_type, user_agent) VALUES (%s, %s, %s, %s) RETURNING id",
-                            (session_id, ip, device, ua[:500])
+                            "INSERT INTO chat_conversations (session_id, visitor_id, visitor_ip, device_type, user_agent) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                            (session_id, visitor_id, ip, device, ua[:500])
                         )
                     conv_id = conv["id"]
                     execute_db("UPDATE chat_conversations SET updated_at = NOW() WHERE id = %s RETURNING id", (conv_id,))
@@ -1561,6 +1564,7 @@ def admin_chat_history():
 
     conversations = query_db("""
         SELECT c.*,
+            c.visitor_id,
             (SELECT COUNT(*) FROM chat_messages WHERE conversation_id = c.id) as message_count,
             (SELECT content FROM chat_messages WHERE conversation_id = c.id AND role = 'user' ORDER BY id LIMIT 1) as first_message
         FROM chat_conversations c
@@ -1572,7 +1576,8 @@ def admin_chat_history():
         SELECT
             (SELECT COUNT(*) FROM chat_conversations) as total_conversations,
             (SELECT COUNT(*) FROM chat_messages WHERE created_at >= CURRENT_DATE) as messages_today,
-            (SELECT ROUND(AVG(cnt), 1) FROM (SELECT COUNT(*) as cnt FROM chat_messages GROUP BY conversation_id) sub) as avg_messages
+            (SELECT ROUND(AVG(cnt), 1) FROM (SELECT COUNT(*) as cnt FROM chat_messages GROUP BY conversation_id) sub) as avg_messages,
+            (SELECT COUNT(DISTINCT visitor_id) FROM chat_conversations WHERE visitor_id != '' AND visitor_id IS NOT NULL) as unique_visitors
     """, fetchone=True)
 
     return jsonify({"conversations": conversations or [], "stats": stats or {}})

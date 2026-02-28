@@ -1010,6 +1010,10 @@ TO CUSTOMIZE THIS DASHBOARD:
         <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Avg Messages / Conversation</div>
         <div id="stat-avg-messages" style="font-size: 1.5rem; font-weight: 600; color: #fff;">0</div>
       </div>
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Unique Visitors</div>
+        <div id="stat-unique-visitors" style="font-size: 1.5rem; font-weight: 600; color: #fff;">0</div>
+      </div>
     </div>
 
     <table class="data-table" id="chat-history-table">
@@ -1017,13 +1021,14 @@ TO CUSTOMIZE THIS DASHBOARD:
         <tr>
           <th>Date</th>
           <th>Messages</th>
+          <th>Visitor</th>
           <th>Device</th>
           <th>First Message</th>
           <th>Actions</th>
         </tr>
       </thead>
       <tbody id="chat-history-tbody">
-        <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+        <tr><td colspan="6" class="empty-state">Loading...</td></tr>
       </tbody>
     </table>
 
@@ -2133,26 +2138,32 @@ TO CUSTOMIZE THIS DASHBOARD:
         document.getElementById('stat-total-conversations').textContent = stats.total_conversations || 0;
         document.getElementById('stat-messages-today').textContent = stats.messages_today || 0;
         document.getElementById('stat-avg-messages').textContent = stats.avg_messages || 0;
+        document.getElementById('stat-unique-visitors').textContent = stats.unique_visitors || 0;
 
         const tbody = document.getElementById('chat-history-tbody');
         const convs = data.conversations || [];
 
         if (!convs.length) {
-          tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No conversations yet. Chat messages will appear here once visitors use the chatbot.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No conversations yet. Chat messages will appear here once visitors use the chatbot.</td></tr>';
           return;
         }
 
-        tbody.innerHTML = convs.map(c => `
+        tbody.innerHTML = convs.map(c => {
+          /* Show a short visitor label — truncate the ID for display */
+          const vid = c.visitor_id || '';
+          const visitorLabel = vid ? vid.replace('cv_', '').substring(0, 10) : '—';
+          return `
           <tr>
             <td>${new Date(c.started_at).toLocaleString()}</td>
             <td>${c.message_count || 0}</td>
+            <td title="${esc(vid)}"><span class="badge" style="font-size:0.65rem;">${esc(visitorLabel)}</span></td>
             <td><span class="badge">${c.device_type || 'desktop'}</span></td>
             <td class="cell-truncate">${esc((c.first_message || '').substring(0, 60))}${(c.first_message || '').length > 60 ? '...' : ''}</td>
             <td>
               <button class="btn btn-secondary btn-sm" onclick="viewConversation(${c.id})" data-testid="button-view-conv-${c.id}">View</button>
             </td>
           </tr>
-        `).join('');
+        `}).join('');
       } catch (err) {
         showToast('Failed to load chat history', 'error');
       }
