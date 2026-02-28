@@ -2619,6 +2619,15 @@ async function chatSendStreaming(message, wasCollapsed) {
     /* Determine if this response navigates to a gallery card */
     const isNavigate = pendingCommand && pendingCommand.action === 'navigate';
 
+    /* Safety check: warn if the AI said it would submit but no command was parsed.
+       This helps catch cases where the AI says "I'll submit" conversationally
+       without actually including the submitForm command block. */
+    if (!pendingCommand && displayText &&
+        /\b(submit|finaliz|booking.*now|processing your)\b/i.test(displayText) &&
+        /\b(form|book|reserv|request)\b/i.test(displayText)) {
+      console.warn('AI mentioned submitting but no submitForm command was found in the response.');
+    }
+
     /* Check if we're currently on the landing page (not in gallery view) */
     const onLandingPage = !document.getElementById('gallery-view').classList.contains('active');
 

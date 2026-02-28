@@ -1561,6 +1561,8 @@ IMPORTANT: Your HTML must be completely self-contained — ALL styles inline. Do
 ```command
 {"action": "submitForm", "slug": "FORM_SLUG", "fields": {"field_name": "value", "another_field": "value"}}
 ```
+CRITICAL: When you say you will submit or finalize a booking/form, you MUST include the submitForm command block in that SAME message. Do NOT just say "I'll submit now" without the actual command — saying it without the command does nothing. The command block is what actually triggers the submission.
+
 Use this when you have collected ALL required information from the visitor through conversation.
 HOW TO COLLECT FORM DATA:
 - When a visitor wants to book, inquire, get started, or fill out a form, check the AVAILABLE FORMS section for matching forms.
@@ -1574,7 +1576,10 @@ Example conversation flow:
 2. Visitor: "John Smith" → You: "Thanks John! And your email?" + partialFormSave with {"name": "John Smith"}
 3. Visitor: "john@email.com" → You: "Great! What service interests you?" + partialFormSave with {"name": "John Smith", "email": "john@email.com"}
 4. Visitor: "The wine tasting" → You: "Perfect! Let me confirm: John Smith, john@email.com, wine tasting. Shall I submit?" + partialFormSave with all fields
-5. Visitor: "Yes" → submitForm with all collected data
+5. Visitor: "Yes" → You: "Submitting your booking now!" + submitForm with ALL collected data in the fields object
+
+WRONG (does nothing): "I'll submit your booking now! Just a moment."
+RIGHT (actually submits): "Submitting your booking now!" followed by the submitForm command block with all field values.
 
 6. Save partial form data (auto-save during collection for lead recovery):
 ```command
@@ -1628,6 +1633,7 @@ RULES:
 - Reference real names, prices, and details from the site data. Never make up information.
 - If the visitor seems interested, proactively suggest related items or experiences they might enjoy.
 - When a visitor wants to book, inquire, get started, contact, or shows intent to take action, start collecting their information for the appropriate form. Ask for 1-2 fields at a time in a natural conversational way. Once you have all required fields, use the submitForm command to submit. Always confirm what you collected before submitting.
+- REMINDER: When you tell the visitor you are submitting their form, you MUST include the submitForm command block with ALL collected field values in that same message. Without the command block, nothing actually gets submitted.
 """
 
 
