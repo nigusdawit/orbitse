@@ -1320,9 +1320,9 @@ input, select, textarea {
 /* Fade-in-on-scroll class — elements start invisible, JS adds .visible */
 .fade-in-view {
   opacity: 0;
-  transform: translateY(24px);
-  transition: opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
-              transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+  transform: translateY(20px);
+  transition: opacity var(--transition-medium) ease-out,
+              transform var(--transition-medium) ease-out;
 }
 
 .fade-in-view.visible {
@@ -1330,22 +1330,13 @@ input, select, textarea {
   transform: translateY(0);
 }
 
-/* Section headers get a subtle scale-in for elegance */
-.section-header.fade-in-view {
-  transform: translateY(30px) scale(0.98);
-}
-
-.section-header.fade-in-view.visible {
-  transform: translateY(0) scale(1);
-}
-
 /* Staggered animation delays for grid children */
-.stagger-1 { transition-delay: 0.08s; }
-.stagger-2 { transition-delay: 0.16s; }
-.stagger-3 { transition-delay: 0.24s; }
-.stagger-4 { transition-delay: 0.32s; }
-.stagger-5 { transition-delay: 0.4s; }
-.stagger-6 { transition-delay: 0.48s; }
+.stagger-1 { transition-delay: 0.1s; }
+.stagger-2 { transition-delay: 0.2s; }
+.stagger-3 { transition-delay: 0.3s; }
+.stagger-4 { transition-delay: 0.4s; }
+.stagger-5 { transition-delay: 0.5s; }
+.stagger-6 { transition-delay: 0.6s; }
 
 
 /* =============================================================================
@@ -1469,29 +1460,12 @@ input, select, textarea {
    Matches the existing dark-glass design language.
 ============================================================================= */
 
-.testimonials-track-wrapper {
-  position: relative;
-  overflow: hidden;
-  width: 100%;
-  mask-image: linear-gradient(to right, transparent, black 5%, black 95%, transparent);
-  -webkit-mask-image: linear-gradient(to right, transparent, black 5%, black 95%, transparent);
-}
-
 .testimonials-grid {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: var(--space-lg);
-  width: max-content;
-  animation: marquee-scroll 40s linear infinite;
-  will-change: transform;
-}
-
-.testimonials-track-wrapper:hover .testimonials-grid {
-  animation-play-state: paused;
-}
-
-@keyframes marquee-scroll {
-  0% { transform: translateX(0); }
-  100% { transform: translateX(-50%); }
+  max-width: 72rem;
+  margin: 0 auto;
 }
 
 .testimonial-card {
@@ -1503,15 +1477,6 @@ input, select, textarea {
   display: flex;
   flex-direction: column;
   gap: var(--space-md);
-  min-width: 340px;
-  max-width: 340px;
-  flex-shrink: 0;
-  transition: border-color 0.3s ease, box-shadow 0.3s ease;
-}
-
-.testimonial-card:hover {
-  border-color: rgba(255, 255, 255, 0.2);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
 
 .testimonial-stars {
@@ -1592,29 +1557,12 @@ input, select, textarea {
    Cards use the same frosted-glass style as the rest of the site.
 ============================================================================= */
 
-.team-track-wrapper {
-  position: relative;
-  overflow: hidden;
-  width: 100%;
-  mask-image: linear-gradient(to right, transparent, black 5%, black 95%, transparent);
-  -webkit-mask-image: linear-gradient(to right, transparent, black 5%, black 95%, transparent);
-}
-
 .team-grid {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: var(--space-lg);
-  width: max-content;
-  animation: marquee-scroll-reverse 35s linear infinite;
-  will-change: transform;
-}
-
-.team-track-wrapper:hover .team-grid {
-  animation-play-state: paused;
-}
-
-@keyframes marquee-scroll-reverse {
-  0% { transform: translateX(-50%); }
-  100% { transform: translateX(0); }
+  max-width: 72rem;
+  margin: 0 auto;
 }
 
 .team-card {
@@ -1628,15 +1576,6 @@ input, select, textarea {
   flex-direction: column;
   align-items: center;
   gap: var(--space-md);
-  min-width: 280px;
-  max-width: 280px;
-  flex-shrink: 0;
-  transition: border-color 0.3s ease, box-shadow 0.3s ease;
-}
-
-.team-card:hover {
-  border-color: rgba(255, 255, 255, 0.2);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
 
 .team-photo {
@@ -1929,265 +1868,6 @@ input, select, textarea {
 
 
 /* =============================================================================
-   17c-2. FULL-PAGE BLOG VIEW
-   =============================================================================
-   A swipable fullscreen blog reader — opens when clicking a blog card.
-   Uses the same pattern as the gallery view with slide transitions.
-============================================================================= */
-
-.blog-view {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  background: var(--color-bg, #060b14);
-  display: none;
-  flex-direction: column;
-}
-
-.blog-view.active {
-  display: flex;
-  animation: fadeIn 0.4s ease-out;
-}
-
-.blog-view-header {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1.25rem 2rem;
-  z-index: 10;
-  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.6), transparent);
-}
-
-.blog-view-close {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  background: rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  color: #fff;
-  padding: 0.5rem 1rem;
-  border-radius: 9999px;
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  transition: background 0.2s, border-color 0.2s;
-}
-
-.blog-view-close:hover {
-  background: rgba(255, 255, 255, 0.2);
-  border-color: rgba(255, 255, 255, 0.3);
-}
-
-.blog-view-counter {
-  color: rgba(255, 255, 255, 0.5);
-  font-size: 0.8125rem;
-  font-weight: 500;
-  letter-spacing: 0.1em;
-}
-
-.blog-slides-container {
-  position: relative;
-  flex: 1;
-  overflow: hidden;
-}
-
-.blog-slide {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.6s ease, transform 0.6s ease;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.1) transparent;
-}
-
-.blog-slide.slide-active {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateY(0);
-}
-
-.blog-slide.slide-enter-down {
-  transform: translateY(60px);
-}
-
-.blog-slide.slide-enter-up {
-  transform: translateY(-60px);
-}
-
-.blog-slide-inner {
-  max-width: 52rem;
-  margin: 0 auto;
-  padding: 6rem 2rem 4rem;
-  width: 100%;
-}
-
-.blog-slide-category {
-  display: inline-block;
-  padding: 0.25rem 0.75rem;
-  font-size: 0.625rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.15em;
-  color: #fff;
-  background: rgba(255, 255, 255, 0.12);
-  backdrop-filter: blur(8px);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 9999px;
-  margin-bottom: var(--space-lg);
-}
-
-.blog-slide-title {
-  font-family: var(--font-serif);
-  font-size: clamp(2rem, 5vw, 3.5rem);
-  font-weight: 700;
-  color: #fff;
-  line-height: 1.15;
-  margin-bottom: var(--space-md);
-}
-
-.blog-slide-meta {
-  display: flex;
-  align-items: center;
-  gap: var(--space-md);
-  color: rgba(255, 255, 255, 0.5);
-  font-size: 0.8125rem;
-  margin-bottom: var(--space-2xl);
-  padding-bottom: var(--space-lg);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.blog-slide-cover {
-  width: 100%;
-  aspect-ratio: 21 / 9;
-  object-fit: cover;
-  border-radius: 0.5rem;
-  margin-bottom: var(--space-2xl);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.blog-slide-body {
-  font-size: 1.0625rem;
-  color: rgba(255, 255, 255, 0.8);
-  line-height: 1.85;
-}
-
-.blog-slide-body p {
-  margin-bottom: var(--space-lg);
-}
-
-.blog-slide-body h2,
-.blog-slide-body h3 {
-  font-family: var(--font-serif);
-  color: #fff;
-  margin-top: var(--space-xl);
-  margin-bottom: var(--space-md);
-}
-
-.blog-slide-body a {
-  color: var(--color-accent, #c9a96e);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.blog-view-nav {
-  position: absolute;
-  right: 2rem;
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  z-index: 10;
-}
-
-.blog-view-nav button {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  background: rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  color: #fff;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.2s, border-color 0.2s;
-}
-
-.blog-view-nav button:hover {
-  background: rgba(255, 255, 255, 0.18);
-  border-color: rgba(255, 255, 255, 0.3);
-}
-
-.blog-view-nav button:disabled {
-  opacity: 0.3;
-  cursor: default;
-}
-
-.blog-view-dots {
-  position: absolute;
-  right: 2rem;
-  bottom: 2rem;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  z-index: 10;
-}
-
-.blog-view-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  cursor: pointer;
-  transition: background 0.3s, transform 0.3s;
-}
-
-.blog-view-dot.active {
-  background: #fff;
-  transform: scale(1.25);
-}
-
-@media (max-width: 768px) {
-  .blog-view-header { padding: 1rem; }
-  .blog-slide-inner { padding: 5rem 1.25rem 3rem; }
-  .blog-view-nav { right: 1rem; }
-  .blog-view-dots { right: 1rem; bottom: 1rem; }
-  .testimonial-card { min-width: 280px; max-width: 280px; }
-  .team-card { min-width: 240px; max-width: 240px; }
-}
-
-/* Respect user preference for reduced motion */
-@media (prefers-reduced-motion: reduce) {
-  .testimonials-grid,
-  .team-grid {
-    animation: none;
-  }
-
-  .fade-in-view {
-    transition-duration: 0.01ms;
-  }
-
-  .blog-slide {
-    transition-duration: 0.01ms;
-  }
-}
-
-
-/* =============================================================================
    17d. SITE FOOTER
    =============================================================================
    A dark footer sitting outside the snap-scroll container.
@@ -2327,6 +2007,14 @@ input, select, textarea {
 ============================================================================= */
 
 @media (max-width: 768px) {
+  .testimonials-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .team-grid {
+    grid-template-columns: 1fr;
+  }
+
   .blog-grid {
     grid-template-columns: 1fr;
   }
@@ -2351,6 +2039,14 @@ input, select, textarea {
 }
 
 @media (min-width: 769px) and (max-width: 1024px) {
+  .testimonials-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .team-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
   .blog-grid {
     grid-template-columns: repeat(2, 1fr);
   }

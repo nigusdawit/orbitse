@@ -297,18 +297,21 @@ function renderTestimonials() {
   const grid = document.getElementById('testimonials-grid');
   if (!grid || !testimonials.length) return;
 
-  /* Build a single testimonial card HTML */
-  function buildCard(t) {
+  grid.innerHTML = testimonials.map((t, index) => {
+    /* Build star rating display (filled stars up to rating, empty for the rest) */
     const stars = Array.from({ length: 5 }, (_, i) =>
       `<span class="testimonial-star ${i >= t.rating ? 'empty' : ''}" data-testid="star-${t.id}-${i}">★</span>`
     ).join('');
 
+    /* Optional reviewer photo — show initials circle if no image */
     const avatar = t.image_url
       ? `<img src="${t.image_url}" alt="${t.reviewer_name}" class="testimonial-photo" data-testid="img-testimonial-${t.id}">`
       : `<div class="testimonial-photo-placeholder" data-testid="avatar-testimonial-${t.id}">${(t.reviewer_name || '?').charAt(0).toUpperCase()}</div>`;
 
+    /* role="article" and aria-label with the reviewer name let screen readers
+       announce each testimonial card with the reviewer's identity */
     return `
-      <div class="testimonial-card" role="article" aria-label="Testimonial from ${escapeHtml(t.reviewer_name)}" data-testid="card-testimonial-${t.id}">
+      <div class="testimonial-card fade-in-view stagger-${(index % 3) + 1}" role="article" aria-label="Testimonial from ${escapeHtml(t.reviewer_name)}" data-testid="card-testimonial-${t.id}">
         <div class="testimonial-stars" data-testid="rating-testimonial-${t.id}">${stars}</div>
         <p class="testimonial-content" data-testid="text-testimonial-${t.id}">"${t.content}"</p>
         <div class="testimonial-reviewer">
@@ -320,13 +323,7 @@ function renderTestimonials() {
         </div>
       </div>
     `;
-  }
-
-  /* Render cards twice — the duplication creates a seamless infinite marquee.
-     When the first set scrolls out of view, the duplicate set takes over,
-     and the CSS animation loops back to the start without a visible jump. */
-  const cardsHtml = testimonials.map(buildCard).join('');
-  grid.innerHTML = cardsHtml + cardsHtml;
+  }).join('');
 }
 
 
@@ -338,25 +335,23 @@ function renderTeam() {
   const grid = document.getElementById('team-grid');
   if (!grid || !teamMembers.length) return;
 
-  /* Build a single team member card HTML */
-  function buildCard(m) {
+  grid.innerHTML = teamMembers.map((m, index) => {
+    /* Optional member photo — show initials circle if no image */
     const photo = m.image_url
       ? `<img src="${m.image_url}" alt="${m.name}" class="team-photo" data-testid="img-team-${m.id}">`
       : `<div class="team-photo-placeholder" data-testid="avatar-team-${m.id}">${(m.name || '?').charAt(0).toUpperCase()}</div>`;
 
+    /* role="article" and aria-label with the member name let screen readers
+       announce each team card with the member's identity */
     return `
-      <div class="team-card" role="article" aria-label="${escapeHtml(m.name)}" data-testid="card-team-${m.id}">
+      <div class="team-card fade-in-view stagger-${(index % 3) + 1}" role="article" aria-label="${escapeHtml(m.name)}" data-testid="card-team-${m.id}">
         ${photo}
         <h3 class="team-name" data-testid="name-team-${m.id}">${m.name}</h3>
         ${m.title ? `<p class="team-title" data-testid="title-team-${m.id}">${m.title}</p>` : ''}
         ${m.bio ? `<p class="team-bio" data-testid="bio-team-${m.id}">${m.bio}</p>` : ''}
       </div>
     `;
-  }
-
-  /* Render cards twice for seamless infinite marquee (scrolls in reverse direction) */
-  const cardsHtml = teamMembers.map(buildCard).join('');
-  grid.innerHTML = cardsHtml + cardsHtml;
+  }).join('');
 }
 
 
@@ -419,17 +414,19 @@ function renderBlogSection() {
   const grid = document.getElementById('blog-grid');
   if (!grid || !blogPosts.length) return;
 
+  /* Each blog card gets role="article" and aria-label with the post title
+     so screen readers can announce each blog preview meaningfully */
   grid.innerHTML = blogPosts.map((post, index) => {
+    /* Format the published date for display */
     const dateStr = post.published_at
       ? new Date(post.published_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
       : '';
 
-    /* Cards open the full-page blog reader instead of navigating away */
     return `
-      <div class="blog-card fade-in-view stagger-${(index % 6) + 1}"
-           role="article" aria-label="${escapeHtml(post.title)}"
-           onclick="openBlogView(${index})" style="cursor:pointer"
-           data-testid="card-blog-${post.slug}">
+      <a href="/blog/${encodeURIComponent(post.slug)}" class="blog-card fade-in-view stagger-${(index % 6) + 1}"
+         role="article" aria-label="${escapeHtml(post.title)}"
+         data-testid="card-blog-${post.slug}">
+        <!-- Cover image with gradient overlay -->
         ${post.cover_image ? `
           <div class="blog-card-image">
             <div class="blog-card-image-bg" style="background-image: url(${post.cover_image})"></div>
@@ -441,6 +438,7 @@ function renderBlogSection() {
             ${post.category ? `<span class="blog-card-category" data-testid="badge-blog-category-${post.slug}">${escapeHtml(post.category)}</span>` : ''}
           </div>
         `}
+        <!-- Card body: title, excerpt, metadata -->
         <div class="blog-card-body">
           <h3 class="blog-card-title" data-testid="text-blog-title-${post.slug}">${escapeHtml(post.title)}</h3>
           ${post.excerpt ? `<p class="blog-card-excerpt" data-testid="text-blog-excerpt-${post.slug}">${escapeHtml(post.excerpt)}</p>` : ''}
@@ -450,7 +448,7 @@ function renderBlogSection() {
           </div>
           <span class="blog-card-readmore" data-testid="link-blog-readmore-${post.slug}">Read More</span>
         </div>
-      </div>
+      </a>
     `;
   }).join('');
 }
@@ -1171,63 +1169,28 @@ function updateNavButtons() {
    Uses a cooldown to prevent scrolling through multiple slides too fast.
 */
 function handleWheel(e) {
-  const galleryActive = document.getElementById('gallery-view').classList.contains('active');
+  /* Only handle wheel in gallery view */
+  if (!document.getElementById('gallery-view').classList.contains('active')) return;
 
-  /* Handle gallery view wheel navigation */
-  if (galleryActive) {
-    e.preventDefault();
-    if (scrollCooldown) return;
-    scrollCooldown = true;
-    setTimeout(() => { scrollCooldown = false; }, SCROLL_COOLDOWN_MS);
-    if (e.deltaY > WHEEL_THRESHOLD) galleryNext();
-    else if (e.deltaY < -WHEEL_THRESHOLD) galleryPrev();
-    return;
-  }
+  e.preventDefault();
 
-  /* Handle blog view wheel navigation — only when scrolled to top/bottom of content */
-  if (blogViewActive) {
-    const activeSlide = document.querySelector('.blog-slide.slide-active');
-    if (!activeSlide) return;
+  /* Cooldown prevents rapid-fire navigation */
+  if (scrollCooldown) return;
+  scrollCooldown = true;
+  setTimeout(() => { scrollCooldown = false; }, SCROLL_COOLDOWN_MS);
 
-    /* Allow normal scrolling within the blog content unless at scroll boundaries */
-    const atTop = activeSlide.scrollTop <= 5;
-    const atBottom = activeSlide.scrollTop + activeSlide.clientHeight >= activeSlide.scrollHeight - 5;
-
-    if ((e.deltaY > WHEEL_THRESHOLD && atBottom) || (e.deltaY < -WHEEL_THRESHOLD && atTop)) {
-      e.preventDefault();
-      if (blogScrollCooldown) return;
-      blogScrollCooldown = true;
-      setTimeout(() => { blogScrollCooldown = false; }, SCROLL_COOLDOWN_MS);
-      if (e.deltaY > WHEEL_THRESHOLD) goToBlogSlide(currentBlogIndex + 1);
-      else goToBlogSlide(currentBlogIndex - 1);
-    }
-  }
+  /* Scroll down = next slide, scroll up = previous slide */
+  if (e.deltaY > WHEEL_THRESHOLD) galleryNext();
+  else if (e.deltaY < -WHEEL_THRESHOLD) galleryPrev();
 }
 
 
 /* --------------- Keyboard Handler ---------------
-   Arrow keys navigate between slides in gallery and blog views.
-   Escape closes the blog view.
+   Arrow keys navigate between slides in the gallery view.
 */
 function handleKeyDown(e) {
-  /* Blog view keyboard controls */
-  if (blogViewActive) {
-    if (e.key === 'Escape') {
-      closeBlogView();
-      return;
-    }
-    if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
-      e.preventDefault();
-      goToBlogSlide(currentBlogIndex + 1);
-    } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
-      e.preventDefault();
-      goToBlogSlide(currentBlogIndex - 1);
-    }
-    return;
-  }
-
-  /* Gallery view keyboard controls */
   if (!document.getElementById('gallery-view').classList.contains('active')) return;
+
   if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
     e.preventDefault();
     galleryNext();
@@ -1240,16 +1203,15 @@ function handleKeyDown(e) {
 
 /* --------------- Touch Handlers ---------------
    Track touch start and end positions to detect swipe gestures.
-   Works in both gallery view and blog view.
+   A minimum distance of SWIPE_THRESHOLD pixels is required.
 */
 function handleTouchStart(e) {
-  if (!document.getElementById('gallery-view').classList.contains('active') && !blogViewActive) return;
+  if (!document.getElementById('gallery-view').classList.contains('active')) return;
   touchStartY = e.touches[0].clientY;
 }
 
 function handleTouchEnd(e) {
-  const galleryActive = document.getElementById('gallery-view').classList.contains('active');
-  if (!galleryActive && !blogViewActive) return;
+  if (!document.getElementById('gallery-view').classList.contains('active')) return;
   if (touchStartY === null) return;
 
   const diff = touchStartY - e.changedTouches[0].clientY;
@@ -1257,137 +1219,9 @@ function handleTouchEnd(e) {
 
   if (Math.abs(diff) < SWIPE_THRESHOLD) return;
 
-  if (galleryActive) {
-    if (diff > 0) galleryNext();
-    else galleryPrev();
-  } else if (blogViewActive) {
-    if (diff > 0) goToBlogSlide(currentBlogIndex + 1);
-    else goToBlogSlide(currentBlogIndex - 1);
-  }
-}
-
-
-/* =============================================================================
-   5b. FULL-PAGE BLOG VIEW
-   =============================================================================
-   A swipable fullscreen blog reader. Opens when a blog card is clicked.
-   Shows full blog content with slide transitions between posts.
-   Supports wheel scroll, keyboard arrows, and touch swipe navigation.
-============================================================================= */
-
-let currentBlogIndex = 0;
-let blogViewActive = false;
-let blogScrollCooldown = false;
-
-/**
- * Opens the full-page blog view at the specified post index.
- * Renders all blog posts as slides and activates the first one.
- */
-function openBlogView(index) {
-  if (!blogPosts.length) return;
-
-  const container = document.getElementById('blog-slides-container');
-  const dotsContainer = document.getElementById('blog-view-dots');
-  const blogView = document.getElementById('blog-view');
-  if (!container || !dotsContainer || !blogView) return;
-
-  blogViewActive = true;
-  currentBlogIndex = index;
-
-  /* Build slides for all blog posts */
-  container.innerHTML = blogPosts.map((post, i) => {
-    const dateStr = post.published_at
-      ? new Date(post.published_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
-      : '';
-
-    const content = typeof DOMPurify !== 'undefined'
-      ? DOMPurify.sanitize(post.content || '')
-      : (post.content || '');
-
-    return `
-      <div class="blog-slide ${i === index ? 'slide-active' : ''}" data-testid="blog-slide-${i}">
-        <div class="blog-slide-inner">
-          ${post.category ? `<span class="blog-slide-category">${escapeHtml(post.category)}</span>` : ''}
-          <h1 class="blog-slide-title">${escapeHtml(post.title)}</h1>
-          <div class="blog-slide-meta">
-            ${post.author ? `<span>${escapeHtml(post.author)}</span>` : ''}
-            ${dateStr ? `<span>${dateStr}</span>` : ''}
-          </div>
-          ${post.cover_image ? `<img class="blog-slide-cover" src="${post.cover_image}" alt="${escapeHtml(post.title)}">` : ''}
-          <div class="blog-slide-body">${content}</div>
-        </div>
-      </div>
-    `;
-  }).join('');
-
-  /* Build dot navigation */
-  dotsContainer.innerHTML = blogPosts.map((_, i) =>
-    `<div class="blog-view-dot ${i === index ? 'active' : ''}" onclick="goToBlogSlide(${i})" data-testid="blog-dot-${i}"></div>`
-  ).join('');
-
-  updateBlogCounter();
-  updateBlogNavButtons();
-  blogView.classList.add('active');
-  document.body.style.overflow = 'hidden';
-}
-
-/**
- * Closes the full-page blog view and restores normal scrolling.
- */
-function closeBlogView() {
-  blogViewActive = false;
-  document.getElementById('blog-view').classList.remove('active');
-  document.body.style.overflow = '';
-}
-
-/**
- * Navigates to a specific blog slide with a smooth transition.
- * Uses the same slide-enter-down/up pattern as the gallery.
- */
-function goToBlogSlide(newIndex) {
-  if (newIndex === currentBlogIndex) return;
-  if (newIndex < 0 || newIndex >= blogPosts.length) return;
-
-  const slides = document.querySelectorAll('.blog-slide');
-  if (!slides.length) return;
-
-  const direction = newIndex > currentBlogIndex ? 'down' : 'up';
-  slides[currentBlogIndex].classList.remove('slide-active');
-
-  const newSlide = slides[newIndex];
-  newSlide.classList.add(direction === 'down' ? 'slide-enter-down' : 'slide-enter-up');
-  /* Scroll the new slide to top */
-  newSlide.scrollTop = 0;
-
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      newSlide.classList.remove('slide-enter-down', 'slide-enter-up');
-      newSlide.classList.add('slide-active');
-    });
-  });
-
-  currentBlogIndex = newIndex;
-  updateBlogCounter();
-  updateBlogNavButtons();
-  updateBlogDots();
-}
-
-function updateBlogCounter() {
-  const counter = document.getElementById('blog-view-counter');
-  if (counter) counter.textContent = `${currentBlogIndex + 1} / ${blogPosts.length}`;
-}
-
-function updateBlogNavButtons() {
-  const prev = document.getElementById('blog-btn-prev');
-  const next = document.getElementById('blog-btn-next');
-  if (prev) prev.disabled = (currentBlogIndex === 0);
-  if (next) next.disabled = (currentBlogIndex === blogPosts.length - 1);
-}
-
-function updateBlogDots() {
-  document.querySelectorAll('.blog-view-dot').forEach((dot, i) => {
-    dot.classList.toggle('active', i === currentBlogIndex);
-  });
+  /* Swipe up = next slide, swipe down = previous slide */
+  if (diff > 0) galleryNext();
+  else galleryPrev();
 }
 
 
