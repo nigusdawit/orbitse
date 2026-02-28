@@ -137,11 +137,15 @@ The AI chatbot can control what the user sees on the website through special com
 
 ### Sample System Prompt
 
-See `app.py` → `SAMPLE_SYSTEM_PROMPT` for a complete example that teaches an AI agent about all available commands.
+See `app.py` → `SYSTEM_PROMPT` for a complete example that teaches an AI agent about all available commands.
 
-### Connecting to OpenAI
+### AI Integration (OpenAI)
 
-Replace the placeholder logic in the `/api/chat` endpoint with OpenAI API calls. See the extensive comments in `app.py` for step-by-step instructions including function calling setup.
+The chatbot connects to OpenAI GPT-4o-mini via Replit AI Integrations. Two endpoints:
+- `POST /api/chat` — Standard request/response (used for most interactions)
+- `POST /api/chat/stream` — SSE streaming (used for live visual building when user says "show me visually")
+
+The AI can generate rich HTML layouts in real-time, streaming the content into the split-screen canvas so the user watches it being built.
 
 ## How to Edit Content
 
@@ -173,12 +177,41 @@ Add new sections inside the `.landing-container` div with classes `snap-section 
 - `DATABASE_URL` — PostgreSQL connection string (provisioned by Replit)
 - `ADMIN_PASSWORD` — Admin dashboard login password (default: "admin")
 - `FLASK_SECRET_KEY` — Session encryption key (auto-generated if not set)
+- `AI_INTEGRATIONS_OPENAI_API_KEY` — OpenAI API key (set by Replit AI Integrations)
+- `AI_INTEGRATIONS_OPENAI_BASE_URL` — OpenAI base URL (set by Replit AI Integrations)
 
 ### Python Packages
 - `flask` — Web framework
 - `psycopg2-binary` — PostgreSQL driver
+- `openai` — OpenAI API client for the AI chatbot
 - `gunicorn` — Production WSGI server
 
 ### CDN Dependencies
 - Google Fonts (Playfair Display, DM Sans)
 - Lucide Icons
+
+## Essential Files (What You Need)
+
+These are the files required to run the site:
+
+```
+app.py                          — Flask backend (main entry point)
+public/
+  index.html                    — Public site HTML structure
+  styles.css                    — All visual styles
+  script.js                     — All interactivity and AI chat
+templates/
+  admin/
+    dashboard.html              — Admin panel (content management)
+    login.html                  — Admin login page
+```
+
+### Files NOT Used by the Running Site
+The following directories are from a previous React/Vite setup and are NOT used by the Flask server:
+- `client/` — React frontend (unused)
+- `server/` — Node.js/Express backend (unused)
+- `shared/` — Shared TypeScript schemas (unused)
+- `vite.config.ts`, `tsconfig.json`, `tailwind.config.ts`, `drizzle.config.ts` — Build configs (unused)
+- `components.json`, `postcss.config.js` — Frontend tooling configs (unused)
+- `package.json`, `package-lock.json` — Node.js dependencies (unused by Flask)
+- `main.py` — Minimal Python entry point (unused)

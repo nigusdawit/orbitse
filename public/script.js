@@ -1105,8 +1105,22 @@ async function chatSendMessage() {
   /* Show typing indicator */
   chatShowTyping(true);
 
+  /* Detect if user wants a visual/streaming response */
+  const wantsVisual = /show\s*(me\s*)?visually|visuali[sz]e|create\s*(a\s*)?visual|build\s*(me\s*)?a\s*(visual|chart|table|layout)/i.test(message);
+
+  if (wantsVisual) {
+    await chatSendStreaming(message);
+  } else {
+    await chatSendRegular(message);
+  }
+}
+
+
+/**
+ * Send a regular (non-streaming) chat message to the AI.
+ */
+async function chatSendRegular(message) {
   try {
-    /* POST the message to the configured API endpoint */
     const apiEndpoint = chatSettings.api_endpoint || '/api/chat';
     const res = await fetch(apiEndpoint, {
       method: 'POST',
@@ -1118,27 +1132,101 @@ async function chatSendMessage() {
     });
 
     const data = await res.json();
-
-    /* Hide typing indicator */
     chatShowTyping(false);
 
-    /* Display the AI's text reply */
     if (data.reply) {
       chatAddMessage('agent', data.reply);
       chatHistory.push({ role: 'assistant', content: data.reply });
     }
 
-    /*
-     * Execute any command the AI included in its response.
-     * This is where the AI controls the website!
-     * See executeCommand() below for all available commands.
-     */
     if (data.command) {
       executeCommand(data.command);
     }
 
   } catch (error) {
     console.error('Chat error:', error);
+    chatShowTyping(false);
+    chatAddMessage('agent', 'I apologize, but I\'m having trouble connecting right now. Please try again in a moment.');
+  }
+}
+
+
+/**
+ * Send a streaming chat message for live visual building.
+ * Opens the split-screen canvas and streams HTML into it in real-time.
+ */
+async function chatSendStreaming(message) {
+  try {
+    /* Open split screen with empty canvas right away */
+    hideAllSplitContent();
+    const canvasContent = document.getElementById('split-canvas-content');
+    const canvasPanel = document.getElementById('split-canvas');
+    if (canvasContent) {
+      canvasContent.innerHTML = '<div style="padding:2rem;color:rgba(255,255,255,0.4);font-style:italic;">Building your visual...</div>';
+    }
+    if (canvasPanel) canvasPanel.style.display = 'block';
+    openSplitScreen();
+
+    chatShowTyping(false);
+
+    const res = await fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: message,
+        history: chatHistory
+      })
+    });
+
+    if (!res.ok) {
+      chatAddMessage('agent', 'I apologize, but I\'m having trouble connecting right now. Please try again.');
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let replyAdded = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const event = JSON.parse(line.slice(6));
+
+          if (event.type === 'text' && !replyAdded) {
+            replyAdded = true;
+            chatAddMessage('agent', event.content);
+            chatHistory.push({ role: 'assistant', content: event.content });
+          } else if (event.type === 'html') {
+            if (canvasContent) {
+              canvasContent.innerHTML = event.content;
+            }
+          } else if (event.type === 'command') {
+            if (event.command && event.command.action !== 'generateHTML') {
+              executeCommand(event.command);
+            }
+          } else if (event.type === 'done') {
+            if (!replyAdded) {
+              chatAddMessage('agent', 'Here you go! I\'ve created that visual for you.');
+              chatHistory.push({ role: 'assistant', content: 'Here you go! I\'ve created that visual for you.' });
+            }
+          } else if (event.type === 'error') {
+            chatAddMessage('agent', event.content);
+          }
+        } catch (e) { /* skip malformed SSE lines */ }
+      }
+    }
+
+  } catch (error) {
+    console.error('Stream error:', error);
     chatShowTyping(false);
     chatAddMessage('agent', 'I apologize, but I\'m having trouble connecting right now. Please try again in a moment.');
   }

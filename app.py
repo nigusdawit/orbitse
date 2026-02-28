@@ -42,6 +42,7 @@ TO RUN:
 """
 
 import os
+import re
 import json
 import secrets
 from datetime import datetime
@@ -51,8 +52,9 @@ import psycopg2
 import psycopg2.extras
 from flask import (
     Flask, request, jsonify, send_from_directory,
-    render_template, session, redirect, url_for
+    render_template, session, redirect, url_for, Response, stream_with_context
 )
+from openai import OpenAI
 
 # =============================================================================
 # APP CONFIGURATION
@@ -79,6 +81,13 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")
 
 # Database connection string from environment variable
 DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# OpenAI client — uses Replit AI Integrations environment variables
+# These are automatically set when the OpenAI integration is installed
+openai_client = OpenAI(
+    api_key=os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY", ""),
+    base_url=os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL", "https://api.openai.com/v1"),
+)
 
 
 # =============================================================================
@@ -522,7 +531,7 @@ def api_chatbot_settings():
 
 # This sample system prompt teaches an AI agent how to control the website.
 # Copy and customize this when connecting to your own AI provider.
-SAMPLE_SYSTEM_PROMPT = """
+SYSTEM_PROMPT = """
 You are Marco, a luxury concierge for Casa Serena, a Mediterranean villa.
 You help guests explore the property and plan their stay.
 
@@ -547,158 +556,160 @@ chef-kitchen, wine-cellar, sunset-terrace, coastal-village
 ```command
 {"action": "generateHTML", "html": "<div>YOUR HTML HERE</div>"}
 ```
+Use this for complex visual layouts: pricing tables, comparison charts,
+itineraries, timelines, or anything that benefits from rich formatting.
+Use inline styles (dark theme: white text on transparent/dark background).
+Use font-family: 'DM Sans', sans-serif for body and 'Playfair Display', serif for headings.
 
 RULES:
 - ALWAYS navigate when discussing a specific space. This IS the experience.
 - Keep text responses to 1-3 sentences. Let the visuals do the talking.
 - Use showSlide for comparisons, recommendations, and structured info.
 - Use generateHTML for complex layouts like pricing tables or itineraries.
+- When the user asks to "show me visually" or "visualize" something, ALWAYS use generateHTML to create a rich, beautiful HTML layout. Make it detailed and visually impressive.
+- Only include ONE command block per response.
 """
+
+
+def parse_command_from_text(text):
+    """
+    Extract a ```command``` block from the AI's response text.
+    Returns (clean_text, command_dict) — the text with the block removed,
+    and the parsed command (or None if no command was found).
+
+    Handles both properly closed ```command...``` blocks and cases where
+    the closing fence is missing (model truncation).
+    """
+    pattern = r'```command\s*\n?(.*?)\n?\s*```'
+    match = re.search(pattern, text, re.DOTALL)
+
+    if not match:
+        unclosed = re.search(r'```command\s*\n?(.*)', text, re.DOTALL)
+        if unclosed:
+            try:
+                raw = unclosed.group(1).strip().rstrip('`').strip()
+                cmd = json.loads(raw)
+                clean = text[:unclosed.start()].strip()
+                return clean, cmd
+            except json.JSONDecodeError:
+                return text.strip(), None
+        return text.strip(), None
+
+    try:
+        cmd = json.loads(match.group(1).strip())
+        clean = re.sub(pattern, '', text, flags=re.DOTALL).strip()
+        return clean, cmd
+    except json.JSONDecodeError:
+        return text.strip(), None
 
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """
     POST /api/chat
-    Handle incoming chat messages from the chatbot.
+    Handle incoming chat messages using OpenAI.
 
-    This is a TEMPLATE endpoint that returns placeholder responses.
-    Replace the logic below with your own AI provider integration.
-
-    The response format supports both text replies and visual commands
-    that control the website (navigate, showSlide, generateHTML).
+    Sends the user message + conversation history to GPT, parses the
+    response for visual commands (navigate, showSlide, generateHTML),
+    and returns both the text reply and any command.
     """
     data = request.get_json()
-    message = data.get("message", "").strip().lower()
+    message = data.get("message", "").strip()
     history = data.get("history", [])
 
-    # =========================================================================
-    # PLACEHOLDER RESPONSES — Replace this section with your AI provider
-    # =========================================================================
-    # This demo logic shows how the response format works.
-    # In production, you'd send the message + history to your AI and
-    # return its response in the format shown above.
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for h in history[-20:]:
+        role = "assistant" if h.get("role") == "agent" else "user"
+        messages.append({"role": role, "content": h.get("content", "")})
+    messages.append({"role": "user", "content": message})
 
-    # Check for navigation keywords and respond with commands
-    if any(word in message for word in ["pool", "swim"]):
-        return jsonify({
-            "reply": "Our infinity pool is truly breathtaking — it seems to pour directly into the Aegean. Let me show you!",
-            "command": {"action": "navigate", "target": "infinity-pool"}
-        })
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            max_tokens=2048,
+            temperature=0.7,
+        )
+        full_text = response.choices[0].message.content or ""
+        reply, command = parse_command_from_text(full_text)
 
-    elif any(word in message for word in ["master", "suite", "bedroom"]):
-        return jsonify({
-            "reply": "The Master Suite is our crown jewel — private terrace, ocean views, and a freestanding copper bathtub. Take a look!",
-            "command": {"action": "navigate", "target": "master-suite"}
-        })
+        result = {"reply": reply}
+        if command:
+            result["command"] = command
+        return jsonify(result)
 
-    elif any(word in message for word in ["kitchen", "cook", "chef"]):
+    except Exception as e:
         return jsonify({
-            "reply": "Our chef's kitchen is a culinary dream. Professional Viking range, wood-fired pizza oven, and a herb garden steps away.",
-            "command": {"action": "navigate", "target": "chef-kitchen"}
-        })
+            "reply": f"I apologize, but I'm having trouble connecting right now. Please try again in a moment."
+        }), 500
 
-    elif any(word in message for word in ["wine", "cellar"]):
-        return jsonify({
-            "reply": "Our stone-vaulted wine cellar houses over 400 labels. Private tastings can be arranged with our sommelier.",
-            "command": {"action": "navigate", "target": "wine-cellar"}
-        })
 
-    elif any(word in message for word in ["sunset", "terrace", "dinner", "dining"]):
-        return jsonify({
-            "reply": "The Sunset Terrace transforms each evening into an open-air restaurant with the most spectacular views.",
-            "command": {"action": "navigate", "target": "sunset-terrace"}
-        })
+@app.route("/api/chat/stream", methods=["POST"])
+def api_chat_stream():
+    """
+    POST /api/chat/stream
+    Streaming version of the chat endpoint using Server-Sent Events (SSE).
 
-    elif any(word in message for word in ["village", "local", "town"]):
-        return jsonify({
-            "reply": "San Lorenzo is just a 10-minute walk — cobblestone streets, family tavernas, and a morning fish market!",
-            "command": {"action": "navigate", "target": "coastal-village"}
-        })
+    Used for generateHTML commands where the user sees the HTML being
+    built live in the split-screen canvas. The stream sends:
+      - {"type": "text", "content": "..."} for reply text chunks
+      - {"type": "html_chunk", "content": "..."} for HTML chunks (live preview)
+      - {"type": "command", "command": {...}} for the final parsed command
+      - {"type": "done"} when streaming is complete
+    """
+    data = request.get_json()
+    message = data.get("message", "").strip()
+    history = data.get("history", [])
 
-    elif any(word in message for word in ["ocean", "sea", "view", "room"]):
-        return jsonify({
-            "reply": "Our Ocean View Room features floor-to-ceiling windows framing the endless blue. Let me show you!",
-            "command": {"action": "navigate", "target": "ocean-room"}
-        })
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for h in history[-20:]:
+        role = "assistant" if h.get("role") == "agent" else "user"
+        messages.append({"role": role, "content": h.get("content", "")})
+    messages.append({"role": "user", "content": message})
 
-    elif any(word in message for word in ["tour", "villa", "property", "explore", "show"]):
-        return jsonify({
-            "reply": "Welcome to Casa Serena! Let me start with an overview of this magnificent property.",
-            "command": {"action": "navigate", "target": "hero-villa"}
-        })
+    def generate():
+        try:
+            stream = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                max_tokens=4096,
+                temperature=0.7,
+                stream=True,
+            )
 
-    elif any(word in message for word in ["compare", "difference", "which"]):
-        return jsonify({
-            "reply": "Great question! Here's a comparison of our accommodations.",
-            "command": {
-                "action": "showSlide",
-                "title": "Room Comparison",
-                "subtitle": "Finding your perfect suite at Casa Serena",
-                "points": [
-                    "Master Suite — King bed, private terrace, copper bathtub — From $1,800/night",
-                    "Ocean View Room — Queen bed, juliet balcony, marble bath — From $1,200/night",
-                    "Both rooms include daily housekeeping and breakfast",
-                    "The Master Suite is ideal for honeymoons and special occasions"
-                ]
-            }
-        })
+            full_text = ""
 
-    elif any(word in message for word in ["price", "cost", "rate", "pricing", "expensive"]):
-        return jsonify({
-            "reply": "Here's our seasonal pricing breakdown. I've created a detailed view for you!",
-            "command": {
-                "action": "generateHTML",
-                "html": """
-                <div style="font-family: 'DM Sans', sans-serif; padding: 2rem; color: #fff;">
-                    <h2 style="font-family: 'Playfair Display', serif; font-size: 1.75rem; margin-bottom: 0.5rem;">Seasonal Pricing</h2>
-                    <p style="color: rgba(255,255,255,0.6); margin-bottom: 1.5rem;">Casa Serena rates by season</p>
-                    <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
-                        <thead>
-                            <tr style="border-bottom: 1px solid rgba(255,255,255,0.2);">
-                                <th style="text-align: left; padding: 0.75rem; color: rgba(255,255,255,0.5); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Season</th>
-                                <th style="text-align: left; padding: 0.75rem; color: rgba(255,255,255,0.5); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Dates</th>
-                                <th style="text-align: left; padding: 0.75rem; color: rgba(255,255,255,0.5); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Nightly Rate</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
-                                <td style="padding: 0.75rem; font-weight: 600;">High Season</td>
-                                <td style="padding: 0.75rem; color: rgba(255,255,255,0.7);">Jun — Sep</td>
-                                <td style="padding: 0.75rem; font-weight: 600;">$1,200 — $1,800</td>
-                            </tr>
-                            <tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
-                                <td style="padding: 0.75rem; font-weight: 600;">Mid Season</td>
-                                <td style="padding: 0.75rem; color: rgba(255,255,255,0.7);">Apr — May, Oct</td>
-                                <td style="padding: 0.75rem; font-weight: 600;">$800 — $1,400</td>
-                            </tr>
-                            <tr>
-                                <td style="padding: 0.75rem; font-weight: 600;">Low Season</td>
-                                <td style="padding: 0.75rem; color: rgba(255,255,255,0.7);">Nov — Mar</td>
-                                <td style="padding: 0.75rem; font-weight: 600;">$600 — $1,000</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                    <p style="color: rgba(255,255,255,0.5); margin-top: 1rem; font-size: 0.8rem;">All rates include daily housekeeping, breakfast, and airport transfer.</p>
-                </div>
-                """
-            }
-        })
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta and delta.content:
+                    full_text += delta.content
+                    yield f"data: {json.dumps({'type': 'token', 'content': delta.content})}\n\n"
 
-    elif any(word in message for word in ["book", "reserve", "stay"]):
-        return jsonify({
-            "reply": "I'd love to help you book your stay! Click the 'Reserve' button to fill out our booking form, or tell me which room interests you and I'll help guide you through the options."
-        })
+            reply, cmd = parse_command_from_text(full_text)
+            if reply:
+                yield f"data: {json.dumps({'type': 'text', 'content': reply})}\n\n"
+            if cmd:
+                if cmd.get("action") == "generateHTML" and cmd.get("html"):
+                    yield f"data: {json.dumps({'type': 'html', 'content': cmd['html']})}\n\n"
+                yield f"data: {json.dumps({'type': 'command', 'command': cmd})}\n\n"
 
-    elif any(word in message for word in ["hello", "hi", "hey"]):
-        return jsonify({
-            "reply": "Hello! Welcome to Casa Serena. I'm here to help you explore our Mediterranean retreat. Would you like a tour of the villa, or is there something specific you'd like to see?"
-        })
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
-    else:
-        return jsonify({
-            "reply": "I'd be happy to help! I can show you around the villa, compare our rooms, share pricing details, or help you plan your perfect Mediterranean getaway. What would you like to explore?"
-        })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield f"data: {json.dumps({'type': 'error', 'content': 'Connection issue. Please try again.'})}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        }
+    )
 
 
 # =============================================================================
