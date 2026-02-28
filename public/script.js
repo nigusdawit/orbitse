@@ -1102,8 +1102,13 @@ async function chatSendMessage() {
   /* Add to history for context */
   chatHistory.push({ role: 'user', content: message });
 
-  /* Show typing indicator */
+  /* Show typing indicator in message areas and latest-text panels */
   chatShowTyping(true);
+  updateMainPanelLatest('');
+  updateSidePanelLatest('');
+  document.querySelectorAll('#panel-latest-text, #side-panel-latest-text').forEach(el => {
+    el.setAttribute('data-thinking', 'true');
+  });
 
   await chatSendStreaming(message);
 }
@@ -1405,6 +1410,7 @@ function toggleMainPanelHistory() {
 function updateMainPanelLatest(text) {
   const latestText = document.getElementById('panel-latest-text');
   if (latestText) {
+    latestText.removeAttribute('data-thinking');
     latestText.textContent = text;
   }
 }
@@ -1794,6 +1800,7 @@ function toggleSidePanelHistory() {
 function updateSidePanelLatest(text) {
   const latestText = document.getElementById('side-panel-latest-text');
   if (latestText) {
+    latestText.removeAttribute('data-thinking');
     latestText.textContent = text;
   }
 }

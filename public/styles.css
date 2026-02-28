@@ -2246,6 +2246,19 @@ input, select, textarea {
   font-style: italic;
 }
 
+.side-panel-latest-text[data-thinking]:empty::before,
+#panel-latest-text[data-thinking]:empty::before {
+  content: "Thinking...";
+  color: rgba(255, 255, 255, 0.45);
+  font-style: italic;
+  animation: pulse-thinking 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse-thinking {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.9; }
+}
+
 .side-panel-input-row {
   display: flex;
   align-items: center;
