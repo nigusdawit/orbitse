@@ -2635,9 +2635,15 @@ async function chatSendStreaming(message, wasCollapsed) {
           const heroEl = document.getElementById('hero-description');
           if (heroEl) typeHeroText(heroEl, shortText || displayText);
         } else {
-          /* No command — check if text is too long for the hero */
+          /* No command — check if text is too long for the hero.
+             Only open the canvas for genuinely long, detailed responses
+             (itineraries, guides, etc.) — not short confirmations that
+             happen to have several short lines. Require both a high
+             sentence count AND a minimum character length. */
           const sentenceCount = (displayText.match(/[.!?]+\s/g) || []).length + 1;
-          if (sentenceCount > 4) {
+          const lineCount = (displayText.match(/\n/g) || []).length + 1;
+          const isLongContent = displayText.length > 600 && (sentenceCount > 6 || lineCount > 12);
+          if (isLongContent) {
             const shortText = displayText.split(/(?<=[.!?])\s+/).slice(0, 2).join(' ');
             const heroEl = document.getElementById('hero-description');
             if (heroEl) typeHeroText(heroEl, shortText + ' Let me show you more…');
