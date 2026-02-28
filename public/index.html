@@ -296,7 +296,7 @@ FONTS:
   - Select fields can be auto-populated from gallery cards data
   -->
   <div id="booking-modal" class="modal-backdrop" data-testid="booking-modal">
-    <div class="modal-content">
+    <div class="modal-content modal-glass">
 
       <div class="modal-header">
         <div>
@@ -305,6 +305,8 @@ FONTS:
         </div>
         <button class="modal-close" onclick="closeModal()" data-testid="button-close-modal">&times;</button>
       </div>
+
+      <div id="multistep-progress" class="multistep-progress" style="display:none;" data-testid="multistep-progress"></div>
 
       <div class="modal-body">
         <form id="booking-form" class="form-grid" onsubmit="handleDynamicFormSubmit(event)" data-testid="form-booking">

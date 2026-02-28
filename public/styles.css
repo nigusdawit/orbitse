@@ -900,11 +900,128 @@ input, select, textarea {
 .modal-content {
   width: 100%;
   max-width: 32rem;
-  background: #1a1f2e;
   border-radius: 1rem;
   box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
   overflow: hidden;
   animation: modalIn var(--transition-fast) var(--ease-smooth);
+}
+
+.modal-glass {
+  background: rgba(15, 20, 35, 0.75);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.multistep-progress {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  padding: 1.25rem var(--space-lg) 0;
+}
+
+.step-item {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.step-dot {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.35);
+  transition: all 0.4s var(--ease-smooth);
+  flex-shrink: 0;
+}
+
+.step-dot.active {
+  border-color: var(--accent, #c9a96e);
+  background: rgba(201, 169, 110, 0.15);
+  color: var(--accent, #c9a96e);
+  box-shadow: 0 0 12px rgba(201, 169, 110, 0.25);
+}
+
+.step-dot.completed {
+  border-color: var(--accent, #c9a96e);
+  background: var(--accent, #c9a96e);
+  color: #000;
+}
+
+.step-line {
+  width: 2.5rem;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  transition: background 0.4s var(--ease-smooth);
+}
+
+.step-line.completed {
+  background: var(--accent, #c9a96e);
+}
+
+.form-step {
+  display: none;
+  animation: stepFadeIn 0.35s var(--ease-smooth);
+}
+
+.form-step.active {
+  display: block;
+}
+
+@keyframes stepFadeIn {
+  from { opacity: 0; transform: translateX(12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.step-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: var(--space-md);
+  gap: 0.75rem;
+}
+
+.btn-step-back {
+  padding: 0.5rem 1.25rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.5rem;
+  background: transparent;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-step-back:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.btn-step-next {
+  padding: 0.5rem 1.5rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #000;
+  background: var(--accent, #c9a96e);
+  border: none;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  margin-left: auto;
+}
+
+.btn-step-next:hover {
+  background: #d4b87a;
+  transform: translateY(-1px);
 }
 
 .modal-header {
@@ -974,25 +1091,56 @@ input, select, textarea {
 .form-group input,
 .form-group select {
   width: 100%;
-  padding: 0.5rem 0.75rem;
+  padding: 0.625rem 0.875rem;
   border-radius: 0.5rem;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(8px);
   color: #fff;
   font-size: 0.875rem;
   outline: none;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
 }
 
 .form-group input:focus,
 .form-group select:focus {
-  border-color: rgba(255, 255, 255, 0.4);
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.05);
+  border-color: var(--accent, #c9a96e);
+  box-shadow: 0 0 0 3px rgba(201, 169, 110, 0.1);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .form-group select option {
   background: #1a1f2e;
   color: #fff;
+}
+
+.glass-textarea {
+  width: 100%;
+  padding: 0.625rem 0.875rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(8px);
+  color: #fff;
+  font-size: 0.875rem;
+  font-family: inherit;
+  resize: vertical;
+  outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
+}
+
+.glass-textarea:focus {
+  border-color: var(--accent, #c9a96e);
+  box-shadow: 0 0 0 3px rgba(201, 169, 110, 0.1);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.form-group input.field-error,
+.form-group select.field-error,
+.form-group textarea.field-error,
+.glass-textarea.field-error {
+  border-color: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1);
 }
 
 .modal-footer {
@@ -1088,17 +1236,20 @@ input, select, textarea {
 /* Submit button in modal */
 .btn-submit {
   padding: 0.5rem 1.5rem;
-  background: #fff;
+  background: var(--accent, #c9a96e);
   color: #000;
   font-family: var(--font-serif);
-  font-weight: 500;
+  font-weight: 600;
   font-size: 0.875rem;
   border-radius: 0.5rem;
-  transition: background var(--transition-fast);
+  border: none;
+  cursor: pointer;
+  transition: background var(--transition-fast), transform var(--transition-fast);
 }
 
 .btn-submit:hover {
-  background: rgba(255, 255, 255, 0.9);
+  background: #d4b87a;
+  transform: translateY(-1px);
 }
 
 

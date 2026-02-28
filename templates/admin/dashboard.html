@@ -1195,6 +1195,18 @@ TO CUSTOMIZE THIS DASHBOARD:
               </select>
             </div>
             <div class="form-group">
+              <label>Step</label>
+              <select id="field-step" data-testid="select-field-step" style="background: var(--admin-input-bg); border: 1px solid var(--admin-border); color: var(--admin-text); padding: 0.5rem; border-radius: var(--admin-radius);">
+                <option value="1">Step 1</option>
+                <option value="2">Step 2</option>
+                <option value="3">Step 3</option>
+                <option value="4">Step 4</option>
+                <option value="5">Step 5</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
               <label>Default Value</label>
               <input type="text" id="field-default" data-testid="input-field-default">
             </div>
@@ -1225,13 +1237,14 @@ TO CUSTOMIZE THIS DASHBOARD:
               <th>Type</th>
               <th>Label</th>
               <th>Name</th>
+              <th>Step</th>
               <th>Required</th>
               <th>Width</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody id="fields-tbody">
-            <tr><td colspan="7" class="empty-state">No fields yet. Add your first field above.</td></tr>
+            <tr><td colspan="8" class="empty-state">No fields yet. Add your first field above.</td></tr>
           </tbody>
         </table>
       </div>
@@ -2287,7 +2300,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     function renderFieldsList(fields) {
       const tbody = document.getElementById('fields-tbody');
       if (!fields.length) {
-        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No fields yet. Add your first field above.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No fields yet. Add your first field above.</td></tr>';
         return;
       }
       tbody.innerHTML = fields.map(f => `
@@ -2296,6 +2309,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           <td><span class="badge" style="font-size:0.65rem;min-width:2rem;text-align:center;">${FIELD_TYPE_LABELS[f.field_type] || f.field_type}</span></td>
           <td><strong>${esc(f.label)}</strong></td>
           <td><code style="font-size:0.75rem;">${esc(f.name)}</code></td>
+          <td><span class="badge" style="background:rgba(201,169,110,0.15);color:#c9a96e;">Step ${f.step || 1}</span></td>
           <td>${f.required ? '<span class="badge" style="background:rgba(239,68,68,0.2);color:#ef4444;">Required</span>' : '—'}</td>
           <td><span class="badge">${f.width}</span></td>
           <td style="display:flex; gap:0.25rem;">
@@ -2338,6 +2352,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('field-name').value = '';
       document.getElementById('field-placeholder').value = '';
       document.getElementById('field-width').value = 'full';
+      document.getElementById('field-step').value = '1';
       document.getElementById('field-default').value = '';
       document.getElementById('field-options').value = '';
       document.getElementById('field-help').value = '';
@@ -2372,6 +2387,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         document.getElementById('field-name').value = field.name || '';
         document.getElementById('field-placeholder').value = field.placeholder || '';
         document.getElementById('field-width').value = field.width || 'full';
+        document.getElementById('field-step').value = field.step || '1';
         document.getElementById('field-default').value = field.default_value || '';
         document.getElementById('field-help').value = field.help_text || '';
         document.getElementById('field-required').checked = !!field.required;
@@ -2408,6 +2424,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         options,
         default_value: document.getElementById('field-default').value.trim(),
         width: document.getElementById('field-width').value,
+        step: parseInt(document.getElementById('field-step').value) || 1,
         help_text: document.getElementById('field-help').value.trim()
       };
 

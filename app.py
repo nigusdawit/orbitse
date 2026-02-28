@@ -395,6 +395,7 @@ def init_db():
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_font_serif TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_font_sans TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE form_submissions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
+                "ALTER TABLE form_fields ADD COLUMN IF NOT EXISTS step INTEGER NOT NULL DEFAULT 1",
             ]:
                 cur.execute(col_sql)
 
@@ -417,19 +418,19 @@ def init_db():
                 if form_row:
                     fid = form_row[0]
                     fields = [
-                        (fid, 'text',   'Full Name',    'name',      'Enter your full name', True,  None, '', 0, 'full', '', ''),
-                        (fid, 'email',  'Email',        'email',     'your@email.com',       True,  None, '', 1, 'full', '', ''),
-                        (fid, 'select', 'Service',      'service',   '',                     True,  '[]', '', 2, 'full', '', 'Select your preferred option'),
-                        (fid, 'date',   'Start Date',   'start_date','',                     True,  None, '', 3, 'half', '', ''),
-                        (fid, 'date',   'End Date',     'end_date',  '',                     True,  None, '', 4, 'half', '', ''),
-                        (fid, 'number', 'Quantity',     'quantity',  '',                     False, None, '1', 5, 'half', '', 'How many?'),
-                        (fid, 'tel',    'Phone',        'phone',     '+1 (555) 000-0000',    False, None, '', 6, 'half', '', ''),
-                        (fid, 'textarea','Additional Details','details','Any special requirements or preferences...', False, None, '', 7, 'full', '', ''),
+                        (fid, 'text',   'Full Name',    'name',      'Enter your full name', True,  None, '', 0, 'full', '', '', 1),
+                        (fid, 'email',  'Email',        'email',     'your@email.com',       True,  None, '', 1, 'full', '', '', 1),
+                        (fid, 'select', 'Service',      'service',   '',                     True,  '[]', '', 2, 'full', '', 'Select your preferred option', 1),
+                        (fid, 'date',   'Start Date',   'start_date','',                     True,  None, '', 3, 'half', '', '', 2),
+                        (fid, 'date',   'End Date',     'end_date',  '',                     True,  None, '', 4, 'half', '', '', 2),
+                        (fid, 'number', 'Quantity',     'quantity',  '',                     False, None, '1', 5, 'half', '', 'How many?', 2),
+                        (fid, 'tel',    'Phone',        'phone',     '+1 (555) 000-0000',    False, None, '', 6, 'half', '', '', 2),
+                        (fid, 'textarea','Additional Details','details','Any special requirements or preferences...', False, None, '', 7, 'full', '', '', 3),
                     ]
                     for f in fields:
                         cur.execute("""
-                            INSERT INTO form_fields (form_id, field_type, label, name, placeholder, required, options, default_value, sort_order, width, validation_regex, help_text)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)
+                            INSERT INTO form_fields (form_id, field_type, label, name, placeholder, required, options, default_value, sort_order, width, validation_regex, help_text, step)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)
                         """, f)
     finally:
         conn.close()
@@ -1522,9 +1523,10 @@ def admin_add_field(form_id):
     name = data.get("name") or data["label"].lower().replace(" ", "_")
     name = re.sub(r'[^a-z0-9_]', '', name)
     options_val = json.dumps(data["options"]) if data.get("options") else None
+    step_val = max(1, int(data.get("step", 1))) if data.get("step") else 1
     result = execute_db(
-        """INSERT INTO form_fields (form_id, field_type, label, name, placeholder, required, options, default_value, sort_order, width, validation_regex, help_text)
-           VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, COALESCE((SELECT MAX(sort_order)+1 FROM form_fields WHERE form_id = %s), 0), %s, %s, %s)
+        """INSERT INTO form_fields (form_id, field_type, label, name, placeholder, required, options, default_value, sort_order, width, validation_regex, help_text, step)
+           VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, COALESCE((SELECT MAX(sort_order)+1 FROM form_fields WHERE form_id = %s), 0), %s, %s, %s, %s)
            RETURNING *""",
         (
             form_id,
@@ -1538,7 +1540,8 @@ def admin_add_field(form_id):
             form_id,
             data.get("width", "full"),
             data.get("validation_regex", ""),
-            data.get("help_text", "")
+            data.get("help_text", ""),
+            step_val
         )
     )
     return jsonify(result), 201
@@ -1550,11 +1553,12 @@ def admin_update_field(form_id, field_id):
     """PUT /admin/api/forms/<id>/fields/<field_id> — Update a field."""
     data = request.get_json()
     options_val = json.dumps(data["options"]) if data.get("options") else None
+    step_val = max(1, int(data.get("step", 1))) if data.get("step") else 1
     result = execute_db(
         """UPDATE form_fields SET
              field_type = %s, label = %s, name = %s, placeholder = %s,
              required = %s, options = %s::jsonb, default_value = %s,
-             width = %s, validation_regex = %s, help_text = %s
+             width = %s, validation_regex = %s, help_text = %s, step = %s
            WHERE id = %s AND form_id = %s RETURNING *""",
         (
             data.get("field_type", "text"),
@@ -1567,6 +1571,7 @@ def admin_update_field(form_id, field_id):
             data.get("width", "full"),
             data.get("validation_regex", ""),
             data.get("help_text", ""),
+            step_val,
             field_id,
             form_id
         )
@@ -1707,7 +1712,7 @@ def api_get_form(slug):
     if not form:
         return jsonify({"error": "Form not found"}), 404
     fields = query_db(
-        "SELECT id, field_type, label, name, placeholder, required, options, default_value, sort_order, width, help_text FROM form_fields WHERE form_id = %s ORDER BY sort_order",
+        "SELECT id, field_type, label, name, placeholder, required, options, default_value, sort_order, width, help_text, step FROM form_fields WHERE form_id = %s ORDER BY sort_order",
         (form["id"],)
     )
     form["fields"] = fields or []

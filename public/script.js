@@ -690,9 +690,13 @@ function trackBookingStep(step) {
   } catch (e) { /* silent */ }
 }
 
+let currentFormStep = 1;
+let totalFormSteps = 1;
+
 function openModal(slug) {
   const formSlug = slug || 'contact-request';
   currentFormSlug = formSlug;
+  currentFormStep = 1;
   document.getElementById('booking-modal').classList.add('active');
   trackBookingStep('opened_modal');
   loadDynamicForm(formSlug);
@@ -704,7 +708,102 @@ function closeModal() {
   if (conf) conf.style.display = 'none';
   const formFields = document.getElementById('booking-form-fields');
   if (formFields) formFields.style.display = 'block';
+  const progress = document.getElementById('multistep-progress');
+  if (progress) progress.style.display = 'none';
   currentFormConfig = null;
+  currentFormStep = 1;
+}
+
+function groupFieldsByStep(fields) {
+  const steps = {};
+  (fields || []).forEach(f => {
+    const s = f.step || 1;
+    if (!steps[s]) steps[s] = [];
+    steps[s].push(f);
+  });
+  const sortedKeys = Object.keys(steps).map(Number).sort((a, b) => a - b);
+  return sortedKeys.map(k => steps[k]);
+}
+
+function renderStepProgress(totalSteps, activeStep) {
+  const progress = document.getElementById('multistep-progress');
+  if (!progress) return;
+  if (totalSteps <= 1) { progress.style.display = 'none'; return; }
+  progress.style.display = 'flex';
+  let html = '';
+  for (let i = 1; i <= totalSteps; i++) {
+    const dotClass = i < activeStep ? 'completed' : (i === activeStep ? 'active' : '');
+    const checkmark = i < activeStep ? '&#10003;' : i;
+    html += `<div class="step-item">
+      <div class="step-dot ${dotClass}" data-testid="step-dot-${i}">${checkmark}</div>
+      ${i < totalSteps ? `<div class="step-line ${i < activeStep ? 'completed' : ''}"></div>` : ''}
+    </div>`;
+  }
+  progress.innerHTML = html;
+}
+
+function renderStepFields(fields) {
+  let html = '';
+  let halfBuffer = [];
+  const flushHalf = () => {
+    if (halfBuffer.length === 2) {
+      html += `<div class="form-grid-2">${halfBuffer.join('')}</div>`;
+      halfBuffer = [];
+    } else if (halfBuffer.length === 1) {
+      html += `<div class="form-grid-2">${halfBuffer[0]}<div></div></div>`;
+      halfBuffer = [];
+    }
+  };
+  fields.forEach(field => {
+    const fieldHtml = renderFormField(field);
+    if (field.width === 'half') {
+      halfBuffer.push(fieldHtml);
+      if (halfBuffer.length === 2) flushHalf();
+    } else {
+      flushHalf();
+      html += fieldHtml;
+    }
+  });
+  flushHalf();
+  return html;
+}
+
+function validateStepPane(pane) {
+  if (!pane) return true;
+  const inputs = pane.querySelectorAll('input, select, textarea');
+  let valid = true;
+  inputs.forEach(el => {
+    el.classList.remove('field-error');
+    if (el.required && !el.value.trim()) {
+      el.classList.add('field-error');
+      valid = false;
+    }
+    if (el.type === 'email' && el.value.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(el.value.trim())) {
+      el.classList.add('field-error');
+      valid = false;
+    }
+  });
+  return valid;
+}
+
+function validateCurrentStep() {
+  const activePane = document.querySelector('.form-step.active');
+  if (!activePane) return true;
+  const valid = validateStepPane(activePane);
+  if (!valid) {
+    const first = activePane.querySelector('.field-error');
+    if (first) first.focus();
+  }
+  return valid;
+}
+
+function goToStep(step) {
+  if (step > currentFormStep && !validateCurrentStep()) return;
+  currentFormStep = step;
+  document.querySelectorAll('.form-step').forEach(el => el.classList.remove('active'));
+  const target = document.querySelector(`.form-step[data-step="${step}"]`);
+  if (target) target.classList.add('active');
+  renderStepProgress(totalFormSteps, step);
 }
 
 async function loadDynamicForm(slug) {
@@ -730,38 +829,46 @@ async function loadDynamicForm(slug) {
     document.getElementById('dynamic-form-title').textContent = form.name || 'Get In Touch';
     document.getElementById('dynamic-form-subtitle').textContent = form.description || '';
 
+    const stepGroups = groupFieldsByStep(form.fields);
+    totalFormSteps = stepGroups.length;
+    currentFormStep = 1;
+
     let html = '';
-    let halfBuffer = [];
 
-    const flushHalf = () => {
-      if (halfBuffer.length === 2) {
-        html += `<div class="form-grid-2">${halfBuffer.join('')}</div>`;
-        halfBuffer = [];
-      } else if (halfBuffer.length === 1) {
-        html += `<div class="form-grid-2">${halfBuffer[0]}<div></div></div>`;
-        halfBuffer = [];
-      }
-    };
+    stepGroups.forEach((stepFields, idx) => {
+      const stepNum = idx + 1;
+      const isActive = stepNum === 1 ? ' active' : '';
+      const isLast = stepNum === totalFormSteps;
 
-    (form.fields || []).forEach(field => {
-      const fieldHtml = renderFormField(field);
-      if (field.width === 'half') {
-        halfBuffer.push(fieldHtml);
-        if (halfBuffer.length === 2) flushHalf();
+      html += `<div class="form-step${isActive}" data-step="${stepNum}">`;
+      html += renderStepFields(stepFields);
+
+      if (totalFormSteps > 1) {
+        html += '<div class="step-nav">';
+        if (stepNum === 1) {
+          html += `<button type="button" class="btn-text" onclick="closeModal()" data-testid="button-cancel-booking">Cancel</button>`;
+        } else {
+          html += `<button type="button" class="btn-step-back" onclick="goToStep(${stepNum - 1})" data-testid="button-step-back-${stepNum}">Back</button>`;
+        }
+        if (isLast) {
+          html += `<button type="submit" class="btn-submit" data-testid="button-submit-booking">${escapeHtml(form.submit_button_text || 'Submit')}</button>`;
+        } else {
+          html += `<button type="button" class="btn-step-next" onclick="goToStep(${stepNum + 1})" data-testid="button-step-next-${stepNum}">Continue</button>`;
+        }
+        html += '</div>';
       } else {
-        flushHalf();
-        html += fieldHtml;
+        html += `<div class="modal-footer">
+          <button type="button" class="btn-text" onclick="closeModal()" data-testid="button-cancel-booking">Cancel</button>
+          <button type="submit" class="btn-submit" data-testid="button-submit-booking">${escapeHtml(form.submit_button_text || 'Submit')}</button>
+        </div>`;
       }
-    });
-    flushHalf();
 
-    html += `<div class="modal-footer">
-      <button type="button" class="btn-text" onclick="closeModal()" data-testid="button-cancel-booking">Cancel</button>
-      <button type="submit" class="btn-submit" data-testid="button-submit-booking">${escapeHtml(form.submit_button_text || 'Submit')}</button>
-    </div>`;
+      html += '</div>';
+    });
 
     container.innerHTML = html;
 
+    renderStepProgress(totalFormSteps, 1);
     populateDynamicRoomDropdown();
     attachPartialSaveListeners();
   } catch (err) {
@@ -796,7 +903,7 @@ function renderFormField(field) {
   let inputHtml = '';
   switch (field.field_type) {
     case 'textarea':
-      inputHtml = `<textarea id="${fid}" name="${escapeHtml(field.name)}"${ph}${reqAttr} rows="3" data-testid="input-${field.name}" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12); color: #fff; padding: 0.75rem; border-radius: 8px; width:100%; font-family:inherit; resize:vertical;">${escapeHtml(defVal)}</textarea>`;
+      inputHtml = `<textarea id="${fid}" name="${escapeHtml(field.name)}"${ph}${reqAttr} rows="3" data-testid="input-${field.name}" class="glass-textarea">${escapeHtml(defVal)}</textarea>`;
       break;
     case 'select': {
       const opts = Array.isArray(field.options) ? field.options : [];
@@ -831,6 +938,28 @@ function renderFormField(field) {
 async function handleDynamicFormSubmit(e) {
   e.preventDefault();
   if (!currentFormConfig || !currentFormSlug) return;
+
+  const allSteps = document.querySelectorAll('.form-step');
+  if (allSteps.length > 0) {
+    let allValid = true;
+    allSteps.forEach(stepEl => {
+      if (!validateStepPane(stepEl)) allValid = false;
+    });
+    if (!allValid) {
+      const firstError = document.querySelector('.field-error');
+      if (firstError) {
+        const errorStep = firstError.closest('.form-step');
+        if (errorStep) {
+          document.querySelectorAll('.form-step').forEach(el => el.classList.remove('active'));
+          errorStep.classList.add('active');
+          currentFormStep = parseInt(errorStep.dataset.step);
+          renderStepProgress(totalFormSteps, currentFormStep);
+          firstError.focus();
+        }
+      }
+      return;
+    }
+  }
 
   const formData = new FormData(e.target);
   const fields = {};

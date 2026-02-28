@@ -16,7 +16,7 @@ The site features:
 - **Image Upload System** — upload images directly from admin, stored in `/uploads/`
 - **Drag-and-Drop Reordering** — reorder gallery cards, experiences, and pricing by dragging rows
 - **Chat History & Analytics** — view all AI conversations, message counts, device types
-- **Dynamic Form Builder** — create custom forms from admin, add/remove/reorder fields, view submissions with full marketing analytics
+- **Dynamic Form Builder** — create custom forms from admin, add/remove/reorder fields, assign fields to steps for multi-step forms, view submissions with full marketing analytics
 - **Partial/Abandon Capture** — auto-saves incomplete form data for lead recovery
 - **Theme / Color Editor** — customize site colors, fonts, and glass effects from admin
 
@@ -68,7 +68,7 @@ The entire template is industry-agnostic — naming, comments, and instructions 
   - `chat_messages` — Individual chat messages linked to conversations (role, content, command_json).
   - `booking_submissions` — Legacy form submissions (kept for backward compatibility).
   - `custom_forms` — Dynamic form definitions (name, slug, description, status, submit_button_text, success_message).
-  - `form_fields` — Form field definitions (form_id FK, field_type, label, name, placeholder, required, options JSONB, default_value, sort_order, width, help_text).
+  - `form_fields` — Form field definitions (form_id FK, field_type, label, name, placeholder, required, options JSONB, default_value, sort_order, width, help_text, step). The `step` column controls multi-step form grouping (default 1).
   - `form_submissions` — Dynamic form submissions (form_id FK, submission_data JSONB, status, device_type, browser, os, screen_resolution, language, UTM params, referrer, IP, session_id, updated_at).
   - `uploaded_images` — Record of uploaded image files (filename, original_name, file_size).
 
