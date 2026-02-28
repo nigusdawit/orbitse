@@ -3366,6 +3366,14 @@ input, select, textarea {
     width: 94%;
     max-width: none;
     bottom: 0.5rem;
+    /* Smooth transition when keyboard opens/closes and JS adjusts bottom */
+    transition: bottom 0.15s ease-out;
+  }
+
+  /* When the mobile keyboard is open, reduce the expanded panel height
+     so it doesn't overflow off the top of the screen */
+  .chatbot-container.keyboard-open .chatbot-panel {
+    max-height: 40vh;
   }
 
   /* Prevent iOS auto-zoom on ALL chat inputs across the site.
@@ -3411,6 +3419,10 @@ input, select, textarea {
     border: none;
     border-top: 1px solid rgba(255, 255, 255, 0.12);
     box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.3);
+    /* Smooth transition when keyboard opens/closes and JS adjusts bottom */
+    transition: opacity 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+                transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+                bottom 0.15s ease-out;
   }
 
   .side-chat-panel.history-open {

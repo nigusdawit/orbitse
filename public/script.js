@@ -1698,11 +1698,62 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* -----------------------------------------------------------------------
      MOBILE KEYBOARD HANDLING
-     The viewport meta tag uses interactive-widget=resizes-content which tells
-     the browser to shrink the layout viewport when the keyboard opens.
-     This means position:fixed elements (like the chatbot bar) naturally
-     stay above the keyboard without any JavaScript repositioning needed.
+     
+     On mobile devices the virtual keyboard often covers fixed-position
+     elements at the bottom of the screen (like the chat pill).
+     
+     The viewport meta tag has interactive-widget=resizes-content which
+     works on Chrome 108+, but iOS Safari does NOT support it — the
+     keyboard simply overlays the page without resizing the viewport.
+     
+     FIX: Use the visualViewport API to detect when the keyboard opens
+     (the visual viewport height shrinks) and reposition the chatbot
+     container so it sits just above the keyboard. When the keyboard
+     closes, reset back to the normal CSS position.
      ----------------------------------------------------------------------- */
+  if (window.visualViewport) {
+    const chatContainer = document.getElementById('chatbot-container');
+    const sidePanel = document.querySelector('.side-chat-panel');
+
+    function adjustChatForKeyboard() {
+      /* Calculate the difference between the full window height and the
+         visual viewport height. When the keyboard is open, the visual
+         viewport is smaller, and the difference tells us the keyboard height. */
+      const keyboardHeight = window.innerHeight - window.visualViewport.height;
+
+      /* Only adjust when the keyboard takes up a meaningful amount of space
+         (more than 100px — avoids reacting to browser chrome changes) */
+      if (keyboardHeight > 100) {
+        const offset = keyboardHeight - window.visualViewport.offsetTop;
+
+        /* Move the main chat container up so it sits above the keyboard */
+        if (chatContainer) {
+          chatContainer.style.bottom = offset + 'px';
+          chatContainer.classList.add('keyboard-open');
+        }
+
+        /* Also move the side chat panel (used in split-screen / gallery mode) */
+        if (sidePanel) {
+          sidePanel.style.bottom = offset + 'px';
+        }
+      } else {
+        /* Keyboard is closed — remove inline styles so CSS takes over */
+        if (chatContainer) {
+          chatContainer.style.bottom = '';
+          chatContainer.classList.remove('keyboard-open');
+        }
+        if (sidePanel) {
+          sidePanel.style.bottom = '';
+        }
+      }
+    }
+
+    /* Listen to both resize and scroll events on the visual viewport.
+       resize fires when the keyboard opens/closes.
+       scroll fires when the viewport pans to keep the focused input visible. */
+    window.visualViewport.addEventListener('resize', adjustChatForKeyboard);
+    window.visualViewport.addEventListener('scroll', adjustChatForKeyboard);
+  }
 });
 
 
