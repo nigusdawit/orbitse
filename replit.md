@@ -196,12 +196,10 @@ Add new sections inside the `.landing-container` div with classes `snap-section 
 - Google Fonts (Playfair Display, DM Sans)
 - Lucide Icons
 
-## Essential Files (What You Need)
-
-These are the files required to run the site:
+## Project File Structure
 
 ```
-app.py                          — Flask backend (main entry point)
+app.py                          — Flask backend (main entry point, all routes + API)
 public/
   index.html                    — Public site HTML structure
   styles.css                    — All visual styles
@@ -210,14 +208,8 @@ templates/
   admin/
     dashboard.html              — Admin panel (content management)
     login.html                  — Admin login page
+pyproject.toml                  — Python package dependencies
+uv.lock                        — Python dependency lock file
+replit.md                       — This documentation file
+.replit                        — Replit run/deploy configuration
 ```
-
-### Files NOT Used by the Running Site
-The following directories are from a previous React/Vite setup and are NOT used by the Flask server:
-- `client/` — React frontend (unused)
-- `server/` — Node.js/Express backend (unused)
-- `shared/` — Shared TypeScript schemas (unused)
-- `vite.config.ts`, `tsconfig.json`, `tailwind.config.ts`, `drizzle.config.ts` — Build configs (unused)
-- `components.json`, `postcss.config.js` — Frontend tooling configs (unused)
-- `package.json`, `package-lock.json` — Node.js dependencies (unused by Flask)
-- `main.py` — Minimal Python entry point (unused)
