@@ -662,36 +662,63 @@ FONTS:
   right while the gallery stays fully interactive behind it.
   -->
   <div id="side-chat-panel" class="side-chat-panel" data-testid="side-chat-panel">
-    <div class="chatbot-panel-header">
-      <div class="chatbot-panel-header-info">
-        <div id="side-chat-avatar" class="chatbot-avatar chatbot-avatar-sm">M</div>
-        <div>
-          <span id="side-chat-name" class="chatbot-agent-name">Marco</span>
-          <span id="side-chat-role" class="chatbot-agent-role">Concierge</span>
+
+    <div class="side-panel-latest" id="side-panel-latest">
+      <div class="side-panel-latest-header">
+        <div class="side-panel-agent-badge">
+          <div id="side-chat-avatar" class="chatbot-avatar chatbot-avatar-sm">M</div>
+          <span id="side-chat-name" class="side-panel-agent-name">Marco</span>
+        </div>
+        <div class="side-panel-actions">
+          <button class="side-panel-history-btn" onclick="toggleSidePanelHistory()" data-testid="button-side-history">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+          </button>
+          <button class="side-panel-close-btn" onclick="closeSidePanel()" data-testid="button-side-panel-close">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+            </svg>
+          </button>
         </div>
       </div>
-      <button class="chatbot-close-btn" onclick="closeSidePanel()" data-testid="button-side-panel-close">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
-        </svg>
-      </button>
+      <div class="side-panel-latest-text" id="side-panel-latest-text" data-testid="text-side-latest"></div>
+      <div class="side-panel-input-row">
+        <input
+          id="side-chat-input"
+          class="side-panel-input"
+          type="text"
+          placeholder="Ask anything..."
+          autocomplete="off"
+          data-testid="input-side-chat"
+        >
+        <button class="side-panel-send-btn" onclick="chatSendMessage()" data-testid="button-side-send">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m22 2-7 20-4-9-9-4Z"/><path d="m22 2-11 11"/>
+          </svg>
+        </button>
+      </div>
     </div>
-    <div id="side-chat-messages" class="chatbot-messages" data-testid="side-chat-messages"></div>
-    <div class="chatbot-input-bar">
-      <input
-        id="side-chat-input"
-        class="chatbot-panel-input"
-        type="text"
-        placeholder="Type your message..."
-        autocomplete="off"
-        data-testid="input-side-chat"
-      >
-      <button class="chatbot-send-panel-btn" onclick="chatSendMessage()" data-testid="button-side-send">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="m22 2-7 20-4-9-9-4Z"/><path d="m22 2-11 11"/>
-        </svg>
-      </button>
+
+    <div class="side-panel-history" id="side-panel-history">
+      <div class="side-panel-history-header">
+        <span class="side-panel-history-title">Conversation</span>
+        <div class="side-panel-actions">
+          <button class="side-panel-close-btn" onclick="toggleSidePanelHistory()" data-testid="button-side-history-collapse" title="Collapse history">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m19 12-7 7-7-7"/><path d="M12 19V5"/>
+            </svg>
+          </button>
+          <button class="side-panel-close-btn" onclick="closeSidePanel()" data-testid="button-side-history-close" title="Close panel">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div id="side-chat-messages" class="chatbot-messages" data-testid="side-chat-messages"></div>
     </div>
+
   </div>
   <!-- END SIDE CHAT PANEL -->
 

@@ -1202,6 +1202,11 @@ function chatAddMessage(role, text) {
     sideMessages.insertAdjacentHTML('beforeend', html);
     sideMessages.scrollTop = sideMessages.scrollHeight;
   }
+
+  /* Update the latest agent message display in the side panel */
+  if (role === 'agent') {
+    updateSidePanelLatest(text);
+  }
 }
 
 
@@ -1524,6 +1529,11 @@ function closeSidePanel() {
 
   sidePanelActive = false;
   panel.classList.remove('active');
+  panel.classList.remove('history-open');
+
+  /* Hide the history if it was open */
+  const history = document.getElementById('side-panel-history');
+  if (history) history.classList.remove('visible');
 
   /* Restore the gallery/landing to full width */
   const galleryView = document.getElementById('gallery-view');
@@ -1541,6 +1551,39 @@ function closeSidePanel() {
 
 
 /**
+ * Toggle the full conversation history in the side panel.
+ */
+function toggleSidePanelHistory() {
+  const history = document.getElementById('side-panel-history');
+  const panel = document.getElementById('side-chat-panel');
+  if (!history || !panel) return;
+
+  const isVisible = history.classList.contains('visible');
+  history.classList.toggle('visible', !isVisible);
+  panel.classList.toggle('history-open', !isVisible);
+
+  if (!isVisible) {
+    /* Scroll to bottom of messages when opening history */
+    const messages = document.getElementById('side-chat-messages');
+    if (messages) {
+      setTimeout(() => { messages.scrollTop = messages.scrollHeight; }, 100);
+    }
+  }
+}
+
+
+/**
+ * Update the latest agent message display in the side panel.
+ */
+function updateSidePanelLatest(text) {
+  const latestText = document.getElementById('side-panel-latest-text');
+  if (latestText) {
+    latestText.textContent = text;
+  }
+}
+
+
+/**
  * Sync messages from the main chat panel to the side panel.
  */
 function syncChatToSidePanel() {
@@ -1549,6 +1592,12 @@ function syncChatToSidePanel() {
   if (panelMessages && sideMessages) {
     sideMessages.innerHTML = panelMessages.innerHTML;
     sideMessages.scrollTop = sideMessages.scrollHeight;
+  }
+
+  /* Also update the latest agent message */
+  const agentMsgs = panelMessages ? panelMessages.querySelectorAll('.chat-msg-agent') : [];
+  if (agentMsgs.length > 0) {
+    updateSidePanelLatest(agentMsgs[agentMsgs.length - 1].textContent);
   }
 }
 

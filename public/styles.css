@@ -1909,8 +1909,10 @@ input, select, textarea {
   z-index: 55;
   display: flex;
   flex-direction: column;
-  background: rgba(10, 15, 26, 0.98);
-  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
   transform: translateX(100%);
   transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -1923,6 +1925,166 @@ input, select, textarea {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.3s ease;
+}
+
+.side-panel-latest {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.side-panel-latest-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+}
+
+.side-panel-agent-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.side-panel-agent-name {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #fff;
+}
+
+.side-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.side-panel-history-btn,
+.side-panel-close-btn {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.5);
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: color 0.2s, background 0.2s;
+}
+
+.side-panel-history-btn:hover,
+.side-panel-close-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.side-panel-latest-text {
+  padding: 0 1rem 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.85);
+  font-weight: 300;
+  max-height: 200px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+.side-panel-latest-text:empty::before {
+  content: "Ask me anything about Casa Serena...";
+  color: rgba(255, 255, 255, 0.35);
+  font-style: italic;
+}
+
+.side-panel-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem 0.75rem;
+}
+
+.side-panel-input {
+  flex: 1;
+  padding: 0.5rem 0.875rem;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 9999px;
+  color: #fff;
+  font-size: 0.8125rem;
+  font-family: inherit;
+  outline: none;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.side-panel-input::placeholder {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.side-panel-input:focus {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.side-panel-send-btn {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  cursor: pointer;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.side-panel-send-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.side-panel-history {
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: max-height 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+              opacity 0.3s ease;
+}
+
+.side-panel-history.visible {
+  display: flex;
+  max-height: 600px;
+  opacity: 1;
+}
+
+.side-panel-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.625rem 1rem;
+  flex-shrink: 0;
+}
+
+.side-panel-history-title {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: rgba(255, 255, 255, 0.4);
+  font-weight: 600;
+}
+
+.side-panel-history .chatbot-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.5rem 1rem;
 }
 
 
@@ -1973,19 +2135,36 @@ input, select, textarea {
     width: 100%;
     top: auto;
     bottom: 0;
-    height: 45%;
+    height: auto;
+    max-height: 40%;
     border-left: none;
-    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    transform: translateY(100%);
+  }
+
+  .side-chat-panel.active {
+    transform: translateY(0);
+  }
+
+  .side-chat-panel.history-open {
+    height: 55%;
+    max-height: 55%;
+    transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+                height 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+                max-height 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .side-panel-latest-text {
+    max-height: 80px;
+    font-size: 0.8125rem;
   }
 
   .gallery-view.side-panel-active {
     right: 0 !important;
-    bottom: 45% !important;
+    bottom: 0 !important;
   }
 
   .landing-container.side-panel-active {
     margin-right: 0;
-    height: 55%;
-    overflow-y: auto;
   }
 }
