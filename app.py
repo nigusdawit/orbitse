@@ -674,8 +674,13 @@ def api_chatbot_settings():
 # This sample system prompt teaches an AI agent how to control the website.
 # Copy and customize this when connecting to your own AI provider.
 SYSTEM_PROMPT = """
-You are an AI assistant for this website.
-You help visitors explore the site and learn about what's offered.
+You are an intelligent, warm, and knowledgeable concierge for this website.
+You have deep knowledge of everything offered here — the spaces, experiences, pricing,
+and details. You speak naturally and conversationally, like a real person who genuinely
+cares about helping each visitor. Adapt your tone to match the visitor: be professional
+yet approachable. Share specific details, make personalized suggestions, and anticipate
+what the visitor might want to know next. Never give generic answers — always reference
+the actual content, names, prices, and descriptions from the site data below.
 
 IMPORTANT: You can control what the user sees on the website by including
 a JSON command block in your response. Always wrap commands in ```command``` blocks.
@@ -714,12 +719,14 @@ personalized greetings, or key announcements. The page scrolls to the top automa
 The original description restores when the page reloads.
 
 RULES:
-- ALWAYS navigate when discussing a specific item. This IS the experience.
-- Keep text responses to 1-3 sentences. Let the visuals do the talking.
+- ALWAYS navigate when discussing a specific item. This IS the experience — show, don't just tell.
+- Keep text responses concise but natural (1-4 sentences). Be conversational, not robotic.
 - Use showSlide for comparisons, recommendations, and structured info.
 - Use heroMessage when the user asks you to greet them, display a welcome message, or when you want to highlight something prominently on the landing page.
 - Do NOT use generateVisual unless the user explicitly says "show me visually", "visualize", "create a visual", or similar. For normal questions about pricing, services, etc., just respond with text and use navigate or showSlide instead.
 - Only include ONE command block per response.
+- Reference real names, prices, and details from the site data. Never make up information.
+- If the visitor seems interested, proactively suggest related items or experiences they might enjoy.
 """
 
 
@@ -784,12 +791,44 @@ def api_chat():
     except Exception:
         pass
 
-    # Inject actual gallery card slugs so the AI navigates correctly
+    # Inject real site content so the AI has full awareness of the business
     try:
-        cards = query_db("SELECT slug, title FROM gallery_cards ORDER BY sort_order ASC")
+        # Site identity
+        settings = query_db("SELECT site_name, site_subtitle, hero_tagline, hero_title, hero_description FROM site_settings WHERE id = 1", fetchone=True)
+        if settings:
+            active_prompt += f"\n\nSITE IDENTITY:\n- Name: {settings.get('site_name', '')}\n- Subtitle: {settings.get('site_subtitle', '')}\n- Tagline: {settings.get('hero_tagline', '')}\n- Title: {settings.get('hero_title', '')}\n- Description: {settings.get('hero_description', '')}"
+
+        # Gallery cards with full details
+        cards = query_db("SELECT slug, title, subtitle, category, description, details, price FROM gallery_cards ORDER BY sort_order ASC")
         if cards:
-            card_list = ", ".join([f'"{c["slug"]}" ({c["title"]})' for c in cards])
-            active_prompt += f"\n\nAVAILABLE GALLERY CARD SLUGS (use these exact values for navigate targets): {card_list}"
+            card_lines = []
+            for c in cards:
+                line = f'  - slug: "{c["slug"]}", title: "{c["title"]}"'
+                if c.get("subtitle"): line += f', subtitle: "{c["subtitle"]}"'
+                if c.get("category"): line += f', category: "{c["category"]}"'
+                if c.get("description"): line += f', description: "{c["description"]}"'
+                if c.get("details"): line += f', details: "{c["details"]}"'
+                if c.get("price"): line += f', price: "{c["price"]}"'
+                card_lines.append(line)
+            active_prompt += f"\n\nGALLERY CARDS (use exact slug values for navigate targets):\n" + "\n".join(card_lines)
+
+        # Experiences
+        experiences = query_db("SELECT name, description, duration, price FROM experiences ORDER BY sort_order ASC")
+        if experiences:
+            exp_lines = [f'  - {e["name"]}: {e.get("description", "")} (duration: {e.get("duration", "N/A")}, price: {e.get("price", "N/A")})' for e in experiences]
+            active_prompt += f"\n\nEXPERIENCES OFFERED:\n" + "\n".join(exp_lines)
+
+        # Pricing
+        pricing = query_db("SELECT label, price, description, features FROM pricing_seasons ORDER BY sort_order ASC")
+        if pricing:
+            price_lines = []
+            for p in pricing:
+                line = f'  - {p["label"]}: {p.get("price", "N/A")}'
+                if p.get("description"): line += f' — {p["description"]}'
+                if p.get("features"): line += f' | Features: {p["features"]}'
+                price_lines.append(line)
+            active_prompt += f"\n\nPRICING:\n" + "\n".join(price_lines)
+
     except Exception:
         pass
 
