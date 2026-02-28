@@ -1173,9 +1173,6 @@ async function chatSendStreaming(message) {
       return;
     }
 
-    chatShowTyping(false);
-
-    const streamBubble = chatCreateStreamBubble();
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -1184,6 +1181,7 @@ async function chatSendStreaming(message) {
     let finalReply = '';
     let pendingCommand = null;
     let inCommandBlock = false;
+    let streamBubble = null;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -1199,6 +1197,10 @@ async function chatSendStreaming(message) {
           const event = JSON.parse(line.slice(6));
 
           if (event.type === 'token') {
+            if (!streamBubble) {
+              chatShowTyping(false);
+              streamBubble = chatCreateStreamBubble();
+            }
             tokenText += event.content;
             if (tokenText.includes('```command') || tokenText.includes('```com')) {
               inCommandBlock = true;
@@ -1212,7 +1214,8 @@ async function chatSendStreaming(message) {
           } else if (event.type === 'command') {
             pendingCommand = event.command;
           } else if (event.type === 'error') {
-            streamBubble.remove();
+            chatShowTyping(false);
+            if (streamBubble) streamBubble.remove();
             chatAddMessage('agent', event.content);
             return;
           }
@@ -1220,14 +1223,16 @@ async function chatSendStreaming(message) {
       }
     }
 
+    chatShowTyping(false);
+
     let displayText = finalReply || displayTokens.trim();
     if (!displayText && tokenText.trim()) {
       displayText = tokenText.replace(/```command[\s\S]*/i, '').trim();
     }
-    if (displayText) {
+    if (displayText && streamBubble) {
       streamBubble.finalize(displayText);
       chatHistory.push({ role: 'assistant', content: displayText });
-    } else {
+    } else if (streamBubble) {
       streamBubble.remove();
     }
 
