@@ -2633,6 +2633,27 @@ input, select, textarea {
   border-color: rgba(255, 255, 255, 0.2);
 }
 
+.chatbot-pill-btn {
+  flex-shrink: 0;
+  padding: 0.3rem 0.85rem;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.65);
+  font-size: 0.7rem;
+  font-family: var(--font-sans);
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.chatbot-pill-btn:hover {
+  background: rgba(201, 169, 110, 0.15);
+  border-color: rgba(201, 169, 110, 0.35);
+  color: var(--color-accent, #c9a96e);
+}
+
 /* Small circular buttons in the bar (send, expand) */
 .chatbot-bar-btn {
   width: 2rem;
@@ -3865,8 +3886,9 @@ input, select, textarea {
     font-size: 16px;
   }
 
-  /* Hide agent name/role on mobile to save space */
-  .chatbot-agent-info {
+  /* Hide agent name/role and visual pill on mobile to save space */
+  .chatbot-agent-info,
+  .chatbot-pill-btn {
     display: none;
   }
 

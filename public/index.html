@@ -598,6 +598,11 @@ FONTS:
         data-testid="input-chatbot-bar"
       >
 
+      <!-- Quick action pill — appends "show me visually" to the prompt -->
+      <button id="chatbot-visual-pill" class="chatbot-pill-btn" onclick="chatInjectVisualPrompt()" aria-label="Show me visually" data-testid="button-chatbot-visual">
+        show me visually
+      </button>
+
       <!-- Send button — submits the message -->
       <button id="chatbot-send-btn" class="chatbot-bar-btn" onclick="chatSendMessage()" aria-label="Send message" data-testid="button-chatbot-send">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

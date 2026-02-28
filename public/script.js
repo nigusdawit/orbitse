@@ -2270,6 +2270,30 @@ function setupBuiltinChat() {
  * 5. Display the AI's text reply
  * 6. Execute any command the AI included
  */
+function chatInjectVisualPrompt() {
+  const barInput = document.getElementById('chatbot-bar-input');
+  const panelInput = document.getElementById('chatbot-panel-input');
+  const splitInput = document.getElementById('split-chat-input');
+  const sideInput = document.getElementById('side-chat-input');
+
+  let target = barInput;
+  if (sidePanelActive && sideInput) target = sideInput;
+  else if (splitScreenActive && splitInput) target = splitInput;
+  else if (chatExpanded && panelInput) target = panelInput;
+
+  if (target) {
+    const current = target.value.trim();
+    if (current) {
+      target.value = current + ' — show me visually';
+    } else {
+      target.value = 'show me visually';
+    }
+    target.focus();
+    chatSendMessage();
+  }
+}
+
+
 async function chatSendMessage() {
   /* Get the message from the currently active input */
   let message = '';
