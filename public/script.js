@@ -605,10 +605,42 @@ function handleTouchEnd(e) {
 ============================================================================= */
 
 /**
- * Open the booking modal.
+ * Helper: get UTM params and tracking data from URL and browser state.
+ */
+function getTrackingData() {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    referrer: document.referrer || '',
+    utm_source: params.get('utm_source') || '',
+    utm_medium: params.get('utm_medium') || '',
+    utm_campaign: params.get('utm_campaign') || '',
+    page_url: window.location.href
+  };
+}
+
+/**
+ * Track a booking funnel step (opened_modal, filling_form, submitted).
+ * Each step is only tracked once per session using sessionStorage.
+ */
+function trackBookingStep(step) {
+  const key = 'booking_tracked_' + step;
+  if (sessionStorage.getItem(key)) return;
+  sessionStorage.setItem(key, '1');
+  try {
+    fetch('/api/booking-step', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ step, ...getTrackingData() })
+    });
+  } catch (e) { /* silent */ }
+}
+
+/**
+ * Open the booking modal and track the funnel step.
  */
 function openModal() {
   document.getElementById('booking-modal').classList.add('active');
+  trackBookingStep('opened_modal');
 }
 
 /**
@@ -617,54 +649,68 @@ function openModal() {
 function closeModal() {
   document.getElementById('booking-modal').classList.remove('active');
   document.getElementById('booking-form').reset();
+  const conf = document.getElementById('booking-confirmation');
+  if (conf) conf.style.display = 'none';
+  const formFields = document.getElementById('booking-form-fields');
+  if (formFields) formFields.style.display = 'block';
 }
 
 /**
- * Handle the booking form submission.
- * Collects form data and displays a confirmation.
- *
- * TO CUSTOMIZE:
- * - Replace the alert() with a fetch() call to your booking API
- * - Add loading state while the request is in progress
- * - Display success/error messages to the user
- *
- * @param {Event} e - The form submit event
+ * Handle the booking form submission with real POST and funnel tracking.
  */
-function handleBookingSubmit(e) {
+async function handleBookingSubmit(e) {
   e.preventDefault();
 
   const formData = new FormData(e.target);
   const data = Object.fromEntries(formData);
 
-  /* Find the selected room name for the confirmation message */
   const selectedRoom = galleryCards.find(c => c.slug === data.roomId);
   const roomName = selectedRoom ? selectedRoom.title : data.roomId;
 
-  /*
-   * In a production app, you would POST this data to your server:
-   *
-   * fetch('/api/bookings', {
-   *   method: 'POST',
-   *   headers: { 'Content-Type': 'application/json' },
-   *   body: JSON.stringify(data)
-   * })
-   * .then(res => res.json())
-   * .then(result => { ... show success ... })
-   * .catch(err => { ... show error ... });
-   */
+  const submitBtn = e.target.querySelector('button[type="submit"]');
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Submitting...'; }
 
-  alert(
-    `Reservation Request Submitted!\n\n` +
-    `Name: ${data.name}\n` +
-    `Email: ${data.email}\n` +
-    `Room: ${roomName}\n` +
-    `Check-in: ${data.checkIn}\n` +
-    `Check-out: ${data.checkOut}\n` +
-    `Guests: ${data.guests}\n\n` +
-    `We'll confirm your booking shortly.`
-  );
+  try {
+    const res = await fetch('/api/bookings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: data.name,
+        email: data.email,
+        room_slug: data.roomId,
+        room_name: roomName,
+        check_in: data.checkIn,
+        check_out: data.checkOut,
+        guests: data.guests,
+        ...getTrackingData()
+      })
+    });
 
-  closeModal();
+    if (res.ok) {
+      const formFields = document.getElementById('booking-form-fields');
+      const conf = document.getElementById('booking-confirmation');
+      if (formFields) formFields.style.display = 'none';
+      if (conf) {
+        conf.style.display = 'block';
+        conf.innerHTML = `
+          <div style="text-align:center; padding: 2rem 0;">
+            <div style="font-size: 2.5rem; margin-bottom: 1rem;">&#10003;</div>
+            <h3 style="font-family: var(--font-serif, 'Playfair Display', serif); margin-bottom: 0.5rem; color: #fff;">Request Submitted</h3>
+            <p style="color: rgba(255,255,255,0.6); margin-bottom: 1.5rem;">Thank you, ${data.name}. We'll confirm your ${roomName} reservation shortly.</p>
+            <button onclick="closeModal()" class="booking-modal-btn" data-testid="button-booking-close-confirm" style="cursor:pointer;">Close</button>
+          </div>
+        `;
+      } else {
+        closeModal();
+      }
+    } else {
+      alert('There was an issue submitting your request. Please try again.');
+    }
+  } catch (err) {
+    alert('Connection error. Please try again.');
+  }
+
+  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Request Reservation'; }
 }
 
 
@@ -763,12 +809,67 @@ function setText(id, text) {
 
 
 /* =============================================================================
-   10. INITIALIZATION — Run when the page loads
+   10. THEME — Load and apply custom theme from the database
+   =============================================================================
+   Fetches /api/theme on page load and applies CSS custom properties.
+   If a Google Font is selected, dynamically injects the font stylesheet.
+============================================================================= */
+
+async function loadAndApplyTheme() {
+  try {
+    const res = await fetch('/api/theme');
+    if (!res.ok) return;
+    const theme = await res.json();
+
+    const cssMap = {
+      theme_bg: '--color-bg',
+      theme_section1: '--color-section-1',
+      theme_section2: '--color-section-2',
+      theme_accent: '--color-accent',
+      theme_text: '--color-text',
+      theme_glass_border: '--glass-border',
+      theme_glass_bg: '--glass-bg'
+    };
+
+    Object.entries(cssMap).forEach(([key, prop]) => {
+      if (theme[key]) {
+        document.documentElement.style.setProperty(prop, theme[key]);
+      }
+    });
+
+    if (theme.theme_font_serif) {
+      document.documentElement.style.setProperty('--font-serif', `'${theme.theme_font_serif}', Georgia, serif`);
+      loadGoogleFont(theme.theme_font_serif);
+    }
+    if (theme.theme_font_sans) {
+      document.documentElement.style.setProperty('--font-sans', `'${theme.theme_font_sans}', -apple-system, sans-serif`);
+      loadGoogleFont(theme.theme_font_sans);
+    }
+  } catch (e) { /* silent */ }
+}
+
+function loadGoogleFont(fontName) {
+  if (!fontName) return;
+  const existing = document.querySelector(`link[data-font="${fontName}"]`);
+  if (existing) return;
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.dataset.font = fontName;
+  link.href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(fontName)}:wght@300;400;500;600;700&display=swap`;
+  document.head.appendChild(link);
+}
+
+
+/* =============================================================================
+   11. INITIALIZATION — Run when the page loads
    =============================================================================
    Sets up event listeners and loads all data from the API.
 ============================================================================= */
 
 document.addEventListener('DOMContentLoaded', () => {
+  /* Load theme customizations first (fast, non-blocking) */
+  loadAndApplyTheme();
+
   /* Load all content from the database */
   loadAllData();
 
@@ -1162,13 +1263,17 @@ function chatCreateStreamBubble() {
  */
 async function chatSendStreaming(message) {
   try {
+    if (!sessionStorage.getItem('chat_session_id')) {
+      sessionStorage.setItem('chat_session_id', 'cs_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10));
+    }
     const apiEndpoint = chatSettings.api_endpoint || '/api/chat';
     const res = await fetch(apiEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: message,
-        history: chatHistory
+        history: chatHistory,
+        session_id: sessionStorage.getItem('chat_session_id')
       })
     });
 

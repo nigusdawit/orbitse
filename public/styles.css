@@ -73,9 +73,18 @@ SECTIONS:
   --font-serif: 'Playfair Display', Georgia, serif;
   --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
 
+  /* Colors — can be overridden by the Theme Editor in admin */
+  --color-bg: #060b14;
+  --color-section-1: #0a0f1a;
+  --color-section-2: #060b14;
+  --color-accent: #c9a96e;
+  --color-text: #e4e4e7;
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-bg: rgba(255, 255, 255, 0.03);
+
   /* Dark backgrounds used in landing page sections */
-  --bg-section-1: #0a0f1a;  /* Highlights section */
-  --bg-section-2: #060b14;  /* Experiences section */
+  --bg-section-1: var(--color-section-1);
+  --bg-section-2: var(--color-section-2);
 
   /* Transition timing — controls how fast animations feel */
   --transition-fast: 0.3s;
@@ -111,8 +120,8 @@ html, body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: #000;
-  color: #fff;
+  background: var(--color-bg, #000);
+  color: var(--color-text, #fff);
 }
 
 h1, h2, h3, h4, h5, h6 {
@@ -2026,7 +2035,7 @@ input, select, textarea {
   font-family: 'DM Sans', sans-serif;
   font-size: 0.95rem;
   font-weight: 500;
-  color: #c9a96e;
+  color: var(--color-accent, #c9a96e);
 }
 
 .visual-footer {

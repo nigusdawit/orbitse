@@ -250,8 +250,66 @@ def init_db():
                     quick_prompts JSONB DEFAULT '["Tour the villa", "Show me the rooms", "What experiences do you offer?", "Tell me about pricing"]'::jsonb,
                     api_endpoint  TEXT NOT NULL DEFAULT '/api/chat',
                     embed_code    TEXT NOT NULL DEFAULT '',
+                    system_prompt TEXT NOT NULL DEFAULT '',
                     created_at    TIMESTAMP DEFAULT NOW(),
                     updated_at    TIMESTAMP DEFAULT NOW()
+                );
+
+                -- Chat conversations (one per visitor session)
+                CREATE TABLE IF NOT EXISTS chat_conversations (
+                    id          SERIAL PRIMARY KEY,
+                    session_id  VARCHAR(100) NOT NULL,
+                    visitor_ip  VARCHAR(45) DEFAULT '',
+                    device_type VARCHAR(20) DEFAULT 'desktop',
+                    user_agent  TEXT DEFAULT '',
+                    started_at  TIMESTAMP DEFAULT NOW(),
+                    updated_at  TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_chat_conv_session ON chat_conversations (session_id);
+
+                -- Chat messages (linked to conversations)
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id              SERIAL PRIMARY KEY,
+                    conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE CASCADE,
+                    role            VARCHAR(20) NOT NULL DEFAULT 'user',
+                    content         TEXT NOT NULL DEFAULT '',
+                    command_json    JSONB,
+                    created_at      TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_chat_msg_conv ON chat_messages (conversation_id);
+
+                -- Booking form submissions with funnel tracking
+                CREATE TABLE IF NOT EXISTS booking_submissions (
+                    id             SERIAL PRIMARY KEY,
+                    name           TEXT NOT NULL DEFAULT '',
+                    email          TEXT NOT NULL DEFAULT '',
+                    room_slug      VARCHAR(100) DEFAULT '',
+                    room_name      TEXT DEFAULT '',
+                    check_in       DATE,
+                    check_out      DATE,
+                    guests         INTEGER DEFAULT 1,
+                    status         VARCHAR(20) NOT NULL DEFAULT 'new',
+                    device_type    VARCHAR(20) DEFAULT 'desktop',
+                    user_agent     TEXT DEFAULT '',
+                    referrer_url   TEXT DEFAULT '',
+                    utm_source     TEXT DEFAULT '',
+                    utm_medium     TEXT DEFAULT '',
+                    utm_campaign   TEXT DEFAULT '',
+                    page_url       TEXT DEFAULT '',
+                    ip_address     VARCHAR(45) DEFAULT '',
+                    step_reached   VARCHAR(30) DEFAULT 'opened_modal',
+                    form_started_at TIMESTAMP,
+                    submitted_at   TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_booking_status ON booking_submissions (status);
+
+                -- Uploaded images
+                CREATE TABLE IF NOT EXISTS uploaded_images (
+                    id            SERIAL PRIMARY KEY,
+                    filename      TEXT NOT NULL,
+                    original_name TEXT NOT NULL DEFAULT '',
+                    file_size     INTEGER DEFAULT 0,
+                    uploaded_at   TIMESTAMP DEFAULT NOW()
                 );
             """)
 
@@ -265,6 +323,21 @@ def init_db():
                     '/api/chat', '')
                 ON CONFLICT (id) DO NOTHING
             """)
+
+            # Add new columns to existing tables (safe — does nothing if already present)
+            for col_sql in [
+                "ALTER TABLE chatbot_settings ADD COLUMN IF NOT EXISTS system_prompt TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_bg TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_section1 TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_section2 TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_accent TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_text TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_glass_border TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_glass_bg TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_font_serif TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_font_sans TEXT NOT NULL DEFAULT ''",
+            ]:
+                cur.execute(col_sql)
     finally:
         conn.close()
 
@@ -623,8 +696,18 @@ def api_chat():
     data = request.get_json()
     message = data.get("message", "").strip()
     history = data.get("history", [])
+    session_id = data.get("session_id", "")
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # Use database system prompt if available, otherwise fall back to hardcoded
+    active_prompt = SYSTEM_PROMPT
+    try:
+        cs = query_db("SELECT system_prompt FROM chatbot_settings WHERE id = 1")
+        if cs and cs.get("system_prompt", "").strip():
+            active_prompt = cs["system_prompt"]
+    except Exception:
+        pass
+
+    messages = [{"role": "system", "content": active_prompt}]
     for h in history[-20:]:
         role = "assistant" if h.get("role") == "agent" else "user"
         messages.append({"role": role, "content": h.get("content", "")})
@@ -655,6 +738,32 @@ def api_chat():
                 yield f"data: {json.dumps({'type': 'text', 'content': reply})}\n\n"
             if cmd:
                 yield f"data: {json.dumps({'type': 'command', 'command': cmd})}\n\n"
+
+            # Save chat messages to the database for history/analytics
+            if session_id:
+                try:
+                    ua = request.headers.get("User-Agent", "")
+                    device = "mobile" if any(m in ua.lower() for m in ["mobile", "android", "iphone"]) else "desktop"
+                    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+
+                    conv = query_db("SELECT id FROM chat_conversations WHERE session_id = %s ORDER BY id DESC LIMIT 1", (session_id,), fetchone=True)
+                    if not conv:
+                        conv = execute_db(
+                            "INSERT INTO chat_conversations (session_id, visitor_ip, device_type, user_agent) VALUES (%s, %s, %s, %s) RETURNING id",
+                            (session_id, ip, device, ua[:500])
+                        )
+                    conv_id = conv["id"]
+                    execute_db("UPDATE chat_conversations SET updated_at = NOW() WHERE id = %s RETURNING id", (conv_id,))
+                    execute_db(
+                        "INSERT INTO chat_messages (conversation_id, role, content) VALUES (%s, 'user', %s) RETURNING id",
+                        (conv_id, message)
+                    )
+                    execute_db(
+                        "INSERT INTO chat_messages (conversation_id, role, content, command_json) VALUES (%s, 'assistant', %s, %s) RETURNING id",
+                        (conv_id, reply or full_text, json.dumps(cmd) if cmd else None)
+                    )
+                except Exception:
+                    pass
 
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
@@ -903,16 +1012,15 @@ def admin_get_chatbot():
 def admin_update_chatbot():
     """
     PUT /admin/api/chatbot-settings
-    Update the chatbot configuration. Expects JSON body with:
-      enabled, mode, agent_name, agent_role, agent_avatar,
-      greeting, quick_prompts, api_endpoint, embed_code
+    Update the chatbot configuration including system_prompt.
     """
     data = request.get_json()
     settings = execute_db(
         """UPDATE chatbot_settings SET
              enabled = %s, mode = %s, agent_name = %s, agent_role = %s,
              agent_avatar = %s, greeting = %s, quick_prompts = %s::jsonb,
-             api_endpoint = %s, embed_code = %s, updated_at = NOW()
+             api_endpoint = %s, embed_code = %s, system_prompt = %s,
+             updated_at = NOW()
            WHERE id = 1 RETURNING *""",
         (
             data.get("enabled", False),
@@ -923,10 +1031,295 @@ def admin_update_chatbot():
             data.get("greeting", ""),
             json.dumps(data.get("quick_prompts", [])),
             data.get("api_endpoint", "/api/chat"),
-            data.get("embed_code", "")
+            data.get("embed_code", ""),
+            data.get("system_prompt", "")
         )
     )
     return jsonify(settings)
+
+
+# --------------- Default System Prompt (public read for admin pre-fill) ------
+
+@app.route("/admin/api/default-system-prompt", methods=["GET"])
+@admin_required
+def admin_get_default_prompt():
+    """GET the hardcoded default system prompt so the admin can pre-fill."""
+    return jsonify({"system_prompt": SYSTEM_PROMPT})
+
+
+# --------------- Image Upload ---------------
+
+UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp"}
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+
+@app.route("/uploads/<path:filename>")
+def serve_upload(filename):
+    """Serve uploaded images from the /uploads directory."""
+    return send_from_directory(UPLOAD_FOLDER, filename)
+
+
+@app.route("/admin/api/upload-image", methods=["POST"])
+@admin_required
+def admin_upload_image():
+    """POST /admin/api/upload-image — Upload an image file, return its URL."""
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"error": "No file selected"}), 400
+    ext = f.filename.rsplit(".", 1)[-1].lower() if "." in f.filename else ""
+    if ext not in ALLOWED_EXTENSIONS:
+        return jsonify({"error": f"File type .{ext} not allowed. Use jpg, png, gif, or webp."}), 400
+
+    unique_name = f"{secrets.token_hex(8)}.{ext}"
+    f.save(os.path.join(UPLOAD_FOLDER, unique_name))
+    file_size = os.path.getsize(os.path.join(UPLOAD_FOLDER, unique_name))
+
+    execute_db(
+        "INSERT INTO uploaded_images (filename, original_name, file_size) VALUES (%s, %s, %s) RETURNING id",
+        (unique_name, f.filename, file_size)
+    )
+
+    return jsonify({"url": f"/uploads/{unique_name}", "filename": unique_name})
+
+
+# --------------- Drag-and-Drop Reorder ---------------
+
+@app.route("/admin/api/reorder/<string:content_type>", methods=["PUT"])
+@admin_required
+def admin_reorder(content_type):
+    """PUT /admin/api/reorder/<type> — Batch-update sort_order for a content type."""
+    table_map = {
+        "gallery-cards": "gallery_cards",
+        "experiences": "experiences",
+        "pricing": "pricing_seasons"
+    }
+    table = table_map.get(content_type)
+    if not table:
+        return jsonify({"error": "Invalid content type"}), 400
+
+    items = request.get_json()
+    if not isinstance(items, list):
+        return jsonify({"error": "Expected array of {id, sort_order}"}), 400
+
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            for item in items:
+                cur.execute(
+                    f"UPDATE {table} SET sort_order = %s, updated_at = NOW() WHERE id = %s",
+                    (item["sort_order"], item["id"])
+                )
+    finally:
+        conn.close()
+
+    return jsonify({"success": True})
+
+
+# --------------- Chat History & Analytics ---------------
+
+@app.route("/admin/api/chat-history", methods=["GET"])
+@admin_required
+def admin_chat_history():
+    """GET /admin/api/chat-history — List conversations with stats."""
+    page = int(request.args.get("page", 1))
+    per_page = int(request.args.get("per_page", 50))
+    offset = (page - 1) * per_page
+
+    conversations = query_db("""
+        SELECT c.*,
+            (SELECT COUNT(*) FROM chat_messages WHERE conversation_id = c.id) as message_count,
+            (SELECT content FROM chat_messages WHERE conversation_id = c.id AND role = 'user' ORDER BY id LIMIT 1) as first_message
+        FROM chat_conversations c
+        ORDER BY c.updated_at DESC
+        LIMIT %s OFFSET %s
+    """, (per_page, offset))
+
+    stats = query_db("""
+        SELECT
+            (SELECT COUNT(*) FROM chat_conversations) as total_conversations,
+            (SELECT COUNT(*) FROM chat_messages WHERE created_at >= CURRENT_DATE) as messages_today,
+            (SELECT ROUND(AVG(cnt), 1) FROM (SELECT COUNT(*) as cnt FROM chat_messages GROUP BY conversation_id) sub) as avg_messages
+    """, fetchone=True)
+
+    return jsonify({"conversations": conversations or [], "stats": stats or {}})
+
+
+@app.route("/admin/api/chat-history/<int:conv_id>", methods=["GET"])
+@admin_required
+def admin_chat_detail(conv_id):
+    """GET /admin/api/chat-history/<id> — Full conversation with messages."""
+    conv = query_db("SELECT * FROM chat_conversations WHERE id = %s", (conv_id,), fetchone=True)
+    if not conv:
+        return jsonify({"error": "Conversation not found"}), 404
+    messages = query_db(
+        "SELECT * FROM chat_messages WHERE conversation_id = %s ORDER BY created_at", (conv_id,)
+    )
+    return jsonify({"conversation": conv, "messages": messages or []})
+
+
+# --------------- Booking Submissions ---------------
+
+@app.route("/api/bookings", methods=["POST"])
+def api_create_booking():
+    """POST /api/bookings — Save a booking form submission with funnel tracking."""
+    data = request.get_json()
+    if not data or not data.get("name") or not data.get("email"):
+        return jsonify({"error": "Name and email are required"}), 400
+    try:
+        guests = int(data.get("guests", 1))
+    except (ValueError, TypeError):
+        guests = 1
+    ua = request.headers.get("User-Agent", "")
+    device = "mobile" if any(m in ua.lower() for m in ["mobile", "android", "iphone"]) else "desktop"
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+
+    booking = execute_db(
+        """INSERT INTO booking_submissions
+            (name, email, room_slug, room_name, check_in, check_out, guests,
+             device_type, user_agent, referrer_url, utm_source, utm_medium,
+             utm_campaign, page_url, ip_address, step_reached)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'submitted')
+           RETURNING *""",
+        (
+            data.get("name", ""),
+            data.get("email", ""),
+            data.get("room_slug", ""),
+            data.get("room_name", ""),
+            data.get("check_in") or None,
+            data.get("check_out") or None,
+            guests,
+            device,
+            ua[:500],
+            data.get("referrer", ""),
+            data.get("utm_source", ""),
+            data.get("utm_medium", ""),
+            data.get("utm_campaign", ""),
+            data.get("page_url", ""),
+            ip
+        )
+    )
+    return jsonify(booking), 201
+
+
+@app.route("/api/booking-step", methods=["POST"])
+def api_booking_step():
+    """POST /api/booking-step — Log a funnel step (opened_modal, filling_form, etc.)."""
+    data = request.get_json()
+    ua = request.headers.get("User-Agent", "")
+    device = "mobile" if any(m in ua.lower() for m in ["mobile", "android", "iphone"]) else "desktop"
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+    step = data.get("step", "opened_modal")
+
+    execute_db(
+        """INSERT INTO booking_submissions
+            (name, email, step_reached, device_type, user_agent, referrer_url,
+             utm_source, utm_medium, utm_campaign, page_url, ip_address,
+             form_started_at)
+           VALUES ('', '', %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+           RETURNING id""",
+        (
+            step, device, ua[:500],
+            data.get("referrer", ""),
+            data.get("utm_source", ""),
+            data.get("utm_medium", ""),
+            data.get("utm_campaign", ""),
+            data.get("page_url", ""),
+            ip
+        )
+    )
+    return jsonify({"success": True}), 201
+
+
+@app.route("/admin/api/bookings", methods=["GET"])
+@admin_required
+def admin_list_bookings():
+    """GET /admin/api/bookings — List all booking submissions with funnel stats."""
+    bookings = query_db(
+        "SELECT * FROM booking_submissions ORDER BY submitted_at DESC"
+    )
+
+    stats = query_db("""
+        SELECT
+            COUNT(*) FILTER (WHERE step_reached = 'opened_modal') as modal_opens,
+            COUNT(*) FILTER (WHERE step_reached = 'filling_form') as form_starts,
+            COUNT(*) FILTER (WHERE step_reached = 'submitted') as submissions,
+            COUNT(*) as total
+        FROM booking_submissions
+    """, fetchone=True)
+
+    return jsonify({"bookings": bookings or [], "stats": stats or {}})
+
+
+@app.route("/admin/api/bookings/<int:booking_id>/status", methods=["PUT"])
+@admin_required
+def admin_update_booking_status(booking_id):
+    """PUT /admin/api/bookings/<id>/status — Change a booking's status."""
+    data = request.get_json()
+    status = data.get("status", "new")
+    result = execute_db(
+        "UPDATE booking_submissions SET status = %s WHERE id = %s RETURNING id, status",
+        (status, booking_id)
+    )
+    if not result:
+        return jsonify({"error": "Booking not found"}), 404
+    return jsonify(result)
+
+
+# --------------- Theme / Color Editor ---------------
+
+@app.route("/api/theme", methods=["GET"])
+def api_get_theme():
+    """GET /api/theme — Public endpoint returning theme customization values."""
+    settings = query_db("""
+        SELECT theme_bg, theme_section1, theme_section2, theme_accent,
+               theme_text, theme_glass_border, theme_glass_bg,
+               theme_font_serif, theme_font_sans
+        FROM site_settings WHERE id = 1
+    """, fetchone=True)
+    return jsonify(settings or {})
+
+
+@app.route("/admin/api/theme", methods=["GET"])
+@admin_required
+def admin_get_theme():
+    """GET /admin/api/theme — Admin read of theme settings."""
+    settings = query_db("""
+        SELECT theme_bg, theme_section1, theme_section2, theme_accent,
+               theme_text, theme_glass_border, theme_glass_bg,
+               theme_font_serif, theme_font_sans
+        FROM site_settings WHERE id = 1
+    """, fetchone=True)
+    return jsonify(settings or {})
+
+
+@app.route("/admin/api/theme", methods=["PUT"])
+@admin_required
+def admin_update_theme():
+    """PUT /admin/api/theme — Save theme color/font overrides."""
+    data = request.get_json()
+    result = execute_db(
+        """UPDATE site_settings SET
+             theme_bg = %s, theme_section1 = %s, theme_section2 = %s,
+             theme_accent = %s, theme_text = %s, theme_glass_border = %s,
+             theme_glass_bg = %s, theme_font_serif = %s, theme_font_sans = %s,
+             updated_at = NOW()
+           WHERE id = 1 RETURNING *""",
+        (
+            data.get("theme_bg", ""),
+            data.get("theme_section1", ""),
+            data.get("theme_section2", ""),
+            data.get("theme_accent", ""),
+            data.get("theme_text", ""),
+            data.get("theme_glass_border", ""),
+            data.get("theme_glass_bg", ""),
+            data.get("theme_font_serif", ""),
+            data.get("theme_font_sans", "")
+        )
+    )
+    return jsonify(result)
 
 
 # =============================================================================

@@ -459,6 +459,57 @@ TO CUSTOMIZE THIS DASHBOARD:
       background: #86efac;
     }
 
+    .drag-handle {
+      cursor: grab;
+      color: var(--admin-text-muted);
+      font-size: 1rem;
+      user-select: none;
+      padding: 0 0.25rem;
+    }
+    .drag-handle:active { cursor: grabbing; }
+    .sortable-ghost { opacity: 0.3; }
+    .sortable-chosen { background: rgba(255,255,255,0.06); }
+
+    .chat-msg {
+      padding: 0.5rem 0.75rem;
+      margin-bottom: 0.5rem;
+      border-radius: var(--admin-radius);
+      font-size: 0.875rem;
+      line-height: 1.5;
+    }
+    .chat-msg-user {
+      background: rgba(59,130,246,0.15);
+      border: 1px solid rgba(59,130,246,0.2);
+      margin-left: 2rem;
+    }
+    .chat-msg-assistant {
+      background: var(--admin-surface);
+      border: 1px solid var(--admin-border);
+      margin-right: 2rem;
+    }
+    .chat-msg-role {
+      font-size: 0.6875rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--admin-text-muted);
+      margin-bottom: 0.25rem;
+    }
+
+    .status-badge {
+      padding: 0.25rem 0.5rem;
+      border-radius: 9999px;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      border: 1px solid;
+    }
+    .status-new { background: rgba(59,130,246,0.15); color: #93c5fd; border-color: rgba(59,130,246,0.3); }
+    .status-contacted { background: rgba(251,191,36,0.15); color: #fcd34d; border-color: rgba(251,191,36,0.3); }
+    .status-confirmed { background: rgba(34,197,94,0.15); color: #86efac; border-color: rgba(34,197,94,0.3); }
+    .status-cancelled { background: rgba(239,68,68,0.15); color: #fca5a5; border-color: rgba(239,68,68,0.3); }
+
     @media (max-width: 768px) {
       .tab-nav { overflow-x: auto; }
       .form-row { grid-template-columns: 1fr; }
@@ -499,6 +550,9 @@ TO CUSTOMIZE THIS DASHBOARD:
     <button class="tab-btn" onclick="switchTab('experiences')" data-testid="tab-experiences">Experiences</button>
     <button class="tab-btn" onclick="switchTab('pricing')" data-testid="tab-pricing">Pricing</button>
     <button class="tab-btn" onclick="switchTab('chatbot')" data-testid="tab-chatbot">Chatbot</button>
+    <button class="tab-btn" onclick="switchTab('chat-history')" data-testid="tab-chat-history">Chat History</button>
+    <button class="tab-btn" onclick="switchTab('bookings')" data-testid="tab-bookings">Bookings</button>
+    <button class="tab-btn" onclick="switchTab('theme')" data-testid="tab-theme">Theme</button>
   </nav>
 
 
@@ -554,7 +608,10 @@ TO CUSTOMIZE THIS DASHBOARD:
       <div class="form-row">
         <div class="form-group" style="grid-column: 1 / -1;">
           <label for="setting-hero-image">Hero Background Image URL</label>
-          <input type="url" id="setting-hero-image" placeholder="https://images.unsplash.com/..." data-testid="input-setting-hero-image">
+          <div style="display: flex; gap: 0.5rem;">
+            <input type="url" id="setting-hero-image" placeholder="https://images.unsplash.com/..." data-testid="input-setting-hero-image" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('setting-hero-image')" data-testid="button-upload-hero-image">Upload</button>
+          </div>
         </div>
       </div>
 
@@ -624,7 +681,10 @@ TO CUSTOMIZE THIS DASHBOARD:
       <div class="form-row">
         <div class="form-group" style="grid-column: 1 / -1;">
           <label for="card-image">Image URL</label>
-          <input type="url" id="card-image" placeholder="https://images.unsplash.com/..." data-testid="input-card-image">
+          <div style="display: flex; gap: 0.5rem;">
+            <input type="url" id="card-image" placeholder="https://images.unsplash.com/..." data-testid="input-card-image" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('card-image')" data-testid="button-upload-card-image">Upload</button>
+          </div>
         </div>
       </div>
       <div class="form-row">
@@ -649,12 +709,12 @@ TO CUSTOMIZE THIS DASHBOARD:
     <table class="data-table" id="cards-table">
       <thead>
         <tr>
+          <th style="width:30px;"></th>
           <th>Image</th>
           <th>Title</th>
           <th>Category</th>
           <th>Subtitle</th>
           <th>Price</th>
-          <th>Order</th>
           <th>Actions</th>
         </tr>
       </thead>
@@ -723,10 +783,10 @@ TO CUSTOMIZE THIS DASHBOARD:
     <table class="data-table" id="exp-table">
       <thead>
         <tr>
+          <th style="width:30px;"></th>
           <th>Icon</th>
           <th>Name</th>
           <th>Description</th>
-          <th>Order</th>
           <th>Actions</th>
         </tr>
       </thead>
@@ -784,10 +844,10 @@ TO CUSTOMIZE THIS DASHBOARD:
     <table class="data-table" id="pricing-table">
       <thead>
         <tr>
+          <th style="width:30px;"></th>
           <th>Label</th>
           <th>Date Range</th>
           <th>Price Range</th>
-          <th>Order</th>
           <th>Actions</th>
         </tr>
       </thead>
@@ -902,6 +962,24 @@ TO CUSTOMIZE THIS DASHBOARD:
         </div>
       </div>
 
+      <!-- AI System Prompt Editor -->
+      <div id="chatbot-system-prompt-section">
+        <h3 style="margin-top: 1.5rem;">AI System Prompt</h3>
+        <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 1rem;">
+          This is the instruction set sent to the AI before every conversation. It controls the AI's personality, knowledge, and behavior.
+          Leave empty to use the built-in default prompt.
+        </p>
+        <div class="form-row">
+          <div class="form-group" style="grid-column: 1 / -1;">
+            <label for="chatbot-system-prompt">System Prompt</label>
+            <textarea id="chatbot-system-prompt" rows="12" placeholder="You are Marco, a luxury concierge..." data-testid="input-chatbot-system-prompt" style="font-family: monospace; font-size: 0.8125rem;"></textarea>
+          </div>
+        </div>
+        <div style="margin-bottom: 1rem;">
+          <button class="btn btn-secondary btn-sm" onclick="loadDefaultSystemPrompt()" data-testid="button-load-default-prompt">Load Default Prompt</button>
+        </div>
+      </div>
+
       <div class="form-actions">
         <button class="btn btn-primary" onclick="saveChatbotSettings()" data-testid="button-save-chatbot">Save Chatbot Settings</button>
       </div>
@@ -909,14 +987,228 @@ TO CUSTOMIZE THIS DASHBOARD:
   </div>
 
 
-  <!--
-  ========================================================================
-  ADMIN JAVASCRIPT
-  ========================================================================
-  Handles all CRUD operations for the admin dashboard.
-  Each section (Settings, Cards, Experiences, Pricing, Chatbot) has its own
-  set of functions: load, show form, hide form, save, edit, delete.
-  -->
+  <!-- Chat History Tab -->
+  <div id="tab-chat-history" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Chat History</h2>
+        <p>View AI concierge conversations and analytics.</p>
+      </div>
+    </div>
+
+    <div id="chat-stats" class="form-panel" style="display: flex; gap: 2rem; flex-wrap: wrap;">
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Total Conversations</div>
+        <div id="stat-total-conversations" style="font-size: 1.5rem; font-weight: 600; color: #fff;">0</div>
+      </div>
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Messages Today</div>
+        <div id="stat-messages-today" style="font-size: 1.5rem; font-weight: 600; color: #fff;">0</div>
+      </div>
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Avg Messages / Conversation</div>
+        <div id="stat-avg-messages" style="font-size: 1.5rem; font-weight: 600; color: #fff;">0</div>
+      </div>
+    </div>
+
+    <table class="data-table" id="chat-history-table">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Messages</th>
+          <th>Device</th>
+          <th>First Message</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="chat-history-tbody">
+        <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+
+    <div id="chat-detail-panel" class="form-panel" style="display:none; margin-top: 1.5rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <h3 id="chat-detail-title">Conversation</h3>
+        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('chat-detail-panel').style.display='none'" data-testid="button-close-chat-detail">Close</button>
+      </div>
+      <div id="chat-detail-messages" style="max-height: 400px; overflow-y: auto;"></div>
+    </div>
+  </div>
+
+
+  <!-- Bookings Tab -->
+  <div id="tab-bookings" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Booking Submissions</h2>
+        <p>View reservation requests and track the booking funnel.</p>
+      </div>
+    </div>
+
+    <div id="booking-stats" class="form-panel" style="display: flex; gap: 2rem; flex-wrap: wrap;">
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Modal Opens</div>
+        <div id="stat-modal-opens" style="font-size: 1.5rem; font-weight: 600; color: #fff;">0</div>
+      </div>
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Form Starts</div>
+        <div id="stat-form-starts" style="font-size: 1.5rem; font-weight: 600; color: #fff;">0</div>
+      </div>
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Submissions</div>
+        <div id="stat-submissions" style="font-size: 1.5rem; font-weight: 600; color: #fff;">0</div>
+      </div>
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Conversion Rate</div>
+        <div id="stat-conversion-rate" style="font-size: 1.5rem; font-weight: 600; color: #fff;">0%</div>
+      </div>
+    </div>
+
+    <table class="data-table" id="bookings-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Room</th>
+          <th>Dates</th>
+          <th>Guests</th>
+          <th>Status</th>
+          <th>Device</th>
+          <th>UTM Source</th>
+          <th>Submitted</th>
+        </tr>
+      </thead>
+      <tbody id="bookings-tbody">
+        <tr><td colspan="9" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+
+  <!-- Theme / Color Editor Tab -->
+  <div id="tab-theme" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Theme Editor</h2>
+        <p>Customize colors, fonts, and glass effects for the public site.</p>
+      </div>
+      <button class="btn btn-danger btn-sm" onclick="resetTheme()" data-testid="button-reset-theme">Reset to Default</button>
+    </div>
+
+    <div class="form-panel" id="theme-form-panel">
+      <h3>Colors</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="theme-bg">Background Color</label>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <input type="color" id="theme-bg-picker" style="width:40px; height:34px; border:none; cursor:pointer; background:transparent;" onchange="document.getElementById('theme-bg').value=this.value" data-testid="picker-theme-bg">
+            <input type="text" id="theme-bg" placeholder="#0a0f1a" oninput="syncPicker('theme-bg')" data-testid="input-theme-bg" style="flex:1;">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-section1">Section Background 1</label>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <input type="color" id="theme-section1-picker" style="width:40px; height:34px; border:none; cursor:pointer; background:transparent;" onchange="document.getElementById('theme-section1').value=this.value" data-testid="picker-theme-section1">
+            <input type="text" id="theme-section1" placeholder="#060b14" oninput="syncPicker('theme-section1')" data-testid="input-theme-section1" style="flex:1;">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-section2">Section Background 2</label>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <input type="color" id="theme-section2-picker" style="width:40px; height:34px; border:none; cursor:pointer; background:transparent;" onchange="document.getElementById('theme-section2').value=this.value" data-testid="picker-theme-section2">
+            <input type="text" id="theme-section2" placeholder="#0d1420" oninput="syncPicker('theme-section2')" data-testid="input-theme-section2" style="flex:1;">
+          </div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="theme-accent">Accent Color</label>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <input type="color" id="theme-accent-picker" style="width:40px; height:34px; border:none; cursor:pointer; background:transparent;" onchange="document.getElementById('theme-accent').value=this.value" data-testid="picker-theme-accent">
+            <input type="text" id="theme-accent" placeholder="#c9a96e" oninput="syncPicker('theme-accent')" data-testid="input-theme-accent" style="flex:1;">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-text">Text Color</label>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <input type="color" id="theme-text-picker" style="width:40px; height:34px; border:none; cursor:pointer; background:transparent;" onchange="document.getElementById('theme-text').value=this.value" data-testid="picker-theme-text">
+            <input type="text" id="theme-text" placeholder="#e4e4e7" oninput="syncPicker('theme-text')" data-testid="input-theme-text" style="flex:1;">
+          </div>
+        </div>
+      </div>
+
+      <h3 style="margin-top: 1.5rem;">Glass Effects</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="theme-glass-border">Glass Border Color</label>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <input type="color" id="theme-glass-border-picker" style="width:40px; height:34px; border:none; cursor:pointer; background:transparent;" onchange="document.getElementById('theme-glass-border').value=this.value" data-testid="picker-theme-glass-border">
+            <input type="text" id="theme-glass-border" placeholder="rgba(255,255,255,0.08)" oninput="syncPicker('theme-glass-border')" data-testid="input-theme-glass-border" style="flex:1;">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-glass-bg">Glass Background Color</label>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <input type="color" id="theme-glass-bg-picker" style="width:40px; height:34px; border:none; cursor:pointer; background:transparent;" onchange="document.getElementById('theme-glass-bg').value=this.value" data-testid="picker-theme-glass-bg">
+            <input type="text" id="theme-glass-bg" placeholder="rgba(255,255,255,0.03)" oninput="syncPicker('theme-glass-bg')" data-testid="input-theme-glass-bg" style="flex:1;">
+          </div>
+        </div>
+      </div>
+
+      <h3 style="margin-top: 1.5rem;">Fonts</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="theme-font-serif">Heading Font (Serif)</label>
+          <select id="theme-font-serif" data-testid="select-theme-font-serif">
+            <option value="">Default (Playfair Display)</option>
+            <option value="Playfair Display">Playfair Display</option>
+            <option value="Cormorant Garamond">Cormorant Garamond</option>
+            <option value="Libre Baskerville">Libre Baskerville</option>
+            <option value="EB Garamond">EB Garamond</option>
+            <option value="Merriweather">Merriweather</option>
+            <option value="Lora">Lora</option>
+            <option value="Crimson Text">Crimson Text</option>
+            <option value="Source Serif 4">Source Serif 4</option>
+            <option value="Noto Serif">Noto Serif</option>
+            <option value="DM Serif Display">DM Serif Display</option>
+            <option value="Fraunces">Fraunces</option>
+            <option value="Bodoni Moda">Bodoni Moda</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="theme-font-sans">Body Font (Sans-Serif)</label>
+          <select id="theme-font-sans" data-testid="select-theme-font-sans">
+            <option value="">Default (DM Sans)</option>
+            <option value="DM Sans">DM Sans</option>
+            <option value="Inter">Inter</option>
+            <option value="Outfit">Outfit</option>
+            <option value="Plus Jakarta Sans">Plus Jakarta Sans</option>
+            <option value="Manrope">Manrope</option>
+            <option value="Nunito Sans">Nunito Sans</option>
+            <option value="Raleway">Raleway</option>
+            <option value="Work Sans">Work Sans</option>
+            <option value="Poppins">Poppins</option>
+            <option value="Montserrat">Montserrat</option>
+            <option value="Source Sans 3">Source Sans 3</option>
+            <option value="Figtree">Figtree</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="saveTheme()" data-testid="button-save-theme">Save Theme</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- Hidden file input for image uploads -->
+  <input type="file" id="admin-file-upload" accept="image/jpeg,image/png,image/gif,image/webp" style="display:none;" data-testid="input-file-upload">
+
+  <!-- SortableJS CDN for drag-and-drop reordering -->
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.3/Sortable.min.js"></script>
+
   <script>
     /*
     ========================================================================
@@ -954,6 +1246,19 @@ TO CUSTOMIZE THIS DASHBOARD:
 
       /* Auto-remove after 3 seconds */
       setTimeout(() => toast.remove(), 3000);
+    }
+
+
+    /*
+    ========================================================================
+    HTML ESCAPE — Prevent XSS when rendering user content
+    ========================================================================
+    */
+    function esc(str) {
+      if (!str) return '';
+      const div = document.createElement('div');
+      div.textContent = String(str);
+      return div.innerHTML;
     }
 
 
@@ -1030,19 +1335,20 @@ TO CUSTOMIZE THIS DASHBOARD:
         }
 
         tbody.innerHTML = cards.map(card => `
-          <tr>
+          <tr data-id="${card.id}">
+            <td><span class="drag-handle" title="Drag to reorder">&#x2630;</span></td>
             <td><img src="${card.image_url}" alt="${card.title}" class="cell-image"></td>
             <td><strong>${card.title}</strong></td>
             <td><span class="badge">${card.category}</span></td>
             <td class="cell-truncate">${card.subtitle}</td>
             <td>${card.price || '—'}</td>
-            <td>${card.sort_order}</td>
             <td class="cell-actions">
               <button class="btn btn-secondary btn-sm" onclick='editCard(${JSON.stringify(card).replace(/'/g, "&#39;")})' data-testid="button-edit-card-${card.id}">Edit</button>
               <button class="btn btn-danger btn-sm" onclick="deleteCard(${card.id})" data-testid="button-delete-card-${card.id}">Delete</button>
             </td>
           </tr>
         `).join('');
+        initSortable('cards-tbody', 'gallery-cards');
       } catch (err) {
         showToast('Failed to load cards', 'error');
       }
@@ -1166,17 +1472,18 @@ TO CUSTOMIZE THIS DASHBOARD:
         }
 
         tbody.innerHTML = exps.map(exp => `
-          <tr>
+          <tr data-id="${exp.id}">
+            <td><span class="drag-handle" title="Drag to reorder">&#x2630;</span></td>
             <td>${exp.icon}</td>
             <td><strong>${exp.name}</strong></td>
             <td class="cell-truncate">${exp.description}</td>
-            <td>${exp.sort_order}</td>
             <td class="cell-actions">
               <button class="btn btn-secondary btn-sm" onclick='editExperience(${JSON.stringify(exp).replace(/'/g, "&#39;")})' data-testid="button-edit-exp-${exp.id}">Edit</button>
               <button class="btn btn-danger btn-sm" onclick="deleteExperience(${exp.id})" data-testid="button-delete-exp-${exp.id}">Delete</button>
             </td>
           </tr>
         `).join('');
+        initSortable('exp-tbody', 'experiences');
       } catch (err) {
         showToast('Failed to load experiences', 'error');
       }
@@ -1270,17 +1577,18 @@ TO CUSTOMIZE THIS DASHBOARD:
         }
 
         tbody.innerHTML = seasons.map(s => `
-          <tr>
+          <tr data-id="${s.id}">
+            <td><span class="drag-handle" title="Drag to reorder">&#x2630;</span></td>
             <td><strong>${s.label}</strong></td>
             <td>${s.date_range}</td>
             <td>${s.price_range}</td>
-            <td>${s.sort_order}</td>
             <td class="cell-actions">
               <button class="btn btn-secondary btn-sm" onclick='editPricing(${JSON.stringify(s).replace(/'/g, "&#39;")})' data-testid="button-edit-pricing-${s.id}">Edit</button>
               <button class="btn btn-danger btn-sm" onclick="deletePricing(${s.id})" data-testid="button-delete-pricing-${s.id}">Delete</button>
             </td>
           </tr>
         `).join('');
+        initSortable('pricing-tbody', 'pricing');
       } catch (err) {
         showToast('Failed to load pricing', 'error');
       }
@@ -1377,6 +1685,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         document.getElementById('chatbot-greeting').value = settings.greeting || '';
         document.getElementById('chatbot-api-endpoint').value = settings.api_endpoint || '/api/chat';
         document.getElementById('chatbot-embed-code').value = settings.embed_code || '';
+        document.getElementById('chatbot-system-prompt').value = settings.system_prompt || '';
 
         /* Convert quick_prompts array to newline-separated text */
         const prompts = settings.quick_prompts || [];
@@ -1412,7 +1721,8 @@ TO CUSTOMIZE THIS DASHBOARD:
         greeting: document.getElementById('chatbot-greeting').value,
         quick_prompts: quickPrompts,
         api_endpoint: document.getElementById('chatbot-api-endpoint').value,
-        embed_code: document.getElementById('chatbot-embed-code').value
+        embed_code: document.getElementById('chatbot-embed-code').value,
+        system_prompt: document.getElementById('chatbot-system-prompt').value
       };
 
       try {
@@ -1435,6 +1745,328 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     /*
     ========================================================================
+    LOAD DEFAULT SYSTEM PROMPT
+    ========================================================================
+    */
+    async function loadDefaultSystemPrompt() {
+      try {
+        const res = await fetch('/admin/api/default-system-prompt');
+        const data = await res.json();
+        document.getElementById('chatbot-system-prompt').value = data.system_prompt || '';
+        showToast('Default prompt loaded — click Save to apply.');
+      } catch (err) {
+        showToast('Failed to load default prompt', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
+    IMAGE UPLOAD
+    ========================================================================
+    */
+    let uploadTargetInput = null;
+
+    function uploadImageFor(inputId) {
+      uploadTargetInput = inputId;
+      document.getElementById('admin-file-upload').click();
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('admin-file-upload').addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file || !uploadTargetInput) return;
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+          const res = await fetch('/admin/api/upload-image', {
+            method: 'POST',
+            body: formData
+          });
+          const data = await res.json();
+          if (res.ok) {
+            document.getElementById(uploadTargetInput).value = data.url;
+            showToast('Image uploaded!');
+          } else {
+            showToast(data.error || 'Upload failed', 'error');
+          }
+        } catch (err) {
+          showToast('Upload failed', 'error');
+        }
+        e.target.value = '';
+        uploadTargetInput = null;
+      });
+    });
+
+
+    /*
+    ========================================================================
+    DRAG-AND-DROP REORDERING (SortableJS)
+    ========================================================================
+    */
+    function initSortable(tbodyId, contentType) {
+      const el = document.getElementById(tbodyId);
+      if (!el || !window.Sortable) return;
+      Sortable.create(el, {
+        handle: '.drag-handle',
+        animation: 150,
+        ghostClass: 'sortable-ghost',
+        chosenClass: 'sortable-chosen',
+        onEnd: async function() {
+          const rows = el.querySelectorAll('tr[data-id]');
+          const order = Array.from(rows).map((row, idx) => ({
+            id: parseInt(row.dataset.id),
+            sort_order: idx
+          }));
+
+          try {
+            const res = await fetch(`/admin/api/reorder/${contentType}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(order)
+            });
+            if (res.ok) {
+              showToast('Order saved!');
+            } else {
+              showToast('Failed to save order', 'error');
+            }
+          } catch (err) {
+            showToast('Failed to save order', 'error');
+          }
+        }
+      });
+    }
+
+
+    /*
+    ========================================================================
+    CHAT HISTORY
+    ========================================================================
+    */
+    async function loadChatHistory() {
+      try {
+        const res = await fetch('/admin/api/chat-history');
+        const data = await res.json();
+
+        const stats = data.stats || {};
+        document.getElementById('stat-total-conversations').textContent = stats.total_conversations || 0;
+        document.getElementById('stat-messages-today').textContent = stats.messages_today || 0;
+        document.getElementById('stat-avg-messages').textContent = stats.avg_messages || 0;
+
+        const tbody = document.getElementById('chat-history-tbody');
+        const convs = data.conversations || [];
+
+        if (!convs.length) {
+          tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No conversations yet. Chat messages will appear here once visitors use the chatbot.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = convs.map(c => `
+          <tr>
+            <td>${new Date(c.started_at).toLocaleString()}</td>
+            <td>${c.message_count || 0}</td>
+            <td><span class="badge">${c.device_type || 'desktop'}</span></td>
+            <td class="cell-truncate">${esc((c.first_message || '').substring(0, 60))}${(c.first_message || '').length > 60 ? '...' : ''}</td>
+            <td>
+              <button class="btn btn-secondary btn-sm" onclick="viewConversation(${c.id})" data-testid="button-view-conv-${c.id}">View</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showToast('Failed to load chat history', 'error');
+      }
+    }
+
+    async function viewConversation(convId) {
+      try {
+        const res = await fetch(`/admin/api/chat-history/${convId}`);
+        const data = await res.json();
+        const panel = document.getElementById('chat-detail-panel');
+        const container = document.getElementById('chat-detail-messages');
+        const conv = data.conversation || {};
+
+        document.getElementById('chat-detail-title').textContent =
+          `Conversation — ${new Date(conv.started_at).toLocaleString()} (${conv.device_type || 'desktop'})`;
+
+        const msgs = data.messages || [];
+        container.innerHTML = msgs.map(m => `
+          <div class="chat-msg chat-msg-${m.role}">
+            <div class="chat-msg-role">${m.role}</div>
+            <div>${esc(m.content)}</div>
+          </div>
+        `).join('');
+
+        panel.style.display = 'block';
+        panel.scrollIntoView({ behavior: 'smooth' });
+      } catch (err) {
+        showToast('Failed to load conversation', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
+    BOOKINGS
+    ========================================================================
+    */
+    async function loadBookings() {
+      try {
+        const res = await fetch('/admin/api/bookings');
+        const data = await res.json();
+
+        const stats = data.stats || {};
+        document.getElementById('stat-modal-opens').textContent = stats.modal_opens || 0;
+        document.getElementById('stat-form-starts').textContent = stats.form_starts || 0;
+        document.getElementById('stat-submissions').textContent = stats.submissions || 0;
+
+        const total = (stats.modal_opens || 0);
+        const subs = (stats.submissions || 0);
+        const rate = total > 0 ? ((subs / total) * 100).toFixed(1) : 0;
+        document.getElementById('stat-conversion-rate').textContent = rate + '%';
+
+        const tbody = document.getElementById('bookings-tbody');
+        const bookings = (data.bookings || []).filter(b => b.step_reached === 'submitted');
+
+        if (!bookings.length) {
+          tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No booking submissions yet.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = bookings.map(b => `
+          <tr>
+            <td><strong>${esc(b.name || '—')}</strong></td>
+            <td>${esc(b.email || '—')}</td>
+            <td>${esc(b.room_name || b.room_slug || '—')}</td>
+            <td>${b.check_in ? new Date(b.check_in).toLocaleDateString() : '—'} — ${b.check_out ? new Date(b.check_out).toLocaleDateString() : '—'}</td>
+            <td>${b.guests || 1}</td>
+            <td>
+              <select class="status-select" onchange="updateBookingStatus(${b.id}, this.value)" data-testid="select-booking-status-${b.id}" style="background: transparent; border: 1px solid var(--admin-border); color: var(--admin-text); padding: 0.25rem 0.5rem; border-radius: var(--admin-radius); font-size: 0.75rem;">
+                <option value="new" ${b.status === 'new' ? 'selected' : ''}>New</option>
+                <option value="contacted" ${b.status === 'contacted' ? 'selected' : ''}>Contacted</option>
+                <option value="confirmed" ${b.status === 'confirmed' ? 'selected' : ''}>Confirmed</option>
+                <option value="cancelled" ${b.status === 'cancelled' ? 'selected' : ''}>Cancelled</option>
+              </select>
+            </td>
+            <td><span class="badge">${b.device_type || 'desktop'}</span></td>
+            <td>${b.utm_source || '—'}</td>
+            <td>${b.submitted_at ? new Date(b.submitted_at).toLocaleString() : '—'}</td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showToast('Failed to load bookings', 'error');
+      }
+    }
+
+    async function updateBookingStatus(bookingId, status) {
+      try {
+        const res = await fetch(`/admin/api/bookings/${bookingId}/status`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status })
+        });
+        if (res.ok) {
+          showToast('Status updated!');
+        } else {
+          showToast('Failed to update status', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to update status', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
+    THEME EDITOR
+    ========================================================================
+    */
+    function syncPicker(fieldId) {
+      const val = document.getElementById(fieldId).value;
+      const picker = document.getElementById(fieldId + '-picker');
+      if (picker && /^#[0-9a-f]{6}$/i.test(val)) {
+        picker.value = val;
+      }
+    }
+
+    async function loadTheme() {
+      try {
+        const res = await fetch('/admin/api/theme');
+        const data = await res.json();
+        const fields = ['theme-bg', 'theme-section1', 'theme-section2', 'theme-accent',
+                        'theme-text', 'theme-glass-border', 'theme-glass-bg'];
+        fields.forEach(f => {
+          const key = f.replace(/-/g, '_');
+          const val = data[key] || '';
+          document.getElementById(f).value = val;
+          syncPicker(f);
+        });
+        document.getElementById('theme-font-serif').value = data.theme_font_serif || '';
+        document.getElementById('theme-font-sans').value = data.theme_font_sans || '';
+      } catch (err) {
+        showToast('Failed to load theme', 'error');
+      }
+    }
+
+    async function saveTheme() {
+      const data = {
+        theme_bg: document.getElementById('theme-bg').value,
+        theme_section1: document.getElementById('theme-section1').value,
+        theme_section2: document.getElementById('theme-section2').value,
+        theme_accent: document.getElementById('theme-accent').value,
+        theme_text: document.getElementById('theme-text').value,
+        theme_glass_border: document.getElementById('theme-glass-border').value,
+        theme_glass_bg: document.getElementById('theme-glass-bg').value,
+        theme_font_serif: document.getElementById('theme-font-serif').value,
+        theme_font_sans: document.getElementById('theme-font-sans').value
+      };
+
+      try {
+        const res = await fetch('/admin/api/theme', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+        if (res.ok) {
+          showToast('Theme saved! Reload the public site to see changes.');
+        } else {
+          showToast('Failed to save theme', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save theme', 'error');
+      }
+    }
+
+    async function resetTheme() {
+      if (!confirm('Reset all theme settings to defaults? This clears all custom colors and fonts.')) return;
+
+      const data = {
+        theme_bg: '', theme_section1: '', theme_section2: '',
+        theme_accent: '', theme_text: '', theme_glass_border: '',
+        theme_glass_bg: '', theme_font_serif: '', theme_font_sans: ''
+      };
+
+      try {
+        const res = await fetch('/admin/api/theme', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+        if (res.ok) {
+          showToast('Theme reset to defaults!');
+          loadTheme();
+        } else {
+          showToast('Failed to reset theme', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to reset theme', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
     INITIALIZATION — Load all data on page load
     ========================================================================
     */
@@ -1444,6 +2076,9 @@ TO CUSTOMIZE THIS DASHBOARD:
       loadExperiences();
       loadPricing();
       loadChatbotSettings();
+      loadChatHistory();
+      loadBookings();
+      loadTheme();
     });
   </script>
 </body>
