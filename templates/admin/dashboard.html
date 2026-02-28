@@ -134,36 +134,84 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     .admin-header a:hover { color: #fff; }
 
-    .tab-nav {
+    .admin-layout {
       display: flex;
-      gap: 0.25rem;
-      padding: 1rem 2rem 0;
-      border-bottom: 1px solid var(--admin-border);
+      min-height: calc(100vh - 56px);
+    }
+
+    .sidebar {
+      width: 220px;
+      min-width: 220px;
       background: var(--admin-surface);
-      backdrop-filter: var(--admin-blur);
-      -webkit-backdrop-filter: var(--admin-blur);
-      position: relative;
-      z-index: 1;
+      backdrop-filter: var(--admin-blur-heavy);
+      -webkit-backdrop-filter: var(--admin-blur-heavy);
+      border-right: 1px solid var(--admin-border);
+      position: sticky;
+      top: 56px;
+      height: calc(100vh - 56px);
+      overflow-y: auto;
+      z-index: 10;
+      padding: 0.75rem 0;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.1) transparent;
+    }
+
+    .sidebar::-webkit-scrollbar { width: 4px; }
+    .sidebar::-webkit-scrollbar-track { background: transparent; }
+    .sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+
+    .sidebar-group-label {
+      padding: 0.875rem 1.25rem 0.375rem;
+      font-size: 0.625rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--admin-text-muted);
+      user-select: none;
     }
 
     .tab-btn {
-      padding: 0.75rem 1.25rem;
-      font-size: 0.875rem;
+      display: flex;
+      align-items: center;
+      gap: 0.625rem;
+      width: 100%;
+      padding: 0.5rem 1.25rem;
+      font-size: 0.8125rem;
       font-weight: 500;
       color: var(--admin-text-muted);
       background: none;
       border: none;
-      border-bottom: 2px solid transparent;
+      border-left: 2px solid transparent;
       cursor: pointer;
-      transition: color 0.2s, border-color 0.2s;
+      transition: color 0.2s, background 0.2s, border-color 0.2s;
       font-family: inherit;
+      text-align: left;
+      white-space: nowrap;
     }
 
-    .tab-btn:hover { color: rgba(255,255,255,0.7); }
+    .tab-btn:hover {
+      color: rgba(255,255,255,0.8);
+      background: rgba(255,255,255,0.04);
+    }
 
     .tab-btn.active {
       color: #fff;
-      border-bottom-color: #fff;
+      background: rgba(255,255,255,0.06);
+      border-left-color: #fff;
+    }
+
+    .tab-btn svg {
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
+      opacity: 0.5;
+    }
+
+    .tab-btn.active svg { opacity: 1; }
+
+    .admin-main {
+      flex: 1;
+      min-width: 0;
     }
 
     .tab-content {
@@ -173,6 +221,35 @@ TO CUSTOMIZE THIS DASHBOARD:
       z-index: 1;
     }
     .tab-content.active { display: block; }
+
+    .sidebar-toggle {
+      display: none;
+      position: fixed;
+      bottom: 1.25rem;
+      left: 1.25rem;
+      z-index: 60;
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: 1px solid var(--admin-border-light);
+      background: var(--admin-bg);
+      backdrop-filter: var(--admin-blur-heavy);
+      -webkit-backdrop-filter: var(--admin-blur-heavy);
+      color: #fff;
+      cursor: pointer;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    }
+
+    .sidebar-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 40;
+    }
+    .sidebar-overlay.active { display: block; }
 
     .section-header-admin {
       display: flex;
@@ -512,7 +589,19 @@ TO CUSTOMIZE THIS DASHBOARD:
     .status-cancelled { background: rgba(239,68,68,0.15); color: #fca5a5; border-color: rgba(239,68,68,0.3); }
 
     @media (max-width: 768px) {
-      .tab-nav { overflow-x: auto; }
+      .sidebar {
+        position: fixed;
+        top: 0;
+        left: -260px;
+        width: 250px;
+        min-width: 250px;
+        height: 100vh;
+        z-index: 50;
+        transition: left 0.25s ease;
+        padding-top: 1rem;
+      }
+      .sidebar.open { left: 0; }
+      .sidebar-toggle { display: flex; }
       .form-row { grid-template-columns: 1fr; }
       .data-table { font-size: 0.8125rem; }
       .admin-header { padding: 1rem; }
@@ -547,31 +636,100 @@ TO CUSTOMIZE THIS DASHBOARD:
 
   <!--
   ========================================================================
-  TAB NAVIGATION
+  MOBILE SIDEBAR OVERLAY + TOGGLE
   ========================================================================
-  Each tab corresponds to a different content type in the database.
-  Clicking a tab shows its content panel and hides the others.
   -->
-  <nav class="tab-nav">
-    <button class="tab-btn active" onclick="switchTab('page-layout')" data-testid="tab-page-layout">Page Layout</button>
-    <button class="tab-btn" onclick="switchTab('settings')" data-testid="tab-settings">Site Settings</button>
-    <button class="tab-btn" onclick="switchTab('cards')" data-testid="tab-cards">Gallery Cards</button>
-    <button class="tab-btn" onclick="switchTab('experiences')" data-testid="tab-experiences">Experiences</button>
-    <button class="tab-btn" onclick="switchTab('pricing')" data-testid="tab-pricing">Pricing</button>
-    <button class="tab-btn" onclick="switchTab('business-info')" data-testid="tab-business-info">Business Info</button>
-    <button class="tab-btn" onclick="switchTab('testimonials')" data-testid="tab-testimonials">Testimonials</button>
-    <button class="tab-btn" onclick="switchTab('team')" data-testid="tab-team">Team</button>
-    <button class="tab-btn" onclick="switchTab('faq')" data-testid="tab-faq">FAQ</button>
-    <button class="tab-btn" onclick="switchTab('chatbot')" data-testid="tab-chatbot">Chatbot</button>
-    <button class="tab-btn" onclick="switchTab('chat-history')" data-testid="tab-chat-history">Chat History</button>
-    <button class="tab-btn" onclick="switchTab('forms')" data-testid="tab-forms">Forms</button>
-    <button class="tab-btn" onclick="switchTab('theme')" data-testid="tab-theme">Theme</button>
-    <button class="tab-btn" onclick="switchTab('seo')" data-testid="tab-seo">SEO</button>
-    <button class="tab-btn" onclick="switchTab('blog')" data-testid="tab-blog">Blog</button>
-    <button class="tab-btn" onclick="switchTab('pages')" data-testid="tab-pages">Saved Pages</button>
-    <button class="tab-btn" onclick="switchTab('analytics')" data-testid="tab-analytics">Analytics</button>
+  <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
+  <button class="sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()" data-testid="button-sidebar-toggle" aria-label="Toggle navigation menu">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+  </button>
+
+  <div class="admin-layout">
+  <!--
+  ========================================================================
+  SIDEBAR NAVIGATION
+  ========================================================================
+  Vertical menu grouped by function. Each button switches to its tab panel.
+  -->
+  <nav class="sidebar" id="admin-sidebar" role="navigation" aria-label="Admin navigation">
+    <div class="sidebar-group-label">Layout</div>
+    <button class="tab-btn active" onclick="switchTab('page-layout', this)" data-testid="tab-page-layout">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+      Page Layout
+    </button>
+    <button class="tab-btn" onclick="switchTab('theme', this)" data-testid="tab-theme">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="2.5"/><path d="M17.5 10.5 19 12l-7 7-1.5-1.5"/><circle cx="8.5" cy="8.5" r="2.5"/><path d="m6 12 1.5 1.5"/></svg>
+      Theme
+    </button>
+
+    <div class="sidebar-group-label">Content</div>
+    <button class="tab-btn" onclick="switchTab('settings', this)" data-testid="tab-settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06c.5.5 1.2.67 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06c-.5.5-.67 1.2-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      Site Settings
+    </button>
+    <button class="tab-btn" onclick="switchTab('cards', this)" data-testid="tab-cards">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+      Gallery Cards
+    </button>
+    <button class="tab-btn" onclick="switchTab('experiences', this)" data-testid="tab-experiences">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+      Experiences
+    </button>
+    <button class="tab-btn" onclick="switchTab('pricing', this)" data-testid="tab-pricing">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+      Pricing
+    </button>
+    <button class="tab-btn" onclick="switchTab('business-info', this)" data-testid="tab-business-info">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+      Business Info
+    </button>
+    <button class="tab-btn" onclick="switchTab('testimonials', this)" data-testid="tab-testimonials">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      Testimonials
+    </button>
+    <button class="tab-btn" onclick="switchTab('team', this)" data-testid="tab-team">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      Team
+    </button>
+    <button class="tab-btn" onclick="switchTab('faq', this)" data-testid="tab-faq">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      FAQ
+    </button>
+    <button class="tab-btn" onclick="switchTab('blog', this)" data-testid="tab-blog">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+      Blog
+    </button>
+    <button class="tab-btn" onclick="switchTab('pages', this)" data-testid="tab-pages">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      Saved Pages
+    </button>
+
+    <div class="sidebar-group-label">AI & Chat</div>
+    <button class="tab-btn" onclick="switchTab('chatbot', this)" data-testid="tab-chatbot">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      Chatbot
+    </button>
+    <button class="tab-btn" onclick="switchTab('chat-history', this)" data-testid="tab-chat-history">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      Chat History
+    </button>
+    <button class="tab-btn" onclick="switchTab('forms', this)" data-testid="tab-forms">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>
+      Forms
+    </button>
+
+    <div class="sidebar-group-label">Marketing</div>
+    <button class="tab-btn" onclick="switchTab('seo', this)" data-testid="tab-seo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      SEO
+    </button>
+    <button class="tab-btn" onclick="switchTab('analytics', this)" data-testid="tab-analytics">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+      Analytics
+    </button>
   </nav>
 
+  <main class="admin-main">
 
   <!--
   ========================================================================
@@ -2351,14 +2509,20 @@ TO CUSTOMIZE THIS DASHBOARD:
       return div.innerHTML;
     }
 
-    function switchTab(tabId) {
+    function switchTab(tabId, btn) {
       /* Hide all tab content panels */
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
       document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
 
       /* Show the selected tab */
       document.getElementById('tab-' + tabId).classList.add('active');
-      event.target.classList.add('active');
+      if (btn) btn.classList.add('active');
+
+      /* Close mobile sidebar after selecting a tab */
+      const sidebar = document.getElementById('admin-sidebar');
+      const overlay = document.getElementById('sidebar-overlay');
+      if (sidebar) sidebar.classList.remove('open');
+      if (overlay) overlay.classList.remove('active');
     }
 
 
@@ -5148,6 +5312,15 @@ TO CUSTOMIZE THIS DASHBOARD:
         console.error('Error deleting page:', err);
       }
     }
+
+    function toggleSidebar() {
+      const sidebar = document.getElementById('admin-sidebar');
+      const overlay = document.getElementById('sidebar-overlay');
+      sidebar.classList.toggle('open');
+      overlay.classList.toggle('active');
+    }
   </script>
+  </main>
+  </div>
 </body>
 </html>
