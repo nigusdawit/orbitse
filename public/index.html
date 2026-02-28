@@ -298,69 +298,23 @@ FONTS:
   <div id="booking-modal" class="modal-backdrop" data-testid="booking-modal">
     <div class="modal-content">
 
-      <!-- Modal Header -->
       <div class="modal-header">
         <div>
-          <h2 class="modal-title" data-testid="text-modal-title">Reserve Your Stay</h2>
-          <p class="modal-subtitle">Experience the serenity of Casa Serena</p>
+          <h2 class="modal-title" id="dynamic-form-title" data-testid="text-modal-title">Reserve Your Stay</h2>
+          <p class="modal-subtitle" id="dynamic-form-subtitle">Experience the serenity of Casa Serena</p>
         </div>
         <button class="modal-close" onclick="closeModal()" data-testid="button-close-modal">&times;</button>
       </div>
 
-      <!-- Modal Body — Reservation Form -->
       <div class="modal-body">
-        <form id="booking-form" class="form-grid" onsubmit="handleBookingSubmit(event)" data-testid="form-booking">
-
-          <div id="booking-form-fields">
-            <!-- Name + Email (2-column row) -->
-            <div class="form-grid-2">
-              <div class="form-group">
-                <label for="booking-name">Full Name</label>
-                <input type="text" id="booking-name" name="name" placeholder="John Doe" required data-testid="input-name" oninput="trackBookingStep('filling_form')">
-              </div>
-              <div class="form-group">
-                <label for="booking-email">Email</label>
-                <input type="email" id="booking-email" name="email" placeholder="john@example.com" required data-testid="input-email">
-              </div>
-            </div>
-
-            <!-- Room Selection -->
-            <div class="form-group">
-              <label for="booking-room">Select Room</label>
-              <select id="booking-room" name="roomId" data-testid="select-room">
-                <!-- Options populated by JavaScript from gallery cards data -->
-              </select>
-            </div>
-
-            <!-- Check-in, Check-out, Guests (3-column row) -->
-            <div class="form-grid-3">
-              <div class="form-group">
-                <label for="booking-checkin">Check In</label>
-                <input type="date" id="booking-checkin" name="checkIn" required data-testid="input-checkin">
-              </div>
-              <div class="form-group">
-                <label for="booking-checkout">Check Out</label>
-                <input type="date" id="booking-checkout" name="checkOut" required data-testid="input-checkout">
-              </div>
-              <div class="form-group">
-                <label for="booking-guests">Guests</label>
-                <input type="number" id="booking-guests" name="guests" min="1" max="8" value="2" data-testid="input-guests">
-              </div>
-            </div>
-
-            <!-- Form Actions -->
-            <div class="modal-footer">
-              <button type="button" class="btn-text" onclick="closeModal()" data-testid="button-cancel-booking">Cancel</button>
-              <button type="submit" class="btn-submit" data-testid="button-submit-booking">Confirm Reservation</button>
-            </div>
-          </div>
-
+        <form id="booking-form" class="form-grid" onsubmit="handleDynamicFormSubmit(event)" data-testid="form-booking">
+          <div id="booking-form-fields"></div>
           <div id="booking-confirmation" style="display:none;" data-testid="booking-confirmation"></div>
         </form>
       </div>
     </div>
   </div>
-  <!-- END BOOKING MODAL -->
+  <!-- END DYNAMIC FORM MODAL -->
 
 
   <!--

@@ -342,12 +342,9 @@ function renderDotNav() {
 function populateRoomDropdown() {
   const select = document.getElementById('booking-room');
   if (!select || !galleryCards.length) return;
-
-  /* Filter to just rooms and the main property */
   const rooms = galleryCards.filter(c =>
     c.category === 'rooms' || c.slug === 'hero-villa' || c.category === 'property'
   );
-
   select.innerHTML = rooms.map(room =>
     `<option value="${room.slug}">${room.title}${room.price ? ' - ' + room.price : ''}</option>`
   ).join('');
@@ -622,6 +619,9 @@ function getTrackingData() {
  * Track a booking funnel step (opened_modal, filling_form, submitted).
  * Each step is only tracked once per session using sessionStorage.
  */
+let currentFormSlug = null;
+let currentFormConfig = null;
+
 function trackBookingStep(step) {
   const key = 'booking_tracked_' + step;
   if (sessionStorage.getItem(key)) return;
@@ -635,82 +635,192 @@ function trackBookingStep(step) {
   } catch (e) { /* silent */ }
 }
 
-/**
- * Open the booking modal and track the funnel step.
- */
-function openModal() {
+function openModal(slug) {
+  const formSlug = slug || 'booking-request';
+  currentFormSlug = formSlug;
   document.getElementById('booking-modal').classList.add('active');
   trackBookingStep('opened_modal');
+  loadDynamicForm(formSlug);
 }
 
-/**
- * Close the booking modal and reset the form.
- */
 function closeModal() {
   document.getElementById('booking-modal').classList.remove('active');
-  document.getElementById('booking-form').reset();
   const conf = document.getElementById('booking-confirmation');
   if (conf) conf.style.display = 'none';
   const formFields = document.getElementById('booking-form-fields');
   if (formFields) formFields.style.display = 'block';
+  currentFormConfig = null;
 }
 
-/**
- * Handle the booking form submission with real POST and funnel tracking.
- */
-async function handleBookingSubmit(e) {
+async function loadDynamicForm(slug) {
+  const container = document.getElementById('booking-form-fields');
+  const conf = document.getElementById('booking-confirmation');
+  if (conf) conf.style.display = 'none';
+  container.style.display = 'block';
+  container.innerHTML = '<p style="text-align:center; color: rgba(255,255,255,0.5); padding: 2rem;">Loading form...</p>';
+
+  try {
+    const res = await fetch(`/api/forms/${slug}`);
+    if (!res.ok) {
+      container.innerHTML = '<p style="text-align:center; color: #ef4444; padding: 2rem;">Form not found.</p>';
+      return;
+    }
+    const form = await res.json();
+    currentFormConfig = form;
+
+    document.getElementById('dynamic-form-title').textContent = form.name || 'Reserve Your Stay';
+    document.getElementById('dynamic-form-subtitle').textContent = form.description || '';
+
+    let html = '';
+    let halfBuffer = [];
+
+    const flushHalf = () => {
+      if (halfBuffer.length === 2) {
+        html += `<div class="form-grid-2">${halfBuffer.join('')}</div>`;
+        halfBuffer = [];
+      } else if (halfBuffer.length === 1) {
+        html += `<div class="form-grid-2">${halfBuffer[0]}<div></div></div>`;
+        halfBuffer = [];
+      }
+    };
+
+    (form.fields || []).forEach(field => {
+      const fieldHtml = renderFormField(field);
+      if (field.width === 'half') {
+        halfBuffer.push(fieldHtml);
+        if (halfBuffer.length === 2) flushHalf();
+      } else {
+        flushHalf();
+        html += fieldHtml;
+      }
+    });
+    flushHalf();
+
+    html += `<div class="modal-footer">
+      <button type="button" class="btn-text" onclick="closeModal()" data-testid="button-cancel-booking">Cancel</button>
+      <button type="submit" class="btn-submit" data-testid="button-submit-booking">${escapeHtml(form.submit_button_text || 'Submit')}</button>
+    </div>`;
+
+    container.innerHTML = html;
+
+    populateDynamicRoomDropdown();
+  } catch (err) {
+    container.innerHTML = '<p style="text-align:center; color: #ef4444; padding: 2rem;">Failed to load form.</p>';
+  }
+}
+
+function populateDynamicRoomDropdown() {
+  if (!currentFormConfig || !galleryCards.length) return;
+  const roomFields = (currentFormConfig.fields || []).filter(f => f.name === 'room' && f.field_type === 'select');
+  roomFields.forEach(field => {
+    const select = document.getElementById(`form-field-${field.name}`);
+    if (!select) return;
+    const rooms = galleryCards.filter(c =>
+      c.category === 'rooms' || c.slug === 'hero-villa' || c.category === 'property'
+    );
+    if (rooms.length) {
+      select.innerHTML = '<option value="">Select a room...</option>' + rooms.map(room =>
+        `<option value="${room.slug}">${room.title}${room.price ? ' - ' + room.price : ''}</option>`
+      ).join('');
+    }
+  });
+}
+
+function renderFormField(field) {
+  const req = field.required ? ' *' : '';
+  const reqAttr = field.required ? ' required' : '';
+  const ph = field.placeholder ? ` placeholder="${escapeHtml(field.placeholder)}"` : '';
+  const helpHtml = field.help_text ? `<small style="color: rgba(255,255,255,0.4); font-size: 0.75rem; margin-top: 0.25rem; display:block;">${escapeHtml(field.help_text)}</small>` : '';
+  const defVal = field.default_value || '';
+  const fid = `form-field-${field.name}`;
+
+  let inputHtml = '';
+  switch (field.field_type) {
+    case 'textarea':
+      inputHtml = `<textarea id="${fid}" name="${escapeHtml(field.name)}"${ph}${reqAttr} rows="3" data-testid="input-${field.name}" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12); color: #fff; padding: 0.75rem; border-radius: 8px; width:100%; font-family:inherit; resize:vertical;">${escapeHtml(defVal)}</textarea>`;
+      break;
+    case 'select': {
+      const opts = Array.isArray(field.options) ? field.options : [];
+      const optHtml = opts.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
+      inputHtml = `<select id="${fid}" name="${escapeHtml(field.name)}"${reqAttr} data-testid="select-${field.name}">${optHtml ? '<option value="">Select...</option>' + optHtml : ''}</select>`;
+      break;
+    }
+    case 'radio': {
+      const opts = Array.isArray(field.options) ? field.options : [];
+      inputHtml = `<div style="display:flex; flex-wrap:wrap; gap:1rem;" id="${fid}">` +
+        opts.map((o, i) =>
+          `<label style="display:flex; align-items:center; gap:0.4rem; cursor:pointer; color:rgba(255,255,255,0.8);"><input type="radio" name="${escapeHtml(field.name)}" value="${escapeHtml(o)}"${i === 0 ? ' checked' : ''}${reqAttr} data-testid="radio-${field.name}-${i}"> ${escapeHtml(o)}</label>`
+        ).join('') + '</div>';
+      break;
+    }
+    case 'checkbox':
+      inputHtml = `<label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; color:rgba(255,255,255,0.8);"><input type="checkbox" id="${fid}" name="${escapeHtml(field.name)}" value="yes"${reqAttr} data-testid="checkbox-${field.name}"> ${escapeHtml(field.label)}</label>`;
+      return `<div class="form-group">${inputHtml}${helpHtml}</div>`;
+    case 'hidden':
+      return `<input type="hidden" id="${fid}" name="${escapeHtml(field.name)}" value="${escapeHtml(defVal)}">`;
+    default:
+      inputHtml = `<input type="${field.field_type || 'text'}" id="${fid}" name="${escapeHtml(field.name)}"${ph}${reqAttr} value="${escapeHtml(defVal)}" data-testid="input-${field.name}">`;
+  }
+
+  return `<div class="form-group">
+    <label for="${fid}">${escapeHtml(field.label)}${req}</label>
+    ${inputHtml}
+    ${helpHtml}
+  </div>`;
+}
+
+async function handleDynamicFormSubmit(e) {
   e.preventDefault();
+  if (!currentFormConfig || !currentFormSlug) return;
 
   const formData = new FormData(e.target);
-  const data = Object.fromEntries(formData);
-
-  const selectedRoom = galleryCards.find(c => c.slug === data.roomId);
-  const roomName = selectedRoom ? selectedRoom.title : data.roomId;
+  const fields = {};
+  for (const [key, value] of formData.entries()) {
+    fields[key] = value;
+  }
 
   const submitBtn = e.target.querySelector('button[type="submit"]');
   if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Submitting...'; }
 
   try {
-    const res = await fetch('/api/bookings', {
+    const res = await fetch(`/api/forms/${currentFormSlug}/submit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        name: data.name,
-        email: data.email,
-        room_slug: data.roomId,
-        room_name: roomName,
-        check_in: data.checkIn,
-        check_out: data.checkOut,
-        guests: data.guests,
-        ...getTrackingData()
+        fields,
+        ...getTrackingData(),
+        screen_resolution: `${window.screen.width}x${window.screen.height}`,
+        language: navigator.language || '',
+        session_id: sessionStorage.getItem('chat_session_id') || ''
       })
     });
 
     if (res.ok) {
-      const formFields = document.getElementById('booking-form-fields');
+      const container = document.getElementById('booking-form-fields');
       const conf = document.getElementById('booking-confirmation');
-      if (formFields) formFields.style.display = 'none';
+      if (container) container.style.display = 'none';
       if (conf) {
+        const name = fields.name || fields.full_name || '';
+        const successMsg = currentFormConfig.success_message || 'Thank you! Your submission has been received.';
         conf.style.display = 'block';
         conf.innerHTML = `
           <div style="text-align:center; padding: 2rem 0;">
             <div style="font-size: 2.5rem; margin-bottom: 1rem;">&#10003;</div>
-            <h3 style="font-family: var(--font-serif, 'Playfair Display', serif); margin-bottom: 0.5rem; color: #fff;">Request Submitted</h3>
-            <p style="color: rgba(255,255,255,0.6); margin-bottom: 1.5rem;">Thank you, ${data.name}. We'll confirm your ${roomName} reservation shortly.</p>
+            <h3 style="font-family: var(--font-serif, 'Playfair Display', serif); margin-bottom: 0.5rem; color: #fff;">Submitted Successfully</h3>
+            <p style="color: rgba(255,255,255,0.6); margin-bottom: 1.5rem;">${escapeHtml(successMsg)}</p>
             <button onclick="closeModal()" class="booking-modal-btn" data-testid="button-booking-close-confirm" style="cursor:pointer;">Close</button>
           </div>
         `;
-      } else {
-        closeModal();
       }
     } else {
-      alert('There was an issue submitting your request. Please try again.');
+      const errData = await res.json().catch(() => ({}));
+      alert(errData.error || 'There was an issue submitting your request. Please try again.');
     }
   } catch (err) {
     alert('Connection error. Please try again.');
   }
 
-  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Request Reservation'; }
+  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = currentFormConfig?.submit_button_text || 'Submit'; }
 }
 
 

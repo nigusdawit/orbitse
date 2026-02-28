@@ -551,7 +551,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     <button class="tab-btn" onclick="switchTab('pricing')" data-testid="tab-pricing">Pricing</button>
     <button class="tab-btn" onclick="switchTab('chatbot')" data-testid="tab-chatbot">Chatbot</button>
     <button class="tab-btn" onclick="switchTab('chat-history')" data-testid="tab-chat-history">Chat History</button>
-    <button class="tab-btn" onclick="switchTab('bookings')" data-testid="tab-bookings">Bookings</button>
+    <button class="tab-btn" onclick="switchTab('forms')" data-testid="tab-forms">Forms</button>
     <button class="tab-btn" onclick="switchTab('theme')" data-testid="tab-theme">Theme</button>
   </nav>
 
@@ -1037,51 +1037,264 @@ TO CUSTOMIZE THIS DASHBOARD:
 
 
   <!-- Bookings Tab -->
-  <div id="tab-bookings" class="tab-content">
-    <div class="section-header-admin">
-      <div>
-        <h2>Booking Submissions</h2>
-        <p>View reservation requests and track the booking funnel.</p>
+  <div id="tab-forms" class="tab-content">
+
+    <!-- Form List View -->
+    <div id="forms-list-view">
+      <div class="section-header-admin">
+        <div>
+          <h2>Forms & Submissions</h2>
+          <p>Create custom forms, manage fields, and view submissions with marketing analytics.</p>
+        </div>
+        <button class="btn btn-primary" onclick="showCreateFormPanel()" data-testid="button-create-form">+ New Form</button>
+      </div>
+
+      <!-- Create Form Panel (hidden by default) -->
+      <div id="create-form-panel" class="form-panel" style="display:none;">
+        <h3 style="margin-bottom: 1rem;">Create New Form</h3>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Form Name *</label>
+            <input type="text" id="new-form-name" placeholder="e.g. Contact Us, Event RSVP" data-testid="input-new-form-name">
+          </div>
+          <div class="form-group">
+            <label>Slug (auto-generated)</label>
+            <input type="text" id="new-form-slug" placeholder="auto-generated-from-name" data-testid="input-new-form-slug">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Description</label>
+          <input type="text" id="new-form-description" placeholder="Brief description of this form" data-testid="input-new-form-desc">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Submit Button Text</label>
+            <input type="text" id="new-form-button" value="Submit" data-testid="input-new-form-button">
+          </div>
+          <div class="form-group">
+            <label>Success Message</label>
+            <input type="text" id="new-form-success" value="Thank you! Your submission has been received." data-testid="input-new-form-success">
+          </div>
+        </div>
+        <div style="display: flex; gap: 0.5rem;">
+          <button class="btn btn-primary" onclick="createForm()" data-testid="button-save-new-form">Create Form</button>
+          <button class="btn btn-secondary" onclick="document.getElementById('create-form-panel').style.display='none'" data-testid="button-cancel-new-form">Cancel</button>
+        </div>
+      </div>
+
+      <table class="data-table" id="forms-table">
+        <thead>
+          <tr>
+            <th>Form Name</th>
+            <th>Slug</th>
+            <th>Status</th>
+            <th>Fields</th>
+            <th>Submissions</th>
+            <th>Created</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="forms-tbody">
+          <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Form Editor View (hidden by default) -->
+    <div id="form-editor-view" style="display:none;">
+      <button class="btn btn-secondary" onclick="showFormsList()" data-testid="button-back-to-forms" style="margin-bottom: 1rem;">&larr; Back to Forms</button>
+
+      <!-- Form Settings -->
+      <div class="form-panel" style="margin-bottom: 1.5rem;">
+        <h3 style="margin-bottom: 1rem;">Form Settings</h3>
+        <input type="hidden" id="edit-form-id">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Form Name *</label>
+            <input type="text" id="edit-form-name" data-testid="input-edit-form-name">
+          </div>
+          <div class="form-group">
+            <label>Slug</label>
+            <input type="text" id="edit-form-slug" disabled style="opacity: 0.6;" data-testid="input-edit-form-slug">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Description</label>
+          <input type="text" id="edit-form-description" data-testid="input-edit-form-desc">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Submit Button Text</label>
+            <input type="text" id="edit-form-button" data-testid="input-edit-form-button">
+          </div>
+          <div class="form-group">
+            <label>Success Message</label>
+            <input type="text" id="edit-form-success" data-testid="input-edit-form-success">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Status</label>
+            <select id="edit-form-status" data-testid="select-edit-form-status" style="background: var(--admin-input-bg); border: 1px solid var(--admin-border); color: var(--admin-text); padding: 0.5rem; border-radius: var(--admin-radius);">
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="saveFormSettings()" data-testid="button-save-form-settings">Save Settings</button>
+      </div>
+
+      <!-- Form Fields -->
+      <div class="form-panel" style="margin-bottom: 1.5rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+          <h3>Form Fields</h3>
+          <button class="btn btn-primary btn-sm" onclick="showAddFieldPanel()" data-testid="button-add-field">+ Add Field</button>
+        </div>
+
+        <!-- Add Field Panel (hidden by default) -->
+        <div id="add-field-panel" class="form-panel" style="display:none; margin-bottom: 1rem; background: rgba(255,255,255,0.03); border: 1px dashed var(--admin-border);">
+          <h4 style="margin-bottom: 0.75rem;" id="field-panel-title">Add New Field</h4>
+          <input type="hidden" id="editing-field-id">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Field Type *</label>
+              <select id="field-type" data-testid="select-field-type" style="background: var(--admin-input-bg); border: 1px solid var(--admin-border); color: var(--admin-text); padding: 0.5rem; border-radius: var(--admin-radius);">
+                <option value="text">Text</option>
+                <option value="email">Email</option>
+                <option value="tel">Phone</option>
+                <option value="number">Number</option>
+                <option value="date">Date</option>
+                <option value="select">Dropdown</option>
+                <option value="textarea">Text Area</option>
+                <option value="checkbox">Checkbox</option>
+                <option value="radio">Radio Buttons</option>
+                <option value="hidden">Hidden</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Label *</label>
+              <input type="text" id="field-label" placeholder="e.g. Full Name" data-testid="input-field-label">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Field Name (slug)</label>
+              <input type="text" id="field-name" placeholder="auto_from_label" data-testid="input-field-name">
+            </div>
+            <div class="form-group">
+              <label>Placeholder</label>
+              <input type="text" id="field-placeholder" placeholder="Placeholder text" data-testid="input-field-placeholder">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Width</label>
+              <select id="field-width" data-testid="select-field-width" style="background: var(--admin-input-bg); border: 1px solid var(--admin-border); color: var(--admin-text); padding: 0.5rem; border-radius: var(--admin-radius);">
+                <option value="full">Full Width</option>
+                <option value="half">Half Width</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Default Value</label>
+              <input type="text" id="field-default" data-testid="input-field-default">
+            </div>
+          </div>
+          <div class="form-group" id="field-options-group" style="display:none;">
+            <label>Options (one per line, for dropdowns and radio buttons)</label>
+            <textarea id="field-options" rows="3" placeholder="Option 1&#10;Option 2&#10;Option 3" data-testid="textarea-field-options" style="background: var(--admin-input-bg); border: 1px solid var(--admin-border); color: var(--admin-text); padding: 0.5rem; border-radius: var(--admin-radius); width: 100%; font-family: inherit;"></textarea>
+          </div>
+          <div class="form-group">
+            <label>Help Text</label>
+            <input type="text" id="field-help" placeholder="Additional guidance shown below the field" data-testid="input-field-help">
+          </div>
+          <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem;">
+            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+              <input type="checkbox" id="field-required" data-testid="checkbox-field-required"> Required
+            </label>
+          </div>
+          <div style="display: flex; gap: 0.5rem;">
+            <button class="btn btn-primary btn-sm" onclick="saveField()" data-testid="button-save-field">Save Field</button>
+            <button class="btn btn-secondary btn-sm" onclick="hideAddFieldPanel()" data-testid="button-cancel-field">Cancel</button>
+          </div>
+        </div>
+
+        <table class="data-table" id="fields-table">
+          <thead>
+            <tr>
+              <th style="width:40px;"></th>
+              <th>Type</th>
+              <th>Label</th>
+              <th>Name</th>
+              <th>Required</th>
+              <th>Width</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="fields-tbody">
+            <tr><td colspan="7" class="empty-state">No fields yet. Add your first field above.</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
-    <div id="booking-stats" class="form-panel" style="display: flex; gap: 2rem; flex-wrap: wrap;">
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Modal Opens</div>
-        <div id="stat-modal-opens" style="font-size: 1.5rem; font-weight: 600; color: #fff;">0</div>
+    <!-- Submissions View (hidden by default) -->
+    <div id="form-submissions-view" style="display:none;">
+      <button class="btn btn-secondary" onclick="showFormsList()" data-testid="button-back-from-subs" style="margin-bottom: 1rem;">&larr; Back to Forms</button>
+
+      <div class="section-header-admin">
+        <div>
+          <h2 id="submissions-form-name">Submissions</h2>
+          <p id="submissions-form-desc">View and manage form submissions with marketing analytics.</p>
+        </div>
       </div>
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Form Starts</div>
-        <div id="stat-form-starts" style="font-size: 1.5rem; font-weight: 600; color: #fff;">0</div>
+
+      <!-- Analytics Cards -->
+      <div id="form-analytics" class="form-panel" style="display: flex; gap: 2rem; flex-wrap: wrap; margin-bottom: 1.5rem;">
+        <div>
+          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Total</div>
+          <div id="analytics-total" style="font-size: 1.5rem; font-weight: 600; color: #fff;" data-testid="text-analytics-total">0</div>
+        </div>
+        <div>
+          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Today</div>
+          <div id="analytics-today" style="font-size: 1.5rem; font-weight: 600; color: #fff;" data-testid="text-analytics-today">0</div>
+        </div>
+        <div>
+          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Devices</div>
+          <div id="analytics-devices" style="font-size: 0.8rem; color: rgba(255,255,255,0.7);" data-testid="text-analytics-devices">—</div>
+        </div>
+        <div>
+          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Top UTM Source</div>
+          <div id="analytics-utm" style="font-size: 0.8rem; color: rgba(255,255,255,0.7);" data-testid="text-analytics-utm">—</div>
+        </div>
+        <div>
+          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Browsers</div>
+          <div id="analytics-browsers" style="font-size: 0.8rem; color: rgba(255,255,255,0.7);" data-testid="text-analytics-browsers">—</div>
+        </div>
+        <div>
+          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Status Breakdown</div>
+          <div id="analytics-status" style="font-size: 0.8rem; color: rgba(255,255,255,0.7);" data-testid="text-analytics-status">—</div>
+        </div>
       </div>
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Submissions</div>
-        <div id="stat-submissions" style="font-size: 1.5rem; font-weight: 600; color: #fff;">0</div>
-      </div>
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Conversion Rate</div>
-        <div id="stat-conversion-rate" style="font-size: 1.5rem; font-weight: 600; color: #fff;">0%</div>
+
+      <table class="data-table" id="submissions-table">
+        <thead id="submissions-thead">
+          <tr><th>Loading...</th></tr>
+        </thead>
+        <tbody id="submissions-tbody">
+          <tr><td class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+
+      <!-- Submission Detail Panel -->
+      <div id="submission-detail" class="form-panel" style="display:none; margin-top: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+          <h3>Submission Details</h3>
+          <button class="btn btn-secondary btn-sm" onclick="document.getElementById('submission-detail').style.display='none'" data-testid="button-close-detail">&times; Close</button>
+        </div>
+        <div id="submission-detail-content"></div>
       </div>
     </div>
 
-    <table class="data-table" id="bookings-table">
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Email</th>
-          <th>Room</th>
-          <th>Dates</th>
-          <th>Guests</th>
-          <th>Status</th>
-          <th>Device</th>
-          <th>UTM Source</th>
-          <th>Submitted</th>
-        </tr>
-      </thead>
-      <tbody id="bookings-tbody">
-        <tr><td colspan="9" class="empty-state">Loading...</td></tr>
-      </tbody>
-    </table>
   </div>
 
 
@@ -1911,68 +2124,479 @@ TO CUSTOMIZE THIS DASHBOARD:
     BOOKINGS
     ========================================================================
     */
-    async function loadBookings() {
+    /*
+    ========================================================================
+    FORM BUILDER — List, Create, Edit, Fields, Submissions, Analytics
+    ========================================================================
+    */
+    let currentEditFormId = null;
+    let currentSubsFormId = null;
+    let currentSubsFields = [];
+
+    const FIELD_TYPE_LABELS = {
+      text: 'Aa', email: '@', tel: 'Tel', number: '123',
+      date: 'Date', select: 'List', textarea: 'Text',
+      checkbox: 'Check', radio: 'Radio', hidden: 'Hide'
+    };
+
+    async function loadForms() {
       try {
-        const res = await fetch('/admin/api/bookings');
-        const data = await res.json();
+        const res = await fetch('/admin/api/forms');
+        const forms = await res.json();
+        const tbody = document.getElementById('forms-tbody');
 
-        const stats = data.stats || {};
-        document.getElementById('stat-modal-opens').textContent = stats.modal_opens || 0;
-        document.getElementById('stat-form-starts').textContent = stats.form_starts || 0;
-        document.getElementById('stat-submissions').textContent = stats.submissions || 0;
-
-        const total = (stats.modal_opens || 0);
-        const subs = (stats.submissions || 0);
-        const rate = total > 0 ? ((subs / total) * 100).toFixed(1) : 0;
-        document.getElementById('stat-conversion-rate').textContent = rate + '%';
-
-        const tbody = document.getElementById('bookings-tbody');
-        const bookings = (data.bookings || []).filter(b => b.step_reached === 'submitted');
-
-        if (!bookings.length) {
-          tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No booking submissions yet.</td></tr>';
+        if (!forms.length) {
+          tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No forms yet. Create your first form above.</td></tr>';
           return;
         }
 
-        tbody.innerHTML = bookings.map(b => `
-          <tr>
-            <td><strong>${esc(b.name || '—')}</strong></td>
-            <td>${esc(b.email || '—')}</td>
-            <td>${esc(b.room_name || b.room_slug || '—')}</td>
-            <td>${b.check_in ? new Date(b.check_in).toLocaleDateString() : '—'} — ${b.check_out ? new Date(b.check_out).toLocaleDateString() : '—'}</td>
-            <td>${b.guests || 1}</td>
-            <td>
-              <select class="status-select" onchange="updateBookingStatus(${b.id}, this.value)" data-testid="select-booking-status-${b.id}" style="background: transparent; border: 1px solid var(--admin-border); color: var(--admin-text); padding: 0.25rem 0.5rem; border-radius: var(--admin-radius); font-size: 0.75rem;">
-                <option value="new" ${b.status === 'new' ? 'selected' : ''}>New</option>
-                <option value="contacted" ${b.status === 'contacted' ? 'selected' : ''}>Contacted</option>
-                <option value="confirmed" ${b.status === 'confirmed' ? 'selected' : ''}>Confirmed</option>
-                <option value="cancelled" ${b.status === 'cancelled' ? 'selected' : ''}>Cancelled</option>
-              </select>
+        tbody.innerHTML = forms.map(f => `
+          <tr data-id="${f.id}">
+            <td><strong>${esc(f.name)}</strong></td>
+            <td><code style="font-size:0.75rem; background:rgba(255,255,255,0.05); padding:0.15rem 0.4rem; border-radius:3px;">${esc(f.slug)}</code></td>
+            <td><span class="badge" style="background:${f.status === 'active' ? 'rgba(34,197,94,0.2); color:#22c55e' : 'rgba(239,68,68,0.2); color:#ef4444'}">${f.status}</span></td>
+            <td>${f.field_count || 0}</td>
+            <td>${f.submission_count || 0}</td>
+            <td>${f.created_at ? new Date(f.created_at).toLocaleDateString() : '—'}</td>
+            <td style="display:flex; gap:0.25rem; flex-wrap:wrap;">
+              <button class="btn btn-secondary btn-sm" onclick="editForm(${f.id})" data-testid="button-edit-form-${f.id}">Edit</button>
+              <button class="btn btn-secondary btn-sm" onclick="viewSubmissions(${f.id})" data-testid="button-subs-form-${f.id}">Submissions</button>
+              <button class="btn btn-secondary btn-sm" onclick="deleteForm(${f.id})" data-testid="button-delete-form-${f.id}" style="color:#ef4444;">Delete</button>
             </td>
-            <td><span class="badge">${b.device_type || 'desktop'}</span></td>
-            <td>${b.utm_source || '—'}</td>
-            <td>${b.submitted_at ? new Date(b.submitted_at).toLocaleString() : '—'}</td>
           </tr>
         `).join('');
       } catch (err) {
-        showToast('Failed to load bookings', 'error');
+        showToast('Failed to load forms', 'error');
       }
     }
 
-    async function updateBookingStatus(bookingId, status) {
+    function showCreateFormPanel() {
+      document.getElementById('create-form-panel').style.display = 'block';
+      document.getElementById('new-form-name').value = '';
+      document.getElementById('new-form-slug').value = '';
+      document.getElementById('new-form-description').value = '';
+      document.getElementById('new-form-button').value = 'Submit';
+      document.getElementById('new-form-success').value = 'Thank you! Your submission has been received.';
+      document.getElementById('new-form-name').focus();
+    }
+
+    async function createForm() {
+      const name = document.getElementById('new-form-name').value.trim();
+      if (!name) { showToast('Form name is required', 'error'); return; }
       try {
-        const res = await fetch(`/admin/api/bookings/${bookingId}/status`, {
+        const res = await fetch('/admin/api/forms', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name,
+            slug: document.getElementById('new-form-slug').value.trim(),
+            description: document.getElementById('new-form-description').value.trim(),
+            submit_button_text: document.getElementById('new-form-button').value.trim(),
+            success_message: document.getElementById('new-form-success').value.trim()
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || 'Failed to create form', 'error'); return; }
+        showToast('Form created!');
+        document.getElementById('create-form-panel').style.display = 'none';
+        loadForms();
+        editForm(data.id);
+      } catch (err) {
+        showToast('Failed to create form', 'error');
+      }
+    }
+
+    async function deleteForm(formId) {
+      if (!confirm('Delete this form? This cannot be undone.')) return;
+      try {
+        const res = await fetch(`/admin/api/forms/${formId}?confirm=true`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('Form deleted');
+          loadForms();
+        } else {
+          const data = await res.json();
+          showToast(data.error || 'Failed to delete', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to delete form', 'error');
+      }
+    }
+
+    function showFormsList() {
+      document.getElementById('forms-list-view').style.display = 'block';
+      document.getElementById('form-editor-view').style.display = 'none';
+      document.getElementById('form-submissions-view').style.display = 'none';
+      loadForms();
+    }
+
+    async function editForm(formId) {
+      currentEditFormId = formId;
+      try {
+        const res = await fetch(`/admin/api/forms/${formId}`);
+        const form = await res.json();
+        if (!res.ok) { showToast(form.error || 'Form not found', 'error'); return; }
+
+        document.getElementById('edit-form-id').value = formId;
+        document.getElementById('edit-form-name').value = form.name || '';
+        document.getElementById('edit-form-slug').value = form.slug || '';
+        document.getElementById('edit-form-description').value = form.description || '';
+        document.getElementById('edit-form-button').value = form.submit_button_text || 'Submit';
+        document.getElementById('edit-form-success').value = form.success_message || '';
+        document.getElementById('edit-form-status').value = form.status || 'active';
+
+        document.getElementById('forms-list-view').style.display = 'none';
+        document.getElementById('form-submissions-view').style.display = 'none';
+        document.getElementById('form-editor-view').style.display = 'block';
+
+        renderFieldsList(form.fields || []);
+        initFieldsSortable();
+      } catch (err) {
+        showToast('Failed to load form', 'error');
+      }
+    }
+
+    async function saveFormSettings() {
+      const formId = document.getElementById('edit-form-id').value;
+      try {
+        const res = await fetch(`/admin/api/forms/${formId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: document.getElementById('edit-form-name').value.trim(),
+            description: document.getElementById('edit-form-description').value.trim(),
+            status: document.getElementById('edit-form-status').value,
+            submit_button_text: document.getElementById('edit-form-button').value.trim(),
+            success_message: document.getElementById('edit-form-success').value.trim()
+          })
+        });
+        if (res.ok) showToast('Form settings saved!');
+        else showToast('Failed to save settings', 'error');
+      } catch (err) {
+        showToast('Failed to save settings', 'error');
+      }
+    }
+
+    function renderFieldsList(fields) {
+      const tbody = document.getElementById('fields-tbody');
+      if (!fields.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No fields yet. Add your first field above.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = fields.map(f => `
+        <tr data-id="${f.id}">
+          <td><span class="drag-handle" style="cursor:grab;">⠿</span></td>
+          <td><span class="badge" style="font-size:0.65rem;min-width:2rem;text-align:center;">${FIELD_TYPE_LABELS[f.field_type] || f.field_type}</span></td>
+          <td><strong>${esc(f.label)}</strong></td>
+          <td><code style="font-size:0.75rem;">${esc(f.name)}</code></td>
+          <td>${f.required ? '<span class="badge" style="background:rgba(239,68,68,0.2);color:#ef4444;">Required</span>' : '—'}</td>
+          <td><span class="badge">${f.width}</span></td>
+          <td style="display:flex; gap:0.25rem;">
+            <button class="btn btn-secondary btn-sm" onclick="editField(${f.id})" data-testid="button-edit-field-${f.id}">Edit</button>
+            <button class="btn btn-secondary btn-sm" onclick="deleteField(${f.id})" data-testid="button-delete-field-${f.id}" style="color:#ef4444;">Del</button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function initFieldsSortable() {
+      const tbody = document.getElementById('fields-tbody');
+      if (tbody._sortable) tbody._sortable.destroy();
+      tbody._sortable = new Sortable(tbody, {
+        handle: '.drag-handle',
+        animation: 150,
+        onEnd: async () => {
+          const rows = tbody.querySelectorAll('tr[data-id]');
+          const order = Array.from(rows).map((r, i) => ({ id: parseInt(r.dataset.id), sort_order: i }));
+          try {
+            await fetch(`/admin/api/forms/${currentEditFormId}/fields/reorder`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ order })
+            });
+            showToast('Field order saved!');
+          } catch (err) {
+            showToast('Failed to save field order', 'error');
+          }
+        }
+      });
+    }
+
+    function showAddFieldPanel() {
+      document.getElementById('add-field-panel').style.display = 'block';
+      document.getElementById('field-panel-title').textContent = 'Add New Field';
+      document.getElementById('editing-field-id').value = '';
+      document.getElementById('field-type').value = 'text';
+      document.getElementById('field-label').value = '';
+      document.getElementById('field-name').value = '';
+      document.getElementById('field-placeholder').value = '';
+      document.getElementById('field-width').value = 'full';
+      document.getElementById('field-default').value = '';
+      document.getElementById('field-options').value = '';
+      document.getElementById('field-help').value = '';
+      document.getElementById('field-required').checked = false;
+      toggleOptionsVisibility();
+      document.getElementById('field-label').focus();
+    }
+
+    function hideAddFieldPanel() {
+      document.getElementById('add-field-panel').style.display = 'none';
+    }
+
+    document.getElementById('field-type').addEventListener('change', toggleOptionsVisibility);
+    function toggleOptionsVisibility() {
+      const type = document.getElementById('field-type').value;
+      document.getElementById('field-options-group').style.display =
+        (type === 'select' || type === 'radio') ? 'block' : 'none';
+    }
+
+    async function editField(fieldId) {
+      try {
+        const res = await fetch(`/admin/api/forms/${currentEditFormId}`);
+        const form = await res.json();
+        const field = (form.fields || []).find(f => f.id === fieldId);
+        if (!field) { showToast('Field not found', 'error'); return; }
+
+        document.getElementById('add-field-panel').style.display = 'block';
+        document.getElementById('field-panel-title').textContent = 'Edit Field';
+        document.getElementById('editing-field-id').value = fieldId;
+        document.getElementById('field-type').value = field.field_type || 'text';
+        document.getElementById('field-label').value = field.label || '';
+        document.getElementById('field-name').value = field.name || '';
+        document.getElementById('field-placeholder').value = field.placeholder || '';
+        document.getElementById('field-width').value = field.width || 'full';
+        document.getElementById('field-default').value = field.default_value || '';
+        document.getElementById('field-help').value = field.help_text || '';
+        document.getElementById('field-required').checked = !!field.required;
+
+        const opts = field.options;
+        if (Array.isArray(opts)) {
+          document.getElementById('field-options').value = opts.join('\n');
+        } else {
+          document.getElementById('field-options').value = '';
+        }
+        toggleOptionsVisibility();
+      } catch (err) {
+        showToast('Failed to load field', 'error');
+      }
+    }
+
+    async function saveField() {
+      const label = document.getElementById('field-label').value.trim();
+      if (!label) { showToast('Field label is required', 'error'); return; }
+
+      const fieldType = document.getElementById('field-type').value;
+      const optionsText = document.getElementById('field-options').value.trim();
+      let options = null;
+      if ((fieldType === 'select' || fieldType === 'radio') && optionsText) {
+        options = optionsText.split('\n').map(o => o.trim()).filter(Boolean);
+      }
+
+      const payload = {
+        field_type: fieldType,
+        label,
+        name: document.getElementById('field-name').value.trim(),
+        placeholder: document.getElementById('field-placeholder').value.trim(),
+        required: document.getElementById('field-required').checked,
+        options,
+        default_value: document.getElementById('field-default').value.trim(),
+        width: document.getElementById('field-width').value,
+        help_text: document.getElementById('field-help').value.trim()
+      };
+
+      const editingId = document.getElementById('editing-field-id').value;
+      try {
+        let res;
+        if (editingId) {
+          res = await fetch(`/admin/api/forms/${currentEditFormId}/fields/${editingId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+        } else {
+          res = await fetch(`/admin/api/forms/${currentEditFormId}/fields`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+        }
+        if (res.ok) {
+          showToast(editingId ? 'Field updated!' : 'Field added!');
+          hideAddFieldPanel();
+          editForm(currentEditFormId);
+        } else {
+          const data = await res.json();
+          showToast(data.error || 'Failed to save field', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save field', 'error');
+      }
+    }
+
+    async function deleteField(fieldId) {
+      if (!confirm('Delete this field?')) return;
+      try {
+        const res = await fetch(`/admin/api/forms/${currentEditFormId}/fields/${fieldId}`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('Field deleted');
+          editForm(currentEditFormId);
+        } else {
+          showToast('Failed to delete field', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to delete field', 'error');
+      }
+    }
+
+    async function viewSubmissions(formId) {
+      currentSubsFormId = formId;
+      document.getElementById('forms-list-view').style.display = 'none';
+      document.getElementById('form-editor-view').style.display = 'none';
+      document.getElementById('form-submissions-view').style.display = 'block';
+
+      try {
+        const [subsRes, analyticsRes, formRes] = await Promise.all([
+          fetch(`/admin/api/forms/${formId}/submissions`),
+          fetch(`/admin/api/forms/${formId}/analytics`),
+          fetch(`/admin/api/forms/${formId}`)
+        ]);
+        const subsData = await subsRes.json();
+        const analytics = await analyticsRes.json();
+        const formData = await formRes.json();
+
+        document.getElementById('submissions-form-name').textContent = (formData.name || 'Form') + ' — Submissions';
+        document.getElementById('submissions-form-desc').textContent = formData.description || '';
+
+        document.getElementById('analytics-total').textContent = analytics.total || 0;
+        document.getElementById('analytics-today').textContent = analytics.today || 0;
+        document.getElementById('analytics-devices').textContent =
+          (analytics.by_device || []).map(d => `${d.device_type}: ${d.cnt}`).join(', ') || '—';
+        document.getElementById('analytics-utm').textContent =
+          (analytics.by_utm_source || []).slice(0, 3).map(u => `${u.utm_source}: ${u.cnt}`).join(', ') || '—';
+        document.getElementById('analytics-browsers').textContent =
+          (analytics.by_browser || []).slice(0, 3).map(b => `${b.browser}: ${b.cnt}`).join(', ') || '—';
+        document.getElementById('analytics-status').textContent =
+          (analytics.by_status || []).map(s => `${s.status}: ${s.cnt}`).join(', ') || '—';
+
+        currentSubsFields = subsData.fields || [];
+        const subs = subsData.submissions || [];
+
+        const thead = document.getElementById('submissions-thead');
+        let headerHtml = '<tr>';
+        currentSubsFields.forEach(f => {
+          headerHtml += `<th>${esc(f.label)}</th>`;
+        });
+        headerHtml += '<th>Status</th><th>Device</th><th>UTM</th><th>Submitted</th><th>Actions</th></tr>';
+        thead.innerHTML = headerHtml;
+
+        const tbody = document.getElementById('submissions-tbody');
+        if (!subs.length) {
+          tbody.innerHTML = `<tr><td colspan="${currentSubsFields.length + 5}" class="empty-state">No submissions yet.</td></tr>`;
+          return;
+        }
+
+        tbody.innerHTML = subs.map(s => {
+          const d = s.submission_data || {};
+          let row = '<tr>';
+          currentSubsFields.forEach(f => {
+            const val = d[f.name];
+            row += `<td>${esc(val != null ? String(val) : '—')}</td>`;
+          });
+          row += `<td>
+            <select class="status-select" onchange="updateSubmissionStatus(${s.id}, this.value)" data-testid="select-sub-status-${s.id}" style="background: transparent; border: 1px solid var(--admin-border); color: var(--admin-text); padding: 0.25rem 0.5rem; border-radius: var(--admin-radius); font-size: 0.75rem;">
+              <option value="new" ${s.status === 'new' ? 'selected' : ''}>New</option>
+              <option value="reviewed" ${s.status === 'reviewed' ? 'selected' : ''}>Reviewed</option>
+              <option value="contacted" ${s.status === 'contacted' ? 'selected' : ''}>Contacted</option>
+              <option value="archived" ${s.status === 'archived' ? 'selected' : ''}>Archived</option>
+            </select>
+          </td>`;
+          row += `<td><span class="badge">${esc(s.device_type || 'desktop')}</span></td>`;
+          row += `<td>${esc(s.utm_source || '—')}</td>`;
+          row += `<td>${s.submitted_at ? new Date(s.submitted_at).toLocaleString() : '—'}</td>`;
+          row += `<td style="display:flex;gap:0.25rem;">
+            <button class="btn btn-secondary btn-sm" onclick="viewSubmissionDetail(${s.id})" data-testid="button-view-sub-${s.id}">Details</button>
+            <button class="btn btn-secondary btn-sm" onclick="deleteSubmission(${s.id})" data-testid="button-delete-sub-${s.id}" style="color:#ef4444;">Del</button>
+          </td>`;
+          row += '</tr>';
+          return row;
+        }).join('');
+      } catch (err) {
+        showToast('Failed to load submissions', 'error');
+      }
+    }
+
+    async function updateSubmissionStatus(subId, status) {
+      try {
+        const res = await fetch(`/admin/api/submissions/${subId}/status`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status })
         });
-        if (res.ok) {
-          showToast('Status updated!');
-        } else {
-          showToast('Failed to update status', 'error');
-        }
+        if (res.ok) showToast('Status updated!');
+        else showToast('Failed to update status', 'error');
       } catch (err) {
         showToast('Failed to update status', 'error');
+      }
+    }
+
+    async function deleteSubmission(subId) {
+      if (!confirm('Delete this submission?')) return;
+      try {
+        const res = await fetch(`/admin/api/submissions/${subId}`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('Submission deleted');
+          viewSubmissions(currentSubsFormId);
+        } else {
+          showToast('Failed to delete', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to delete submission', 'error');
+      }
+    }
+
+    async function viewSubmissionDetail(subId) {
+      try {
+        const res = await fetch(`/admin/api/forms/${currentSubsFormId}/submissions`);
+        const data = await res.json();
+        const sub = (data.submissions || []).find(s => s.id === subId);
+        if (!sub) { showToast('Submission not found', 'error'); return; }
+
+        const d = sub.submission_data || {};
+        let html = '<div style="display:grid; grid-template-columns: 1fr 1fr; gap: 1rem;">';
+
+        html += '<div><h4 style="margin-bottom:0.75rem; color:var(--admin-text-muted);">Form Data</h4>';
+        currentSubsFields.forEach(f => {
+          html += `<div style="margin-bottom:0.5rem;"><span style="color:var(--admin-text-muted);font-size:0.75rem;text-transform:uppercase;">${esc(f.label)}</span><br><strong>${esc(d[f.name] != null ? String(d[f.name]) : '—')}</strong></div>`;
+        });
+        html += '</div>';
+
+        html += '<div><h4 style="margin-bottom:0.75rem; color:var(--admin-text-muted);">Marketing & Analytics</h4>';
+        const meta = [
+          ['Device', sub.device_type],
+          ['Browser', sub.browser],
+          ['OS', sub.os],
+          ['Screen', sub.screen_resolution],
+          ['Language', sub.language],
+          ['Referrer', sub.referrer_url],
+          ['Page URL', sub.page_url],
+          ['UTM Source', sub.utm_source],
+          ['UTM Medium', sub.utm_medium],
+          ['UTM Campaign', sub.utm_campaign],
+          ['UTM Term', sub.utm_term],
+          ['UTM Content', sub.utm_content],
+          ['IP Address', sub.ip_address],
+          ['Session ID', sub.session_id]
+        ];
+        meta.forEach(([label, val]) => {
+          if (val) {
+            html += `<div style="margin-bottom:0.5rem;"><span style="color:var(--admin-text-muted);font-size:0.75rem;text-transform:uppercase;">${label}</span><br>${esc(val)}</div>`;
+          }
+        });
+        html += '</div></div>';
+
+        document.getElementById('submission-detail-content').innerHTML = html;
+        document.getElementById('submission-detail').style.display = 'block';
+      } catch (err) {
+        showToast('Failed to load submission details', 'error');
       }
     }
 
@@ -2077,7 +2701,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       loadPricing();
       loadChatbotSettings();
       loadChatHistory();
-      loadBookings();
+      loadForms();
       loadTheme();
     });
   </script>

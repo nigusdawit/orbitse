@@ -16,7 +16,7 @@ The site features:
 - **Image Upload System** — upload images directly from admin, stored in `/uploads/`
 - **Drag-and-Drop Reordering** — reorder gallery cards, experiences, and pricing by dragging rows
 - **Chat History & Analytics** — view all AI conversations, message counts, device types
-- **Booking Submissions** — real form submissions with status tracking and funnel analytics
+- **Dynamic Form Builder** — create custom forms from admin, add/remove/reorder fields, view submissions with full marketing analytics
 - **Theme / Color Editor** — customize site colors, fonts, and glass effects from admin
 
 ## User Preferences
@@ -42,7 +42,7 @@ Code should be fully commented and templatized for modular reuse.
 - **Files**:
   - `index.html` — Main page structure (landing + gallery + modal + chatbot + split-screen)
   - `styles.css` — All visual styles, fully commented (18 sections + chatbot + split-screen)
-  - `script.js` — All interactivity (API fetches, navigation, animations, chatbot, AI site control, theme loading)
+  - `script.js` — All interactivity (API fetches, navigation, animations, chatbot, AI site control, theme loading, dynamic form rendering)
 - **Fonts**: Google Fonts (Playfair Display + DM Sans, dynamically swappable via Theme Editor)
 - **Icons**: Lucide Icons (loaded via CDN)
 - **No build step** — plain HTML/CSS/JS, works directly in any browser
@@ -52,7 +52,7 @@ Code should be fully commented and templatized for modular reuse.
 - **Login**: `/admin/login` — password set via `ADMIN_PASSWORD` environment variable (default: "admin")
 - **Logout**: `/admin/logout`
 - **Location**: `templates/admin/dashboard.html`, `templates/admin/login.html`
-- **Tabs**: Site Settings, Gallery Cards, Experiences, Pricing, Chatbot, Chat History, Bookings, Theme
+- **Tabs**: Site Settings, Gallery Cards, Experiences, Pricing, Chatbot, Chat History, Forms, Theme
 
 ### Database (PostgreSQL)
 - **Connection**: `DATABASE_URL` environment variable
@@ -64,7 +64,10 @@ Code should be fully commented and templatized for modular reuse.
   - `chatbot_settings` — AI chatbot configuration. Singleton row (id=1). Has enabled, mode, agent_name, agent_role, agent_avatar, greeting, quick_prompts (JSONB), api_endpoint, embed_code, system_prompt.
   - `chat_conversations` — Chat sessions with visitor info (session_id, ip, device_type, user_agent).
   - `chat_messages` — Individual chat messages linked to conversations (role, content, command_json).
-  - `booking_submissions` — Booking form submissions with funnel tracking (name, email, room, dates, guests, status, device, UTM params, step_reached).
+  - `booking_submissions` — Legacy booking form submissions (kept for backward compatibility).
+  - `custom_forms` — Dynamic form definitions (name, slug, description, status, submit_button_text, success_message).
+  - `form_fields` — Form field definitions (form_id FK, field_type, label, name, placeholder, required, options JSONB, default_value, sort_order, width, help_text).
+  - `form_submissions` — Dynamic form submissions (form_id FK, submission_data JSONB, status, device_type, browser, os, screen_resolution, language, UTM params, referrer, IP, session_id).
   - `uploaded_images` — Record of uploaded image files (filename, original_name, file_size).
 
 ### API Endpoints
@@ -76,13 +79,15 @@ Code should be fully commented and templatized for modular reuse.
 - `GET /api/pricing` — Returns all pricing seasons ordered by sort_order
 - `GET /api/chatbot-settings` — Returns chatbot configuration (enabled, mode, agent info, etc.)
 - `GET /api/theme` — Returns theme customization values (colors, fonts)
+- `GET /api/forms/<slug>` — Returns form config (fields, types, options) for dynamic rendering
 
 **Chat API:**
 - `POST /api/chat` — Streaming SSE chat. Accepts `{message, history, session_id}`, streams token/text/html/command/done events. Saves messages to chat_conversations/chat_messages.
 
-**Booking API:**
-- `POST /api/bookings` — Submit a booking with tracking data
-- `POST /api/booking-step` — Log funnel steps (opened_modal, filling_form)
+**Form Submission API:**
+- `POST /api/forms/<slug>/submit` — Submit a dynamic form with auto-captured marketing data (UTM, device, browser, OS, screen resolution, language, referrer, IP, session ID)
+- `POST /api/bookings` — Legacy booking submission (still works)
+- `POST /api/booking-step` — Legacy funnel tracking
 
 **Admin (CRUD, protected by session login):**
 - `GET/PUT /admin/api/site-settings` — Read and update site settings
@@ -95,8 +100,18 @@ Code should be fully commented and templatized for modular reuse.
 - `PUT /admin/api/reorder/<type>` — Batch reorder gallery-cards, experiences, or pricing
 - `GET /admin/api/chat-history` — List conversations with stats
 - `GET /admin/api/chat-history/<id>` — Full conversation detail with messages
-- `GET /admin/api/bookings` — List bookings with funnel stats
-- `PUT /admin/api/bookings/<id>/status` — Update booking status
+- `GET/POST /admin/api/forms` — List all forms / create new form
+- `GET/PUT/DELETE /admin/api/forms/<id>` — Get, update, or delete a form
+- `POST /admin/api/forms/<id>/fields` — Add a field to a form
+- `PUT /admin/api/forms/<id>/fields/<field_id>` — Update a field
+- `DELETE /admin/api/forms/<id>/fields/<field_id>` — Delete a field
+- `PUT /admin/api/forms/<id>/fields/reorder` — Reorder fields (drag-and-drop)
+- `GET /admin/api/forms/<id>/submissions` — List form submissions with field data
+- `PUT /admin/api/submissions/<id>/status` — Update submission status
+- `DELETE /admin/api/submissions/<id>` — Delete a submission
+- `GET /admin/api/forms/<id>/analytics` — Marketing analytics (device, browser, OS, UTM, status, referrer, language breakdowns)
+- `GET /admin/api/bookings` — Legacy bookings list
+- `PUT /admin/api/bookings/<id>/status` — Legacy booking status update
 - `GET/PUT /admin/api/theme` — Read and update theme colors/fonts
 
 **Static files:**
@@ -198,12 +213,21 @@ The AI only uses `generateVisual` when the user explicitly asks to "show me visu
 - Admin → Chat History tab shows conversation list with stats (total, messages today, average per conversation)
 - Click "View" to expand and see the full message thread
 
-### Booking Submissions & Funnel Tracking
-- Booking modal submits via POST to `/api/bookings` (replaces the old alert)
-- Funnel tracking: modal opens, form filling, and submission steps are logged
-- UTM params (utm_source, utm_medium, utm_campaign), referrer, device type captured automatically
-- Admin → Bookings tab shows submissions with inline status dropdown (new/contacted/confirmed/cancelled)
-- Funnel stats at top: modal opens, form starts, submissions, conversion rate
+### Dynamic Form Builder
+- Admin → Forms tab for creating and managing custom forms
+- **Form creation**: Name, slug (auto-generated), description, submit button text, success message, active/inactive status
+- **Field management**: Add/edit/delete fields with drag-and-drop reordering
+- **Field types**: text, email, tel, number, date, select (dropdown), textarea, checkbox, radio, hidden
+- **Field options**: Label, name (slug), placeholder, required toggle, width (full/half), options (for select/radio), default value, help text
+- **Dynamic rendering**: Public site fetches form config from `/api/forms/<slug>` and renders fields dynamically
+- **Half-width fields**: Two half-width fields are displayed side-by-side in a 2-column grid
+- **Room dropdown**: The "room" select field is auto-populated with gallery cards data
+- **Auto-captured marketing data**: UTM params (source/medium/campaign/term/content), device type, browser, OS, screen resolution, language, referrer, page URL, IP address, session ID
+- **Submissions**: JSONB storage for flexible field data; viewed in admin with dynamic table headers
+- **Submission detail**: Expandable view showing all form data + marketing metadata
+- **Analytics dashboard**: Total submissions, today's count, device breakdown, top UTM sources, browser/OS stats, status distribution
+- **Status tracking**: new → reviewed → contacted → archived
+- Default "Booking Request" form is seeded on first run with 8 fields (name, email, room, check-in, check-out, guests, phone, special requests)
 
 ### Theme / Color Editor
 - Admin → Theme tab with color pickers + text inputs for: background, section 1, section 2, accent, text, glass border, glass background
@@ -215,12 +239,14 @@ The AI only uses `generateVisual` when the user explicitly asks to "show me visu
 ## How to Edit Content
 
 1. Go to `/admin` in your browser (password: set via ADMIN_PASSWORD env var, default "admin")
-2. Use the tabs to switch between Site Settings, Gallery Cards, Experiences, Pricing, Chatbot, Chat History, Bookings, and Theme
+2. Use the tabs to switch between Site Settings, Gallery Cards, Experiences, Pricing, Chatbot, Chat History, Forms, and Theme
 3. Click "Edit" on any item to modify it, or "+ Add" to create a new one
-4. Drag rows to reorder gallery cards, experiences, and pricing
+4. Drag rows to reorder gallery cards, experiences, pricing, and form fields
 5. Upload images directly from the admin panel
-6. Changes are saved to the database immediately
-7. Reload the public site to see your changes
+6. Create custom forms with any combination of field types
+7. View form submissions with full marketing analytics
+8. Changes are saved to the database immediately
+9. Reload the public site to see your changes
 
 ## How to Customize the Template
 

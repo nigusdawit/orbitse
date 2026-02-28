@@ -311,6 +311,64 @@ def init_db():
                     file_size     INTEGER DEFAULT 0,
                     uploaded_at   TIMESTAMP DEFAULT NOW()
                 );
+
+                -- Dynamic forms (form builder)
+                CREATE TABLE IF NOT EXISTS custom_forms (
+                    id                SERIAL PRIMARY KEY,
+                    name              TEXT NOT NULL DEFAULT '',
+                    slug              VARCHAR(100) NOT NULL UNIQUE,
+                    description       TEXT NOT NULL DEFAULT '',
+                    status            VARCHAR(20) NOT NULL DEFAULT 'active',
+                    submit_button_text TEXT NOT NULL DEFAULT 'Submit',
+                    success_message   TEXT NOT NULL DEFAULT 'Thank you! Your submission has been received.',
+                    created_at        TIMESTAMP DEFAULT NOW(),
+                    updated_at        TIMESTAMP DEFAULT NOW(),
+                    sort_order        INTEGER DEFAULT 0
+                );
+
+                -- Dynamic form fields
+                CREATE TABLE IF NOT EXISTS form_fields (
+                    id              SERIAL PRIMARY KEY,
+                    form_id         INTEGER NOT NULL REFERENCES custom_forms(id) ON DELETE CASCADE,
+                    field_type      VARCHAR(30) NOT NULL DEFAULT 'text',
+                    label           TEXT NOT NULL DEFAULT '',
+                    name            VARCHAR(100) NOT NULL DEFAULT '',
+                    placeholder     TEXT NOT NULL DEFAULT '',
+                    required        BOOLEAN NOT NULL DEFAULT false,
+                    options         JSONB,
+                    default_value   TEXT NOT NULL DEFAULT '',
+                    sort_order      INTEGER DEFAULT 0,
+                    width           VARCHAR(10) NOT NULL DEFAULT 'full',
+                    validation_regex TEXT NOT NULL DEFAULT '',
+                    help_text       TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_form_fields_form ON form_fields (form_id);
+
+                -- Dynamic form submissions (JSONB for flexible field storage)
+                CREATE TABLE IF NOT EXISTS form_submissions (
+                    id                SERIAL PRIMARY KEY,
+                    form_id           INTEGER NOT NULL REFERENCES custom_forms(id) ON DELETE CASCADE,
+                    submission_data   JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    status            VARCHAR(20) NOT NULL DEFAULT 'new',
+                    device_type       VARCHAR(20) DEFAULT 'desktop',
+                    user_agent        TEXT DEFAULT '',
+                    referrer_url      TEXT DEFAULT '',
+                    utm_source        TEXT DEFAULT '',
+                    utm_medium        TEXT DEFAULT '',
+                    utm_campaign      TEXT DEFAULT '',
+                    utm_term          TEXT DEFAULT '',
+                    utm_content       TEXT DEFAULT '',
+                    page_url          TEXT DEFAULT '',
+                    ip_address        VARCHAR(45) DEFAULT '',
+                    browser           TEXT DEFAULT '',
+                    os                TEXT DEFAULT '',
+                    screen_resolution TEXT DEFAULT '',
+                    language          TEXT DEFAULT '',
+                    session_id        TEXT DEFAULT '',
+                    submitted_at      TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_form_sub_form ON form_submissions (form_id);
+                CREATE INDEX IF NOT EXISTS idx_form_sub_status ON form_submissions (status);
             """)
 
             # Seed chatbot_settings singleton if it doesn't exist
@@ -338,6 +396,39 @@ def init_db():
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_font_sans TEXT NOT NULL DEFAULT ''",
             ]:
                 cur.execute(col_sql)
+
+            # Seed default "Booking Request" form if no forms exist yet
+            cur.execute("SELECT COUNT(*) FROM custom_forms")
+            row = cur.fetchone()
+            form_count = row[0] if row else 0
+            if form_count == 0:
+                cur.execute("""
+                    INSERT INTO custom_forms (name, slug, description, status, submit_button_text, success_message, sort_order)
+                    VALUES ('Booking Request', 'booking-request',
+                            'Reserve your stay at Casa Serena',
+                            'active', 'Confirm Reservation',
+                            'Thank you! Your reservation request has been received. We will confirm your booking within 24 hours.',
+                            0)
+                    RETURNING id
+                """)
+                form_row = cur.fetchone()
+                if form_row:
+                    fid = form_row[0]
+                    fields = [
+                        (fid, 'text',   'Full Name',    'name',      'Enter your full name', True,  None, '', 0, 'full', '', ''),
+                        (fid, 'email',  'Email',        'email',     'your@email.com',       True,  None, '', 1, 'full', '', ''),
+                        (fid, 'select', 'Room',         'room',      '',                     True,  '[]', '', 2, 'full', '', 'Select your preferred room'),
+                        (fid, 'date',   'Check-In',     'check_in',  '',                     True,  None, '', 3, 'half', '', ''),
+                        (fid, 'date',   'Check-Out',    'check_out', '',                     True,  None, '', 4, 'half', '', ''),
+                        (fid, 'number', 'Guests',       'guests',    '',                     False, None, '2', 5, 'half', '', 'Number of guests (1-8)'),
+                        (fid, 'tel',    'Phone',        'phone',     '+1 (555) 000-0000',    False, None, '', 6, 'half', '', ''),
+                        (fid, 'textarea','Special Requests','special_requests','Any dietary needs, celebrations, or preferences...', False, None, '', 7, 'full', '', ''),
+                    ]
+                    for f in fields:
+                        cur.execute("""
+                            INSERT INTO form_fields (form_id, field_type, label, name, placeholder, required, options, default_value, sort_order, width, validation_regex, help_text)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)
+                        """, f)
     finally:
         conn.close()
 
@@ -1320,6 +1411,388 @@ def admin_update_theme():
         )
     )
     return jsonify(result)
+
+
+# =============================================================================
+# DYNAMIC FORM BUILDER — Admin API Routes
+# =============================================================================
+
+@app.route("/admin/api/forms", methods=["GET"])
+@admin_required
+def admin_list_forms():
+    """GET /admin/api/forms — List all forms with field/submission counts."""
+    forms = query_db("""
+        SELECT f.*,
+            (SELECT COUNT(*) FROM form_fields WHERE form_id = f.id) AS field_count,
+            (SELECT COUNT(*) FROM form_submissions WHERE form_id = f.id) AS submission_count
+        FROM custom_forms f ORDER BY f.sort_order, f.created_at
+    """)
+    return jsonify(forms or [])
+
+
+@app.route("/admin/api/forms", methods=["POST"])
+@admin_required
+def admin_create_form():
+    """POST /admin/api/forms — Create a new form."""
+    data = request.get_json()
+    if not data or not data.get("name"):
+        return jsonify({"error": "Form name is required"}), 400
+    slug = data.get("slug") or data["name"].lower().replace(" ", "-").replace("'", "")
+    slug = re.sub(r'[^a-z0-9\-]', '', slug)
+    existing = query_db("SELECT id FROM custom_forms WHERE slug = %s", (slug,), fetchone=True)
+    if existing:
+        return jsonify({"error": "A form with this slug already exists"}), 400
+    result = execute_db(
+        """INSERT INTO custom_forms (name, slug, description, status, submit_button_text, success_message, sort_order)
+           VALUES (%s, %s, %s, %s, %s, %s, COALESCE((SELECT MAX(sort_order)+1 FROM custom_forms), 0))
+           RETURNING *""",
+        (
+            data["name"],
+            slug,
+            data.get("description", ""),
+            data.get("status", "active"),
+            data.get("submit_button_text", "Submit"),
+            data.get("success_message", "Thank you! Your submission has been received.")
+        )
+    )
+    return jsonify(result), 201
+
+
+@app.route("/admin/api/forms/<int:form_id>", methods=["GET"])
+@admin_required
+def admin_get_form(form_id):
+    """GET /admin/api/forms/<id> — Get a single form with all its fields."""
+    form = query_db("SELECT * FROM custom_forms WHERE id = %s", (form_id,), fetchone=True)
+    if not form:
+        return jsonify({"error": "Form not found"}), 404
+    fields = query_db("SELECT * FROM form_fields WHERE form_id = %s ORDER BY sort_order", (form_id,))
+    form["fields"] = fields or []
+    sub_count = query_db("SELECT COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s", (form_id,), fetchone=True)
+    form["submission_count"] = sub_count["cnt"] if sub_count else 0
+    return jsonify(form)
+
+
+@app.route("/admin/api/forms/<int:form_id>", methods=["PUT"])
+@admin_required
+def admin_update_form(form_id):
+    """PUT /admin/api/forms/<id> — Update form settings."""
+    data = request.get_json()
+    result = execute_db(
+        """UPDATE custom_forms SET
+             name = %s, description = %s, status = %s,
+             submit_button_text = %s, success_message = %s, updated_at = NOW()
+           WHERE id = %s RETURNING *""",
+        (
+            data.get("name", ""),
+            data.get("description", ""),
+            data.get("status", "active"),
+            data.get("submit_button_text", "Submit"),
+            data.get("success_message", "Thank you! Your submission has been received."),
+            form_id
+        )
+    )
+    if not result:
+        return jsonify({"error": "Form not found"}), 404
+    return jsonify(result)
+
+
+@app.route("/admin/api/forms/<int:form_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_form(form_id):
+    """DELETE /admin/api/forms/<id> — Delete a form (cascades fields and submissions)."""
+    sub_count = query_db("SELECT COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s", (form_id,), fetchone=True)
+    if sub_count and sub_count["cnt"] > 0:
+        confirm = request.args.get("confirm") == "true"
+        if not confirm:
+            return jsonify({"error": f"Form has {sub_count['cnt']} submission(s). Add ?confirm=true to delete anyway."}), 400
+    result = execute_db("DELETE FROM custom_forms WHERE id = %s RETURNING id", (form_id,))
+    if not result:
+        return jsonify({"error": "Form not found"}), 404
+    return jsonify({"success": True})
+
+
+@app.route("/admin/api/forms/<int:form_id>/fields", methods=["POST"])
+@admin_required
+def admin_add_field(form_id):
+    """POST /admin/api/forms/<id>/fields — Add a field to a form."""
+    data = request.get_json()
+    if not data or not data.get("label"):
+        return jsonify({"error": "Field label is required"}), 400
+    name = data.get("name") or data["label"].lower().replace(" ", "_")
+    name = re.sub(r'[^a-z0-9_]', '', name)
+    options_val = json.dumps(data["options"]) if data.get("options") else None
+    result = execute_db(
+        """INSERT INTO form_fields (form_id, field_type, label, name, placeholder, required, options, default_value, sort_order, width, validation_regex, help_text)
+           VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, COALESCE((SELECT MAX(sort_order)+1 FROM form_fields WHERE form_id = %s), 0), %s, %s, %s)
+           RETURNING *""",
+        (
+            form_id,
+            data.get("field_type", "text"),
+            data["label"],
+            name,
+            data.get("placeholder", ""),
+            data.get("required", False),
+            options_val,
+            data.get("default_value", ""),
+            form_id,
+            data.get("width", "full"),
+            data.get("validation_regex", ""),
+            data.get("help_text", "")
+        )
+    )
+    return jsonify(result), 201
+
+
+@app.route("/admin/api/forms/<int:form_id>/fields/<int:field_id>", methods=["PUT"])
+@admin_required
+def admin_update_field(form_id, field_id):
+    """PUT /admin/api/forms/<id>/fields/<field_id> — Update a field."""
+    data = request.get_json()
+    options_val = json.dumps(data["options"]) if data.get("options") else None
+    result = execute_db(
+        """UPDATE form_fields SET
+             field_type = %s, label = %s, name = %s, placeholder = %s,
+             required = %s, options = %s::jsonb, default_value = %s,
+             width = %s, validation_regex = %s, help_text = %s
+           WHERE id = %s AND form_id = %s RETURNING *""",
+        (
+            data.get("field_type", "text"),
+            data.get("label", ""),
+            data.get("name", ""),
+            data.get("placeholder", ""),
+            data.get("required", False),
+            options_val,
+            data.get("default_value", ""),
+            data.get("width", "full"),
+            data.get("validation_regex", ""),
+            data.get("help_text", ""),
+            field_id,
+            form_id
+        )
+    )
+    if not result:
+        return jsonify({"error": "Field not found"}), 404
+    return jsonify(result)
+
+
+@app.route("/admin/api/forms/<int:form_id>/fields/<int:field_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_field(form_id, field_id):
+    """DELETE /admin/api/forms/<id>/fields/<field_id> — Remove a field."""
+    result = execute_db("DELETE FROM form_fields WHERE id = %s AND form_id = %s RETURNING id", (field_id, form_id))
+    if not result:
+        return jsonify({"error": "Field not found"}), 404
+    return jsonify({"success": True})
+
+
+@app.route("/admin/api/forms/<int:form_id>/fields/reorder", methods=["PUT"])
+@admin_required
+def admin_reorder_fields(form_id):
+    """PUT /admin/api/forms/<id>/fields/reorder — Batch reorder fields."""
+    data = request.get_json()
+    order = data.get("order", [])
+    for item in order:
+        execute_db(
+            "UPDATE form_fields SET sort_order = %s WHERE id = %s AND form_id = %s",
+            (item["sort_order"], item["id"], form_id)
+        )
+    return jsonify({"success": True})
+
+
+# =============================================================================
+# DYNAMIC FORM BUILDER — Submissions & Analytics
+# =============================================================================
+
+@app.route("/admin/api/forms/<int:form_id>/submissions", methods=["GET"])
+@admin_required
+def admin_form_submissions(form_id):
+    """GET /admin/api/forms/<id>/submissions — List submissions with all fields."""
+    submissions = query_db(
+        "SELECT * FROM form_submissions WHERE form_id = %s ORDER BY submitted_at DESC",
+        (form_id,)
+    )
+    fields = query_db(
+        "SELECT id, label, name, field_type FROM form_fields WHERE form_id = %s ORDER BY sort_order",
+        (form_id,)
+    )
+    return jsonify({"submissions": submissions or [], "fields": fields or []})
+
+
+@app.route("/admin/api/submissions/<int:sub_id>/status", methods=["PUT"])
+@admin_required
+def admin_update_submission_status(sub_id):
+    """PUT /admin/api/submissions/<id>/status — Update submission status."""
+    data = request.get_json()
+    result = execute_db(
+        "UPDATE form_submissions SET status = %s WHERE id = %s RETURNING id, status",
+        (data.get("status", "new"), sub_id)
+    )
+    if not result:
+        return jsonify({"error": "Submission not found"}), 404
+    return jsonify(result)
+
+
+@app.route("/admin/api/submissions/<int:sub_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_submission(sub_id):
+    """DELETE /admin/api/submissions/<id> — Delete a submission."""
+    result = execute_db("DELETE FROM form_submissions WHERE id = %s RETURNING id", (sub_id,))
+    if not result:
+        return jsonify({"error": "Submission not found"}), 404
+    return jsonify({"success": True})
+
+
+@app.route("/admin/api/forms/<int:form_id>/analytics", methods=["GET"])
+@admin_required
+def admin_form_analytics(form_id):
+    """GET /admin/api/forms/<id>/analytics — Marketing analytics for a form."""
+    total = query_db("SELECT COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s", (form_id,), fetchone=True)
+    today = query_db(
+        "SELECT COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s AND submitted_at::date = CURRENT_DATE",
+        (form_id,), fetchone=True
+    )
+    by_status = query_db(
+        "SELECT status, COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s GROUP BY status ORDER BY cnt DESC",
+        (form_id,)
+    )
+    by_device = query_db(
+        "SELECT device_type, COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s GROUP BY device_type ORDER BY cnt DESC",
+        (form_id,)
+    )
+    by_utm = query_db(
+        "SELECT utm_source, COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s AND utm_source != '' GROUP BY utm_source ORDER BY cnt DESC LIMIT 10",
+        (form_id,)
+    )
+    by_browser = query_db(
+        "SELECT browser, COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s AND browser != '' GROUP BY browser ORDER BY cnt DESC LIMIT 10",
+        (form_id,)
+    )
+    by_os = query_db(
+        "SELECT os, COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s AND os != '' GROUP BY os ORDER BY cnt DESC LIMIT 10",
+        (form_id,)
+    )
+    top_referrers = query_db(
+        "SELECT referrer_url, COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s AND referrer_url != '' GROUP BY referrer_url ORDER BY cnt DESC LIMIT 10",
+        (form_id,)
+    )
+    by_language = query_db(
+        "SELECT language, COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s AND language != '' GROUP BY language ORDER BY cnt DESC LIMIT 10",
+        (form_id,)
+    )
+    return jsonify({
+        "total": total["cnt"] if total else 0,
+        "today": today["cnt"] if today else 0,
+        "by_status": by_status or [],
+        "by_device": by_device or [],
+        "by_utm_source": by_utm or [],
+        "by_browser": by_browser or [],
+        "by_os": by_os or [],
+        "top_referrers": top_referrers or [],
+        "by_language": by_language or []
+    })
+
+
+# =============================================================================
+# DYNAMIC FORM BUILDER — Public API
+# =============================================================================
+
+@app.route("/api/forms/<slug>", methods=["GET"])
+def api_get_form(slug):
+    """GET /api/forms/<slug> — Public endpoint returning form config for rendering."""
+    form = query_db(
+        "SELECT id, name, slug, description, submit_button_text, success_message FROM custom_forms WHERE slug = %s AND status = 'active'",
+        (slug,), fetchone=True
+    )
+    if not form:
+        return jsonify({"error": "Form not found"}), 404
+    fields = query_db(
+        "SELECT id, field_type, label, name, placeholder, required, options, default_value, sort_order, width, help_text FROM form_fields WHERE form_id = %s ORDER BY sort_order",
+        (form["id"],)
+    )
+    form["fields"] = fields or []
+    return jsonify(form)
+
+
+@app.route("/api/forms/<slug>/submit", methods=["POST"])
+def api_submit_form(slug):
+    """POST /api/forms/<slug>/submit — Accept a dynamic form submission."""
+    form = query_db(
+        "SELECT id, name FROM custom_forms WHERE slug = %s AND status = 'active'",
+        (slug,), fetchone=True
+    )
+    if not form:
+        return jsonify({"error": "Form not found"}), 404
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+
+    fields = query_db(
+        "SELECT name, required, label FROM form_fields WHERE form_id = %s",
+        (form["id"],)
+    )
+    form_data = data.get("fields", {})
+    for f in (fields or []):
+        if f["required"] and not form_data.get(f["name"]):
+            return jsonify({"error": f"{f['label']} is required"}), 400
+
+    ua_string = request.headers.get("User-Agent", "")
+    ua_lower = ua_string.lower()
+    device = "mobile" if any(m in ua_lower for m in ["mobile", "android", "iphone"]) else "desktop"
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+
+    browser = ""
+    if "firefox" in ua_lower:
+        browser = "Firefox"
+    elif "edg" in ua_lower:
+        browser = "Edge"
+    elif "chrome" in ua_lower:
+        browser = "Chrome"
+    elif "safari" in ua_lower:
+        browser = "Safari"
+    elif "opera" in ua_lower or "opr" in ua_lower:
+        browser = "Opera"
+
+    os_name = ""
+    if "windows" in ua_lower:
+        os_name = "Windows"
+    elif "mac os" in ua_lower or "macintosh" in ua_lower:
+        os_name = "macOS"
+    elif "linux" in ua_lower:
+        os_name = "Linux"
+    elif "android" in ua_lower:
+        os_name = "Android"
+    elif "iphone" in ua_lower or "ipad" in ua_lower:
+        os_name = "iOS"
+
+    result = execute_db(
+        """INSERT INTO form_submissions
+            (form_id, submission_data, status, device_type, user_agent,
+             referrer_url, utm_source, utm_medium, utm_campaign, utm_term, utm_content,
+             page_url, ip_address, browser, os, screen_resolution, language, session_id)
+           VALUES (%s, %s::jsonb, 'new', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+           RETURNING id""",
+        (
+            form["id"],
+            json.dumps(form_data),
+            device,
+            ua_string[:500],
+            data.get("referrer", ""),
+            data.get("utm_source", ""),
+            data.get("utm_medium", ""),
+            data.get("utm_campaign", ""),
+            data.get("utm_term", ""),
+            data.get("utm_content", ""),
+            data.get("page_url", ""),
+            ip,
+            browser,
+            os_name,
+            data.get("screen_resolution", ""),
+            data.get("language", ""),
+            data.get("session_id", "")
+        )
+    )
+    return jsonify({"success": True, "id": result["id"] if result else None}), 201
 
 
 # =============================================================================
