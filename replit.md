@@ -122,17 +122,24 @@ The AI chatbot can control what the user sees on the website through special com
    {"action": "showSlide", "title": "Room Comparison", "subtitle": "Finding your perfect suite", "points": ["Master Suite: $1,800/night", "Ocean Room: $1,200/night"]}
    ```
 
-3. **generateHTML** — Render custom AI-generated HTML on a blank canvas
+3. **generateVisual** — Render a templated visual slide (table or list)
    ```json
-   {"action": "generateHTML", "html": "<div style='padding:2rem'><h2>Pricing</h2><table>...</table></div>"}
+   {"action": "generateVisual", "title": "Room Pricing", "columns": ["Room", "Price"], "rows": [["Master Suite", "$600/night"]], "footer": "Prices vary by season"}
    ```
-   The AI can create comparison tables, charts, itineraries — anything expressible in HTML.
+   The AI sends structured data and the frontend renders it using a pre-built frosted glass template. Supports two layouts:
+   - **Table**: `columns` + `rows` for comparisons, pricing, schedules
+   - **List**: `items` [{label, value}] for key-value pairs
+
+4. **generateHTML** (fallback) — Render raw custom HTML on a blank canvas
+   ```json
+   {"action": "generateHTML", "html": "<div>...</div>"}
+   ```
 
 ### Adding New Commands
 
 1. Define the command format (JSON structure)
 2. Add a handler in `script.js` → `executeCommand()` function
-3. Update the system prompt (in `app.py` → `SAMPLE_SYSTEM_PROMPT`) to teach the AI about the command
+3. Update the system prompt (in `app.py` → `SYSTEM_PROMPT`) to teach the AI about the command
 4. Test with a sample API response
 
 ### Sample System Prompt
@@ -142,9 +149,9 @@ See `app.py` → `SYSTEM_PROMPT` for a complete example that teaches an AI agent
 ### AI Integration (OpenAI)
 
 The chatbot connects to OpenAI GPT-4o-mini via Replit AI Integrations. Single unified streaming endpoint:
-- `POST /api/chat` — SSE streaming for ALL messages. Tokens arrive live so the user sees text being typed out. After streaming completes, the server sends final `text`, `command`, and `html` events.
+- `POST /api/chat` — SSE streaming for ALL messages. Tokens arrive live so the user sees text being typed out. After streaming completes, the server sends final `text`, `command`, and `done` events.
 
-The AI only uses `generateHTML` when the user explicitly asks to "show me visually" or "visualize" something. For normal questions it uses `navigate` and `showSlide` commands instead. Generated HTML uses frosted glass styling matching the site (rgba backgrounds, subtle borders, gold accents).
+The AI only uses `generateVisual` when the user explicitly asks to "show me visually" or "visualize" something. It sends structured JSON data (title, columns, rows) and the frontend renders it using a built-in frosted glass template — this is faster and always matches the site design. For normal questions it uses `navigate` and `showSlide` commands instead.
 
 ## How to Edit Content
 

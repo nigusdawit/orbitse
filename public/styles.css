@@ -1925,7 +1925,126 @@ input, select, textarea {
 }
 
 /*
-  FULLSCREEN CANVAS — Displays AI-generated HTML behind the side panel.
+  VISUAL TEMPLATE — Pre-built frosted glass card for AI-generated visual slides.
+  The AI sends structured data (title, columns, rows) and the frontend renders
+  it using this template — consistent, fast, always matches the site.
+*/
+.visual-card {
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 1.25rem;
+  padding: 2.5rem 3rem;
+  max-width: 700px;
+  width: 100%;
+  color: #fff;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.visual-title {
+  font-family: 'Playfair Display', serif;
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  font-weight: 600;
+  margin: 0 0 0.25rem;
+  letter-spacing: -0.01em;
+}
+
+.visual-subtitle {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.45);
+  margin: 0 0 2rem;
+  font-weight: 400;
+}
+
+.visual-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1.5rem;
+}
+
+.visual-th {
+  text-align: left;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.35);
+  padding: 0 0 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.visual-tr {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.visual-tr:last-child {
+  border-bottom: none;
+}
+
+.visual-td {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.95rem;
+  padding: 0.85rem 0;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.visual-td-label {
+  color: #fff;
+  font-weight: 500;
+}
+
+.visual-list {
+  margin-top: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.visual-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.visual-item:last-child {
+  border-bottom: none;
+}
+
+.visual-item-label {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.visual-item-value {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: #c9a96e;
+}
+
+.visual-footer {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.3);
+  margin-top: 1.5rem;
+  font-style: italic;
+}
+
+@media (max-width: 768px) {
+  .visual-card {
+    padding: 1.5rem 1.25rem;
+    border-radius: 1rem;
+  }
+}
+
+/*
+  FULLSCREEN CANVAS — Displays AI-generated visual behind the side panel.
   Matches the gallery layout: content fills the screen, side panel overlays on the right.
 */
 .fullscreen-canvas {

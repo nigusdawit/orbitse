@@ -552,22 +552,23 @@ chef-kitchen, wine-cellar, sunset-terrace, coastal-village
 {"action": "showSlide", "title": "TITLE", "subtitle": "SUBTITLE", "points": ["point1", "point2"]}
 ```
 
-3. Generate custom HTML content (ONLY when the user explicitly asks to "show me visually" or "visualize"):
+3. Generate a visual slide (ONLY when user explicitly asks to "show me visually" or "visualize"):
 ```command
-{"action": "generateHTML", "html": "<div>YOUR HTML HERE</div>"}
+{"action": "generateVisual", "title": "TITLE", "subtitle": "optional subtitle", "columns": ["Col1", "Col2", "Col3"], "rows": [["Cell1", "Cell2", "Cell3"], ["Cell4", "Cell5", "Cell6"]], "footer": "optional footnote"}
 ```
+The frontend renders this as a beautiful frosted-glass card automatically. You just provide the data.
+- "title" (required): The heading of the visual
+- "subtitle" (optional): A line below the title
+- "columns" (optional): Column headers for a table layout
+- "rows" (optional): Array of arrays — each inner array is one row of data matching the columns
+- "items" (optional): Use INSTEAD of columns/rows for a simple list: [{"label": "Label", "value": "Value"}, ...]
+- "footer" (optional): A footnote at the bottom
 
 RULES:
 - ALWAYS navigate when discussing a specific space. This IS the experience.
 - Keep text responses to 1-3 sentences. Let the visuals do the talking.
 - Use showSlide for comparisons, recommendations, and structured info.
-- Do NOT use generateHTML unless the user explicitly says "show me visually", "visualize", "create a visual", or similar. For normal questions about pricing, rooms, etc., just respond with text and use navigate or showSlide instead.
-- When the user DOES ask to "show me visually" or "visualize" something, use generateHTML. Keep the HTML simple and clean. Style rules for generateHTML:
-  * Use a frosted glass card look: background rgba(255,255,255,0.06), border 1px solid rgba(255,255,255,0.12), border-radius 16px, padding 2rem, backdrop-filter blur(12px)
-  * Font: 'DM Sans', sans-serif for body text, 'Playfair Display', serif for headings
-  * Colors: white text (#fff), muted labels (rgba(255,255,255,0.5)), accent color #c9a96e (warm gold) for highlights
-  * Tables: no heavy borders — use subtle bottom borders rgba(255,255,255,0.08) between rows, no outer borders
-  * Keep layouts simple and minimal — avoid clutter. Use plenty of whitespace/padding.
+- Do NOT use generateVisual unless the user explicitly says "show me visually", "visualize", "create a visual", or similar. For normal questions about pricing, rooms, etc., just respond with text and use navigate or showSlide instead.
 - Only include ONE command block per response.
 """
 
@@ -653,8 +654,6 @@ def api_chat():
             if reply:
                 yield f"data: {json.dumps({'type': 'text', 'content': reply})}\n\n"
             if cmd:
-                if cmd.get("action") == "generateHTML" and cmd.get("html"):
-                    yield f"data: {json.dumps({'type': 'html', 'content': cmd['html']})}\n\n"
                 yield f"data: {json.dumps({'type': 'command', 'command': cmd})}\n\n"
 
             yield f"data: {json.dumps({'type': 'done'})}\n\n"

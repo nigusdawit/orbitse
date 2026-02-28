@@ -1183,7 +1183,6 @@ async function chatSendStreaming(message) {
     let displayTokens = '';
     let finalReply = '';
     let pendingCommand = null;
-    let pendingHtml = null;
     let inCommandBlock = false;
 
     while (true) {
@@ -1210,8 +1209,6 @@ async function chatSendStreaming(message) {
             }
           } else if (event.type === 'text') {
             finalReply = event.content;
-          } else if (event.type === 'html') {
-            pendingHtml = event.content;
           } else if (event.type === 'command') {
             pendingCommand = event.command;
           } else if (event.type === 'error') {
@@ -1234,12 +1231,7 @@ async function chatSendStreaming(message) {
       streamBubble.remove();
     }
 
-    if (pendingHtml) {
-      openFullscreenCanvas(pendingHtml);
-      openSidePanel();
-    }
-
-    if (pendingCommand && pendingCommand.action !== 'generateHTML') {
+    if (pendingCommand) {
       executeCommand(pendingCommand);
     }
 
@@ -1460,16 +1452,65 @@ function updateMainPanelLatest(text) {
 ============================================================================= */
 
 /**
+ * Render a visual slide from structured AI data using the site's built-in template.
+ * The AI sends structured data (title, columns, rows, items, etc.) and this
+ * function builds matching HTML — consistent, fast, always on-brand.
+ *
+ * Supports two layouts:
+ *   - Table: columns + rows (for comparisons, pricing, schedules)
+ *   - List:  items [{label, value}] (for key-value pairs, details)
+ *
+ * @param {Object} data - Structured visual data from the AI
+ * @returns {string} Rendered HTML string
+ */
+function renderVisualTemplate(data) {
+  const title = escapeHtml(data.title || 'Casa Serena');
+  const subtitle = data.subtitle ? `<p class="visual-subtitle">${escapeHtml(data.subtitle)}</p>` : '';
+  const footer = data.footer ? `<p class="visual-footer">${escapeHtml(data.footer)}</p>` : '';
+
+  let body = '';
+
+  if (data.columns && data.rows && data.rows.length > 0) {
+    const headerCells = data.columns.map(col =>
+      `<th class="visual-th">${escapeHtml(col)}</th>`
+    ).join('');
+    const bodyRows = data.rows.map(row => {
+      const cells = row.map((cell, i) =>
+        `<td class="visual-td${i === 0 ? ' visual-td-label' : ''}">${escapeHtml(String(cell))}</td>`
+      ).join('');
+      return `<tr class="visual-tr">${cells}</tr>`;
+    }).join('');
+    body = `
+      <table class="visual-table">
+        <thead><tr>${headerCells}</tr></thead>
+        <tbody>${bodyRows}</tbody>
+      </table>`;
+  } else if (data.items) {
+    const listItems = data.items.map(item =>
+      `<div class="visual-item">
+        <span class="visual-item-label">${escapeHtml(item.label || '')}</span>
+        <span class="visual-item-value">${escapeHtml(item.value || '')}</span>
+      </div>`
+    ).join('');
+    body = `<div class="visual-list">${listItems}</div>`;
+  }
+
+  return `
+    <div class="visual-card">
+      <h1 class="visual-title">${title}</h1>
+      ${subtitle}
+      ${body}
+      ${footer}
+    </div>`;
+}
+
+
+/**
  * Execute a visual command from the AI.
  * This is the main dispatcher for all AI site control actions.
  *
  * @param {Object} cmd - The command object from the API response
- * @param {string} cmd.action - The command type (navigate, showSlide, generateHTML)
- * @param {string} [cmd.target] - Target slug for navigate commands
- * @param {string} [cmd.title] - Title for showSlide commands
- * @param {string} [cmd.subtitle] - Subtitle for showSlide commands
- * @param {string[]} [cmd.points] - Bullet points for showSlide commands
- * @param {string} [cmd.html] - HTML content for generateHTML commands
+ * @param {string} cmd.action - The command type (navigate, showSlide, generateVisual, generateHTML)
  */
 function executeCommand(cmd) {
   if (!cmd || !cmd.action) return;
@@ -1575,6 +1616,13 @@ function executeCommand(cmd) {
          frame.srcdoc = cmd.html;
        And update the HTML to use an iframe element.
     */
+    case 'generateVisual': {
+      const visualHtml = renderVisualTemplate(cmd);
+      openFullscreenCanvas(visualHtml);
+      openSidePanel();
+      break;
+    }
+
     case 'generateHTML': {
       openFullscreenCanvas(cmd.html || '');
       openSidePanel();
