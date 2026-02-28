@@ -2668,9 +2668,12 @@ input, select, textarea {
     bottom: 0.5rem;
   }
 
-  /* Prevent iOS auto-zoom: inputs below 16px trigger Safari's zoom-on-focus.
-     Setting 16px here stops that while keeping the desktop size smaller. */
-  .chatbot-bar-input {
+  /* Prevent iOS auto-zoom on ALL chat inputs across the site.
+     iOS Safari zooms in on any input with font-size below 16px.
+     This covers: main chat bar, expanded panel, split-screen chat, and side panel. */
+  .chatbot-bar-input,
+  .chatbot-panel-input,
+  .side-panel-input {
     font-size: 16px;
   }
 
