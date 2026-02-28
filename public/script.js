@@ -2065,6 +2065,14 @@ function executeCommand(cmd) {
       const heroEl = document.getElementById('hero-description');
       if (!heroEl) break;
 
+      /* Collapse the chat panel so the hero text is fully visible */
+      if (chatExpanded) {
+        chatToggleExpand();
+      }
+
+      /* If the side panel is open, close it too */
+      if (sidePanelActive) closeSidePanel();
+
       const landingContainer = document.querySelector('.landing-container');
       if (landingContainer) {
         landingContainer.scrollTo({ top: 0, behavior: 'smooth' });
