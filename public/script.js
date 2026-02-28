@@ -1176,39 +1176,12 @@ document.addEventListener('DOMContentLoaded', () => {
   initChatbot();
 
   /* -----------------------------------------------------------------------
-     MOBILE KEYBOARD HANDLER — Reposition chatbot bar above the iOS keyboard.
-     When the virtual keyboard opens on mobile, the visible area shrinks.
-     We listen to the visualViewport resize event and move the chatbot bar
-     so it sits just above the keyboard instead of floating with a big gap.
-
-     We track a baseline height that resets on orientation changes so the
-     keyboard detection stays accurate after rotating the device.
+     MOBILE KEYBOARD HANDLING
+     The viewport meta tag uses interactive-widget=resizes-content which tells
+     the browser to shrink the layout viewport when the keyboard opens.
+     This means position:fixed elements (like the chatbot bar) naturally
+     stay above the keyboard without any JavaScript repositioning needed.
      ----------------------------------------------------------------------- */
-  if (window.visualViewport) {
-    const chatContainer = document.getElementById('chatbot-container');
-    let baselineHeight = window.innerHeight;
-
-    /* Reset baseline when orientation changes (portrait <-> landscape) */
-    window.addEventListener('resize', () => {
-      if (!document.activeElement || document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
-        baselineHeight = window.innerHeight;
-      }
-    });
-
-    window.visualViewport.addEventListener('resize', () => {
-      if (!chatContainer) return;
-      const vp = window.visualViewport;
-      const keyboardHeight = baselineHeight - vp.height;
-
-      if (keyboardHeight > 100) {
-        /* Keyboard is open — position the bar just above it */
-        chatContainer.style.bottom = keyboardHeight + 'px';
-      } else {
-        /* Keyboard closed — reset to CSS default */
-        chatContainer.style.bottom = '';
-      }
-    });
-  }
 });
 
 
