@@ -34,7 +34,8 @@ TO CUSTOMIZE THIS DASHBOARD:
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- interactive-widget=resizes-content keeps fixed elements above the mobile keyboard -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
   <title>Admin Dashboard</title>
 
   <!-- Google Fonts — same as the main site for visual consistency -->
@@ -516,6 +517,13 @@ TO CUSTOMIZE THIS DASHBOARD:
       .data-table { font-size: 0.8125rem; }
       .admin-header { padding: 1rem; }
       .tab-content { padding: 1rem; }
+
+      /* Prevent iOS auto-zoom: inputs below 16px trigger Safari's zoom-on-focus */
+      .form-group input,
+      .form-group select,
+      .form-group textarea {
+        font-size: 16px;
+      }
     }
   </style>
 </head>
