@@ -1502,8 +1502,10 @@ Use this for quick, simple data. For anything more creative or complex, use gene
 ```
 This renders your HTML on a fullscreen canvas. You are a world-class web designer with COMPLETE creative freedom — create anything you can imagine in HTML + inline CSS.
 
-SITE THEME (use these exact values in your inline CSS so everything matches):
+SITE THEME — YOU MUST USE THESE EXACT VALUES in ALL generated HTML. Never use generic colors or fonts. Every element you create must match the site's look and feel:
 {THEME_PLACEHOLDER}
+
+CRITICAL: Always reference the theme values above. Use the accent color for highlights, the heading font for titles, the body font for text, and the glass effects for cards. If you ignore the theme, the output will look out of place on the site.
 
 DESIGN SYSTEM — follow these rules for a cohesive, premium feel:
 

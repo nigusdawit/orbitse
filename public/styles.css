@@ -3335,7 +3335,7 @@ input, select, textarea {
 }
 
 .visual-title {
-  font-family: 'Playfair Display', serif;
+  font-family: var(--font-serif);
   font-size: clamp(1.5rem, 3vw, 2rem);
   font-weight: 600;
   margin: 0 0 0.25rem;
@@ -3343,7 +3343,7 @@ input, select, textarea {
 }
 
 .visual-subtitle {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-sans);
   font-size: 0.875rem;
   color: rgba(255, 255, 255, 0.55);
   margin: 0 0 1.75rem;
@@ -3358,7 +3358,7 @@ input, select, textarea {
 
 .visual-th {
   text-align: left;
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-sans);
   font-size: 0.7rem;
   font-weight: 600;
   text-transform: uppercase;
@@ -3377,7 +3377,7 @@ input, select, textarea {
 }
 
 .visual-td {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-sans);
   font-size: 0.925rem;
   padding: 0.9rem 1rem 0.9rem 0;
   color: rgba(255, 255, 255, 0.75);
@@ -3407,13 +3407,13 @@ input, select, textarea {
 }
 
 .visual-item-label {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-sans);
   font-size: 0.9rem;
   color: rgba(255, 255, 255, 0.55);
 }
 
 .visual-item-value {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-sans);
   font-size: 0.95rem;
   font-weight: 500;
   color: var(--color-accent, #c9a96e);
@@ -3536,7 +3536,7 @@ input, select, textarea {
 }
 .canvas-markdown hr {
   border: none;
-  border-top: 1px solid rgba(201, 169, 110, 0.25);
+  border-top: 1px solid color-mix(in srgb, var(--color-accent, #c9a96e) 25%, transparent);
   margin: 1.5rem 0;
 }
 .canvas-markdown code {
