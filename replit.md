@@ -5,7 +5,7 @@
 A database-driven website template built as a reusable, industry-agnostic HTML/CSS/JS application. All content (gallery slides, experiences, pricing, site settings, chatbot) is managed through a PostgreSQL database and a password-protected admin dashboard — no code editing needed to change content. Suitable for any business type: hospitality, real estate, restaurants, portfolios, agencies, and more.
 
 The site features:
-- **Snap-scroll landing page** with hero, highlights, experiences, pricing, testimonials, team, FAQ, and blog sections
+- **Snap-scroll landing page** with hero, highlights, experiences, pricing, testimonials, team, FAQ, blog, and business info/contact sections
 - **Immersive fullscreen gallery** with swipe/wheel/keyboard navigation
 - **AI chatbot with site control** — enable/disable from admin, supports built-in chat or external embed
 - **Side-panel AI chat** — frosted glass panel slides in from the right when AI navigates gallery slides; shows only the agent's latest message by default with a toggle to reveal full conversation history; on mobile, appears as a compact bottom strip that expands when history is opened
@@ -16,7 +16,8 @@ The site features:
 - **Image Upload System** — upload images directly from admin, stored in `/uploads/`
 - **Drag-and-Drop Reordering** — reorder gallery cards, experiences, pricing, testimonials, team, and FAQ by dragging rows
 - **Toggleable Sections** — enable/disable Testimonials, Team, FAQ, and Footer from admin
-- **Business Info & Social Links** — manage contact details, hours, and social media profiles from admin
+- **Business Info & Social Links** — manage contact details, hours, and social media profiles from admin; dedicated landing page section with contact info cards and embedded Contact Us form
+- **Contact Us Form** — database-driven contact form (slug: `contact-us`) with name, email, subject, message fields; submissions appear in admin Forms tab; also available as AI chatbot form collection
 - **Testimonials/Reviews** — client quotes with star ratings, reviewer names/roles
 - **Team/About** — team member cards with photo, name, title, bio
 - **FAQ** — collapsible question/answer pairs

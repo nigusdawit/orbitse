@@ -337,6 +337,27 @@ FONTS:
       </div>
     </section>
 
+    <!-- ================================================================
+         BUSINESS INFO & CONTACT SECTION
+         ================================================================
+         Displays business details (phone, email, address, hours, map)
+         pulled from the database, plus an embedded contact form.
+         Managed via admin: Business Info & Social Links tab.
+    -->
+    <section id="section-business-info" class="snap-section landing-section" style="background: var(--bg-section-1); display: none;" data-testid="section-business-info">
+      <div class="max-w-container">
+        <div class="section-header fade-in-view">
+          <p class="section-eyebrow">Get In Touch</p>
+          <h2 class="section-title" data-testid="text-business-info-title">Contact Us</h2>
+          <p class="section-subtitle">We'd love to hear from you. Reach out anytime.</p>
+        </div>
+
+        <div id="business-info-content" class="business-info-grid fade-in-view" data-testid="business-info-content">
+          <!-- Populated by JavaScript from /api/business-info -->
+        </div>
+      </div>
+    </section>
+
     <div id="custom-sections-container"></div>
 
   </div>
@@ -377,6 +398,7 @@ FONTS:
           <li id="footer-link-team" style="display:none;"><a href="#section-team" onclick="scrollToSection('section-team')" data-testid="link-footer-team">Team</a></li>
           <li id="footer-link-faq" style="display:none;"><a href="#section-faq" onclick="scrollToSection('section-faq')" data-testid="link-footer-faq">FAQ</a></li>
           <li id="footer-link-blog" style="display:none;"><a href="#section-blog" onclick="scrollToSection('section-blog')" data-testid="link-footer-blog">Blog</a></li>
+          <li id="footer-link-business-info" style="display:none;"><a href="#section-business-info" onclick="scrollToSection('section-business-info')" data-testid="link-footer-business-info">Contact</a></li>
         </ul>
       </div>
 

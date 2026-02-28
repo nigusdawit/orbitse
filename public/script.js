@@ -125,6 +125,7 @@ async function loadAllData() {
     renderTeam();
     renderFAQ();
     renderBlogSection();
+    renderBusinessInfoSection();
     renderFooter();
     renderGallerySlides();
     renderDotNav();
@@ -481,6 +482,153 @@ function renderBlogSection() {
 
 
 /**
+ * Renders the Business Info & Contact section on the landing page.
+ * Pulls data from the businessInfo global (fetched from /api/business-info)
+ * and renders an embedded contact form from the database.
+ */
+function renderBusinessInfoSection() {
+  const container = document.getElementById('business-info-content');
+  if (!container) return;
+
+  const hasPhone = businessInfo.business_phone;
+  const hasEmail = businessInfo.business_email;
+  const hasAddress = businessInfo.business_address;
+  const hasMap = businessInfo.business_map_embed;
+  const hasHours = businessInfo.business_hours && businessInfo.business_hours.length > 0;
+
+  let infoCardsHtml = '';
+
+  if (hasPhone) {
+    infoCardsHtml += `
+      <div class="biz-info-card" data-testid="card-biz-phone">
+        <div class="biz-info-icon"><i data-lucide="phone"></i></div>
+        <h3 class="biz-info-label">Phone</h3>
+        <p class="biz-info-value"><a href="tel:${escapeHtml(businessInfo.business_phone)}" data-testid="link-biz-phone">${escapeHtml(businessInfo.business_phone)}</a></p>
+      </div>`;
+  }
+
+  if (hasEmail) {
+    infoCardsHtml += `
+      <div class="biz-info-card" data-testid="card-biz-email">
+        <div class="biz-info-icon"><i data-lucide="mail"></i></div>
+        <h3 class="biz-info-label">Email</h3>
+        <p class="biz-info-value"><a href="mailto:${escapeHtml(businessInfo.business_email)}" data-testid="link-biz-email">${escapeHtml(businessInfo.business_email)}</a></p>
+      </div>`;
+  }
+
+  if (hasAddress) {
+    infoCardsHtml += `
+      <div class="biz-info-card" data-testid="card-biz-address">
+        <div class="biz-info-icon"><i data-lucide="map-pin"></i></div>
+        <h3 class="biz-info-label">Address</h3>
+        <p class="biz-info-value" data-testid="text-biz-address">${escapeHtml(businessInfo.business_address)}</p>
+      </div>`;
+  }
+
+  if (hasHours) {
+    const hours = businessInfo.business_hours;
+    let hoursHtml = '<ul class="biz-hours-list">';
+    hours.forEach(h => {
+      const dayLabel = escapeHtml(h.day || '');
+      const timeLabel = h.closed ? 'Closed' : `${escapeHtml(h.open || '')} – ${escapeHtml(h.close || '')}`;
+      hoursHtml += `<li><span class="biz-hours-day">${dayLabel}</span><span class="biz-hours-time">${timeLabel}</span></li>`;
+    });
+    hoursHtml += '</ul>';
+
+    infoCardsHtml += `
+      <div class="biz-info-card biz-info-card-wide" data-testid="card-biz-hours">
+        <div class="biz-info-icon"><i data-lucide="clock"></i></div>
+        <h3 class="biz-info-label">Hours</h3>
+        ${hoursHtml}
+      </div>`;
+  }
+
+  let mapHtml = '';
+  if (hasMap) {
+    const sanitizedMap = DOMPurify.sanitize(businessInfo.business_map_embed, { ADD_TAGS: ['iframe'], ADD_ATTR: ['allow', 'allowfullscreen', 'frameborder', 'loading', 'referrerpolicy'] });
+    mapHtml = `<div class="biz-info-map" data-testid="biz-map">${sanitizedMap}</div>`;
+  }
+
+  let contactFormHtml = `
+    <div class="biz-contact-form-wrapper" data-testid="biz-contact-form">
+      <h3 class="biz-contact-form-title">Send Us a Message</h3>
+      <form id="biz-contact-form" class="biz-contact-form" onsubmit="submitContactForm(event)" data-testid="form-contact">
+        <div class="biz-form-row">
+          <input type="text" name="full_name" placeholder="Your Name" required class="biz-form-input" data-testid="input-contact-name">
+          <input type="email" name="email" placeholder="Email Address" required class="biz-form-input" data-testid="input-contact-email">
+        </div>
+        <input type="text" name="subject" placeholder="Subject" class="biz-form-input" data-testid="input-contact-subject">
+        <textarea name="message" placeholder="Your message..." required rows="4" class="biz-form-input biz-form-textarea" data-testid="input-contact-message"></textarea>
+        <button type="submit" class="biz-form-submit" data-testid="button-contact-submit">Send Message</button>
+      </form>
+      <div id="biz-contact-success" class="biz-contact-success" style="display:none;" data-testid="text-contact-success">
+        <i data-lucide="check-circle"></i>
+        <p>Thank you! Your message has been sent. We'll get back to you soon.</p>
+      </div>
+    </div>`;
+
+  container.innerHTML = `
+    <div class="biz-info-left">
+      <div class="biz-info-cards">${infoCardsHtml}</div>
+      ${mapHtml}
+    </div>
+    <div class="biz-info-right">
+      ${contactFormHtml}
+    </div>
+  `;
+
+  if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+/**
+ * Handles the contact form submission from the Business Info section.
+ * Submits to the "contact-us" form slug in the database.
+ */
+function submitContactForm(e) {
+  e.preventDefault();
+  const form = e.target;
+  const submitBtn = form.querySelector('.biz-form-submit');
+  const formData = new FormData(form);
+  const fields = {};
+  formData.forEach((val, key) => { fields[key] = val; });
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Sending...';
+
+  fetch('/api/forms/contact-us/submit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      fields: fields,
+      session_id: window._chatSessionId || '',
+      page_url: window.location.href,
+      referrer: document.referrer || ''
+    })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.error) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Send Message';
+      alert('Something went wrong: ' + data.error);
+    } else {
+      form.style.display = 'none';
+      const successEl = document.getElementById('biz-contact-success');
+      if (successEl) {
+        successEl.style.display = 'flex';
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+      }
+    }
+  })
+  .catch(() => {
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Send Message';
+    alert('Could not send your message. Please try again.');
+  });
+}
+
+
+/**
  * Renders the site footer with business info, social links, and navigation.
  * Pulls data from siteSettings and businessInfo.
  */
@@ -587,6 +735,7 @@ const BUILTIN_SECTION_MAP = {
   'team': 'section-team',
   'faq': 'section-faq',
   'blog': 'section-blog',
+  'business-info': 'section-business-info',
   'footer': 'site-footer'
 };
 
@@ -668,6 +817,7 @@ function checkBuiltinHasData(slug) {
     case 'team': return teamMembers.length > 0;
     case 'faq': return faqItems.length > 0;
     case 'blog': return blogPosts.length > 0;
+    case 'business-info': return !!(businessInfo.business_phone || businessInfo.business_email || businessInfo.business_address || businessInfo.business_map_embed || (businessInfo.business_hours && businessInfo.business_hours.length > 0));
     case 'footer': return true;
     default: return true;
   }
@@ -687,6 +837,10 @@ function updateFooterQuickLinks() {
   /* Blog footer link — show if blog section is enabled and has published posts */
   const footerLinkBlog = document.getElementById('footer-link-blog');
   if (footerLinkBlog) footerLinkBlog.style.display = enabledSlugs.has('blog') && blogPosts.length ? '' : 'none';
+
+  /* Business Info / Contact footer link */
+  const footerLinkBizInfo = document.getElementById('footer-link-business-info');
+  if (footerLinkBizInfo) footerLinkBizInfo.style.display = enabledSlugs.has('business-info') ? '' : 'none';
 }
 
 function applySectionVisibilityFallback() {

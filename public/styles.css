@@ -1895,6 +1895,243 @@ input, select, textarea {
 
 
 /* =============================================================================
+   17c1. BUSINESS INFO & CONTACT SECTION
+   =============================================================================
+   Two-column layout: left side has contact info cards (phone, email, address,
+   hours) plus optional map embed; right side has an embedded contact form.
+   All data is pulled from the database via the admin panel.
+   ============================================================================= */
+
+.business-info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2.5rem;
+  align-items: start;
+}
+
+.biz-info-left {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.biz-info-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.biz-info-card {
+  background: var(--glass-bg, rgba(255,255,255,0.04));
+  border: 1px solid var(--glass-border, rgba(255,255,255,0.08));
+  border-radius: 1rem;
+  padding: 1.5rem;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  transition: border-color var(--transition-fast), transform var(--transition-fast);
+}
+
+.biz-info-card:hover {
+  border-color: rgba(255,255,255,0.15);
+  transform: translateY(-2px);
+}
+
+.biz-info-card-wide {
+  grid-column: 1 / -1;
+}
+
+.biz-info-icon {
+  color: var(--color-accent, #c9a96e);
+  margin-bottom: 0.75rem;
+}
+
+.biz-info-icon i,
+.biz-info-icon svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.biz-info-label {
+  font-family: var(--font-sans, 'DM Sans', sans-serif);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: rgba(255,255,255,0.5);
+  margin-bottom: 0.35rem;
+}
+
+.biz-info-value {
+  font-family: var(--font-sans, 'DM Sans', sans-serif);
+  font-size: 0.95rem;
+  color: rgba(255,255,255,0.85);
+  line-height: 1.5;
+}
+
+.biz-info-value a {
+  color: var(--color-accent, #c9a96e);
+  text-decoration: none;
+  transition: opacity var(--transition-fast);
+}
+
+.biz-info-value a:hover {
+  opacity: 0.8;
+}
+
+.biz-hours-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.biz-hours-list li {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.3rem 0;
+  font-size: 0.85rem;
+  color: rgba(255,255,255,0.7);
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+
+.biz-hours-list li:last-child {
+  border-bottom: none;
+}
+
+.biz-hours-day {
+  font-weight: 500;
+  color: rgba(255,255,255,0.85);
+}
+
+.biz-hours-time {
+  color: rgba(255,255,255,0.55);
+}
+
+.biz-info-map {
+  border-radius: 1rem;
+  overflow: hidden;
+  border: 1px solid var(--glass-border, rgba(255,255,255,0.08));
+}
+
+.biz-info-map iframe {
+  width: 100%;
+  height: 250px;
+  border: none;
+  display: block;
+}
+
+.biz-contact-form-wrapper {
+  background: var(--glass-bg, rgba(255,255,255,0.04));
+  border: 1px solid var(--glass-border, rgba(255,255,255,0.08));
+  border-radius: 1rem;
+  padding: 2rem;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.biz-contact-form-title {
+  font-family: var(--font-serif, 'Playfair Display', serif);
+  font-size: 1.35rem;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 1.5rem;
+}
+
+.biz-contact-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.biz-form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.85rem;
+}
+
+.biz-form-input {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  font-family: var(--font-sans, 'DM Sans', sans-serif);
+  font-size: 0.9rem;
+  color: #fff;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 0.5rem;
+  outline: none;
+  transition: border-color var(--transition-fast);
+  box-sizing: border-box;
+}
+
+.biz-form-input::placeholder {
+  color: rgba(255,255,255,0.35);
+}
+
+.biz-form-input:focus {
+  border-color: var(--color-accent, #c9a96e);
+}
+
+.biz-form-textarea {
+  resize: vertical;
+  min-height: 100px;
+}
+
+.biz-form-submit {
+  padding: 0.75rem 2rem;
+  font-family: var(--font-sans, 'DM Sans', sans-serif);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #111;
+  background: var(--color-accent, #c9a96e);
+  border: none;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+  margin-top: 0.25rem;
+}
+
+.biz-form-submit:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.biz-form-submit:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.biz-contact-success {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1.5rem;
+  color: var(--color-accent, #c9a96e);
+  font-family: var(--font-sans, 'DM Sans', sans-serif);
+  font-size: 0.95rem;
+}
+
+.biz-contact-success i,
+.biz-contact-success svg {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex-shrink: 0;
+}
+
+@media (max-width: 768px) {
+  .business-info-grid {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+  }
+
+  .biz-info-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .biz-form-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* =============================================================================
    17c2. BLOG SECTION — Gallery-Style Preview Cards
    =============================================================================
    A grid of frosted-glass blog preview cards.

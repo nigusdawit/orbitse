@@ -652,6 +652,36 @@ def init_db():
                 ON CONFLICT (slug) DO NOTHING
             """)
 
+            cur.execute("""
+                INSERT INTO page_sections (slug, title, section_type, template, sort_order, enabled)
+                VALUES ('business-info', 'Contact Us', 'built_in', 'business-info', 7, true)
+                ON CONFLICT (slug) DO NOTHING
+            """)
+
+            cur.execute("SELECT COUNT(*) FROM custom_forms WHERE slug = 'contact-us'")
+            contact_form_exists = cur.fetchone()[0]
+            if contact_form_exists == 0:
+                cur.execute("""
+                    INSERT INTO custom_forms (name, slug, description, status, submit_button_text, success_message, sort_order)
+                    VALUES ('Contact Us', 'contact-us', 'General contact and inquiry form',
+                            'active', 'Send Message',
+                            'Thank you for reaching out! We will get back to you soon.',
+                            COALESCE((SELECT MAX(sort_order)+1 FROM custom_forms), 0))
+                    RETURNING id
+                """)
+                contact_form_id = cur.fetchone()[0]
+                contact_fields = [
+                    ('full_name', 'Full Name', 'text', True, 'Your name', 1, 'half'),
+                    ('email', 'Email Address', 'email', True, 'you@example.com', 2, 'half'),
+                    ('subject', 'Subject', 'text', False, 'What is this about?', 3, 'full'),
+                    ('message', 'Message', 'textarea', True, 'Tell us more...', 4, 'full'),
+                ]
+                for fname, flabel, ftype, freq, fplaceholder, fsort, fwidth in contact_fields:
+                    cur.execute("""
+                        INSERT INTO form_fields (form_id, field_type, label, name, placeholder, required, sort_order, width, step)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1)
+                    """, (contact_form_id, ftype, flabel, fname, fplaceholder, freq, fsort, fwidth))
+
             # =============================================================
             # SEED: Sample blog post (industry-agnostic)
             # =============================================================
