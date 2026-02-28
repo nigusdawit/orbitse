@@ -1376,6 +1376,7 @@ input, select, textarea {
     align-items: center;
     width: 100%;
     max-width: 280px;
+    margin: 0 auto;
   }
 
   .hero-buttons .btn-primary,
