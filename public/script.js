@@ -1689,22 +1689,7 @@ async function chatSendStreaming(message, wasCollapsed) {
     }
 
     /* Determine if this response navigates to a gallery card */
-    let isNavigate = pendingCommand && pendingCommand.action === 'navigate';
-
-    /* Auto-navigate fallback: if the AI discussed a gallery item but forgot the navigate command */
-    if (!isNavigate && displayText && galleryCards.length > 0) {
-      const lowerText = displayText.toLowerCase();
-      for (const card of galleryCards) {
-        const titleMatch = card.title && lowerText.includes(card.title.toLowerCase());
-        const slugWords = card.slug ? card.slug.replace(/-/g, ' ') : '';
-        const slugMatch = slugWords && lowerText.includes(slugWords);
-        if (titleMatch || slugMatch) {
-          pendingCommand = { action: 'navigate', target: card.slug };
-          isNavigate = true;
-          break;
-        }
-      }
-    }
+    const isNavigate = pendingCommand && pendingCommand.action === 'navigate';
 
     /* Check if we're currently on the landing page (not in gallery view) */
     const onLandingPage = !document.getElementById('gallery-view').classList.contains('active');
