@@ -2705,9 +2705,10 @@ async function chatSendStreaming(message, wasCollapsed) {
       } else if (bubbleFinalized) {
         const finalContent = displayText || displayTokens.trim();
         if (finalReply && finalReply !== displayTokens.trim()) {
+          const rendered = renderMarkdown(finalReply);
           document.querySelectorAll('.chat-msg-agent').forEach(el => {
             if (el.textContent.trim() === displayTokens.trim()) {
-              el.textContent = finalReply;
+              el.innerHTML = rendered;
             }
           });
           updateSidePanelLatest(finalReply);
