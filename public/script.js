@@ -1235,12 +1235,8 @@ async function chatSendStreaming(message) {
     }
 
     if (pendingHtml) {
-      hideAllSplitContent();
-      const canvasContent = document.getElementById('split-canvas-content');
-      const canvasPanel = document.getElementById('split-canvas');
-      if (canvasContent) canvasContent.innerHTML = pendingHtml;
-      if (canvasPanel) canvasPanel.style.display = 'block';
-      openSplitScreen();
+      openFullscreenCanvas(pendingHtml);
+      openSidePanel();
     }
 
     if (pendingCommand && pendingCommand.action !== 'generateHTML') {
@@ -1580,20 +1576,8 @@ function executeCommand(cmd) {
        And update the HTML to use an iframe element.
     */
     case 'generateHTML': {
-      /* Hide other content panels */
-      hideAllSplitContent();
-
-      /* Render the AI-generated HTML on the canvas */
-      const canvasPanel = document.getElementById('split-canvas');
-      const canvasContent = document.getElementById('split-canvas-content');
-
-      if (canvasContent) {
-        canvasContent.innerHTML = cmd.html || '';
-      }
-
-      if (canvasPanel) canvasPanel.style.display = 'block';
-
-      openSplitScreen();
+      openFullscreenCanvas(cmd.html || '');
+      openSidePanel();
       break;
     }
 
@@ -1656,8 +1640,39 @@ function openSidePanel() {
 
 
 /**
+ * Open the fullscreen canvas with AI-generated HTML.
+ * The canvas fills the entire screen behind the side panel.
+ *
+ * @param {string} html - The HTML content to render
+ */
+function openFullscreenCanvas(html) {
+  if (!html || !html.trim()) return;
+
+  const canvas = document.getElementById('fullscreen-canvas');
+  const content = document.getElementById('fullscreen-canvas-content');
+  if (!canvas || !content) return;
+
+  content.innerHTML = html;
+  canvas.classList.add('active');
+}
+
+/**
+ * Close the fullscreen canvas.
+ */
+function closeFullscreenCanvas() {
+  const canvas = document.getElementById('fullscreen-canvas');
+  if (!canvas) return;
+
+  canvas.classList.remove('active');
+
+  const content = document.getElementById('fullscreen-canvas-content');
+  if (content) content.innerHTML = '';
+}
+
+/**
  * Close the side chat panel.
  * Returns the gallery/landing to full width.
+ * Also closes the fullscreen canvas if it was open.
  */
 function closeSidePanel() {
   const panel = document.getElementById('side-chat-panel');
@@ -1670,6 +1685,12 @@ function closeSidePanel() {
   /* Hide the history if it was open */
   const history = document.getElementById('side-panel-history');
   if (history) history.classList.remove('visible');
+
+  /* Close the fullscreen canvas if it was open */
+  const canvas = document.getElementById('fullscreen-canvas');
+  if (canvas && canvas.classList.contains('active')) {
+    closeFullscreenCanvas();
+  }
 
   /* Restore the gallery/landing to full width */
   const galleryView = document.getElementById('gallery-view');

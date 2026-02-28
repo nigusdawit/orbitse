@@ -649,10 +649,22 @@ FONTS:
 
   <!--
   ============================================================================
-  SIDE CHAT PANEL — Slides in from the right for navigate commands
+  FULLSCREEN CANVAS — Background for AI-generated HTML visuals
   ============================================================================
-  When the AI navigates to a gallery slide, this panel slides in from the
-  right while the gallery stays fully interactive behind it.
+  When the AI uses generateHTML, the custom HTML is displayed fullscreen
+  behind the side chat panel — matching the gallery layout exactly.
+  Content on the left, frosted glass chat on the right.
+  -->
+  <div id="fullscreen-canvas" class="fullscreen-canvas" data-testid="fullscreen-canvas">
+    <div id="fullscreen-canvas-content" class="fullscreen-canvas-content"></div>
+  </div>
+
+  <!--
+  ============================================================================
+  SIDE CHAT PANEL — Slides in from the right for navigate/generateHTML
+  ============================================================================
+  When the AI navigates to a gallery slide or generates custom HTML, this
+  panel slides in from the right while the content stays behind it.
   -->
   <div id="side-chat-panel" class="side-chat-panel" data-testid="side-chat-panel">
 

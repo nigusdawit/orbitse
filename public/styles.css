@@ -1924,6 +1924,49 @@ input, select, textarea {
   border-radius: 2px;
 }
 
+/*
+  FULLSCREEN CANVAS — Displays AI-generated HTML behind the side panel.
+  Matches the gallery layout: content fills the screen, side panel overlays on the right.
+*/
+.fullscreen-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: #0a0f1a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.fullscreen-canvas.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.fullscreen-canvas-content {
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+.fullscreen-canvas-content::-webkit-scrollbar {
+  width: 4px;
+}
+
+.fullscreen-canvas-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+}
+
 
 /* =============================================================================
    20a. NAVIGATE SIDE-PANEL MODE
