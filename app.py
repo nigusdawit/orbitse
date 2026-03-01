@@ -1838,8 +1838,9 @@ else stays on the landing page with your response displayed prominently.
 
 RULES:
 - **NAVIGATION IS YOUR PRIMARY TOOL** — When the visitor asks about, mentions, or shows interest in ANY specific gallery item (room, product, service, etc.), you MUST use the navigate command to take them there. This is the most important rule. 1 sentence of text + navigate command. Do NOT just describe an item in text — SHOW them by navigating.
-- **"SHOW ME VISUALLY" RULE (HIGHEST PRIORITY)**: If the visitor's message contains ANY of these phrases — "show me visually", "show me", "visualize", "make it visual", "display it", "visually", "visual", "show it to me", "let me see", "can I see" — you MUST respond with a generateHTML or generatePage command. This is NON-NEGOTIABLE. Do NOT write a long markdown text reply. Do NOT use showSlide. Create a beautifully designed visual using the frosted glass design system. Even for simple topics (a process, a list, a comparison), wrap it in stunning visual output. A plain text or markdown response to a visual request is ALWAYS wrong.
-- **"ANIMATED / IMMERSIVE / PAGE" RULE**: If the visitor's message contains ANY of these — "animate", "animated", "immersive", "create a page", "build a page", "make a page", "landing page", "full page", "website page", "with animations", "with effects", "parallax" — you MUST use generatePage (NOT generateHTML). generatePage has full CSS power: animations, @keyframes, background images, scroll effects. Use the site's CSS variables so it matches the design.
+- **"SHOW ME VISUALLY" RULE (HIGHEST PRIORITY)**: If the visitor's message contains ANY of these phrases — "show me visually", "show me", "visualize", "make it visual", "display it", "visually", "visual", "show it to me", "let me see", "can I see" — you MUST respond with a generatePage command. This is NON-NEGOTIABLE. Do NOT write a long markdown text reply. Do NOT use showSlide. Create a beautifully designed, animated page using generatePage with the frosted glass design system. A plain text or markdown response to a visual request is ALWAYS wrong.
+- **"ANIMATED / IMMERSIVE / PAGE" RULE**: If the visitor's message contains ANY of these — "animate", "animated", "immersive", "create a page", "build a page", "make a page", "landing page", "full page", "website page", "with animations", "with effects", "parallax", "create", "design", "build" — you MUST use generatePage (NOT generateHTML). generatePage has full CSS power: animations, @keyframes, background images, scroll effects. Use the site's CSS variables so it matches the design.
+- **DEFAULT VISUAL COMMAND**: When you need to create any visual content and are unsure which command to use, DEFAULT to generatePage. It is strictly superior to generateHTML — it supports everything generateHTML does PLUS animations, <style> tags, background images, and scroll effects. Only use generateHTML for extremely simple content (a single data card or short table).
 - For general questions (pricing overview, broad info, recommendations across items), reply with text. It will appear on the hero.
 - Keep text responses concise but natural (1-4 sentences). Be conversational, not robotic.
 - Use showSlide for quick structured comparisons and bullet-point recommendations (3-6 points max).
@@ -2248,10 +2249,13 @@ def api_chat():
     # — especially with smaller models like gpt-4o-mini.
     messages.append({"role": "system", "content": (
         "REMEMBER: If your reply involves ANY action (navigate, showSlide, "
-        "generateHTML, submitForm, scrollToSection, etc.), you MUST include "
+        "generateHTML, generatePage, submitForm, scrollToSection, etc.), you MUST include "
         "the ```command\\n{...}\\n``` JSON block. Without it the visitor sees "
         "NO change on the site. Never narrate an action — execute it. "
-        "Keep reply text to 1 sentence when a command follows."
+        "Keep reply text to 1 sentence when a command follows. "
+        "PREFER generatePage over generateHTML — it supports animations, "
+        "<style> tags, background images, and scroll effects. Use generatePage "
+        "for anything visual, animated, or page-like."
     )})
 
     messages.append({"role": "user", "content": message})

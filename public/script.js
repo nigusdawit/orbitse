@@ -4695,6 +4695,7 @@ function openImmersivePage(html) {
       background: var(--color-bg);
       overflow-x: hidden;
       -webkit-font-smoothing: antialiased;
+      padding-top: 4rem;
     }
     img { max-width: 100%; height: auto; display: block; }
     a { color: var(--color-accent); text-decoration: none; }

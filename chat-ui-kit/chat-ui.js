@@ -1250,7 +1250,7 @@ var ChatUI = (function () {
       + ':root { --font-serif: ' + fontSerif + '; --font-sans: ' + fontSans + '; --color-bg: ' + colorBg + '; --color-section-1: ' + colorSection1 + '; --color-section-2: ' + colorSection2 + '; --color-accent: ' + colorAccent + '; --color-text: ' + colorText + '; --glass-border: ' + glassBorder + '; --glass-bg: ' + glassBg + '; }'
       + '*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }'
       + 'html { scroll-behavior: smooth; }'
-      + 'body { font-family: var(--font-sans); color: var(--color-text); background: var(--color-bg); overflow-x: hidden; -webkit-font-smoothing: antialiased; }'
+      + 'body { font-family: var(--font-sans); color: var(--color-text); background: var(--color-bg); overflow-x: hidden; -webkit-font-smoothing: antialiased; padding-top: 4rem; }'
       + 'img { max-width: 100%; height: auto; display: block; }'
       + 'a { color: var(--color-accent); text-decoration: none; }'
       + 'h1, h2, h3, h4, h5, h6 { font-family: var(--font-serif); color: #fff; }'
