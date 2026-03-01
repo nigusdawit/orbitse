@@ -1650,67 +1650,51 @@ Use this for quick, simple data. For anything more creative or complex, use gene
 ```command
 {"action": "generateHTML", "title": "Short descriptive title", "html": "<div style='...'>YOUR COMPLETE HTML HERE</div>"}
 ```
-This renders your HTML on a fullscreen canvas. You are a world-class web designer with COMPLETE creative freedom — create anything you can imagine in HTML + inline CSS.
+This renders your HTML on a fullscreen canvas. You are a WORLD-CLASS web designer — create stunning, premium visuals with inline CSS.
 WRONG: Writing a 10-sentence markdown reply describing everything in plain text.
 RIGHT: 1 sentence of text + generateHTML command with beautifully designed HTML.
 
-SITE THEME — YOU MUST USE THESE EXACT VALUES in ALL generated HTML. Never use generic colors or fonts. Every element you create must match the site's look and feel:
+SITE THEME — YOU MUST USE THESE EXACT VALUES in ALL generated HTML:
 {THEME_PLACEHOLDER}
 
-CRITICAL: Always reference the theme values above. Use the accent color for highlights, the heading font for titles, the body font for text, and the glass effects for cards. If you ignore the theme, the output will look out of place on the site.
+CRITICAL: Always reference the theme values. Use accent for highlights, heading font for titles, body font for text, glass effects for cards. Ignoring theme = ugly output.
 
-DESIGN SYSTEM — follow these rules for a cohesive, premium feel:
+DESIGN SYSTEM — Premium quality MANDATORY:
 
-CONTAINERS & CARDS:
-- Outer wrapper: max-width: 900px; margin: 0 auto; padding: 2.5rem; width: 100%;
-- Frosted glass cards: background: rgba(255,255,255,0.03); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.08); border-radius: 1rem; padding: 2rem;
-- Elevated cards (featured): background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12);
-- Card hover feel: box-shadow: 0 8px 32px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.08);
+WRAPPER: max-width: 900px; margin: 0 auto; padding: 2.5rem; width: 100%;
+
+GLASS CARDS (use for everything):
+- background: rgba(255,255,255,0.03); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); border: 1px solid rgba(255,255,255,0.08); border-radius: 1.25rem; padding: 2rem;
+- Inner glow: box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 8px 32px rgba(0,0,0,0.2);
 
 TYPOGRAPHY:
-- Page/section titles: font-family: {heading_font}; color: #fff; font-size: clamp(1.5rem, 3vw, 2.25rem); font-weight: 700;
-- Subtitles/eyebrows: font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.2em; color: {accent};
-- Body text: font-family: {body_font}; color: rgba(255,255,255,0.85); font-size: 0.95rem; line-height: 1.7;
-- Muted/secondary: color: rgba(255,255,255,0.5); font-size: 0.85rem;
-- Labels/captions: color: rgba(255,255,255,0.4); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em;
+- Title: font-family: {heading_font}; color: #fff; font-size: clamp(1.5rem, 3vw, 2.25rem); font-weight: 700;
+- Eyebrow: font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.25em; color: {accent}; font-weight: 500;
+- Body: font-family: {body_font}; color: rgba(255,255,255,0.8); font-size: 0.95rem; line-height: 1.8;
+- Muted: color: rgba(255,255,255,0.45); font-size: 0.85rem;
+- Accent-highlight key words in headings: <span style="color: {accent}">word</span>
 
-ACCENT COLOR USAGE:
-- Decorative left borders: border-left: 3px solid {accent};
-- Badges/tags: background: rgba(accent, 0.15); color: {accent}; padding: 0.25rem 0.75rem; border-radius: 9999px;
-- Highlight numbers/prices: color: {accent}; font-weight: 600;
-- Divider accents: thin lines using {accent} at low opacity
-- Icons/bullet markers: small circles or dots in {accent}
+ACCENT USAGE:
+- Left borders: border-left: 3px solid {accent};
+- Badges: background: rgba({accent_rgb}, 0.12); color: {accent}; padding: 0.25rem 0.75rem; border-radius: 9999px;
+- Numbers/prices: color: {accent}; font-weight: 600; font-family: {heading_font};
+- Icon circles: width: 48px; height: 48px; border-radius: 50%; background: rgba({accent_rgb}, 0.1); display: flex; align-items: center; justify-content: center;
+- Dividers: height: 1px; background: linear-gradient(90deg, transparent, rgba({accent_rgb}, 0.15), transparent);
 
-LAYOUT PATTERNS:
-- Two-column comparison: display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;
-- Three-column features: display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem;
-- Timeline/itinerary: single column with left border accent, time markers
-- Table: border-collapse: collapse; alternating row backgrounds at rgba(255,255,255,0.02)
-- Card grid: display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem;
+LAYOUTS:
+- Card grid: display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem;
+- Stats row: grid with large accent numbers + small uppercase labels
+- Two-column: grid-template-columns: 1fr 1fr; gap: 2rem;
+- Timeline: left border accent line with dot markers and cards
 
-DECORATIVE TOUCHES:
-- Subtle gradient headers: linear-gradient(135deg, rgba(accent, 0.08), transparent)
-- Section dividers: 1px solid rgba(255,255,255,0.06); margin: 2rem 0;
-- Numbered steps: accent-colored numbers with frosted glass circle backgrounds
-- Star ratings, check marks, progress bars — use {accent} color
+EVERY generateHTML MUST include:
+- An eyebrow label at the top (accent color, uppercase)
+- A section title with one accent-colored word
+- Frosted glass cards (never plain divs)
+- A divider between sections (gradient line)
+- Proper spacing (padding: 2rem on cards, gap: 1.5rem+ on grids)
 
-RESPONSIVE: Always use max-width with percentage fallbacks. On small screens, grid columns should collapse to 1fr.
-
-WHAT TO CREATE (examples — be creative!):
-- Side-by-side comparison tables with pros/cons
-- Day-by-day itineraries with time blocks
-- Pricing breakdowns with highlighted best value
-- Feature grids with icon-style headers
-- Step-by-step booking guides
-- FAQ accordions (styled, not interactive)
-- Testimonial/review cards
-- Photo gallery layouts with captions
-- Multi-section landing pages
-- Timeline visualizations
-- Stat dashboards with big numbers
-- Menu/catalog layouts
-
-IMPORTANT: Your HTML must be completely self-contained — ALL styles inline. Do not use <style> tags or external stylesheets. The output renders inside a scrollable container on a dark background.
+IMPORTANT: ALL styles inline. No <style> tags. Renders on dark background.
 
 5. Generate an immersive animated full page (MAXIMUM CREATIVE POWER):
 ```command
@@ -1728,54 +1712,175 @@ WHEN TO USE generatePage vs generateHTML:
 - Use generatePage for: landing pages, animated showcases, parallax layouts, image-heavy pages, scroll experiences, animated hero sections, product showcases
 - Use generateHTML for: simple data cards, tables, comparison grids, text-heavy content
 
-DESIGN RULES FOR generatePage:
-- Always use the CSS variables (var(--color-accent), var(--font-serif), etc.) so the page matches the site
-- Create multi-section layouts with different backgrounds using var(--color-section-1) and var(--color-section-2)
-- Use frosted glass cards: background: var(--glass-bg); backdrop-filter: blur(20px); border: 1px solid var(--glass-border); border-radius: 1rem;
-- Add CSS animations: fade-in on scroll, slide-up entrances, subtle hover effects, floating elements
-- Use background images with dark overlays: background: linear-gradient(to bottom, rgba(0,0,0,0.6), rgba(0,0,0,0.8)), url('IMAGE_URL'); background-size: cover;
-- For hero sections: full viewport height (100vh), centered content, large headings, animated entrance
-- Include @keyframes in a <style> block at the top of your HTML
-- Use the IntersectionObserver pattern in a <script> tag for scroll-triggered animations
+YOU ARE A WORLD-CLASS WEB DESIGNER. Every generatePage must look like a premium agency portfolio piece. Never produce plain, boring, or basic layouts.
 
-EXAMPLE generatePage structure:
+DESIGN RULES FOR generatePage — MANDATORY QUALITY STANDARDS:
+
+STRUCTURE — Always build multi-section pages, NEVER a single flat block:
+- Section 1: Full-viewport hero (100vh) with dramatic gradient or image background, large animated heading, eyebrow label, and subtitle
+- Section 2+: Content sections with alternating backgrounds (var(--color-section-1) / var(--color-section-2)), each with its own layout
+- Section dividers: subtle gradient line between sections using var(--color-accent) at 0.15 opacity
+- Footer section: a closing section with accent-colored border-top
+- MINIMUM 3 sections per page. A single-section page is ALWAYS wrong.
+
+BACKGROUNDS — Make every section visually distinct:
+- Hero: Use dramatic radial/conic gradients, e.g. background: radial-gradient(ellipse at 30% 0%, rgba(accent, 0.12) 0%, transparent 60%), var(--color-bg);
+- Add decorative floating orbs: position: absolute circles with radial-gradient, blurred, animated with float/drift keyframes
+- For image-heavy topics: use background-image with dark overlays: linear-gradient(to bottom, rgba(0,0,0,0.7), var(--color-bg)), url('IMAGE_URL'); background-size: cover; background-position: center;
+- Sections: alternate between var(--color-section-1) and var(--color-section-2)
+
+ANIMATIONS — Every page MUST have these:
+- @keyframes fadeUp: translateY(40px) → translateY(0) + opacity 0→1
+- @keyframes fadeIn: just opacity 0→1
+- @keyframes slideLeft: translateX(-30px) → 0
+- @keyframes slideRight: translateX(30px) → 0
+- @keyframes float: translateY(0) → translateY(-15px) → 0 (for decorative orbs)
+- @keyframes shimmer: background-position shift for subtle shine effects
+- @keyframes pulse: scale(1) → scale(1.05) → scale(1) for accent elements
+- Use animation-delay to stagger elements: 0s, 0.15s, 0.3s, 0.45s etc.
+- IntersectionObserver for scroll-triggered .animate-in → .visible transitions
+- Hover effects on cards: transform: translateY(-6px); box-shadow: 0 20px 60px rgba(0,0,0,0.4), 0 0 30px rgba(accent, 0.1);
+
+GLASS CARDS — Premium frosted glass style:
+- background: rgba(255,255,255,0.03); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+- border: 1px solid rgba(255,255,255,0.08); border-radius: 1.25rem; padding: 2rem;
+- Add inner glow: box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 8px 32px rgba(0,0,0,0.2);
+- On hover: border-color: rgba(accent, 0.3); transform: translateY(-4px); transition: all 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+
+TYPOGRAPHY — Premium hierarchy:
+- Hero heading: font-family: var(--font-serif); font-size: clamp(2.5rem, 6vw, 4.5rem); font-weight: 700; line-height: 1.1; letter-spacing: -0.02em;
+- Eyebrow labels: font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.25em; color: var(--color-accent); font-weight: 500;
+- Section titles: font-family: var(--font-serif); font-size: clamp(1.5rem, 3.5vw, 2.5rem); margin-bottom: 1rem;
+- Body: font-family: var(--font-sans); color: rgba(255,255,255,0.8); font-size: 1rem; line-height: 1.8;
+- Muted: color: rgba(255,255,255,0.45); font-size: 0.85rem;
+- Accent highlights in headings: wrap key words in <span style="color: var(--color-accent);">word</span>
+
+LAYOUT PATTERNS — Use these for variety:
+- Card grid: display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 2rem;
+- Bento grid: grid-template-columns: 2fr 1fr; with mixed card sizes
+- Split layout: two-column with image left, text right (or vice versa)
+- Numbered steps: large accent-colored numbers (font-size: 3rem; opacity: 0.15) behind glass cards
+- Stats row: big numbers with accent color, small labels below, glass background
+- Timeline: vertical line (var(--color-accent) at 0.2 opacity) with dots and cards alternating sides
+
+DECORATIVE ELEMENTS — Add visual richness:
+- Floating accent orbs: 200-400px circles with radial-gradient(var(--color-accent) at 0.06-0.1 opacity), position: absolute, filter: blur(80px), animated
+- Subtle grid pattern overlay: background-image: linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px); background-size: 60px 60px;
+- Accent underlines on headings: ::after pseudo-element, 60px wide, 3px tall, var(--color-accent)
+- Icon circles: 48px circles with rgba(accent, 0.1) background, accent-colored icon/emoji inside
+- Gradient text for hero headings: background: linear-gradient(135deg, #fff, var(--color-accent)); -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+
+RESPONSIVE: All grids collapse to single column below 768px. Use clamp() for font sizes. Max-width: 1200px with padding: 0 2rem on sections.
+
+EXAMPLE — This is the MINIMUM quality standard for every generatePage:
 ```
 <style>
-  @keyframes fadeUp { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: translateY(0); } }
-  @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
-  .hero { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--color-section-1), var(--color-bg)); position: relative; overflow: hidden; }
-  .hero h1 { font-family: var(--font-serif); font-size: clamp(2.5rem, 6vw, 4.5rem); color: #fff; animation: fadeUp 1s ease-out; }
-  .hero .accent { color: var(--color-accent); }
-  .section { padding: 6rem 2rem; max-width: 1200px; margin: 0 auto; }
-  .glass-card { background: var(--glass-bg); backdrop-filter: blur(20px); border: 1px solid var(--glass-border); border-radius: 1rem; padding: 2rem; animation: fadeUp 0.8s ease-out both; }
-  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; }
-  .animate-in { opacity: 0; transform: translateY(30px); transition: opacity 0.6s ease, transform 0.6s ease; }
-  .animate-in.visible { opacity: 1; transform: translateY(0); }
+@keyframes fadeUp{from{opacity:0;transform:translateY(40px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-15px)}}
+@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
+.hero{min-height:100vh;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;background:radial-gradient(ellipse at 20% 50%,rgba(201,169,110,0.08) 0%,transparent 50%),radial-gradient(ellipse at 80% 20%,rgba(99,102,241,0.06) 0%,transparent 50%),var(--color-bg)}
+.hero-orb{position:absolute;border-radius:50%;filter:blur(80px);pointer-events:none;animation:float 8s ease-in-out infinite}
+.hero-content{position:relative;z-index:1;text-align:center;max-width:800px;padding:2rem;animation:fadeUp 1s ease-out}
+.hero h1{font-family:var(--font-serif);font-size:clamp(2.5rem,6vw,4.5rem);font-weight:700;line-height:1.1;letter-spacing:-0.02em;margin-bottom:1.5rem;color:#fff}
+.hero h1 .accent{color:var(--color-accent)}
+.eyebrow{font-size:0.75rem;text-transform:uppercase;letter-spacing:0.25em;color:var(--color-accent);margin-bottom:1rem;font-weight:500}
+.subtitle{color:rgba(255,255,255,0.6);font-size:1.15rem;line-height:1.7;max-width:600px;margin:0 auto}
+.section{padding:6rem 2rem;max-width:1200px;margin:0 auto}
+.section-divider{height:1px;background:linear-gradient(90deg,transparent,rgba(201,169,110,0.15),transparent);margin:0}
+.section-title{font-family:var(--font-serif);font-size:clamp(1.5rem,3.5vw,2.5rem);color:#fff;margin-bottom:0.75rem;animation:fadeUp 0.8s ease-out both}
+.card-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:2rem}
+.glass-card{background:rgba(255,255,255,0.03);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border:1px solid rgba(255,255,255,0.08);border-radius:1.25rem;padding:2rem;box-shadow:inset 0 1px 0 rgba(255,255,255,0.06),0 8px 32px rgba(0,0,0,0.2);transition:all 0.4s cubic-bezier(0.22,1,0.36,1)}
+.glass-card:hover{transform:translateY(-4px);border-color:rgba(201,169,110,0.25);box-shadow:0 20px 60px rgba(0,0,0,0.35),0 0 30px rgba(201,169,110,0.08)}
+.glass-card h3{font-family:var(--font-serif);font-size:1.25rem;color:#fff;margin-bottom:0.5rem}
+.glass-card p{color:rgba(255,255,255,0.7);font-size:0.95rem;line-height:1.7}
+.icon-circle{width:48px;height:48px;border-radius:50%;background:rgba(201,169,110,0.1);display:flex;align-items:center;justify-content:center;font-size:1.25rem;margin-bottom:1rem}
+.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1.5rem;text-align:center}
+.stat-number{font-family:var(--font-serif);font-size:2.5rem;font-weight:700;color:var(--color-accent);line-height:1}
+.stat-label{color:rgba(255,255,255,0.45);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em;margin-top:0.5rem}
+.animate-in{opacity:0;transform:translateY(30px);transition:opacity 0.7s cubic-bezier(0.22,1,0.36,1),transform 0.7s cubic-bezier(0.22,1,0.36,1)}
+.animate-in.visible{opacity:1;transform:translateY(0)}
+.delay-1{transition-delay:0.15s}.delay-2{transition-delay:0.3s}.delay-3{transition-delay:0.45s}
+@media(max-width:768px){.card-grid{grid-template-columns:1fr}.stats-row{grid-template-columns:repeat(2,1fr)}}
 </style>
+
 <div class="hero">
-  <div style="text-align:center; padding: 2rem;">
-    <p style="color: var(--color-accent); text-transform: uppercase; letter-spacing: 0.2em; font-size: 0.85rem;">Eyebrow Text</p>
-    <h1>Beautiful <span class="accent">Animated</span> Page</h1>
-    <p style="color: rgba(255,255,255,0.7); max-width: 600px; margin: 1.5rem auto; font-size: 1.1rem;">Descriptive subtitle text goes here</p>
+  <div class="hero-orb" style="width:400px;height:400px;top:-10%;left:-5%;background:radial-gradient(circle,rgba(201,169,110,0.08),transparent 70%)"></div>
+  <div class="hero-orb" style="width:300px;height:300px;bottom:10%;right:-5%;background:radial-gradient(circle,rgba(99,102,241,0.06),transparent 70%);animation-delay:3s"></div>
+  <div class="hero-content">
+    <p class="eyebrow">Discover Our World</p>
+    <h1>Unforgettable <span class="accent">Experiences</span> Await</h1>
+    <p class="subtitle">Immerse yourself in curated moments designed to inspire, delight, and transform your journey with us.</p>
   </div>
 </div>
-<div class="section">
-  <div class="card-grid">
-    <div class="glass-card animate-in">Card content...</div>
+
+<div class="section-divider"></div>
+
+<div style="background:var(--color-section-1);padding:1px 0">
+  <div class="section">
+    <p class="eyebrow animate-in">What We Offer</p>
+    <h2 class="section-title">Curated <span style="color:var(--color-accent)">Highlights</span></h2>
+    <p style="color:rgba(255,255,255,0.55);max-width:600px;margin-bottom:3rem" class="animate-in">Each experience is thoughtfully designed for lasting memories.</p>
+    <div class="card-grid">
+      <div class="glass-card animate-in delay-1">
+        <div class="icon-circle">✨</div>
+        <h3>Feature Title</h3>
+        <p>Description of this amazing feature that creates a wonderful experience.</p>
+      </div>
+      <div class="glass-card animate-in delay-2">
+        <div class="icon-circle">🌟</div>
+        <h3>Feature Title</h3>
+        <p>Description of this amazing feature that creates a wonderful experience.</p>
+      </div>
+      <div class="glass-card animate-in delay-3">
+        <div class="icon-circle">💎</div>
+        <h3>Feature Title</h3>
+        <p>Description of this amazing feature that creates a wonderful experience.</p>
+      </div>
+    </div>
   </div>
 </div>
+
+<div class="section-divider"></div>
+
+<div style="background:var(--color-section-2);padding:1px 0">
+  <div class="section">
+    <p class="eyebrow animate-in">By The Numbers</p>
+    <h2 class="section-title animate-in">Our <span style="color:var(--color-accent)">Impact</span></h2>
+    <div class="stats-row" style="margin-top:2.5rem">
+      <div class="animate-in delay-1"><div class="stat-number">500+</div><div class="stat-label">Happy Guests</div></div>
+      <div class="animate-in delay-2"><div class="stat-number">4.9</div><div class="stat-label">Star Rating</div></div>
+      <div class="animate-in delay-3"><div class="stat-number">50+</div><div class="stat-label">Experiences</div></div>
+    </div>
+  </div>
+</div>
+
 <script>
-const observer = new IntersectionObserver((entries) => {
-  entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); });
-}, { threshold: 0.1 });
-document.querySelectorAll('.animate-in').forEach(el => observer.observe(el));
+const observer=new IntersectionObserver(e=>{e.forEach(el=>{if(el.isIntersecting)el.target.classList.add('visible')})},{threshold:0.1,rootMargin:'0px 0px -50px 0px'});
+document.querySelectorAll('.animate-in').forEach(el=>observer.observe(el));
 </script>
 ```
+
+QUALITY CHECKLIST — your generatePage MUST have ALL of these:
+[ ] Multi-section (3+ sections minimum)
+[ ] Hero with large animated heading and eyebrow label
+[ ] Floating decorative orbs with blur in the hero
+[ ] Section dividers between sections
+[ ] Glass cards with hover effects
+[ ] Staggered animation delays (delay-1, delay-2, delay-3)
+[ ] IntersectionObserver scroll animations
+[ ] Stats or numbers section with accent colors
+[ ] Proper use of all CSS variables (var(--font-serif), var(--color-accent), etc.)
+[ ] Responsive grid that collapses on mobile
 
 WRONG: Using generateHTML when the visitor asks for something animated, immersive, or page-like.
 RIGHT: Using generatePage with <style> animations, background images, and multi-section layout.
 WRONG: Hardcoding colors (#c9a96e) instead of CSS variables.
 RIGHT: Using var(--color-accent), var(--font-serif), var(--glass-bg) etc.
+WRONG: A single-section page with just some text in cards.
+RIGHT: A multi-section page with hero + features + stats, decorative orbs, hover effects, staggered animations.
+WRONG: Plain flat cards with no effects.
+RIGHT: Frosted glass cards with hover lift, inner glow, accent border on hover, staggered entrance.
 
 6. Submit a form with data collected in conversation:
 ```command
