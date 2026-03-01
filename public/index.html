@@ -72,6 +72,8 @@ FONTS:
   <!-- Three.js — 3D rendering library for the Sphere View immersive experience.
        Only used when the Sphere View feature is enabled in the admin dashboard. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <!-- CSS3DRenderer — renders HTML elements in 3D space (used for section cards in Sections mode) -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/renderers/CSS3DRenderer.js"></script>
 
   <!-- DOMPurify — Sanitizes AI-generated HTML before rendering into the DOM.
        This prevents XSS (Cross-Site Scripting) attacks from malicious or
@@ -538,6 +540,7 @@ FONTS:
   -->
   <div id="sphere-view" class="sphere-view" data-testid="sphere-view">
     <canvas id="sphere-canvas" class="sphere-canvas" data-testid="sphere-canvas"></canvas>
+    <div id="sphere-css3d-container" class="sphere-css3d-container" data-testid="sphere-css3d-container"></div>
 
     <div class="sphere-heading-container">
       <h1 id="sphere-heading" class="sphere-heading" data-testid="text-sphere-heading"></h1>

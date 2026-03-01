@@ -1284,9 +1284,44 @@ function showSphereView() {
 
   if (window.lucide) lucide.createIcons();
 
-  /* Initialize Three.js scene if not already done, or resume animation */
+  /* Choose renderer based on view_mode */
+  const mode = sphereSettings.view_mode || 'sections';
+
+  /* If the mode changed since last init, dispose old scene and rebuild */
+  if (sphereInstance && sphereInstance._viewMode !== mode) {
+    sphereInstance.dispose();
+    sphereInstance = null;
+  }
+
+  /* Show/hide the canvas vs css3d container based on mode */
+  const sphereCanvas = document.getElementById('sphere-canvas');
+  const css3dContainer = document.getElementById('sphere-css3d-container');
+
+  function showForMode(activeMode) {
+    if (activeMode === 'sections') {
+      if (sphereCanvas) sphereCanvas.style.display = 'none';
+      if (css3dContainer) css3dContainer.style.display = '';
+    } else {
+      if (sphereCanvas) sphereCanvas.style.display = '';
+      if (css3dContainer) css3dContainer.style.display = 'none';
+    }
+  }
+  showForMode(mode);
+
+  /* Initialize scene if not already done, or resume animation */
   if (!sphereInstance) {
-    sphereInstance = createSphereScene(sphereSettings);
+    if (mode === 'sections') {
+      sphereInstance = createSectionsScene(sphereSettings);
+    } else {
+      sphereInstance = createSphereScene(sphereSettings);
+    }
+    /* Tag the instance with its mode so we detect changes */
+    if (sphereInstance) sphereInstance._viewMode = sphereInstance._viewMode || mode;
+
+    /* If createSectionsScene fell back to sphere, show the canvas instead */
+    if (mode === 'sections' && sphereInstance && sphereInstance._viewMode === 'sphere') {
+      showForMode('sphere');
+    }
   } else {
     sphereInstance.resume();
   }
@@ -1588,6 +1623,7 @@ function createSphereScene(settings) {
 
   /* ── Controller ── */
   return {
+    _viewMode: 'sphere',
     pause: function() {
       animating = false;
       if (animationId) cancelAnimationFrame(animationId);
@@ -1633,6 +1669,370 @@ function createSphereScene(settings) {
       particleGeo.dispose();
 
       renderer.dispose();
+    }
+  };
+}
+
+
+/* =============================================================================
+   4b. SECTION CAROUSEL — 3D orbiting glassmorphic section cards
+   =============================================================================
+   Creates a ring of HTML cards rendered via CSS3DRenderer, each representing
+   a site section (hero, highlights, experiences, pricing, testimonials, team,
+   FAQ, blog). A WebGL particle field runs behind them for atmosphere.
+
+   The cards auto-rotate around the Y axis. The user can drag to rotate and
+   scroll to zoom, just like the Sphere View.
+   ========================================================================= */
+
+function createSectionsScene(cfg) {
+  var container = document.getElementById('sphere-css3d-container');
+  if (!container || typeof THREE === 'undefined' || typeof THREE.CSS3DRenderer === 'undefined') {
+    console.warn('CSS3DRenderer not available — falling back to sphere mode');
+    var fallback = createSphereScene(cfg);
+    if (fallback) fallback._viewMode = 'sphere';
+    return fallback;
+  }
+
+  /* ----- Build card HTML from sections_data ----- */
+  var sd = cfg.sections_data || {};
+  var site = sd.site || {};
+  var cards = [];
+
+  /* Sanitize text to prevent XSS when inserted via innerHTML */
+  function esc(str) {
+    var d = document.createElement('div');
+    d.textContent = str || '';
+    return d.innerHTML;
+  }
+
+  /* Hero card */
+  cards.push({
+    eyebrow: 'Welcome',
+    title: esc(site.hero_title || site.site_name || 'Welcome'),
+    body: esc(site.hero_description || site.site_subtitle || ''),
+    image: site.hero_image || ''
+  });
+
+  /* Highlights card */
+  if (sd.highlights && sd.highlights.length) {
+    var hlItems = sd.highlights.slice(0, 4).map(function(h) {
+      return '<li>' + esc(h.title) + (h.price ? ' — ' + esc(h.price) : '') + '</li>';
+    }).join('');
+    cards.push({
+      eyebrow: 'Highlights',
+      title: 'Featured',
+      html: '<ul class="sphere-card-items">' + hlItems + '</ul>',
+      image: sd.highlights[0].image_url || ''
+    });
+  }
+
+  /* Experiences card */
+  if (sd.experiences && sd.experiences.length) {
+    var expItems = sd.experiences.slice(0, 4).map(function(e) {
+      return '<li>' + esc(e.name) + '</li>';
+    }).join('');
+    cards.push({
+      eyebrow: 'Experiences',
+      title: 'What We Offer',
+      html: '<ul class="sphere-card-items">' + expItems + '</ul>'
+    });
+  }
+
+  /* Pricing card */
+  if (sd.pricing && sd.pricing.length) {
+    var priceGrid = sd.pricing.slice(0, 4).map(function(p) {
+      return '<div class="sphere-card-grid-item">' +
+        '<div class="grid-label">' + esc(p.label) + '</div>' +
+        '<div class="grid-value">' + esc(p.price_range) + '</div>' +
+      '</div>';
+    }).join('');
+    cards.push({
+      eyebrow: 'Pricing',
+      title: 'Rates & Seasons',
+      html: '<div class="sphere-card-grid">' + priceGrid + '</div>'
+    });
+  }
+
+  /* Testimonials card */
+  if (sd.testimonials && sd.testimonials.length) {
+    var t = sd.testimonials[0];
+    var stars = '';
+    for (var s = 0; s < (t.rating || 5); s++) stars += '★';
+    cards.push({
+      eyebrow: 'Testimonials',
+      title: 'What People Say',
+      html: '<div class="sphere-card-stars">' + stars + '</div>' +
+            '<div class="sphere-card-quote">"' + esc(t.content) + '"</div>' +
+            '<div class="sphere-card-reviewer">— ' + esc(t.reviewer_name) +
+            (t.reviewer_role ? ', ' + esc(t.reviewer_role) : '') + '</div>'
+    });
+  }
+
+  /* Team card */
+  if (sd.team && sd.team.length) {
+    var teamItems = sd.team.slice(0, 4).map(function(m) {
+      return '<li>' + esc(m.name) + (m.title ? ' · ' + esc(m.title) : '') + '</li>';
+    }).join('');
+    cards.push({
+      eyebrow: 'Our Team',
+      title: 'Meet the Team',
+      html: '<ul class="sphere-card-items">' + teamItems + '</ul>'
+    });
+  }
+
+  /* FAQ card */
+  if (sd.faq && sd.faq.length) {
+    var faqItems = sd.faq.slice(0, 4).map(function(f) {
+      return '<li>' + esc(f.question) + '</li>';
+    }).join('');
+    cards.push({
+      eyebrow: 'FAQ',
+      title: 'Common Questions',
+      html: '<ul class="sphere-card-items">' + faqItems + '</ul>'
+    });
+  }
+
+  /* Blog card */
+  if (sd.blog && sd.blog.length) {
+    var blogItems = sd.blog.slice(0, 3).map(function(b) {
+      return '<li>' + esc(b.title) + '</li>';
+    }).join('');
+    cards.push({
+      eyebrow: 'Journal',
+      title: 'Latest Posts',
+      html: '<ul class="sphere-card-items">' + blogItems + '</ul>',
+      image: sd.blog[0].cover_image || ''
+    });
+  }
+
+  /* Fallback if no data */
+  if (cards.length === 0) {
+    cards.push({ eyebrow: 'Welcome', title: 'Explore', body: 'Content coming soon.' });
+  }
+
+  /* ----- Three.js setup ----- */
+  var W = container.offsetWidth;
+  var H = container.offsetHeight;
+  var camera = new THREE.PerspectiveCamera(60, W / H, 1, 5000);
+  camera.position.set(0, 0, cfg.zoom_min ? cfg.zoom_min * 60 : 600);
+
+  /* CSS3D scene & renderer */
+  var scene = new THREE.Scene();
+  var cssRenderer = new THREE.CSS3DRenderer();
+  cssRenderer.setSize(W, H);
+  cssRenderer.domElement.style.position = 'absolute';
+  cssRenderer.domElement.style.top = '0';
+  cssRenderer.domElement.style.pointerEvents = 'none';
+  container.appendChild(cssRenderer.domElement);
+
+  /* WebGL scene for background particles */
+  var glScene = new THREE.Scene();
+  var glRenderer = new THREE.WebGLRenderer({ alpha: true, antialias: false });
+  glRenderer.setSize(W, H);
+  glRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  glRenderer.domElement.style.position = 'absolute';
+  glRenderer.domElement.style.top = '0';
+  glRenderer.domElement.style.pointerEvents = 'none';
+  container.insertBefore(glRenderer.domElement, cssRenderer.domElement);
+
+  /* ----- Background particles ----- */
+  var pCount = Math.min(cfg.particle_count || 800, 2000);
+  var pGeo = new THREE.BufferGeometry();
+  var pPositions = new Float32Array(pCount * 3);
+  var pOpacities = new Float32Array(pCount);
+  var spread = 1200;
+  for (var i = 0; i < pCount; i++) {
+    pPositions[i * 3] = (Math.random() - 0.5) * spread;
+    pPositions[i * 3 + 1] = (Math.random() - 0.5) * spread;
+    pPositions[i * 3 + 2] = (Math.random() - 0.5) * spread;
+    pOpacities[i] = Math.random() * 0.4 + 0.1;
+  }
+  pGeo.setAttribute('position', new THREE.BufferAttribute(pPositions, 3));
+  pGeo.setAttribute('alpha', new THREE.BufferAttribute(pOpacities, 1));
+
+  var pMat = new THREE.PointsMaterial({
+    color: 0xffffff,
+    size: 1.5,
+    transparent: true,
+    opacity: cfg.particle_opacity != null ? cfg.particle_opacity * 0.5 : 0.4,
+    depthWrite: false,
+    sizeAttenuation: true
+  });
+  var particles = new THREE.Points(pGeo, pMat);
+  glScene.add(particles);
+
+  /* ----- Card ring group ----- */
+  var ringGroup = new THREE.Group();
+  scene.add(ringGroup);
+
+  var cardScale = cfg.card_scale || 1.0;
+  var cardGap = cfg.card_gap || 2.5;
+  var ringRadius = cards.length * 55 * cardGap;
+  var angleStep = (Math.PI * 2) / cards.length;
+
+  cards.forEach(function(cardData, idx) {
+    /* Build card HTML */
+    var el = document.createElement('div');
+    el.className = 'sphere-section-card';
+    el.style.width = Math.round(320 * cardScale) + 'px';
+
+    var html = '<div class="sphere-card-eyebrow">' + (cardData.eyebrow || '') + '</div>';
+
+    if (cardData.image) {
+      html += '<img class="sphere-card-image" src="' + cardData.image + '" alt="" loading="lazy" />';
+    }
+
+    html += '<div class="sphere-card-title">' + (cardData.title || '') + '</div>';
+
+    if (cardData.html) {
+      html += cardData.html;
+    } else if (cardData.body) {
+      html += '<div class="sphere-card-body">' + cardData.body + '</div>';
+    }
+
+    el.innerHTML = html;
+
+    /* Create CSS3DObject and position on ring */
+    var obj = new THREE.CSS3DObject(el);
+    var angle = angleStep * idx;
+    obj.position.set(
+      Math.sin(angle) * ringRadius,
+      (Math.random() - 0.5) * 80,
+      Math.cos(angle) * ringRadius
+    );
+    /* Face outward from center */
+    obj.lookAt(obj.position.clone().multiplyScalar(2));
+    obj.scale.set(cardScale, cardScale, cardScale);
+
+    ringGroup.add(obj);
+  });
+
+  /* ----- Interaction state ----- */
+  var rotationSpeed = cfg.rotation_speed || 0.0005;
+  var isDragging = false;
+  var prevX = 0;
+  var targetRotY = 0;
+  var currentRotY = 0;
+  var zoomTarget = camera.position.z;
+  var zoomMin = (cfg.zoom_min || 5) * 50;
+  var zoomMax = (cfg.zoom_max || 30) * 50;
+  var running = true;
+
+  /* Mouse drag */
+  container.style.pointerEvents = 'auto';
+  function onPointerDown(e) {
+    isDragging = true;
+    prevX = e.clientX || (e.touches && e.touches[0].clientX) || 0;
+  }
+  function onPointerMove(e) {
+    if (!isDragging) return;
+    var x = e.clientX || (e.touches && e.touches[0].clientX) || 0;
+    var dx = x - prevX;
+    prevX = x;
+    targetRotY += dx * 0.003;
+  }
+  function onPointerUp() { isDragging = false; }
+
+  container.addEventListener('mousedown', onPointerDown);
+  container.addEventListener('mousemove', onPointerMove);
+  container.addEventListener('mouseup', onPointerUp);
+  container.addEventListener('mouseleave', onPointerUp);
+  container.addEventListener('touchstart', onPointerDown, { passive: true });
+  container.addEventListener('touchmove', onPointerMove, { passive: true });
+  container.addEventListener('touchend', onPointerUp);
+
+  /* Scroll to zoom */
+  function onWheel(e) {
+    e.preventDefault();
+    zoomTarget += e.deltaY * 0.5;
+    zoomTarget = Math.max(zoomMin, Math.min(zoomMax, zoomTarget));
+  }
+  container.addEventListener('wheel', onWheel, { passive: false });
+
+  /* Scroll hint auto-hide */
+  var scrollHintEl = document.getElementById('sphere-scroll-hint');
+  var scrollHintTimer = setTimeout(function() {
+    if (scrollHintEl) scrollHintEl.style.opacity = '0';
+  }, 4000);
+
+  /* ----- Resize handler ----- */
+  function onResize() {
+    var w = container.offsetWidth;
+    var h = container.offsetHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    cssRenderer.setSize(w, h);
+    glRenderer.setSize(w, h);
+  }
+  window.addEventListener('resize', onResize);
+
+  /* ----- Tab visibility — pause/resume ----- */
+  function onVisChange() {
+    if (document.hidden) running = false;
+    else running = true;
+  }
+  document.addEventListener('visibilitychange', onVisChange);
+
+  /* ----- Animation loop ----- */
+  var animId;
+  function animate() {
+    animId = requestAnimationFrame(animate);
+    if (!running) return;
+
+    /* Auto-rotate when not dragging */
+    if (!isDragging) {
+      targetRotY += rotationSpeed;
+    }
+
+    /* Smooth interpolation */
+    currentRotY += (targetRotY - currentRotY) * 0.05;
+    ringGroup.rotation.y = currentRotY;
+
+    /* Gentle float on particles */
+    particles.rotation.y += 0.0001;
+    particles.rotation.x += 0.00005;
+
+    /* Zoom lerp */
+    camera.position.z += (zoomTarget - camera.position.z) * 0.08;
+
+    cssRenderer.render(scene, camera);
+    glRenderer.render(glScene, camera);
+  }
+  animate();
+
+  /* ----- Public interface (matches sphere instance API) ----- */
+  return {
+    _viewMode: 'sections',
+    pause: function() { running = false; },
+    resume: function() { running = true; },
+    dispose: function() {
+      running = false;
+      cancelAnimationFrame(animId);
+      clearTimeout(scrollHintTimer);
+
+      window.removeEventListener('resize', onResize);
+      document.removeEventListener('visibilitychange', onVisChange);
+      container.removeEventListener('mousedown', onPointerDown);
+      container.removeEventListener('mousemove', onPointerMove);
+      container.removeEventListener('mouseup', onPointerUp);
+      container.removeEventListener('mouseleave', onPointerUp);
+      container.removeEventListener('touchstart', onPointerDown);
+      container.removeEventListener('touchmove', onPointerMove);
+      container.removeEventListener('touchend', onPointerUp);
+      container.removeEventListener('wheel', onWheel);
+
+      pGeo.dispose();
+      pMat.dispose();
+      glRenderer.dispose();
+
+      /* Remove renderer DOM elements */
+      if (cssRenderer.domElement.parentNode) {
+        cssRenderer.domElement.parentNode.removeChild(cssRenderer.domElement);
+      }
+      if (glRenderer.domElement.parentNode) {
+        glRenderer.domElement.parentNode.removeChild(glRenderer.domElement);
+      }
     }
   };
 }

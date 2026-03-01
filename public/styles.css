@@ -1636,6 +1636,19 @@ input, select, textarea {
     min-height: 44px;
   }
 
+  /* Modal close button — ensure 44px touch target */
+  .modal-close {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* Chat send buttons — ensure 44px touch target */
+  .chatbot-send-panel-btn,
+  .side-panel-send-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
   /* Prevent iOS Safari auto-zoom on ALL inputs site-wide (must be >= 16px) */
   input[type="text"],
   input[type="email"],
@@ -4404,6 +4417,139 @@ input, select, textarea {
   width: 100%;
   height: 100%;
   display: block;
+}
+
+.sphere-css3d-container {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.sphere-css3d-container > div {
+  pointer-events: none;
+}
+
+/* Section cards rendered inside the CSS3D scene */
+.sphere-section-card {
+  width: 320px;
+  padding: 1.5rem;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-family: var(--font-sans, 'DM Sans', sans-serif);
+  backface-visibility: hidden;
+  pointer-events: none;
+}
+
+.sphere-card-eyebrow {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--accent, #c9a96e);
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.sphere-card-title {
+  font-family: var(--font-serif, 'Playfair Display', Georgia, serif);
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+  line-height: 1.3;
+  color: #fff;
+}
+
+.sphere-card-body {
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.sphere-card-items {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.sphere-card-items li {
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.55);
+  padding-left: 0.75rem;
+  position: relative;
+}
+
+.sphere-card-items li::before {
+  content: '·';
+  position: absolute;
+  left: 0;
+  color: var(--accent, #c9a96e);
+  font-weight: 700;
+}
+
+.sphere-card-image {
+  width: 100%;
+  height: 100px;
+  object-fit: cover;
+  border-radius: 0.5rem;
+  margin-bottom: 0.75rem;
+  opacity: 0.85;
+}
+
+.sphere-card-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.sphere-card-grid-item {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 0.5rem;
+  padding: 0.5rem;
+  text-align: center;
+}
+
+.sphere-card-grid-item .grid-label {
+  font-size: 0.6rem;
+  color: rgba(255, 255, 255, 0.45);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sphere-card-grid-item .grid-value {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #fff;
+  margin-top: 0.15rem;
+}
+
+.sphere-card-stars {
+  color: var(--accent, #c9a96e);
+  font-size: 0.7rem;
+  margin-bottom: 0.25rem;
+}
+
+.sphere-card-quote {
+  font-style: italic;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.65);
+  line-height: 1.5;
+  margin-bottom: 0.5rem;
+}
+
+.sphere-card-reviewer {
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.4);
 }
 
 .sphere-heading-container {

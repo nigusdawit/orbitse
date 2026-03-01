@@ -1783,11 +1783,36 @@ TO CUSTOMIZE THIS DASHBOARD:
 
       <div class="form-row">
         <div class="form-group">
-          <label for="sphere-image-source">Image Source</label>
-          <select id="sphere-image-source" data-testid="select-sphere-image-source">
-            <option value="gallery">Use Gallery Card Images</option>
-            <option value="custom">Use Custom Images</option>
+          <label for="sphere-view-mode">View Mode</label>
+          <select id="sphere-view-mode" onchange="toggleSphereViewMode()" data-testid="select-sphere-view-mode">
+            <option value="sections">Section Carousel (cards)</option>
+            <option value="sphere">Classic Sphere (images)</option>
           </select>
+        </div>
+      </div>
+
+      <div id="sphere-carousel-settings" style="display:none;">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="sphere-card-scale">Card Scale</label>
+            <input type="number" id="sphere-card-scale" min="0.5" max="2" step="0.1" data-testid="input-sphere-card-scale">
+          </div>
+          <div class="form-group">
+            <label for="sphere-card-gap">Card Gap</label>
+            <input type="number" id="sphere-card-gap" min="1" max="5" step="0.5" data-testid="input-sphere-card-gap">
+          </div>
+        </div>
+      </div>
+
+      <div id="sphere-classic-settings">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="sphere-image-source">Image Source</label>
+            <select id="sphere-image-source" data-testid="select-sphere-image-source">
+              <option value="gallery">Use Gallery Card Images</option>
+              <option value="custom">Use Custom Images</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -5968,6 +5993,7 @@ TO CUSTOMIZE THIS DASHBOARD:
 
         document.getElementById('sphere-enabled').checked = !!data.enabled;
         document.getElementById('sphere-heading-text').value = data.heading_text || '';
+        document.getElementById('sphere-view-mode').value = data.view_mode || 'sections';
         document.getElementById('sphere-image-source').value = data.image_source || 'gallery';
         document.getElementById('sphere-particle-count').value = data.particle_count || 1500;
         document.getElementById('sphere-rotation-speed').value = data.rotation_speed || 0.0005;
@@ -5977,7 +6003,10 @@ TO CUSTOMIZE THIS DASHBOARD:
         document.getElementById('sphere-particle-opacity').value = data.particle_opacity || 1;
         document.getElementById('sphere-zoom-min').value = data.zoom_min || 5;
         document.getElementById('sphere-zoom-max').value = data.zoom_max || 30;
+        document.getElementById('sphere-card-scale').value = data.card_scale || 1.0;
+        document.getElementById('sphere-card-gap').value = data.card_gap || 2.5;
 
+        toggleSphereViewMode();
         toggleSphereImageSource();
         renderSphereImages(data.custom_images || []);
       } catch (err) {
@@ -5989,6 +6018,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       const body = {
         enabled: document.getElementById('sphere-enabled').checked,
         heading_text: document.getElementById('sphere-heading-text').value,
+        view_mode: document.getElementById('sphere-view-mode').value,
         image_source: document.getElementById('sphere-image-source').value,
         particle_count: parseInt(document.getElementById('sphere-particle-count').value) || 1500,
         rotation_speed: parseFloat(document.getElementById('sphere-rotation-speed').value) || 0.0005,
@@ -5998,6 +6028,8 @@ TO CUSTOMIZE THIS DASHBOARD:
         particle_opacity: parseFloat(document.getElementById('sphere-particle-opacity').value) || 1,
         zoom_min: parseFloat(document.getElementById('sphere-zoom-min').value) || 5,
         zoom_max: parseFloat(document.getElementById('sphere-zoom-max').value) || 30,
+        card_scale: parseFloat(document.getElementById('sphere-card-scale').value) || 1.0,
+        card_gap: parseFloat(document.getElementById('sphere-card-gap').value) || 2.5,
       };
       try {
         await fetch('/admin/api/sphere-settings', {
@@ -6019,6 +6051,14 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     document.getElementById('sphere-image-source').addEventListener('change', toggleSphereImageSource);
+
+    function toggleSphereViewMode() {
+      const mode = document.getElementById('sphere-view-mode').value;
+      const carouselPanel = document.getElementById('sphere-carousel-settings');
+      const classicPanel = document.getElementById('sphere-classic-settings');
+      if (carouselPanel) carouselPanel.style.display = mode === 'sections' ? 'block' : 'none';
+      if (classicPanel) classicPanel.style.display = mode === 'sphere' ? 'block' : 'none';
+    }
 
     function renderSphereImages(images) {
       const tbody = document.getElementById('sphere-images-body');

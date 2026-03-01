@@ -10,7 +10,7 @@ The site features:
 - **AI chatbot with site control** — enable/disable from admin, supports built-in chat or external embed
 - **Side-panel AI chat** — frosted glass panel slides in from the right when AI navigates gallery slides; shows only the agent's latest message by default with a toggle to reveal full conversation history; on mobile, appears as a compact bottom strip that expands when history is opened
 - **Split-screen AI display** — for custom slides (showSlide, generateHTML), a full overlay with chat + content is used
-- **Immersive Sphere View** — fullscreen 3D rotating image sphere with particles, scroll-to-zoom, drag-to-rotate; admin-configurable (heading, particle count, rotation speed, sphere size, image source); uses Three.js
+- **Immersive Sphere View** — fullscreen 3D experience with two modes: **Section Carousel** (default) shows site sections as glassmorphic HTML cards orbiting in 3D via CSS3DRenderer with WebGL particles; **Classic Sphere** shows rotating image sphere with particles. Both support scroll-to-zoom and drag-to-rotate. Admin-configurable (view mode, heading, particle count, rotation speed, card scale/gap, image source); uses Three.js + CSS3DRenderer
 - **Admin dashboard** at `/admin` (password-protected) for editing all content via a web interface
 - **Database-driven content** — changes in admin are instantly visible on the public site
 - **AI System Prompt Editor** — edit the AI's system prompt from admin without touching code
@@ -102,7 +102,7 @@ The entire template is industry-agnostic — naming, comments, and instructions 
   - `form_submissions` — Dynamic form submissions (form_id FK, submission_data JSONB, status, device_type, browser, os, screen_resolution, language, UTM params, referrer, IP, session_id, updated_at).
   - `uploaded_images` — Record of uploaded image files (filename, original_name, file_size).
   - `generated_pages` — AI-generated HTML pages saved from chatbot interactions. Has title, html (full content), prompt (user's original question), slug (unique URL), status (draft/published), created_at, updated_at.
-  - `sphere_settings` — 3D sphere view configuration. Singleton row (id=1). Has enabled, heading_text, particle_count, rotation_speed, sphere_radius, image_size, image_source (gallery/custom), position_randomness, particle_opacity, zoom_min, zoom_max.
+  - `sphere_settings` — 3D sphere view configuration. Singleton row (id=1). Has enabled, heading_text, view_mode (sphere/sections), particle_count, rotation_speed, sphere_radius, image_size, image_source (gallery/custom), position_randomness, particle_opacity, zoom_min, zoom_max, card_scale, card_gap.
   - `sphere_images` — Custom images for the sphere view (when image_source='custom'). Has image_url, caption, sort_order.
 
 ### API Endpoints

@@ -538,6 +538,7 @@ def init_db():
                     id              INTEGER PRIMARY KEY DEFAULT 1,
                     enabled         BOOLEAN DEFAULT false,
                     heading_text    TEXT NOT NULL DEFAULT '',
+                    view_mode       TEXT NOT NULL DEFAULT 'sections',
                     particle_count  INTEGER NOT NULL DEFAULT 1500,
                     rotation_speed  REAL NOT NULL DEFAULT 0.0005,
                     sphere_radius   REAL NOT NULL DEFAULT 9,
@@ -547,6 +548,8 @@ def init_db():
                     particle_opacity REAL NOT NULL DEFAULT 1,
                     zoom_min        REAL NOT NULL DEFAULT 5,
                     zoom_max        REAL NOT NULL DEFAULT 30,
+                    card_scale      REAL NOT NULL DEFAULT 1.0,
+                    card_gap        REAL NOT NULL DEFAULT 2.5,
                     updated_at      TIMESTAMP DEFAULT NOW()
                 );
 
@@ -610,6 +613,9 @@ def init_db():
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS seo_twitter_handle TEXT DEFAULT ''",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS seo_canonical_url TEXT DEFAULT ''",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS seo_robots TEXT DEFAULT 'index, follow'",
+                "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS view_mode TEXT NOT NULL DEFAULT 'sections'",
+                "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_scale REAL NOT NULL DEFAULT 1.0",
+                "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_gap REAL NOT NULL DEFAULT 2.5",
             ]:
                 cur.execute(col_sql)
 
@@ -1380,6 +1386,28 @@ def api_sphere_settings():
     else:
         imgs = query_db("SELECT id, image_url, caption, sort_order FROM sphere_images ORDER BY sort_order ASC")
         result["images"] = [i["image_url"] for i in (imgs or [])]
+
+    # If sections mode, include section summary data for the 3D cards
+    if result.get("view_mode") == "sections":
+        site = query_db("SELECT site_name, site_subtitle, hero_tagline, hero_title, hero_description, hero_image FROM site_settings WHERE id = 1", fetchone=True)
+        cards_data = query_db("SELECT slug, title, subtitle, image_url, category, price FROM gallery_cards ORDER BY sort_order ASC LIMIT 6")
+        exps = query_db("SELECT name, description, icon FROM experiences ORDER BY sort_order ASC LIMIT 4")
+        pricing = query_db("SELECT label, date_range, price_range FROM pricing_seasons ORDER BY sort_order ASC LIMIT 4")
+        testimonials = query_db("SELECT reviewer_name, reviewer_role, content, rating FROM testimonials ORDER BY sort_order ASC LIMIT 3")
+        team = query_db("SELECT name, title, image_url FROM team_members ORDER BY sort_order ASC LIMIT 4")
+        faqs = query_db("SELECT question FROM faqs ORDER BY sort_order ASC LIMIT 4")
+        blog = query_db("SELECT title, category, cover_image FROM blog_posts WHERE status = 'published' ORDER BY sort_order ASC LIMIT 3")
+
+        result["sections_data"] = {
+            "site": dict(site) if site else {},
+            "highlights": [dict(c) for c in (cards_data or [])],
+            "experiences": [dict(e) for e in (exps or [])],
+            "pricing": [dict(p) for p in (pricing or [])],
+            "testimonials": [dict(t) for t in (testimonials or [])],
+            "team": [dict(t) for t in (team or [])],
+            "faq": [dict(f) for f in (faqs or [])],
+            "blog": [dict(b) for b in (blog or [])],
+        }
 
     return jsonify(result)
 
@@ -4214,6 +4242,7 @@ def admin_update_sphere_settings():
         UPDATE sphere_settings SET
             enabled = %s,
             heading_text = %s,
+            view_mode = %s,
             particle_count = %s,
             rotation_speed = %s,
             sphere_radius = %s,
@@ -4223,11 +4252,14 @@ def admin_update_sphere_settings():
             particle_opacity = %s,
             zoom_min = %s,
             zoom_max = %s,
+            card_scale = %s,
+            card_gap = %s,
             updated_at = NOW()
         WHERE id = 1
     """, (
         data.get("enabled", False),
         data.get("heading_text", ""),
+        data.get("view_mode", "sections"),
         int(data.get("particle_count", 1500)),
         float(data.get("rotation_speed", 0.0005)),
         float(data.get("sphere_radius", 9)),
@@ -4237,6 +4269,8 @@ def admin_update_sphere_settings():
         float(data.get("particle_opacity", 1)),
         float(data.get("zoom_min", 5)),
         float(data.get("zoom_max", 30)),
+        float(data.get("card_scale", 1.0)),
+        float(data.get("card_gap", 2.5)),
     ))
     return jsonify({"status": "ok"})
 
