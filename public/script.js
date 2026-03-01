@@ -3258,17 +3258,35 @@ function setupBuiltinChat() {
  * 5. Display the AI's text reply
  * 6. Execute any command the AI included
  */
-function chatInjectVisualPrompt() {
+/**
+ * Get the currently active chat input element.
+ * Returns the input from whichever chat view is active (side panel,
+ * split-screen, expanded panel, or main chat bar).
+ */
+function _getActiveChatInput() {
   const barInput = document.getElementById('chatbot-bar-input');
   const panelInput = document.getElementById('chatbot-panel-input');
   const splitInput = document.getElementById('split-chat-input');
   const sideInput = document.getElementById('side-chat-input');
 
-  let target = barInput;
-  if (sidePanelActive && sideInput) target = sideInput;
-  else if (splitScreenActive && splitInput) target = splitInput;
-  else if (chatExpanded && panelInput) target = panelInput;
+  if (sidePanelActive && sideInput) return sideInput;
+  if (splitScreenActive && splitInput) return splitInput;
+  if (chatExpanded && panelInput) return panelInput;
+  return barInput;
+}
 
+
+/**
+ * "Full Screen" pill — injects "show me visually" into the prompt.
+ * This triggers the AI to use generateHTML, which renders content on
+ * the fullscreen canvas as a styled data card or visual layout.
+ *
+ * If the input already has text, appends the trigger and sends immediately.
+ * If the input is empty, pre-fills with the trigger and focuses so the
+ * user can type what they want to see.
+ */
+function chatInjectVisualPrompt() {
+  const target = _getActiveChatInput();
   if (target) {
     const current = target.value.trim();
     if (current) {
@@ -3276,6 +3294,30 @@ function chatInjectVisualPrompt() {
       chatSendMessage();
     } else {
       target.value = 'show me visually ';
+      target.focus();
+    }
+  }
+}
+
+
+/**
+ * "Visualize" pill — injects "create an animated page about" into the prompt.
+ * This triggers the AI to use generatePage, which renders inside a sandboxed
+ * iframe with full CSS freedom: animations, @keyframes, background images,
+ * parallax, scroll effects — a fully immersive animated page experience.
+ *
+ * If the input already has text, wraps it in the trigger phrase and sends.
+ * If the input is empty, pre-fills and focuses for the user to type a topic.
+ */
+function chatInjectPagePrompt() {
+  const target = _getActiveChatInput();
+  if (target) {
+    const current = target.value.trim();
+    if (current) {
+      target.value = 'create an animated page about: ' + current;
+      chatSendMessage();
+    } else {
+      target.value = 'create an animated page about ';
       target.focus();
     }
   }

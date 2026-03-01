@@ -684,9 +684,14 @@ FONTS:
         data-testid="input-chatbot-bar"
       >
 
-      <!-- Quick action pill — appends "show me visually" to the prompt -->
-      <button id="chatbot-visual-pill" class="chatbot-pill-btn" onclick="chatInjectVisualPrompt()" aria-label="Show me visually" data-testid="button-chatbot-visual">
-        show me visually
+      <!-- Quick action pills — inject hidden prompt keywords to trigger specific AI commands -->
+      <button class="chatbot-pill-btn chatbot-pill-visualize" onclick="chatInjectPagePrompt()" aria-label="Visualize as animated page" data-testid="button-chatbot-visualize">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></svg>
+        Visualize
+      </button>
+      <button class="chatbot-pill-btn chatbot-pill-fullscreen" onclick="chatInjectVisualPrompt()" aria-label="Show full screen visual" data-testid="button-chatbot-fullscreen">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+        Full Screen
       </button>
 
       <!-- Send button — submits the message -->
@@ -825,8 +830,13 @@ FONTS:
           autocomplete="off"
           data-testid="input-split-chat"
         >
-        <button class="chatbot-pill-btn chatbot-pill-inline" onclick="chatInjectVisualPrompt()" aria-label="Show me visually" data-testid="button-split-visual">
-          show me visually
+        <button class="chatbot-pill-btn chatbot-pill-inline chatbot-pill-visualize" onclick="chatInjectPagePrompt()" aria-label="Visualize as animated page" data-testid="button-split-visualize">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></svg>
+          Visualize
+        </button>
+        <button class="chatbot-pill-btn chatbot-pill-inline chatbot-pill-fullscreen" onclick="chatInjectVisualPrompt()" aria-label="Show full screen visual" data-testid="button-split-fullscreen">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+          Full Screen
         </button>
         <button class="chatbot-send-panel-btn" onclick="chatSendMessage()" data-testid="button-split-send">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -999,8 +1009,13 @@ FONTS:
           autocomplete="off"
           data-testid="input-side-chat"
         >
-        <button class="chatbot-pill-btn chatbot-pill-inline" onclick="chatInjectVisualPrompt()" aria-label="Show me visually" data-testid="button-side-visual">
-          show me visually
+        <button class="chatbot-pill-btn chatbot-pill-inline chatbot-pill-visualize" onclick="chatInjectPagePrompt()" aria-label="Visualize as animated page" data-testid="button-side-visualize">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></svg>
+          Visualize
+        </button>
+        <button class="chatbot-pill-btn chatbot-pill-inline chatbot-pill-fullscreen" onclick="chatInjectVisualPrompt()" aria-label="Show full screen visual" data-testid="button-side-fullscreen">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+          Full Screen
         </button>
         <button class="side-panel-send-btn" onclick="chatSendMessage()" data-testid="button-side-send">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
