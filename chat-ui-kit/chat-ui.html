@@ -357,6 +357,25 @@ Content on the left, frosted glass chat on the right.
 
 <!--
 ============================================================================
+IMMERSIVE PAGE IFRAME — For AI-generated animated pages (generatePage)
+============================================================================
+Unlike generateHTML (which sanitizes and strips styles/animations),
+generatePage renders inside a sandboxed iframe with FULL CSS freedom:
+animations, @keyframes, background-image, parallax, scroll effects.
+The site's theme (colors, fonts, glass effects) is auto-injected.
+-->
+<div id="immersive-page-overlay" class="immersive-page-overlay" data-testid="immersive-page-overlay">
+  <button class="canvas-close-btn" onclick="ChatUI.closeImmersivePage(); ChatUI.closeSidePanel();" data-testid="button-immersive-close">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="m15 18-6-6 6-6"/>
+    </svg>
+    Back
+  </button>
+  <iframe id="immersive-page-frame" class="immersive-page-frame" sandbox="allow-scripts" data-testid="immersive-page-frame"></iframe>
+</div>
+
+<!--
+============================================================================
 SIDE CHAT PANEL — Slides in from the right for navigate/generateHTML
 ============================================================================
 When the AI navigates to a gallery slide or generates custom HTML, this

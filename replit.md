@@ -41,6 +41,7 @@ The site features:
 - **Blog Rich Text Editor** — custom toolbar-based editor in admin (bold, italic, headings, lists, links, images) replaces raw HTML textarea
 - **Reading Progress Bar** — thin gold bar on blog post pages that fills as the reader scrolls
 - **Chat Markdown Rendering** — AI responses render with proper formatting (headings, bold, lists, code blocks, tables) instead of raw markdown text; sanitized via DOMPurify
+- **Immersive Page Generator (generatePage)** — new AI command that renders fully animated pages inside a sandboxed iframe with FULL CSS freedom: `<style>` tags, `@keyframes` animations, `background-image`, parallax, scroll effects. The site's theme (CSS variables, fonts, glass effects) is auto-injected so generated pages match the design. Unlike `generateHTML` (which sanitizes and strips styles via DOMPurify), `generatePage` gives the AI maximum creative power for immersive visual experiences.
 - **Auto-Canvas Fallback** — when AI sends long text without a generateHTML command, it auto-renders in a premium frosted-glass canvas with gradient header, contextual eyebrow labels, accent-colored list bullets, and styled tables
 - **Visual Request Priority** — system prompt enforces generateHTML for "show me visually" and similar phrases; fallback canvas ensures polished display even when AI skips the command
 
@@ -130,7 +131,7 @@ The entire template is industry-agnostic — naming, comments, and instructions 
 - `GET /blog/<slug>` — Public blog post page with SEO meta tags and JSON-LD structured data
 
 **Chat API:**
-- `POST /api/chat` — Streaming SSE chat. Accepts `{message, history, session_id}`, streams token/text/html/command/done events. Saves messages to chat_conversations/chat_messages. AI commands include: navigate, showSlide, generateVisual, generateHTML, submitForm, scrollToSection, heroMessage. The AI can also collect form data conversationally and submit via the submitForm command.
+- `POST /api/chat` — Streaming SSE chat. Accepts `{message, history, session_id}`, streams token/text/html/command/done events. Saves messages to chat_conversations/chat_messages. AI commands include: navigate, showSlide, generateVisual, generateHTML, generatePage, submitForm, scrollToSection, heroMessage. The AI can also collect form data conversationally and submit via the submitForm command. generatePage renders animated pages in a sandboxed iframe with full CSS freedom (animations, @keyframes, background-image).
 
 **Tracking API:**
 - `POST /api/track/pageview` — Record a page view with session/visitor IDs, UTM params, device info (rate-limited to 1 per session+page per 30s)

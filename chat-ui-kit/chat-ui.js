@@ -960,6 +960,16 @@ var ChatUI = (function () {
         break;
       }
 
+      /* generatePage — Render an immersive animated full page in a sandboxed
+         iframe with FULL CSS freedom: @keyframes, background-image, parallax,
+         scroll-triggered animations. The site's theme is auto-injected. */
+      case 'generatePage': {
+        openImmersivePage(cmd.html || '');
+        openSidePanel();
+        doSaveGeneratedPage(cmd.html || '', cmd.title || '');
+        break;
+      }
+
       case 'partialFormSave': {
         var partialSlug = cmd.slug;
         var partialFields = cmd.fields || {};
@@ -1195,6 +1205,74 @@ var ChatUI = (function () {
 
     var content = document.getElementById('fullscreen-canvas-content');
     if (content) content.innerHTML = '';
+  }
+
+
+  /**
+   * Open the immersive page overlay with an AI-generated animated page.
+   * Renders inside a sandboxed iframe for full CSS freedom — <style> tags,
+   * @keyframes, background-image, animations, parallax, scroll effects.
+   * The site's theme CSS variables and fonts are auto-injected into the iframe.
+   */
+  function openImmersivePage(html) {
+    if (!html || !html.trim()) return;
+
+    var overlay = document.getElementById('immersive-page-overlay');
+    var frame = document.getElementById('immersive-page-frame');
+    if (!overlay || !frame) return;
+
+    closeFullscreenCanvas();
+
+    /* Read current theme CSS variables from the live document */
+    var styles = getComputedStyle(document.documentElement);
+    var fontSerif = styles.getPropertyValue('--font-serif').trim() || "'Playfair Display', Georgia, serif";
+    var fontSans = styles.getPropertyValue('--font-sans').trim() || "'DM Sans', -apple-system, sans-serif";
+    var colorBg = styles.getPropertyValue('--color-bg').trim() || '#060b14';
+    var colorSection1 = styles.getPropertyValue('--color-section-1').trim() || '#0a0f1a';
+    var colorSection2 = styles.getPropertyValue('--color-section-2').trim() || '#060b14';
+    var colorAccent = styles.getPropertyValue('--color-accent').trim() || '#c9a96e';
+    var colorText = styles.getPropertyValue('--color-text').trim() || '#e4e4e7';
+    var glassBorder = styles.getPropertyValue('--glass-border').trim() || 'rgba(255, 255, 255, 0.08)';
+    var glassBg = styles.getPropertyValue('--glass-bg').trim() || 'rgba(255, 255, 255, 0.03)';
+
+    /* Collect Google Font links from the parent page */
+    var fontLinkEls = document.querySelectorAll('link[rel="stylesheet"][href*="fonts.googleapis.com"]');
+    var fontLinks = '';
+    for (var i = 0; i < fontLinkEls.length; i++) {
+      fontLinks += '<link rel="stylesheet" href="' + fontLinkEls[i].href + '">\n';
+    }
+
+    /* Build the full HTML document for the iframe with theme injection */
+    var fullDoc = '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+      + '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+      + fontLinks
+      + '<style>'
+      + ':root { --font-serif: ' + fontSerif + '; --font-sans: ' + fontSans + '; --color-bg: ' + colorBg + '; --color-section-1: ' + colorSection1 + '; --color-section-2: ' + colorSection2 + '; --color-accent: ' + colorAccent + '; --color-text: ' + colorText + '; --glass-border: ' + glassBorder + '; --glass-bg: ' + glassBg + '; }'
+      + '*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }'
+      + 'html { scroll-behavior: smooth; }'
+      + 'body { font-family: var(--font-sans); color: var(--color-text); background: var(--color-bg); overflow-x: hidden; -webkit-font-smoothing: antialiased; }'
+      + 'img { max-width: 100%; height: auto; display: block; }'
+      + 'a { color: var(--color-accent); text-decoration: none; }'
+      + 'h1, h2, h3, h4, h5, h6 { font-family: var(--font-serif); color: #fff; }'
+      + '::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }'
+      + '</style></head><body>' + html + '</body></html>';
+
+    frame.srcdoc = fullDoc;
+    overlay.classList.add('active');
+  }
+
+
+  /**
+   * Close the immersive page overlay and clear the iframe.
+   */
+  function closeImmersivePage() {
+    var overlay = document.getElementById('immersive-page-overlay');
+    if (!overlay) return;
+
+    overlay.classList.remove('active');
+
+    var frame = document.getElementById('immersive-page-frame');
+    if (frame) frame.srcdoc = '';
   }
 
 
@@ -1444,6 +1522,8 @@ var ChatUI = (function () {
 
     openFullscreenCanvas: openFullscreenCanvas,
     closeFullscreenCanvas: closeFullscreenCanvas,
+    openImmersivePage: openImmersivePage,
+    closeImmersivePage: closeImmersivePage,
 
     restoreHeroDescription: restoreHeroDescription,
 

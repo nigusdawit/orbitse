@@ -4181,7 +4181,7 @@ function renderVisualTemplate(data) {
  * This is the main dispatcher for all AI site control actions.
  *
  * @param {Object} cmd - The command object from the API response
- * @param {string} cmd.action - The command type (navigate, showSlide, generateVisual, generateHTML)
+ * @param {string} cmd.action - The command type (navigate, showSlide, generateVisual, generateHTML, generatePage)
  */
 function executeCommand(cmd) {
   if (!cmd || !cmd.action) return;
@@ -4205,8 +4205,9 @@ function executeCommand(cmd) {
         return;
       }
 
-      /* Close the fullscreen canvas if a visual was showing */
+      /* Close the fullscreen canvas / immersive page if a visual was showing */
       closeFullscreenCanvas();
+      closeImmersivePage();
 
       /* Navigate the actual gallery to this slide */
       const cardIndex = galleryCards.findIndex(c => c.slug === cmd.target);
@@ -4236,8 +4237,9 @@ function executeCommand(cmd) {
        - Pricing breakdowns ("Compare the options")
     */
     case 'showSlide': {
-      /* Close the fullscreen canvas if a visual was showing */
+      /* Close the fullscreen canvas / immersive page if a visual was showing */
       closeFullscreenCanvas();
+      closeImmersivePage();
 
       /* Hide other content panels */
       hideAllSplitContent();
@@ -4311,6 +4313,24 @@ function executeCommand(cmd) {
        to prevent XSS attacks from untrusted AI output. */
     case 'generateHTML': {
       openFullscreenCanvas(cmd.html || '');
+      openSidePanel();
+      saveGeneratedPage(cmd.html || '', cmd.title || '');
+      break;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────
+       GENERATE PAGE — Render an immersive animated full page
+       ─────────────────────────────────────────────────────────────────
+       Unlike generateHTML (which strips <style> and animations via
+       DOMPurify), generatePage renders inside a sandboxed iframe with
+       FULL CSS freedom: @keyframes, background-image, parallax,
+       scroll-triggered animations, gradients — anything CSS can do.
+
+       The site's theme (colors, fonts, glass effects) is automatically
+       injected into the iframe so the generated page matches the site.
+    */
+    case 'generatePage': {
+      openImmersivePage(cmd.html || '');
       openSidePanel();
       saveGeneratedPage(cmd.html || '', cmd.title || '');
       break;
@@ -4435,8 +4455,9 @@ function executeCommand(cmd) {
         showLanding();
       }
 
-      /* Close fullscreen canvas if showing */
+      /* Close fullscreen canvas / immersive page if showing */
       closeFullscreenCanvas();
+      closeImmersivePage();
 
       /* Scroll the landing container to the target section */
       setTimeout(() => {
@@ -4611,8 +4632,105 @@ function closeFullscreenCanvas() {
 }
 
 /**
+ * Open the immersive page overlay with an AI-generated animated page.
+ * Renders inside a sandboxed iframe for full CSS freedom — <style> tags,
+ * @keyframes, background-image, animations, parallax, scroll effects all work.
+ *
+ * The site's theme (CSS variables, fonts, glass effects) is automatically
+ * injected into the iframe <head> so the page matches the site's design.
+ *
+ * @param {string} html - The full HTML content (can include <style>, animations, etc.)
+ */
+function openImmersivePage(html) {
+  if (!html || !html.trim()) return;
+
+  const overlay = document.getElementById('immersive-page-overlay');
+  const frame = document.getElementById('immersive-page-frame');
+  if (!overlay || !frame) return;
+
+  /* Close the regular canvas if it was open */
+  closeFullscreenCanvas();
+
+  /* Read current theme CSS variables from the live document */
+  const styles = getComputedStyle(document.documentElement);
+  const fontSerif = styles.getPropertyValue('--font-serif').trim() || "'Playfair Display', Georgia, serif";
+  const fontSans = styles.getPropertyValue('--font-sans').trim() || "'DM Sans', -apple-system, sans-serif";
+  const colorBg = styles.getPropertyValue('--color-bg').trim() || '#060b14';
+  const colorSection1 = styles.getPropertyValue('--color-section-1').trim() || '#0a0f1a';
+  const colorSection2 = styles.getPropertyValue('--color-section-2').trim() || '#060b14';
+  const colorAccent = styles.getPropertyValue('--color-accent').trim() || '#c9a96e';
+  const colorText = styles.getPropertyValue('--color-text').trim() || '#e4e4e7';
+  const glassBorder = styles.getPropertyValue('--glass-border').trim() || 'rgba(255, 255, 255, 0.08)';
+  const glassBg = styles.getPropertyValue('--glass-bg').trim() || 'rgba(255, 255, 255, 0.03)';
+
+  /* Find Google Font links from the parent page to inject into the iframe */
+  const fontLinks = Array.from(document.querySelectorAll('link[rel="stylesheet"][href*="fonts.googleapis.com"]'))
+    .map(link => `<link rel="stylesheet" href="${link.href}">`)
+    .join('\n');
+
+  /* Build the full HTML document for the iframe with theme injection */
+  const fullDoc = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  ${fontLinks}
+  <style>
+    :root {
+      --font-serif: ${fontSerif};
+      --font-sans: ${fontSans};
+      --color-bg: ${colorBg};
+      --color-section-1: ${colorSection1};
+      --color-section-2: ${colorSection2};
+      --color-accent: ${colorAccent};
+      --color-text: ${colorText};
+      --glass-border: ${glassBorder};
+      --glass-bg: ${glassBg};
+    }
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: var(--font-sans);
+      color: var(--color-text);
+      background: var(--color-bg);
+      overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+    img { max-width: 100%; height: auto; display: block; }
+    a { color: var(--color-accent); text-decoration: none; }
+    h1, h2, h3, h4, h5, h6 { font-family: var(--font-serif); color: #fff; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+  </style>
+</head>
+<body>
+${html}
+</body>
+</html>`;
+
+  frame.srcdoc = fullDoc;
+  overlay.classList.add('active');
+}
+
+
+/**
+ * Close the immersive page overlay and clear the iframe content.
+ */
+function closeImmersivePage() {
+  const overlay = document.getElementById('immersive-page-overlay');
+  if (!overlay) return;
+
+  overlay.classList.remove('active');
+
+  const frame = document.getElementById('immersive-page-frame');
+  if (frame) frame.srcdoc = '';
+}
+
+
+/**
  * Auto-save an AI-generated HTML page to the database.
- * Called whenever the AI issues a generateHTML command.
+ * Called whenever the AI issues a generateHTML or generatePage command.
  */
 function saveGeneratedPage(html, title) {
   if (!html || !html.trim()) return;
@@ -4655,6 +4773,10 @@ function closeSidePanel() {
   const canvas = document.getElementById('fullscreen-canvas');
   if (canvas && canvas.classList.contains('active')) {
     closeFullscreenCanvas();
+  }
+  const immersiveOverlay = document.getElementById('immersive-page-overlay');
+  if (immersiveOverlay && immersiveOverlay.classList.contains('active')) {
+    closeImmersivePage();
   }
 
   /* Restore the gallery/landing to full width */
