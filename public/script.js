@@ -2458,13 +2458,11 @@ document.addEventListener('DOMContentLoaded', () => {
   (function initMobileKeyboardHandler() {
     const chatContainer = document.getElementById('chatbot-container');
     const sidePanel = document.querySelector('.side-chat-panel');
+    const landingContainer = document.querySelector('.landing-container');
     if (!chatContainer) return;
 
-    /* Store the initial full window height before the keyboard ever opens.
-       On iOS Safari, window.innerHeight sometimes changes with the keyboard,
-       sometimes not — it depends on the browser version and webview context.
-       By capturing the height on load we have a reliable baseline. */
-    const fullHeight = window.innerHeight;
+    let keyboardOpen = false;
+    let rafPending = false;
 
     function repositionChat(bottomPx) {
       if (chatContainer) {
@@ -2480,50 +2478,64 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
+    /* Disable snap-scroll when keyboard is open to prevent forced snapping */
+    function disableSnapScroll() {
+      if (landingContainer) {
+        landingContainer.style.scrollSnapType = 'none';
+      }
+    }
+
+    function restoreSnapScroll() {
+      if (landingContainer) {
+        landingContainer.style.scrollSnapType = '';
+      }
+    }
+
     /* ---- Strategy 1: visualViewport API (best support) ---- */
     if (window.visualViewport) {
-      window.visualViewport.addEventListener('resize', function() {
-        const vvHeight = window.visualViewport.height;
-        /* Compare visual viewport height against our stored full height.
-           If it shrank by more than 100px, the keyboard is likely open. */
-        const diff = fullHeight - vvHeight;
-        if (diff > 100) {
-          /* Position the chat just above the keyboard with 8px padding */
-          repositionChat((diff + 8) + 'px');
-        } else {
-          repositionChat('');
-        }
-      });
+      function onViewportChange() {
+        if (rafPending) return;
+        rafPending = true;
+        requestAnimationFrame(function() {
+          rafPending = false;
+          const vv = window.visualViewport;
+          const currentFullHeight = window.innerHeight;
+          const diff = currentFullHeight - vv.height;
 
-      /* Also listen to scroll events — on iOS the viewport can pan */
-      window.visualViewport.addEventListener('scroll', function() {
-        const vvHeight = window.visualViewport.height;
-        const diff = fullHeight - vvHeight;
-        if (diff > 100) {
-          repositionChat((diff + 8) + 'px');
-        } else {
-          repositionChat('');
-        }
-      });
+          if (diff > 100) {
+            const offset = diff + vv.offsetTop + 8;
+            repositionChat(offset + 'px');
+            if (!keyboardOpen) {
+              keyboardOpen = true;
+              disableSnapScroll();
+            }
+          } else {
+            repositionChat('');
+            if (keyboardOpen) {
+              keyboardOpen = false;
+              setTimeout(restoreSnapScroll, 300);
+            }
+          }
+        });
+      }
+
+      window.visualViewport.addEventListener('resize', onViewportChange);
+      window.visualViewport.addEventListener('scroll', onViewportChange);
     }
 
     /* ---- Strategy 2: Focus/blur fallback for older devices ---- */
-    /* If visualViewport is not available or not firing reliably,
-       detect keyboard via input focus and use a conservative offset. */
     let focusedInput = null;
 
     document.addEventListener('focusin', function(e) {
       const tag = e.target.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') {
         focusedInput = e.target;
-        /* On devices where visualViewport isn't reliable, use a
-           timeout to let the keyboard finish animating, then check
-           if the element is still focused and possibly obscured */
+
         if (!window.visualViewport) {
+          disableSnapScroll();
           setTimeout(function() {
             if (document.activeElement === focusedInput) {
-              /* Use a conservative 45% of screen height as keyboard estimate */
-              const estimatedKeyboard = Math.round(fullHeight * 0.45);
+              const estimatedKeyboard = Math.round(window.innerHeight * 0.45);
               repositionChat(estimatedKeyboard + 'px');
             }
           }, 400);
@@ -2533,10 +2545,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.addEventListener('focusout', function() {
       focusedInput = null;
-      /* Small delay to avoid flicker when tapping between inputs */
       setTimeout(function() {
         if (!focusedInput) {
           repositionChat('');
+          if (!window.visualViewport) {
+            restoreSnapScroll();
+          }
         }
       }, 150);
     });

@@ -207,7 +207,8 @@ SECTIONS:
 html, body {
   height: 100%;
   width: 100%;
-  overflow: hidden; /* Prevent page-level scrolling — we manage scroll ourselves */
+  overflow: hidden;
+  overflow-x: hidden;
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -237,10 +238,23 @@ button {
   background: none;
   font-family: inherit;
   color: inherit;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+a {
+  -webkit-tap-highlight-color: transparent;
 }
 
 input, select, textarea {
   font-family: var(--font-sans);
+}
+
+/* Prevent iOS auto-zoom on touch devices (applies to all viewport sizes including iPad) */
+@media (hover: none) and (pointer: coarse) {
+  input, select, textarea {
+    font-size: 16px !important;
+  }
 }
 
 
@@ -279,10 +293,13 @@ input, select, textarea {
 
 .landing-container {
   height: 100vh;
+  height: 100dvh;
   overflow-y: auto;
+  overflow-x: hidden;
   scroll-snap-type: y mandatory;
   scroll-behavior: smooth;
   scroll-snap-stop: always;
+  -webkit-overflow-scrolling: touch;
 }
 
 .snap-section {
@@ -361,6 +378,7 @@ input, select, textarea {
 .hero-section {
   position: relative;
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
 }
@@ -440,6 +458,9 @@ input, select, textarea {
   justify-content: center;
   text-align: center;
   padding: 0 var(--space-lg);
+  box-sizing: border-box;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .hero-tagline {
@@ -457,6 +478,9 @@ input, select, textarea {
   color: #fff;
   margin-bottom: var(--space-lg);
   line-height: 1.1;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  max-width: 100%;
 }
 
 .hero-description {
@@ -468,6 +492,8 @@ input, select, textarea {
   line-height: 1.6;
   transition: opacity 0.3s ease;
   min-height: 1.6em;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .hero-description.hero-typing {
@@ -509,6 +535,7 @@ input, select, textarea {
 .landing-section {
   position: relative;
   min-height: 100vh;
+  min-height: 100dvh;
   padding: var(--space-3xl) var(--space-xl);
 }
 
@@ -1536,6 +1563,14 @@ input, select, textarea {
     padding: var(--space-md);
   }
 
+  .hero-content {
+    padding: 0 var(--space-md);
+  }
+
+  .hero-title {
+    font-size: clamp(2.25rem, 10vw, 3.5rem);
+  }
+
   .hero-buttons {
     flex-direction: column;
     align-items: center;
@@ -1582,11 +1617,40 @@ input, select, textarea {
   }
 
   .dot-nav {
-    display: none; /* Hide dot nav on mobile — use arrows instead */
+    display: none;
   }
 
   .gallery-top-left .logo-text {
     display: none;
+  }
+
+  /* Ensure 44px minimum touch targets on navigation buttons */
+  .nav-circle-btn {
+    width: 2.75rem;
+    height: 2.75rem;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .faq-question {
+    min-height: 44px;
+  }
+
+  /* Prevent iOS Safari auto-zoom on ALL inputs site-wide (must be >= 16px) */
+  input[type="text"],
+  input[type="email"],
+  input[type="tel"],
+  input[type="number"],
+  input[type="date"],
+  input[type="search"],
+  input[type="password"],
+  input[type="url"],
+  select,
+  textarea,
+  .form-group input,
+  .form-group select,
+  .glass-textarea {
+    font-size: 16px !important;
   }
 }
 
@@ -3035,6 +3099,7 @@ input, select, textarea {
 .chatbot-messages {
   flex: 1;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 1rem;
   display: flex;
   flex-direction: column;
@@ -4165,8 +4230,8 @@ input, select, textarea {
     width: 94%;
     max-width: none;
     bottom: 0.5rem;
-    /* Smooth transition when keyboard opens/closes and JS adjusts bottom */
     transition: bottom 0.15s ease-out;
+    will-change: bottom;
   }
 
   /* When the mobile keyboard is open, reduce the expanded panel height
@@ -4246,6 +4311,68 @@ input, select, textarea {
 
   .landing-container.side-panel-active {
     margin-right: 0;
+  }
+
+  /* Modal form — nearly fullscreen on mobile for easier input */
+  .modal-content {
+    max-width: 100%;
+    max-height: 85vh;
+    max-height: 85dvh;
+    border-radius: 0.75rem;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .modal-body {
+    padding-bottom: calc(var(--space-xl) + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* Safe area insets for notched phones (iPhone X+) */
+  .chatbot-container {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .side-chat-panel {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+}
+
+
+/* =====================================================================
+   SMALL SCREEN — Extra adjustments for phones under 380px
+   ===================================================================== */
+
+@media (max-width: 380px) {
+  .hero-title {
+    font-size: clamp(1.75rem, 9vw, 2.5rem);
+  }
+
+  .hero-content {
+    padding: 0 var(--space-sm);
+  }
+
+  .hero-buttons {
+    max-width: 260px;
+  }
+
+  .hero-buttons .btn-primary,
+  .hero-buttons .btn-secondary {
+    font-size: 0.7rem;
+    padding: 0.75rem 1rem;
+    letter-spacing: 0.1em;
+  }
+
+  .landing-section {
+    padding: var(--space-xl) var(--space-sm);
+  }
+
+  .chatbot-container {
+    width: 96%;
+  }
+
+  .sphere-heading {
+    font-size: clamp(1.5rem, 8vw, 2.5rem);
+    padding: 0 var(--space-sm);
   }
 }
 
@@ -4367,7 +4494,7 @@ input, select, textarea {
   }
 
   .sphere-scroll-hint {
-    bottom: 1.5rem;
+    bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
     font-size: 0.65rem;
   }
 }

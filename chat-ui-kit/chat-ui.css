@@ -1422,6 +1422,8 @@ SECTIONS:
     max-width: none;
     bottom: 0.5rem;
     transition: bottom 0.15s ease-out;
+    will-change: bottom;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 
   .chatbot-container.keyboard-open .chatbot-panel {
