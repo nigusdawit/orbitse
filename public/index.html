@@ -79,7 +79,7 @@ FONTS:
        This prevents XSS (Cross-Site Scripting) attacks from malicious or
        unexpected HTML/JS in AI responses. All innerHTML assignments of
        AI-generated content pass through DOMPurify.sanitize() first. -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.4/purify.min.js" integrity="sha512-MRxSTHOqMPFz8gRXMPfqPqwxBBMhSbpWOYBMochFflixJg3BnuD/xQQxDj8AkKA1ANWPQHR7IYUKBFCP0iLHg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.4/purify.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
   <!-- JSON_LD_INJECT — This placeholder is replaced server-side by Flask
        with JSON-LD structured data (Organization + WebSite schemas) for

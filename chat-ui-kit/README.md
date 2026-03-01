@@ -11,6 +11,7 @@ A standalone, reusable AI chat interface with frosted-glass design, split-screen
 | `chat-ui.css`   | All chat-related styles (chatbot bar, panels, canvas, split-screen, responsive) |
 | `chat-ui.html`  | HTML partial — paste into your page body             |
 | `chat-ui.js`    | Self-contained JS module exposing `ChatUI` namespace |
+| `PROMPT_GUIDE.md` | How to write an AI system prompt for the chat UI   |
 | `README.md`     | This file                                            |
 
 ---
@@ -85,6 +86,19 @@ Paste the contents of `chat-ui.html` into your page's `<body>`, just before the 
 ```
 
 The chat endpoint URL itself comes from your `/api/chatbot-settings` response (the `api_endpoint` field), defaulting to `/api/chat` if not set.
+
+---
+
+## AI System Prompt
+
+The chat UI executes commands embedded in AI responses. Your AI model needs specific
+instructions to format commands correctly and use the frosted glass design system.
+
+See **[PROMPT_GUIDE.md](PROMPT_GUIDE.md)** for:
+- Complete command reference with examples
+- The frosted glass design system CSS rules
+- Behavior rules and common mistakes to avoid
+- A ready-to-use template prompt you can copy and customize
 
 ---
 
