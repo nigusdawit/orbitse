@@ -1,104 +1,114 @@
 # Chat UI Kit
 
-A standalone, reusable AI chat interface with frosted-glass design, split-screen visuals, fullscreen canvas, and side panel — extracted from the main template for drop-in use on any page.
+A complete, production-ready AI chat template with a frosted-glass interface, real-time streaming, conversation capture, generated HTML storage, dynamic forms with lead recovery, and a full admin dashboard. Drop it into any website and configure a few settings to get a working AI concierge that controls your site.
 
 ---
 
-## Files
+## What's Included
 
-| File            | Purpose                                              |
-|-----------------|------------------------------------------------------|
-| `chat-ui.css`   | All chat-related styles (chatbot bar, panels, canvas, split-screen, responsive) |
-| `chat-ui.html`  | HTML partial — paste into your page body             |
-| `chat-ui.js`    | Self-contained JS module exposing `ChatUI` namespace |
-| `PROMPT_GUIDE.md` | How to write an AI system prompt for the chat UI   |
-| `README.md`     | This file                                            |
-
----
-
-## Dependencies
-
-| Dependency   | Required | Purpose                              | CDN Example |
-|--------------|----------|--------------------------------------|-------------|
-| DOMPurify    | Yes      | Sanitize AI-generated HTML           | `<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>` |
-| Lucide Icons | Optional | Render `<i data-lucide="...">` icons | `<script src="https://unpkg.com/lucide@latest"></script>` |
+| Component | Files | Description |
+|-----------|-------|-------------|
+| **Frontend Widget** | `chat-ui.css`, `chat-ui.html`, `chat-ui.js` | The chat bar, expandable panel, split-screen overlay, fullscreen canvas, and side panel |
+| **Reference Backend** | `backend/server.py`, `backend/schema.sql` | Flask server with SSE streaming, OpenAI integration, conversation storage, form submissions, and all admin APIs |
+| **Admin Dashboard** | `backend/admin.html` | Single-file admin panel for viewing chat history, managing AI-generated pages, reviewing form submissions, and configuring the chatbot |
+| **AI Prompt Guide** | `PROMPT_GUIDE.md` | How to write a system prompt that works with the chat commands and frosted glass design system |
+| **Site Integration Guide** | `INTEGRATION_GUIDE.md` | How to wire the chat to control your site (gallery navigation, section scrolling, hero text, etc.) |
 
 ---
 
 ## Quick Start
 
-### 1. Add CSS
+### 1. Set Up the Database
 
-```html
-<link rel="stylesheet" href="chat-ui-kit/chat-ui.css">
+Create a PostgreSQL database and run the schema:
+
+```bash
+psql -U your_user -d your_database -f backend/schema.sql
 ```
 
-### 2. Add HTML partial
+### 2. Configure the Backend
 
-Paste the contents of `chat-ui.html` into your page's `<body>`, just before the closing `</body>` tag.
+Set environment variables (or edit the top of `backend/server.py`):
 
-### 3. Add JS
+```bash
+export DATABASE_URL="postgresql://user:password@localhost:5432/your_database"
+export OPENAI_API_KEY="sk-..."
+export ADMIN_API_KEY="your-secret-admin-key"
+```
+
+### 3. Install Dependencies and Run
+
+```bash
+pip install flask psycopg2-binary openai
+python backend/server.py
+```
+
+The server starts on `http://localhost:5000`. Admin dashboard is at `http://localhost:5000/admin`.
+
+### 4. Add the Frontend to Your Page
 
 ```html
+<!-- CSS -->
+<link rel="stylesheet" href="chat-ui.css">
+
+<!-- HTML partial — paste chat-ui.html contents before </body> -->
+
+<!-- JS -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
-<script src="chat-ui-kit/chat-ui.js"></script>
-```
+<script src="chat-ui.js"></script>
 
-### 4. Initialize
-
-```html
 <script>
   ChatUI.init({
-    // Settings endpoint — fetches chatbot config (agent name, role, avatar, prompts, etc.)
-    // Default: '/api/chatbot-settings'
     settingsEndpoint: '/api/chatbot-settings',
-
-    // Gallery integration — return your gallery cards array
-    // Each card: { title, subtitle, description, category, image, id }
     getGalleryCards: function() { return myGalleryCards; },
-
-    // Navigate to a gallery slide by index
-    goToSlide: function(index) { /* your slide navigation logic */ },
-
-    // Show the gallery view
-    showGallery: function() { /* show your gallery */ },
-
-    // Show the landing/home view
-    showLanding: function() { /* show your landing page */ },
-
-    // DOM element getters — return the elements the chat system needs to manipulate
+    goToSlide: function(index) { /* navigate to slide */ },
+    showGallery: function() { /* show gallery view */ },
+    showLanding: function() { /* show landing view */ },
     getHeroElement: function() { return document.getElementById('hero-description'); },
     getGalleryView: function() { return document.getElementById('gallery-view'); },
     getLandingView: function() { return document.getElementById('landing-view'); },
     getLandingContainer: function() { return document.querySelector('.landing-container'); },
-
-    // Original hero description text (for the restoreHero command)
-    originalHeroDescription: 'Welcome to our site',
-
-    // Optional — save AI-generated pages to the server
-    saveGeneratedPage: function(html, title, prompt) { /* POST to your save endpoint */ },
-    onPageSaved: function(data) { /* callback after save succeeds */ },
-
-    // Optional — custom HTML escaping function (built-in fallback provided)
-    escapeHtml: null
+    originalHeroDescription: 'Welcome to our site'
   });
 </script>
 ```
 
-The chat endpoint URL itself comes from your `/api/chatbot-settings` response (the `api_endpoint` field), defaulting to `/api/chat` if not set.
+The chat endpoint URL comes from your `/api/chatbot-settings` response (the `api_endpoint` field), defaulting to `/api/chat`.
 
 ---
 
-## AI System Prompt
+## What to Configure
 
-The chat UI executes commands embedded in AI responses. Your AI model needs specific
-instructions to format commands correctly and use the frosted glass design system.
+Before going live, update these items to match your site:
 
-See **[PROMPT_GUIDE.md](PROMPT_GUIDE.md)** for:
-- Complete command reference with examples
-- The frosted glass design system CSS rules
-- Behavior rules and common mistakes to avoid
-- A ready-to-use template prompt you can copy and customize
+| Setting | Where | What to Change |
+|---------|-------|----------------|
+| **Database connection** | `backend/server.py` or env var `DATABASE_URL` | Your PostgreSQL connection string |
+| **OpenAI API key** | `backend/server.py` or env var `OPENAI_API_KEY` | Your API key from OpenAI |
+| **AI model** | `backend/server.py` or env var `AI_MODEL` | Default is `gpt-4o-mini`; use `gpt-4o` for higher quality |
+| **Admin authentication** | `backend/server.py` — `admin_required` decorator | Replace the simple API key check with session auth, JWT, or OAuth |
+| **Gallery cards** | `ChatUI.init()` — `getGalleryCards` callback | Return your actual gallery/product data |
+| **Site sections** | Your HTML | Add `id` attributes matching the pattern `section-hero`, `section-pricing`, etc. |
+| **Theme colors/fonts** | CSS `:root` variables + `server.py` theme block | Match your site's accent color, fonts, and glass effects |
+| **System prompt** | Admin dashboard or `server.py` `SYSTEM_PROMPT` | Customize the AI's personality, knowledge, and behavior |
+
+---
+
+## Guides
+
+| Guide | What It Covers |
+|-------|---------------|
+| **[PROMPT_GUIDE.md](PROMPT_GUIDE.md)** | Complete command reference, frosted glass design system, behavior rules, common mistakes, and a copy-pasteable template prompt |
+| **[INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md)** | How to wire the chat to navigate your gallery, scroll to sections, control the hero, use split-screen and canvas, add custom commands, and a minimal working example |
+
+---
+
+## Frontend Dependencies
+
+| Dependency   | Required | Purpose                              | CDN Example |
+|--------------|----------|--------------------------------------|-------------|
+| DOMPurify    | Yes      | Sanitize AI-generated HTML           | `<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>` |
+| Lucide Icons | Optional | Render `<i data-lucide="...">` icons | `<script src="https://unpkg.com/lucide@latest"></script>` |
 
 ---
 
@@ -181,9 +191,47 @@ All public methods are on the global `ChatUI` object.
 
 ---
 
+## Backend API Reference
+
+All routes are defined in `backend/server.py`. Admin routes require authentication (see `admin_required` decorator).
+
+### Public Endpoints
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/api/chatbot-settings` | GET | Returns chatbot config (agent name, avatar, greeting, quick prompts, endpoint URL) |
+| `/api/chat` | POST | Main AI chat endpoint — SSE streaming response with token, text, command, and done events |
+| `/api/generated-pages` | POST | Save an AI-generated HTML page as a draft |
+| `/api/forms/<slug>/submit` | POST | Submit a dynamic form with validation and confirmation number generation |
+| `/api/forms/<slug>/partial` | POST | Auto-save partial form data for abandon recovery |
+| `/page/<slug>` | GET | View a published AI-generated page |
+
+### Admin Endpoints
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/admin` | GET | Serve the admin dashboard |
+| `/admin/api/chat-history` | GET | List conversations with stats (paginated) |
+| `/admin/api/chat-history/<id>` | GET | Full conversation transcript |
+| `/admin/api/chat-history/<id>` | DELETE | Delete a conversation |
+| `/admin/api/generated-pages` | GET | List all saved pages |
+| `/admin/api/generated-pages/<id>` | GET | Get a single page with full HTML |
+| `/admin/api/generated-pages/<id>` | PUT | Update page title, HTML, or status |
+| `/admin/api/generated-pages/<id>` | DELETE | Delete a page |
+| `/admin/api/chatbot-settings` | GET | Get chatbot settings |
+| `/admin/api/chatbot-settings` | PUT | Update chatbot settings |
+| `/admin/api/forms` | GET | List all forms with field/submission counts |
+| `/admin/api/forms/<id>/submissions` | GET | Get form submissions with field definitions |
+| `/admin/api/forms/<id>/analytics` | GET | Marketing analytics (UTM, device, browser, referrer breakdowns) |
+| `/admin/api/submissions/<id>/status` | PUT | Update submission status |
+| `/admin/api/submissions/<id>` | DELETE | Delete a submission |
+| `/admin/api/default-prompt` | GET | Get the hardcoded default system prompt |
+
+---
+
 ## SSE Chat Endpoint Format
 
-The kit sends a POST request to the chat endpoint (from `chatbot_settings.api_endpoint`, default `/api/chat`) and expects a Server-Sent Events (SSE) stream in response.
+The kit sends a POST request to the chat endpoint and expects a Server-Sent Events (SSE) stream in response.
 
 ### Request
 
@@ -198,6 +246,7 @@ Content-Type: application/json
     { "role": "assistant", "content": "Hi there!" }
   ],
   "session_id": "cs_1234567890_abc123",
+  "visitor_id": "v_abc123def456",
   "page_url": "https://example.com/",
   "referrer": "https://google.com",
   "screen_resolution": "1920x1080",
@@ -212,34 +261,23 @@ Content-Type: application/json
 
 ### Response (SSE stream)
 
-Each event is a JSON object on a `data:` line:
-
 ```
 data: {"type":"token","content":"Here's "}
 data: {"type":"token","content":"what I can tell you..."}
 data: {"type":"text","content":"Here's what I can tell you about our services."}
 data: {"type":"command","command":{"action":"navigate","target":"services"}}
+data: {"type":"done"}
 ```
 
 **Event types:**
 
 | Type      | Fields            | Description                              |
 |-----------|-------------------|------------------------------------------|
-| `token`   | `content`         | Streamed text chunk (appended to message in real-time) |
-| `text`    | `content`         | Final complete reply text (sent after all tokens) |
-| `command` | `command`         | AI command object (see below)            |
+| `token`   | `content`         | Streamed text chunk (real-time display)  |
+| `text`    | `content`         | Final complete reply text                |
+| `command` | `command`         | AI command object to execute             |
+| `done`    | —                 | Stream complete                          |
 | `error`   | `content`         | Error message                            |
-
-**Command actions:**
-
-| Action         | Fields                                    | Effect                        |
-|----------------|-------------------------------------------|-------------------------------|
-| `navigate`     | `target` (string or index)                | Navigate to gallery slide or page section |
-| `showSlide`    | `title`, `subtitle`, `points[]`, `image`  | Show a structured slide       |
-| `generateHTML` | `html`                                    | Render custom HTML on canvas  |
-| `highlightHero`| `text`                                    | Update the hero description   |
-| `restoreHero`  | —                                         | Restore original hero text    |
-| `showGallery`  | —                                         | Show the gallery view         |
 
 ---
 
@@ -259,6 +297,17 @@ The HTML partial includes five components:
 
 ---
 
+## Admin Dashboard
+
+The admin dashboard (`backend/admin.html`) is a single-file, zero-dependency admin panel with a frosted glass dark theme matching the chat UI aesthetic. It includes four tabs:
+
+1. **Chat History** — Stats cards (total conversations, messages today, avg per session, unique visitors) + conversation list + click-to-view full transcript
+2. **Generated Pages** — List of AI-generated HTML pages with preview (iframe), publish/unpublish, and delete
+3. **Form Submissions** — Form selector, dynamic columns from form fields, status management (new/reviewed/contacted/archived), marketing analytics
+4. **Chatbot Settings** — Toggle enabled, agent name/role/avatar, greeting, quick prompts editor, system prompt textarea, mode selector (built-in vs embed)
+
+---
+
 ## Customization Tips
 
 - **Avatar**: Replace `/ai_concierge.png` references in the HTML with your own avatar image path.
@@ -267,3 +316,4 @@ The HTML partial includes five components:
 - **Colors**: Override CSS variables listed above — the accent color flows through buttons, borders, highlights, and message bubbles.
 - **Glass effect**: Adjust `backdrop-filter` values in `chat-ui.css` to control blur intensity.
 - **Responsive**: The kit includes mobile breakpoints at 768px and 600px. Split-screen becomes an overlay on mobile.
+- **AI Model**: Change `AI_MODEL` in `server.py` to use a different OpenAI model (or modify the chat route to use any LLM API).

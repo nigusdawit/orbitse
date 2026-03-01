@@ -389,6 +389,17 @@ templates/
     dashboard.html              — Admin panel (content management, SEO, blog, analytics)
     login.html                  — Admin login page
   blog_post.html                — Individual blog post page template
+chat-ui-kit/                    — Standalone sellable chat UI template package
+  chat-ui.css                   — Chat widget styles (frosted glass, responsive)
+  chat-ui.html                  — HTML partial (chat bar, panels, canvas, split-screen)
+  chat-ui.js                    — Self-contained JS module (ChatUI namespace)
+  README.md                     — Full package overview and setup instructions
+  PROMPT_GUIDE.md               — AI system prompt writing guide with command reference
+  INTEGRATION_GUIDE.md          — How to wire the chat to control any website
+  backend/
+    schema.sql                  — PostgreSQL schema for all chat tables (7 tables)
+    server.py                   — Reference Flask backend with all API routes
+    admin.html                  — Standalone admin dashboard (frosted glass dark theme)
 GUIDE.md                       — Developer guide for customizing the template
 pyproject.toml                  — Python package dependencies
 uv.lock                        — Python dependency lock file

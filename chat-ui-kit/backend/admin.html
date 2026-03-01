@@ -1,0 +1,2039 @@
+<!DOCTYPE html>
+<!--
+===============================================================================
+CHAT UI KIT — Admin Dashboard (admin.html)
+===============================================================================
+
+PURPOSE:
+  Standalone, self-contained admin panel for managing the AI chat system.
+  No external dependencies, no build tools — just open in a browser.
+  Fetches data from the backend API routes defined in server.py.
+
+TABS:
+  1. Chat History    — View conversations, message stats, full transcripts
+  2. Generated Pages — Manage AI-generated HTML pages (preview, publish, delete)
+  3. Form Submissions— Review form submissions with marketing analytics
+  4. Chatbot Settings— Configure the AI chatbot (name, prompts, mode, etc.)
+
+STYLING:
+  Frosted glass dark theme matching the chat UI aesthetic.
+  Colors: Dark bg (#0a0f1a), gold accent (#c9a96e), frosted glass cards.
+  Fonts: DM Sans (body) + Playfair Display (headings).
+
+TO CUSTOMIZE:
+  - Update API_BASE if your backend runs on a different URL
+  - Swap the @admin_required auth mechanism in server.py
+  - Add new tabs by copying the tab pattern below
+
+===============================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
+  <title>Chat Admin Dashboard</title>
+
+  <!-- Google Fonts — DM Sans for body, Playfair Display for headings -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,100..1000&family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap">
+
+  <style>
+    /*
+    ========================================================================
+    ADMIN DASHBOARD STYLES — Frosted Glass Dark Theme
+    ========================================================================
+    Self-contained CSS. No external stylesheets needed.
+    Gold accent (#c9a96e) for active states and highlights.
+    Frosted glass cards with backdrop-filter blur.
+    */
+
+    :root {
+      /* Background colors */
+      --bg-primary: #0a0f1a;
+      --bg-surface: rgba(255, 255, 255, 0.03);
+      --bg-surface-hover: rgba(255, 255, 255, 0.06);
+      --bg-elevated: rgba(255, 255, 255, 0.05);
+
+      /* Border colors */
+      --border-default: rgba(255, 255, 255, 0.08);
+      --border-light: rgba(255, 255, 255, 0.12);
+
+      /* Text colors */
+      --text-primary: #e4e4e7;
+      --text-secondary: rgba(255, 255, 255, 0.6);
+      --text-muted: rgba(255, 255, 255, 0.4);
+      --text-white: #ffffff;
+
+      /* Accent — gold */
+      --accent: #c9a96e;
+      --accent-dim: rgba(201, 169, 110, 0.15);
+      --accent-border: rgba(201, 169, 110, 0.3);
+
+      /* Status colors */
+      --success: #22c55e;
+      --success-dim: rgba(34, 197, 94, 0.15);
+      --success-border: rgba(34, 197, 94, 0.3);
+      --success-text: #86efac;
+      --danger: #ef4444;
+      --danger-dim: rgba(239, 68, 68, 0.15);
+      --danger-border: rgba(239, 68, 68, 0.3);
+      --danger-text: #fca5a5;
+      --info: #3b82f6;
+      --info-dim: rgba(59, 130, 246, 0.15);
+      --info-border: rgba(59, 130, 246, 0.3);
+      --info-text: #93c5fd;
+      --warning: #f59e0b;
+      --warning-dim: rgba(245, 158, 11, 0.15);
+      --warning-border: rgba(245, 158, 11, 0.3);
+      --warning-text: #fcd34d;
+
+      /* Layout */
+      --radius: 0.5rem;
+      --blur: blur(20px);
+      --blur-heavy: blur(32px);
+      --sidebar-width: 220px;
+
+      /* Typography */
+      --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-serif: 'Playfair Display', Georgia, serif;
+    }
+
+    /* ===== RESET ===== */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      position: relative;
+    }
+
+    /* Ambient background glow effects */
+    body::before {
+      content: '';
+      position: fixed;
+      top: -30%;
+      left: -10%;
+      width: 60%;
+      height: 60%;
+      background: radial-gradient(circle, rgba(201, 169, 110, 0.04) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    body::after {
+      content: '';
+      position: fixed;
+      bottom: -20%;
+      right: -10%;
+      width: 50%;
+      height: 50%;
+      background: radial-gradient(circle, rgba(139, 92, 246, 0.03) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ===== HEADER ===== */
+    /* Fixed top bar with dashboard title and navigation links */
+    .admin-header {
+      background: var(--bg-surface);
+      backdrop-filter: var(--blur-heavy);
+      -webkit-backdrop-filter: var(--blur-heavy);
+      border-bottom: 1px solid var(--border-default);
+      padding: 1rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+
+    .admin-header h1 {
+      font-family: var(--font-serif);
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: var(--text-white);
+    }
+
+    .admin-header h1 span {
+      color: var(--accent);
+    }
+
+    .header-links {
+      display: flex;
+      gap: 1rem;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .header-links a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 0.875rem;
+      transition: color 0.2s;
+    }
+
+    .header-links a:hover { color: var(--text-white); }
+
+    /* ===== LAYOUT ===== */
+    .admin-layout {
+      display: flex;
+      min-height: calc(100vh - 56px);
+    }
+
+    /* ===== SIDEBAR ===== */
+    /* Fixed left navigation with gold accent on active tab */
+    .sidebar {
+      width: var(--sidebar-width);
+      min-width: var(--sidebar-width);
+      background: var(--bg-surface);
+      backdrop-filter: var(--blur-heavy);
+      -webkit-backdrop-filter: var(--blur-heavy);
+      border-right: 1px solid var(--border-default);
+      position: sticky;
+      top: 56px;
+      height: calc(100vh - 56px);
+      overflow-y: auto;
+      z-index: 10;
+      padding: 0.75rem 0;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.1) transparent;
+    }
+
+    .sidebar::-webkit-scrollbar { width: 4px; }
+    .sidebar::-webkit-scrollbar-track { background: transparent; }
+    .sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+
+    /* Sidebar section labels */
+    .sidebar-group-label {
+      padding: 0.875rem 1.25rem 0.375rem;
+      font-size: 0.625rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-muted);
+      user-select: none;
+    }
+
+    /* Sidebar tab buttons */
+    .tab-btn {
+      display: flex;
+      align-items: center;
+      gap: 0.625rem;
+      width: 100%;
+      padding: 0.5rem 1.25rem;
+      font-size: 0.8125rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      background: none;
+      border: none;
+      border-left: 2px solid transparent;
+      cursor: pointer;
+      transition: color 0.2s, background 0.2s, border-color 0.2s;
+      font-family: inherit;
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    .tab-btn:hover {
+      color: rgba(255,255,255,0.8);
+      background: rgba(255,255,255,0.04);
+    }
+
+    /* Active tab — gold left border and text highlight */
+    .tab-btn.active {
+      color: var(--accent);
+      background: var(--accent-dim);
+      border-left-color: var(--accent);
+    }
+
+    .tab-btn svg {
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
+      opacity: 0.5;
+    }
+
+    .tab-btn.active svg { opacity: 1; }
+
+    /* ===== MAIN CONTENT AREA ===== */
+    .admin-main {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .tab-content {
+      display: none;
+      padding: 2rem;
+      position: relative;
+      z-index: 1;
+    }
+
+    .tab-content.active { display: block; }
+
+    /* ===== MOBILE SIDEBAR TOGGLE ===== */
+    /* Hamburger button shown only on mobile screens */
+    .sidebar-toggle {
+      display: none;
+      position: fixed;
+      bottom: 1.25rem;
+      left: 1.25rem;
+      z-index: 60;
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: 1px solid var(--border-light);
+      background: var(--bg-primary);
+      backdrop-filter: var(--blur-heavy);
+      -webkit-backdrop-filter: var(--blur-heavy);
+      color: var(--accent);
+      cursor: pointer;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    }
+
+    /* Dark overlay behind sidebar on mobile */
+    .sidebar-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 40;
+    }
+
+    .sidebar-overlay.active { display: block; }
+
+    /* ===== SECTION HEADERS ===== */
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1.5rem;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .section-header h2 {
+      font-family: var(--font-serif);
+      font-size: 1.5rem;
+      color: var(--text-white);
+    }
+
+    .section-header p {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      margin-top: 0.25rem;
+    }
+
+    /* ===== STAT CARDS ===== */
+    /* Row of 4 metric cards at the top of tabs */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .stat-card {
+      background: var(--bg-surface);
+      backdrop-filter: var(--blur);
+      -webkit-backdrop-filter: var(--blur);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+
+    .stat-card-label {
+      font-size: 0.6875rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    .stat-card-value {
+      font-family: var(--font-serif);
+      font-size: 1.75rem;
+      font-weight: 600;
+      color: var(--text-white);
+    }
+
+    /* ===== BUTTONS ===== */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: background 0.2s, border-color 0.2s;
+      font-family: inherit;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      background: var(--accent-dim);
+      color: var(--accent);
+      border: 1px solid var(--accent-border);
+    }
+
+    .btn-primary:hover {
+      background: rgba(201, 169, 110, 0.25);
+      border-color: rgba(201, 169, 110, 0.4);
+    }
+
+    .btn-danger {
+      background: var(--danger-dim);
+      color: var(--danger-text);
+      border: 1px solid var(--danger-border);
+    }
+
+    .btn-danger:hover {
+      background: rgba(239, 68, 68, 0.25);
+      border-color: rgba(239, 68, 68, 0.4);
+    }
+
+    .btn-secondary {
+      background: rgba(255,255,255,0.05);
+      color: var(--text-primary);
+      border: 1px solid var(--border-default);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255,255,255,0.1);
+      border-color: var(--border-light);
+    }
+
+    .btn-sm {
+      padding: 0.375rem 0.75rem;
+      font-size: 0.8125rem;
+    }
+
+    /* ===== DATA TABLES ===== */
+    /* Tables with frosted glass header rows */
+    .table-wrapper {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.875rem;
+    }
+
+    .data-table th {
+      text-align: left;
+      padding: 0.75rem 1rem;
+      font-weight: 600;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border-default);
+      background: rgba(255,255,255,0.02);
+      backdrop-filter: blur(8px);
+      white-space: nowrap;
+    }
+
+    .data-table td {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border-default);
+      vertical-align: top;
+    }
+
+    .data-table tr { cursor: pointer; transition: background 0.15s; }
+    .data-table thead tr { cursor: default; }
+    .data-table tbody tr:hover td { background: rgba(255,255,255,0.03); }
+
+    .cell-truncate {
+      max-width: 200px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .cell-actions {
+      display: flex;
+      gap: 0.5rem;
+      white-space: nowrap;
+    }
+
+    /* ===== FROSTED GLASS PANELS ===== */
+    /* Used for forms, detail views, and card containers */
+    .glass-panel {
+      background: var(--bg-surface);
+      backdrop-filter: var(--blur);
+      -webkit-backdrop-filter: var(--blur);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius);
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+
+    .glass-panel h3 {
+      font-family: var(--font-serif);
+      font-size: 1.125rem;
+      margin-bottom: 1rem;
+      color: var(--text-white);
+    }
+
+    /* ===== FORM ELEMENTS ===== */
+    .form-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.375rem;
+    }
+
+    .form-group label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
+    .form-group input,
+    .form-group select,
+    .form-group textarea {
+      padding: 0.5rem 0.75rem;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius);
+      color: var(--text-primary);
+      font-size: 0.875rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s, background 0.2s;
+    }
+
+    .form-group input:focus,
+    .form-group select:focus,
+    .form-group textarea:focus {
+      border-color: var(--accent-border);
+      background: rgba(255,255,255,0.08);
+    }
+
+    .form-group textarea {
+      resize: vertical;
+      min-height: 80px;
+    }
+
+    .form-group select option {
+      background: var(--bg-primary);
+      color: var(--text-primary);
+    }
+
+    .form-actions {
+      display: flex;
+      gap: 0.75rem;
+      justify-content: flex-end;
+      margin-top: 1rem;
+    }
+
+    /* ===== BADGES ===== */
+    .badge {
+      display: inline-block;
+      padding: 0.125rem 0.5rem;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-radius: 9999px;
+      white-space: nowrap;
+    }
+
+    .badge-draft {
+      background: rgba(255, 255, 255, 0.08);
+      color: rgba(255, 255, 255, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .badge-published {
+      background: var(--success-dim);
+      color: var(--success-text);
+      border: 1px solid var(--success-border);
+    }
+
+    .badge-new {
+      background: var(--info-dim);
+      color: var(--info-text);
+      border: 1px solid var(--info-border);
+    }
+
+    .badge-reviewed {
+      background: var(--accent-dim);
+      color: var(--accent);
+      border: 1px solid var(--accent-border);
+    }
+
+    .badge-contacted {
+      background: var(--warning-dim);
+      color: var(--warning-text);
+      border: 1px solid var(--warning-border);
+    }
+
+    .badge-archived {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-muted);
+      border: 1px solid var(--border-default);
+    }
+
+    /* ===== TOGGLE SWITCH ===== */
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 52px;
+      height: 28px;
+      flex-shrink: 0;
+    }
+
+    .toggle-switch input { opacity: 0; width: 0; height: 0; }
+
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      inset: 0;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 9999px;
+      transition: background 0.3s, border-color 0.3s;
+    }
+
+    .toggle-slider::before {
+      content: '';
+      position: absolute;
+      height: 22px;
+      width: 22px;
+      left: 3px;
+      bottom: 2px;
+      background: rgba(255,255,255,0.7);
+      border-radius: 50%;
+      transition: transform 0.3s, background 0.3s;
+    }
+
+    .toggle-switch input:checked + .toggle-slider {
+      background: var(--success-dim);
+      border-color: var(--success-border);
+    }
+
+    .toggle-switch input:checked + .toggle-slider::before {
+      transform: translateX(24px);
+      background: var(--success-text);
+    }
+
+    /* ===== TOAST NOTIFICATIONS ===== */
+    .toast {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      padding: 0.75rem 1.25rem;
+      border-radius: var(--radius);
+      font-size: 0.875rem;
+      font-weight: 500;
+      z-index: 200;
+      animation: slideInUp 0.3s ease-out;
+      color: var(--text-white);
+      backdrop-filter: var(--blur);
+      -webkit-backdrop-filter: var(--blur);
+    }
+
+    .toast-success {
+      background: var(--success-dim);
+      border: 1px solid var(--success-border);
+      color: var(--success-text);
+    }
+
+    .toast-error {
+      background: var(--danger-dim);
+      border: 1px solid var(--danger-border);
+      color: var(--danger-text);
+    }
+
+    @keyframes slideInUp {
+      from { opacity: 0; transform: translateY(1rem); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ===== SLIDE-IN TRANSCRIPT PANEL ===== */
+    /* Right-side panel that slides in when a conversation row is clicked */
+    .transcript-panel {
+      position: fixed;
+      top: 0;
+      right: -480px;
+      width: 480px;
+      max-width: 100vw;
+      height: 100vh;
+      background: var(--bg-primary);
+      border-left: 1px solid var(--border-default);
+      z-index: 100;
+      transition: right 0.3s ease;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .transcript-panel.open { right: 0; }
+
+    .transcript-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--border-default);
+      background: var(--bg-surface);
+      backdrop-filter: var(--blur);
+      -webkit-backdrop-filter: var(--blur);
+    }
+
+    .transcript-header h3 {
+      font-family: var(--font-serif);
+      font-size: 1.125rem;
+      color: var(--text-white);
+    }
+
+    .transcript-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1.5rem;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.1) transparent;
+    }
+
+    .transcript-body::-webkit-scrollbar { width: 4px; }
+    .transcript-body::-webkit-scrollbar-track { background: transparent; }
+    .transcript-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+
+    /* Chat message bubbles in transcript */
+    .chat-msg {
+      padding: 0.75rem 1rem;
+      margin-bottom: 0.75rem;
+      border-radius: var(--radius);
+      font-size: 0.875rem;
+      line-height: 1.6;
+    }
+
+    .chat-msg-user {
+      background: var(--info-dim);
+      border: 1px solid var(--info-border);
+      margin-left: 2rem;
+    }
+
+    .chat-msg-assistant {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      margin-right: 2rem;
+    }
+
+    .chat-msg-role {
+      font-size: 0.6875rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 0.25rem;
+    }
+
+    .chat-msg-time {
+      font-size: 0.6875rem;
+      color: var(--text-muted);
+      margin-top: 0.25rem;
+      text-align: right;
+    }
+
+    /* Transcript overlay (darkens background when panel is open) */
+    .transcript-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 90;
+    }
+
+    .transcript-overlay.active { display: block; }
+
+    /* ===== PREVIEW MODAL ===== */
+    /* Full-screen modal with iframe for previewing generated pages */
+    .preview-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 150;
+      background: rgba(0,0,0,0.8);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+    }
+
+    .preview-modal.active { display: flex; flex-direction: column; }
+
+    .preview-modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 1rem 1.5rem;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-default);
+    }
+
+    .preview-modal-header h3 {
+      font-family: var(--font-serif);
+      color: var(--text-white);
+    }
+
+    .preview-modal iframe {
+      flex: 1;
+      width: 100%;
+      border: none;
+      background: #fff;
+    }
+
+    /* ===== QUICK PROMPTS EDITOR ===== */
+    /* Editable list of quick prompt buttons in chatbot settings */
+    .prompt-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .prompt-item {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+    }
+
+    .prompt-item input {
+      flex: 1;
+      padding: 0.5rem 0.75rem;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius);
+      color: var(--text-primary);
+      font-size: 0.875rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .prompt-item input:focus {
+      border-color: var(--accent-border);
+    }
+
+    .prompt-remove-btn {
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--danger-dim);
+      border: 1px solid var(--danger-border);
+      border-radius: var(--radius);
+      color: var(--danger-text);
+      cursor: pointer;
+      font-size: 1rem;
+      transition: background 0.2s;
+      flex-shrink: 0;
+    }
+
+    .prompt-remove-btn:hover {
+      background: rgba(239, 68, 68, 0.25);
+    }
+
+    /* ===== STATUS SELECT ===== */
+    /* Inline status dropdown for form submissions table */
+    .status-select {
+      padding: 0.25rem 0.5rem;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius);
+      color: var(--text-primary);
+      font-size: 0.75rem;
+      font-family: inherit;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .status-select option {
+      background: var(--bg-primary);
+      color: var(--text-primary);
+    }
+
+    /* ===== EMPTY STATE ===== */
+    .empty-state {
+      text-align: center;
+      padding: 3rem;
+      color: var(--text-muted);
+    }
+
+    /* ===== SUBMISSION DETAIL EXPANDED ROW ===== */
+    .submission-detail {
+      background: rgba(255,255,255,0.02);
+    }
+
+    .submission-detail td {
+      padding: 1rem;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 0.75rem;
+    }
+
+    .detail-item {
+      display: flex;
+      flex-direction: column;
+      gap: 0.125rem;
+    }
+
+    .detail-item-label {
+      font-size: 0.6875rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
+    .detail-item-value {
+      font-size: 0.8125rem;
+      color: var(--text-primary);
+      word-break: break-word;
+    }
+
+    /* ===== EMBED CODE SECTION ===== */
+    /* Shown/hidden based on chatbot mode selection */
+    .embed-section {
+      display: none;
+      margin-top: 1rem;
+    }
+
+    .embed-section.visible { display: block; }
+
+    /* ===== RESPONSIVE ===== */
+    /* Mobile: sidebar becomes a slide-out drawer with hamburger toggle */
+    @media (max-width: 768px) {
+      .sidebar {
+        position: fixed;
+        top: 0;
+        left: -260px;
+        width: 250px;
+        min-width: 250px;
+        height: 100vh;
+        z-index: 50;
+        transition: left 0.25s ease;
+        padding-top: 1rem;
+      }
+
+      .sidebar.open { left: 0; }
+      .sidebar-toggle { display: flex; }
+      .form-row { grid-template-columns: 1fr; }
+      .data-table { font-size: 0.8125rem; }
+      .admin-header { padding: 1rem; }
+      .tab-content { padding: 1rem; }
+      .stats-grid { grid-template-columns: repeat(2, 1fr); }
+
+      .transcript-panel { width: 100vw; right: -100vw; }
+
+      /* Prevent iOS auto-zoom on input focus */
+      .form-group input,
+      .form-group select,
+      .form-group textarea,
+      .prompt-item input {
+        font-size: 16px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <!--
+  ========================================================================
+  ADMIN HEADER
+  ========================================================================
+  Dashboard title with gold accent and navigation links.
+  -->
+  <header class="admin-header">
+    <div>
+      <h1>Chat <span>Admin</span></h1>
+    </div>
+    <div class="header-links">
+      <a href="/" target="_blank">&#x2197; View Site</a>
+      <a href="/admin/logout" style="color: var(--danger-text);">Logout</a>
+    </div>
+  </header>
+
+  <!--
+  ========================================================================
+  MOBILE SIDEBAR OVERLAY + TOGGLE BUTTON
+  ========================================================================
+  On mobile, tapping the hamburger opens the sidebar as a drawer.
+  The overlay darkens the background and closes sidebar on tap.
+  -->
+  <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
+  <button class="sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()" data-testid="button-sidebar-toggle" aria-label="Toggle navigation menu">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+  </button>
+
+  <div class="admin-layout">
+
+  <!--
+  ========================================================================
+  SIDEBAR NAVIGATION
+  ========================================================================
+  Four tabs matching the chat admin features.
+  Gold accent (#c9a96e) highlights the active tab.
+  -->
+  <nav class="sidebar" id="admin-sidebar" role="navigation" aria-label="Admin navigation">
+    <div class="sidebar-group-label">Chat Management</div>
+
+    <!-- Chat History tab -->
+    <button class="tab-btn active" onclick="switchTab('chat-history', this)" data-testid="tab-chat-history">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      Chat History
+    </button>
+
+    <!-- Generated Pages tab -->
+    <button class="tab-btn" onclick="switchTab('generated-pages', this)" data-testid="tab-generated-pages">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      Generated Pages
+    </button>
+
+    <!-- Form Submissions tab -->
+    <button class="tab-btn" onclick="switchTab('form-submissions', this)" data-testid="tab-form-submissions">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>
+      Form Submissions
+    </button>
+
+    <div class="sidebar-group-label">Configuration</div>
+
+    <!-- Chatbot Settings tab -->
+    <button class="tab-btn" onclick="switchTab('chatbot-settings', this)" data-testid="tab-chatbot-settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06c.5.5 1.2.67 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06c-.5.5-.67 1.2-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      Chatbot Settings
+    </button>
+  </nav>
+
+  <main class="admin-main">
+
+  <!--
+  ========================================================================
+  TAB: CHAT HISTORY
+  ========================================================================
+  View all chat conversations with stats and full transcript viewer.
+  - 4 stat cards: Total, Today, Avg Messages, Unique Visitors
+  - Conversations table: click row to open transcript slide-in panel
+  - Delete button per conversation
+  -->
+  <div id="tab-chat-history" class="tab-content active">
+    <div class="section-header">
+      <div>
+        <h2>Chat History</h2>
+        <p>View all AI chat conversations and their full transcripts.</p>
+      </div>
+    </div>
+
+    <!-- Stat cards row -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-card-label">Total Conversations</div>
+        <div class="stat-card-value" id="stat-total-conversations" data-testid="text-stat-total-conversations">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Messages Today</div>
+        <div class="stat-card-value" id="stat-messages-today" data-testid="text-stat-messages-today">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Avg Messages / Session</div>
+        <div class="stat-card-value" id="stat-avg-messages" data-testid="text-stat-avg-messages">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Unique Visitors</div>
+        <div class="stat-card-value" id="stat-unique-visitors" data-testid="text-stat-unique-visitors">--</div>
+      </div>
+    </div>
+
+    <!-- Conversations table -->
+    <div class="table-wrapper">
+      <table class="data-table" id="conversations-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Messages</th>
+            <th>Visitor ID</th>
+            <th>Device</th>
+            <th>First Message</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="conversations-tbody" data-testid="table-conversations">
+          <tr><td colspan="6" class="empty-state">Loading conversations...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: GENERATED PAGES
+  ========================================================================
+  Manage AI-generated HTML pages saved from the chatbot.
+  - Table: Title, Slug, Status (draft/published), Created date
+  - Actions: Preview (iframe modal), Publish/Unpublish toggle, Delete
+  -->
+  <div id="tab-generated-pages" class="tab-content">
+    <div class="section-header">
+      <div>
+        <h2>Generated Pages</h2>
+        <p>AI-generated HTML pages saved from chat conversations.</p>
+      </div>
+    </div>
+
+    <div class="table-wrapper">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Title</th>
+            <th>Slug</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="pages-tbody" data-testid="table-generated-pages">
+          <tr><td colspan="5" class="empty-state">Loading pages...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: FORM SUBMISSIONS
+  ========================================================================
+  Review form submissions with marketing analytics.
+  - Form selector dropdown (loads available forms)
+  - 4 analytics cards: Total, Today, Abandoned, Abandon Rate
+  - Submissions table with dynamic columns from form fields
+  - Status dropdown per row, click to expand detail view
+  -->
+  <div id="tab-form-submissions" class="tab-content">
+    <div class="section-header">
+      <div>
+        <h2>Form Submissions</h2>
+        <p>Review form submissions with full marketing analytics.</p>
+      </div>
+      <div class="form-group" style="min-width: 200px;">
+        <label for="form-selector">Select Form</label>
+        <select id="form-selector" onchange="loadFormSubmissions()" data-testid="select-form">
+          <option value="">-- Select a form --</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Analytics cards (shown after selecting a form) -->
+    <div class="stats-grid" id="form-stats" style="display: none;">
+      <div class="stat-card">
+        <div class="stat-card-label">Total Submissions</div>
+        <div class="stat-card-value" id="stat-form-total" data-testid="text-stat-form-total">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Today</div>
+        <div class="stat-card-value" id="stat-form-today" data-testid="text-stat-form-today">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Abandoned (Partial)</div>
+        <div class="stat-card-value" id="stat-form-abandoned" data-testid="text-stat-form-abandoned">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Abandon Rate</div>
+        <div class="stat-card-value" id="stat-form-abandon-rate" data-testid="text-stat-form-abandon-rate">--</div>
+      </div>
+    </div>
+
+    <!-- Submissions table (columns generated dynamically from form fields) -->
+    <div class="table-wrapper">
+      <table class="data-table" id="submissions-table" style="display: none;">
+        <thead id="submissions-thead">
+          <tr><th>Select a form to view submissions</th></tr>
+        </thead>
+        <tbody id="submissions-tbody" data-testid="table-submissions">
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: CHATBOT SETTINGS
+  ========================================================================
+  Configure the AI chatbot behavior and appearance.
+  - Enable/Disable toggle
+  - Agent Name, Role, Avatar URL, Greeting message
+  - Quick Prompts: editable list (add/remove)
+  - System Prompt: large textarea
+  - Mode selector: Built-in AI vs Custom Embed
+  - Embed Code textarea (shown only in embed mode)
+  - Save button with toast notification
+  -->
+  <div id="tab-chatbot-settings" class="tab-content">
+    <div class="section-header">
+      <div>
+        <h2>Chatbot Settings</h2>
+        <p>Configure the AI chatbot appearance, behavior, and system prompt.</p>
+      </div>
+    </div>
+
+    <div class="glass-panel">
+      <!-- Enable/Disable Toggle -->
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border-default);">
+        <div>
+          <h3 style="margin-bottom: 0.25rem;">Chatbot Status</h3>
+          <p style="color: var(--text-muted); font-size: 0.8125rem;">Enable or disable the chatbot on the public site.</p>
+        </div>
+        <label class="toggle-switch" data-testid="toggle-chatbot-enabled">
+          <input type="checkbox" id="chatbot-enabled">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      <!-- Agent Identity -->
+      <h3>Agent Identity</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="chatbot-agent-name">Agent Name</label>
+          <input type="text" id="chatbot-agent-name" placeholder="AI Concierge" data-testid="input-chatbot-agent-name">
+        </div>
+        <div class="form-group">
+          <label for="chatbot-agent-role">Agent Role</label>
+          <input type="text" id="chatbot-agent-role" placeholder="Concierge" data-testid="input-chatbot-agent-role">
+        </div>
+        <div class="form-group">
+          <label for="chatbot-agent-avatar">Agent Avatar (URL or initials)</label>
+          <input type="text" id="chatbot-agent-avatar" placeholder="AI" data-testid="input-chatbot-agent-avatar">
+        </div>
+      </div>
+
+      <!-- Greeting Message -->
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="chatbot-greeting">Greeting Message</label>
+          <textarea id="chatbot-greeting" rows="2" placeholder="Welcome! How can I help you today?" data-testid="input-chatbot-greeting"></textarea>
+        </div>
+      </div>
+
+      <!-- Quick Prompts -->
+      <h3 style="margin-top: 1.5rem;">Quick Prompts</h3>
+      <p style="color: var(--text-muted); font-size: 0.8125rem; margin-bottom: 0.75rem;">Suggested prompts shown to the user as clickable buttons.</p>
+      <div class="prompt-list" id="prompt-list" data-testid="list-quick-prompts">
+        <!-- Prompt items are dynamically rendered here -->
+      </div>
+      <button class="btn btn-secondary btn-sm" style="margin-top: 0.75rem;" onclick="addPromptItem()" data-testid="button-add-prompt">+ Add Prompt</button>
+
+      <!-- System Prompt -->
+      <h3 style="margin-top: 1.5rem;">System Prompt</h3>
+      <p style="color: var(--text-muted); font-size: 0.8125rem; margin-bottom: 0.75rem;">The system prompt defines the AI's personality, knowledge, and behavior rules.</p>
+      <div class="form-group">
+        <textarea id="chatbot-system-prompt" rows="12" placeholder="You are a helpful AI assistant..." data-testid="input-chatbot-system-prompt" style="font-family: 'DM Sans', monospace; font-size: 0.8125rem; line-height: 1.6;"></textarea>
+      </div>
+
+      <!-- Mode Selector -->
+      <h3 style="margin-top: 1.5rem;">Chat Mode</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="chatbot-mode">Mode</label>
+          <select id="chatbot-mode" onchange="toggleEmbedSection()" data-testid="select-chatbot-mode">
+            <option value="builtin">Built-in AI Chat</option>
+            <option value="embed">Custom Embed Code</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Embed Code (shown only in embed mode) -->
+      <div class="embed-section" id="embed-section">
+        <div class="form-group">
+          <label for="chatbot-embed-code">Embed Code</label>
+          <textarea id="chatbot-embed-code" rows="6" placeholder="<script src='https://...'></script>" data-testid="input-chatbot-embed-code" style="font-family: monospace; font-size: 0.8125rem;"></textarea>
+        </div>
+      </div>
+
+      <!-- Save Button -->
+      <div class="form-actions" style="margin-top: 1.5rem;">
+        <button class="btn btn-primary" onclick="saveChatbotSettings()" data-testid="button-save-chatbot-settings">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+  </main>
+  </div>
+
+  <!--
+  ========================================================================
+  TRANSCRIPT SLIDE-IN PANEL
+  ========================================================================
+  Shows the full message exchange for a selected conversation.
+  Slides in from the right when a conversation row is clicked.
+  -->
+  <div class="transcript-overlay" id="transcript-overlay" onclick="closeTranscript()"></div>
+  <div class="transcript-panel" id="transcript-panel">
+    <div class="transcript-header">
+      <h3 id="transcript-title">Conversation</h3>
+      <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <button class="btn btn-danger btn-sm" id="transcript-delete-btn" onclick="deleteConversationFromPanel()" data-testid="button-delete-conversation">Delete</button>
+        <button class="btn btn-secondary btn-sm" onclick="closeTranscript()" data-testid="button-close-transcript">Close</button>
+      </div>
+    </div>
+    <div class="transcript-body" id="transcript-body" data-testid="panel-transcript">
+      <!-- Messages rendered here dynamically -->
+    </div>
+  </div>
+
+  <!--
+  ========================================================================
+  PREVIEW MODAL
+  ========================================================================
+  Full-screen iframe modal for previewing generated HTML pages.
+  -->
+  <div class="preview-modal" id="preview-modal">
+    <div class="preview-modal-header">
+      <h3 id="preview-modal-title">Page Preview</h3>
+      <button class="btn btn-secondary btn-sm" onclick="closePreviewModal()" data-testid="button-close-preview">Close</button>
+    </div>
+    <iframe id="preview-iframe" data-testid="iframe-preview"></iframe>
+  </div>
+
+  <!--
+  ========================================================================
+  JAVASCRIPT — All admin functionality
+  ========================================================================
+  Inline JS handles:
+  - Tab switching
+  - API fetching (chat history, pages, forms, settings)
+  - Transcript panel slide-in/out
+  - Preview modal open/close
+  - Quick prompt editor (add/remove)
+  - Toast notifications
+  - Mobile sidebar toggle
+  -->
+  <script>
+    /*
+    ========================================================================
+    CONFIGURATION
+    ========================================================================
+    API_BASE: Base URL for all API calls. Change this if your backend
+    runs on a different host/port.
+    */
+    const API_BASE = '';
+
+    /*
+    ========================================================================
+    TAB SWITCHING
+    ========================================================================
+    Switches between the four main tabs by hiding/showing content panels
+    and updating the active state on sidebar buttons.
+    */
+    function switchTab(tabId, btn) {
+      /* Hide all tab content panels */
+      document.querySelectorAll('.tab-content').forEach(function(el) {
+        el.classList.remove('active');
+      });
+
+      /* Deactivate all sidebar buttons */
+      document.querySelectorAll('.tab-btn').forEach(function(el) {
+        el.classList.remove('active');
+      });
+
+      /* Show the selected tab and activate its button */
+      var tabEl = document.getElementById('tab-' + tabId);
+      if (tabEl) tabEl.classList.add('active');
+      if (btn) btn.classList.add('active');
+
+      /* Close mobile sidebar after selection */
+      closeSidebar();
+
+      /* Load data for the selected tab */
+      if (tabId === 'chat-history') loadChatHistory();
+      if (tabId === 'generated-pages') loadGeneratedPages();
+      if (tabId === 'form-submissions') loadForms();
+      if (tabId === 'chatbot-settings') loadChatbotSettings();
+    }
+
+    /*
+    ========================================================================
+    MOBILE SIDEBAR
+    ========================================================================
+    Toggle the sidebar drawer on mobile screens.
+    */
+    function toggleSidebar() {
+      var sidebar = document.getElementById('admin-sidebar');
+      var overlay = document.getElementById('sidebar-overlay');
+      sidebar.classList.toggle('open');
+      overlay.classList.toggle('active');
+    }
+
+    function closeSidebar() {
+      var sidebar = document.getElementById('admin-sidebar');
+      var overlay = document.getElementById('sidebar-overlay');
+      sidebar.classList.remove('open');
+      overlay.classList.remove('active');
+    }
+
+    /*
+    ========================================================================
+    TOAST NOTIFICATIONS
+    ========================================================================
+    Show a brief success or error message at the bottom-right corner.
+    Auto-dismisses after 3 seconds.
+    */
+    function showToast(message, type) {
+      type = type || 'success';
+
+      /* Remove any existing toast */
+      var existing = document.querySelector('.toast');
+      if (existing) existing.remove();
+
+      /* Create and display the toast */
+      var toast = document.createElement('div');
+      toast.className = 'toast toast-' + type;
+      toast.textContent = message;
+      document.body.appendChild(toast);
+
+      /* Auto-remove after 3 seconds */
+      setTimeout(function() {
+        if (toast.parentNode) toast.remove();
+      }, 3000);
+    }
+
+    /*
+    ========================================================================
+    UTILITY: Format date string for display
+    ========================================================================
+    */
+    function formatDate(dateStr) {
+      if (!dateStr) return '--';
+      var d = new Date(dateStr);
+      return d.toLocaleDateString('en-US', {
+        month: 'short', day: 'numeric', year: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+      });
+    }
+
+    function formatShortDate(dateStr) {
+      if (!dateStr) return '--';
+      var d = new Date(dateStr);
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+
+    /*
+    ========================================================================
+    UTILITY: Escape HTML to prevent XSS in rendered content
+    ========================================================================
+    */
+    function escapeHtml(text) {
+      if (!text) return '';
+      var div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    /*
+    ========================================================================
+    CHAT HISTORY
+    ========================================================================
+    Loads conversation list with stats from /admin/api/chat-history.
+    Each row is clickable to open the transcript panel.
+    */
+    var currentConversationId = null;
+
+    function loadChatHistory() {
+      fetch(API_BASE + '/admin/api/chat-history')
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+          /* Update stat cards */
+          var stats = data.stats || {};
+          document.getElementById('stat-total-conversations').textContent = stats.total || 0;
+          document.getElementById('stat-messages-today').textContent = stats.today || 0;
+          document.getElementById('stat-avg-messages').textContent = stats.avg_messages ? parseFloat(stats.avg_messages).toFixed(1) : '0';
+          document.getElementById('stat-unique-visitors').textContent = stats.unique_visitors || 0;
+
+          /* Render conversations table */
+          var conversations = data.conversations || [];
+          var tbody = document.getElementById('conversations-tbody');
+
+          if (conversations.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No conversations yet.</td></tr>';
+            return;
+          }
+
+          tbody.innerHTML = conversations.map(function(conv) {
+            return '<tr onclick="openTranscript(' + conv.id + ')" data-testid="row-conversation-' + conv.id + '">' +
+              '<td>' + formatDate(conv.started_at) + '</td>' +
+              '<td>' + (conv.message_count || 0) + '</td>' +
+              '<td class="cell-truncate">' + escapeHtml(conv.visitor_id || '--') + '</td>' +
+              '<td>' + escapeHtml(conv.device_type || 'desktop') + '</td>' +
+              '<td class="cell-truncate">' + escapeHtml(conv.first_message || '--') + '</td>' +
+              '<td class="cell-actions">' +
+                '<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); deleteConversation(' + conv.id + ')" data-testid="button-delete-conv-' + conv.id + '">Delete</button>' +
+              '</td>' +
+            '</tr>';
+          }).join('');
+        })
+        .catch(function(err) {
+          console.error('Error loading chat history:', err);
+          showToast('Failed to load chat history', 'error');
+        });
+    }
+
+    /*
+    ========================================================================
+    TRANSCRIPT PANEL
+    ========================================================================
+    Opens a slide-in panel showing the full conversation transcript.
+    Fetches messages from /admin/api/chat-history/<id>.
+    */
+    function openTranscript(conversationId) {
+      currentConversationId = conversationId;
+      var panel = document.getElementById('transcript-panel');
+      var overlay = document.getElementById('transcript-overlay');
+      var body = document.getElementById('transcript-body');
+
+      /* Show loading state */
+      body.innerHTML = '<div class="empty-state">Loading transcript...</div>';
+      panel.classList.add('open');
+      overlay.classList.add('active');
+
+      fetch(API_BASE + '/admin/api/chat-history/' + conversationId)
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+          var conv = data.conversation || {};
+          var messages = data.messages || [];
+
+          /* Update panel title with visitor info */
+          document.getElementById('transcript-title').textContent =
+            'Conversation #' + conversationId + (conv.visitor_id ? ' — ' + conv.visitor_id : '');
+
+          if (messages.length === 0) {
+            body.innerHTML = '<div class="empty-state">No messages in this conversation.</div>';
+            return;
+          }
+
+          /* Render each message as a chat bubble */
+          body.innerHTML = messages.map(function(msg) {
+            var isUser = msg.role === 'user';
+            var cssClass = isUser ? 'chat-msg-user' : 'chat-msg-assistant';
+            var roleLabel = isUser ? 'User' : 'Assistant';
+
+            return '<div class="chat-msg ' + cssClass + '">' +
+              '<div class="chat-msg-role">' + roleLabel + '</div>' +
+              '<div>' + escapeHtml(msg.content) + '</div>' +
+              '<div class="chat-msg-time">' + formatDate(msg.created_at) + '</div>' +
+            '</div>';
+          }).join('');
+        })
+        .catch(function(err) {
+          console.error('Error loading transcript:', err);
+          body.innerHTML = '<div class="empty-state">Failed to load transcript.</div>';
+        });
+    }
+
+    function closeTranscript() {
+      document.getElementById('transcript-panel').classList.remove('open');
+      document.getElementById('transcript-overlay').classList.remove('active');
+      currentConversationId = null;
+    }
+
+    /*
+    ========================================================================
+    DELETE CONVERSATION
+    ========================================================================
+    Deletes a conversation and reloads the table.
+    Can be triggered from the table row button or the transcript panel.
+    */
+    function deleteConversation(id) {
+      if (!confirm('Delete this conversation and all its messages?')) return;
+
+      fetch(API_BASE + '/admin/api/chat-history/' + id, { method: 'DELETE' })
+        .then(function(res) {
+          if (res.ok) {
+            showToast('Conversation deleted');
+            loadChatHistory();
+            /* Close transcript if it was showing this conversation */
+            if (currentConversationId === id) closeTranscript();
+          } else {
+            showToast('Failed to delete conversation', 'error');
+          }
+        })
+        .catch(function(err) {
+          console.error('Error deleting conversation:', err);
+          showToast('Failed to delete conversation', 'error');
+        });
+    }
+
+    function deleteConversationFromPanel() {
+      if (currentConversationId) {
+        deleteConversation(currentConversationId);
+      }
+    }
+
+    /*
+    ========================================================================
+    GENERATED PAGES
+    ========================================================================
+    Loads and manages AI-generated HTML pages.
+    - Table with Title, Slug, Status badge, Created date
+    - Preview: opens iframe modal
+    - Publish/Unpublish: toggles page status
+    - Delete: removes the page
+    */
+    function loadGeneratedPages() {
+      fetch(API_BASE + '/admin/api/generated-pages')
+        .then(function(res) { return res.json(); })
+        .then(function(pages) {
+          var tbody = document.getElementById('pages-tbody');
+
+          if (!pages || pages.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No generated pages yet.</td></tr>';
+            return;
+          }
+
+          tbody.innerHTML = pages.map(function(page) {
+            var statusClass = page.status === 'published' ? 'badge-published' : 'badge-draft';
+            var toggleLabel = page.status === 'published' ? 'Unpublish' : 'Publish';
+            var toggleStatus = page.status === 'published' ? 'draft' : 'published';
+
+            return '<tr data-testid="row-page-' + page.id + '">' +
+              '<td>' + escapeHtml(page.title) + '</td>' +
+              '<td class="cell-truncate"><code style="font-size:0.8125rem; color: var(--accent);">' + escapeHtml(page.slug) + '</code></td>' +
+              '<td><span class="badge ' + statusClass + '">' + escapeHtml(page.status) + '</span></td>' +
+              '<td>' + formatShortDate(page.created_at) + '</td>' +
+              '<td class="cell-actions">' +
+                '<button class="btn btn-secondary btn-sm" onclick="previewPage(' + page.id + ', ' + JSON.stringify(escapeHtml(page.title)).replace(/"/g, '&quot;') + ')" data-testid="button-preview-page-' + page.id + '">Preview</button>' +
+                '<button class="btn btn-primary btn-sm" onclick="togglePageStatus(' + page.id + ', \'' + toggleStatus + '\')" data-testid="button-toggle-page-' + page.id + '">' + toggleLabel + '</button>' +
+                '<button class="btn btn-danger btn-sm" onclick="deletePage(' + page.id + ')" data-testid="button-delete-page-' + page.id + '">Delete</button>' +
+              '</td>' +
+            '</tr>';
+          }).join('');
+        })
+        .catch(function(err) {
+          console.error('Error loading pages:', err);
+          showToast('Failed to load generated pages', 'error');
+        });
+    }
+
+    /*
+    ========================================================================
+    PREVIEW MODAL
+    ========================================================================
+    Opens a full-screen iframe showing the generated HTML page.
+    Fetches the page HTML from the public /page/<slug> route.
+    */
+    function previewPage(pageId, title) {
+      var modal = document.getElementById('preview-modal');
+      var iframe = document.getElementById('preview-iframe');
+      document.getElementById('preview-modal-title').textContent = title || 'Page Preview';
+
+      /* Load page in iframe via the public route */
+      iframe.src = API_BASE + '/page/' + pageId;
+      modal.classList.add('active');
+    }
+
+    function closePreviewModal() {
+      var modal = document.getElementById('preview-modal');
+      var iframe = document.getElementById('preview-iframe');
+      modal.classList.remove('active');
+      iframe.src = '';
+    }
+
+    /*
+    ========================================================================
+    TOGGLE PAGE STATUS (publish/unpublish)
+    ========================================================================
+    */
+    function togglePageStatus(pageId, newStatus) {
+      fetch(API_BASE + '/admin/api/generated-pages/' + pageId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus })
+      })
+        .then(function(res) {
+          if (res.ok) {
+            showToast('Page ' + newStatus);
+            loadGeneratedPages();
+          } else {
+            showToast('Failed to update page status', 'error');
+          }
+        })
+        .catch(function(err) {
+          console.error('Error updating page:', err);
+          showToast('Failed to update page', 'error');
+        });
+    }
+
+    /*
+    ========================================================================
+    DELETE PAGE
+    ========================================================================
+    */
+    function deletePage(pageId) {
+      if (!confirm('Delete this generated page? This cannot be undone.')) return;
+
+      fetch(API_BASE + '/admin/api/generated-pages/' + pageId, { method: 'DELETE' })
+        .then(function(res) {
+          if (res.ok) {
+            showToast('Page deleted');
+            loadGeneratedPages();
+          } else {
+            showToast('Failed to delete page', 'error');
+          }
+        })
+        .catch(function(err) {
+          console.error('Error deleting page:', err);
+          showToast('Failed to delete page', 'error');
+        });
+    }
+
+    /*
+    ========================================================================
+    FORM SUBMISSIONS
+    ========================================================================
+    Loads available forms into the selector dropdown.
+    When a form is selected, loads its submissions with analytics.
+    */
+    var currentFormId = null;
+    var currentFormFields = [];
+    var expandedSubmissionId = null;
+
+    function loadForms() {
+      fetch(API_BASE + '/admin/api/forms')
+        .then(function(res) { return res.json(); })
+        .then(function(forms) {
+          var selector = document.getElementById('form-selector');
+          /* Preserve current selection */
+          var currentVal = selector.value;
+
+          /* Build options (keep the placeholder) */
+          selector.innerHTML = '<option value="">-- Select a form --</option>';
+          (forms || []).forEach(function(form) {
+            var opt = document.createElement('option');
+            opt.value = form.id;
+            opt.textContent = form.name + ' (' + (form.submission_count || 0) + ' submissions)';
+            selector.appendChild(opt);
+          });
+
+          /* Restore selection if still valid */
+          if (currentVal) selector.value = currentVal;
+        })
+        .catch(function(err) {
+          console.error('Error loading forms:', err);
+        });
+    }
+
+    function loadFormSubmissions() {
+      var formId = document.getElementById('form-selector').value;
+      var statsGrid = document.getElementById('form-stats');
+      var table = document.getElementById('submissions-table');
+
+      if (!formId) {
+        statsGrid.style.display = 'none';
+        table.style.display = 'none';
+        return;
+      }
+
+      currentFormId = formId;
+      statsGrid.style.display = '';
+      table.style.display = '';
+
+      fetch(API_BASE + '/admin/api/forms/' + formId + '/submissions')
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+          var submissions = data.submissions || [];
+          var fields = data.fields || [];
+          var stats = data.stats || {};
+          currentFormFields = fields;
+
+          /* Update analytics cards */
+          document.getElementById('stat-form-total').textContent = stats.total || 0;
+          document.getElementById('stat-form-today').textContent = stats.today || 0;
+          document.getElementById('stat-form-abandoned').textContent = stats.abandoned || 0;
+
+          var abandonRate = stats.total > 0 ? ((stats.abandoned / stats.total) * 100).toFixed(1) + '%' : '0%';
+          document.getElementById('stat-form-abandon-rate').textContent = abandonRate;
+
+          /* Build table headers from form fields */
+          var thead = document.getElementById('submissions-thead');
+          var headerCols = '<th>Date</th><th>Status</th>';
+          fields.forEach(function(field) {
+            headerCols += '<th>' + escapeHtml(field.label) + '</th>';
+          });
+          headerCols += '<th>Actions</th>';
+          thead.innerHTML = '<tr>' + headerCols + '</tr>';
+
+          /* Render submission rows */
+          var tbody = document.getElementById('submissions-tbody');
+
+          if (submissions.length === 0) {
+            var colCount = fields.length + 3;
+            tbody.innerHTML = '<tr><td colspan="' + colCount + '" class="empty-state">No submissions yet.</td></tr>';
+            return;
+          }
+
+          tbody.innerHTML = submissions.map(function(sub) {
+            var subData = sub.submission_data || {};
+            var rowId = 'sub-row-' + sub.id;
+
+            /* Main row */
+            var row = '<tr onclick="toggleSubmissionDetail(' + sub.id + ')" data-testid="row-submission-' + sub.id + '">' +
+              '<td>' + formatDate(sub.submitted_at) + '</td>' +
+              '<td>' +
+                '<select class="status-select" onclick="event.stopPropagation()" onchange="updateSubmissionStatus(' + sub.id + ', this.value)" data-testid="select-status-' + sub.id + '">' +
+                  '<option value="new"' + (sub.status === 'new' ? ' selected' : '') + '>New</option>' +
+                  '<option value="reviewed"' + (sub.status === 'reviewed' ? ' selected' : '') + '>Reviewed</option>' +
+                  '<option value="contacted"' + (sub.status === 'contacted' ? ' selected' : '') + '>Contacted</option>' +
+                  '<option value="archived"' + (sub.status === 'archived' ? ' selected' : '') + '>Archived</option>' +
+                '</select>' +
+              '</td>';
+
+            fields.forEach(function(field) {
+              var val = subData[field.name] || '--';
+              row += '<td class="cell-truncate">' + escapeHtml(String(val)) + '</td>';
+            });
+
+            row += '<td class="cell-actions">' +
+              '<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); toggleSubmissionDetail(' + sub.id + ')" data-testid="button-expand-sub-' + sub.id + '">Details</button>' +
+            '</td></tr>';
+
+            /* Expandable detail row (hidden by default) */
+            row += '<tr class="submission-detail" id="' + rowId + '" style="display: none;">' +
+              '<td colspan="' + (fields.length + 3) + '">' +
+                '<div class="detail-grid">' +
+                  buildDetailItem('Confirmation', sub.confirmation_number || '--') +
+                  buildDetailItem('Device', sub.device_type || '--') +
+                  buildDetailItem('Browser', sub.browser || '--') +
+                  buildDetailItem('OS', sub.os || '--') +
+                  buildDetailItem('IP Address', sub.ip_address || '--') +
+                  buildDetailItem('Referrer', sub.referrer_url || '--') +
+                  buildDetailItem('Page URL', sub.page_url || '--') +
+                  buildDetailItem('UTM Source', sub.utm_source || '--') +
+                  buildDetailItem('UTM Medium', sub.utm_medium || '--') +
+                  buildDetailItem('UTM Campaign', sub.utm_campaign || '--') +
+                  buildDetailItem('UTM Term', sub.utm_term || '--') +
+                  buildDetailItem('UTM Content', sub.utm_content || '--') +
+                  buildDetailItem('Screen', sub.screen_resolution || '--') +
+                  buildDetailItem('Language', sub.language || '--') +
+                  buildDetailItem('Session ID', sub.session_id || '--') +
+                '</div>' +
+              '</td></tr>';
+
+            return row;
+          }).join('');
+        })
+        .catch(function(err) {
+          console.error('Error loading submissions:', err);
+          showToast('Failed to load submissions', 'error');
+        });
+    }
+
+    /* Helper: build a detail item (label + value) for the expanded submission row */
+    function buildDetailItem(label, value) {
+      return '<div class="detail-item">' +
+        '<div class="detail-item-label">' + escapeHtml(label) + '</div>' +
+        '<div class="detail-item-value">' + escapeHtml(String(value)) + '</div>' +
+      '</div>';
+    }
+
+    /* Toggle the expanded detail row for a submission */
+    function toggleSubmissionDetail(subId) {
+      var row = document.getElementById('sub-row-' + subId);
+      if (!row) return;
+
+      if (expandedSubmissionId === subId) {
+        row.style.display = 'none';
+        expandedSubmissionId = null;
+      } else {
+        /* Close any previously expanded row */
+        if (expandedSubmissionId !== null) {
+          var prev = document.getElementById('sub-row-' + expandedSubmissionId);
+          if (prev) prev.style.display = 'none';
+        }
+        row.style.display = '';
+        expandedSubmissionId = subId;
+      }
+    }
+
+    /* Update the status of a form submission */
+    function updateSubmissionStatus(subId, newStatus) {
+      fetch(API_BASE + '/admin/api/submissions/' + subId + '/status', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus })
+      })
+        .then(function(res) {
+          if (res.ok) {
+            showToast('Status updated to ' + newStatus);
+          } else {
+            showToast('Failed to update status', 'error');
+          }
+        })
+        .catch(function(err) {
+          console.error('Error updating submission status:', err);
+          showToast('Failed to update status', 'error');
+        });
+    }
+
+    /*
+    ========================================================================
+    CHATBOT SETTINGS
+    ========================================================================
+    Loads and saves the chatbot configuration.
+    - Fetches from /admin/api/chatbot-settings
+    - Saves to PUT /admin/api/chatbot-settings
+    - Quick prompts are managed as an editable list
+    */
+    function loadChatbotSettings() {
+      fetch(API_BASE + '/admin/api/chatbot-settings')
+        .then(function(res) { return res.json(); })
+        .then(function(settings) {
+          if (!settings) return;
+
+          /* Populate form fields */
+          document.getElementById('chatbot-enabled').checked = !!settings.enabled;
+          document.getElementById('chatbot-agent-name').value = settings.agent_name || '';
+          document.getElementById('chatbot-agent-role').value = settings.agent_role || '';
+          document.getElementById('chatbot-agent-avatar').value = settings.agent_avatar || '';
+          document.getElementById('chatbot-greeting').value = settings.greeting || '';
+          document.getElementById('chatbot-system-prompt').value = settings.system_prompt || '';
+          document.getElementById('chatbot-mode').value = settings.mode || 'builtin';
+          document.getElementById('chatbot-embed-code').value = settings.embed_code || '';
+
+          /* Render quick prompts list */
+          var prompts = settings.quick_prompts || [];
+          if (typeof prompts === 'string') {
+            try { prompts = JSON.parse(prompts); } catch(e) { prompts = []; }
+          }
+          renderPromptList(prompts);
+
+          /* Show/hide embed section based on mode */
+          toggleEmbedSection();
+        })
+        .catch(function(err) {
+          console.error('Error loading chatbot settings:', err);
+          showToast('Failed to load chatbot settings', 'error');
+        });
+    }
+
+    /* Render the quick prompts editable list */
+    function renderPromptList(prompts) {
+      var container = document.getElementById('prompt-list');
+      container.innerHTML = '';
+
+      prompts.forEach(function(prompt, index) {
+        var item = document.createElement('div');
+        item.className = 'prompt-item';
+        item.innerHTML =
+          '<input type="text" value="' + escapeHtml(prompt) + '" placeholder="Enter a quick prompt..." data-testid="input-prompt-' + index + '">' +
+          '<button class="prompt-remove-btn" onclick="removePromptItem(this)" data-testid="button-remove-prompt-' + index + '" title="Remove prompt">&times;</button>';
+        container.appendChild(item);
+      });
+    }
+
+    /* Add a new empty prompt to the list */
+    function addPromptItem() {
+      var container = document.getElementById('prompt-list');
+      var index = container.children.length;
+      var item = document.createElement('div');
+      item.className = 'prompt-item';
+      item.innerHTML =
+        '<input type="text" value="" placeholder="Enter a quick prompt..." data-testid="input-prompt-' + index + '">' +
+        '<button class="prompt-remove-btn" onclick="removePromptItem(this)" data-testid="button-remove-prompt-' + index + '" title="Remove prompt">&times;</button>';
+      container.appendChild(item);
+
+      /* Focus the new input */
+      item.querySelector('input').focus();
+    }
+
+    /* Remove a prompt from the list */
+    function removePromptItem(btn) {
+      btn.parentElement.remove();
+    }
+
+    /* Collect current quick prompts from the DOM */
+    function getQuickPrompts() {
+      var inputs = document.querySelectorAll('#prompt-list .prompt-item input');
+      var prompts = [];
+      inputs.forEach(function(input) {
+        var val = input.value.trim();
+        if (val) prompts.push(val);
+      });
+      return prompts;
+    }
+
+    /* Show/hide the embed code section based on mode selection */
+    function toggleEmbedSection() {
+      var mode = document.getElementById('chatbot-mode').value;
+      var embedSection = document.getElementById('embed-section');
+      if (mode === 'embed') {
+        embedSection.classList.add('visible');
+      } else {
+        embedSection.classList.remove('visible');
+      }
+    }
+
+    /* Save all chatbot settings to the backend */
+    function saveChatbotSettings() {
+      var payload = {
+        enabled: document.getElementById('chatbot-enabled').checked,
+        agent_name: document.getElementById('chatbot-agent-name').value.trim(),
+        agent_role: document.getElementById('chatbot-agent-role').value.trim(),
+        agent_avatar: document.getElementById('chatbot-agent-avatar').value.trim(),
+        greeting: document.getElementById('chatbot-greeting').value.trim(),
+        quick_prompts: getQuickPrompts(),
+        system_prompt: document.getElementById('chatbot-system-prompt').value,
+        mode: document.getElementById('chatbot-mode').value,
+        embed_code: document.getElementById('chatbot-embed-code').value
+      };
+
+      fetch(API_BASE + '/admin/api/chatbot-settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+        .then(function(res) {
+          if (res.ok) {
+            showToast('Chatbot settings saved');
+          } else {
+            showToast('Failed to save settings', 'error');
+          }
+        })
+        .catch(function(err) {
+          console.error('Error saving chatbot settings:', err);
+          showToast('Failed to save settings', 'error');
+        });
+    }
+
+    /*
+    ========================================================================
+    INITIAL LOAD
+    ========================================================================
+    Load the default tab (Chat History) on page load.
+    */
+    document.addEventListener('DOMContentLoaded', function() {
+      loadChatHistory();
+    });
+  </script>
+</body>
+</html>
