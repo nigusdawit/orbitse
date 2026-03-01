@@ -146,30 +146,71 @@ SECTIONS:
   border-color: rgba(255, 255, 255, 0.2);
 }
 
-.chatbot-pill-btn {
+/* Icon-only action buttons (Visualize / Full Screen) with hover tooltip */
+.chatbot-icon-btn {
+  position: relative;
   flex-shrink: 0;
-  padding: 0.3rem 0.85rem;
-  border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.65);
-  font-size: 0.7rem;
-  font-family: var(--font-sans, 'DM Sans', sans-serif);
-  letter-spacing: 0.02em;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.4);
   cursor: pointer;
-  white-space: nowrap;
-  transition: background var(--transition-fast, 0.3s), border-color var(--transition-fast, 0.3s), color var(--transition-fast, 0.3s);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.3s, border-color 0.3s, color 0.3s, box-shadow 0.3s, transform 0.3s;
 }
 
-.chatbot-pill-btn:hover {
-  background: rgba(201, 169, 110, 0.15);
-  border-color: rgba(201, 169, 110, 0.35);
-  color: var(--color-accent, #c9a96e);
+.chatbot-icon-btn:hover {
+  transform: scale(1.1);
 }
 
-.chatbot-pill-inline {
-  padding: 0.25rem 0.65rem;
+.chatbot-icon-btn::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  background: rgba(10, 15, 26, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.85);
+  font-family: var(--font-sans, 'DM Sans', sans-serif);
   font-size: 0.65rem;
+  letter-spacing: 0.03em;
+  padding: 0.3rem 0.6rem;
+  border-radius: 0.4rem;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.chatbot-icon-btn:hover::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.chatbot-pill-visualize:hover {
+  background: rgba(201, 169, 110, 0.15);
+  border-color: rgba(201, 169, 110, 0.3);
+  color: var(--color-accent, #c9a96e);
+  box-shadow: 0 0 10px rgba(201, 169, 110, 0.1);
+}
+
+.chatbot-pill-fullscreen:hover {
+  background: rgba(99, 102, 241, 0.12);
+  border-color: rgba(99, 102, 241, 0.25);
+  color: rgba(165, 168, 255, 0.9);
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.08);
+}
+
+.chatbot-icon-inline {
+  width: 1.6rem;
+  height: 1.6rem;
 }
 
 .chatbot-bar-btn {
@@ -1478,7 +1519,7 @@ SECTIONS:
   }
 
   .chatbot-agent-info,
-  .chatbot-pill-btn {
+  .chatbot-icon-btn {
     display: none;
   }
 

@@ -2945,51 +2945,75 @@ input, select, textarea {
   border-color: rgba(255, 255, 255, 0.2);
 }
 
-.chatbot-pill-btn {
+/* Icon-only action buttons (Visualize / Full Screen) with hover tooltip */
+.chatbot-icon-btn {
+  position: relative;
   flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.3rem 0.85rem;
-  border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.55);
-  font-size: 0.65rem;
-  font-family: var(--font-sans);
-  letter-spacing: 0.03em;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.4);
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+
+.chatbot-icon-btn:hover {
+  transform: scale(1.1);
+}
+
+/* Tooltip — appears above the button on hover */
+.chatbot-icon-btn::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  background: rgba(10, 15, 26, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.85);
+  font-family: var(--font-sans);
+  font-size: 0.65rem;
+  letter-spacing: 0.03em;
+  padding: 0.3rem 0.6rem;
+  border-radius: 0.4rem;
   white-space: nowrap;
-  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
-.chatbot-pill-btn svg {
-  flex-shrink: 0;
-  opacity: 0.7;
-  transition: opacity var(--transition-fast);
-}
-
-.chatbot-pill-btn:hover svg {
+.chatbot-icon-btn:hover::after {
   opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 
+/* Visualize button — gold accent on hover */
 .chatbot-pill-visualize:hover {
   background: rgba(201, 169, 110, 0.15);
-  border-color: rgba(201, 169, 110, 0.35);
+  border-color: rgba(201, 169, 110, 0.3);
   color: var(--color-accent, #c9a96e);
-  box-shadow: 0 0 12px rgba(201, 169, 110, 0.12);
+  box-shadow: 0 0 10px rgba(201, 169, 110, 0.1);
 }
 
+/* Full Screen button — indigo accent on hover */
 .chatbot-pill-fullscreen:hover {
   background: rgba(99, 102, 241, 0.12);
-  border-color: rgba(99, 102, 241, 0.3);
+  border-color: rgba(99, 102, 241, 0.25);
   color: rgba(165, 168, 255, 0.9);
-  box-shadow: 0 0 12px rgba(99, 102, 241, 0.1);
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.08);
 }
 
-.chatbot-pill-inline {
-  padding: 0.25rem 0.55rem;
-  font-size: 0.6rem;
+/* Slightly smaller in inline panels (split-screen / side chat) */
+.chatbot-icon-inline {
+  width: 1.6rem;
+  height: 1.6rem;
 }
 
 /* Small circular buttons in the bar (send, expand) */
@@ -4323,9 +4347,9 @@ input, select, textarea {
     font-size: 16px;
   }
 
-  /* Hide agent name/role and visual pill on mobile to save space */
+  /* Hide agent name/role and action icons on mobile to save space */
   .chatbot-agent-info,
-  .chatbot-pill-btn {
+  .chatbot-icon-btn {
     display: none;
   }
 

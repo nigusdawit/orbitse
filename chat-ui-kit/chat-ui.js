@@ -270,6 +270,29 @@ var ChatUI = (function () {
      MESSAGING — Send & receive
      ==================================================================== */
 
+  function chatInjectPagePrompt() {
+    var barInput = document.getElementById('chatbot-bar-input');
+    var panelInput = document.getElementById('chatbot-panel-input');
+    var splitInput = document.getElementById('split-chat-input');
+    var sideInput = document.getElementById('side-chat-input');
+
+    var target = barInput;
+    if (sidePanelActive && sideInput) target = sideInput;
+    else if (splitScreenActive && splitInput) target = splitInput;
+    else if (chatExpanded && panelInput) target = panelInput;
+
+    if (target) {
+      var current = target.value.trim();
+      if (current) {
+        target.value = 'create an animated page about: ' + current;
+        chatSendMessage();
+      } else {
+        target.value = 'create an animated page about: ';
+        target.focus();
+      }
+    }
+  }
+
   function chatInjectVisualPrompt() {
     var barInput = document.getElementById('chatbot-bar-input');
     var panelInput = document.getElementById('chatbot-panel-input');
@@ -1508,6 +1531,7 @@ var ChatUI = (function () {
     sendQuickPrompt: chatSendQuickPrompt,
     addMessage: chatAddMessage,
     injectVisualPrompt: chatInjectVisualPrompt,
+    injectPagePrompt: chatInjectPagePrompt,
 
     toggleExpand: chatToggleExpand,
     toggleMainPanelHistory: toggleMainPanelHistory,
