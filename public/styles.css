@@ -833,7 +833,7 @@ input, select, textarea {
 
 .slide-content {
   position: absolute;
-  bottom: 6rem;
+  bottom: 8rem;
   left: var(--space-xl);
   max-width: 36rem;
   color: #fff;
