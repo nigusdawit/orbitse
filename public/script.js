@@ -1284,12 +1284,12 @@ function showSphereView() {
 
   if (window.lucide) lucide.createIcons();
 
-  /* Initialize Three.js scene if not already done, or resume animation */
-  if (!sphereInstance) {
-    sphereInstance = createSphereScene(sphereSettings);
-  } else {
-    sphereInstance.resume();
+  /* Initialize Three.js scene — dispose previous if settings may have changed */
+  if (sphereInstance) {
+    sphereInstance.dispose();
+    sphereInstance = null;
   }
+  sphereInstance = createSphereScene(sphereSettings);
 }
 
 /**
@@ -1388,43 +1388,47 @@ function createSphereScene(settings) {
   /* ── Orbiting images ── */
   const loader = new THREE.TextureLoader();
   const imageCount = images.length;
+  const loadedTextures = [];
 
   if (imageCount > 0) {
-    const planeGeo = new THREE.PlaneGeometry(IMAGE_SIZE, IMAGE_SIZE);
-
+    /* Distribute images around the sphere at varied heights for a natural look */
     for (let i = 0; i < imageCount; i++) {
       const angle = (i / imageCount) * Math.PI * 2;
-      const ix = SPHERE_RADIUS * Math.cos(angle);
-      const iy = 0;
-      const iz = SPHERE_RADIUS * Math.sin(angle);
-
-      const position = new THREE.Vector3(ix, iy, iz);
-      const outward = position.clone().normalize();
+      /* Stagger vertical position so images aren't all on one flat ring */
+      const heightOffset = (Math.sin(angle * 2.3) * SPHERE_RADIUS * 0.35);
+      const ringRadius = Math.sqrt(SPHERE_RADIUS * SPHERE_RADIUS - heightOffset * heightOffset);
+      const ix = ringRadius * Math.cos(angle);
+      const iy = heightOffset;
+      const iz = ringRadius * Math.sin(angle);
 
       const mat = new THREE.MeshBasicMaterial({
         transparent: true,
         opacity: 1,
-        side: THREE.DoubleSide
+        side: THREE.FrontSide
       });
 
       loader.load(images[i], function(texture) {
-        texture.wrapS = THREE.ClampToEdgeWrapping;
-        texture.wrapT = THREE.ClampToEdgeWrapping;
+        texture.colorSpace = THREE.SRGBColorSpace;
         mat.map = texture;
         mat.needsUpdate = true;
+        loadedTextures.push(texture);
+
+        /* Adjust plane aspect ratio to match the image */
+        const imgAspect = texture.image.width / texture.image.height;
+        if (imgAspect > 1) {
+          plane.scale.set(IMAGE_SIZE * imgAspect, IMAGE_SIZE, 1);
+        } else {
+          plane.scale.set(IMAGE_SIZE, IMAGE_SIZE / imgAspect, 1);
+        }
       });
 
+      const planeGeo = new THREE.PlaneGeometry(1, 1);
       const plane = new THREE.Mesh(planeGeo, mat);
-      plane.position.copy(position);
+      plane.position.set(ix, iy, iz);
 
-      /* Face outward from center */
-      const lookTarget = position.clone().add(outward);
-      const lookMatrix = new THREE.Matrix4();
-      lookMatrix.lookAt(position, lookTarget, new THREE.Vector3(0, 1, 0));
-      const euler = new THREE.Euler();
-      euler.setFromRotationMatrix(lookMatrix);
-      euler.z += Math.PI;
-      plane.rotation.copy(euler);
+      /* Face outward: look away from the center (0,0,0) */
+      const outwardTarget = new THREE.Vector3(ix * 2, iy * 2, iz * 2);
+      plane.lookAt(outwardTarget);
 
       group.add(plane);
     }
@@ -1629,8 +1633,9 @@ function createSphereScene(settings) {
         }
       });
 
-      /* Dispose shared particle geometry */
+      /* Dispose shared particle geometry and any tracked textures */
       particleGeo.dispose();
+      loadedTextures.forEach(function(t) { t.dispose(); });
 
       renderer.dispose();
     }
