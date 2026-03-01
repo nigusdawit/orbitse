@@ -949,21 +949,21 @@ FONTS:
 
   <!--
   ============================================================================
-  IMMERSIVE PAGE IFRAME — For AI-generated animated pages (generatePage)
+  IMMERSIVE PAGE VIEWER — Full-viewport AI-generated animated pages
   ============================================================================
-  Unlike generateHTML (which sanitizes and strips styles/animations),
-  generatePage renders inside a sandboxed iframe with FULL CSS freedom:
-  animations, @keyframes, background-image, parallax, scroll effects.
-  The site's theme (colors, fonts, glass effects) is auto-injected.
+  The generatePage command renders here with FULL CSS power: <style> tags,
+  @keyframes, animations, background-image, scroll effects — everything.
+  Takes over the entire screen (no side panel) for a real website feel.
+  Uses DOMPurify with expanded allowlist (not an iframe) so the page
+  inherits the parent's loaded fonts and CSS variables directly.
   -->
   <div id="immersive-page-overlay" class="immersive-page-overlay" data-testid="immersive-page-overlay">
-    <button class="canvas-close-btn" onclick="closeImmersivePage(); closeSidePanel();" data-testid="button-immersive-close">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="m15 18-6-6 6-6"/>
+    <button class="immersive-close-btn" onclick="closeImmersivePage()" data-testid="button-immersive-close">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
       </svg>
-      Back
     </button>
-    <iframe id="immersive-page-frame" class="immersive-page-frame" sandbox="allow-scripts" data-testid="immersive-page-frame"></iframe>
+    <div id="immersive-page-content" class="immersive-page-content" data-testid="immersive-page-content"></div>
   </div>
 
   <!--

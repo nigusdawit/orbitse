@@ -4363,17 +4363,16 @@ function executeCommand(cmd) {
     /* ─────────────────────────────────────────────────────────────────
        GENERATE PAGE — Render an immersive animated full page
        ─────────────────────────────────────────────────────────────────
-       Unlike generateHTML (which strips <style> and animations via
-       DOMPurify), generatePage renders inside a sandboxed iframe with
-       FULL CSS freedom: @keyframes, background-image, parallax,
-       scroll-triggered animations, gradients — anything CSS can do.
+       Unlike generateHTML (which strips <style> and animations),
+       generatePage renders in a dedicated full-viewport overlay with
+       expanded DOMPurify allowlist: @keyframes, background-image,
+       parallax, scroll-triggered animations — anything CSS can do.
 
-       The site's theme (colors, fonts, glass effects) is automatically
-       injected into the iframe so the generated page matches the site.
+       Takes over the ENTIRE screen (no side panel) for a real
+       website experience. Floating X button to close.
     */
     case 'generatePage': {
       openImmersivePage(cmd.html || '');
-      openSidePanel();
       saveGeneratedPage(cmd.html || '', cmd.title || '');
       break;
     }
@@ -4687,78 +4686,35 @@ function openImmersivePage(html) {
   if (!html || !html.trim()) return;
 
   const overlay = document.getElementById('immersive-page-overlay');
-  const frame = document.getElementById('immersive-page-frame');
-  if (!overlay || !frame) return;
+  const contentDiv = document.getElementById('immersive-page-content');
+  if (!overlay || !contentDiv) return;
 
   /* Close the regular canvas if it was open */
   closeFullscreenCanvas();
 
-  /* Read current theme CSS variables from the live document */
-  const styles = getComputedStyle(document.documentElement);
-  const fontSerif = styles.getPropertyValue('--font-serif').trim() || "'Playfair Display', Georgia, serif";
-  const fontSans = styles.getPropertyValue('--font-sans').trim() || "'DM Sans', -apple-system, sans-serif";
-  const colorBg = styles.getPropertyValue('--color-bg').trim() || '#060b14';
-  const colorSection1 = styles.getPropertyValue('--color-section-1').trim() || '#0a0f1a';
-  const colorSection2 = styles.getPropertyValue('--color-section-2').trim() || '#060b14';
-  const colorAccent = styles.getPropertyValue('--color-accent').trim() || '#c9a96e';
-  const colorText = styles.getPropertyValue('--color-text').trim() || '#e4e4e7';
-  const glassBorder = styles.getPropertyValue('--glass-border').trim() || 'rgba(255, 255, 255, 0.08)';
-  const glassBg = styles.getPropertyValue('--glass-bg').trim() || 'rgba(255, 255, 255, 0.03)';
+  /* Sanitize the HTML using DOMPurify with expanded allowlist.
+     We allow <style> tags, @keyframes, and presentation attributes
+     so the AI can generate fully animated immersive pages. */
+  let sanitized = html;
+  if (typeof DOMPurify !== 'undefined') {
+    sanitized = DOMPurify.sanitize(html, {
+      ADD_TAGS: ['style'],
+      ADD_ATTR: ['target', 'rel', 'loading', 'decoding', 'srcset', 'sizes'],
+      ALLOW_UNKNOWN_PROTOCOLS: false,
+      FORCE_BODY: true
+    });
+  }
 
-  /* Find Google Font links from the parent page to inject into the iframe */
-  const fontLinks = Array.from(document.querySelectorAll('link[rel="stylesheet"][href*="fonts.googleapis.com"]'))
-    .map(link => `<link rel="stylesheet" href="${link.href}">`)
-    .join('\n');
-
-  /* Build the full HTML document for the iframe with theme injection */
-  const fullDoc = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  ${fontLinks}
-  <style>
-    :root {
-      --font-serif: ${fontSerif};
-      --font-sans: ${fontSans};
-      --color-bg: ${colorBg};
-      --color-section-1: ${colorSection1};
-      --color-section-2: ${colorSection2};
-      --color-accent: ${colorAccent};
-      --color-text: ${colorText};
-      --glass-border: ${glassBorder};
-      --glass-bg: ${glassBg};
-    }
-    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-    html { scroll-behavior: smooth; }
-    body {
-      font-family: var(--font-sans);
-      color: var(--color-text);
-      background: var(--color-bg);
-      overflow-x: hidden;
-      -webkit-font-smoothing: antialiased;
-      padding-top: 4rem;
-    }
-    img { max-width: 100%; height: auto; display: block; }
-    a { color: var(--color-accent); text-decoration: none; }
-    h1, h2, h3, h4, h5, h6 { font-family: var(--font-serif); color: #fff; }
-    ::-webkit-scrollbar { width: 6px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
-  </style>
-</head>
-<body>
-${html}
-</body>
-</html>`;
-
-  frame.srcdoc = fullDoc;
+  /* Inject the sanitized HTML into the content div.
+     Because it's a div (not an iframe), it inherits the parent page's
+     loaded Google Fonts and CSS variables automatically — no cross-origin issues. */
+  contentDiv.innerHTML = sanitized;
   overlay.classList.add('active');
 }
 
 
 /**
- * Close the immersive page overlay and clear the iframe content.
+ * Close the immersive page overlay and clear its content.
  */
 function closeImmersivePage() {
   const overlay = document.getElementById('immersive-page-overlay');
@@ -4766,8 +4722,8 @@ function closeImmersivePage() {
 
   overlay.classList.remove('active');
 
-  const frame = document.getElementById('immersive-page-frame');
-  if (frame) frame.srcdoc = '';
+  const contentDiv = document.getElementById('immersive-page-content');
+  if (contentDiv) contentDiv.innerHTML = '';
 }
 
 
