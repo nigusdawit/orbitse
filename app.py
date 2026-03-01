@@ -2175,6 +2175,19 @@ def api_chat():
     for h in history[-20:]:
         role = "assistant" if h.get("role") == "agent" else "user"
         messages.append({"role": role, "content": h.get("content", "")})
+
+    # Short, sharp reminder injected as a second system message right before
+    # the user's turn.  Models pay far more attention to the most recent
+    # system message, so this dramatically improves command-block compliance
+    # — especially with smaller models like gpt-4o-mini.
+    messages.append({"role": "system", "content": (
+        "REMEMBER: If your reply involves ANY action (navigate, showSlide, "
+        "generateHTML, submitForm, scrollToSection, etc.), you MUST include "
+        "the ```command\\n{...}\\n``` JSON block. Without it the visitor sees "
+        "NO change on the site. Never narrate an action — execute it. "
+        "Keep reply text to 1 sentence when a command follows."
+    )})
+
     messages.append({"role": "user", "content": message})
 
     def generate():
