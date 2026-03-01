@@ -163,14 +163,12 @@ All public methods are on the global `ChatUI` object.
 | `ChatUI.toggleSidePanelMinimize()` | Minimize/restore the side panel          |
 | `ChatUI.toggleSidePanelHistory()`  | Toggle history view in side panel        |
 
-### Canvas & Immersive Pages
+### Canvas
 
 | Method                            | Description                              |
 |-----------------------------------|------------------------------------------|
-| `ChatUI.openFullscreenCanvas(html)` | Open fullscreen canvas with HTML content (generateHTML) |
+| `ChatUI.openFullscreenCanvas(html)` | Open fullscreen canvas with HTML content |
 | `ChatUI.closeFullscreenCanvas()`   | Close the fullscreen canvas              |
-| `ChatUI.openImmersivePage(html)`  | Open full-viewport immersive page (generatePage) — supports `<style>`, animations, scroll effects |
-| `ChatUI.closeImmersivePage()`     | Close the immersive page overlay         |
 
 ### Utilities
 

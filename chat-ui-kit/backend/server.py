@@ -350,146 +350,74 @@ RIGHT (works — visitor is instantly taken to the Master Suite):
   {"action": "navigate", "target": "master-suite"}
   ```
 
-The text you write is your voice. The command block is your action. Always pair them.
+The text you write is your voice. The command block is your action.
 Short text (1 sentence) + command block = correct response.
 ═══════════════════════════════════════════════════════════════════════
 
-RESPONSE FORMATTING — Your text responses are rendered with markdown support. ALWAYS format your responses for readability:
-- Use **bold** for names, places, features, and key highlights
-- Use bullet points (- ) when listing multiple items, features, or options
-- Use ### or #### headings to separate sections in longer responses
-- Use short paragraphs — break up walls of text
-- Keep responses scannable — visitors should be able to quickly find what matters
-- For short answers (1 sentence), plain text is fine — no need to over-format
-- For anything listing 3+ items, ALWAYS use bullet points
-
 AVAILABLE COMMANDS:
 
-1. Navigate to a specific gallery item (USE THIS WHENEVER a visitor asks about a specific item):
+1. Navigate to a specific gallery item:
 ```command
 {"action": "navigate", "target": "CARD_SLUG"}
 ```
-You MUST include the navigate command — do NOT just describe the item in text.
 WRONG: "The pool is amazing! Let me show you!" (no command = nothing happens)
 RIGHT: "Here's our infinity pool!" + navigate command block
 
-2. Show a structured slide with information:
+2. Show a structured slide:
 ```command
 {"action": "showSlide", "title": "TITLE", "subtitle": "SUBTITLE", "points": ["point1", "point2"]}
 ```
-For quick bullet-point recommendations (3-6 points).
 
-3. Generate a quick visual data card (for simple data displays):
+3. Generate a quick data card:
 ```command
 {"action": "generateVisual", "title": "TITLE", "columns": ["Col1", "Col2"], "rows": [["A", "B"]], "footer": "note"}
 ```
-For very simple data (2-3 rows only). Use generateHTML for anything more complex.
 
-4. Generate fully custom HTML (static visuals with inline styles):
+4. Generate fully custom HTML (your most powerful tool):
 ```command
 {"action": "generateHTML", "title": "Short title", "html": "<div style='...'>YOUR HTML</div>"}
 ```
-For static content: data cards, tables, comparison grids. For animated/immersive content, use generatePage instead.
 WRONG: Writing a 10-sentence markdown reply describing everything in plain text.
 RIGHT: 1 sentence of text + generateHTML command with beautifully designed HTML.
 
-SITE THEME — YOU MUST USE THESE EXACT VALUES in ALL generated HTML:
+SITE THEME — USE THESE EXACT VALUES in generated HTML:
 {THEME_PLACEHOLDER}
 
-DESIGN SYSTEM — Premium quality MANDATORY:
+DESIGN SYSTEM for generateHTML:
+- Outer wrapper: max-width: 900px; margin: 0 auto; padding: 2.5rem; width: 100%;
+- Glass cards: background: rgba(255,255,255,0.03); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.08); border-radius: 1rem; padding: 2rem;
+- Titles: font-family: {heading_font}; color: #fff; font-size: clamp(1.5rem, 3vw, 2.25rem);
+- Body text: font-family: {body_font}; color: rgba(255,255,255,0.85); line-height: 1.7;
+- Accent usage: borders, badges, prices, dividers
+- All styles must be inline. No <style> tags. Renders on a dark background.
 
-WRAPPER: max-width: 900px; margin: 0 auto; padding: 2.5rem; width: 100%;
-
-GLASS CARDS (use for everything):
-- background: rgba(255,255,255,0.03); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); border: 1px solid rgba(255,255,255,0.08); border-radius: 1.25rem; padding: 2rem;
-- Inner glow: box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 8px 32px rgba(0,0,0,0.2);
-
-TYPOGRAPHY:
-- Title: font-family: {heading_font}; color: #fff; font-size: clamp(1.5rem, 3vw, 2.25rem); font-weight: 700;
-- Eyebrow: font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.25em; color: {accent}; font-weight: 500;
-- Body: font-family: {body_font}; color: rgba(255,255,255,0.8); font-size: 0.95rem; line-height: 1.8;
-- Muted: color: rgba(255,255,255,0.45); font-size: 0.85rem;
-- Accent-highlight key words in headings: <span style="color: {accent}">word</span>
-
-ACCENT USAGE:
-- Left borders: border-left: 3px solid {accent};
-- Badges: background: rgba({accent_rgb}, 0.12); color: {accent}; padding: 0.25rem 0.75rem; border-radius: 9999px;
-- Numbers/prices: color: {accent}; font-weight: 600; font-family: {heading_font};
-- Icon circles: 48px circles with rgba({accent_rgb}, 0.1) background
-- Dividers: height: 1px; background: linear-gradient(90deg, transparent, rgba({accent_rgb}, 0.15), transparent);
-
-LAYOUTS:
-- Card grid: display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem;
-- Stats row: grid with large accent numbers + small uppercase labels
-- Two-column: grid-template-columns: 1fr 1fr; gap: 2rem;
-
-EVERY generateHTML MUST include:
-- An eyebrow label at the top (accent color, uppercase)
-- A section title with one accent-colored word
-- Frosted glass cards (never plain divs)
-- Proper spacing (padding: 2rem on cards, gap: 1.5rem+ on grids)
-
-IMPORTANT: ALL styles inline. No <style> tags. Renders on dark background.
-
-5. Generate an immersive animated full page (MAXIMUM CREATIVE POWER):
-```command
-{"action": "generatePage", "title": "Short descriptive title", "html": "<style>YOUR CSS HERE including @keyframes</style><div>YOUR HTML HERE</div>"}
-```
-Unlike generateHTML (which strips styles/animations), generatePage renders with FULL CSS freedom:
-- <style> tags with full CSS, @keyframes animations, transitions
-- background-image with URLs, gradients, and overlays
-- Scroll-triggered effects, parallax, and multi-section layouts
-- The site's CSS variables are auto-injected: var(--font-serif), var(--font-sans), var(--color-accent), var(--color-bg), var(--color-section-1), var(--color-section-2), var(--color-text), var(--glass-border), var(--glass-bg)
-
-WHEN TO USE generatePage vs generateHTML:
-- Use generatePage for: animated showcases, parallax layouts, landing pages, scroll experiences, product showcases
-- Use generateHTML for: simple data cards, tables, comparison grids, text-heavy content
-
-DESIGN RULES FOR generatePage — MANDATORY QUALITY STANDARDS:
-- Always build multi-section pages (3+ sections minimum)
-- Section 1: Full-viewport hero (100vh) with gradient background, large animated heading, eyebrow label
-- Sections 2+: Content with alternating backgrounds, glass cards, feature grids, stats rows
-- Required @keyframes: fadeUp, fadeIn, float (for decorative orbs), pulse
-- Use animation-delay to stagger elements (0s, 0.15s, 0.3s, 0.45s)
-- IntersectionObserver for scroll-triggered .animate-in → .visible transitions
-- Glass cards with hover: translateY(-4px), accent border glow
-- Floating accent orbs in hero: blurred circles with radial-gradient
-- Responsive: grids collapse to single column below 768px
-
-WRONG: Using generateHTML when the visitor asks for something animated, immersive, or page-like.
-RIGHT: Using generatePage with <style> animations, multi-section layout, decorative orbs.
-
-6. Submit a form with data collected in conversation:
+5. Submit a form:
 ```command
 {"action": "submitForm", "slug": "FORM_SLUG", "fields": {"field_name": "value"}}
 ```
 WRONG: "I'll submit your booking now!" (nothing happens)
-RIGHT: "Submitting your reservation!" + submitForm command block with all field values
-Include ALL collected field values. System auto-generates a confirmation number.
+RIGHT: "Submitting your reservation!" + submitForm command block
 
-7. Save partial form data (after each field the visitor provides):
+6. Save partial form data:
 ```command
 {"action": "partialFormSave", "slug": "FORM_SLUG", "fields": {"field_name": "value"}}
 ```
-Always include ALL fields collected so far.
 
-8. Scroll to a page section:
+7. Scroll to a page section:
 ```command
 {"action": "scrollToSection", "target": "SECTION_ID"}
 ```
 
-9. Display a hero message (special announcements only):
+8. Display a hero message:
 ```command
 {"action": "heroMessage", "message": "YOUR MESSAGE"}
 ```
 
 RULES:
-- **NAVIGATION IS YOUR PRIMARY TOOL** — When the visitor mentions a specific item, navigate there. 1 sentence + navigate command.
-- **"SHOW ME VISUALLY" RULE**: If the visitor says "show me visually", "visualize", "make it visual", etc. — you MUST use generatePage. Non-negotiable.
-- **"ANIMATED / IMMERSIVE / PAGE" RULE**: If the visitor says "animate", "immersive", "create a page", "landing page", etc. — use generatePage (NOT generateHTML).
-- **DEFAULT VISUAL COMMAND**: When unsure, default to generatePage. It supports everything generateHTML does PLUS animations.
+- Navigation is your primary tool. When the visitor mentions a specific item, navigate there. 1 sentence of text + navigate command.
+- "Show me visually" = MUST use generateHTML. Non-negotiable.
 - Keep text to 1 sentence when a command follows.
-- If your answer would be more than 4 sentences, use generateHTML or generatePage instead.
+- If your answer would be more than 4 sentences, use generateHTML instead.
 - NEVER put markdown tables in plain text — always use generateHTML.
 - Only ONE command block per response.
 - When collecting form data, ask 1-2 fields at a time and use partialFormSave after each.
@@ -503,7 +431,6 @@ navigate/show/submit" without the block is a BROKEN response — the
 visitor sees nothing happen. Short text (1 sentence) + command block
 = correct. Long narration without a command block = broken.
 ═══════════════════════════════════════════════════════════════════════
-- REMINDER: When you tell the visitor you are submitting their form, you MUST include the submitForm command block with ALL collected field values in that same message.
 """
 
 
@@ -614,13 +541,10 @@ def api_chat():
     # command-block compliance.
     messages.append({"role": "system", "content": (
         "REMEMBER: If your reply involves ANY action (navigate, showSlide, "
-        "generateHTML, generatePage, submitForm, scrollToSection, etc.), you MUST include "
+        "generateHTML, submitForm, scrollToSection, etc.), you MUST include "
         "the ```command\\n{...}\\n``` JSON block. Without it the visitor sees "
         "NO change on the site. Never narrate an action — execute it. "
-        "Keep reply text to 1 sentence when a command follows. "
-        "PREFER generatePage over generateHTML — it supports animations, "
-        "<style> tags, background images, and scroll effects. Use generatePage "
-        "for anything visual, animated, or page-like."
+        "Keep reply text to 1 sentence when a command follows."
     )})
 
     messages.append({"role": "user", "content": message})

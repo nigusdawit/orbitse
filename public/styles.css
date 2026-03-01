@@ -3843,19 +3843,18 @@ input, select, textarea {
 
 
 /* =============================================================================
-   IMMERSIVE PAGE VIEWER — Full-viewport AI-generated animated pages
+   IMMERSIVE PAGE OVERLAY — AI-generated animated full pages (generatePage)
    =============================================================================
-   Takes over the ENTIRE screen (no side panel) for a real website feel.
-   Uses DOMPurify with expanded allowlist so animations, @keyframes,
-   background-image, and scroll effects all work. The page inherits
-   the parent document's fonts and CSS variables directly.
+   Renders inside a sandboxed iframe for full CSS freedom: animations,
+   @keyframes, background-image, parallax, scroll effects. The site's theme
+   is automatically injected so everything matches the design.
 ============================================================================= */
 
 .immersive-page-overlay {
   position: fixed;
   inset: 0;
-  z-index: 100;
-  background: var(--color-bg, #060b14);
+  z-index: 50;
+  background: #0c1220;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.5s cubic-bezier(0.22, 1, 0.36, 1);
@@ -3867,58 +3866,19 @@ input, select, textarea {
   pointer-events: auto;
 }
 
-.immersive-page-content {
+.immersive-page-frame {
   width: 100%;
   height: 100%;
-  overflow-y: auto;
-  overflow-x: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
+  border: none;
+  background: transparent;
+  padding-right: 380px;
+  transition: padding 0.5s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.immersive-page-content::-webkit-scrollbar {
-  width: 6px;
-}
-
-.immersive-page-content::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 3px;
-}
-
-.immersive-close-btn {
-  position: fixed;
-  top: 1.25rem;
-  right: 1.25rem;
-  z-index: 101;
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  color: rgba(255, 255, 255, 0.7);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0;
-  transform: scale(0.8);
-  transition: opacity 0.4s ease 0.6s, transform 0.4s ease 0.6s, background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
-  pointer-events: none;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-}
-
-.immersive-page-overlay.active .immersive-close-btn {
-  opacity: 1;
-  transform: scale(1);
-  pointer-events: auto;
-}
-
-.immersive-close-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.25);
-  color: #fff;
+@media (max-width: 768px) {
+  .immersive-page-frame {
+    padding-right: 0;
+  }
 }
 
 .fullscreen-canvas-content {
