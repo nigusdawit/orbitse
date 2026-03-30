@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "kglOn9tRguhq2f-tulUqK"
+uri = "file://TEMPLATE_OVERVIEW.md"
+type = "text"
+title = "AI Website Template — Product Overview"
