@@ -3277,30 +3277,6 @@ function _getActiveChatInput() {
 
 
 /**
- * "Full Screen" pill — injects "show me visually" into the prompt.
- * This triggers the AI to use generateHTML, which renders content on
- * the fullscreen canvas as a styled data card or visual layout.
- *
- * If the input already has text, appends the trigger and sends immediately.
- * If the input is empty, pre-fills with the trigger and focuses so the
- * user can type what they want to see.
- */
-function chatInjectVisualPrompt() {
-  const target = _getActiveChatInput();
-  if (target) {
-    const current = target.value.trim();
-    if (current) {
-      target.value = current + ' — show me visually';
-      chatSendMessage();
-    } else {
-      target.value = 'show me visually ';
-      target.focus();
-    }
-  }
-}
-
-
-/**
  * "Visualize" pill — injects "create an animated page about" into the prompt.
  * This triggers the AI to use generatePage, which renders inside a sandboxed
  * iframe with full CSS freedom: animations, @keyframes, background images,
