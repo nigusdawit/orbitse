@@ -2516,23 +2516,24 @@ input, select, textarea {
   border: 1px solid rgba(255, 255, 255, 0.25);
 }
 
-/* Date pill that overlaps the bottom-left of the cover image */
+/* Date pill that sits over the bottom-left corner of the cover image,
+   slightly overhanging into the body so it visually anchors the card */
 .event-date-pill {
   position: absolute;
-  top: calc(16 / 9 * 100% / 2 + 1rem - 30px);
+  bottom: -22px;
   left: var(--space-lg);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  width: 60px; height: 60px;
-  background: rgba(6, 11, 20, 0.85);
+  width: 56px; height: 56px;
+  background: rgba(6, 11, 20, 0.92);
   border: 1px solid rgba(201, 169, 110, 0.4);
-  border-radius: 0.5rem;
+  border-radius: 0.6rem;
   backdrop-filter: blur(10px);
   z-index: 3;
-  transform: translateY(0);
   pointer-events: none;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.35);
 }
 .event-date-day {
   font-family: var(--font-serif);
@@ -2551,6 +2552,7 @@ input, select, textarea {
 
 .event-card-body {
   padding: var(--space-lg);
+  padding-top: calc(var(--space-lg) + 14px);
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);

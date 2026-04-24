@@ -577,19 +577,25 @@ function renderEventsSection() {
             <div class="event-card-image-overlay"></div>
             ${isCancelled ? `<span class="event-card-badge cancelled" data-testid="badge-event-cancelled-${ev.slug}">Cancelled</span>` : ''}
             ${isFull && !isCancelled ? `<span class="event-card-badge full" data-testid="badge-event-full-${ev.slug}">Sold Out</span>` : ''}
+            ${start ? `
+              <div class="event-date-pill" data-testid="text-event-date-${ev.slug}">
+                <span class="event-date-day">${day}</span>
+                <span class="event-date-month">${month}</span>
+              </div>
+            ` : ''}
           </div>
         ` : `
           <div class="event-card-image event-card-image-empty">
             ${isCancelled ? `<span class="event-card-badge cancelled">Cancelled</span>` : ''}
             ${isFull && !isCancelled ? `<span class="event-card-badge full">Sold Out</span>` : ''}
+            ${start ? `
+              <div class="event-date-pill" data-testid="text-event-date-${ev.slug}">
+                <span class="event-date-day">${day}</span>
+                <span class="event-date-month">${month}</span>
+              </div>
+            ` : ''}
           </div>
         `}
-        ${start ? `
-          <div class="event-date-pill" data-testid="text-event-date-${ev.slug}">
-            <span class="event-date-day">${day}</span>
-            <span class="event-date-month">${month}</span>
-          </div>
-        ` : ''}
         <div class="event-card-body">
           <h3 class="event-card-title" data-testid="text-event-title-${ev.slug}">${escapeHtml(ev.title)}</h3>
           <div class="event-card-meta">
