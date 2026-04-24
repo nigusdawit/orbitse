@@ -2153,19 +2153,22 @@ TO CUSTOMIZE THIS DASHBOARD:
       </div>
 
       <div class="form-row">
-        <div class="form-group">
-          <label for="voice-default-voice">Default Voice</label>
-          <select id="voice-default-voice" data-testid="select-voice-default">
-            <option value="alloy">Alloy (neutral, balanced)</option>
-            <option value="echo">Echo (warm male)</option>
-            <option value="fable">Fable (British male)</option>
-            <option value="onyx">Onyx (deep male)</option>
-            <option value="nova">Nova (warm female)</option>
-            <option value="shimmer">Shimmer (soft female)</option>
-          </select>
+        <div class="form-group" style="flex: 2;">
+          <label for="voice-default-voice">Default OpenAI Voice</label>
+          <div style="display:flex; gap:0.5rem; align-items:stretch;">
+            <select id="voice-default-voice" data-testid="select-voice-default" style="flex:1;" onchange="updateOpenAIPreviewButton()">
+              <option value="alloy">Alloy (neutral, balanced)</option>
+              <option value="echo">Echo (warm male)</option>
+              <option value="fable">Fable (British male)</option>
+              <option value="onyx">Onyx (deep male)</option>
+              <option value="nova">Nova (warm female)</option>
+              <option value="shimmer">Shimmer (soft female)</option>
+            </select>
+            <button type="button" class="btn btn-secondary" onclick="previewOpenAIVoice()" data-testid="button-preview-openai-voice" title="Listen to a sample of this voice">▶ Listen</button>
+          </div>
         </div>
         <div class="form-group">
-          <label for="voice-tts-model">TTS Model</label>
+          <label for="voice-tts-model">OpenAI TTS Model</label>
           <select id="voice-tts-model" data-testid="select-voice-model">
             <option value="tts-1">tts-1 (faster, lower cost)</option>
             <option value="tts-1-hd">tts-1-hd (higher quality)</option>
@@ -2180,8 +2183,75 @@ TO CUSTOMIZE THIS DASHBOARD:
         </div>
       </div>
 
+      <!-- Hidden audio player shared by all "▶ Listen" preview buttons -->
+      <audio id="voice-preview-player" preload="none" style="display:none;"></audio>
+
       <div class="form-actions">
         <button class="btn btn-primary" onclick="saveVoiceSettings()" data-testid="button-save-voice-settings">Save Voice Settings</button>
+      </div>
+    </div>
+
+    <!-- ============== Section 1b: Multi-provider configuration ============== -->
+    <!-- Lets the admin pick between free defaults (OpenAI TTS, browser STT)  -->
+    <!-- and premium upgrades (ElevenLabs TTS, Whisper STT). Premium options  -->
+    <!-- are gated by the master "Premium features" toggle so a single click  -->
+    <!-- can turn off all paid features for a client whose trial expired.     -->
+    <div class="form-card" id="voice-provider-form" style="margin-top: 1rem;">
+      <h3 style="margin-top:0;">Voice Providers <span class="badge" style="background: rgba(201,169,110,0.15); color: var(--admin-accent, #c9a96e); padding: 0.15rem 0.5rem; border-radius: 6px; font-size: 0.7rem; vertical-align: middle;">Premium</span></h3>
+      <p class="help-text" style="margin-top:0; color: var(--admin-text-muted);">Pick which AI providers power your voice features. Premium providers (ElevenLabs voices, Whisper transcription) deliver noticeably higher quality but require API keys and bill the client per use.</p>
+
+      <div class="form-row">
+        <div class="form-group" style="flex: 1;">
+          <label>
+            <input type="checkbox" id="voice-premium-enabled" data-testid="checkbox-voice-premium" onchange="updatePremiumGating()">
+            <strong>Enable Premium Voice Features</strong>
+          </label>
+          <p class="help-text" style="margin-top:0.25rem; font-size:0.8rem; color: var(--admin-text-muted);">Master switch for ElevenLabs and Whisper. Turn off to instantly disable all paid voice features without losing your provider selections below.</p>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group" style="flex: 1;">
+          <label for="voice-tts-provider">TTS Provider <span id="status-tts-provider" class="provider-status"></span></label>
+          <select id="voice-tts-provider" data-testid="select-tts-provider" onchange="onTtsProviderChange()">
+            <option value="openai">OpenAI (standard quality, low cost)</option>
+            <option value="elevenlabs">ElevenLabs (premium, ultra-realistic)</option>
+          </select>
+          <p class="help-text" id="tts-provider-hint" style="margin-top:0.25rem; font-size:0.8rem; color: var(--admin-text-muted);"></p>
+        </div>
+        <div class="form-group" style="flex: 1;">
+          <label for="voice-stt-provider">STT Provider <span id="status-stt-provider" class="provider-status"></span></label>
+          <select id="voice-stt-provider" data-testid="select-stt-provider" onchange="onSttProviderChange()">
+            <option value="webspeech">Browser (Web Speech API — free)</option>
+            <option value="whisper">OpenAI Whisper (premium, higher accuracy)</option>
+          </select>
+          <p class="help-text" id="stt-provider-hint" style="margin-top:0.25rem; font-size:0.8rem; color: var(--admin-text-muted);"></p>
+        </div>
+      </div>
+
+      <!-- ElevenLabs voice picker — only visible when ElevenLabs is selected -->
+      <div id="elevenlabs-config" style="display:none; padding: 1rem; border-radius: 8px; background: rgba(201,169,110,0.05); border: 1px solid rgba(201,169,110,0.2); margin-top: 0.5rem;">
+        <div class="form-row" style="margin-bottom: 0.5rem;">
+          <div class="form-group" style="flex: 2;">
+            <label for="voice-elevenlabs-voice">ElevenLabs Voice</label>
+            <div style="display:flex; gap:0.5rem; align-items:stretch;">
+              <select id="voice-elevenlabs-voice" data-testid="select-elevenlabs-voice" style="flex:1;">
+                <option value="">— Loading voices…</option>
+              </select>
+              <button type="button" class="btn btn-secondary" onclick="previewElevenLabsVoice()" data-testid="button-preview-elevenlabs" title="Listen to a sample of this voice">▶ Listen</button>
+              <button type="button" class="btn btn-secondary" onclick="loadElevenLabsVoices(true)" data-testid="button-refresh-elevenlabs" title="Refresh voice list from ElevenLabs">↻</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="voice-elevenlabs-model">ElevenLabs Model</label>
+            <select id="voice-elevenlabs-model" data-testid="select-elevenlabs-model">
+              <option value="eleven_turbo_v2_5">Turbo v2.5 (fast, low latency)</option>
+              <option value="eleven_multilingual_v2">Multilingual v2 (29 languages)</option>
+              <option value="eleven_monolingual_v1">Monolingual v1 (legacy)</option>
+            </select>
+          </div>
+        </div>
+        <p class="help-text" style="margin: 0; font-size: 0.8rem; color: var(--admin-text-muted);" id="elevenlabs-status-text">Loading…</p>
       </div>
     </div>
 
@@ -6398,12 +6468,27 @@ TO CUSTOMIZE THIS DASHBOARD:
       try {
         const res = await fetch('/admin/api/voice-settings');
         const data = await res.json();
+        /* --- Basic toggles --- */
         document.getElementById('voice-enabled-intros').checked = !!data.enabled_intros;
         document.getElementById('voice-enabled-visitor').checked = !!data.enabled_visitor_voice;
         document.getElementById('voice-enabled-ai').checked = !!data.enabled_ai_voice;
         document.getElementById('voice-default-voice').value = data.default_voice || 'alloy';
         document.getElementById('voice-tts-model').value = data.tts_model || 'tts-1';
         document.getElementById('voice-autoplay-strategy').value = data.autoplay_strategy || 'gesture';
+        /* --- v2 multi-provider fields --- */
+        document.getElementById('voice-premium-enabled').checked = !!data.premium_enabled;
+        document.getElementById('voice-tts-provider').value = data.tts_provider || 'openai';
+        document.getElementById('voice-stt-provider').value = data.stt_provider || 'webspeech';
+        document.getElementById('voice-elevenlabs-model').value = data.elevenlabs_model || 'eleven_turbo_v2_5';
+        /* Stash settings + provider status for use by helper handlers */
+        window.__voiceSettings = data;
+        window.__voiceProviderStatus = data.provider_status || {};
+        window.__voiceElevenLabsId = data.elevenlabs_voice_id || '';
+        /* Update derived UI: status badges, premium gating, provider hints */
+        renderProviderStatusBadges();
+        updatePremiumGating();
+        onTtsProviderChange();
+        onSttProviderChange();
       } catch (err) {
         console.error('Error loading voice settings:', err);
       }
@@ -6417,18 +6502,199 @@ TO CUSTOMIZE THIS DASHBOARD:
         default_voice: document.getElementById('voice-default-voice').value,
         tts_model: document.getElementById('voice-tts-model').value,
         autoplay_strategy: document.getElementById('voice-autoplay-strategy').value,
+        /* v2 multi-provider fields */
+        premium_enabled: document.getElementById('voice-premium-enabled').checked,
+        tts_provider: document.getElementById('voice-tts-provider').value,
+        stt_provider: document.getElementById('voice-stt-provider').value,
+        elevenlabs_voice_id: document.getElementById('voice-elevenlabs-voice').value || '',
+        elevenlabs_model: document.getElementById('voice-elevenlabs-model').value,
       };
       try {
-        await fetch('/admin/api/voice-settings', {
+        const res = await fetch('/admin/api/voice-settings', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          showToast(body.error || 'Could not save voice settings', 'error');
+          return;
+        }
         showToast('Voice settings saved');
       } catch (err) {
         console.error('Error saving voice settings:', err);
         showToast('Could not save voice settings', 'error');
       }
+    }
+
+    /* ---------- 1b. Provider status, gating, and previews ---------- */
+
+    /* Renders little colored pills next to each provider dropdown showing
+       whether the API key is configured. Keeps the admin from spending
+       time picking a provider that won't actually work. */
+    function renderProviderStatusBadges() {
+      const status = window.__voiceProviderStatus || {};
+      const ttsBadge = document.getElementById('status-tts-provider');
+      const sttBadge = document.getElementById('status-stt-provider');
+      if (!ttsBadge || !sttBadge) return;
+      const ttsProvider = document.getElementById('voice-tts-provider').value;
+      const sttProvider = document.getElementById('voice-stt-provider').value;
+      const renderBadge = (ok, label) => {
+        const color = ok ? '#3a8c5a' : '#a64242';
+        const bg = ok ? 'rgba(58,140,90,0.15)' : 'rgba(166,66,66,0.15)';
+        return `<span style="background:${bg}; color:${color}; padding:0.1rem 0.45rem; border-radius:6px; font-size:0.7rem; margin-left:0.4rem;">${label}</span>`;
+      };
+      ttsBadge.innerHTML = ttsProvider === 'elevenlabs'
+        ? renderBadge(status.elevenlabs, status.elevenlabs ? 'API key set' : 'Missing ELEVENLABS_API_KEY')
+        : renderBadge(status.openai_tts, status.openai_tts ? 'API key set' : 'Missing OPENAI_API_KEY');
+      sttBadge.innerHTML = sttProvider === 'whisper'
+        ? renderBadge(status.openai_whisper, status.openai_whisper ? 'API key set' : 'Missing OPENAI_API_KEY')
+        : renderBadge(true, 'Browser native');
+    }
+
+    /* When premium is OFF, disable ElevenLabs/Whisper options so the admin
+       can't accidentally pick an unavailable provider. The dropdowns stay
+       visible (so admins know premium options exist) but greyed out. */
+    function updatePremiumGating() {
+      const premium = document.getElementById('voice-premium-enabled').checked;
+      const ttsSelect = document.getElementById('voice-tts-provider');
+      const sttSelect = document.getElementById('voice-stt-provider');
+      /* Disable the premium options inside each select */
+      Array.from(ttsSelect.options).forEach(o => {
+        if (o.value === 'elevenlabs') o.disabled = !premium;
+      });
+      Array.from(sttSelect.options).forEach(o => {
+        if (o.value === 'whisper') o.disabled = !premium;
+      });
+      /* If premium just got turned off and a premium option was selected, fall back to defaults */
+      if (!premium) {
+        if (ttsSelect.value === 'elevenlabs') ttsSelect.value = 'openai';
+        if (sttSelect.value === 'whisper') sttSelect.value = 'webspeech';
+        onTtsProviderChange();
+        onSttProviderChange();
+      }
+    }
+
+    function onTtsProviderChange() {
+      const provider = document.getElementById('voice-tts-provider').value;
+      const elevenWrap = document.getElementById('elevenlabs-config');
+      const hint = document.getElementById('tts-provider-hint');
+      if (provider === 'elevenlabs') {
+        elevenWrap.style.display = 'block';
+        hint.textContent = 'ElevenLabs voices sound noticeably more natural but cost ~10× more per character. Loaded dynamically from your ElevenLabs account.';
+        loadElevenLabsVoices(false);
+      } else {
+        elevenWrap.style.display = 'none';
+        hint.textContent = 'OpenAI TTS — six voices, fast, low cost. Use the "▶ Listen" button next to "Default OpenAI Voice" above to audition.';
+      }
+      renderProviderStatusBadges();
+    }
+
+    function onSttProviderChange() {
+      const provider = document.getElementById('voice-stt-provider').value;
+      const hint = document.getElementById('stt-provider-hint');
+      hint.textContent = provider === 'whisper'
+        ? 'Whisper transcribes recorded audio server-side via OpenAI. Slower than the browser API (1-3s) but much more accurate, especially in noisy environments and with non-English languages.'
+        : 'Browser-native Web Speech API. Free, instant, but accuracy varies by browser and degrades with background noise.';
+      renderProviderStatusBadges();
+    }
+
+    /* Generic preview helper — POSTs to /api/voice/sample and plays the
+       returned audio URL through the shared <audio> element. Catches
+       config errors (missing API key, bad voice id) and shows them as
+       toast notifications instead of silent failures. */
+    async function playVoicePreview(provider, voice_id, model) {
+      const player = document.getElementById('voice-preview-player');
+      try {
+        const res = await fetch('/admin/api/voice-sample-not-used-but-here-for-clarity', {});
+        /* (Above is dead code — use the real endpoint below) */
+      } catch (e) { /* noop */ }
+      try {
+        const res = await fetch('/api/voice/sample', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider, voice_id, model }),
+        });
+        const body = await res.json();
+        if (!res.ok) {
+          showToast(body.error || 'Sample failed', 'error');
+          return;
+        }
+        player.src = body.audio_url;
+        player.play().catch(err => {
+          console.warn('Voice preview play failed:', err);
+          showToast('Tap once anywhere on the page first, then try again (browser autoplay policy)', 'error');
+        });
+      } catch (err) {
+        console.error('Voice preview error:', err);
+        showToast('Could not generate sample', 'error');
+      }
+    }
+
+    function previewOpenAIVoice() {
+      playVoicePreview('openai', document.getElementById('voice-default-voice').value, document.getElementById('voice-tts-model').value);
+    }
+
+    function previewElevenLabsVoice() {
+      const voice = document.getElementById('voice-elevenlabs-voice').value;
+      if (!voice) { showToast('Pick a voice first', 'error'); return; }
+      playVoicePreview('elevenlabs', voice, document.getElementById('voice-elevenlabs-model').value);
+    }
+
+    /* Updates the OpenAI preview button label to reflect the current
+       selection — purely cosmetic but signals the button is contextual. */
+    function updateOpenAIPreviewButton() { /* No-op for now; reserved hook */ }
+
+    /* Loads the ElevenLabs voice catalogue. `force` re-fetches even if
+       cached. Populates the voice dropdown and surfaces any error to
+       the inline status text. */
+    let _elevenLabsVoicesCache = null;
+    async function loadElevenLabsVoices(force) {
+      const select = document.getElementById('voice-elevenlabs-voice');
+      const status = document.getElementById('elevenlabs-status-text');
+      if (!force && _elevenLabsVoicesCache) {
+        renderElevenLabsVoices(_elevenLabsVoicesCache, status);
+        return;
+      }
+      status.textContent = 'Loading voices from ElevenLabs…';
+      select.innerHTML = '<option value="">— Loading…</option>';
+      try {
+        const res = await fetch('/admin/api/voice/elevenlabs-voices');
+        const body = await res.json();
+        if (!res.ok) {
+          select.innerHTML = '<option value="">— Unavailable —</option>';
+          status.textContent = body.error || 'ElevenLabs API unavailable';
+          status.style.color = '#a64242';
+          return;
+        }
+        _elevenLabsVoicesCache = body.voices || [];
+        renderElevenLabsVoices(_elevenLabsVoicesCache, status);
+      } catch (err) {
+        console.error('ElevenLabs voices fetch error:', err);
+        select.innerHTML = '<option value="">— Error —</option>';
+        status.textContent = 'Failed to load voices: ' + err.message;
+        status.style.color = '#a64242';
+      }
+    }
+
+    function renderElevenLabsVoices(voices, status) {
+      const select = document.getElementById('voice-elevenlabs-voice');
+      if (!voices.length) {
+        select.innerHTML = '<option value="">— No voices in your ElevenLabs account —</option>';
+        status.textContent = 'No voices found. Add some at elevenlabs.io.';
+        return;
+      }
+      select.innerHTML = voices.map(v => {
+        const labels = Object.values(v.labels || {}).filter(Boolean).join(', ');
+        const desc = labels ? ` — ${esc(labels)}` : '';
+        return `<option value="${esc(v.voice_id)}">${esc(v.name)}${desc}</option>`;
+      }).join('');
+      /* Restore previously-saved selection if present */
+      if (window.__voiceElevenLabsId) {
+        select.value = window.__voiceElevenLabsId;
+      }
+      status.textContent = `Loaded ${voices.length} voice${voices.length === 1 ? '' : 's'} from ElevenLabs.`;
+      status.style.color = '';
     }
 
     /* ---------- 2. Intros — CRUD ---------- */

@@ -50,6 +50,7 @@ import secrets
 from datetime import datetime, timedelta
 from functools import wraps
 
+import httpx
 import psycopg2
 import psycopg2.extras
 import sentry_sdk
@@ -102,12 +103,32 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")
 # Database connection string from environment variable
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# OpenAI client — uses Replit AI Integrations environment variables
-# These are automatically set when the OpenAI integration is installed
+# OpenAI client — uses Replit AI Integrations environment variables.
+# These are automatically set when the OpenAI integration is installed and
+# are used for chat completions (which the proxy supports).
 openai_client = OpenAI(
     api_key=os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY", ""),
     base_url=os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL", "https://api.openai.com/v1"),
 )
+
+# Separate direct OpenAI client for endpoints the Replit AI proxy doesn't
+# support yet — specifically /audio/speech (TTS) and /audio/transcriptions
+# (Whisper STT). Falls back to None if no direct key is configured; voice
+# features will surface a clear "missing API key" message instead of crashing.
+_DIRECT_OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+openai_direct_client = None
+if _DIRECT_OPENAI_KEY:
+    try:
+        openai_direct_client = OpenAI(api_key=_DIRECT_OPENAI_KEY)
+    except Exception as _e:
+        print(f"[OpenAI direct client init error] {_e}")
+
+# ElevenLabs — premium TTS provider. We talk to its REST API directly via
+# the `requests` library (already a dependency). Key is optional; ElevenLabs
+# features are gated behind the admin "premium_enabled" toggle AND the key
+# being present, so missing keys never crash the app.
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+ELEVENLABS_API_BASE = "https://api.elevenlabs.io/v1"
 
 
 # =============================================================================
@@ -592,8 +613,27 @@ def init_db():
                     default_voice            TEXT NOT NULL DEFAULT 'alloy',
                     tts_model                TEXT NOT NULL DEFAULT 'tts-1',
                     autoplay_strategy        TEXT NOT NULL DEFAULT 'gesture',
+                    -- Multi-provider support (added in v2 of voice agent):
+                    -- tts_provider: 'openai' (default) or 'elevenlabs' (premium)
+                    -- stt_provider: 'webspeech' (default, free) or 'whisper' (premium)
+                    -- premium_enabled: master kill-switch for paid providers; when
+                    --   false, ElevenLabs/Whisper are unavailable even if keys exist
+                    -- elevenlabs_voice_id / elevenlabs_model: ElevenLabs config
+                    tts_provider             TEXT NOT NULL DEFAULT 'openai',
+                    stt_provider             TEXT NOT NULL DEFAULT 'webspeech',
+                    premium_enabled          BOOLEAN NOT NULL DEFAULT false,
+                    elevenlabs_voice_id      TEXT NOT NULL DEFAULT '',
+                    elevenlabs_model         TEXT NOT NULL DEFAULT 'eleven_turbo_v2_5',
                     updated_at               TIMESTAMP DEFAULT NOW()
                 );
+
+                -- Idempotent column adds for upgrades from v1 schema. Each
+                -- ADD COLUMN IF NOT EXISTS is safe to re-run on existing DBs.
+                ALTER TABLE voice_settings ADD COLUMN IF NOT EXISTS tts_provider TEXT NOT NULL DEFAULT 'openai';
+                ALTER TABLE voice_settings ADD COLUMN IF NOT EXISTS stt_provider TEXT NOT NULL DEFAULT 'webspeech';
+                ALTER TABLE voice_settings ADD COLUMN IF NOT EXISTS premium_enabled BOOLEAN NOT NULL DEFAULT false;
+                ALTER TABLE voice_settings ADD COLUMN IF NOT EXISTS elevenlabs_voice_id TEXT NOT NULL DEFAULT '';
+                ALTER TABLE voice_settings ADD COLUMN IF NOT EXISTS elevenlabs_model TEXT NOT NULL DEFAULT 'eleven_turbo_v2_5';
 
                 -- Predefined intro voice notes. Each intro has a message text
                 -- and a pre-generated audio file (cached to avoid re-paying
@@ -4706,40 +4746,116 @@ def _log_voice_usage(feature_type, char_count=0, voice_id="", session_id="", int
         print(f"[voice usage log error] {e}")
 
 
-def _generate_tts_audio(text, voice_id, model):
-    """Generate TTS audio for the given text and save to cache. Returns
-    (audio_url, was_cached). If a cached file already exists, just returns
-    the URL without re-generating."""
-    # Validate inputs against whitelists
-    if voice_id not in ALLOWED_TTS_VOICES:
-        voice_id = "alloy"
-    if model not in ALLOWED_TTS_MODELS:
-        model = "tts-1"
+def _voice_provider_status():
+    """Return a dict describing which voice providers are usable right now.
+    Used by the admin dashboard to show "Active" vs "Missing API key" badges
+    and to gate provider selection. Cheap to call (no API requests)."""
+    return {
+        "openai_tts": bool(openai_direct_client),
+        "openai_whisper": bool(openai_direct_client),
+        "elevenlabs": bool(ELEVENLABS_API_KEY),
+        "webspeech": True,  # Browser-side, always considered available
+    }
 
-    # Trim and cap the text length to control cost
+
+def _generate_tts_openai(text, voice_id, model, filepath):
+    """OpenAI TTS implementation. Streams the result to `filepath`. Raises
+    if the direct OpenAI client isn't configured (i.e. OPENAI_API_KEY
+    secret not set) so the caller can return a helpful 503."""
+    if not openai_direct_client:
+        raise RuntimeError("OPENAI_API_KEY not configured — required for OpenAI TTS")
+    response = openai_direct_client.audio.speech.create(
+        model=model,
+        voice=voice_id,
+        input=text,
+    )
+    response.stream_to_file(filepath)
+
+
+def _generate_tts_elevenlabs(text, voice_id, model, filepath):
+    """ElevenLabs TTS implementation. POSTs to the v1 text-to-speech
+    endpoint and writes the returned MP3 stream to `filepath`. Raises with
+    a useful message if the API rejects the request (bad voice id, no
+    quota, missing key, etc)."""
+    if not ELEVENLABS_API_KEY:
+        raise RuntimeError("ELEVENLABS_API_KEY not configured — required for ElevenLabs TTS")
+    if not voice_id:
+        raise RuntimeError("ElevenLabs voice_id is empty — pick a voice in the admin Voice Agent tab")
+
+    url = f"{ELEVENLABS_API_BASE}/text-to-speech/{voice_id}"
+    headers = {
+        "xi-api-key": ELEVENLABS_API_KEY,
+        "accept": "audio/mpeg",
+        "content-type": "application/json",
+    }
+    body = {
+        "text": text,
+        "model_id": model or "eleven_turbo_v2_5",
+        # Voice settings tuned for natural, slightly expressive speech.
+        # Admins could surface these later if fine control is needed.
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.75,
+            "style": 0.0,
+            "use_speaker_boost": True,
+        },
+    }
+    # 60s timeout — TTS can take a few seconds for longer text
+    with httpx.stream("POST", url, headers=headers, json=body, timeout=60.0) as r:
+        if r.status_code != 200:
+            # Drain to grab the JSON error body
+            err_text = r.read().decode("utf-8", errors="replace")[:300]
+            raise RuntimeError(f"ElevenLabs API error {r.status_code}: {err_text}")
+        with open(filepath, "wb") as f:
+            for chunk in r.iter_bytes():
+                if chunk:
+                    f.write(chunk)
+
+
+def _generate_tts_audio(text, voice_id, model, provider="openai", elevenlabs_voice_id="", elevenlabs_model=""):
+    """Generate TTS audio for the given text and save to cache. Returns
+    (audio_url, was_cached, provider_used).
+
+    The cache key is hashed from (provider, voice, model, text), so the
+    same text spoken by OpenAI's `alloy` and ElevenLabs's `Rachel` are
+    cached as separate files. Cache hits cost nothing."""
+    provider = (provider or "openai").lower()
+
+    # --- Resolve the effective voice + model based on provider ---
+    if provider == "elevenlabs":
+        eff_voice = (elevenlabs_voice_id or "").strip()
+        eff_model = (elevenlabs_model or "eleven_turbo_v2_5").strip()
+        if not eff_voice:
+            raise ValueError("ElevenLabs voice_id is required")
+    else:
+        # OpenAI is the default fallback. Validate against whitelists.
+        provider = "openai"
+        eff_voice = voice_id if voice_id in ALLOWED_TTS_VOICES else "alloy"
+        eff_model = model if model in ALLOWED_TTS_MODELS else "tts-1"
+
+    # Trim and cap the text length to control cost (applies to both providers)
     text = (text or "").strip()
     if not text:
         raise ValueError("Empty text — nothing to synthesize")
     if len(text) > TTS_MAX_CHARS:
         text = text[:TTS_MAX_CHARS]
 
-    # Check the cache first
-    filename = _voice_cache_filename(text, voice_id, model)
+    # Cache key includes the provider so different providers don't collide
+    cache_key = f"{provider}:{eff_model}:{eff_voice}:{text}"
+    filename = _voice_cache_filename(cache_key, eff_voice, eff_model)
     filepath = os.path.join(VOICE_CACHE_DIR, filename)
     audio_url = f"/uploads/voice/{filename}"
 
     if os.path.exists(filepath):
-        return audio_url, True  # Cache hit — no API call needed
+        return audio_url, True, provider  # Cache hit — no API call needed
 
-    # Cache miss — call OpenAI TTS and stream the result to disk
-    response = openai_client.audio.speech.create(
-        model=model,
-        voice=voice_id,
-        input=text,
-    )
-    # The OpenAI SDK returns a streamable response — write the binary content
-    response.stream_to_file(filepath)
-    return audio_url, False
+    # Cache miss — dispatch to the right provider implementation
+    if provider == "elevenlabs":
+        _generate_tts_elevenlabs(text, eff_voice, eff_model, filepath)
+    else:
+        _generate_tts_openai(text, eff_voice, eff_model, filepath)
+
+    return audio_url, False, provider
 
 
 # -----------------------------------------------------------------------------
@@ -4777,6 +4893,12 @@ def api_voice_settings():
         "enabled_ai_voice": settings.get("enabled_ai_voice", False),
         "default_voice": settings.get("default_voice", "alloy"),
         "autoplay_strategy": settings.get("autoplay_strategy", "gesture"),
+        # Provider info — frontend needs stt_provider to pick mic flow
+        # (Web Speech vs Whisper recording). We deliberately expose the
+        # *effective* providers, not the API keys, so visitors can't
+        # enumerate which premium services we use.
+        "tts_provider": settings.get("tts_provider", "openai"),
+        "stt_provider": settings.get("stt_provider", "webspeech"),
     })
 
 
@@ -4877,23 +4999,32 @@ def api_voice_tts():
 
     data = request.get_json(silent=True) or {}
     text = (data.get("text") or "").strip()
-    voice_id = (data.get("voice") or settings.get("default_voice") or "alloy").strip()
-    model = (settings.get("tts_model") or "tts-1").strip()
     session_id = (data.get("session_id") or "").strip()
-
     if not text:
         return jsonify({"error": "Missing text"}), 400
+
+    # Resolve provider + per-provider voice/model from admin settings.
+    # ElevenLabs is gated behind premium_enabled (master toggle that lets
+    # admins disable all paid providers without deleting their config).
+    provider = (settings.get("tts_provider") or "openai").lower()
+    if provider == "elevenlabs" and not settings.get("premium_enabled"):
+        return jsonify({"error": "Premium TTS providers are disabled"}), 403
+
+    if provider == "elevenlabs":
+        voice_id = (settings.get("elevenlabs_voice_id") or "").strip()
+        model = (settings.get("elevenlabs_model") or "eleven_turbo_v2_5").strip()
+    else:
+        # OpenAI path — visitor request can override default voice but not model
+        voice_id = (data.get("voice") or settings.get("default_voice") or "alloy").strip()
+        model = (settings.get("tts_model") or "tts-1").strip()
 
     # Per-IP daily budget check — prevents abuse via cache-busting requests.
     # We only consume budget for fresh generations, so check by hashing first
     # to see if the request would be a cache hit (cache hits cost $0 and are
     # always allowed). request.remote_addr is fine in dev; behind a proxy
     # you'd want to honor X-Forwarded-For.
-    cache_filename = _voice_cache_filename(
-        text[:TTS_MAX_CHARS],
-        voice_id if voice_id in ALLOWED_TTS_VOICES else "alloy",
-        model if model in ALLOWED_TTS_MODELS else "tts-1",
-    )
+    cache_key_preview = f"{provider}:{model}:{voice_id}:{text[:TTS_MAX_CHARS]}"
+    cache_filename = _voice_cache_filename(cache_key_preview, voice_id, model)
     will_be_cached = os.path.exists(os.path.join(VOICE_CACHE_DIR, cache_filename))
     if not will_be_cached:
         client_ip = request.remote_addr or "unknown"
@@ -4901,14 +5032,31 @@ def api_voice_tts():
             return jsonify({"error": "Daily voice quota exceeded for your address"}), 429
 
     try:
-        audio_url, was_cached = _generate_tts_audio(text, voice_id, model)
+        audio_url, was_cached, used_provider = _generate_tts_audio(
+            text=text,
+            voice_id=voice_id,
+            model=model,
+            provider=provider,
+            elevenlabs_voice_id=voice_id if provider == "elevenlabs" else "",
+            elevenlabs_model=model if provider == "elevenlabs" else "",
+        )
+    except RuntimeError as e:
+        # Configuration / missing-key errors are user-facing
+        print(f"[TTS config error] {e}")
+        return jsonify({"error": str(e)}), 503
     except Exception as e:
         print(f"[TTS generation error] {e}")
         return jsonify({"error": "TTS generation failed"}), 500
 
-    # Log usage — distinguish cached hits (no cost) from real generations
+    # Log usage — distinguish cached hits (no cost) from real generations.
+    # Tag the feature_type with the provider so billing reports can break
+    # down OpenAI vs ElevenLabs spend (ElevenLabs is ~10x more expensive).
+    if was_cached:
+        feature_type = "tts_cached"
+    else:
+        feature_type = f"tts_generate_{used_provider}"
     _log_voice_usage(
-        feature_type="tts_cached" if was_cached else "tts_generate",
+        feature_type=feature_type,
         char_count=len(text),
         voice_id=voice_id,
         session_id=session_id,
@@ -4918,6 +5066,116 @@ def api_voice_tts():
         "audio_url": audio_url,
         "cached": was_cached,
         "voice": voice_id,
+        "provider": used_provider,
+    })
+
+
+@app.route("/api/voice/stt", methods=["POST"])
+def api_voice_stt():
+    """Whisper-based speech-to-text. Accepts a multipart upload with field
+    `audio` containing a short voice clip (webm/ogg/mp3/wav from the
+    browser's MediaRecorder), returns {text}. Premium feature.
+
+    Free alternative is the browser's Web Speech API — when stt_provider
+    is 'webspeech' the frontend never hits this endpoint."""
+    settings = query_db("SELECT * FROM voice_settings WHERE id = 1", fetchone=True)
+    if not settings or not settings.get("enabled_visitor_voice"):
+        return jsonify({"error": "Visitor voice is disabled"}), 403
+    if (settings.get("stt_provider") or "webspeech") != "whisper":
+        return jsonify({"error": "Whisper STT is not the configured provider"}), 403
+    if not settings.get("premium_enabled"):
+        return jsonify({"error": "Premium STT is disabled"}), 403
+    if not openai_direct_client:
+        return jsonify({"error": "OPENAI_API_KEY not configured"}), 503
+
+    if "audio" not in request.files:
+        return jsonify({"error": "Missing audio file"}), 400
+    audio_file = request.files["audio"]
+
+    # Cap the upload size (browser will record short snippets — we don't
+    # want someone uploading a 30-minute MP3 to bill the client). Read the
+    # blob into memory first so we can size-check it. 5 MB ≈ 5 minutes
+    # of compressed speech audio, plenty for chat.
+    blob = audio_file.read()
+    if len(blob) > 5 * 1024 * 1024:
+        return jsonify({"error": "Audio file too large (max 5 MB)"}), 413
+    if not blob:
+        return jsonify({"error": "Empty audio file"}), 400
+
+    session_id = (request.form.get("session_id") or "").strip()
+
+    try:
+        # The OpenAI SDK accepts a (filename, file_obj) tuple for uploads.
+        # We pass the original filename so the API can sniff the format.
+        from io import BytesIO
+        bio = BytesIO(blob)
+        bio.name = audio_file.filename or "audio.webm"
+        result = openai_direct_client.audio.transcriptions.create(
+            model="whisper-1",
+            file=bio,
+        )
+        text = (result.text or "").strip()
+    except Exception as e:
+        print(f"[Whisper STT error] {e}")
+        return jsonify({"error": "Transcription failed"}), 500
+
+    # Bill clients on transcribed character count — gives a usage-based
+    # signal even though Whisper actually charges per minute of audio.
+    _log_voice_usage(
+        feature_type="stt_whisper",
+        char_count=len(text),
+        session_id=session_id,
+    )
+    return jsonify({"text": text})
+
+
+@app.route("/api/voice/sample", methods=["POST"])
+def api_voice_sample():
+    """Generate (or fetch from cache) a short sample audio clip for a
+    given voice. Used by the admin dashboard "Listen" buttons so admins
+    can audition voices before picking one. Cached aggressively — every
+    voice's sample is generated exactly once per provider."""
+    # Sample auditioning should only be available to admins (otherwise
+    # anyone could call this to bypass the AI voice toggle and burn $$).
+    if not session.get("admin_logged_in"):
+        return jsonify({"error": "Admin only"}), 403
+
+    data = request.get_json(silent=True) or {}
+    provider = (data.get("provider") or "openai").lower()
+    voice_id = (data.get("voice_id") or "").strip()
+    model = (data.get("model") or "").strip()
+
+    # Standard sample text — kept short to minimize cost and identical
+    # across voices so admins can A/B compare.
+    sample_text = data.get("sample_text") or "Hi! Thanks for visiting. This is a sample of how I sound."
+
+    try:
+        if provider == "elevenlabs":
+            audio_url, was_cached, used_provider = _generate_tts_audio(
+                text=sample_text,
+                voice_id="",
+                model="",
+                provider="elevenlabs",
+                elevenlabs_voice_id=voice_id,
+                elevenlabs_model=model or "eleven_turbo_v2_5",
+            )
+        else:
+            audio_url, was_cached, used_provider = _generate_tts_audio(
+                text=sample_text,
+                voice_id=voice_id or "alloy",
+                model=model or "tts-1",
+                provider="openai",
+            )
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 503
+    except Exception as e:
+        print(f"[Voice sample error] {e}")
+        return jsonify({"error": "Sample generation failed"}), 500
+
+    return jsonify({
+        "audio_url": audio_url,
+        "cached": was_cached,
+        "provider": used_provider,
     })
 
 
@@ -4945,34 +5203,52 @@ def api_voice_log():
 @app.route("/admin/api/voice-settings", methods=["GET"])
 @admin_required
 def admin_get_voice_settings():
-    """Return the full voice settings record for the admin dashboard."""
+    """Return the full voice settings record AND a `provider_status` block
+    so the dashboard can show "Active" vs "Missing API key" badges."""
     settings = query_db("SELECT * FROM voice_settings WHERE id = 1", fetchone=True)
     if not settings:
         execute_db("INSERT INTO voice_settings (id) VALUES (1) ON CONFLICT DO NOTHING")
         settings = query_db("SELECT * FROM voice_settings WHERE id = 1", fetchone=True)
-    return jsonify(settings or {})
+    payload = dict(settings or {})
+    payload["provider_status"] = _voice_provider_status()
+    payload["available_voices_openai"] = sorted(ALLOWED_TTS_VOICES)
+    return jsonify(payload)
 
 
 @app.route("/admin/api/voice-settings", methods=["PUT"])
 @admin_required
 def admin_update_voice_settings():
-    """Update the global voice toggles and defaults."""
+    """Update the global voice toggles and defaults. New v2 fields:
+    tts_provider, stt_provider, premium_enabled, elevenlabs_voice_id,
+    elevenlabs_model — all whitelisted/validated below."""
     data = request.get_json(force=True) or {}
 
     # Validate enum-like fields against whitelists. If the admin somehow
     # submits a bad value (custom client, typo in JS), we reject it rather
     # than letting the bad value live in the DB and crash later TTS calls.
     if "default_voice" in data and data["default_voice"] not in ALLOWED_TTS_VOICES:
-        return jsonify({"error": "Invalid voice"}), 400
+        return jsonify({"error": "Invalid OpenAI voice"}), 400
     if "tts_model" in data and data["tts_model"] not in ALLOWED_TTS_MODELS:
-        return jsonify({"error": "Invalid TTS model"}), 400
+        return jsonify({"error": "Invalid OpenAI TTS model"}), 400
     if "autoplay_strategy" in data and data["autoplay_strategy"] not in ("gesture", "auto"):
         return jsonify({"error": "Invalid autoplay strategy"}), 400
+    if "tts_provider" in data and data["tts_provider"] not in ("openai", "elevenlabs"):
+        return jsonify({"error": "Invalid TTS provider"}), 400
+    if "stt_provider" in data and data["stt_provider"] not in ("webspeech", "whisper"):
+        return jsonify({"error": "Invalid STT provider"}), 400
+    # ElevenLabs voice id is a free-form string from their API. We just cap
+    # the length to prevent garbage data; their API will reject bad ids.
+    if "elevenlabs_voice_id" in data and len(str(data["elevenlabs_voice_id"])) > 100:
+        return jsonify({"error": "elevenlabs_voice_id too long"}), 400
+    if "elevenlabs_model" in data and len(str(data["elevenlabs_model"])) > 80:
+        return jsonify({"error": "elevenlabs_model too long"}), 400
 
-    # Whitelist columns we allow updating
+    # Whitelist columns we allow updating (includes the v2 multi-provider fields)
     allowed = {
         "enabled_intros", "enabled_visitor_voice", "enabled_ai_voice",
         "default_voice", "tts_model", "autoplay_strategy",
+        "tts_provider", "stt_provider", "premium_enabled",
+        "elevenlabs_voice_id", "elevenlabs_model",
     }
     cols = []
     vals = []
@@ -4989,6 +5265,44 @@ def admin_update_voice_settings():
         tuple(vals),
     )
     return jsonify({"status": "ok"})
+
+
+@app.route("/admin/api/voice/elevenlabs-voices", methods=["GET"])
+@admin_required
+def admin_list_elevenlabs_voices():
+    """Proxy the ElevenLabs voice catalogue so the admin dropdown can be
+    populated dynamically. Returns a trimmed list of {voice_id, name,
+    labels, preview_url} so the UI doesn't have to deal with their full
+    response. Returns 503 if the API key isn't configured."""
+    if not ELEVENLABS_API_KEY:
+        return jsonify({"error": "ELEVENLABS_API_KEY not configured", "voices": []}), 503
+    try:
+        resp = httpx.get(
+            f"{ELEVENLABS_API_BASE}/voices",
+            headers={"xi-api-key": ELEVENLABS_API_KEY, "accept": "application/json"},
+            timeout=15.0,
+        )
+        if resp.status_code != 200:
+            return jsonify({
+                "error": f"ElevenLabs API returned {resp.status_code}",
+                "detail": resp.text[:300],
+                "voices": [],
+            }), 502
+        body = resp.json() or {}
+    except Exception as e:
+        print(f"[ElevenLabs voices error] {e}")
+        return jsonify({"error": "Failed to fetch ElevenLabs voices", "voices": []}), 500
+
+    voices = []
+    for v in (body.get("voices") or []):
+        voices.append({
+            "voice_id": v.get("voice_id") or "",
+            "name": v.get("name") or "",
+            "labels": v.get("labels") or {},
+            "preview_url": v.get("preview_url") or "",
+            "category": v.get("category") or "",
+        })
+    return jsonify({"voices": voices})
 
 
 @app.route("/admin/api/voice-intros", methods=["GET"])

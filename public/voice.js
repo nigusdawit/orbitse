@@ -54,6 +54,8 @@
     sessionId: null,           // Per-session ID, reused for the chat session
     recognition: null,         // Web Speech API SpeechRecognition instance
     recognitionActive: false,  // True while the mic is actively listening
+    mediaRecorder: null,       // MediaRecorder instance for Whisper STT
+    recordingActive: false,    // True while Whisper is recording audio
   };
 
   // sessionStorage key for "intro was already played in this tab"
@@ -249,9 +251,26 @@
   // Visitor voice input — Web Speech API (free, browser-native STT)
   // ---------------------------------------------------------------------------
 
-  /** Returns true if the browser supports SpeechRecognition. */
+  /** Returns true if the browser supports SpeechRecognition (Web Speech API). */
   function speechRecognitionSupported() {
     return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+  }
+
+  /** Returns true if the browser can record audio via MediaRecorder.
+   *  Required for the Whisper STT path (we POST recorded blobs server-side). */
+  function mediaRecorderSupported() {
+    return !!(window.MediaRecorder && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  }
+
+  /** Decide which STT provider to actually use right now. Falls back from
+   *  Whisper → Web Speech if the browser can't record (e.g. no mic permission
+   *  granted, ancient browser). Returns 'whisper', 'webspeech', or null. */
+  function effectiveSttProvider() {
+    const desired = (VOICE.settings && VOICE.settings.stt_provider) || "webspeech";
+    if (desired === "whisper" && mediaRecorderSupported()) return "whisper";
+    if (speechRecognitionSupported()) return "webspeech";
+    if (mediaRecorderSupported()) return "whisper"; // Last-ditch fallback
+    return null;
   }
 
   /**
@@ -260,7 +279,8 @@
    */
   function injectMicButtons() {
     if (!VOICE.settings || !VOICE.settings.enabled_visitor_voice) return;
-    if (!speechRecognitionSupported()) return;
+    // Only inject if the visitor's browser supports SOME form of STT
+    if (!effectiveSttProvider()) return;
 
     // Map each chat input ID to its matching send-button selector. The bar
     // send button has an id, but the split/side send buttons are identified
@@ -296,12 +316,26 @@
 
       micBtn.addEventListener("click", (ev) => {
         ev.preventDefault();
-        toggleSpeechRecognition(inputEl, sendEl, micBtn);
+        toggleVoiceInput(inputEl, sendEl, micBtn);
       });
 
       // Insert the mic button just before the send button
       sendEl.parentElement.insertBefore(micBtn, sendEl);
     });
+  }
+
+  /**
+   * Toggle voice input. Dispatches to either Web Speech (browser-native,
+   * free, instant) or Whisper (server-side, premium, more accurate) based
+   * on what the admin configured AND what the visitor's browser supports.
+   */
+  function toggleVoiceInput(inputEl, sendEl, micBtn) {
+    const provider = effectiveSttProvider();
+    if (provider === "whisper") {
+      toggleWhisperRecording(inputEl, sendEl, micBtn);
+    } else {
+      toggleSpeechRecognition(inputEl, sendEl, micBtn);
+    }
   }
 
   /**
@@ -374,6 +408,107 @@
     } catch (e) {
       VOICE.recognitionActive = false;
       micBtn.classList.remove("voice-mic-active");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Visitor voice input — Whisper (premium, server-side STT via OpenAI)
+  // ---------------------------------------------------------------------------
+  // Web Speech API gives instant on-device transcription but its accuracy
+  // varies wildly between browsers and degrades fast in noisy environments.
+  // Whisper transcribes server-side: slower (1-3s round trip) but much more
+  // accurate, especially for non-English speech and accented English.
+  //
+  // Flow: click → request mic → record with MediaRecorder → click again to
+  // stop → POST blob to /api/voice/stt → server returns text → drop into
+  // input → trigger send button.
+
+  /**
+   * Toggle Whisper-based voice recording. First click starts recording,
+   * second click stops and uploads the audio for transcription.
+   */
+  async function toggleWhisperRecording(inputEl, sendEl, micBtn) {
+    // If already recording, stop and upload
+    if (VOICE.recordingActive && VOICE.mediaRecorder) {
+      try { VOICE.mediaRecorder.stop(); } catch (e) {}
+      return;
+    }
+
+    // Acquire mic permission. If denied, fall back to Web Speech if available.
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      console.warn("[voice] mic permission denied, falling back to Web Speech:", err);
+      if (speechRecognitionSupported()) {
+        toggleSpeechRecognition(inputEl, sendEl, micBtn);
+      }
+      return;
+    }
+
+    // Pick the best supported MIME type for the browser. Chrome/Edge produce
+    // webm/opus, Safari produces mp4. Whisper accepts both.
+    let mimeType = "audio/webm";
+    if (window.MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
+      mimeType = "audio/webm;codecs=opus";
+    } else if (window.MediaRecorder.isTypeSupported("audio/mp4")) {
+      mimeType = "audio/mp4";
+    }
+
+    const recorder = new MediaRecorder(stream, { mimeType });
+    const chunks = [];
+    VOICE.mediaRecorder = recorder;
+    VOICE.recordingActive = true;
+    micBtn.classList.add("voice-mic-active");
+
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+
+    recorder.onstop = async () => {
+      VOICE.recordingActive = false;
+      micBtn.classList.remove("voice-mic-active");
+      // Always release the mic so the browser tab indicator turns off
+      stream.getTracks().forEach(t => t.stop());
+
+      if (!chunks.length) return;
+      const blob = new Blob(chunks, { type: mimeType });
+
+      // Briefly indicate "thinking" while we upload — repurpose the active
+      // class so the existing pulse animation keeps the user engaged.
+      micBtn.classList.add("voice-mic-active");
+      const fd = new FormData();
+      fd.append("audio", blob, "speech.webm");
+      fd.append("session_id", getSessionId());
+
+      try {
+        const res = await fetch("/api/voice/stt", { method: "POST", body: fd });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          console.warn("[voice] Whisper STT failed:", body.error);
+          // Soft fallback: if Whisper isn't usable, silently downgrade to Web Speech next time
+          return;
+        }
+        const text = (body.text || "").trim();
+        if (!text) return;
+        inputEl.value = text;
+        // Trigger the chat send button so the message goes through the
+        // normal pipeline (typing indicator, history, etc.)
+        sendEl.click();
+      } catch (err) {
+        console.warn("[voice] Whisper upload error:", err);
+      } finally {
+        micBtn.classList.remove("voice-mic-active");
+      }
+    };
+
+    try {
+      recorder.start();
+    } catch (e) {
+      console.warn("[voice] MediaRecorder start failed:", e);
+      VOICE.recordingActive = false;
+      micBtn.classList.remove("voice-mic-active");
+      stream.getTracks().forEach(t => t.stop());
     }
   }
 
