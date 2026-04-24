@@ -392,6 +392,23 @@ input, select, textarea {
   background-repeat: no-repeat;
 }
 
+.hero-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 0;
+}
+
+/* Video that fills a highlight card background */
+.highlight-card-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 /* Gradient overlay — darkens the image so text is readable */
 .hero-overlay {
   position: absolute;
@@ -809,6 +826,16 @@ input, select, textarea {
   background-position: center;
   background-repeat: no-repeat;
   animation: kenBurns var(--ken-burns-duration) ease-in-out infinite alternate;
+}
+
+/* When the slide background is a video, fill the same area without Ken Burns */
+.gallery-slide-bg-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  animation: none;
+  display: block;
 }
 
 /* Gradient overlay for text readability */
@@ -4948,3 +4975,137 @@ input, select, textarea {
     max-width: none;
   }
 }
+
+/* ============================================================
+   VIDEO GALLERY SECTION
+   ============================================================ */
+.video-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.25rem;
+  margin-top: 2rem;
+}
+
+.video-gallery-item {
+  position: relative;
+  aspect-ratio: 16/9;
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  background: #111;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+.video-gallery-item:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 28px rgba(0,0,0,0.25);
+}
+.video-gallery-thumb {
+  position: absolute; inset: 0;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  width: 100%; height: 100%;
+}
+.video-gallery-thumb-video { object-fit: cover; }
+.video-gallery-overlay {
+  position: absolute; inset: 0;
+  background: linear-gradient(to top, rgba(0,0,0,0.6) 0%, rgba(0,0,0,0.1) 50%, rgba(0,0,0,0) 100%);
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0.85;
+  transition: opacity 0.2s ease;
+}
+.video-gallery-item:hover .video-gallery-overlay { opacity: 1; }
+.video-gallery-play {
+  width: 64px; height: 64px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.92);
+  color: #111;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.6rem;
+  padding-left: 4px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+}
+.video-gallery-meta {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  padding: 1rem;
+  color: #fff;
+  z-index: 2;
+}
+.video-gallery-title { margin: 0; font-size: 1.05rem; font-weight: 600; }
+.video-gallery-desc { margin: 0.25rem 0 0; font-size: 0.875rem; opacity: 0.9; }
+
+/* Video lightbox */
+.video-lightbox {
+  position: fixed; inset: 0;
+  z-index: 9999;
+  display: none;
+  align-items: center; justify-content: center;
+}
+.video-lightbox-backdrop {
+  position: absolute; inset: 0;
+  background: rgba(0,0,0,0.85);
+}
+.video-lightbox-frame {
+  position: relative;
+  width: min(92vw, 1100px);
+  max-height: 90vh;
+}
+.video-lightbox-frame video {
+  width: 100%;
+  max-height: 90vh;
+  border-radius: 8px;
+  background: #000;
+  display: block;
+}
+.video-lightbox-close {
+  position: absolute;
+  top: -2.5rem; right: 0;
+  background: none; border: none;
+  color: #fff;
+  font-size: 2rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+/* ============================================================
+   PODCAST SECTION
+   ============================================================ */
+.podcast-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 1.5rem;
+  margin-top: 2rem;
+}
+.podcast-episode {
+  display: flex;
+  gap: 1rem;
+  padding: 1rem;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.podcast-episode:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+}
+.podcast-cover {
+  flex-shrink: 0;
+  width: 96px; height: 96px;
+  border-radius: 8px;
+  background-size: cover;
+  background-position: center;
+  background-color: #222;
+}
+.podcast-cover-empty {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 2.4rem;
+  color: rgba(255,255,255,0.65);
+}
+.podcast-body { flex: 1; min-width: 0; }
+.podcast-meta { font-size: 0.78rem; opacity: 0.7; margin-bottom: 0.25rem; }
+.podcast-number { text-transform: uppercase; letter-spacing: 0.06em; }
+.podcast-title { margin: 0 0 0.4rem; font-size: 1.05rem; font-weight: 600; }
+.podcast-desc { margin: 0; font-size: 0.875rem; opacity: 0.85; }

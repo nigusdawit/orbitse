@@ -1092,6 +1092,14 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
       Media Library
     </button>
+    <button class="tab-btn" onclick="switchTab('videos', this); loadVideoGallery();" data-testid="tab-videos">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+      Videos
+    </button>
+    <button class="tab-btn" onclick="switchTab('podcast', this); loadPodcast();" data-testid="tab-podcast">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+      Podcast
+    </button>
     <button class="tab-btn" onclick="switchTab('sphere', this)" data-testid="tab-sphere">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
       Sphere View
@@ -1282,8 +1290,20 @@ TO CUSTOMIZE THIS DASHBOARD:
           <label for="setting-hero-image">Hero Background Image URL</label>
           <div style="display: flex; gap: 0.5rem;">
             <input type="url" id="setting-hero-image" placeholder="https://images.unsplash.com/..." data-testid="input-setting-hero-image" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'setting-hero-image', mediaType:'image'})" data-testid="button-pick-hero-image">Pick</button>
             <button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('setting-hero-image')" data-testid="button-upload-hero-image">Upload</button>
           </div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="setting-hero-video">Hero Background Video URL <span style="color:var(--admin-text-muted); font-weight:normal;">(optional — overrides image)</span></label>
+          <div style="display: flex; gap: 0.5rem;">
+            <input type="url" id="setting-hero-video" placeholder="/uploads/yourvideo.mp4" data-testid="input-setting-hero-video" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'setting-hero-video', mediaType:'video'})" data-testid="button-pick-hero-video">Pick</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('setting-hero-video').value=''" data-testid="button-clear-hero-video">Clear</button>
+          </div>
+          <small style="color:var(--admin-text-muted);">Plays muted &amp; looped behind the hero. Falls back to the image if blank.</small>
         </div>
       </div>
 
@@ -1413,7 +1433,18 @@ TO CUSTOMIZE THIS DASHBOARD:
           <label for="card-image">Image URL</label>
           <div style="display: flex; gap: 0.5rem;">
             <input type="url" id="card-image" placeholder="https://images.unsplash.com/..." data-testid="input-card-image" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'card-image', mediaType:'image'})" data-testid="button-pick-card-image">Pick</button>
             <button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('card-image')" data-testid="button-upload-card-image">Upload</button>
+          </div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="card-video">Video URL <span style="color:var(--admin-text-muted); font-weight:normal;">(optional — overrides image)</span></label>
+          <div style="display: flex; gap: 0.5rem;">
+            <input type="url" id="card-video" placeholder="/uploads/clip.mp4" data-testid="input-card-video" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'card-video', mediaType:'video'})" data-testid="button-pick-card-video">Pick</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('card-video').value=''" data-testid="button-clear-card-video">Clear</button>
           </div>
         </div>
       </div>
@@ -1730,6 +1761,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           <label for="testimonial-image">Image URL (optional)</label>
           <div style="display: flex; gap: 0.5rem;">
             <input type="url" id="testimonial-image" placeholder="https://..." data-testid="input-testimonial-image" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'testimonial-image', mediaType:'image'})" data-testid="button-pick-testimonial-image">Pick</button>
             <button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('testimonial-image')" data-testid="button-upload-testimonial-image">Upload</button>
           </div>
         </div>
@@ -1803,6 +1835,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           <label for="team-image">Image URL (optional)</label>
           <div style="display: flex; gap: 0.5rem;">
             <input type="url" id="team-image" placeholder="https://..." data-testid="input-team-image" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'team-image', mediaType:'image'})" data-testid="button-pick-team-image">Pick</button>
             <button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('team-image')" data-testid="button-upload-team-image">Upload</button>
           </div>
         </div>
@@ -2029,6 +2062,7 @@ TO CUSTOMIZE THIS DASHBOARD:
             <label for="sphere-new-image-url">Image URL</label>
             <div style="display:flex; gap: 0.5rem;">
               <input type="text" id="sphere-new-image-url" placeholder="/uploads/image.jpg" data-testid="input-sphere-new-image-url" style="flex:1;">
+              <button type="button" class="btn btn-secondary" style="white-space:nowrap;" onclick="openMediaPicker({targetInputId:'sphere-new-image-url', mediaType:'image'})" data-testid="button-pick-sphere-image">Pick</button>
               <label class="btn btn-secondary" style="cursor:pointer; margin:0; white-space:nowrap;">
                 Upload
                 <input type="file" accept="image/*" onchange="uploadSphereImage(this)" style="display:none;" data-testid="input-sphere-upload">
@@ -3037,6 +3071,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           <label for="seo-og-image">OG Image URL</label>
           <div style="display: flex; gap: 0.5rem;">
             <input type="url" id="seo-og-image" placeholder="https://example.com/og-image.jpg" data-testid="input-seo-og-image" style="flex:1;" oninput="updateSeoPreview();">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'seo-og-image', mediaType:'image'})" data-testid="button-pick-seo-og-image">Pick</button>
             <button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('seo-og-image')" data-testid="button-upload-seo-og-image">Upload</button>
           </div>
         </div>
@@ -3165,6 +3200,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           <label for="blog-cover-image">Cover Image URL</label>
           <div style="display: flex; gap: 0.5rem;">
             <input type="url" id="blog-cover-image" placeholder="https://images.unsplash.com/..." data-testid="input-blog-cover" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'blog-cover-image', mediaType:'image'})" data-testid="button-pick-blog-cover">Pick</button>
             <button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('blog-cover-image')" data-testid="button-upload-blog-cover">Upload</button>
           </div>
         </div>
@@ -3203,6 +3239,12 @@ TO CUSTOMIZE THIS DASHBOARD:
               <button type="button" class="rte-btn" onclick="rteInsertHR()" title="Horizontal Rule" data-testid="rte-hr">&mdash;</button>
               <button type="button" class="rte-btn" onclick="rteInsertImage()" title="Insert Image" data-testid="rte-img">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+              </button>
+              <button type="button" class="rte-btn" onclick="rteInsertVideo()" title="Insert Video" data-testid="rte-video">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+              </button>
+              <button type="button" class="rte-btn" onclick="rteInsertAudio()" title="Insert Audio" data-testid="rte-audio">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
               </button>
               <span class="rte-sep"></span>
               <button type="button" class="rte-btn rte-btn-toggle" id="rte-preview-btn" onclick="rteTogglePreview()" title="Toggle Preview" data-testid="rte-preview">
@@ -3340,6 +3382,144 @@ TO CUSTOMIZE THIS DASHBOARD:
          style="display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:1rem;">
       <div style="grid-column:1/-1; text-align:center; color:var(--admin-text-muted); padding:2rem;">Loading…</div>
     </div>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: VIDEOS — Video Gallery
+  ========================================================================
+  -->
+  <div id="tab-videos" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Video Gallery</h2>
+        <p>Curate a grid of videos. Each one plays in a lightbox on the public site. Enable the "Video Gallery" section in Page Layout to show it.</p>
+      </div>
+      <button class="btn btn-primary" onclick="showVideoGalleryForm()" data-testid="button-new-video">+ New Video</button>
+    </div>
+
+    <div id="video-form-panel" style="display:none; padding:1rem; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:8px; margin-bottom:1rem;">
+      <h3 id="video-form-title" style="margin-top:0;">New Video</h3>
+      <input type="hidden" id="video-form-id">
+      <div class="form-row">
+        <div class="form-group">
+          <label for="video-title">Title</label>
+          <input type="text" id="video-title" data-testid="input-video-title">
+        </div>
+        <div class="form-group">
+          <label for="video-sort-order">Sort Order</label>
+          <input type="number" id="video-sort-order" value="0" data-testid="input-video-sort">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column:1/-1;">
+          <label for="video-url">Video URL</label>
+          <div style="display:flex; gap:0.5rem;">
+            <input type="url" id="video-url" placeholder="/uploads/clip.mp4" style="flex:1;" data-testid="input-video-url">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'video-url', mediaType:'video'})" data-testid="button-pick-video-url">Pick</button>
+          </div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column:1/-1;">
+          <label for="video-thumb">Thumbnail Image URL</label>
+          <div style="display:flex; gap:0.5rem;">
+            <input type="url" id="video-thumb" placeholder="https://…" style="flex:1;" data-testid="input-video-thumb">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'video-thumb', mediaType:'image'})" data-testid="button-pick-video-thumb">Pick</button>
+          </div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column:1/-1;">
+          <label for="video-description">Description</label>
+          <textarea id="video-description" rows="2" data-testid="input-video-description"></textarea>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="hideVideoGalleryForm()" data-testid="button-cancel-video">Cancel</button>
+        <button class="btn btn-primary" onclick="saveVideoGallery()" data-testid="button-save-video">Save</button>
+      </div>
+    </div>
+
+    <table class="data-table" id="video-gallery-table">
+      <thead>
+        <tr><th>Thumb</th><th>Title</th><th>Video URL</th><th>Sort</th><th></th></tr>
+      </thead>
+      <tbody id="video-gallery-tbody">
+        <tr><td colspan="5" style="text-align:center; color:var(--admin-text-muted); padding:1.5rem;">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: PODCAST — Audio Episodes
+  ========================================================================
+  -->
+  <div id="tab-podcast" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Podcast Episodes</h2>
+        <p>Add audio episodes that play on the public site. Enable the "Podcast" section in Page Layout to show it.</p>
+      </div>
+      <button class="btn btn-primary" onclick="showPodcastForm()" data-testid="button-new-podcast">+ New Episode</button>
+    </div>
+
+    <div id="podcast-form-panel" style="display:none; padding:1rem; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:8px; margin-bottom:1rem;">
+      <h3 id="podcast-form-title" style="margin-top:0;">New Episode</h3>
+      <input type="hidden" id="podcast-form-id">
+      <div class="form-row">
+        <div class="form-group">
+          <label for="podcast-title">Title</label>
+          <input type="text" id="podcast-title" data-testid="input-podcast-title">
+        </div>
+        <div class="form-group">
+          <label for="podcast-episode-number">Episode #</label>
+          <input type="number" id="podcast-episode-number" data-testid="input-podcast-number">
+        </div>
+        <div class="form-group">
+          <label for="podcast-sort-order">Sort Order</label>
+          <input type="number" id="podcast-sort-order" value="0" data-testid="input-podcast-sort">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column:1/-1;">
+          <label for="podcast-audio">Audio URL (mp3/wav/ogg)</label>
+          <div style="display:flex; gap:0.5rem;">
+            <input type="url" id="podcast-audio" placeholder="/uploads/episode.mp3" style="flex:1;" data-testid="input-podcast-audio">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'podcast-audio', mediaType:'audio'})" data-testid="button-pick-podcast-audio">Pick</button>
+          </div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column:1/-1;">
+          <label for="podcast-cover">Cover Image URL</label>
+          <div style="display:flex; gap:0.5rem;">
+            <input type="url" id="podcast-cover" placeholder="https://…" style="flex:1;" data-testid="input-podcast-cover">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'podcast-cover', mediaType:'image'})" data-testid="button-pick-podcast-cover">Pick</button>
+          </div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column:1/-1;">
+          <label for="podcast-description">Description</label>
+          <textarea id="podcast-description" rows="3" data-testid="input-podcast-description"></textarea>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="hidePodcastForm()" data-testid="button-cancel-podcast">Cancel</button>
+        <button class="btn btn-primary" onclick="savePodcast()" data-testid="button-save-podcast">Save</button>
+      </div>
+    </div>
+
+    <table class="data-table" id="podcast-table">
+      <thead>
+        <tr><th>Cover</th><th>#</th><th>Title</th><th>Audio</th><th>Sort</th><th></th></tr>
+      </thead>
+      <tbody id="podcast-tbody">
+        <tr><td colspan="6" style="text-align:center; color:var(--admin-text-muted); padding:1.5rem;">Loading…</td></tr>
+      </tbody>
+    </table>
   </div>
 
   <!--
@@ -3582,6 +3762,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         document.getElementById('setting-hero-title').value = data.hero_title || '';
         document.getElementById('setting-hero-description').value = data.hero_description || '';
         document.getElementById('setting-hero-image').value = data.hero_image || '';
+        document.getElementById('setting-hero-video').value = data.hero_video_url || '';
       } catch (err) {
         showToast('Failed to load settings', 'error');
       }
@@ -3596,7 +3777,8 @@ TO CUSTOMIZE THIS DASHBOARD:
         hero_tagline: document.getElementById('setting-hero-tagline').value,
         hero_title: document.getElementById('setting-hero-title').value,
         hero_description: document.getElementById('setting-hero-description').value,
-        hero_image: document.getElementById('setting-hero-image').value
+        hero_image: document.getElementById('setting-hero-image').value,
+        hero_video_url: document.getElementById('setting-hero-video').value
       };
 
       try {
@@ -3667,6 +3849,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('card-price').value = '';
       document.getElementById('card-sort-order').value = '0';
       document.getElementById('card-image').value = '';
+      document.getElementById('card-video').value = '';
       document.getElementById('card-description').value = '';
       document.getElementById('card-details').value = '';
     }
@@ -3688,6 +3871,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('card-price').value = card.price || '';
       document.getElementById('card-sort-order').value = card.sort_order;
       document.getElementById('card-image').value = card.image_url;
+      document.getElementById('card-video').value = card.video_url || '';
       document.getElementById('card-description').value = card.description;
 
       /* Convert details array back to newline-separated text */
@@ -3710,6 +3894,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         price: document.getElementById('card-price').value || null,
         sort_order: parseInt(document.getElementById('card-sort-order').value) || 0,
         image_url: document.getElementById('card-image').value,
+        video_url: document.getElementById('card-video').value,
         description: document.getElementById('card-description').value,
         details: details
       };
@@ -5135,6 +5320,205 @@ TO CUSTOMIZE THIS DASHBOARD:
       }
     }
 
+    /* =====================================================================
+       VIDEO GALLERY (admin tab)
+       ===================================================================== */
+    async function loadVideoGallery() {
+      try {
+        const res = await fetch('/admin/api/video-gallery');
+        const items = await res.json();
+        const tbody = document.getElementById('video-gallery-tbody');
+        if (!items.length) {
+          tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No videos yet. Click "+ New Video" to add one.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = items.map(v => {
+          const thumb = v.thumbnail_url
+            ? `<img src="${esc(v.thumbnail_url)}" alt="" class="cell-image" style="width:60px;height:40px;object-fit:cover;border-radius:4px;">`
+            : '<span style="color:var(--admin-text-muted);">—</span>';
+          return `
+            <tr data-id="${v.id}">
+              <td>${thumb}</td>
+              <td><strong>${esc(v.title)}</strong></td>
+              <td class="cell-truncate"><code style="font-size:0.8em;">${esc(v.video_url || '')}</code></td>
+              <td>${v.sort_order}</td>
+              <td class="cell-actions">
+                <button class="btn btn-secondary btn-sm" onclick='editVideoGallery(${JSON.stringify(v).replace(/'/g, "&#39;")})' data-testid="button-edit-video-${v.id}">Edit</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteVideoGallery(${v.id})" data-testid="button-delete-video-${v.id}">Delete</button>
+              </td>
+            </tr>`;
+        }).join('');
+      } catch (err) {
+        showToast('Failed to load videos', 'error');
+      }
+    }
+
+    function showVideoGalleryForm() {
+      document.getElementById('video-form-panel').style.display = 'block';
+      document.getElementById('video-form-title').textContent = 'New Video';
+      document.getElementById('video-form-id').value = '';
+      document.getElementById('video-title').value = '';
+      document.getElementById('video-url').value = '';
+      document.getElementById('video-thumb').value = '';
+      document.getElementById('video-description').value = '';
+      document.getElementById('video-sort-order').value = '0';
+    }
+
+    function hideVideoGalleryForm() {
+      document.getElementById('video-form-panel').style.display = 'none';
+    }
+
+    function editVideoGallery(v) {
+      document.getElementById('video-form-panel').style.display = 'block';
+      document.getElementById('video-form-title').textContent = 'Edit: ' + (v.title || '(untitled)');
+      document.getElementById('video-form-id').value = v.id;
+      document.getElementById('video-title').value = v.title || '';
+      document.getElementById('video-url').value = v.video_url || '';
+      document.getElementById('video-thumb').value = v.thumbnail_url || '';
+      document.getElementById('video-description').value = v.description || '';
+      document.getElementById('video-sort-order').value = v.sort_order || 0;
+    }
+
+    async function saveVideoGallery() {
+      const id = document.getElementById('video-form-id').value;
+      const data = {
+        title: document.getElementById('video-title').value,
+        description: document.getElementById('video-description').value,
+        video_url: document.getElementById('video-url').value,
+        thumbnail_url: document.getElementById('video-thumb').value,
+        sort_order: parseInt(document.getElementById('video-sort-order').value) || 0
+      };
+      try {
+        const url = id ? `/admin/api/video-gallery/${id}` : '/admin/api/video-gallery';
+        const method = id ? 'PUT' : 'POST';
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+        if (res.ok) {
+          showToast(id ? 'Video updated!' : 'Video added!');
+          hideVideoGalleryForm();
+          loadVideoGallery();
+        } else {
+          showToast('Failed to save video', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save video', 'error');
+      }
+    }
+
+    async function deleteVideoGallery(id) {
+      if (!confirm('Delete this video?')) return;
+      try {
+        const res = await fetch(`/admin/api/video-gallery/${id}`, { method: 'DELETE' });
+        if (res.ok) { showToast('Video deleted'); loadVideoGallery(); }
+        else { showToast('Failed to delete', 'error'); }
+      } catch (err) { showToast('Failed to delete', 'error'); }
+    }
+
+    /* =====================================================================
+       PODCAST (admin tab)
+       ===================================================================== */
+    async function loadPodcast() {
+      try {
+        const res = await fetch('/admin/api/podcast');
+        const items = await res.json();
+        const tbody = document.getElementById('podcast-tbody');
+        if (!items.length) {
+          tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No episodes yet. Click "+ New Episode" to add one.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = items.map(e => {
+          const cover = e.cover_image
+            ? `<img src="${esc(e.cover_image)}" alt="" class="cell-image" style="width:48px;height:48px;object-fit:cover;border-radius:4px;">`
+            : '<span style="color:var(--admin-text-muted);">—</span>';
+          return `
+            <tr data-id="${e.id}">
+              <td>${cover}</td>
+              <td>${e.episode_number || ''}</td>
+              <td><strong>${esc(e.title)}</strong></td>
+              <td class="cell-truncate"><code style="font-size:0.8em;">${esc(e.audio_url || '')}</code></td>
+              <td>${e.sort_order}</td>
+              <td class="cell-actions">
+                <button class="btn btn-secondary btn-sm" onclick='editPodcast(${JSON.stringify(e).replace(/'/g, "&#39;")})' data-testid="button-edit-podcast-${e.id}">Edit</button>
+                <button class="btn btn-danger btn-sm" onclick="deletePodcast(${e.id})" data-testid="button-delete-podcast-${e.id}">Delete</button>
+              </td>
+            </tr>`;
+        }).join('');
+      } catch (err) {
+        showToast('Failed to load episodes', 'error');
+      }
+    }
+
+    function showPodcastForm() {
+      document.getElementById('podcast-form-panel').style.display = 'block';
+      document.getElementById('podcast-form-title').textContent = 'New Episode';
+      document.getElementById('podcast-form-id').value = '';
+      document.getElementById('podcast-title').value = '';
+      document.getElementById('podcast-episode-number').value = '';
+      document.getElementById('podcast-audio').value = '';
+      document.getElementById('podcast-cover').value = '';
+      document.getElementById('podcast-description').value = '';
+      document.getElementById('podcast-sort-order').value = '0';
+    }
+
+    function hidePodcastForm() {
+      document.getElementById('podcast-form-panel').style.display = 'none';
+    }
+
+    function editPodcast(e) {
+      document.getElementById('podcast-form-panel').style.display = 'block';
+      document.getElementById('podcast-form-title').textContent = 'Edit: ' + (e.title || '(untitled)');
+      document.getElementById('podcast-form-id').value = e.id;
+      document.getElementById('podcast-title').value = e.title || '';
+      document.getElementById('podcast-episode-number').value = e.episode_number || '';
+      document.getElementById('podcast-audio').value = e.audio_url || '';
+      document.getElementById('podcast-cover').value = e.cover_image || '';
+      document.getElementById('podcast-description').value = e.description || '';
+      document.getElementById('podcast-sort-order').value = e.sort_order || 0;
+    }
+
+    async function savePodcast() {
+      const id = document.getElementById('podcast-form-id').value;
+      const epNumRaw = document.getElementById('podcast-episode-number').value;
+      const data = {
+        title: document.getElementById('podcast-title').value,
+        description: document.getElementById('podcast-description').value,
+        audio_url: document.getElementById('podcast-audio').value,
+        cover_image: document.getElementById('podcast-cover').value,
+        episode_number: epNumRaw ? parseInt(epNumRaw) : null,
+        sort_order: parseInt(document.getElementById('podcast-sort-order').value) || 0
+      };
+      try {
+        const url = id ? `/admin/api/podcast/${id}` : '/admin/api/podcast';
+        const method = id ? 'PUT' : 'POST';
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+        if (res.ok) {
+          showToast(id ? 'Episode updated!' : 'Episode added!');
+          hidePodcastForm();
+          loadPodcast();
+        } else {
+          showToast('Failed to save episode', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save episode', 'error');
+      }
+    }
+
+    async function deletePodcast(id) {
+      if (!confirm('Delete this episode?')) return;
+      try {
+        const res = await fetch(`/admin/api/podcast/${id}`, { method: 'DELETE' });
+        if (res.ok) { showToast('Episode deleted'); loadPodcast(); }
+        else { showToast('Failed to delete', 'error'); }
+      } catch (err) { showToast('Failed to delete', 'error'); }
+    }
+
 
     /*
     ========================================================================
@@ -5673,6 +6057,7 @@ TO CUSTOMIZE THIS DASHBOARD:
                 <label for="si-${f.id}">${f.label}</label>
                 <div style="display: flex; gap: 0.5rem;">
                   <input type="url" id="si-${f.id}" value="${val}" data-testid="input-si-${f.id}" style="flex:1;">
+                  ${f.id === 'image_url' ? `<button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'si-${f.id}', mediaType:'image'})" data-testid="button-pick-si-${f.id}">Pick</button>` : ''}
                   ${f.id === 'image_url' ? `<button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('si-${f.id}')" data-testid="button-upload-si-${f.id}">Upload</button>` : ''}
                 </div>
               </div>
@@ -5937,13 +6322,40 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     function rteInsertImage() {
-      const url = prompt('Enter image URL:');
-      if (url) {
-        const alt = prompt('Enter alt text (optional):', '') || '';
-        document.getElementById('blog-content-editor').focus();
-        document.execCommand('insertHTML', false, '<img src="' + url + '" alt="' + alt.replace(/"/g, '&quot;') + '">');
-        rteSyncToTextarea();
-      }
+      openMediaPicker({
+        mediaType: 'image',
+        onSelect: function(item) {
+          document.getElementById('blog-content-editor').focus();
+          const alt = (item.original_name || item.filename || '').replace(/"/g, '&quot;');
+          document.execCommand('insertHTML', false,
+            '<img src="' + item.url + '" alt="' + alt + '" style="max-width:100%; height:auto;">');
+          rteSyncToTextarea();
+        }
+      });
+    }
+
+    function rteInsertVideo() {
+      openMediaPicker({
+        mediaType: 'video',
+        onSelect: function(item) {
+          document.getElementById('blog-content-editor').focus();
+          document.execCommand('insertHTML', false,
+            '<video controls playsinline preload="metadata" style="max-width:100%; height:auto;" src="' + item.url + '"></video>');
+          rteSyncToTextarea();
+        }
+      });
+    }
+
+    function rteInsertAudio() {
+      openMediaPicker({
+        mediaType: 'audio',
+        onSelect: function(item) {
+          document.getElementById('blog-content-editor').focus();
+          document.execCommand('insertHTML', false,
+            '<audio controls preload="metadata" style="width:100%;" src="' + item.url + '"></audio>');
+          rteSyncToTextarea();
+        }
+      });
     }
 
     function rteSyncToTextarea() {
@@ -7397,8 +7809,164 @@ TO CUSTOMIZE THIS DASHBOARD:
       if (!e.target.closest || !e.target.closest('#media-dropzone')) e.preventDefault();
     });
 
+    /*
+    ========================================================================
+    MEDIA PICKER (reusable across all admin tabs)
+    ========================================================================
+    Usage:
+      openMediaPicker({ targetInputId: 'card-image', mediaType: 'image' });
+      openMediaPicker({ mediaType: 'video', onSelect: (item) => { ... } });
+    */
+    let _mediaPickerState = { items: [], type: 'image', onSelect: null, targetInputId: null };
+
+    async function openMediaPicker(opts) {
+      opts = opts || {};
+      _mediaPickerState.type = opts.mediaType || 'image';
+      _mediaPickerState.onSelect = opts.onSelect || null;
+      _mediaPickerState.targetInputId = opts.targetInputId || null;
+
+      const modal = document.getElementById('media-picker-modal');
+      modal.style.display = 'flex';
+      document.getElementById('media-picker-title').textContent =
+        opts.title || `Pick a${_mediaPickerState.type === 'audio' ? 'n' : ''} ${_mediaPickerState.type}`;
+      document.getElementById('media-picker-subtitle').textContent =
+        opts.subtitle || 'Click a file to use it. Or upload a new one.';
+      document.getElementById('media-picker-typehint').textContent =
+        `Filtering: ${_mediaPickerState.type}`;
+      document.getElementById('media-picker-search').value = '';
+      document.getElementById('media-picker-upload-input').accept =
+        _mediaPickerState.type === 'image' ? 'image/*'
+        : _mediaPickerState.type === 'video' ? 'video/*'
+        : _mediaPickerState.type === 'audio' ? 'audio/*'
+        : 'image/*,video/*,audio/*';
+
+      // Fetch fresh list filtered by type.
+      try {
+        const res = await fetch('/admin/api/media?type=' + encodeURIComponent(_mediaPickerState.type));
+        if (!res.ok) throw new Error('Failed to load media');
+        _mediaPickerState.items = await res.json();
+      } catch (err) {
+        _mediaPickerState.items = [];
+      }
+      renderMediaPickerGrid();
+    }
+
+    function closeMediaPicker() {
+      document.getElementById('media-picker-modal').style.display = 'none';
+    }
+
+    function renderMediaPickerGrid() {
+      const grid = document.getElementById('media-picker-grid');
+      const search = (document.getElementById('media-picker-search')?.value || '').toLowerCase().trim();
+      let items = _mediaPickerState.items;
+      if (search) items = items.filter(m =>
+        (m.original_name || '').toLowerCase().includes(search) ||
+        (m.filename || '').toLowerCase().includes(search)
+      );
+      if (!items.length) {
+        grid.innerHTML = '<div style="grid-column:1/-1; text-align:center; color:var(--admin-text-muted); padding:2rem;">' +
+          (_mediaPickerState.items.length ? 'No matches.' : 'Nothing here yet — click + Upload to add a file.') + '</div>';
+        return;
+      }
+      grid.innerHTML = items.map(m => {
+        const safeUrl = _escapeAttr(m.url);
+        const safeName = _escapeAttr(m.original_name || m.filename);
+        let preview = '';
+        if (m.media_type === 'image') {
+          preview = `<img src="${safeUrl}" alt="${safeName}" loading="lazy" style="width:100%; aspect-ratio:1/1; object-fit:cover; display:block;">`;
+        } else if (m.media_type === 'video') {
+          preview = `<video src="${safeUrl}" muted preload="metadata" style="width:100%; aspect-ratio:1/1; object-fit:cover; display:block;"></video>`;
+        } else {
+          preview = `<div style="width:100%; aspect-ratio:1/1; display:flex; align-items:center; justify-content:center; background:#0a0a0f; color:var(--admin-text-muted); font-size:1.75rem;">♪</div>`;
+        }
+        return `
+          <div onclick='_pickMediaItem(${JSON.stringify(m.id)})' style="cursor:pointer; border:1px solid var(--admin-border); border-radius:8px; overflow:hidden; transition:all 0.12s; background:var(--admin-bg);"
+               onmouseover="this.style.borderColor='rgba(120,180,255,0.5)';" onmouseout="this.style.borderColor='';"
+               data-testid="picker-item-${m.id}">
+            ${preview}
+            <div style="padding:0.4rem 0.5rem; font-size:0.7rem; color:var(--admin-text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${safeName}">${safeName}</div>
+          </div>`;
+      }).join('');
+    }
+
+    function _pickMediaItem(id) {
+      const item = _mediaPickerState.items.find(m => m.id === id);
+      if (!item) return;
+      if (_mediaPickerState.targetInputId) {
+        const input = document.getElementById(_mediaPickerState.targetInputId);
+        if (input) {
+          input.value = item.url;
+          // Fire input/change events so any oninput handlers (preview, etc.) run.
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      }
+      if (typeof _mediaPickerState.onSelect === 'function') {
+        try { _mediaPickerState.onSelect(item); } catch (e) { console.error(e); }
+      }
+      closeMediaPicker();
+    }
+
+    async function mediaPickerUpload(files) {
+      if (!files || !files.length) return;
+      const fd = new FormData();
+      Array.from(files).forEach(f => fd.append('files', f));
+      try {
+        const res = await fetch('/admin/api/media/upload', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Upload failed');
+        // Filter the returned items to the picker's current type.
+        const newOnes = (data.saved || []).filter(s => s.media_type === _mediaPickerState.type);
+        _mediaPickerState.items = newOnes.concat(_mediaPickerState.items);
+        renderMediaPickerGrid();
+        // Also refresh the main library cache if it's open.
+        if (typeof loadMediaLibrary === 'function') loadMediaLibrary();
+        showToast(`Uploaded ${data.saved.length} file${data.saved.length === 1 ? '' : 's'}`);
+      } catch (err) {
+        showToast(err.message || 'Upload failed', 'error');
+      }
+    }
+
+    /* Click outside the modal panel to close. */
+    document.getElementById('media-picker-modal')?.addEventListener('click', (e) => {
+      if (e.target.id === 'media-picker-modal') closeMediaPicker();
+    });
+
   </script>
   </main>
+  </div>
+
+  <!--
+  ========================================================================
+  MEDIA PICKER MODAL
+  ========================================================================
+  Reusable modal opened by openMediaPicker(). Lets the admin pick a file
+  from the Media Library and inserts the URL into a target input or runs
+  a custom callback.
+  -->
+  <div id="media-picker-modal" style="display:none; position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.7); align-items:center; justify-content:center; padding:1rem;">
+    <div style="background:#0f1320; border:1px solid var(--admin-border); border-radius:12px; max-width:900px; width:100%; max-height:85vh; display:flex; flex-direction:column; overflow:hidden;">
+      <div style="padding:1rem 1.25rem; border-bottom:1px solid var(--admin-border); display:flex; align-items:center; justify-content:space-between;">
+        <div>
+          <h3 id="media-picker-title" style="margin:0; color:var(--admin-text);">Pick from Media Library</h3>
+          <p id="media-picker-subtitle" style="margin:0.25rem 0 0; color:var(--admin-text-muted); font-size:0.8125rem;">Click a file to use it.</p>
+        </div>
+        <div style="display:flex; gap:0.5rem; align-items:center;">
+          <input type="file" id="media-picker-upload-input" multiple style="display:none;" onchange="mediaPickerUpload(this.files); this.value='';">
+          <button class="btn btn-secondary" onclick="document.getElementById('media-picker-upload-input').click();" data-testid="button-picker-upload">+ Upload</button>
+          <button class="btn btn-secondary" onclick="closeMediaPicker()" data-testid="button-picker-close">✕ Close</button>
+        </div>
+      </div>
+      <div style="padding:0.75rem 1.25rem; display:flex; gap:0.5rem; align-items:center; border-bottom:1px solid var(--admin-border);">
+        <input type="search" id="media-picker-search" placeholder="Search…" oninput="renderMediaPickerGrid()"
+               style="flex:1; padding:0.45rem 0.65rem; border:1px solid var(--admin-border); border-radius:6px; background:var(--admin-bg); color:var(--admin-text);"
+               data-testid="input-picker-search">
+        <span id="media-picker-typehint" style="color:var(--admin-text-muted); font-size:0.8125rem;"></span>
+      </div>
+      <div id="media-picker-grid" style="overflow-y:auto; padding:1rem; display:grid; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:0.75rem; flex:1;" data-testid="grid-media-picker">
+        <div style="grid-column:1/-1; text-align:center; color:var(--admin-text-muted); padding:2rem;">Loading…</div>
+      </div>
+    </div>
   </div>
 </body>
 </html>

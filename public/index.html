@@ -125,6 +125,7 @@ FONTS:
 
       <!-- Background image — set dynamically by JavaScript -->
       <div id="hero-bg" class="hero-bg"></div>
+      <video id="hero-video" class="hero-video" muted loop playsinline autoplay style="display:none;"></video>
 
       <!-- Gradient overlay — makes text readable over the image -->
       <div class="hero-overlay"></div>
@@ -343,6 +344,40 @@ FONTS:
         <div id="blog-grid" class="blog-grid" data-testid="blog-grid">
           <!-- Blog preview cards are inserted here dynamically -->
         </div>
+      </div>
+    </section>
+
+    <!-- ================================================================
+         VIDEO GALLERY SECTION
+         ================================================================
+         Curated grid of videos that play in a lightbox modal.
+         Managed via admin: Videos tab.
+    -->
+    <section id="section-video-gallery" class="snap-section landing-section" style="background: var(--bg-section-1); display: none;" data-testid="section-video-gallery">
+      <div class="max-w-container">
+        <div class="section-header fade-in-view">
+          <p class="section-eyebrow">Watch</p>
+          <h2 class="section-title" data-testid="text-video-gallery-title">Video Gallery</h2>
+          <p class="section-subtitle">Tap any video to watch full-screen.</p>
+        </div>
+        <div id="video-gallery-grid" class="video-gallery-grid" data-testid="video-gallery-grid"></div>
+      </div>
+    </section>
+
+    <!-- ================================================================
+         PODCAST SECTION
+         ================================================================
+         List of audio episodes with built-in HTML5 audio player.
+         Managed via admin: Podcast tab.
+    -->
+    <section id="section-podcast" class="snap-section landing-section" style="background: var(--bg-section-2); display: none;" data-testid="section-podcast">
+      <div class="max-w-container">
+        <div class="section-header fade-in-view">
+          <p class="section-eyebrow">Listen</p>
+          <h2 class="section-title" data-testid="text-podcast-title">Podcast</h2>
+          <p class="section-subtitle">Press play on any episode below.</p>
+        </div>
+        <div id="podcast-grid" class="podcast-grid" data-testid="podcast-grid"></div>
       </div>
     </section>
 

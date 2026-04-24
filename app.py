@@ -524,6 +524,42 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_blog_posts_sort ON blog_posts (sort_order);
 
                 -- =============================================================
+                -- VIDEO GALLERY ITEMS
+                -- =============================================================
+                -- A library of videos shown in a gallery section. Each item
+                -- has its own thumbnail and a video URL (typically pointing to
+                -- a /uploads/... mp4 from the Media Library).
+                CREATE TABLE IF NOT EXISTS video_gallery_items (
+                    id            SERIAL PRIMARY KEY,
+                    title         TEXT NOT NULL DEFAULT '',
+                    description   TEXT NOT NULL DEFAULT '',
+                    video_url     TEXT NOT NULL DEFAULT '',
+                    thumbnail_url TEXT NOT NULL DEFAULT '',
+                    sort_order    INTEGER NOT NULL DEFAULT 0,
+                    created_at    TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_video_gallery_sort ON video_gallery_items (sort_order);
+
+                -- =============================================================
+                -- PODCAST EPISODES
+                -- =============================================================
+                -- An audio podcast / talks library. Each episode has a cover
+                -- image, an audio URL (mp3 from the Media Library), and an
+                -- optional episode number.
+                CREATE TABLE IF NOT EXISTS podcast_episodes (
+                    id             SERIAL PRIMARY KEY,
+                    title          TEXT NOT NULL DEFAULT '',
+                    description    TEXT NOT NULL DEFAULT '',
+                    audio_url      TEXT NOT NULL DEFAULT '',
+                    cover_image    TEXT NOT NULL DEFAULT '',
+                    episode_number INTEGER,
+                    published_at   TIMESTAMP,
+                    sort_order     INTEGER NOT NULL DEFAULT 0,
+                    created_at     TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_podcast_sort ON podcast_episodes (sort_order);
+
+                -- =============================================================
                 -- PAGE VIEWS — Visitor Analytics
                 -- =============================================================
                 -- Tracks individual page views for the visitor analytics
@@ -734,6 +770,10 @@ def init_db():
                 # --- Media Library: extend uploaded_images to support video & audio ---
                 "ALTER TABLE uploaded_images ADD COLUMN IF NOT EXISTS media_type VARCHAR(10) NOT NULL DEFAULT 'image'",
                 "ALTER TABLE uploaded_images ADD COLUMN IF NOT EXISTS mime_type TEXT NOT NULL DEFAULT ''",
+                # --- Hero video background (alternative to hero_image) ---
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS hero_video_url TEXT NOT NULL DEFAULT ''",
+                # --- Gallery card video (alternative to image) ---
+                "ALTER TABLE gallery_cards ADD COLUMN IF NOT EXISTS video_url TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS view_mode TEXT NOT NULL DEFAULT 'sections'",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_scale REAL NOT NULL DEFAULT 1.0",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_gap REAL NOT NULL DEFAULT 2.5",
@@ -805,6 +845,18 @@ def init_db():
             cur.execute("""
                 INSERT INTO page_sections (slug, title, section_type, template, sort_order, enabled)
                 VALUES ('blog', 'Latest Stories', 'built_in', 'blog', 6, false)
+                ON CONFLICT (slug) DO NOTHING
+            """)
+
+            cur.execute("""
+                INSERT INTO page_sections (slug, title, section_type, template, sort_order, enabled)
+                VALUES ('video-gallery', 'Video Gallery', 'built_in', 'video-gallery', 8, false)
+                ON CONFLICT (slug) DO NOTHING
+            """)
+
+            cur.execute("""
+                INSERT INTO page_sections (slug, title, section_type, template, sort_order, enabled)
+                VALUES ('podcast', 'Podcast', 'built_in', 'podcast', 9, false)
                 ON CONFLICT (slug) DO NOTHING
             """)
 
@@ -1240,6 +1292,24 @@ def api_gallery_cards():
     """
     cards = query_db("SELECT * FROM gallery_cards ORDER BY sort_order ASC")
     return jsonify(cards or [])
+
+
+@app.route("/api/video-gallery")
+def api_video_gallery():
+    """GET /api/video-gallery — Public list of video gallery items."""
+    items = query_db(
+        "SELECT * FROM video_gallery_items ORDER BY sort_order ASC, id ASC"
+    )
+    return jsonify(items or [])
+
+
+@app.route("/api/podcast")
+def api_podcast():
+    """GET /api/podcast — Public list of podcast episodes."""
+    items = query_db(
+        "SELECT * FROM podcast_episodes ORDER BY sort_order ASC, id ASC"
+    )
+    return jsonify(items or [])
 
 
 @app.route("/api/experiences")
@@ -2708,12 +2778,13 @@ def admin_create_card():
     """
     data = request.get_json()
     card = execute_db(
-        """INSERT INTO gallery_cards (slug, title, subtitle, image_url, category, description, details, price, sort_order)
-           VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+        """INSERT INTO gallery_cards (slug, title, subtitle, image_url, video_url, category, description, details, price, sort_order)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
            RETURNING *""",
         (
             data["slug"], data["title"], data["subtitle"],
-            data["image_url"], data["category"], data["description"],
+            data["image_url"], data.get("video_url", ""),
+            data["category"], data["description"],
             json.dumps(data.get("details", [])),
             data.get("price"), data.get("sort_order", 0)
         )
@@ -2729,12 +2800,13 @@ def admin_update_card(card_id):
     card = execute_db(
         """UPDATE gallery_cards SET
              slug = %s, title = %s, subtitle = %s, image_url = %s,
-             category = %s, description = %s, details = %s::jsonb,
+             video_url = %s, category = %s, description = %s, details = %s::jsonb,
              price = %s, sort_order = %s, updated_at = NOW()
            WHERE id = %s RETURNING *""",
         (
             data["slug"], data["title"], data["subtitle"],
-            data["image_url"], data["category"], data["description"],
+            data["image_url"], data.get("video_url", ""),
+            data["category"], data["description"],
             json.dumps(data.get("details", [])),
             data.get("price"), data.get("sort_order", 0),
             card_id
@@ -2900,6 +2972,107 @@ def admin_update_testimonial(item_id):
     if not item:
         return jsonify({"error": "Testimonial not found"}), 404
     return jsonify(item)
+
+
+@app.route("/admin/api/video-gallery", methods=["GET"])
+@admin_required
+def admin_get_video_gallery():
+    items = query_db("SELECT * FROM video_gallery_items ORDER BY sort_order ASC, id ASC")
+    return jsonify(items or [])
+
+
+@app.route("/admin/api/video-gallery", methods=["POST"])
+@admin_required
+def admin_create_video_gallery():
+    data = request.get_json() or {}
+    item = execute_db(
+        """INSERT INTO video_gallery_items
+              (title, description, video_url, thumbnail_url, sort_order)
+           VALUES (%s, %s, %s, %s, %s) RETURNING *""",
+        (data.get("title", ""), data.get("description", ""),
+         data.get("video_url", ""), data.get("thumbnail_url", ""),
+         data.get("sort_order", 0))
+    )
+    return jsonify(item), 201
+
+
+@app.route("/admin/api/video-gallery/<int:item_id>", methods=["PUT"])
+@admin_required
+def admin_update_video_gallery(item_id):
+    data = request.get_json() or {}
+    item = execute_db(
+        """UPDATE video_gallery_items SET
+             title = %s, description = %s, video_url = %s,
+             thumbnail_url = %s, sort_order = %s
+           WHERE id = %s RETURNING *""",
+        (data.get("title", ""), data.get("description", ""),
+         data.get("video_url", ""), data.get("thumbnail_url", ""),
+         data.get("sort_order", 0), item_id)
+    )
+    if not item:
+        return jsonify({"error": "Video not found"}), 404
+    return jsonify(item)
+
+
+@app.route("/admin/api/video-gallery/<int:item_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_video_gallery(item_id):
+    count = execute_db("DELETE FROM video_gallery_items WHERE id = %s", (item_id,))
+    if count == 0:
+        return jsonify({"error": "Video not found"}), 404
+    return jsonify({"success": True})
+
+
+@app.route("/admin/api/podcast", methods=["GET"])
+@admin_required
+def admin_get_podcast():
+    items = query_db("SELECT * FROM podcast_episodes ORDER BY sort_order ASC, id ASC")
+    return jsonify(items or [])
+
+
+@app.route("/admin/api/podcast", methods=["POST"])
+@admin_required
+def admin_create_podcast():
+    data = request.get_json() or {}
+    item = execute_db(
+        """INSERT INTO podcast_episodes
+              (title, description, audio_url, cover_image,
+               episode_number, sort_order)
+           VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
+        (data.get("title", ""), data.get("description", ""),
+         data.get("audio_url", ""), data.get("cover_image", ""),
+         data.get("episode_number") or None,
+         data.get("sort_order", 0))
+    )
+    return jsonify(item), 201
+
+
+@app.route("/admin/api/podcast/<int:item_id>", methods=["PUT"])
+@admin_required
+def admin_update_podcast(item_id):
+    data = request.get_json() or {}
+    item = execute_db(
+        """UPDATE podcast_episodes SET
+             title = %s, description = %s, audio_url = %s,
+             cover_image = %s, episode_number = %s, sort_order = %s
+           WHERE id = %s RETURNING *""",
+        (data.get("title", ""), data.get("description", ""),
+         data.get("audio_url", ""), data.get("cover_image", ""),
+         data.get("episode_number") or None,
+         data.get("sort_order", 0), item_id)
+    )
+    if not item:
+        return jsonify({"error": "Episode not found"}), 404
+    return jsonify(item)
+
+
+@app.route("/admin/api/podcast/<int:item_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_podcast(item_id):
+    count = execute_db("DELETE FROM podcast_episodes WHERE id = %s", (item_id,))
+    if count == 0:
+        return jsonify({"error": "Episode not found"}), 404
+    return jsonify({"success": True})
 
 
 @app.route("/admin/api/testimonials/<int:item_id>", methods=["DELETE"])
@@ -3558,12 +3731,12 @@ def admin_update_settings():
         """UPDATE site_settings SET
              site_name = %s, site_subtitle = %s, hero_tagline = %s,
              hero_title = %s, hero_description = %s, hero_image = %s,
-             logo_initials = %s, updated_at = NOW()
+             hero_video_url = %s, logo_initials = %s, updated_at = NOW()
            WHERE id = 1 RETURNING *""",
         (
             data["site_name"], data["site_subtitle"], data["hero_tagline"],
             data["hero_title"], data["hero_description"], data["hero_image"],
-            data["logo_initials"]
+            data.get("hero_video_url", ""), data["logo_initials"]
         )
     )
     return jsonify(settings)

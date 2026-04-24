@@ -69,6 +69,8 @@ let blogPosts = [];
 let businessInfo = {};
 let pageSections = [];
 let sphereSettings = null;
+let videoGalleryItems = [];
+let podcastEpisodes = [];
 let sphereInstance = null;
 let currentSlideIndex = 0;
 let scrollCooldown = false;
@@ -95,7 +97,7 @@ let touchStartY = null;
 async function loadAllData() {
   try {
     /* Fetch all data sources in parallel for speed */
-    const [settingsRes, cardsRes, expRes, pricingRes, testimonialsRes, teamRes, faqRes, blogRes, bizRes, sectionsRes, sphereRes] = await Promise.all([
+    const [settingsRes, cardsRes, expRes, pricingRes, testimonialsRes, teamRes, faqRes, blogRes, bizRes, sectionsRes, sphereRes, videoGalleryRes, podcastRes] = await Promise.all([
       fetch('/api/site-settings'),
       fetch('/api/gallery-cards'),
       fetch('/api/experiences'),
@@ -106,7 +108,9 @@ async function loadAllData() {
       fetch('/api/blog'),
       fetch('/api/business-info'),
       fetch('/api/page-sections'),
-      fetch('/api/sphere-settings')
+      fetch('/api/sphere-settings'),
+      fetch('/api/video-gallery'),
+      fetch('/api/podcast')
     ]);
 
     siteSettings = await settingsRes.json();
@@ -120,6 +124,8 @@ async function loadAllData() {
     businessInfo = await bizRes.json();
     pageSections = await sectionsRes.json();
     sphereSettings = await sphereRes.json();
+    videoGalleryItems = await videoGalleryRes.json();
+    podcastEpisodes = await podcastRes.json();
 
     renderHero();
     renderHighlights();
@@ -129,6 +135,8 @@ async function loadAllData() {
     renderTeam();
     renderFAQ();
     renderBlogSection();
+    renderVideoGallery();
+    renderPodcast();
     renderBusinessInfoSection();
     renderFooter();
     renderGallerySlides();
@@ -202,10 +210,27 @@ let originalHeroDescription = '';
 function renderHero() {
   if (!siteSettings) return;
 
-  /* Set hero background image */
+  /* Set hero background image or video */
   const heroBg = document.getElementById('hero-bg');
-  if (heroBg && siteSettings.hero_image) {
-    heroBg.style.backgroundImage = `url(${siteSettings.hero_image})`;
+  const heroVideo = document.getElementById('hero-video');
+  if (siteSettings.hero_video_url) {
+    /* Prefer video when provided: hide image bg and show muted/looping video */
+    if (heroBg) heroBg.style.backgroundImage = '';
+    if (heroVideo) {
+      heroVideo.src = siteSettings.hero_video_url;
+      heroVideo.style.display = 'block';
+      heroVideo.muted = true;
+      heroVideo.loop = true;
+      heroVideo.playsInline = true;
+      heroVideo.autoplay = true;
+      const p = heroVideo.play();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    }
+  } else {
+    if (heroVideo) { heroVideo.removeAttribute('src'); heroVideo.style.display = 'none'; }
+    if (heroBg && siteSettings.hero_image) {
+      heroBg.style.backgroundImage = `url(${siteSettings.hero_image})`;
+    }
   }
 
   /* Update text content */
@@ -251,7 +276,9 @@ function renderHighlights() {
          onclick="showGalleryAt(${index})"
          role="article" aria-label="${escapeHtml(card.title)}"
          data-testid="card-highlight-${card.slug}">
-      <div class="highlight-card-bg" style="background-image: url(${card.image_url})"></div>
+      ${card.video_url
+        ? `<video class="highlight-card-bg highlight-card-video" src="${card.video_url}" muted loop playsinline autoplay></video>`
+        : `<div class="highlight-card-bg" style="background-image: url(${card.image_url})"></div>`}
       <div class="highlight-card-overlay"></div>
       <div class="highlight-card-content">
         <span class="highlight-card-category">${card.category}</span>
@@ -482,6 +509,117 @@ function renderBlogSection() {
         </div>
       </a>
     `;
+  }).join('');
+}
+
+
+/**
+ * Renders the Video Gallery section on the landing page.
+ * Each item shows a thumbnail (or auto-generated video preview) that opens
+ * a lightbox player on click.
+ */
+function renderVideoGallery() {
+  const grid = document.getElementById('video-gallery-grid');
+  if (!grid) return;
+  if (!videoGalleryItems.length) {
+    grid.innerHTML = '';
+    return;
+  }
+  grid.innerHTML = videoGalleryItems.map(item => {
+    const safeVideoUrl = escapeHtml(item.video_url || '');
+    const safeThumbUrl = encodeURI(item.thumbnail_url || '');
+    const thumb = item.thumbnail_url
+      ? `<div class="video-gallery-thumb" style="background-image:url('${safeThumbUrl}')"></div>`
+      : `<video class="video-gallery-thumb video-gallery-thumb-video" src="${safeVideoUrl}" muted playsinline preload="metadata"></video>`;
+    return `
+      <div class="video-gallery-item fade-in-view" role="button" tabindex="0"
+           data-video-id="${item.id}"
+           data-testid="card-video-${item.id}">
+        ${thumb}
+        <div class="video-gallery-overlay">
+          <div class="video-gallery-play">&#9658;</div>
+        </div>
+        <div class="video-gallery-meta">
+          <h4 class="video-gallery-title" data-testid="text-video-title-${item.id}">${escapeHtml(item.title || '')}</h4>
+          ${item.description ? `<p class="video-gallery-desc">${escapeHtml(item.description)}</p>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  /* Bind handlers programmatically — avoids inline-handler XSS via stored data. */
+  grid.querySelectorAll('.video-gallery-item').forEach(el => {
+    const id = el.getAttribute('data-video-id');
+    const item = videoGalleryItems.find(v => String(v.id) === String(id));
+    if (!item) return;
+    const open = () => openVideoLightbox(item.video_url, item.title || '');
+    el.addEventListener('click', open);
+    el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+  });
+}
+
+/**
+ * Opens a fullscreen lightbox playing the given video URL.
+ */
+function openVideoLightbox(videoUrl, title) {
+  let lb = document.getElementById('video-lightbox');
+  if (!lb) {
+    lb = document.createElement('div');
+    lb.id = 'video-lightbox';
+    lb.className = 'video-lightbox';
+    lb.setAttribute('role', 'dialog');
+    lb.setAttribute('aria-modal', 'true');
+    lb.innerHTML = `
+      <div class="video-lightbox-backdrop" onclick="closeVideoLightbox()"></div>
+      <div class="video-lightbox-frame">
+        <button class="video-lightbox-close" onclick="closeVideoLightbox()" aria-label="Close" data-testid="button-close-video-lightbox">&times;</button>
+        <video id="video-lightbox-player" controls playsinline></video>
+      </div>`;
+    document.body.appendChild(lb);
+  }
+  const player = document.getElementById('video-lightbox-player');
+  player.src = videoUrl;
+  lb.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+  const p = player.play();
+  if (p && typeof p.catch === 'function') p.catch(() => {});
+}
+
+function closeVideoLightbox() {
+  const lb = document.getElementById('video-lightbox');
+  if (!lb) return;
+  const player = document.getElementById('video-lightbox-player');
+  if (player) { player.pause(); player.removeAttribute('src'); player.load(); }
+  lb.style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+/**
+ * Renders the Podcast section on the landing page.
+ * Each episode shows a cover, title, description, and an HTML5 audio player.
+ */
+function renderPodcast() {
+  const grid = document.getElementById('podcast-grid');
+  if (!grid) return;
+  if (!podcastEpisodes.length) {
+    grid.innerHTML = '';
+    return;
+  }
+  grid.innerHTML = podcastEpisodes.map(ep => {
+    const cover = ep.cover_image
+      ? `<div class="podcast-cover" style="background-image:url(${ep.cover_image})"></div>`
+      : `<div class="podcast-cover podcast-cover-empty"><span>&#127908;</span></div>`;
+    return `
+      <article class="podcast-episode fade-in-view" data-testid="card-podcast-${ep.id}">
+        ${cover}
+        <div class="podcast-body">
+          <div class="podcast-meta">
+            ${ep.episode_number ? `<span class="podcast-number">Episode ${ep.episode_number}</span>` : ''}
+          </div>
+          <h3 class="podcast-title" data-testid="text-podcast-title-${ep.id}">${escapeHtml(ep.title || '')}</h3>
+          ${ep.description ? `<p class="podcast-desc">${escapeHtml(ep.description)}</p>` : ''}
+          ${ep.audio_url ? `<audio controls preload="none" src="${ep.audio_url}" data-testid="audio-podcast-${ep.id}" style="width:100%; margin-top:0.75rem;"></audio>` : ''}
+        </div>
+      </article>`;
   }).join('');
 }
 
@@ -741,6 +879,8 @@ const BUILTIN_SECTION_MAP = {
   'faq': 'section-faq',
   'blog': 'section-blog',
   'business-info': 'section-business-info',
+  'video-gallery': 'section-video-gallery',
+  'podcast': 'section-podcast',
   'footer': 'site-footer'
 };
 
@@ -823,6 +963,8 @@ function checkBuiltinHasData(slug) {
     case 'faq': return faqItems.length > 0;
     case 'blog': return blogPosts.length > 0;
     case 'business-info': return !!(businessInfo.business_phone || businessInfo.business_email || businessInfo.business_address || businessInfo.business_map_embed || (businessInfo.business_hours && businessInfo.business_hours.length > 0));
+    case 'video-gallery': return videoGalleryItems.length > 0;
+    case 'podcast': return podcastEpisodes.length > 0;
     case 'footer': return true;
     default: return true;
   }
@@ -1099,8 +1241,10 @@ function renderGallerySlides() {
            role="group" aria-roledescription="slide" aria-label="${escapeHtml(card.title)}"
            data-testid="slide-${card.slug}">
 
-        <!-- Fullscreen background image -->
-        <div class="gallery-slide-bg" style="background-image: url(${card.image_url})"></div>
+        <!-- Fullscreen background — video takes priority over image when set -->
+        ${card.video_url
+          ? `<video class="gallery-slide-bg gallery-slide-bg-video" src="${escapeHtml(card.video_url)}" autoplay muted loop playsinline preload="metadata"></video>`
+          : `<div class="gallery-slide-bg" style="background-image: url('${encodeURI(card.image_url || '')}')"></div>`}
         <div class="gallery-slide-overlay"></div>
 
         <!-- Text content overlay -->
