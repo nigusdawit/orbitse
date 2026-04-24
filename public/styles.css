@@ -5206,11 +5206,18 @@ input, select, textarea {
   top: 0; right: 0; bottom: 0;
   width: min(420px, 100%);
   background: #fff;
+  /* Explicit dark text — the surrounding site uses light --color-text on
+     dark backgrounds, so without this the inner text inherits and is unreadable
+     on the white panel. */
+  color: #111827;
   display: flex; flex-direction: column;
   transform: translateX(100%);
   transition: transform 0.25s ease;
   box-shadow: -8px 0 30px rgba(0,0,0,0.15);
 }
+.cart-drawer-panel h1, .cart-drawer-panel h2, .cart-drawer-panel h3,
+.cart-drawer-panel h4, .cart-drawer-panel p, .cart-drawer-panel span,
+.cart-drawer-panel label, .cart-drawer-panel strong { color: inherit; }
 .cart-drawer-open .cart-drawer-panel { transform: translateX(0); }
 .cart-drawer-head {
   display: flex; align-items: center; justify-content: space-between;
@@ -5253,9 +5260,50 @@ input, select, textarea {
 .cart-line-remove {
   margin-left: auto;
   border: none; background: none; color: #ef4444;
-  cursor: pointer; font-size: 0.8rem; padding: 0;
+  cursor: pointer; font-size: 0.8rem; padding: 0.15rem 0.35rem;
+  border-radius: 4px;
   width: auto !important; height: auto !important;
 }
+.cart-line-remove:hover { color: #b91c1c; background: rgba(239,68,68,0.08); }
+.cart-line-remove:focus { outline: none; }
+.cart-line-remove:focus-visible {
+  outline: 2px solid rgba(239,68,68,0.5); outline-offset: 2px;
+}
+
+/* ---- Generic button base + dark variant used on the storefront / cart ----
+   The site previously only had `.btn-primary` / `.btn-secondary` / etc.
+   Cart and checkout use `.btn` and `.btn-dark`, which were undefined and
+   rendered as transparent-on-white (invisible). Define them here. */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: 0.5rem;
+  padding: 0.7rem 1.4rem;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.btn:focus { outline: none; }
+.btn:focus-visible { outline: 2px solid rgba(17,24,39,0.5); outline-offset: 2px; }
+.btn-dark {
+  background: #111827;
+  color: #fff;
+  border-color: #111827;
+}
+.btn-dark:hover:not(:disabled) { background: #1f2937; border-color: #1f2937; }
+.btn-dark:disabled { background: #9ca3af; border-color: #9ca3af; cursor: not-allowed; }
+.btn-light {
+  background: #fff;
+  color: #111827;
+  border-color: #d1d5db;
+}
+.btn-light:hover:not(:disabled) { background: #f3f4f6; }
 .cart-drawer-foot {
   border-top: 1px solid #e5e7eb;
   padding: 1rem 1.25rem;
@@ -5282,6 +5330,8 @@ input, select, textarea {
 .checkout-modal-panel {
   position: relative;
   background: #fff;
+  /* Same fix as cart drawer — explicit dark text for the white panel. */
+  color: #111827;
   border-radius: 14px;
   width: min(540px, 92%);
   max-height: 92vh;
@@ -5291,6 +5341,9 @@ input, select, textarea {
   box-shadow: 0 20px 60px rgba(0,0,0,0.25);
   overflow: hidden;
 }
+.checkout-modal-panel h1, .checkout-modal-panel h2, .checkout-modal-panel h3,
+.checkout-modal-panel h4, .checkout-modal-panel p, .checkout-modal-panel span,
+.checkout-modal-panel label, .checkout-modal-panel strong { color: inherit; }
 .checkout-modal-open .checkout-modal-panel { transform: translateY(0); opacity: 1; }
 .checkout-modal-head {
   display: flex; align-items: center; justify-content: space-between;
