@@ -5403,6 +5403,52 @@ function executeCommand(cmd) {
     }
 
     /* ─────────────────────────────────────────────────────────────────
+       SHOW SAVED PAGE — Reuse a previously published AI page
+       ─────────────────────────────────────────────────────────────────
+       The AI hands back a slug from the PAGE LIBRARY block in its
+       system prompt. Instead of regenerating the HTML through the
+       model (slow, expensive, and inconsistent across visitors), we
+       fetch the saved markup and render it instantly in the same
+       immersive page overlay that generatePage uses. */
+    case 'showSavedPage': {
+      const savedSlug = cmd.slug;
+      if (!savedSlug) break;
+
+      /* If the model also started streaming an immersive page for this
+         turn (it shouldn't, but guard anyway), tear that down first so
+         we don't double-render. */
+      if (isImmersivePageStreaming()) {
+        resetImmersiveStreamState();
+        closeImmersivePage();
+      }
+
+      /* Deterministic fallback: when the saved page can't be loaded
+         (slug missing, unpublished, or network hiccup), tell the visitor
+         clearly and prompt them to ask again. Re-asking will rebuild the
+         system prompt with a fresh PAGE LIBRARY snapshot, so a stale slug
+         won't recur, and the model will fall through to generatePage if
+         no library entry actually fits. */
+      const fallbackMsg = "That saved page isn't available right now. Could you ask again, or rephrase what you'd like to see?";
+
+      fetch(`/api/generated-pages/by-slug/${encodeURIComponent(savedSlug)}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (data && data.html) {
+            openImmersivePage(data.html);
+            openSidePanel();
+          } else {
+            console.warn('Saved page not found for slug:', savedSlug);
+            chatAddMessage('agent', fallbackMsg);
+          }
+        })
+        .catch(err => {
+          console.warn('Could not load saved page:', err);
+          chatAddMessage('agent', fallbackMsg);
+        });
+      break;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────
        SUBMIT FORM — Submit a form with data collected by the AI in chat
        ─────────────────────────────────────────────────────────────────
        The AI collects form field values through natural conversation,
