@@ -4347,9 +4347,11 @@ input, select, textarea {
     font-size: 16px;
   }
 
-  /* Hide agent name/role and action icons on mobile to save space */
+  /* Hide agent name/role and action icons on mobile to save space.
+     Voice controls (mic + voice-reply toggle) stay visible because they're
+     the primary affordance for the voice feature on touch devices. */
   .chatbot-agent-info,
-  .chatbot-icon-btn {
+  .chatbot-icon-btn:not(.voice-mic-btn):not(.voice-reply-toggle) {
     display: none;
   }
 
@@ -4865,6 +4867,76 @@ input, select, textarea {
 @keyframes voice-speaking-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(201, 169, 110, 0.4); }
   50%      { box-shadow: 0 0 0 8px rgba(201, 169, 110, 0); }
+}
+
+/* ---- AI voice reply toggle (injected next to chat send buttons) -------- */
+/* Visitor-side master switch for AI voice replies. Lives next to the mic
+   button so the chat input row reads as: [mic] [voice toggle] [send]. */
+.voice-reply-toggle .voice-toggle-off { display: none; }
+.voice-reply-toggle.voice-reply-muted .voice-toggle-on  { display: none; }
+.voice-reply-toggle.voice-reply-muted .voice-toggle-off { display: inline; }
+.voice-reply-toggle.voice-reply-muted {
+  /* Dimmed appearance when muted so it's obvious voice is off */
+  opacity: 0.55;
+}
+.voice-reply-toggle:not(.voice-reply-muted) {
+  /* Subtle accent tint when active so visitors notice it's "live" */
+  color: var(--accent, #c9a96e);
+}
+
+/* ---- Per-message speaker badge ----------------------------------------- */
+/* Tiny pill rendered inside each agent message bubble. Click to replay or
+   stop. Icons swap based on the bubble's voice-speaking state. */
+.chat-msg-agent[data-voice-tagged="1"] {
+  position: relative;
+  /* Reserve a bit of bottom space so the badge doesn't overlap text */
+  padding-bottom: calc(0.75rem + 1.5rem);
+}
+.voice-msg-badge {
+  position: absolute;
+  bottom: 0.4rem;
+  right: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: 999px;
+  border: 1px solid rgba(201, 169, 110, 0.35);
+  background: rgba(201, 169, 110, 0.08);
+  color: var(--accent, #c9a96e);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+.voice-msg-badge:hover {
+  background: rgba(201, 169, 110, 0.18);
+  border-color: rgba(201, 169, 110, 0.6);
+}
+.voice-msg-badge .voice-msg-icon-stop { display: none; }
+/* While the bubble is speaking, swap play→stop and pulse softly */
+.chat-msg-agent.voice-speaking .voice-msg-badge .voice-msg-icon-play { display: none; }
+.chat-msg-agent.voice-speaking .voice-msg-badge .voice-msg-icon-stop { display: inline; }
+.chat-msg-agent.voice-speaking .voice-msg-badge {
+  background: rgba(201, 169, 110, 0.22);
+  border-color: rgba(201, 169, 110, 0.7);
+}
+/* While we're fetching audio, show a quiet pulsing state */
+.chat-msg-agent.voice-loading .voice-msg-badge {
+  opacity: 0.6;
+  animation: voice-msg-loading 1.1s ease-in-out infinite;
+}
+@keyframes voice-msg-loading {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 0.9; }
+}
+/* Autoplay was blocked → invite the visitor to tap */
+.chat-msg-agent.voice-tap-to-play .voice-msg-badge::after {
+  content: "Tap to play";
+  margin-left: 2px;
+}
+.chat-msg-agent.voice-tap-to-play .voice-msg-badge .voice-msg-label {
+  display: none;
 }
 
 /* ---- Mobile tweaks for the intro card ---------------------------------- */

@@ -56,10 +56,31 @@
     recognitionActive: false,  // True while the mic is actively listening
     mediaRecorder: null,       // MediaRecorder instance for Whisper STT
     recordingActive: false,    // True while Whisper is recording audio
+    speakSeq: 0,               // Monotonic counter — increments on every speak
+                               // request so a slow older fetch can't interrupt
+                               // playback of a newer message.
   };
 
   // sessionStorage key for "intro was already played in this tab"
   const INTRO_PLAYED_KEY = "voiceIntroPlayed";
+  // localStorage key for the visitor's mute preference (persists across visits)
+  const VOICE_MUTED_KEY = "voiceRepliesMuted";
+
+  /** True if the visitor has muted AI voice replies on their device. */
+  function isVoiceMuted() {
+    try { return localStorage.getItem(VOICE_MUTED_KEY) === "1"; }
+    catch (e) { return false; }
+  }
+
+  /** Persist the visitor's mute preference and update every toggle button. */
+  function setVoiceMuted(muted) {
+    try { localStorage.setItem(VOICE_MUTED_KEY, muted ? "1" : "0"); }
+    catch (e) {}
+    // If muting mid-playback, stop any audio that's currently speaking
+    if (muted) stopCurrentAudio();
+    // Refresh every toggle button to reflect the new state
+    document.querySelectorAll(".voice-reply-toggle").forEach(updateVoiceToggleButton);
+  }
 
   // ---------------------------------------------------------------------------
   // Utilities
@@ -99,31 +120,50 @@
   }
 
   /**
-   * Play an audio URL. Adds the "voice-speaking" class to chat avatars while
-   * playing so the speaking indicator pulses. Resolves when playback ends or
-   * fails (so callers don't hang).
+   * Play an audio URL. Adds the "voice-speaking" class to the targeted chat
+   * elements while playing so the speaking indicator pulses.
+   *
+   * Resolves with `true` if playback actually started, `false` if it failed
+   * (e.g. blocked by the browser's autoplay policy). Either way it never
+   * rejects, so callers don't have to wrap it in try/catch.
+   *
+   * @param {string}  url      The audio URL to play.
+   * @param {Element[]} [extraTargets]  Specific elements to highlight in
+   *        addition to the default selector (used by AI replies to highlight
+   *        the specific bubble being spoken, not every agent bubble on page).
    */
-  function playAudioUrl(url) {
+  function playAudioUrl(url, extraTargets) {
     return new Promise((resolve) => {
       stopCurrentAudio();
       const audio = new Audio(url);
       VOICE.currentAudio = audio;
 
-      // Add a visual "speaking now" pulse to any chat avatars on the page
-      const avatars = document.querySelectorAll(
-        ".chatbot-avatar, .chat-msg-agent, .voice-intro-card .voice-avatar"
+      // Default targets — covers intros and the avatar in the chat header.
+      // For AI replies we also highlight the specific bubble passed in.
+      const defaults = document.querySelectorAll(
+        ".chatbot-avatar, .voice-intro-card .voice-avatar"
       );
-      avatars.forEach((el) => el.classList.add("voice-speaking"));
+      const targets = new Set();
+      defaults.forEach((el) => targets.add(el));
+      if (Array.isArray(extraTargets)) extraTargets.forEach((el) => el && targets.add(el));
+      targets.forEach((el) => el.classList.add("voice-speaking"));
 
-      const cleanup = () => {
-        avatars.forEach((el) => el.classList.remove("voice-speaking"));
+      let resolved = false;
+      const cleanup = (success) => {
+        targets.forEach((el) => el.classList.remove("voice-speaking"));
         if (VOICE.currentAudio === audio) VOICE.currentAudio = null;
-        resolve();
+        if (!resolved) {
+          resolved = true;
+          resolve(!!success);
+        }
       };
 
-      audio.addEventListener("ended", cleanup);
-      audio.addEventListener("error", cleanup);
-      audio.play().catch(() => cleanup());  // Autoplay blocked → resolve quietly
+      audio.addEventListener("ended", () => cleanup(true));
+      audio.addEventListener("error", () => cleanup(false));
+      audio.play().then(
+        () => { /* started — wait for ended/error */ },
+        () => cleanup(false)  // Autoplay blocked → resolve false so caller can fall back
+      );
     });
   }
 
@@ -169,14 +209,15 @@
 
     // If the strategy is "auto", optimistically try autoplay too. If the
     // browser blocks it, the visitor still has the card to click.
+    // playAudioUrl resolves with `true` only when playback actually started,
+    // so we only mark the intro as "played" in that case.
     if (VOICE.settings.autoplay_strategy === "auto") {
-      try {
-        await playAudioUrl(data.intro.audio_url);
+      const played = await playAudioUrl(data.intro.audio_url);
+      if (played) {
         markIntroPlayed();
         hideIntroCard();
-      } catch (e) {
-        /* card stays visible */
       }
+      /* If blocked, the card stays visible so the visitor can tap it. */
     }
   }
 
@@ -532,12 +573,87 @@
 
       // Only speak agent messages, only when AI voice is enabled
       if (role === "agent" && VOICE.settings && VOICE.settings.enabled_ai_voice) {
-        speakText(text).catch(() => {}); // Fire and forget
+        // Tag the freshly-rendered agent bubbles. We hand back direct DOM
+        // references so we never have to re-select by text (which is fragile
+        // for duplicate messages and multi-line strings).
+        const bubbles = tagLatestAgentBubbles(text);
+        if (isVoiceMuted()) {
+          // Visitor opted out → show the badge but mark it "tap to play"
+          bubbles.forEach((el) => el.classList.add("voice-tap-to-play"));
+        } else {
+          speakText(text, bubbles).catch(() => {}); // Fire and forget
+        }
       }
       return result;
     };
     wrapped.__voiceWrapped = true;
     window.chatAddMessage = wrapped;
+  }
+
+  /**
+   * Find the most recently rendered agent bubble in each chat surface
+   * (main panel, split-screen, side panel) and attach a small interactive
+   * speaker badge. Stores the source text on the element so click handlers
+   * can replay or stop the audio.
+   *
+   * @returns {Element[]} The bubbles that were tagged this call (zero or more).
+   */
+  function tagLatestAgentBubbles(text) {
+    const containers = [
+      "chatbot-messages",
+      "split-chat-messages",
+      "side-chat-messages",
+    ];
+    const tagged = [];
+    containers.forEach((id) => {
+      const container = document.getElementById(id);
+      if (!container) return;
+      // Last agent message that hasn't been tagged yet
+      const bubbles = container.querySelectorAll(".chat-msg-agent:not([data-voice-tagged])");
+      const last = bubbles[bubbles.length - 1];
+      if (!last) return;
+      last.setAttribute("data-voice-tagged", "1");
+      // Stash the text on the element itself (data attribute is fine even for
+      // multi-line strings; we never use it inside a CSS selector).
+      last.__voiceText = text || "";
+      attachSpeakerBadge(last);
+      tagged.push(last);
+    });
+    return tagged;
+  }
+
+  /** Build and append the click-to-replay/stop speaker badge. */
+  function attachSpeakerBadge(bubble) {
+    if (bubble.querySelector(".voice-msg-badge")) return;
+    const badge = document.createElement("button");
+    badge.type = "button";
+    badge.className = "voice-msg-badge";
+    badge.setAttribute("aria-label", "Play voice");
+    badge.setAttribute("data-testid", "button-voice-replay");
+    badge.innerHTML = `
+      <svg class="voice-msg-icon-play" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <polygon points="6,4 20,12 6,20"/>
+      </svg>
+      <svg class="voice-msg-icon-stop" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <rect x="6" y="6" width="12" height="12" rx="1"/>
+      </svg>
+      <span class="voice-msg-label">Voice</span>
+    `;
+    badge.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      // If this bubble is currently the one speaking → stop
+      if (bubble.classList.contains("voice-speaking")) {
+        stopCurrentAudio();
+        return;
+      }
+      const txt = bubble.__voiceText || "";
+      bubble.classList.remove("voice-tap-to-play");
+      // Pass the single bubble as the target so only this one shows the
+      // speaking state — even if other bubbles share identical text.
+      speakText(txt, [bubble]).catch(() => {});
+    });
+    bubble.appendChild(badge);
   }
 
   /**
@@ -555,10 +671,32 @@
     return clean;
   }
 
-  /** Request TTS audio for the given text and play it. */
-  async function speakText(text) {
+  /**
+   * Request TTS audio for the given text and play it.
+   *
+   * @param {string} text   The message text to speak (markdown will be stripped).
+   * @param {Element} [bubble]  Optional specific message bubble to highlight.
+   *                            If omitted, the latest tagged agent bubbles are
+   *                            highlighted (the default for auto-play).
+   */
+  async function speakText(text, bubbles) {
     const clean = cleanTextForTTS(text);
     if (!clean) return;
+
+    // Sequence guard — every speak call gets a monotonic ID. If a newer
+    // request starts while this one is mid-fetch, our seq won't match the
+    // latest and we silently drop the result instead of interrupting the
+    // newer reply with stale audio.
+    const seq = ++VOICE.speakSeq;
+
+    // Caller passes the exact bubbles to highlight — never selector-match
+    // by text, which is fragile for duplicate or multi-line messages.
+    const targets = Array.isArray(bubbles) ? bubbles.filter(Boolean) : [];
+    targets.forEach((el) => el.classList.add("voice-loading"));
+
+    const cleanupLoading = () => {
+      targets.forEach((el) => el.classList.remove("voice-loading"));
+    };
 
     let data;
     try {
@@ -571,14 +709,32 @@
           session_id: getSessionId(),
         }),
       });
-      if (!res.ok) return;
+      if (!res.ok) { cleanupLoading(); return; }
       data = await res.json();
     } catch (e) {
+      cleanupLoading();
       return;
     }
 
-    if (data && data.audio_url) {
-      await playAudioUrl(data.audio_url);
+    cleanupLoading();
+    if (!data || !data.audio_url) return;
+
+    // Stale request — a newer speak has started since we issued this fetch.
+    // Drop quietly so we don't yank playback away from the latest message.
+    if (seq !== VOICE.speakSeq) return;
+
+    // Final mute guard — the visitor may have toggled mute while we were
+    // fetching the audio. Don't start playback in that case; just leave the
+    // tap-to-play affordance so they can listen later if they change their mind.
+    if (isVoiceMuted()) {
+      targets.forEach((el) => el.classList.add("voice-tap-to-play"));
+      return;
+    }
+
+    // Try to play; if blocked by autoplay policy, mark bubbles as "tap to play"
+    const played = await playAudioUrl(data.audio_url, targets);
+    if (!played) {
+      targets.forEach((el) => el.classList.add("voice-tap-to-play"));
     }
   }
 
@@ -624,14 +780,100 @@
       setTimeout(injectMicButtons, 1500);
     }
 
-    // AI voice replies — hook into chatAddMessage. The chat module loads
-    // before us, so the global function should already exist; if not, we
-    // retry a few times.
+    // AI voice replies — hook into chatAddMessage AND listen for the
+    // `chat:agent-message` custom event dispatched by the streaming finalize
+    // path (see chatCreateStreamBubble in script.js). chatAddMessage covers
+    // the non-streaming path (errors, confirmations); the event covers the
+    // primary streaming path. Also inject a visitor mute toggle.
     if (VOICE.settings.enabled_ai_voice) {
       hookChatMessages();
-      setTimeout(hookChatMessages, 500);
-      setTimeout(hookChatMessages, 1500);
+      hookStreamingMessages();
+      injectVoiceToggleButtons();
+      setTimeout(() => { hookChatMessages(); injectVoiceToggleButtons(); }, 500);
+      setTimeout(() => { hookChatMessages(); injectVoiceToggleButtons(); }, 1500);
     }
+  }
+
+  /**
+   * Listen for the `chat:agent-message` event fired by chatCreateStreamBubble's
+   * finalize() in script.js. The event detail provides both the full text and
+   * direct references to the bubble elements — we use them as the speak target
+   * so per-bubble highlighting works without any text-based selector matching.
+   */
+  function hookStreamingMessages() {
+    if (hookStreamingMessages.__wired) return;
+    hookStreamingMessages.__wired = true;
+    document.addEventListener("chat:agent-message", (ev) => {
+      if (!VOICE.settings || !VOICE.settings.enabled_ai_voice) return;
+      const detail = ev.detail || {};
+      const text = detail.text || "";
+      const els = Array.isArray(detail.bubbles) ? detail.bubbles.filter(Boolean) : [];
+      // Tag each finalized bubble with our markers so click-to-replay works
+      els.forEach((el) => {
+        if (el.hasAttribute("data-voice-tagged")) return;
+        el.setAttribute("data-voice-tagged", "1");
+        el.__voiceText = text;
+        attachSpeakerBadge(el);
+      });
+      if (isVoiceMuted()) {
+        els.forEach((el) => el.classList.add("voice-tap-to-play"));
+      } else {
+        speakText(text, els).catch(() => {});
+      }
+    });
+  }
+
+  /**
+   * Inject a 🔊/🔇 toggle into every chat input row so visitors can mute
+   * AI voice replies on their device. Mirrors injectMicButtons. Idempotent.
+   */
+  function injectVoiceToggleButtons() {
+    if (!VOICE.settings || !VOICE.settings.enabled_ai_voice) return;
+
+    const inputPairs = [
+      { sendSelector: "#chatbot-send-btn",                 scope: "bar"   },
+      { sendSelector: '[data-testid="button-split-send"]', scope: "split" },
+      { sendSelector: '[data-testid="button-side-send"]',  scope: "side"  },
+    ];
+
+    inputPairs.forEach(({ sendSelector, scope }) => {
+      const sendEl = document.querySelector(sendSelector);
+      if (!sendEl) return;
+      if (sendEl.parentElement.querySelector(`.voice-reply-toggle[data-scope="${scope}"]`)) return;
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "voice-reply-toggle chatbot-icon-btn chatbot-icon-inline";
+      btn.setAttribute("data-scope", scope);
+      btn.setAttribute("data-testid", `button-voice-toggle-${scope}`);
+      btn.innerHTML = `
+        <svg class="voice-toggle-on"  width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+          <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+          <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+        </svg>
+        <svg class="voice-toggle-off" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+          <line x1="23" y1="9"  x2="17" y2="15"/>
+          <line x1="17" y1="9"  x2="23" y2="15"/>
+        </svg>
+      `;
+      btn.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        setVoiceMuted(!isVoiceMuted());
+      });
+      sendEl.parentElement.insertBefore(btn, sendEl);
+      updateVoiceToggleButton(btn);
+    });
+  }
+
+  /** Sync a single toggle button's icon + tooltip to the current mute state. */
+  function updateVoiceToggleButton(btn) {
+    const muted = isVoiceMuted();
+    btn.classList.toggle("voice-reply-muted", muted);
+    btn.setAttribute("data-tooltip", muted ? "Voice replies off" : "Voice replies on");
+    btn.setAttribute("aria-label", muted ? "Turn AI voice replies on" : "Turn AI voice replies off");
+    btn.setAttribute("aria-pressed", muted ? "false" : "true");
   }
 
   // Expose a small public API for debugging / programmatic control

@@ -3506,13 +3506,24 @@ function chatCreateStreamBubble() {
     },
     finalize(fullText) {
       const rendered = renderMarkdown(fullText);
+      const finalizedEls = [];
       bubbles.forEach(({ el, container }) => {
         el.innerHTML = rendered;
         el.classList.remove('chat-msg-streaming');
         container.scrollTop = container.scrollHeight;
+        finalizedEls.push(el);
       });
       updateSidePanelLatest(fullText);
       updateMainPanelLatest(fullText);
+      /* Notify subscribers (e.g. the voice module) that an agent message has
+         been fully rendered. Voice cannot rely on chatAddMessage here because
+         streaming responses build the bubble incrementally and never go
+         through that helper. */
+      try {
+        document.dispatchEvent(new CustomEvent('chat:agent-message', {
+          detail: { text: fullText, bubbles: finalizedEls }
+        }));
+      } catch (e) { /* CustomEvent always supported in modern browsers */ }
     },
     remove() {
       bubbles.forEach(({ el }) => el.remove());
