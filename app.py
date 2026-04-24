@@ -7050,8 +7050,16 @@ def admin_delete_voice_intro(intro_id):
 @admin_required
 def admin_generate_intro_audio(intro_id):
     """Generate (or re-generate) the audio file for a specific intro.
-    This actually calls the OpenAI TTS API — costs money — so we expose
-    it as an explicit button in the admin panel rather than auto-running."""
+
+    Honors the global TTS provider setting from voice_settings: if the
+    admin has selected ElevenLabs (and premium is enabled and a voice
+    is configured), the intro is rendered with ElevenLabs using that
+    voice. Otherwise we fall back to OpenAI TTS using the per-intro
+    voice_id picker (alloy/echo/etc.).
+
+    This is an explicit "Generate" button in the admin panel because
+    every call costs real money — we never want it triggered implicitly.
+    """
     intro = query_db("SELECT * FROM voice_intros WHERE id = %s", (intro_id,), fetchone=True)
     if not intro:
         return jsonify({"error": "Intro not found"}), 404
@@ -7060,30 +7068,70 @@ def admin_generate_intro_audio(intro_id):
     if not text:
         return jsonify({"error": "Intro has no message text"}), 400
 
-    voice_id = intro.get("voice_id") or "alloy"
-    settings = query_db("SELECT tts_model FROM voice_settings WHERE id = 1", fetchone=True)
-    model = (settings.get("tts_model") if settings else "tts-1") or "tts-1"
+    settings = query_db(
+        "SELECT tts_model, tts_provider, premium_enabled, "
+        "elevenlabs_voice_id, elevenlabs_model "
+        "FROM voice_settings WHERE id = 1",
+        fetchone=True,
+    ) or {}
+
+    # Decide provider. ElevenLabs requires premium_enabled AND a voice id;
+    # if either is missing we silently fall back to OpenAI so the admin
+    # never sees a confusing "ElevenLabs is selected but generation
+    # failed" error — they get a working OpenAI render and can fix the
+    # ElevenLabs config in voice settings.
+    desired_provider = (settings.get("tts_provider") or "openai").lower()
+    el_voice = (settings.get("elevenlabs_voice_id") or "").strip()
+    el_model = (settings.get("elevenlabs_model") or "eleven_turbo_v2_5").strip()
+    use_elevenlabs = (
+        desired_provider == "elevenlabs"
+        and settings.get("premium_enabled")
+        and bool(el_voice)
+        and bool(ELEVENLABS_API_KEY)  # secret must actually be present
+    )
+
+    # OpenAI fallback config (also used when ElevenLabs isn't selected)
+    openai_voice = intro.get("voice_id") or "alloy"
+    openai_model = (settings.get("tts_model") or "tts-1") or "tts-1"
 
     try:
-        # _generate_tts_audio returns 3 values now (audio_url, was_cached,
-        # used_provider). Intros currently always use OpenAI TTS so we
-        # ignore the provider tag — we only need the URL/cache flag.
-        audio_url, was_cached, _used_provider = _generate_tts_audio(text, voice_id, model)
+        if use_elevenlabs:
+            audio_url, was_cached, used_provider = _generate_tts_audio(
+                text,
+                voice_id="",  # not used for elevenlabs path
+                model="",
+                provider="elevenlabs",
+                elevenlabs_voice_id=el_voice,
+                elevenlabs_model=el_model,
+            )
+            log_voice_id = el_voice
+        else:
+            audio_url, was_cached, used_provider = _generate_tts_audio(
+                text, openai_voice, openai_model, provider="openai",
+            )
+            log_voice_id = openai_voice
     except Exception as e:
-        print(f"[Admin TTS generation error] {e}")
+        print(f"[Admin TTS generation error] provider={'elevenlabs' if use_elevenlabs else 'openai'} {e}")
         return jsonify({"error": str(e)}), 500
 
     execute_db(
         "UPDATE voice_intros SET audio_url = %s WHERE id = %s",
         (audio_url, intro_id),
     )
+    # Tag the usage log with the provider so the billing dashboard can
+    # split costs (matches the pattern used by the live chat TTS routes).
+    feature_tag = "tts_cached" if was_cached else f"tts_generate_{used_provider}"
     _log_voice_usage(
-        feature_type="tts_cached" if was_cached else "tts_generate",
+        feature_type=feature_tag,
         char_count=len(text),
-        voice_id=voice_id,
+        voice_id=log_voice_id,
         intro_id=intro_id,
     )
-    return jsonify({"audio_url": audio_url, "cached": was_cached})
+    return jsonify({
+        "audio_url": audio_url,
+        "cached": was_cached,
+        "provider": used_provider,
+    })
 
 
 @app.route("/admin/api/voice-usage", methods=["GET"])

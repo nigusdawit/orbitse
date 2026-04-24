@@ -2527,7 +2527,7 @@ TO CUSTOMIZE THIS DASHBOARD:
             <input type="text" id="voice-intro-name" placeholder="e.g. Google Ads visitors" data-testid="input-voice-intro-name">
           </div>
           <div class="form-group">
-            <label for="voice-intro-voice">Voice</label>
+            <label for="voice-intro-voice">Voice (OpenAI fallback)</label>
             <select id="voice-intro-voice" data-testid="select-voice-intro-voice">
               <option value="alloy">Alloy</option>
               <option value="echo">Echo</option>
@@ -2536,6 +2536,10 @@ TO CUSTOMIZE THIS DASHBOARD:
               <option value="nova">Nova</option>
               <option value="shimmer">Shimmer</option>
             </select>
+            <small style="display:block; margin-top:.25rem; opacity:.7;">
+              Used when your TTS provider is OpenAI. When ElevenLabs is selected
+              above, intros are generated with your ElevenLabs voice instead.
+            </small>
           </div>
           <div class="form-group" style="flex: 0 0 100px;">
             <label for="voice-intro-priority">Priority</label>
@@ -8518,7 +8522,7 @@ TO CUSTOMIZE THIS DASHBOARD:
      * accidental double-clicks that would double-bill the customer.
      */
     async function generateVoiceIntroAudio(id, btn) {
-      if (!confirm('Generate audio with the OpenAI TTS API? This will use a small amount of credit.')) return;
+      if (!confirm('Generate audio with your selected TTS provider (OpenAI or ElevenLabs based on Voice Settings)? This will use a small amount of credit.')) return;
       const restore = setButtonBusy(btn, 'Generating…');
       try {
         const res = await adminFetch(`/admin/api/voice-intros/${id}/generate`, { method: 'POST' });
