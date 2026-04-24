@@ -3645,12 +3645,15 @@ async function chatSendStreaming(message, wasCollapsed) {
               if (pageStreamStarted) {
                 const extracted = extractStreamingJsonString(tokenText, 'html');
                 if (extracted && extracted.value) {
-                  /* Only flush up to the last complete tag boundary so the
-                     browser never receives a half-written tag. If no `>`
-                     is present yet, wait for the next token. */
+                  /* Only flush up to the latest TOP-LEVEL element boundary —
+                     a position where every opened element has been closed.
+                     Each insertAdjacentHTML call parses fresh in the document
+                     context (it can't continue inside an open <style> from a
+                     previous chunk), so flushing mid-element would dump the
+                     remaining CSS/markup as visible text on the next chunk. */
                   const safeEnd = extracted.complete
                     ? extracted.value.length
-                    : extracted.value.lastIndexOf('>') + 1;
+                    : findTopLevelHtmlBoundary(extracted.value, pageStreamWritten);
                   if (safeEnd > pageStreamWritten) {
                     const delta = extracted.value.substring(pageStreamWritten, safeEnd);
                     appendImmersivePageStreaming(delta);
@@ -5010,6 +5013,94 @@ function resetImmersiveStreamState() {
  * @param {string} key - The JSON key to extract (e.g. "html")
  * @returns {{value: string, complete: boolean}|null}
  */
+/**
+ * Find the last position in `html` (starting from `startPos`) where every
+ * element opened in the slice has been closed. Used to flush streamed HTML
+ * to the iframe on safe top-level boundaries — each insertAdjacentHTML call
+ * parses fresh in the document context, so cutting mid-element (especially
+ * inside <style>/<script>) makes the next chunk's content render as text.
+ *
+ * Tracks raw-text mode (style/script/textarea/title content is opaque),
+ * comments, and self-closing void elements.
+ */
+function findTopLevelHtmlBoundary(html, startPos) {
+  const VOID_ELEMENTS = new Set([
+    'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+    'link', 'meta', 'param', 'source', 'track', 'wbr'
+  ]);
+  const RAW_TEXT_ELEMENTS = new Set(['script', 'style', 'textarea', 'title']);
+
+  let i = startPos || 0;
+  let depth = 0;
+  let rawTextEndTag = null;
+  let lastSafeEnd = i;
+
+  while (i < html.length) {
+    if (rawTextEndTag) {
+      /* Inside <style>/<script>/etc. — content is opaque until matching close */
+      const needle = '</' + rawTextEndTag;
+      const idx = html.toLowerCase().indexOf(needle, i);
+      if (idx === -1) return lastSafeEnd;
+      const gt = html.indexOf('>', idx + needle.length);
+      if (gt === -1) return lastSafeEnd;
+      depth--;
+      rawTextEndTag = null;
+      i = gt + 1;
+      if (depth === 0) lastSafeEnd = i;
+      continue;
+    }
+
+    const lt = html.indexOf('<', i);
+    if (lt === -1) return lastSafeEnd;
+
+    const next = html[lt + 1];
+    if (next === '!') {
+      /* Comment <!-- ... --> or doctype */
+      if (html.substr(lt, 4) === '<!--') {
+        const end = html.indexOf('-->', lt + 4);
+        if (end === -1) return lastSafeEnd;
+        i = end + 3;
+      } else {
+        const gt = html.indexOf('>', lt);
+        if (gt === -1) return lastSafeEnd;
+        i = gt + 1;
+      }
+      if (depth === 0) lastSafeEnd = i;
+      continue;
+    }
+
+    const gt = html.indexOf('>', lt);
+    if (gt === -1) return lastSafeEnd;
+
+    if (next === '/') {
+      depth = Math.max(0, depth - 1);
+      i = gt + 1;
+      if (depth === 0) lastSafeEnd = i;
+      continue;
+    }
+
+    /* Opening tag — extract tag name */
+    const tagMatch = html.slice(lt + 1, gt).match(/^([a-zA-Z][a-zA-Z0-9-]*)/);
+    if (!tagMatch) {
+      i = gt + 1;
+      continue;
+    }
+    const tagName = tagMatch[1].toLowerCase();
+    const isSelfClosing = html[gt - 1] === '/' || VOID_ELEMENTS.has(tagName);
+
+    if (!isSelfClosing) {
+      depth++;
+      if (RAW_TEXT_ELEMENTS.has(tagName)) {
+        rawTextEndTag = tagName;
+      }
+    }
+    i = gt + 1;
+    if (depth === 0) lastSafeEnd = i;
+  }
+
+  return lastSafeEnd;
+}
+
 function extractStreamingJsonString(buffer, key) {
   /* Match `"key" : "` allowing whitespace */
   const re = new RegExp('"' + key + '"\\s*:\\s*"');
