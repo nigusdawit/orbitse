@@ -617,7 +617,27 @@ input, select, textarea {
 .highlight-card-overlay {
   position: absolute;
   inset: 0;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.2), transparent);
+  background:
+    linear-gradient(to top,
+      rgba(0, 0, 0, 0.85) 0%,
+      rgba(0, 0, 0, 0.45) 45%,
+      rgba(0, 0, 0, 0.15) 75%,
+      transparent 100%
+    ),
+    rgba(0, 0, 0, 0.10);
+  transition: background 0.3s ease;
+  pointer-events: none;
+}
+/* Darken further on hover so the title/subtitle stay legible even when the
+   user is focusing on the card. */
+.highlight-card:hover .highlight-card-overlay {
+  background:
+    linear-gradient(to top,
+      rgba(0, 0, 0, 0.9) 0%,
+      rgba(0, 0, 0, 0.6) 50%,
+      rgba(0, 0, 0, 0.35) 100%
+    ),
+    rgba(0, 0, 0, 0.20);
 }
 
 .highlight-card-content {
@@ -838,16 +858,31 @@ input, select, textarea {
   display: block;
 }
 
-/* Gradient overlay for text readability */
+/* Gradient overlay for text readability.
+   The gallery is full-screen and not hover-able, so we use an always-on
+   stronger overlay. The text sits in the lower-left, so the bottom is heavily
+   darkened, fading smoothly toward the top so the imagery still shines.
+   A subtle global tint (4th layer) keeps mid-tones consistent on bright
+   images (skies, snow) and bright video frames. */
 .gallery-slide-overlay {
   position: absolute;
   inset: 0;
-  background: linear-gradient(to top,
-    rgba(0, 0, 0, 0.6) 0%,
-    rgba(0, 0, 0, 0.2) 50%,
-    transparent 100%
-  );
-  opacity: 0.8;
+  background:
+    linear-gradient(to top,
+      rgba(0, 0, 0, 0.85) 0%,
+      rgba(0, 0, 0, 0.55) 35%,
+      rgba(0, 0, 0, 0.25) 60%,
+      rgba(0, 0, 0, 0.10) 80%,
+      transparent 100%
+    ),
+    linear-gradient(to right,
+      rgba(0, 0, 0, 0.35) 0%,
+      rgba(0, 0, 0, 0.15) 35%,
+      transparent 60%
+    ),
+    rgba(0, 0, 0, 0.12);
+  opacity: 1;
+  pointer-events: none;
 }
 
 
