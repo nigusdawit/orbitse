@@ -1630,13 +1630,13 @@ def api_chatbot_settings():
 #     }
 #   }
 #
-#   Reply with custom HTML (AI-generated dynamic content):
+#   Reply with a fully-styled website page (AI-generated dynamic content):
 #   {
 #     "reply": "I've created a pricing breakdown for you.",
 #     "command": {
-#       "action": "generateHTML",
+#       "action": "generatePage",
 #       "title": "Pricing Breakdown",
-#       "html": "<div style='padding:2rem;'><h2>Pricing</h2><table>...</table></div>"
+#       "html": "<style>...</style><section class='hero'>...</section><section>...</section>"
 #     }
 #   }
 #
@@ -1651,10 +1651,12 @@ def api_chatbot_settings():
 #      { "action": "showSlide", "title": "...", "subtitle": "...",
 #        "points": ["point 1", "point 2"], "image": "optional URL" }
 #
-#   3. generateHTML — Renders custom AI-generated HTML in a canvas
-#      { "action": "generateHTML", "title": "Page Title", "html": "<div>Any valid HTML</div>" }
-#      The AI can generate comparison tables, charts, custom layouts, etc.
-#      Generated pages are auto-saved to the database for admin review.
+#   3. generatePage — Renders a fully-styled, immersive website page in an iframe
+#      { "action": "generatePage", "title": "Page Title", "html": "<style>...</style><section>...</section>" }
+#      The site's hero image and theme variables are auto-injected so the
+#      generated page looks like part of this exact website. Use this for ALL
+#      visual responses — comparison tables, charts, custom layouts, animated
+#      pages, etc. Generated pages are auto-saved to the database for admin review.
 #
 #   4. submitForm — Submit a form with data collected in conversation
 #      { "action": "submitForm", "slug": "form-slug", "fields": {"name": "value"} }
@@ -1779,89 +1781,42 @@ RIGHT: "Here's our infinity pool!" + navigate command block
 ```
 The frontend renders this as a frosted-glass card automatically. You just provide the data.
 - "title" (required), "subtitle" (optional), "columns" + "rows" for tables, "items" for simple lists, "footer" (optional)
-Use this for quick, simple data. For anything more creative or complex, use generateHTML instead.
+Use this for quick, simple data. For anything more creative or complex, use generatePage instead.
 
-4. Generate fully custom HTML (FULL CREATIVE FREEDOM):
-```command
-{"action": "generateHTML", "title": "Short descriptive title", "html": "<div style='...'>YOUR COMPLETE HTML HERE</div>"}
-```
-This renders your HTML on a fullscreen canvas. You are a WORLD-CLASS web designer — create stunning, premium visuals with inline CSS.
-WRONG: Writing a 10-sentence markdown reply describing everything in plain text.
-RIGHT: 1 sentence of text + generateHTML command with beautifully designed HTML.
-
-SITE THEME — YOU MUST USE THESE EXACT VALUES in ALL generated HTML:
+SITE THEME — YOU MUST USE THESE EXACT VALUES in ALL generated pages:
 {THEME_PLACEHOLDER}
 
 CRITICAL: Always reference the theme values. Use accent for highlights, heading font for titles, body font for text, glass effects for cards. Ignoring theme = ugly output.
 
-DESIGN SYSTEM — Premium quality MANDATORY:
-
-WRAPPER: max-width: 900px; margin: 0 auto; padding: 2.5rem; width: 100%;
-
-GLASS CARDS (use for everything):
-- background: rgba(255,255,255,0.03); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); border: 1px solid rgba(255,255,255,0.08); border-radius: 1.25rem; padding: 2rem;
-- Inner glow: box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 8px 32px rgba(0,0,0,0.2);
-
-TYPOGRAPHY:
-- Title: font-family: {heading_font}; color: #fff; font-size: clamp(1.5rem, 3vw, 2.25rem); font-weight: 700;
-- Eyebrow: font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.25em; color: {accent}; font-weight: 500;
-- Body: font-family: {body_font}; color: rgba(255,255,255,0.8); font-size: 0.95rem; line-height: 1.8;
-- Muted: color: rgba(255,255,255,0.45); font-size: 0.85rem;
-- Accent-highlight key words in headings: <span style="color: {accent}">word</span>
-
-ACCENT USAGE:
-- Left borders: border-left: 3px solid {accent};
-- Badges: background: rgba({accent_rgb}, 0.12); color: {accent}; padding: 0.25rem 0.75rem; border-radius: 9999px;
-- Numbers/prices: color: {accent}; font-weight: 600; font-family: {heading_font};
-- Icon circles: width: 48px; height: 48px; border-radius: 50%; background: rgba({accent_rgb}, 0.1); display: flex; align-items: center; justify-content: center;
-- Dividers: height: 1px; background: linear-gradient(90deg, transparent, rgba({accent_rgb}, 0.15), transparent);
-
-LAYOUTS:
-- Card grid: display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem;
-- Stats row: grid with large accent numbers + small uppercase labels
-- Two-column: grid-template-columns: 1fr 1fr; gap: 2rem;
-- Timeline: left border accent line with dot markers and cards
-
-EVERY generateHTML MUST include:
-- An eyebrow label at the top (accent color, uppercase)
-- A section title with one accent-colored word
-- Frosted glass cards (never plain divs)
-- A divider between sections (gradient line)
-- Proper spacing (padding: 2rem on cards, gap: 1.5rem+ on grids)
-
-IMPORTANT: ALL styles inline. No <style> tags. Renders on dark background.
-
-5. Generate an immersive animated full page (MAXIMUM CREATIVE POWER):
+4. Generate an immersive, fully-styled website page (THE ONLY visualization command — MAXIMUM CREATIVE POWER):
 ```command
 {"action": "generatePage", "title": "Short descriptive title", "html": "<style>YOUR CSS HERE including @keyframes</style><div>YOUR HTML HERE</div>"}
 ```
-This is your MOST POWERFUL command — it renders inside a full-page iframe with COMPLETE CSS freedom.
-Unlike generateHTML (which strips styles/animations), generatePage supports:
-- <style> tags with full CSS, @keyframes animations, transitions
-- background-image with URLs, gradients, and overlays
-- Scroll-triggered effects, parallax, and multi-section layouts
-- The site's actual CSS variables are auto-injected: var(--font-serif), var(--font-sans), var(--color-accent), var(--color-bg), var(--color-section-1), var(--color-section-2), var(--color-text), var(--glass-border), var(--glass-bg)
+This is the ONE consolidated visualization command. Use it for ALL visual responses — data cards, tables, comparisons, landing pages, animated showcases, anything visual.
+It renders inside a full-page iframe with COMPLETE CSS freedom and the SITE'S OWN STYLING auto-injected so the result looks like part of this exact website.
 
-WHEN TO USE generatePage vs generateHTML:
-- Use generatePage when the visitor asks for something animated, immersive, visual, or page-like
-- Use generatePage for: landing pages, animated showcases, parallax layouts, image-heavy pages, scroll experiences, animated hero sections, product showcases
-- Use generateHTML for: simple data cards, tables, comparison grids, text-heavy content
+WHAT IS AUTO-INJECTED INTO THE IFRAME (use these directly, do NOT redefine them):
+- The site's CSS variables: var(--font-serif), var(--font-sans), var(--color-accent), var(--color-bg), var(--color-section-1), var(--color-section-2), var(--color-text), var(--glass-border), var(--glass-bg)
+- The landing page hero background image, available as: var(--hero-image)
+  → Use it on the hero section like: background: linear-gradient(to bottom, rgba(0,0,0,0.55), rgba(0,0,0,0.85)), var(--hero-image); background-size: cover; background-position: center;
+  → This is REQUIRED on the hero of every generatePage so the page visually matches the landing page.
+- The same Google Fonts the site uses are loaded — just reference var(--font-serif) / var(--font-sans).
 
-YOU ARE A WORLD-CLASS WEB DESIGNER. Every generatePage must look like a premium agency portfolio piece. Never produce plain, boring, or basic layouts.
+YOU ARE A WORLD-CLASS WEB DESIGNER. Every generatePage must look like a seamless extension of THIS website — same hero image, same colors, same fonts, same glass cards, same spacing. Never produce plain, boring, or basic layouts. Never invent off-brand colors or fonts.
 
 DESIGN RULES FOR generatePage — MANDATORY QUALITY STANDARDS:
 
 STRUCTURE — Always build multi-section pages, NEVER a single flat block:
-- Section 1: Full-viewport hero (100vh) with dramatic gradient or image background, large animated heading, eyebrow label, and subtitle
+- Section 1: Full-viewport hero (100vh) using var(--hero-image) as background with a dark gradient overlay, large animated heading, eyebrow label, and subtitle. THIS IS REQUIRED.
 - Section 2+: Content sections with alternating backgrounds (var(--color-section-1) / var(--color-section-2)), each with its own layout
 - Section dividers: subtle gradient line between sections using var(--color-accent) at 0.15 opacity
 - Footer section: a closing section with accent-colored border-top
 - MINIMUM 3 sections per page. A single-section page is ALWAYS wrong.
 
 BACKGROUNDS — Make every section visually distinct:
-- Hero: Use dramatic radial/conic gradients, e.g. background: radial-gradient(ellipse at 30% 0%, rgba(accent, 0.12) 0%, transparent 60%), var(--color-bg);
-- Add decorative floating orbs: position: absolute circles with radial-gradient, blurred, animated with float/drift keyframes
-- For image-heavy topics: use background-image with dark overlays: linear-gradient(to bottom, rgba(0,0,0,0.7), var(--color-bg)), url('IMAGE_URL'); background-size: cover; background-position: center;
+- Hero: ALWAYS use var(--hero-image): background: linear-gradient(to bottom, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.75) 60%, var(--color-bg) 100%), var(--hero-image); background-size: cover; background-position: center; background-attachment: fixed;
+- Add decorative floating orbs in the hero: position: absolute circles with radial-gradient(var(--color-accent), transparent), blurred, animated with float/drift keyframes
+- For other image-heavy sections: use background-image with dark overlays — same pattern
 - Sections: alternate between var(--color-section-1) and var(--color-section-2)
 
 ANIMATIONS — Every page MUST have these:
@@ -2008,14 +1963,16 @@ QUALITY CHECKLIST — your generatePage MUST have ALL of these:
 [ ] Proper use of all CSS variables (var(--font-serif), var(--color-accent), etc.)
 [ ] Responsive grid that collapses on mobile
 
-WRONG: Using generateHTML when the visitor asks for something animated, immersive, or page-like.
-RIGHT: Using generatePage with <style> animations, background images, and multi-section layout.
+WRONG: A static text reply when the visitor asks for something animated, immersive, or page-like.
+RIGHT: Using generatePage with <style> animations, the hero background image, and a multi-section layout.
 WRONG: Hardcoding colors (#c9a96e) instead of CSS variables.
-RIGHT: Using var(--color-accent), var(--font-serif), var(--glass-bg) etc.
+RIGHT: Using var(--color-accent), var(--font-serif), var(--glass-bg), var(--hero-image), etc.
 WRONG: A single-section page with just some text in cards.
 RIGHT: A multi-section page with hero + features + stats, decorative orbs, hover effects, staggered animations.
 WRONG: Plain flat cards with no effects.
 RIGHT: Frosted glass cards with hover lift, inner glow, accent border on hover, staggered entrance.
+WRONG: Hero section without var(--hero-image) — it won't match the rest of the website.
+RIGHT: Hero section with var(--hero-image) + dark gradient overlay so it visually flows from the landing page.
 
 6. Submit a form with data collected in conversation:
 ```command
@@ -2078,14 +2035,14 @@ else stays on the landing page with your response displayed prominently.
 
 RULES:
 - **NAVIGATION IS YOUR PRIMARY TOOL** — When the visitor asks about, mentions, or shows interest in ANY specific gallery item (room, product, service, etc.), you MUST use the navigate command to take them there. This is the most important rule. 1 sentence of text + navigate command. Do NOT just describe an item in text — SHOW them by navigating.
-- **"SHOW ME VISUALLY" RULE (HIGHEST PRIORITY)**: If the visitor's message contains ANY of these phrases — "show me visually", "show me", "visualize", "make it visual", "display it", "visually", "visual", "show it to me", "let me see", "can I see" — you MUST respond with a generatePage command. This is NON-NEGOTIABLE. Do NOT write a long markdown text reply. Do NOT use showSlide. Create a beautifully designed, animated page using generatePage with the frosted glass design system. A plain text or markdown response to a visual request is ALWAYS wrong.
-- **"ANIMATED / IMMERSIVE / PAGE" RULE**: If the visitor's message contains ANY of these — "animate", "animated", "immersive", "create a page", "build a page", "make a page", "landing page", "full page", "website page", "with animations", "with effects", "parallax", "create", "design", "build" — you MUST use generatePage (NOT generateHTML). generatePage has full CSS power: animations, @keyframes, background images, scroll effects. Use the site's CSS variables so it matches the design.
-- **DEFAULT VISUAL COMMAND**: When you need to create any visual content and are unsure which command to use, DEFAULT to generatePage. It is strictly superior to generateHTML — it supports everything generateHTML does PLUS animations, <style> tags, background images, and scroll effects. Only use generateHTML for extremely simple content (a single data card or short table).
+- **"SHOW ME VISUALLY" RULE (HIGHEST PRIORITY)**: If the visitor's message contains ANY of these phrases — "show me visually", "show me", "visualize", "make it visual", "display it", "visually", "visual", "show it to me", "let me see", "can I see" — you MUST respond with a generatePage command. This is NON-NEGOTIABLE. Do NOT write a long markdown text reply. Do NOT use showSlide. Create a beautifully designed, animated page using generatePage with the site's hero image and theme. A plain text or markdown response to a visual request is ALWAYS wrong.
+- **"ANIMATED / IMMERSIVE / PAGE" RULE**: If the visitor's message contains ANY of these — "animate", "animated", "immersive", "create a page", "build a page", "make a page", "landing page", "full page", "website page", "with animations", "with effects", "parallax", "create", "design", "build" — you MUST use generatePage. It has full CSS power: animations, @keyframes, background images, scroll effects. Use var(--hero-image) and the site's CSS variables so it matches the design exactly.
+- **DEFAULT VISUAL COMMAND**: generatePage is THE visualization command. Use it for any visual response.
 - For general questions (pricing overview, broad info, recommendations across items), reply with text. It will appear on the hero.
 - Keep text responses concise but natural (1-4 sentences). Be conversational, not robotic.
 - Use showSlide for quick structured comparisons and bullet-point recommendations (3-6 points max).
-- IMPORTANT: Keep plain text replies SHORT — 1 to 4 sentences maximum. If your answer needs more detail, create a generateHTML visual instead of writing a long text reply. The visitor sees short text on the landing page hero; anything longer should become a beautiful visual slide.
-- Use generateHTML and generatePage LIBERALLY — they are your most powerful tools. Use generatePage for animated/immersive content, generateHTML for static visuals. Use them for:
+- IMPORTANT: Keep plain text replies SHORT — 1 to 4 sentences maximum. If your answer needs more detail, create a generatePage visual instead of writing a long text reply. The visitor sees short text on the landing page hero; anything longer should become a beautiful visual page.
+- Use generatePage LIBERALLY — it is your most powerful tool. Use it for:
   * Any answer that would be more than 4 sentences
   * Comparisons ("compare X and Y", "what's the difference between")
   * Detailed information ("tell me everything about", "full details")
@@ -2094,9 +2051,9 @@ RULES:
   * Pricing breakdowns or rate comparisons
   * Recommendations with multiple options
   * Any request where a visual layout adds clarity or beauty
-  * ANY response that contains tabular data, feature lists, or structured comparisons — even if the user did NOT explicitly ask for a visual. If the best way to present information is in a table or comparison layout, USE generateHTML automatically.
-  You are a designer — make every generateHTML output stunning with the frosted glass design system.
-- AUTOMATIC VISUAL RULE: If your answer would naturally include a table (markdown or otherwise), a comparison grid, a pricing breakdown, or a multi-item feature list, you MUST use generateHTML to render it beautifully. NEVER put raw markdown tables (|---|) in your plain text response — always route tables through generateHTML.
+  * ANY response that contains tabular data, feature lists, or structured comparisons — even if the user did NOT explicitly ask for a visual. If the best way to present information is in a table or comparison layout, USE generatePage automatically.
+  You are a designer — make every generatePage output stunning with the site's hero image, frosted glass cards, and accent color.
+- AUTOMATIC VISUAL RULE: If your answer would naturally include a table (markdown or otherwise), a comparison grid, a pricing breakdown, or a multi-item feature list, you MUST use generatePage to render it beautifully. NEVER put raw markdown tables (|---|) in your plain text response — always route tables through generatePage.
 - Use generateVisual only for very simple quick data cards (2-3 rows of data).
 - Only use heroMessage for special greetings or announcements, not for regular Q&A.
 - Only include ONE command block per response. Make sure the JSON in your command block is valid — no trailing backslashes or line breaks inside the JSON string.
@@ -2200,7 +2157,7 @@ def api_chat():
     After the full response is collected, the server parses it and sends:
       - {"type": "token", "content": "..."} for each token as it arrives
       - {"type": "text", "content": "..."} for the final clean reply text
-      - {"type": "html", "content": "..."} if generateHTML was used
+      - {"type": "html", "content": "..."} if generatePage was used
       - {"type": "command", "command": {...}} for any parsed command
       - {"type": "done"} when complete
       - {"type": "error", "content": "..."} on failure
@@ -2234,10 +2191,11 @@ def api_chat():
         "body_font": "DM Sans, sans-serif",
         "glass_bg": "rgba(255, 255, 255, 0.03)",
         "glass_border": "rgba(255, 255, 255, 0.08)",
+        "hero_image_url": "",
     }
     try:
         theme = query_db(
-            "SELECT theme_bg, theme_accent, theme_text, theme_glass_border, theme_glass_bg, theme_font_serif, theme_font_sans FROM site_settings WHERE id = 1",
+            "SELECT theme_bg, theme_accent, theme_text, theme_glass_border, theme_glass_bg, theme_font_serif, theme_font_sans, hero_image FROM site_settings WHERE id = 1",
             fetchone=True
         )
         if theme:
@@ -2248,8 +2206,17 @@ def api_chat():
             if theme.get("theme_font_sans"): theme_colors["body_font"] = theme["theme_font_sans"] + ", sans-serif"
             if theme.get("theme_glass_bg"): theme_colors["glass_bg"] = theme["theme_glass_bg"]
             if theme.get("theme_glass_border"): theme_colors["glass_border"] = theme["theme_glass_border"]
+            if theme.get("hero_image"): theme_colors["hero_image_url"] = theme["hero_image"]
     except Exception:
         pass
+
+    hero_img_line = (
+        f"- Landing page hero background image URL: {theme_colors['hero_image_url']}\n"
+        f"  (Auto-injected into every generatePage iframe as: var(--hero-image). "
+        f"ALWAYS use it on the hero section so the page matches the landing page.)\n"
+        if theme_colors["hero_image_url"] else
+        "- Landing page hero image: not set. Use a tasteful gradient background instead.\n"
+    )
 
     theme_block = (
         f"- Page background: {theme_colors['background']}\n"
@@ -2261,7 +2228,8 @@ def api_chat():
         f"- Glass card background ({{glass_bg}}): {theme_colors['glass_bg']}\n"
         f"- Glass card border ({{glass_border}}): {theme_colors['glass_border']}\n"
         f"- Frosted glass effect: backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);\n"
-        f"- When the design system above says {{accent}}, use: {theme_colors['accent_gold']}"
+        f"- When the design system above says {{accent}}, use: {theme_colors['accent_gold']}\n"
+        f"{hero_img_line}"
     )
     active_prompt = active_prompt.replace("{THEME_PLACEHOLDER}", theme_block)
 
@@ -2426,6 +2394,25 @@ def api_chat():
                 + "\n".join(blog_lines)
             )
 
+        # ----- 9b. AI-GENERATED PAGES -----
+        # Live "view" of pages already created by previous chat sessions, so the
+        # AI knows what visualizations exist on the site and can reference or
+        # avoid duplicating them.
+        ai_pages = query_db(
+            "SELECT title, slug, status FROM generated_pages ORDER BY created_at DESC LIMIT 25"
+        )
+        if ai_pages:
+            ai_lines = [
+                f'  - "{p["title"]}" (slug: "{p["slug"]}", status: {p.get("status", "draft")})'
+                for p in ai_pages if p.get("title")
+            ]
+            if ai_lines:
+                active_prompt += (
+                    "\n\nAI-GENERATED PAGES ALREADY CREATED (live view of generated_pages table — "
+                    "use this to avoid duplicating recent visualizations):\n"
+                    + "\n".join(ai_lines)
+                )
+
         # ----- 10. BUSINESS INFO -----
         # Contact details, hours, and address so the AI can share them
         biz = query_db("""
@@ -2489,13 +2476,14 @@ def api_chat():
     # — especially with smaller models like gpt-4o-mini.
     messages.append({"role": "system", "content": (
         "REMEMBER: If your reply involves ANY action (navigate, showSlide, "
-        "generateHTML, generatePage, submitForm, scrollToSection, etc.), you MUST include "
+        "generatePage, submitForm, scrollToSection, etc.), you MUST include "
         "the ```command\\n{...}\\n``` JSON block. Without it the visitor sees "
         "NO change on the site. Never narrate an action — execute it. "
         "Keep reply text to 1 sentence when a command follows. "
-        "PREFER generatePage over generateHTML — it supports animations, "
-        "<style> tags, background images, and scroll effects. Use generatePage "
-        "for anything visual, animated, or page-like."
+        "Use generatePage for ALL visual responses — it auto-injects the site's "
+        "hero image (var(--hero-image)) and theme variables so the result looks "
+        "like part of this exact website. Always start with a hero section that "
+        "uses var(--hero-image) with a dark gradient overlay."
     )})
 
     messages.append({"role": "user", "content": message})

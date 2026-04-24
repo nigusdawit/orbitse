@@ -4361,28 +4361,21 @@ function executeCommand(cmd) {
       break;
     }
 
-    /* generateHTML — Render raw AI-generated HTML on a canvas.
-       The HTML is sanitized via DOMPurify inside openFullscreenCanvas()
-       to prevent XSS attacks from untrusted AI output. */
-    case 'generateHTML': {
-      openFullscreenCanvas(cmd.html || '');
-      openSidePanel();
-      saveGeneratedPage(cmd.html || '', cmd.title || '');
-      break;
-    }
-
     /* ─────────────────────────────────────────────────────────────────
-       GENERATE PAGE — Render an immersive animated full page
+       GENERATE PAGE — Render an immersive, fully-styled website page
        ─────────────────────────────────────────────────────────────────
-       Unlike generateHTML (which strips <style> and animations via
-       DOMPurify), generatePage renders inside a sandboxed iframe with
-       FULL CSS freedom: @keyframes, background-image, parallax,
-       scroll-triggered animations, gradients — anything CSS can do.
+       This is the consolidated visualization command. Both the modern
+       'generatePage' and the legacy 'generateHTML' name route here for
+       backwards compatibility — there is now ONE visualization path.
 
-       The site's theme (colors, fonts, glass effects) is automatically
-       injected into the iframe so the generated page matches the site.
+       It renders inside a sandboxed iframe with FULL CSS freedom
+       (@keyframes, background-image, parallax, scroll animations) AND
+       auto-injects the site's theme variables, Google Fonts, and the
+       landing page hero background image as var(--hero-image) so the
+       generated page looks like part of this exact website.
     */
-    case 'generatePage': {
+    case 'generatePage':
+    case 'generateHTML': {
       openImmersivePage(cmd.html || '');
       openSidePanel();
       saveGeneratedPage(cmd.html || '', cmd.title || '');
@@ -4716,6 +4709,29 @@ function openImmersivePage(html) {
   const glassBorder = styles.getPropertyValue('--glass-border').trim() || 'rgba(255, 255, 255, 0.08)';
   const glassBg = styles.getPropertyValue('--glass-bg').trim() || 'rgba(255, 255, 255, 0.03)';
 
+  /* Resolve the landing page hero background image so AI-generated pages can
+     reference it as var(--hero-image) and visually match the rest of the site.
+     Source order: <body> data attribute set by the server → live computed
+     background-image of the .hero element → empty string (AI will fall back
+     to a gradient). */
+  let heroImageUrl = '';
+  if (typeof siteSettings === 'object' && siteSettings && siteSettings.hero_image) {
+    heroImageUrl = siteSettings.hero_image;
+  }
+  if (!heroImageUrl) {
+    const heroEl = document.getElementById('hero-bg') ||
+      document.querySelector('.hero, #hero, [data-hero], .hero-section');
+    if (heroEl) {
+      const bg = getComputedStyle(heroEl).backgroundImage || '';
+      const match = bg.match(/url\((['"]?)([^'")]+)\1\)/);
+      if (match && match[2]) heroImageUrl = match[2];
+    }
+  }
+  /* Build a CSS value that is always safe to drop into background:.
+     If we have a URL, expose it as url(...). Otherwise expose 'none' so
+     the AI's `background: ..., var(--hero-image)` rules degrade gracefully. */
+  const heroImageCss = heroImageUrl ? `url("${heroImageUrl.replace(/"/g, '\\"')}")` : 'none';
+
   /* Find Google Font links from the parent page to inject into the iframe */
   const fontLinks = Array.from(document.querySelectorAll('link[rel="stylesheet"][href*="fonts.googleapis.com"]'))
     .map(link => `<link rel="stylesheet" href="${link.href}">`)
@@ -4739,6 +4755,7 @@ function openImmersivePage(html) {
       --color-text: ${colorText};
       --glass-border: ${glassBorder};
       --glass-bg: ${glassBg};
+      --hero-image: ${heroImageCss};
     }
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
     html { scroll-behavior: smooth; }
