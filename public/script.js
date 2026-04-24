@@ -235,14 +235,26 @@ function renderHero() {
       heroVideo.muted = true;
       heroVideo.loop = true;
       heroVideo.playsInline = true;
-      heroVideo.autoplay = true;
+      heroVideo.setAttribute('autoplay', '');
       const p = heroVideo.play();
       if (p && typeof p.catch === 'function') p.catch(() => {});
     }
   } else {
-    if (heroVideo) { heroVideo.removeAttribute('src'); heroVideo.style.display = 'none'; }
-    if (heroBg && siteSettings.hero_image) {
-      heroBg.style.backgroundImage = `url(${siteSettings.hero_image})`;
+    /* Properly tear down the video element so the browser doesn't fire a
+       MEDIA_ERR_SRC_NOT_SUPPORTED error on the empty src. We pause first,
+       remove the autoplay attribute (so it won't re-trigger on next load),
+       remove the src, and call load() to abort any pending media request. */
+    if (heroVideo) {
+      try { heroVideo.pause(); } catch (e) { /* ignore */ }
+      heroVideo.removeAttribute('autoplay');
+      heroVideo.removeAttribute('src');
+      try { heroVideo.load(); } catch (e) { /* ignore */ }
+      heroVideo.style.display = 'none';
+    }
+    if (heroBg) {
+      heroBg.style.backgroundImage = siteSettings.hero_image
+        ? `url(${siteSettings.hero_image})`
+        : '';
     }
   }
 

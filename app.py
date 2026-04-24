@@ -89,14 +89,43 @@ app = Flask(
     template_folder="templates"   # Jinja2 templates for admin dashboard
 )
 
-# Secret key for Flask sessions (used for admin login persistence)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", secrets.token_hex(32))
+# Secret key for Flask sessions (used for admin login persistence).
+# Priority: FLASK_SECRET_KEY env var > persisted .flask_secret file > new random.
+# We persist a generated key to a local file so admin sessions survive workflow
+# restarts even when no env var is configured (otherwise every restart would
+# log everyone out, since Flask sessions are signed with this key).
+def _resolve_flask_secret() -> str:
+    env_key = os.environ.get("FLASK_SECRET_KEY", "").strip()
+    if env_key:
+        return env_key
+    secret_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".flask_secret")
+    try:
+        if os.path.exists(secret_file):
+            with open(secret_file, "r", encoding="utf-8") as f:
+                existing = f.read().strip()
+                if existing:
+                    return existing
+        new_key = secrets.token_hex(32)
+        with open(secret_file, "w", encoding="utf-8") as f:
+            f.write(new_key)
+        try:
+            os.chmod(secret_file, 0o600)
+        except OSError:
+            pass
+        return new_key
+    except OSError:
+        # Fall back to in-memory key if filesystem isn't writable.
+        return secrets.token_hex(32)
+
+app.secret_key = _resolve_flask_secret()
 
 # Session cookie security settings
 # SESSION_COOKIE_HTTPONLY: Prevents JavaScript from accessing the session cookie
 # SESSION_COOKIE_SAMESITE: Prevents CSRF by limiting cross-site cookie sending
+# PERMANENT_SESSION_LIFETIME: How long admin login persists after last activity
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
 # Admin password — set via environment variable, defaults to "admin" for development
 # IMPORTANT: Change this in production by setting the ADMIN_PASSWORD env var
@@ -1091,6 +1120,7 @@ def admin_login():
         password = request.form.get("password", "")
         if password == ADMIN_PASSWORD:
             session["admin_logged_in"] = True
+            session.permanent = True
             return redirect(url_for("admin_dashboard"))
         else:
             error = "Invalid password. Please try again."
