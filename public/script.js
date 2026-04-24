@@ -4860,25 +4860,34 @@ function buildImmersivePageDoc(bodyHtml, streamToken) {
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
-    /* Tiny "building..." indicator shown only while streaming */
+    /* "Generating..." indicator shown only while streaming —
+       pinned to the bottom-center of the viewport so visitors know
+       the page is still being built as they scroll. */
     .__streaming_pulse__ {
-      position: fixed; top: 1rem; right: 1rem; z-index: 999999;
-      display: inline-flex; align-items: center; gap: 0.5rem;
-      padding: 0.4rem 0.8rem; background: rgba(0,0,0,0.6);
-      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-      border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 999px;
-      font-family: var(--font-sans); font-size: 0.7rem;
-      letter-spacing: 0.15em; text-transform: uppercase;
-      color: rgba(255,255,255,0.85);
+      position: fixed; bottom: 1.25rem; left: 50%;
+      transform: translateX(-50%); z-index: 999999;
+      display: inline-flex; align-items: center; gap: 0.6rem;
+      padding: 0.55rem 1.1rem; background: rgba(0,0,0,0.7);
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 999px;
+      font-family: var(--font-sans); font-size: 0.72rem;
+      letter-spacing: 0.18em; text-transform: uppercase;
+      color: rgba(255,255,255,0.9);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.35);
       animation: __streamFade__ 1.6s ease-in-out infinite;
     }
     .__streaming_pulse__::before {
-      content: ''; width: 6px; height: 6px; border-radius: 50%;
+      content: ''; width: 7px; height: 7px; border-radius: 50%;
       background: var(--color-accent);
-      box-shadow: 0 0 8px var(--color-accent);
+      box-shadow: 0 0 10px var(--color-accent);
+      animation: __streamDot__ 1.2s ease-in-out infinite;
     }
     @keyframes __streamFade__ {
-      0%, 100% { opacity: 0.6; } 50% { opacity: 1; }
+      0%, 100% { opacity: 0.75; } 50% { opacity: 1; }
+    }
+    @keyframes __streamDot__ {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.4); opacity: 0.7; }
     }
   </style>
   ${streamBootstrap}
