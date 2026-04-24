@@ -3576,6 +3576,9 @@ async function chatSendStreaming(message, wasCollapsed) {
     let finalReply = '';
     let pendingCommand = null;
     let inCommandBlock = false;
+    let streamBubble = null;
+    let bubbleFinalized = false;
+    let expandedForResponse = false;
     /* Live page-render state — set when we detect a generatePage/generateHTML
        command early in the stream so the iframe renders HTML progressively
        as tokens arrive. `pageStreamWritten` tracks how many decoded HTML
