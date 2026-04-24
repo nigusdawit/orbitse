@@ -543,6 +543,33 @@ function renderBlogSection() {
 
 
 /**
+ * Build a display-ready price label for an event.
+ *
+ * Order of preference:
+ *   1. Structured price fields (price_mode + price_amount/min_donation)
+ *      — the source of truth once Stripe Checkout was added.
+ *   2. Legacy free-text `price` column — kept for events created before
+ *      the structured fields existed.
+ *   3. The literal "Free".
+ */
+function formatEventPriceLabel(ev) {
+  if (ev && ev.price_mode === 'paid' && ev.price_amount) {
+    return formatMoney(ev.price_amount, ev.currency || 'USD');
+  }
+  if (ev && ev.price_mode === 'donation') {
+    if (ev.min_donation) {
+      return formatMoney(ev.min_donation, ev.currency || 'USD') + '+ donation';
+    }
+    return 'Pay what you wish';
+  }
+  if (ev && ev.price && String(ev.price).trim()) {
+    return String(ev.price);
+  }
+  return 'Free';
+}
+
+
+/**
  * Renders the Upcoming Events section.
  * Each card shows the cover image, date pill, title, location/price meta,
  * a short description, and a CTA that links to /event/<slug>. When the
@@ -566,6 +593,11 @@ function renderEventsSection() {
     const safeImageUrl = ev.image_url
       ? escapeHtml(String(ev.image_url).replace(/\\/g, '\\\\').replace(/"/g, '\\"'))
       : '';
+
+    /* Derive a price label from the structured price fields when present,
+       falling back to the legacy free-text `price` column. This keeps the
+       homepage card in sync with what the public event page advertises. */
+    const priceLabel = formatEventPriceLabel(ev);
 
     return `
       <a href="/event/${encodeURIComponent(ev.slug)}" class="event-card fade-in-view stagger-${(index % 6) + 1}"
@@ -601,7 +633,7 @@ function renderEventsSection() {
           <div class="event-card-meta">
             ${time ? `<span class="event-meta-pill" data-testid="text-event-time-${ev.slug}">${time}</span>` : ''}
             ${ev.location ? `<span class="event-meta-pill" data-testid="text-event-place-${ev.slug}">${escapeHtml(ev.location)}</span>` : ''}
-            <span class="event-meta-pill price" data-testid="text-event-cost-${ev.slug}">${escapeHtml(ev.price || 'Free')}</span>
+            <span class="event-meta-pill price" data-testid="text-event-cost-${ev.slug}">${escapeHtml(priceLabel)}</span>
           </div>
           ${ev.description ? `<p class="event-card-excerpt" data-testid="text-event-excerpt-${ev.slug}">${escapeHtml(ev.description.slice(0, 140))}${ev.description.length > 140 ? '…' : ''}</p>` : ''}
           <div class="event-card-footer">
@@ -1595,6 +1627,26 @@ function renderCustomSectionHTML(section, items) {
     case 'icon_features':
       contentHTML = renderIconFeaturesTemplate(items, section.id, sTitle);
       break;
+    /* Data-showcase templates pull from existing libraries instead of
+       per-section items. They're useful when an admin wants the same
+       data to appear in extra spots on the page (or wants to relocate
+       it within a custom-built page layout). */
+    case 'events':
+      contentHTML = renderEventsCustomTemplate(section.id);
+      break;
+    case 'rsvp_form':
+      /* The event slug is stashed in section.subtitle by editPageSection. */
+      contentHTML = renderRsvpFormCustomTemplate(section.id, section.subtitle || '');
+      break;
+    case 'video_gallery':
+      contentHTML = renderVideoGalleryCustomTemplate(section.id);
+      break;
+    case 'podcast':
+      contentHTML = renderPodcastCustomTemplate(section.id);
+      break;
+    case 'products':
+      contentHTML = renderProductsCustomTemplate(section.id);
+      break;
     default:
       contentHTML = renderCardsGridTemplate(items, section.id, sTitle);
   }
@@ -1690,6 +1742,226 @@ function renderIconFeaturesTemplate(items, sectionId, sectionTitle) {
         ${item.content ? `<p class="custom-feature-description">${escapeHtml(item.content)}</p>` : ''}
       </div>
     `).join('')}
+  </div>`;
+}
+
+
+/* ================================================================== *
+ *  DATA-SHOWCASE TEMPLATES                                           *
+ *                                                                    *
+ *  These templates don't have their own items — they re-render the   *
+ *  existing data libraries (events, video gallery, podcast, store)   *
+ *  inside a custom section so admins can place that data anywhere    *
+ *  on the page. The HTML mirrors the dedicated homepage sections so  *
+ *  global CSS/lightbox/cart wiring keeps working unchanged.          *
+ * ================================================================== */
+
+/** Upcoming events as compact cards (links to /event/<slug>). */
+function renderEventsCustomTemplate(sectionId) {
+  const events = (typeof upcomingEvents !== 'undefined' && upcomingEvents) || [];
+  if (!events.length) {
+    return '<p class="section-subtitle" style="text-align:center;">No upcoming events yet.</p>';
+  }
+  return `<div class="events-grid" data-testid="grid-custom-events-${sectionId}">
+    ${events.map((ev, index) => {
+      const start = ev.start_at ? new Date(ev.start_at) : null;
+      const day = start ? start.toLocaleDateString('en-US', { day: '2-digit' }) : '';
+      const month = start ? start.toLocaleDateString('en-US', { month: 'short' }).toUpperCase() : '';
+      const time = start ? start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '';
+      const isCancelled = ev.status === 'cancelled';
+      const hasCapacity = ev.capacity !== null && ev.capacity !== undefined;
+      const remaining = hasCapacity ? Math.max(0, ev.capacity - (ev.rsvp_count || 0)) : null;
+      const isFull = hasCapacity && remaining <= 0;
+      const safeImageUrl = ev.image_url
+        ? escapeHtml(String(ev.image_url).replace(/\\/g, '\\\\').replace(/"/g, '\\"'))
+        : '';
+      const priceLabel = formatEventPriceLabel(ev);
+      return `
+        <a href="/event/${encodeURIComponent(ev.slug)}" class="event-card fade-in-view stagger-${(index % 6) + 1}"
+           role="article" aria-label="${escapeHtml(ev.title)}"
+           data-testid="card-custom-event-${ev.slug}">
+          <div class="event-card-image${ev.image_url ? '' : ' event-card-image-empty'}">
+            ${ev.image_url ? `<div class="event-card-image-bg" style='background-image: url("${safeImageUrl}")'></div><div class="event-card-image-overlay"></div>` : ''}
+            ${isCancelled ? `<span class="event-card-badge cancelled">Cancelled</span>` : ''}
+            ${isFull && !isCancelled ? `<span class="event-card-badge full">Sold Out</span>` : ''}
+            ${start ? `<div class="event-date-pill"><span class="event-date-day">${day}</span><span class="event-date-month">${month}</span></div>` : ''}
+          </div>
+          <div class="event-card-body">
+            <h3 class="event-card-title">${escapeHtml(ev.title)}</h3>
+            <div class="event-card-meta">
+              ${time ? `<span class="event-meta-pill">${time}</span>` : ''}
+              ${ev.location ? `<span class="event-meta-pill">${escapeHtml(ev.location)}</span>` : ''}
+              <span class="event-meta-pill price">${escapeHtml(priceLabel)}</span>
+            </div>
+            ${ev.description ? `<p class="event-card-excerpt">${escapeHtml(ev.description.slice(0, 140))}${ev.description.length > 140 ? '…' : ''}</p>` : ''}
+            <div class="event-card-footer">
+              ${remaining !== null && !isCancelled && !isFull ? `<span class="event-spots-left">${remaining} spot${remaining === 1 ? '' : 's'} left</span>` : '<span></span>'}
+              <span class="event-card-cta">${isCancelled ? 'Details' : (isFull ? 'View' : 'RSVP')} &rarr;</span>
+            </div>
+          </div>
+        </a>`;
+    }).join('')}
+  </div>`;
+}
+
+
+/** Inline RSVP / ticket card for a single event identified by slug.
+ *  Free events get a real inline form; paid/donation events get a CTA
+ *  that bounces the visitor to /event/<slug> (where the full Stripe
+ *  Checkout flow already lives) — keeps this section dependency-free. */
+function renderRsvpFormCustomTemplate(sectionId, eventSlug) {
+  const slug = (eventSlug || '').trim();
+  if (!slug) {
+    return '<p class="section-subtitle" style="text-align:center;">No event selected. Open this section\u2019s settings and enter an event slug.</p>';
+  }
+  const events = (typeof upcomingEvents !== 'undefined' && upcomingEvents) || [];
+  const ev = events.find(e => e.slug === slug);
+  if (!ev) {
+    return `<p class="section-subtitle" style="text-align:center;">Event &ldquo;${escapeHtml(slug)}&rdquo; not found.</p>`;
+  }
+  const start = ev.start_at ? new Date(ev.start_at) : null;
+  const dateStr = start ? start.toLocaleString('en-US', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+  const priceLabel = formatEventPriceLabel(ev);
+  const hasCapacity = ev.capacity !== null && ev.capacity !== undefined;
+  const remaining = hasCapacity ? Math.max(0, ev.capacity - (ev.rsvp_count || 0)) : null;
+  const isFull = hasCapacity && remaining <= 0;
+  const isCancelled = ev.status === 'cancelled';
+
+  if (isCancelled || isFull) {
+    return `
+      <div class="custom-rsvp-card" data-testid="card-rsvp-form-${sectionId}" style="max-width:560px;margin:0 auto;padding:2rem;border-radius:14px;background:rgba(255,255,255,0.04);text-align:center;">
+        <h3 style="margin:0 0 .5rem;">${escapeHtml(ev.title)}</h3>
+        ${dateStr ? `<p style="opacity:.75;margin:0 0 1rem;">${escapeHtml(dateStr)}</p>` : ''}
+        <p style="color:${isCancelled ? '#ef4444' : '#fbbf24'};font-weight:600;">${isCancelled ? 'This event has been cancelled.' : 'This event is sold out.'}</p>
+        <a href="/event/${encodeURIComponent(slug)}" class="btn btn-secondary" style="margin-top:1rem;">View details</a>
+      </div>`;
+  }
+
+  return `
+    <div class="custom-rsvp-card" data-testid="card-rsvp-form-${sectionId}" style="max-width:560px;margin:0 auto;padding:2rem;border-radius:14px;background:rgba(255,255,255,0.04);">
+      <h3 style="margin:0 0 .25rem;">${escapeHtml(ev.title)}</h3>
+      ${dateStr ? `<p style="opacity:.75;margin:0 0 .25rem;">${escapeHtml(dateStr)}</p>` : ''}
+      ${ev.location ? `<p style="opacity:.6;margin:0 0 1rem;font-size:.9rem;">${escapeHtml(ev.location)}</p>` : '<div style="height:.75rem;"></div>'}
+      <p style="margin:0 0 1.25rem;"><strong>${escapeHtml(priceLabel)}</strong>${remaining !== null ? ` &middot; <span style="opacity:.7;">${remaining} spot${remaining === 1 ? '' : 's'} left</span>` : ''}</p>
+      <a href="/event/${encodeURIComponent(slug)}" class="btn btn-dark" data-testid="link-rsvp-form-${sectionId}" style="display:inline-block;">
+        ${ev.price_mode === 'paid' ? 'Buy ticket' : (ev.price_mode === 'donation' ? 'Reserve & donate' : 'RSVP')} &rarr;
+      </a>
+    </div>`;
+}
+
+
+/** Video gallery thumbnails. Reuses the global lightbox via a click
+ *  delegate that looks up the item by id in `videoGalleryItems`. */
+function renderVideoGalleryCustomTemplate(sectionId) {
+  const items = (typeof videoGalleryItems !== 'undefined' && videoGalleryItems) || [];
+  if (!items.length) {
+    return '<p class="section-subtitle" style="text-align:center;">No videos yet.</p>';
+  }
+  /* Wire the click-to-lightbox handlers after the section is in the DOM.
+     Custom-section wrappers are created with id="section-custom-<id>"
+     by renderCustomSectionHTML — keep these selectors in sync. */
+  setTimeout(() => {
+    const root = document.getElementById('section-custom-' + sectionId);
+    if (!root) return;
+    root.querySelectorAll('.video-gallery-item').forEach(el => {
+      const id = el.getAttribute('data-video-id');
+      const item = items.find(v => String(v.id) === String(id));
+      if (!item) return;
+      const open = () => openVideoLightbox(item.video_url, item.title || '');
+      el.addEventListener('click', open);
+      el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+    });
+  }, 0);
+  return `<div class="video-gallery-grid" data-testid="grid-custom-videos-${sectionId}">
+    ${items.map(item => {
+      const safeVideoUrl = escapeHtml(item.video_url || '');
+      const safeThumbUrl = encodeURI(item.thumbnail_url || '');
+      const thumb = item.thumbnail_url
+        ? `<div class="video-gallery-thumb" style="background-image:url('${safeThumbUrl}')"></div>`
+        : `<video class="video-gallery-thumb video-gallery-thumb-video" src="${safeVideoUrl}" muted playsinline preload="metadata"></video>`;
+      return `
+        <div class="video-gallery-item fade-in-view" role="button" tabindex="0"
+             data-video-id="${item.id}" data-testid="card-custom-video-${item.id}">
+          ${thumb}
+          <div class="video-gallery-overlay"><div class="video-gallery-play">&#9658;</div></div>
+          <div class="video-gallery-meta">
+            <h4 class="video-gallery-title">${escapeHtml(item.title || '')}</h4>
+            ${item.description ? `<p class="video-gallery-desc">${escapeHtml(item.description)}</p>` : ''}
+          </div>
+        </div>`;
+    }).join('')}
+  </div>`;
+}
+
+
+/** Podcast episode list with HTML5 audio players. */
+function renderPodcastCustomTemplate(sectionId) {
+  const eps = (typeof podcastEpisodes !== 'undefined' && podcastEpisodes) || [];
+  if (!eps.length) {
+    return '<p class="section-subtitle" style="text-align:center;">No episodes yet.</p>';
+  }
+  return `<div class="podcast-grid" data-testid="grid-custom-podcast-${sectionId}">
+    ${eps.map(ep => {
+      const cover = ep.cover_image
+        ? `<div class="podcast-cover" style="background-image:url(${ep.cover_image})"></div>`
+        : `<div class="podcast-cover podcast-cover-empty"><span>&#127908;</span></div>`;
+      return `
+        <article class="podcast-episode fade-in-view" data-testid="card-custom-podcast-${ep.id}">
+          ${cover}
+          <div class="podcast-body">
+            <div class="podcast-meta">
+              ${ep.episode_number ? `<span class="podcast-number">Episode ${ep.episode_number}</span>` : ''}
+            </div>
+            <h3 class="podcast-title">${escapeHtml(ep.title || '')}</h3>
+            ${ep.description ? `<p class="podcast-desc">${escapeHtml(ep.description)}</p>` : ''}
+            ${ep.audio_url ? `<audio controls preload="none" src="${ep.audio_url}" style="width:100%; margin-top:0.75rem;"></audio>` : ''}
+          </div>
+        </article>`;
+    }).join('')}
+  </div>`;
+}
+
+
+/** Storefront product cards. Wires the existing addToCart() flow so the
+ *  global cart drawer / Stripe checkout continue to work unchanged. */
+function renderProductsCustomTemplate(sectionId) {
+  const products = (typeof storeProducts !== 'undefined' && storeProducts) || [];
+  if (!products.length) {
+    return '<p class="section-subtitle" style="text-align:center;">No products yet.</p>';
+  }
+  setTimeout(() => {
+    /* See note in renderVideoGalleryCustomTemplate — wrapper id is
+       "section-custom-<id>", set by renderCustomSectionHTML. */
+    const root = document.getElementById('section-custom-' + sectionId);
+    if (!root) return;
+    root.querySelectorAll('.store-add-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = parseInt(btn.getAttribute('data-product-id'), 10);
+        if (typeof addToCart === 'function') addToCart(id);
+      });
+    });
+  }, 0);
+  return `<div class="store-grid" data-testid="grid-custom-products-${sectionId}">
+    ${products.map(p => {
+      const outOfStock = p.track_inventory && (p.stock || 0) <= 0;
+      const img = p.image_url
+        ? `<img class="store-card-img" src="${escapeHtml(p.image_url)}" alt="${escapeHtml(p.name)}" loading="lazy">`
+        : `<div class="store-card-img store-card-img-placeholder">Product</div>`;
+      return `
+        <article class="store-card fade-in-view" data-testid="card-custom-product-${p.id}">
+          ${img}
+          <div class="store-card-body">
+            <h3 class="store-card-title">${escapeHtml(p.name)}</h3>
+            ${p.description ? `<p class="store-card-desc">${escapeHtml(p.description)}</p>` : ''}
+            <div class="store-card-foot">
+              <span class="store-card-price">${formatMoney(p.price_cents, p.currency)}</span>
+              ${outOfStock
+                ? `<span class="store-card-soldout">Sold out</span>`
+                : `<button type="button" class="btn btn-dark store-add-btn" data-product-id="${p.id}">Add to cart</button>`}
+            </div>
+          </div>
+        </article>`;
+    }).join('')}
   </div>`;
 }
 

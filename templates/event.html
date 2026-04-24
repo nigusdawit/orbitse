@@ -238,7 +238,15 @@
             {% endif %}
             <div class="event-meta-item">
                 <span class="label">Price</span>
-                <span class="value" data-testid="text-event-price">{{ event.price or 'Free' }}</span>
+                <span class="value" data-testid="text-event-price">
+                    {% if event.price_mode == 'paid' and event.price_amount %}
+                        {{ "%.2f"|format(event.price_amount / 100) }} {{ (event.currency or 'usd')|upper }}
+                    {% elif event.price_mode == 'donation' %}
+                        Pay what you wish{% if event.min_donation %} (min {{ "%.2f"|format(event.min_donation / 100) }} {{ (event.currency or 'usd')|upper }}){% endif %}
+                    {% else %}
+                        {{ event.price or 'Free' }}
+                    {% endif %}
+                </span>
             </div>
             {% if event.capacity is not none %}
             <div class="event-meta-item">
@@ -255,10 +263,27 @@
         {% endif %}
 
         {% set is_full = event.capacity is not none and event.rsvp_count >= event.capacity %}
+        {% set mode = event.price_mode or 'free' %}
         {% if event.status != 'cancelled' and not is_full %}
-        <section class="rsvp-card" aria-labelledby="rsvp-heading">
-            <h2 id="rsvp-heading">Reserve your spot</h2>
-            <p class="helper">We'll email you a confirmation. No payment required at this step.</p>
+        <section class="rsvp-card" aria-labelledby="rsvp-heading"
+                 data-mode="{{ mode }}"
+                 data-price-cents="{{ event.price_amount or 0 }}"
+                 data-min-donation="{{ event.min_donation or 0 }}"
+                 data-currency="{{ (event.currency or 'usd')|upper }}">
+            <h2 id="rsvp-heading">
+                {% if mode == 'paid' %}Buy your ticket
+                {% elif mode == 'donation' %}Reserve & contribute
+                {% else %}Reserve your spot{% endif %}
+            </h2>
+            <p class="helper">
+                {% if mode == 'paid' %}
+                    We'll send your receipt and confirmation by email. Secure checkout powered by Stripe.
+                {% elif mode == 'donation' %}
+                    Pay what feels right{% if event.min_donation %} (minimum {{ "%.2f"|format(event.min_donation / 100) }} {{ (event.currency or 'usd')|upper }}){% endif %}. Secure checkout powered by Stripe.
+                {% else %}
+                    We'll email you a confirmation. No payment required at this step.
+                {% endif %}
+            </p>
 
             <form class="rsvp-form" id="rsvpForm" data-testid="form-rsvp">
                 <div class="rsvp-row">
@@ -277,15 +302,37 @@
                         <input id="rsvp-phone" name="phone" type="tel" data-testid="input-rsvp-phone">
                     </div>
                     <div>
-                        <label for="rsvp-guests">Number of guests</label>
+                        <label for="rsvp-guests">
+                            {% if mode == 'paid' %}Tickets{% else %}Number of guests{% endif %}
+                        </label>
                         <input id="rsvp-guests" name="guests" type="number" min="1" max="20" value="1" data-testid="input-rsvp-guests">
                     </div>
                 </div>
+
+                {% if mode == 'donation' %}
+                <div>
+                    <label for="rsvp-donation">Your contribution ({{ (event.currency or 'usd')|upper }})</label>
+                    <input id="rsvp-donation" name="donation_amount" type="number"
+                           step="0.01"
+                           min="{{ "%.2f"|format((event.min_donation or 0) / 100) }}"
+                           placeholder="{{ "%.2f"|format(((event.min_donation or 1000)) / 100) }}"
+                           required data-testid="input-rsvp-donation">
+                </div>
+                {% endif %}
+
                 <div>
                     <label for="rsvp-notes">Notes (optional)</label>
                     <textarea id="rsvp-notes" name="notes" placeholder="Dietary requirements, questions, etc." data-testid="input-rsvp-notes"></textarea>
                 </div>
-                <button type="submit" class="rsvp-submit" data-testid="button-rsvp-submit">Confirm RSVP</button>
+                <button type="submit" class="rsvp-submit" id="rsvpSubmit" data-testid="button-rsvp-submit">
+                    {% if mode == 'paid' and event.price_amount %}
+                        Continue to checkout · {{ "%.2f"|format(event.price_amount / 100) }} {{ (event.currency or 'usd')|upper }}
+                    {% elif mode == 'donation' %}
+                        Continue to checkout
+                    {% else %}
+                        Confirm RSVP
+                    {% endif %}
+                </button>
                 <div class="rsvp-message" id="rsvpMessage" role="status" aria-live="polite" data-testid="message-rsvp"></div>
             </form>
         </section>
@@ -304,16 +351,19 @@
         (function() {
             var form = document.getElementById('rsvpForm');
             if (!form) return;
+            var card = form.closest('.rsvp-card');
+            var mode = card ? (card.dataset.mode || 'free') : 'free';
             var slug = {{ event.slug | tojson }};
             var msg = document.getElementById('rsvpMessage');
             var btn = form.querySelector('.rsvp-submit');
+            var originalLabel = btn.textContent.trim();
 
             form.addEventListener('submit', async function(e) {
                 e.preventDefault();
                 msg.className = 'rsvp-message';
                 msg.textContent = '';
                 btn.disabled = true;
-                btn.textContent = 'Sending…';
+                btn.textContent = (mode === 'free') ? 'Sending…' : 'Preparing checkout…';
 
                 var payload = {
                     name: form.name.value.trim(),
@@ -322,6 +372,10 @@
                     guests: parseInt(form.guests.value, 10) || 1,
                     notes: form.notes.value.trim()
                 };
+                if (mode === 'donation') {
+                    var donEl = document.getElementById('rsvp-donation');
+                    payload.donation_amount = donEl ? donEl.value : '';
+                }
                 try {
                     var res = await fetch('/api/events/' + encodeURIComponent(slug) + '/rsvp', {
                         method: 'POST',
@@ -330,6 +384,13 @@
                     });
                     var data = await res.json().catch(function() { return {}; });
                     if (res.ok) {
+                        if (data.checkout_url) {
+                            // Paid / donation — bounce to Stripe Hosted Checkout.
+                            msg.className = 'rsvp-message success';
+                            msg.textContent = 'Redirecting to secure checkout…';
+                            window.location.href = data.checkout_url;
+                            return;
+                        }
                         msg.className = 'rsvp-message success';
                         msg.textContent = 'You\'re in! A confirmation is on its way to ' + payload.email + '.';
                         form.reset();
@@ -342,7 +403,7 @@
                     msg.textContent = 'Network error. Please try again.';
                 } finally {
                     btn.disabled = false;
-                    btn.textContent = 'Confirm RSVP';
+                    btn.textContent = originalLabel;
                 }
             });
         })();

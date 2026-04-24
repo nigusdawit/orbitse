@@ -496,6 +496,7 @@ def init_db():
                     id            SERIAL PRIMARY KEY,
                     slug          TEXT UNIQUE NOT NULL,
                     title         TEXT NOT NULL DEFAULT '',
+                    subtitle      TEXT NOT NULL DEFAULT '',
                     section_type  TEXT NOT NULL DEFAULT 'built_in',
                     template      TEXT NOT NULL DEFAULT '',
                     sort_order    INTEGER NOT NULL DEFAULT 0,
@@ -504,6 +505,13 @@ def init_db():
                     created_at    TIMESTAMP DEFAULT NOW()
                 );
                 CREATE INDEX IF NOT EXISTS idx_page_sections_sort ON page_sections (sort_order);
+
+                -- Optional small free-text pointer used by some custom-section
+                -- templates as a single-field "settings" hint. The rsvp_form
+                -- template stashes the event slug here so the admin doesn't
+                -- need a whole settings panel just to pick which event to show.
+                ALTER TABLE page_sections
+                  ADD COLUMN IF NOT EXISTS subtitle TEXT NOT NULL DEFAULT '';
 
                 -- =============================================================
                 -- CUSTOM SECTION ITEMS
@@ -604,6 +612,28 @@ def init_db():
                     created_at TIMESTAMP DEFAULT NOW()
                 );
                 CREATE INDEX IF NOT EXISTS idx_event_rsvps_event ON event_rsvps (event_id);
+
+                -- Optional payment columns (added after launch). Keep nullable
+                -- so existing free events keep working unchanged.
+                --   price_mode: 'free' | 'paid' | 'donation'
+                --   price_amount: cents charged when price_mode='paid'
+                --   min_donation: cents minimum when price_mode='donation' (NULL = any)
+                --   currency: ISO-4217 lower-case (e.g. 'usd', 'eur')
+                ALTER TABLE events
+                  ADD COLUMN IF NOT EXISTS price_mode    VARCHAR(20) NOT NULL DEFAULT 'free',
+                  ADD COLUMN IF NOT EXISTS price_amount  INTEGER,
+                  ADD COLUMN IF NOT EXISTS min_donation  INTEGER,
+                  ADD COLUMN IF NOT EXISTS currency      VARCHAR(3) NOT NULL DEFAULT 'usd';
+
+                -- Track Stripe Checkout state on each RSVP. payment_status:
+                --   'none'    — free event, no payment expected
+                --   'pending' — Checkout session created, awaiting webhook
+                --   'paid'    — checkout.session.completed received
+                ALTER TABLE event_rsvps
+                  ADD COLUMN IF NOT EXISTS payment_status    VARCHAR(20) NOT NULL DEFAULT 'none',
+                  ADD COLUMN IF NOT EXISTS payment_amount    INTEGER,
+                  ADD COLUMN IF NOT EXISTS stripe_session_id VARCHAR(255);
+                CREATE INDEX IF NOT EXISTS idx_event_rsvps_session ON event_rsvps (stripe_session_id);
 
                 -- =============================================================
                 -- VIDEO GALLERY ITEMS
@@ -1424,7 +1454,9 @@ def serve_event_page(slug):
     """
     event = query_db(
         """SELECT e.*,
-                  COALESCE((SELECT SUM(guests) FROM event_rsvps r WHERE r.event_id = e.id), 0)::int AS rsvp_count
+                  COALESCE((SELECT SUM(guests) FROM event_rsvps r
+                            WHERE r.event_id = e.id
+                              AND r.payment_status NOT IN ('expired','failed')), 0)::int AS rsvp_count
            FROM events e
            WHERE e.slug = %s AND e.status IN ('published', 'cancelled')""",
         (slug,), fetchone=True
@@ -1624,7 +1656,9 @@ def api_events():
     """
     rows = query_db(
         """SELECT e.*,
-                  COALESCE((SELECT SUM(guests) FROM event_rsvps r WHERE r.event_id = e.id), 0)::int AS rsvp_count
+                  COALESCE((SELECT SUM(guests) FROM event_rsvps r
+                            WHERE r.event_id = e.id
+                              AND r.payment_status NOT IN ('expired','failed')), 0)::int AS rsvp_count
            FROM events e
            WHERE e.status IN ('published', 'cancelled')
              AND e.start_at IS NOT NULL
@@ -1645,7 +1679,9 @@ def api_event_detail(slug):
     """
     event = query_db(
         """SELECT e.*,
-                  COALESCE((SELECT SUM(guests) FROM event_rsvps r WHERE r.event_id = e.id), 0)::int AS rsvp_count
+                  COALESCE((SELECT SUM(guests) FROM event_rsvps r
+                            WHERE r.event_id = e.id
+                              AND r.payment_status NOT IN ('expired','failed')), 0)::int AS rsvp_count
            FROM events e
            WHERE e.slug = %s AND e.status IN ('published', 'cancelled')""",
         (slug,), fetchone=True
@@ -1659,10 +1695,13 @@ def api_event_detail(slug):
 def api_event_rsvp(slug):
     """
     POST /api/events/<slug>/rsvp
-    Body: {name, email, phone?, guests?, notes?}
+    Body: {name, email, phone?, guests?, notes?, donation_amount?}
+
     Creates an RSVP for the given event. Validates required fields,
-    rejects RSVPs to draft/cancelled events, and enforces capacity by
-    summing existing guests + the requested party size.
+    rejects draft/cancelled events, and enforces capacity by summing
+    existing guests + the requested party size. For paid events the
+    response is `{checkout_url}` (Stripe Hosted Checkout); for free
+    events the response is the saved RSVP row.
     """
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
@@ -1677,13 +1716,17 @@ def api_event_rsvp(slug):
 
     # Run the lookup, capacity check, and insert inside a single transaction
     # with SELECT ... FOR UPDATE so two concurrent RSVPs cannot both pass the
-    # capacity check and oversubscribe the event.
+    # capacity check and oversubscribe the event. For paid/donation events
+    # we additionally create a Stripe Checkout Session BEFORE committing —
+    # if Stripe fails, the RSVP is rolled back and capacity stays unchanged.
     conn = get_db()
     conn.autocommit = False
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT id, capacity, status FROM events WHERE slug = %s FOR UPDATE",
+                """SELECT id, title, capacity, status,
+                          price_mode, price_amount, min_donation, currency, image_url
+                   FROM events WHERE slug = %s FOR UPDATE""",
                 (slug,)
             )
             event = cur.fetchone()
@@ -1695,8 +1738,17 @@ def api_event_rsvp(slug):
                 return jsonify({"error": "This event has been cancelled"}), 409
 
             if event["capacity"] is not None:
+                # Capacity reservation: count rows whose payment_status still
+                # holds a seat. Free RSVPs ('none'), in-flight Checkout sessions
+                # ('pending'), and completed payments ('paid') all reserve a
+                # seat. Abandoned/expired sessions ('expired', 'failed')
+                # release theirs so the event doesn't fill up forever after
+                # visitors close the Stripe tab.
                 cur.execute(
-                    "SELECT COALESCE(SUM(guests), 0)::int AS used FROM event_rsvps WHERE event_id = %s",
+                    "SELECT COALESCE(SUM(guests), 0)::int AS used "
+                    "FROM event_rsvps "
+                    "WHERE event_id = %s "
+                    "  AND payment_status NOT IN ('expired','failed')",
                     (event["id"],)
                 )
                 used_count = (cur.fetchone() or {}).get("used", 0)
@@ -1708,20 +1760,147 @@ def api_event_rsvp(slug):
                         "remaining": remaining
                     }), 409
 
+            mode = event.get("price_mode") or "free"
+            currency = (event.get("currency") or "usd").lower()
+
+            # Compute the cents to charge.
+            charge_cents = 0
+            if mode == "paid":
+                charge_cents = int(event.get("price_amount") or 0) * guests
+                if charge_cents <= 0:
+                    conn.rollback()
+                    return jsonify({"error": "This event has no ticket price set"}), 500
+            elif mode == "donation":
+                # Donation amount is provided per-RSVP, treated as TOTAL (not per-guest).
+                try:
+                    raw_amt = data.get("donation_amount")
+                    if raw_amt in (None, "", "null"):
+                        raise ValueError("missing")
+                    charge_cents = max(0, int(round(float(raw_amt) * 100)))
+                except (TypeError, ValueError):
+                    conn.rollback()
+                    return jsonify({"error": "Please enter a donation amount"}), 400
+                min_d = event.get("min_donation") or 0
+                if charge_cents < min_d:
+                    conn.rollback()
+                    return jsonify({
+                        "error": f"Minimum donation is {min_d / 100:.2f} {currency.upper()}"
+                    }), 400
+
+            payment_status = "none" if mode == "free" else "pending"
+
             cur.execute(
-                """INSERT INTO event_rsvps (event_id, name, email, phone, guests, notes)
-                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
+                """INSERT INTO event_rsvps
+                   (event_id, name, email, phone, guests, notes, payment_status, payment_amount)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *""",
                 (event["id"], name, email, (data.get("phone") or "").strip(),
-                 guests, (data.get("notes") or "").strip())
+                 guests, (data.get("notes") or "").strip(),
+                 payment_status, charge_cents if charge_cents else None)
             )
             rsvp = dict(cur.fetchone())
-        conn.commit()
-        return jsonify(rsvp), 201
+
+            # Free events: commit and return the row immediately.
+            if mode == "free":
+                conn.commit()
+                return jsonify(rsvp), 201
+
+            # Paid / donation: create the Stripe Checkout session.
+            if not stripe_client.is_configured():
+                conn.rollback()
+                return jsonify({
+                    "error": "Payments are not configured for this site. Please contact the organizer."
+                }), 503
+
+            try:
+                stripe = stripe_client.get_stripe()
+                line_label = event["title"]
+                if mode == "donation":
+                    line_label = f"Donation — {event['title']}"
+                elif guests > 1:
+                    line_label = f"{event['title']} ({guests} ticket{'s' if guests != 1 else ''})"
+
+                session = stripe.checkout.Session.create(
+                    mode="payment",
+                    payment_method_types=["card"],
+                    line_items=[{
+                        "price_data": {
+                            "currency": currency,
+                            "unit_amount": charge_cents,
+                            "product_data": {"name": line_label},
+                        },
+                        "quantity": 1,
+                    }],
+                    customer_email=email,
+                    success_url=request.host_url.rstrip("/")
+                                + url_for("event_rsvp_success", slug=slug)
+                                + "?session_id={CHECKOUT_SESSION_ID}",
+                    cancel_url=request.host_url.rstrip("/")
+                               + url_for("event_rsvp_cancel", slug=slug),
+                    metadata={
+                        "kind": "event_rsvp",
+                        "rsvp_id": str(rsvp["id"]),
+                        "event_id": str(event["id"]),
+                        "event_slug": slug,
+                    },
+                )
+            except Exception as e:
+                conn.rollback()
+                return jsonify({"error": f"Stripe error: {e}"}), 502
+
+            cur.execute(
+                "UPDATE event_rsvps SET stripe_session_id = %s WHERE id = %s",
+                (session.id, rsvp["id"])
+            )
+            conn.commit()
+            return jsonify({"checkout_url": session.url, "rsvp_id": rsvp["id"]}), 201
+
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+
+
+def _event_status_theme():
+    """Same theme dict assembled by serve_event_page so the status page
+    inherits the site's colors and fonts without rebuilding the helper."""
+    s = query_db("SELECT * FROM site_settings WHERE id = 1", fetchone=True) or {}
+    return s, {
+        "bg": s.get("theme_bg", "#060b14") or "#060b14",
+        "accent": s.get("theme_accent", "#c9a96e") or "#c9a96e",
+        "text": s.get("theme_text", "#e4e4e7") or "#e4e4e7",
+        "glass_bg": s.get("theme_glass_bg", "rgba(255,255,255,0.03)") or "rgba(255,255,255,0.03)",
+        "glass_border": s.get("theme_glass_border", "rgba(255,255,255,0.08)") or "rgba(255,255,255,0.08)",
+        "font_serif": s.get("theme_font_serif", "Playfair Display") or "Playfair Display",
+        "font_sans": s.get("theme_font_sans", "DM Sans") or "DM Sans",
+    }
+
+
+@app.route("/event/<string:slug>/rsvp/success")
+def event_rsvp_success(slug):
+    """Stripe redirects here after a successful checkout. We render a
+    confirmation page; the actual paid-status update is driven by the
+    webhook (this route does not trust the URL alone)."""
+    event = query_db("SELECT title, slug FROM events WHERE slug = %s", (slug,), fetchone=True)
+    settings, theme = _event_status_theme()
+    return render_template(
+        "event_rsvp_status.html",
+        event=event or {"title": "Event", "slug": slug},
+        success=True, settings=settings, theme=theme,
+    )
+
+
+@app.route("/event/<string:slug>/rsvp/cancel")
+def event_rsvp_cancel(slug):
+    """Stripe redirects here when the visitor abandons checkout. The
+    pending RSVP is left in place; admins can clean up if desired."""
+    event = query_db("SELECT title, slug FROM events WHERE slug = %s", (slug,), fetchone=True)
+    settings, theme = _event_status_theme()
+    return render_template(
+        "event_rsvp_status.html",
+        event=event or {"title": "Event", "slug": slug},
+        success=False, settings=settings, theme=theme,
+    )
 
 
 # =============================================================
@@ -3679,6 +3858,30 @@ def _parse_event_payload(data):
     if status not in ("draft", "published", "cancelled"):
         status = "published"
 
+    # Payment fields. price_mode drives the public RSVP flow:
+    #   'free'     — no payment, current behavior
+    #   'paid'     — fixed ticket price, Stripe Checkout for price_amount cents
+    #   'donation' — visitor enters their own amount (>= min_donation if set)
+    price_mode = (data.get("price_mode") or "free").strip()
+    if price_mode not in ("free", "paid", "donation"):
+        price_mode = "free"
+
+    def _to_cents(raw):
+        """Accept '25', '25.50', 25, 25.5 → integer cents. Empty / invalid → None."""
+        if raw in (None, "", "null"):
+            return None
+        try:
+            return max(0, int(round(float(raw) * 100)))
+        except (TypeError, ValueError):
+            return None
+
+    price_amount = _to_cents(data.get("price_amount"))
+    min_donation = _to_cents(data.get("min_donation"))
+    if price_mode == "paid" and (price_amount is None or price_amount <= 0):
+        raise ValueError("Paid events need a ticket price greater than zero")
+
+    currency = (data.get("currency") or "usd").strip().lower()[:3] or "usd"
+
     return (
         title, slug,
         (data.get("description") or "").strip(),
@@ -3689,6 +3892,7 @@ def _parse_event_payload(data):
         (data.get("price") or "Free").strip(),
         status,
         int(data.get("sort_order") or 0),
+        price_mode, price_amount, min_donation, currency,
     )
 
 
@@ -3699,7 +3903,9 @@ def admin_get_events():
     rolled-up rsvp_count so the list view can show "5 RSVPs" badges."""
     events = query_db(
         """SELECT e.*,
-                  COALESCE((SELECT SUM(guests) FROM event_rsvps r WHERE r.event_id = e.id), 0)::int AS rsvp_count
+                  COALESCE((SELECT SUM(guests) FROM event_rsvps r
+                            WHERE r.event_id = e.id
+                              AND r.payment_status NOT IN ('expired','failed')), 0)::int AS rsvp_count
            FROM events e
            ORDER BY e.sort_order ASC, e.start_at ASC NULLS LAST"""
     )
@@ -3718,8 +3924,10 @@ def admin_create_event():
         event = execute_db(
             """INSERT INTO events
                (title, slug, description, image_url, start_at, end_at,
-                location, capacity, price, status, sort_order)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                location, capacity, price, status, sort_order,
+                price_mode, price_amount, min_donation, currency)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                       %s, %s, %s, %s)
                RETURNING *""",
             values
         )
@@ -3743,6 +3951,7 @@ def admin_update_event(event_id):
                  title = %s, slug = %s, description = %s, image_url = %s,
                  start_at = %s, end_at = %s, location = %s,
                  capacity = %s, price = %s, status = %s, sort_order = %s,
+                 price_mode = %s, price_amount = %s, min_donation = %s, currency = %s,
                  updated_at = NOW()
                WHERE id = %s RETURNING *""",
             values + (event_id,)
@@ -3831,14 +4040,39 @@ def admin_create_page_section():
 @app.route("/admin/api/page-sections/<int:section_id>", methods=["PUT"])
 @admin_required
 def admin_update_page_section(section_id):
-    """PUT /admin/api/page-sections/<id> — Update a section's title, enabled, settings."""
-    data = request.get_json()
+    """PUT /admin/api/page-sections/<id> — Update a section's title, subtitle,
+    enabled flag, and settings.
+
+    The optional subtitle is used by some custom-section templates as a small
+    free-text "where to look" pointer (the rsvp_form template, for example,
+    stashes the event slug here so the admin doesn't need a whole settings
+    panel just to pick which event to show).
+
+    Only the fields actually present in the request body are touched —
+    callers that only want to flip `enabled` or rename `title` shouldn't
+    have to round-trip the rest. We build the SET clause dynamically and
+    fall back to the existing row for any omitted field so the UPDATE is
+    safe even when called from older clients.
+    """
+    data = request.get_json() or {}
+
+    existing = query_db(
+        "SELECT title, subtitle, enabled, settings FROM page_sections WHERE id = %s",
+        (section_id,), fetchone=True
+    )
+    if not existing:
+        return jsonify({"error": "Section not found"}), 404
+
+    title    = data["title"]    if "title"    in data else (existing.get("title") or "")
+    subtitle = data["subtitle"] if "subtitle" in data else (existing.get("subtitle") or "")
+    enabled  = data["enabled"]  if "enabled"  in data else bool(existing.get("enabled"))
+    settings = data["settings"] if "settings" in data else (existing.get("settings") or {})
+
     item = execute_db(
         """UPDATE page_sections SET
-             title = %s, enabled = %s, settings = %s::jsonb
+             title = %s, subtitle = %s, enabled = %s, settings = %s::jsonb
            WHERE id = %s RETURNING *""",
-        (data.get("title", ""), data.get("enabled", True),
-         json.dumps(data.get("settings", {})), section_id)
+        (title, subtitle, enabled, json.dumps(settings), section_id)
     )
     if not item:
         return jsonify({"error": "Section not found"}), 404
@@ -6997,8 +7231,63 @@ def api_stripe_webhook():
         _handle_payment_failed(obj)
     elif event_type == "charge.refunded":
         _handle_charge_refunded(obj)
+    elif event_type == "checkout.session.completed":
+        _handle_event_checkout_completed(obj)
+    elif event_type == "checkout.session.expired":
+        _handle_event_checkout_expired(obj)
 
     return jsonify({"received": True})
+
+
+def _handle_event_checkout_completed(session_obj):
+    """Mark the matching RSVP as paid. Idempotent — safe to receive twice."""
+    metadata = session_obj.get("metadata") or {}
+    if metadata.get("kind") != "event_rsvp":
+        return  # Not an event-rsvp checkout (e.g. shop checkout via PI flow)
+    rsvp_id = metadata.get("rsvp_id")
+    session_id = session_obj.get("id")
+    amount_total = session_obj.get("amount_total")
+    if not rsvp_id:
+        return
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, payment_status FROM event_rsvps WHERE id = %s FOR UPDATE",
+                (rsvp_id,),
+            )
+            row = cur.fetchone()
+            if not row or row["payment_status"] == "paid":
+                conn.commit()
+                return
+            cur.execute(
+                """UPDATE event_rsvps
+                   SET payment_status = 'paid',
+                       payment_amount = COALESCE(%s, payment_amount),
+                       stripe_session_id = COALESCE(stripe_session_id, %s)
+                   WHERE id = %s""",
+                (amount_total, session_id, rsvp_id),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+
+
+def _handle_event_checkout_expired(session_obj):
+    """Visitor abandoned checkout. We leave the RSVP row in place (so the
+    organizer can see attempted reservations) but mark it 'expired' so it
+    no longer counts toward capacity in admin views."""
+    metadata = session_obj.get("metadata") or {}
+    if metadata.get("kind") != "event_rsvp":
+        return
+    rsvp_id = metadata.get("rsvp_id")
+    if not rsvp_id:
+        return
+    execute_db(
+        "UPDATE event_rsvps SET payment_status = 'expired' "
+        "WHERE id = %s AND payment_status = 'pending'",
+        (rsvp_id,),
+    )
 
 
 def _handle_payment_succeeded(intent):

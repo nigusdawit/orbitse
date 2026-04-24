@@ -1183,12 +1183,21 @@ TO CUSTOMIZE THIS DASHBOARD:
         <div class="form-group">
           <label for="new-section-template">Template</label>
           <select id="new-section-template" data-testid="select-new-section-template">
-            <option value="cards_grid">Cards Grid</option>
-            <option value="text_content">Text Content</option>
-            <option value="image_gallery">Image Gallery</option>
-            <option value="cta_banner">CTA Banner</option>
-            <option value="stats_counter">Stats / Counters</option>
-            <option value="icon_features">Icon Features</option>
+            <optgroup label="Layouts (you provide items)">
+              <option value="cards_grid">Cards Grid</option>
+              <option value="text_content">Text Content</option>
+              <option value="image_gallery">Image Gallery</option>
+              <option value="cta_banner">CTA Banner</option>
+              <option value="stats_counter">Stats / Counters</option>
+              <option value="icon_features">Icon Features</option>
+            </optgroup>
+            <optgroup label="Data showcases (auto-pulled from your library)">
+              <option value="events">Upcoming Events</option>
+              <option value="rsvp_form">RSVP / Ticket Form (single event)</option>
+              <option value="video_gallery">Video Gallery</option>
+              <option value="podcast">Podcast Episodes</option>
+              <option value="products">Products / Shop</option>
+            </optgroup>
           </select>
         </div>
       </div>
@@ -3361,9 +3370,50 @@ TO CUSTOMIZE THIS DASHBOARD:
           <input type="text" id="event-location" placeholder="123 Main St, or 'Online'" data-testid="input-event-location">
         </div>
         <div class="form-group">
-          <label for="event-price">Price label</label>
+          <label for="event-price">Price label (display text)</label>
           <input type="text" id="event-price" placeholder="Free, $25, etc." value="Free" data-testid="input-event-price">
+          <small style="color:rgba(255,255,255,0.5); font-size:0.78rem;">Shown on listing cards. Auto-filled from price mode below if left blank.</small>
         </div>
+      </div>
+
+      <!-- Payment configuration -->
+      <div class="form-row">
+        <div class="form-group">
+          <label for="event-price-mode">Price mode</label>
+          <select id="event-price-mode" data-testid="select-event-price-mode" onchange="updateEventPriceModeUI()">
+            <option value="free">Free (RSVP only)</option>
+            <option value="paid">Paid ticket (Stripe Checkout)</option>
+            <option value="donation">Suggested donation (pay what you wish)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="event-currency">Currency</label>
+          <select id="event-currency" data-testid="select-event-currency">
+            <option value="usd">USD</option>
+            <option value="eur">EUR</option>
+            <option value="gbp">GBP</option>
+            <option value="cad">CAD</option>
+            <option value="aud">AUD</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row" id="event-paid-row" style="display:none;">
+        <div class="form-group">
+          <label for="event-price-amount">Ticket price</label>
+          <input type="number" id="event-price-amount" min="0" step="0.01" placeholder="25.00" data-testid="input-event-price-amount">
+          <small style="color:rgba(255,255,255,0.5); font-size:0.78rem;">Charged per ticket. Visitor selects # of tickets when reserving.</small>
+        </div>
+        <div class="form-group"></div>
+      </div>
+
+      <div class="form-row" id="event-donation-row" style="display:none;">
+        <div class="form-group">
+          <label for="event-min-donation">Minimum donation (optional)</label>
+          <input type="number" id="event-min-donation" min="0" step="0.01" placeholder="5.00" data-testid="input-event-min-donation">
+          <small style="color:rgba(255,255,255,0.5); font-size:0.78rem;">Leave blank to allow any amount.</small>
+        </div>
+        <div class="form-group"></div>
       </div>
 
       <div class="form-row">
@@ -6281,8 +6331,21 @@ TO CUSTOMIZE THIS DASHBOARD:
       image_gallery: 'Image Gallery',
       cta_banner: 'CTA Banner',
       stats_counter: 'Stats / Counters',
-      icon_features: 'Icon Features'
+      icon_features: 'Icon Features',
+      events: 'Upcoming Events',
+      rsvp_form: 'RSVP / Ticket Form',
+      video_gallery: 'Video Gallery',
+      podcast: 'Podcast Episodes',
+      products: 'Products / Shop'
     };
+
+    /** Templates that auto-pull data from existing libraries (events,
+     *  videos, podcast, products) instead of using per-section items.
+     *  We hide the "Items" management UI for these so the admin doesn't
+     *  get confused by an empty items table. */
+    const DATA_DRIVEN_TEMPLATES = new Set([
+      'events', 'rsvp_form', 'video_gallery', 'podcast', 'products'
+    ]);
 
     async function loadPageSections() {
       try {
@@ -6305,8 +6368,12 @@ TO CUSTOMIZE THIS DASHBOARD:
 
           let actions = '';
           if (!isBuiltIn) {
-            actions += `<button class="btn btn-secondary btn-sm" onclick="manageSectionItems(${s.id}, '${esc(s.template)}', '${esc(s.title)}')" data-testid="button-manage-section-${s.id}">Items</button>`;
-            actions += ` <button class="btn btn-secondary btn-sm" onclick="editPageSection(${s.id})" data-testid="button-edit-section-${s.id}">Edit</button>`;
+            // Data-driven templates render existing libraries — there are
+            // no per-section items to manage, so we hide the "Items" button.
+            if (!DATA_DRIVEN_TEMPLATES.has(s.template)) {
+              actions += `<button class="btn btn-secondary btn-sm" onclick="manageSectionItems(${s.id}, '${esc(s.template)}', '${esc(s.title)}')" data-testid="button-manage-section-${s.id}">Items</button> `;
+            }
+            actions += `<button class="btn btn-secondary btn-sm" onclick="editPageSection(${s.id})" data-testid="button-edit-section-${s.id}">Edit</button>`;
             actions += ` <button class="btn btn-danger btn-sm" onclick="deletePageSection(${s.id})" data-testid="button-delete-section-${s.id}">Delete</button>`;
           }
 
@@ -6400,10 +6467,25 @@ TO CUSTOMIZE THIS DASHBOARD:
         const newTitle = prompt('Section Title:', section.title);
         if (newTitle === null) return;
 
+        const payload = { title: newTitle };
+
+        // The RSVP-form template needs to know which event to render.
+        // We store the slug in section.subtitle (a small bit of UX
+        // overloading that avoids building a whole new settings panel).
+        if (section.template === 'rsvp_form') {
+          const slug = prompt(
+            'Event slug to display the RSVP / ticket form for:\n\n' +
+            'Find this on the Events tab — it\'s the URL-friendly version of the title (e.g. "summer-workshop").',
+            section.subtitle || ''
+          );
+          if (slug === null) return;
+          payload.subtitle = slug.trim();
+        }
+
         const updateRes = await fetch(`/admin/api/page-sections/${id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: newTitle })
+          body: JSON.stringify(payload)
         });
         if (updateRes.ok) {
           showToast('Section updated!');
@@ -6549,6 +6631,15 @@ TO CUSTOMIZE THIS DASHBOARD:
             { id: 'title', label: 'Title', type: 'text' },
             { id: 'content', label: 'Description', type: 'textarea' }
           ];
+        // Data-showcase templates pull from the existing libraries (events,
+        // video gallery, podcast, products). They have no per-section items,
+        // so the items management UI is hidden via DATA_DRIVEN_TEMPLATES.
+        case 'events':
+        case 'rsvp_form':
+        case 'video_gallery':
+        case 'podcast':
+        case 'products':
+          return [];
         default:
           return [
             { id: 'title', label: 'Title', type: 'text' },
@@ -7215,6 +7306,19 @@ TO CUSTOMIZE THIS DASHBOARD:
       }
     }
 
+    /** Show/hide the paid + donation rows based on the current price mode. */
+    function updateEventPriceModeUI() {
+      const mode = document.getElementById('event-price-mode').value;
+      document.getElementById('event-paid-row').style.display = mode === 'paid' ? '' : 'none';
+      document.getElementById('event-donation-row').style.display = mode === 'donation' ? '' : 'none';
+    }
+
+    /** Convert cents (DB) → dollars-as-string for an <input type="number" step="0.01">. */
+    function centsToDollarStr(cents) {
+      if (cents == null || cents === '') return '';
+      return (Number(cents) / 100).toFixed(2);
+    }
+
     /** Show the event form for adding a new event with empty fields. */
     function showEventForm() {
       document.getElementById('event-form-panel').style.display = 'block';
@@ -7231,6 +7335,11 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('event-sort-order').value = '0';
       document.getElementById('event-image').value = '';
       document.getElementById('event-description').value = '';
+      document.getElementById('event-price-mode').value = 'free';
+      document.getElementById('event-currency').value = 'usd';
+      document.getElementById('event-price-amount').value = '';
+      document.getElementById('event-min-donation').value = '';
+      updateEventPriceModeUI();
     }
 
     function hideEventForm() {
@@ -7258,11 +7367,19 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('event-sort-order').value = ev.sort_order || 0;
       document.getElementById('event-image').value = ev.image_url || '';
       document.getElementById('event-description').value = ev.description || '';
+      document.getElementById('event-price-mode').value = ev.price_mode || 'free';
+      document.getElementById('event-currency').value = (ev.currency || 'usd').toLowerCase();
+      document.getElementById('event-price-amount').value = centsToDollarStr(ev.price_amount);
+      document.getElementById('event-min-donation').value = centsToDollarStr(ev.min_donation);
+      updateEventPriceModeUI();
     }
 
     async function saveEvent() {
       const id = document.getElementById('event-form-id').value;
       const capRaw = document.getElementById('event-capacity').value;
+      const priceMode = document.getElementById('event-price-mode').value;
+      const priceAmt = document.getElementById('event-price-amount').value;
+      const minDon = document.getElementById('event-min-donation').value;
       const data = {
         title: document.getElementById('event-title').value,
         slug: document.getElementById('event-slug').value,
@@ -7274,8 +7391,20 @@ TO CUSTOMIZE THIS DASHBOARD:
         status: document.getElementById('event-status').value,
         sort_order: parseInt(document.getElementById('event-sort-order').value) || 0,
         image_url: document.getElementById('event-image').value,
-        description: document.getElementById('event-description').value
+        description: document.getElementById('event-description').value,
+        price_mode: priceMode,
+        currency: document.getElementById('event-currency').value,
+        price_amount: priceAmt === '' ? null : parseFloat(priceAmt),
+        min_donation: minDon === '' ? null : parseFloat(minDon)
       };
+      // Auto-fill the display label from the price mode if the admin didn't set one.
+      if (!data.price || data.price === 'Free') {
+        if (priceMode === 'paid' && priceAmt !== '') {
+          data.price = '$' + parseFloat(priceAmt).toFixed(2);
+        } else if (priceMode === 'donation') {
+          data.price = 'Pay what you wish';
+        }
+      }
 
       if (!data.title || !data.slug) {
         showToast('Title and slug are required', 'error');
@@ -7343,19 +7472,37 @@ TO CUSTOMIZE THIS DASHBOARD:
         body.innerHTML = `
           <table class="data-table">
             <thead>
-              <tr><th>Name</th><th>Email</th><th>Phone</th><th>Guests</th><th>Notes</th><th></th></tr>
+              <tr><th>Name</th><th>Email</th><th>Phone</th><th>Guests</th><th>Payment</th><th>Notes</th><th></th></tr>
             </thead>
             <tbody>
-              ${rsvps.map(r => `
+              ${rsvps.map(r => {
+                /* Render a payment cell whose label & color reflect the
+                   Stripe Checkout outcome stored on the RSVP row. */
+                /* `payment_status` defaults to 'none' for free events;
+                   anything else came from the Stripe Checkout flow. */
+                let payHTML = '<span style="color:rgba(255,255,255,0.5);">Free</span>';
+                if (r.payment_status && r.payment_status !== 'none' && r.payment_status !== 'free') {
+                  const amt = (r.payment_amount || 0) / 100;
+                  const amtStr = amt > 0 ? '$' + amt.toFixed(2) : '';
+                  let color = 'rgba(255,255,255,0.6)';
+                  let label = r.payment_status;
+                  if (r.payment_status === 'paid')    { color = '#34d399'; label = 'Paid' + (amtStr ? ' \u00b7 ' + amtStr : ''); }
+                  if (r.payment_status === 'pending') { color = '#fbbf24'; label = 'Pending' + (amtStr ? ' \u00b7 ' + amtStr : ''); }
+                  if (r.payment_status === 'expired') { color = '#9ca3af'; label = 'Expired'; }
+                  if (r.payment_status === 'failed')  { color = '#ef4444'; label = 'Failed'; }
+                  payHTML = `<span style="color:${color}; font-weight:600;">${esc(label)}</span>`;
+                }
+                return `
                 <tr>
                   <td><strong>${esc(r.name)}</strong></td>
                   <td><a href="mailto:${esc(r.email)}" style="color:#c9a96e;">${esc(r.email)}</a></td>
                   <td>${esc(r.phone || '\u2014')}</td>
                   <td style="text-align:center;">${r.guests}</td>
+                  <td data-testid="text-rsvp-payment-${r.id}">${payHTML}</td>
                   <td><small style="color:rgba(255,255,255,0.6);">${esc(r.notes || '\u2014')}</small></td>
                   <td><button class="btn btn-danger btn-sm" onclick="deleteRsvp(${r.id}, ${eventId}, ${JSON.stringify(eventTitle).replace(/"/g, '&quot;')})" data-testid="button-delete-rsvp-${r.id}">Remove</button></td>
-                </tr>
-              `).join('')}
+                </tr>`;
+              }).join('')}
             </tbody>
           </table>
         `;

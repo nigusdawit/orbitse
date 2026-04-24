@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% if success %}RSVP Confirmed{% else %}Checkout Cancelled{% endif %} — {{ event.title }}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: {{ theme.bg }};
+            --accent: {{ theme.accent }};
+            --text: {{ theme.text }};
+            --glass-bg: {{ theme.glass_bg }};
+            --glass-border: {{ theme.glass_border }};
+            --font-serif: '{{ theme.font_serif }}', serif;
+            --font-sans: '{{ theme.font_sans }}', sans-serif;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body {
+            background: var(--bg); color: var(--text);
+            font-family: var(--font-sans); line-height: 1.7;
+            min-height: 100vh;
+            display: flex; align-items: center; justify-content: center;
+            padding: 2rem;
+        }
+        .status-card {
+            max-width: 540px; width: 100%;
+            padding: 3rem 2.5rem;
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 18px;
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+            text-align: center;
+        }
+        .status-icon {
+            width: 72px; height: 72px;
+            margin: 0 auto 1.5rem;
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 2rem;
+        }
+        .status-icon.success {
+            background: rgba(80, 200, 120, 0.15);
+            border: 1px solid rgba(80, 200, 120, 0.4);
+            color: #a7f3c8;
+        }
+        .status-icon.cancel {
+            background: rgba(220, 80, 80, 0.12);
+            border: 1px solid rgba(220, 80, 80, 0.35);
+            color: #ffb3b3;
+        }
+        .status-card h1 {
+            font-family: var(--font-serif);
+            font-size: 1.85rem;
+            color: #fff; margin-bottom: 1rem; line-height: 1.2;
+        }
+        .status-card p {
+            color: rgba(255,255,255,0.75);
+            font-size: 1rem; margin-bottom: 1.5rem;
+        }
+        .status-actions {
+            display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap;
+            margin-top: 2rem;
+        }
+        .status-btn {
+            padding: 0.75rem 1.5rem;
+            border-radius: 10px;
+            font-family: inherit; font-weight: 500; font-size: 0.95rem;
+            text-decoration: none;
+            transition: transform 0.15s ease, box-shadow 0.2s ease;
+        }
+        .status-btn.primary {
+            background: var(--accent); color: #1a1208;
+            border: none;
+        }
+        .status-btn.primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 24px rgba(201,169,110,0.25);
+        }
+        .status-btn.ghost {
+            background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.85);
+            border: 1px solid rgba(255,255,255,0.12);
+        }
+        .status-btn.ghost:hover { color: var(--accent); border-color: rgba(201,169,110,0.4); }
+    </style>
+</head>
+<body>
+    <main class="status-card" data-testid="card-rsvp-status">
+        {% if success %}
+            <div class="status-icon success" aria-hidden="true">&check;</div>
+            <h1 data-testid="text-status-heading">You're all set!</h1>
+            <p data-testid="text-status-message">
+                Your payment for <strong>{{ event.title }}</strong> went through successfully.
+                A receipt and confirmation are on their way to your email.
+            </p>
+        {% else %}
+            <div class="status-icon cancel" aria-hidden="true">&times;</div>
+            <h1 data-testid="text-status-heading">Checkout cancelled</h1>
+            <p data-testid="text-status-message">
+                No payment was taken. Your spot for <strong>{{ event.title }}</strong>
+                hasn't been confirmed yet — feel free to head back and try again.
+            </p>
+        {% endif %}
+        <div class="status-actions">
+            <a href="/event/{{ event.slug }}" class="status-btn primary" data-testid="link-back-to-event">Back to event</a>
+            <a href="/" class="status-btn ghost" data-testid="link-back-home">Back home</a>
+        </div>
+    </main>
+</body>
+</html>
