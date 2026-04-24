@@ -3033,12 +3033,28 @@ def api_chat():
                     "SELECT name, label, field_type, required, options, help_text FROM form_fields WHERE form_id = %s ORDER BY step, sort_order ASC",
                     (frm["id"],)
                 )
+                # Sort required fields first so they're impossible to miss,
+                # and build TWO separate listings: a checklist of required
+                # field NAMES (for the AI to track collection) and the full
+                # detailed field list.
+                import json as _json
+                required_names = []
+                optional_names = []
                 field_descs = []
                 for fld in (fields or []):
-                    desc = f'    - "{fld["name"]}" ({fld["field_type"]}): "{fld["label"]}"'
-                    if fld.get("required"): desc += " [REQUIRED]"
+                    if fld.get("required"):
+                        required_names.append(fld["name"])
+                    else:
+                        optional_names.append(fld["name"])
+                # Required fields rendered first
+                ordered = sorted(
+                    fields or [],
+                    key=lambda f: (0 if f.get("required") else 1, f.get("name") or ""),
+                )
+                for fld in ordered:
+                    flag = "★ REQUIRED" if fld.get("required") else "optional"
+                    desc = f'    - [{flag}] "{fld["name"]}" ({fld["field_type"]}): "{fld["label"]}"'
                     if fld.get("options") and fld["options"]:
-                        import json as _json
                         try:
                             opts = _json.loads(fld["options"]) if isinstance(fld["options"], str) else fld["options"]
                             if isinstance(opts, list) and opts:
@@ -3047,12 +3063,30 @@ def api_chat():
                             pass
                     if fld.get("help_text"): desc += f' — {fld["help_text"]}'
                     field_descs.append(desc)
+                req_summary = (
+                    f'  REQUIRED FIELDS YOU MUST COLLECT BEFORE submitForm: '
+                    f'{required_names if required_names else "(none)"}'
+                )
                 form_lines.append(
                     f'  Form: "{frm["name"]}" (slug: "{frm["slug"]}")\n'
                     f'  Description: {frm.get("description", "")}\n'
-                    f'  Fields:\n' + "\n".join(field_descs)
+                    f'{req_summary}\n'
+                    f'  Fields (★ = required, optional fields can be skipped):\n' + "\n".join(field_descs)
                 )
-            active_prompt += f"\n\nAVAILABLE FORMS (you can collect this info in chat and submit):\n" + "\n\n".join(form_lines)
+            active_prompt += (
+                "\n\nAVAILABLE FORMS (you can collect this info in chat and submit).\n"
+                "PRE-SUBMISSION CHECKLIST — do NOT skip:\n"
+                "  1. Before EVERY submitForm, mentally check: for the form's slug, "
+                "does my fields object include a non-empty value for EVERY name listed "
+                "under 'REQUIRED FIELDS YOU MUST COLLECT'?\n"
+                "  2. If ANY required field is missing, do NOT submit. Instead, ask the "
+                "visitor for the missing field(s) in your reply (1-2 at a time, in plain "
+                "English using the field's label, not its internal name).\n"
+                "  3. Only after every required field has a real value should you call "
+                "submitForm. The submission will be rejected otherwise and the visitor "
+                "will see a confusing error.\n\n"
+                + "\n\n".join(form_lines)
+            )
 
         # ----- 6. TESTIMONIALS / REVIEWS -----
         # Customer reviews with star ratings so the AI can reference real feedback
@@ -5532,9 +5566,23 @@ def api_submit_form(slug):
         (form["id"],)
     )
     form_data = data.get("fields", {})
+    # Collect EVERY missing required field (not just the first one) so the
+    # AI can ask for them all at once instead of bouncing the visitor
+    # through one validation error per submit attempt.
+    missing = []
     for f in (fields or []):
-        if f["required"] and not form_data.get(f["name"]):
-            return jsonify({"error": f"{f['label']} is required"}), 400
+        if not f.get("required"):
+            continue
+        v = form_data.get(f["name"])
+        # Treat empty strings, None, and empty lists as "not provided".
+        if v is None or (isinstance(v, str) and not v.strip()) or (isinstance(v, list) and not v):
+            missing.append({"name": f["name"], "label": f.get("label") or f["name"]})
+    if missing:
+        labels = ", ".join(m["label"] for m in missing)
+        return jsonify({
+            "error": f"Missing required field{'s' if len(missing) > 1 else ''}: {labels}",
+            "missing_fields": missing,
+        }), 400
 
     ua_string = request.headers.get("User-Agent", "")
     ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")

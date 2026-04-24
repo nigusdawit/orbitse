@@ -5093,6 +5093,7 @@ function chatToggleExpand() {
     const hasUserMessages = panelMessages && panelMessages.querySelector('.chat-msg-user');
     if (!hasUserMessages && chatHistory.length > 0 && panelMessages) {
       chatHistory.forEach(msg => {
+        if (msg.hidden) return; /* internal note for the AI — never render */
         const cls = msg.role === 'user' ? 'chat-msg-user' : 'chat-msg-agent';
         const rendered = msg.role === 'user' ? escapeHtml(msg.content) : renderMarkdown(msg.content);
         panelMessages.insertAdjacentHTML('beforeend',
@@ -5530,7 +5531,33 @@ function executeCommand(cmd) {
       .then(data => {
         chatShowTyping(false);
         if (data.error) {
-          chatAddMessage('agent', `There was a small issue: ${data.error}. Could you double-check that detail?`);
+          /* If the backend reported missing required fields, ask the
+             visitor for them in one friendly message instead of showing
+             the raw error. Also push a hidden note into chatHistory so
+             the AI sees its own validation failure on the next turn and
+             won't try to re-submit before the data is in. */
+          if (Array.isArray(data.missing_fields) && data.missing_fields.length) {
+            const labels = data.missing_fields.map(f => f.label).join(', ');
+            const names = data.missing_fields.map(f => f.name).join(', ');
+            const ask = `Before I can finalize that, I still need: ${labels}. Could you share ${data.missing_fields.length > 1 ? 'those' : 'that'}?`;
+            chatAddMessage('agent', ask);
+            try {
+              /* Push a note in the AI's history so it knows on the next
+                 turn what was missing. Use role 'agent' because the
+                 backend maps 'agent' → 'assistant' (anything else maps
+                 to user, which would attribute these instructions to
+                 the visitor). The `hidden` flag keeps the note out of
+                 every UI rebuild path so the visitor never sees it. */
+              chatHistory.push({
+                role: 'agent',
+                hidden: true,
+                content: `[System note for assistant: submitForm was rejected because these required fields were not yet collected from the visitor: ${names}. Ask the visitor for them naturally before attempting submitForm again. Do NOT call submitForm until every required field has a value.]`,
+              });
+              sessionStorage.setItem('chatHistory', JSON.stringify(chatHistory.slice(-40)));
+            } catch (_) {}
+          } else {
+            chatAddMessage('agent', `There was a small issue: ${data.error}. Could you double-check that detail?`);
+          }
         } else {
           const confNum = data.confirmation_number || '';
           const confMsg = confNum
@@ -6348,6 +6375,7 @@ function syncChatToSidePanel() {
       );
     }
     chatHistory.forEach(msg => {
+      if (msg.hidden) return; /* internal note for the AI — never render */
       const cls = msg.role === 'user' ? 'chat-msg-user' : 'chat-msg-agent';
       const rendered = msg.role === 'user' ? escapeHtml(msg.content) : renderMarkdown(msg.content);
       sideMessages.insertAdjacentHTML('beforeend',
