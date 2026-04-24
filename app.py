@@ -47,6 +47,9 @@ import json
 import html as html_module
 import hashlib
 import secrets
+import threading
+import time as _time
+import uuid as _uuid
 from datetime import datetime, timedelta
 from functools import wraps
 
@@ -5330,6 +5333,120 @@ def _generate_tts_elevenlabs(text, voice_id, model, filepath):
                     f.write(chunk)
 
 
+def _stream_tts_openai(text, voice_id, model, cache_filepath, tmp_path):
+    """Generator that yields MP3 chunks from OpenAI's streaming TTS endpoint
+    while teeing the bytes to a cache file on disk. The cache file is only
+    promoted to its final location once the stream completes successfully —
+    a partial download (client disconnect, provider error) leaves no cache
+    artifact, so the next request retries from scratch.
+
+    `tmp_path` MUST be unique per request (e.g. include a uuid) so that two
+    concurrent misses for the same cache key don't write to the same file
+    and corrupt each other. Last writer wins on the final `os.replace`,
+    which is fine — both produced the same MP3 from the same input.
+
+    Raises RuntimeError if OpenAI is not configured. The caller is expected
+    to handle this BEFORE entering the streaming response (since once we've
+    started streaming, headers have already been flushed).
+    """
+    if not openai_direct_client:
+        raise RuntimeError("OPENAI_API_KEY not configured — required for OpenAI TTS")
+
+    # Open the streaming response OUTSIDE the generator so configuration /
+    # auth errors raise synchronously and we can return a normal HTTP error.
+    streaming_ctx = openai_direct_client.audio.speech.with_streaming_response.create(
+        model=model,
+        voice=voice_id,
+        input=text,
+        response_format="mp3",
+    )
+
+    def gen():
+        try:
+            with streaming_ctx as response:
+                with open(tmp_path, "wb") as f:
+                    for chunk in response.iter_bytes(chunk_size=4096):
+                        if chunk:
+                            f.write(chunk)
+                            yield chunk
+            os.replace(tmp_path, cache_filepath)
+        except GeneratorExit:
+            # Client disconnected mid-stream — drop the partial cache file.
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    return gen()
+
+
+def _stream_tts_elevenlabs(text, voice_id, model, cache_filepath, tmp_path):
+    """Generator that yields MP3 chunks from ElevenLabs' /stream endpoint
+    while teeing the bytes to a cache file on disk. Same partial-cleanup
+    contract as `_stream_tts_openai`. `tmp_path` MUST be unique per request.
+    """
+    if not ELEVENLABS_API_KEY:
+        raise RuntimeError("ELEVENLABS_API_KEY not configured — required for ElevenLabs TTS")
+    if not voice_id:
+        raise RuntimeError("ElevenLabs voice_id is empty — pick a voice in the admin Voice Agent tab")
+
+    # ElevenLabs has a dedicated streaming variant: /text-to-speech/{id}/stream
+    url = f"{ELEVENLABS_API_BASE}/text-to-speech/{voice_id}/stream"
+    headers = {
+        "xi-api-key": ELEVENLABS_API_KEY,
+        "accept": "audio/mpeg",
+        "content-type": "application/json",
+    }
+    body = {
+        "text": text,
+        "model_id": model or "eleven_turbo_v2_5",
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.75,
+            "style": 0.0,
+            "use_speaker_boost": True,
+        },
+    }
+
+    def gen():
+        try:
+            with httpx.stream("POST", url, headers=headers, json=body, timeout=60.0) as r:
+                if r.status_code != 200:
+                    err_text = r.read().decode("utf-8", errors="replace")[:300]
+                    raise RuntimeError(f"ElevenLabs API error {r.status_code}: {err_text}")
+                with open(tmp_path, "wb") as f:
+                    for chunk in r.iter_bytes():
+                        if chunk:
+                            f.write(chunk)
+                            yield chunk
+            os.replace(tmp_path, cache_filepath)
+        except GeneratorExit:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    return gen()
+
+
 def _generate_tts_audio(text, voice_id, model, provider="openai", elevenlabs_voice_id="", elevenlabs_model=""):
     """Generate TTS audio for the given text and save to cache. Returns
     (audio_url, was_cached, provider_used).
@@ -5586,6 +5703,200 @@ def api_voice_tts():
         "voice": voice_id,
         "provider": used_provider,
     })
+
+
+# -----------------------------------------------------------------------------
+# Streaming-TTS prepare/consume token flow
+# -----------------------------------------------------------------------------
+# We use a POST→GET handshake so the audio URL doesn't carry the synthesized
+# text in its query string (which would leak to access logs, browser history,
+# and any intermediate proxies). The POST validates and stashes the request,
+# returning either a cached audio URL (instant) or a one-shot tokenized
+# stream URL the <audio> element can consume.
+# -----------------------------------------------------------------------------
+
+_TTS_STREAM_TOKENS = {}            # token -> request payload (see _put_tts_token)
+_TTS_STREAM_TOKENS_LOCK = threading.Lock()
+_TTS_TOKEN_TTL_SEC = 60            # tokens are short-lived; the browser fetches within a few ms
+
+
+def _put_tts_token(payload):
+    """Store a streaming-TTS request payload and return a one-shot opaque token.
+    Opportunistically purges expired entries on every write so the dict can't
+    grow unbounded (the consume path also drops on TTL miss)."""
+    token = _uuid.uuid4().hex
+    now = _time.time()
+    with _TTS_STREAM_TOKENS_LOCK:
+        # Cheap GC pass — most installs will only have a handful of live tokens.
+        expired = [k for k, v in _TTS_STREAM_TOKENS.items() if v["expires_at"] < now]
+        for k in expired:
+            _TTS_STREAM_TOKENS.pop(k, None)
+        payload["expires_at"] = now + _TTS_TOKEN_TTL_SEC
+        _TTS_STREAM_TOKENS[token] = payload
+    return token
+
+
+def _consume_tts_token(token):
+    """Pop a token from the store. Returns its payload if still valid,
+    otherwise None. One-shot — a token can never be replayed."""
+    if not token:
+        return None
+    with _TTS_STREAM_TOKENS_LOCK:
+        payload = _TTS_STREAM_TOKENS.pop(token, None)
+    if not payload:
+        return None
+    if payload["expires_at"] < _time.time():
+        return None
+    return payload
+
+
+@app.route("/api/voice/tts/stream/prepare", methods=["POST"])
+def api_voice_tts_stream_prepare():
+    """First step of the streaming-TTS handshake. Validates the request,
+    resolves provider/voice/model, runs the per-IP budget check, and either:
+
+      - Returns `{audio_url}` pointing at the existing cache file (cache hit),
+        which the browser fetches via the normal static handler — instant.
+      - Returns `{stream_url}` containing a one-shot opaque token the
+        <audio> element fetches, triggering the actual provider stream.
+
+    Keeping all the validation/cache logic here means the stream endpoint
+    itself stays simple and the URL the browser sees never contains the
+    synthesized text (privacy / log-leak avoidance).
+    """
+    settings = query_db("SELECT * FROM voice_settings WHERE id = 1", fetchone=True)
+    if not settings or not settings.get("enabled_ai_voice"):
+        return jsonify({"error": "AI voice is disabled"}), 403
+
+    body = request.get_json(silent=True) or {}
+    text = (body.get("text") or "").strip()
+    session_id = (body.get("session_id") or "").strip()
+    if not text:
+        return jsonify({"error": "Missing text"}), 400
+    if len(text) > TTS_MAX_CHARS:
+        text = text[:TTS_MAX_CHARS]
+
+    provider = (settings.get("tts_provider") or "openai").lower()
+    if provider == "elevenlabs" and not settings.get("premium_enabled"):
+        return jsonify({"error": "Premium TTS providers are disabled"}), 403
+
+    if provider == "elevenlabs":
+        eff_voice = (settings.get("elevenlabs_voice_id") or "").strip()
+        eff_model = (settings.get("elevenlabs_model") or "eleven_turbo_v2_5").strip()
+        if not eff_voice:
+            return jsonify({"error": "ElevenLabs voice not configured"}), 503
+    else:
+        provider = "openai"
+        eff_voice = (body.get("voice") or settings.get("default_voice") or "alloy").strip()
+        if eff_voice not in ALLOWED_TTS_VOICES:
+            eff_voice = "alloy"
+        eff_model = (settings.get("tts_model") or "tts-1").strip()
+        if eff_model not in ALLOWED_TTS_MODELS:
+            eff_model = "tts-1"
+
+    # Cache lookup — if already synthesized, return the static URL directly.
+    cache_key = f"{provider}:{eff_model}:{eff_voice}:{text}"
+    filename = _voice_cache_filename(cache_key, eff_voice, eff_model)
+    filepath = os.path.join(VOICE_CACHE_DIR, filename)
+
+    if os.path.exists(filepath):
+        _log_voice_usage(
+            feature_type="tts_cached", char_count=len(text),
+            voice_id=eff_voice, session_id=session_id,
+        )
+        return jsonify({
+            "audio_url": f"/uploads/voice/{filename}",
+            "cached": True,
+            "provider": provider,
+        })
+
+    # Per-IP daily budget — enforced here so the consume endpoint can stay
+    # focused on streaming (and so we reject before allocating a token).
+    client_ip = request.remote_addr or "unknown"
+    if not _check_tts_ip_budget(client_ip, len(text)):
+        return jsonify({"error": "Daily voice quota exceeded"}), 429
+
+    token = _put_tts_token({
+        "text": text,
+        "voice": eff_voice,
+        "model": eff_model,
+        "provider": provider,
+        "cache_filename": filename,
+        "cache_filepath": filepath,
+        "session_id": session_id,
+    })
+    return jsonify({
+        "stream_url": f"/api/voice/tts/stream/consume?token={token}",
+        "cached": False,
+        "provider": provider,
+    })
+
+
+@app.route("/api/voice/tts/stream/consume", methods=["GET"])
+def api_voice_tts_stream_consume():
+    """Second step of the streaming-TTS handshake. The <audio> element
+    points at this URL with a one-shot token; we look up the prepared
+    request and pipe provider bytes straight to the browser, teeing to a
+    cache file on disk along the way.
+
+    Browsers begin playback as soon as they have enough buffered audio
+    (typically 200-500ms). On any provider error or client disconnect,
+    the partial cache file is discarded so the next request retries clean.
+    """
+    payload = _consume_tts_token(request.args.get("token"))
+    if not payload:
+        return Response("Invalid or expired token", status=410, mimetype="text/plain")
+
+    text = payload["text"]
+    eff_voice = payload["voice"]
+    eff_model = payload["model"]
+    provider = payload["provider"]
+    filepath = payload["cache_filepath"]
+    filename = payload["cache_filename"]
+    session_id = payload["session_id"]
+
+    # A second client could have generated the cache file between prepare
+    # and consume — serve it if so, no need to re-synthesize.
+    if os.path.exists(filepath):
+        _log_voice_usage(
+            feature_type="tts_cached", char_count=len(text),
+            voice_id=eff_voice, session_id=session_id,
+        )
+        return send_from_directory(VOICE_CACHE_DIR, filename, mimetype="audio/mpeg")
+
+    # Unique per-request tmp file so concurrent same-key misses don't trample
+    # each other. Last writer wins on `os.replace`, which is harmless because
+    # both produce identical MP3 bytes from identical inputs.
+    tmp_path = filepath + f".{os.getpid()}.{_uuid.uuid4().hex}.part"
+
+    # Open the provider stream synchronously so config/auth errors surface
+    # as proper HTTP errors before we start writing the audio body.
+    try:
+        if provider == "elevenlabs":
+            byte_iter = _stream_tts_elevenlabs(text, eff_voice, eff_model, filepath, tmp_path)
+        else:
+            byte_iter = _stream_tts_openai(text, eff_voice, eff_model, filepath, tmp_path)
+    except RuntimeError as e:
+        print(f"[TTS stream config error] {e}")
+        return Response(str(e), status=503, mimetype="text/plain")
+    except Exception as e:
+        print(f"[TTS stream open error] {e}")
+        return Response("TTS generation failed", status=500, mimetype="text/plain")
+
+    _log_voice_usage(
+        feature_type=f"tts_generate_{provider}", char_count=len(text),
+        voice_id=eff_voice, session_id=session_id,
+    )
+
+    return Response(
+        stream_with_context(byte_iter),
+        mimetype="audio/mpeg",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",  # Disable proxy buffering so chunks flow immediately
+            "X-TTS-Provider": provider,
+        },
+    )
 
 
 @app.route("/api/voice/stt", methods=["POST"])

@@ -684,9 +684,9 @@
     if (!clean) return;
 
     // Sequence guard — every speak call gets a monotonic ID. If a newer
-    // request starts while this one is mid-fetch, our seq won't match the
-    // latest and we silently drop the result instead of interrupting the
-    // newer reply with stale audio.
+    // request starts while this one is mid-playback, our seq won't match
+    // the latest and we silently drop instead of interrupting the newer
+    // reply with stale audio.
     const seq = ++VOICE.speakSeq;
 
     // Caller passes the exact bubbles to highlight — never selector-match
@@ -694,13 +694,28 @@
     const targets = Array.isArray(bubbles) ? bubbles.filter(Boolean) : [];
     targets.forEach((el) => el.classList.add("voice-loading"));
 
-    const cleanupLoading = () => {
+    // Mute / stale checks BEFORE we fire the request so we don't waste a
+    // synthesis call the visitor will never hear.
+    if (isVoiceMuted()) {
       targets.forEach((el) => el.classList.remove("voice-loading"));
-    };
+      targets.forEach((el) => el.classList.add("voice-tap-to-play"));
+      return;
+    }
+    if (seq !== VOICE.speakSeq) {
+      targets.forEach((el) => el.classList.remove("voice-loading"));
+      return;
+    }
 
-    let data;
+    // Two-step streaming TTS handshake:
+    //   1) POST /prepare → returns either a cache URL (instant) or a one-shot
+    //      tokenized stream URL. The text never appears in any GET URL, so
+    //      it can't leak to access logs / browser history / proxies.
+    //   2) Set audio.src to whichever URL came back. For the streaming case,
+    //      the browser starts playback as soon as it has enough buffered
+    //      (typically 200-500ms) instead of waiting for the entire MP3.
+    let prepared;
     try {
-      const res = await fetch("/api/voice/tts", {
+      const res = await fetch("/api/voice/tts/stream/prepare", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -709,30 +724,35 @@
           session_id: getSessionId(),
         }),
       });
-      if (!res.ok) { cleanupLoading(); return; }
-      data = await res.json();
+      if (!res.ok) {
+        targets.forEach((el) => el.classList.remove("voice-loading"));
+        return;
+      }
+      prepared = await res.json();
     } catch (e) {
-      cleanupLoading();
+      targets.forEach((el) => el.classList.remove("voice-loading"));
       return;
     }
 
-    cleanupLoading();
-    if (!data || !data.audio_url) return;
-
-    // Stale request — a newer speak has started since we issued this fetch.
-    // Drop quietly so we don't yank playback away from the latest message.
-    if (seq !== VOICE.speakSeq) return;
-
-    // Final mute guard — the visitor may have toggled mute while we were
-    // fetching the audio. Don't start playback in that case; just leave the
-    // tap-to-play affordance so they can listen later if they change their mind.
-    if (isVoiceMuted()) {
-      targets.forEach((el) => el.classList.add("voice-tap-to-play"));
+    // Stale check after the prepare round-trip — a newer reply may have
+    // already started speaking, in which case drop quietly.
+    if (seq !== VOICE.speakSeq) {
+      targets.forEach((el) => el.classList.remove("voice-loading"));
       return;
     }
 
-    // Try to play; if blocked by autoplay policy, mark bubbles as "tap to play"
-    const played = await playAudioUrl(data.audio_url, targets);
+    const playUrl = prepared && (prepared.audio_url || prepared.stream_url);
+    if (!playUrl) {
+      targets.forEach((el) => el.classList.remove("voice-loading"));
+      return;
+    }
+
+    // playAudioUrl handles the speaking-class animation + autoplay fallback.
+    // Strip loading right before playback starts so the bubble doesn't show
+    // both indicators at once.
+    targets.forEach((el) => el.classList.remove("voice-loading"));
+
+    const played = await playAudioUrl(playUrl, targets);
     if (!played) {
       targets.forEach((el) => el.classList.add("voice-tap-to-play"));
     }
