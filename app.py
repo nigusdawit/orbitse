@@ -558,6 +558,54 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_blog_posts_sort ON blog_posts (sort_order);
 
                 -- =============================================================
+                -- EVENTS
+                -- =============================================================
+                -- Industry-agnostic event listings (workshops, webinars, retreats,
+                -- store openings, concerts, etc.). Each event has a public detail
+                -- page at /event/<slug> with an optional RSVP form.
+                --
+                -- status: 'draft' (admin-only), 'published' (visible to public),
+                --         or 'cancelled' (visible but RSVPs blocked).
+                -- capacity: NULL means unlimited; otherwise the RSVP endpoint
+                --           rejects new sign-ups once SUM(guests) >= capacity.
+                -- price: free-form text so admins can write "Free", "$25", or
+                --        "From $99 — pay at the door" without numeric coercion.
+                CREATE TABLE IF NOT EXISTS events (
+                    id          SERIAL PRIMARY KEY,
+                    title       TEXT NOT NULL,
+                    slug        VARCHAR(120) UNIQUE NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    image_url   TEXT NOT NULL DEFAULT '',
+                    start_at    TIMESTAMP WITH TIME ZONE NOT NULL,
+                    end_at      TIMESTAMP WITH TIME ZONE,
+                    location    TEXT NOT NULL DEFAULT '',
+                    capacity    INTEGER,
+                    price       TEXT NOT NULL DEFAULT 'Free',
+                    status      VARCHAR(20) NOT NULL DEFAULT 'published',
+                    sort_order  INTEGER NOT NULL DEFAULT 0,
+                    created_at  TIMESTAMP DEFAULT NOW(),
+                    updated_at  TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_events_status ON events (status);
+                CREATE INDEX IF NOT EXISTS idx_events_slug   ON events (slug);
+                CREATE INDEX IF NOT EXISTS idx_events_start  ON events (start_at);
+
+                -- RSVPs are optional per event. Capacity is enforced at write
+                -- time in the API layer, not via a DB trigger, to keep the
+                -- public flow simple and to allow admins to manually exceed it.
+                CREATE TABLE IF NOT EXISTS event_rsvps (
+                    id         SERIAL PRIMARY KEY,
+                    event_id   INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                    name       TEXT NOT NULL,
+                    email      TEXT NOT NULL,
+                    phone      TEXT NOT NULL DEFAULT '',
+                    guests     INTEGER NOT NULL DEFAULT 1,
+                    notes      TEXT NOT NULL DEFAULT '',
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_event_rsvps_event ON event_rsvps (event_id);
+
+                -- =============================================================
                 -- VIDEO GALLERY ITEMS
                 -- =============================================================
                 -- A library of videos shown in a gallery section. Each item
@@ -966,6 +1014,12 @@ def init_db():
                 ON CONFLICT (slug) DO NOTHING
             """)
 
+            cur.execute("""
+                INSERT INTO page_sections (slug, title, section_type, template, sort_order, enabled)
+                VALUES ('events', 'Upcoming Events', 'built_in', 'events', 11, false)
+                ON CONFLICT (slug) DO NOTHING
+            """)
+
             cur.execute("SELECT COUNT(*) FROM custom_forms WHERE slug = 'contact-us'")
             contact_form_exists = cur.fetchone()[0]
             if contact_form_exists == 0:
@@ -1355,6 +1409,47 @@ def serve_blog_post(slug):
     )
 
 
+# =============================================================
+# PUBLIC EVENT PAGE — Individual event detail pages
+# =============================================================
+
+@app.route("/event/<string:slug>")
+def serve_event_page(slug):
+    """
+    GET /event/<slug>
+    Serves a standalone event page with the same dark theme + frosted
+    glass aesthetic as the rest of the public site, including SEO meta
+    tags and a built-in RSVP form (when capacity isn't already full).
+    Returns 404 if the event is missing or in draft status.
+    """
+    event = query_db(
+        """SELECT e.*,
+                  COALESCE((SELECT SUM(guests) FROM event_rsvps r WHERE r.event_id = e.id), 0)::int AS rsvp_count
+           FROM events e
+           WHERE e.slug = %s AND e.status IN ('published', 'cancelled')""",
+        (slug,), fetchone=True
+    )
+    if not event:
+        return "Event not found", 404
+
+    settings = query_db("SELECT * FROM site_settings WHERE id = 1", fetchone=True) or {}
+    theme_colors = {
+        "bg": settings.get("theme_bg", "#060b14") or "#060b14",
+        "accent": settings.get("theme_accent", "#c9a96e") or "#c9a96e",
+        "text": settings.get("theme_text", "#e4e4e7") or "#e4e4e7",
+        "glass_bg": settings.get("theme_glass_bg", "rgba(255,255,255,0.03)") or "rgba(255,255,255,0.03)",
+        "glass_border": settings.get("theme_glass_border", "rgba(255,255,255,0.08)") or "rgba(255,255,255,0.08)",
+        "font_serif": settings.get("theme_font_serif", "Playfair Display") or "Playfair Display",
+        "font_sans": settings.get("theme_font_sans", "DM Sans") or "DM Sans",
+    }
+    return render_template(
+        "event.html",
+        event=event,
+        settings=settings,
+        theme=theme_colors
+    )
+
+
 @app.route("/<path:filename>")
 def serve_static(filename):
     """
@@ -1511,6 +1606,122 @@ def api_blog_post(slug):
     if not post:
         return jsonify({"error": "Blog post not found"}), 404
     return jsonify(post)
+
+
+# =============================================================
+# PUBLIC API — EVENTS
+# =============================================================
+
+@app.route("/api/events")
+def api_events():
+    """
+    GET /api/events
+    Returns published + cancelled events whose start date is today or
+    later, ordered by start_at ASC (soonest first). Each row includes
+    a `rsvp_count` aggregate (sum of guests across RSVPs) so the public
+    card can show "12/30 spots taken" when capacity is set.
+    Drafts are never returned here.
+    """
+    rows = query_db(
+        """SELECT e.*,
+                  COALESCE((SELECT SUM(guests) FROM event_rsvps r WHERE r.event_id = e.id), 0)::int AS rsvp_count
+           FROM events e
+           WHERE e.status IN ('published', 'cancelled')
+             AND e.start_at IS NOT NULL
+             AND COALESCE(e.end_at, e.start_at) >= NOW()
+           ORDER BY e.sort_order ASC, e.start_at ASC"""
+    )
+    return jsonify(rows or [])
+
+
+@app.route("/api/events/<string:slug>")
+def api_event_detail(slug):
+    """
+    GET /api/events/<slug>
+    Returns a single event by slug for the public detail page. Drafts
+    return 404; cancelled events ARE returned (so the page can show a
+    "This event has been cancelled" notice rather than a dead link).
+    Includes `rsvp_count` for capacity display.
+    """
+    event = query_db(
+        """SELECT e.*,
+                  COALESCE((SELECT SUM(guests) FROM event_rsvps r WHERE r.event_id = e.id), 0)::int AS rsvp_count
+           FROM events e
+           WHERE e.slug = %s AND e.status IN ('published', 'cancelled')""",
+        (slug,), fetchone=True
+    )
+    if not event:
+        return jsonify({"error": "Event not found"}), 404
+    return jsonify(event)
+
+
+@app.route("/api/events/<string:slug>/rsvp", methods=["POST"])
+def api_event_rsvp(slug):
+    """
+    POST /api/events/<slug>/rsvp
+    Body: {name, email, phone?, guests?, notes?}
+    Creates an RSVP for the given event. Validates required fields,
+    rejects RSVPs to draft/cancelled events, and enforces capacity by
+    summing existing guests + the requested party size.
+    """
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    email = (data.get("email") or "").strip()
+    if not name or not email:
+        return jsonify({"error": "Name and email are required"}), 400
+
+    try:
+        guests = max(1, int(data.get("guests") or 1))
+    except (TypeError, ValueError):
+        guests = 1
+
+    # Run the lookup, capacity check, and insert inside a single transaction
+    # with SELECT ... FOR UPDATE so two concurrent RSVPs cannot both pass the
+    # capacity check and oversubscribe the event.
+    conn = get_db()
+    conn.autocommit = False
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, capacity, status FROM events WHERE slug = %s FOR UPDATE",
+                (slug,)
+            )
+            event = cur.fetchone()
+            if not event or event["status"] == "draft":
+                conn.rollback()
+                return jsonify({"error": "Event not found"}), 404
+            if event["status"] == "cancelled":
+                conn.rollback()
+                return jsonify({"error": "This event has been cancelled"}), 409
+
+            if event["capacity"] is not None:
+                cur.execute(
+                    "SELECT COALESCE(SUM(guests), 0)::int AS used FROM event_rsvps WHERE event_id = %s",
+                    (event["id"],)
+                )
+                used_count = (cur.fetchone() or {}).get("used", 0)
+                if used_count + guests > event["capacity"]:
+                    remaining = max(0, event["capacity"] - used_count)
+                    conn.rollback()
+                    return jsonify({
+                        "error": "Not enough spots remaining",
+                        "remaining": remaining
+                    }), 409
+
+            cur.execute(
+                """INSERT INTO event_rsvps (event_id, name, email, phone, guests, notes)
+                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
+                (event["id"], name, email, (data.get("phone") or "").strip(),
+                 guests, (data.get("notes") or "").strip())
+            )
+            rsvp = dict(cur.fetchone())
+        conn.commit()
+        return jsonify(rsvp), 201
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 # =============================================================
@@ -3430,6 +3641,148 @@ def admin_delete_blog_post(post_id):
     count = execute_db("DELETE FROM blog_posts WHERE id = %s", (post_id,))
     if count == 0:
         return jsonify({"error": "Blog post not found"}), 404
+    return jsonify({"success": True})
+
+
+# =============================================================
+# ADMIN CRUD — EVENTS + RSVPS
+# =============================================================
+# CRUD for the events listing plus a read/delete view for RSVPs that
+# visitors submit through the public event detail page.
+
+def _parse_event_payload(data):
+    """Normalize a JSON payload into the tuple of values used by both
+    INSERT and UPDATE. Treats blank strings as NULL for the optional
+    end_at + capacity columns; everything else gets sensible defaults."""
+    title = (data.get("title") or "").strip()
+    slug = (data.get("slug") or "").strip().lower()
+    slug = re.sub(r'[^a-z0-9-]', '-', slug)
+    slug = re.sub(r'-+', '-', slug).strip('-')
+    if not title or not slug:
+        raise ValueError("Title and slug are required")
+
+    start_at = (data.get("start_at") or "").strip() or None
+    end_at = (data.get("end_at") or "").strip() or None
+    if not start_at:
+        raise ValueError("Start date/time is required")
+
+    cap_raw = data.get("capacity")
+    if cap_raw in (None, "", "null"):
+        capacity = None
+    else:
+        try:
+            capacity = max(0, int(cap_raw))
+        except (TypeError, ValueError):
+            capacity = None
+
+    status = (data.get("status") or "published").strip()
+    if status not in ("draft", "published", "cancelled"):
+        status = "published"
+
+    return (
+        title, slug,
+        (data.get("description") or "").strip(),
+        (data.get("image_url") or "").strip(),
+        start_at, end_at,
+        (data.get("location") or "").strip(),
+        capacity,
+        (data.get("price") or "Free").strip(),
+        status,
+        int(data.get("sort_order") or 0),
+    )
+
+
+@app.route("/admin/api/events", methods=["GET"])
+@admin_required
+def admin_get_events():
+    """GET all events (any status) for the admin panel, including a
+    rolled-up rsvp_count so the list view can show "5 RSVPs" badges."""
+    events = query_db(
+        """SELECT e.*,
+                  COALESCE((SELECT SUM(guests) FROM event_rsvps r WHERE r.event_id = e.id), 0)::int AS rsvp_count
+           FROM events e
+           ORDER BY e.sort_order ASC, e.start_at ASC NULLS LAST"""
+    )
+    return jsonify(events or [])
+
+
+@app.route("/admin/api/events", methods=["POST"])
+@admin_required
+def admin_create_event():
+    """POST /admin/api/events — Create a new event."""
+    try:
+        values = _parse_event_payload(request.get_json() or {})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    try:
+        event = execute_db(
+            """INSERT INTO events
+               (title, slug, description, image_url, start_at, end_at,
+                location, capacity, price, status, sort_order)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               RETURNING *""",
+            values
+        )
+    except Exception as e:
+        # Most likely a UNIQUE-violation on slug
+        return jsonify({"error": "Could not create event: " + str(e)}), 400
+    return jsonify(event), 201
+
+
+@app.route("/admin/api/events/<int:event_id>", methods=["PUT"])
+@admin_required
+def admin_update_event(event_id):
+    """PUT /admin/api/events/<id> — Update an event."""
+    try:
+        values = _parse_event_payload(request.get_json() or {})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    try:
+        event = execute_db(
+            """UPDATE events SET
+                 title = %s, slug = %s, description = %s, image_url = %s,
+                 start_at = %s, end_at = %s, location = %s,
+                 capacity = %s, price = %s, status = %s, sort_order = %s,
+                 updated_at = NOW()
+               WHERE id = %s RETURNING *""",
+            values + (event_id,)
+        )
+    except Exception as e:
+        return jsonify({"error": "Could not update event: " + str(e)}), 400
+    if not event:
+        return jsonify({"error": "Event not found"}), 404
+    return jsonify(event)
+
+
+@app.route("/admin/api/events/<int:event_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_event(event_id):
+    """DELETE /admin/api/events/<id> — Remove an event and its RSVPs
+    (cascade is enforced at the DB level via the FK)."""
+    count = execute_db("DELETE FROM events WHERE id = %s", (event_id,))
+    if count == 0:
+        return jsonify({"error": "Event not found"}), 404
+    return jsonify({"success": True})
+
+
+@app.route("/admin/api/events/<int:event_id>/rsvps", methods=["GET"])
+@admin_required
+def admin_get_event_rsvps(event_id):
+    """GET all RSVPs for one event, newest first."""
+    rsvps = query_db(
+        "SELECT * FROM event_rsvps WHERE event_id = %s ORDER BY created_at DESC",
+        (event_id,)
+    )
+    return jsonify(rsvps or [])
+
+
+@app.route("/admin/api/event-rsvps/<int:rsvp_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_rsvp(rsvp_id):
+    """DELETE /admin/api/event-rsvps/<id> — Remove a single RSVP."""
+    count = execute_db("DELETE FROM event_rsvps WHERE id = %s", (rsvp_id,))
+    if count == 0:
+        return jsonify({"error": "RSVP not found"}), 404
     return jsonify({"success": True})
 
 

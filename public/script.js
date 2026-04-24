@@ -73,6 +73,7 @@ let videoGalleryItems = [];
 let podcastEpisodes = [];
 let storeProducts = [];
 let storefrontConfig = { stripe_publishable_key: '', stripe_configured: false, currency: 'USD' };
+let upcomingEvents = [];
 let cart = [];          /* { product_id, name, price_cents, quantity, image_url } */
 let stripeInstance = null;
 let stripeElements = null;
@@ -103,7 +104,7 @@ let touchStartY = null;
 async function loadAllData() {
   try {
     /* Fetch all data sources in parallel for speed */
-    const [settingsRes, cardsRes, expRes, pricingRes, testimonialsRes, teamRes, faqRes, blogRes, bizRes, sectionsRes, sphereRes, videoGalleryRes, podcastRes, productsRes, storeConfigRes] = await Promise.all([
+    const [settingsRes, cardsRes, expRes, pricingRes, testimonialsRes, teamRes, faqRes, blogRes, bizRes, sectionsRes, sphereRes, videoGalleryRes, podcastRes, productsRes, storeConfigRes, eventsRes] = await Promise.all([
       fetch('/api/site-settings'),
       fetch('/api/gallery-cards'),
       fetch('/api/experiences'),
@@ -118,7 +119,8 @@ async function loadAllData() {
       fetch('/api/video-gallery'),
       fetch('/api/podcast'),
       fetch('/api/products'),
-      fetch('/api/storefront-config')
+      fetch('/api/storefront-config'),
+      fetch('/api/events')
     ]);
 
     siteSettings = await settingsRes.json();
@@ -136,6 +138,7 @@ async function loadAllData() {
     podcastEpisodes = await podcastRes.json();
     storeProducts = await productsRes.json();
     storefrontConfig = await storeConfigRes.json();
+    upcomingEvents = await eventsRes.json();
     loadCartFromStorage();
 
     renderHero();
@@ -146,6 +149,7 @@ async function loadAllData() {
     renderTeam();
     renderFAQ();
     renderBlogSection();
+    renderEventsSection();
     renderVideoGallery();
     renderPodcast();
     renderStore();
@@ -531,6 +535,73 @@ function renderBlogSection() {
             ${dateStr ? `<span class="blog-card-date" data-testid="text-blog-date-${post.slug}">${dateStr}</span>` : ''}
           </div>
           <span class="blog-card-readmore" data-testid="link-blog-readmore-${post.slug}">Read More</span>
+        </div>
+      </a>
+    `;
+  }).join('');
+}
+
+
+/**
+ * Renders the Upcoming Events section.
+ * Each card shows the cover image, date pill, title, location/price meta,
+ * a short description, and a CTA that links to /event/<slug>. When the
+ * event has a capacity, a small "X spots left" hint is shown.
+ */
+function renderEventsSection() {
+  const grid = document.getElementById('events-grid');
+  if (!grid) return;
+  if (!upcomingEvents.length) { grid.innerHTML = ''; return; }
+
+  grid.innerHTML = upcomingEvents.map((ev, index) => {
+    const start = ev.start_at ? new Date(ev.start_at) : null;
+    const day = start ? start.toLocaleDateString('en-US', { day: '2-digit' }) : '';
+    const month = start ? start.toLocaleDateString('en-US', { month: 'short' }).toUpperCase() : '';
+    const time = start ? start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '';
+    const isCancelled = ev.status === 'cancelled';
+    const hasCapacity = ev.capacity !== null && ev.capacity !== undefined;
+    const remaining = hasCapacity ? Math.max(0, ev.capacity - (ev.rsvp_count || 0)) : null;
+    const isFull = hasCapacity && remaining <= 0;
+    /* Escape image URL for safe use inside both an HTML style attribute and a CSS url("…") string */
+    const safeImageUrl = ev.image_url
+      ? escapeHtml(String(ev.image_url).replace(/\\/g, '\\\\').replace(/"/g, '\\"'))
+      : '';
+
+    return `
+      <a href="/event/${encodeURIComponent(ev.slug)}" class="event-card fade-in-view stagger-${(index % 6) + 1}"
+         role="article" aria-label="${escapeHtml(ev.title)}"
+         data-testid="card-event-${ev.slug}">
+        ${ev.image_url ? `
+          <div class="event-card-image">
+            <div class="event-card-image-bg" style='background-image: url("${safeImageUrl}")'></div>
+            <div class="event-card-image-overlay"></div>
+            ${isCancelled ? `<span class="event-card-badge cancelled" data-testid="badge-event-cancelled-${ev.slug}">Cancelled</span>` : ''}
+            ${isFull && !isCancelled ? `<span class="event-card-badge full" data-testid="badge-event-full-${ev.slug}">Sold Out</span>` : ''}
+          </div>
+        ` : `
+          <div class="event-card-image event-card-image-empty">
+            ${isCancelled ? `<span class="event-card-badge cancelled">Cancelled</span>` : ''}
+            ${isFull && !isCancelled ? `<span class="event-card-badge full">Sold Out</span>` : ''}
+          </div>
+        `}
+        ${start ? `
+          <div class="event-date-pill" data-testid="text-event-date-${ev.slug}">
+            <span class="event-date-day">${day}</span>
+            <span class="event-date-month">${month}</span>
+          </div>
+        ` : ''}
+        <div class="event-card-body">
+          <h3 class="event-card-title" data-testid="text-event-title-${ev.slug}">${escapeHtml(ev.title)}</h3>
+          <div class="event-card-meta">
+            ${time ? `<span class="event-meta-pill" data-testid="text-event-time-${ev.slug}">${time}</span>` : ''}
+            ${ev.location ? `<span class="event-meta-pill" data-testid="text-event-place-${ev.slug}">${escapeHtml(ev.location)}</span>` : ''}
+            <span class="event-meta-pill price" data-testid="text-event-cost-${ev.slug}">${escapeHtml(ev.price || 'Free')}</span>
+          </div>
+          ${ev.description ? `<p class="event-card-excerpt" data-testid="text-event-excerpt-${ev.slug}">${escapeHtml(ev.description.slice(0, 140))}${ev.description.length > 140 ? '…' : ''}</p>` : ''}
+          <div class="event-card-footer">
+            ${remaining !== null && !isCancelled && !isFull ? `<span class="event-spots-left" data-testid="text-event-spots-${ev.slug}">${remaining} spot${remaining === 1 ? '' : 's'} left</span>` : '<span></span>'}
+            <span class="event-card-cta" data-testid="link-event-rsvp-${ev.slug}">${isCancelled ? 'Details' : (isFull ? 'View' : 'RSVP')} &rarr;</span>
+          </div>
         </div>
       </a>
     `;
@@ -1281,6 +1352,7 @@ const BUILTIN_SECTION_MAP = {
   'team': 'section-team',
   'faq': 'section-faq',
   'blog': 'section-blog',
+  'events': 'section-events',
   'business-info': 'section-business-info',
   'video-gallery': 'section-video-gallery',
   'podcast': 'section-podcast',
@@ -1366,6 +1438,7 @@ function checkBuiltinHasData(slug) {
     case 'team': return teamMembers.length > 0;
     case 'faq': return faqItems.length > 0;
     case 'blog': return blogPosts.length > 0;
+    case 'events': return upcomingEvents.length > 0;
     case 'business-info': return !!(businessInfo.business_phone || businessInfo.business_email || businessInfo.business_address || businessInfo.business_map_embed || (businessInfo.business_hours && businessInfo.business_hours.length > 0));
     case 'video-gallery': return videoGalleryItems.length > 0;
     case 'podcast': return podcastEpisodes.length > 0;
@@ -1402,6 +1475,7 @@ function applySectionVisibilityFallback() {
     { id: 'section-team', toggle: siteSettings.section_team, hasData: teamMembers.length > 0 },
     { id: 'section-faq', toggle: siteSettings.section_faq, hasData: faqItems.length > 0 },
     { id: 'section-blog', toggle: true, hasData: blogPosts.length > 0 },
+    { id: 'section-events', toggle: true, hasData: upcomingEvents.length > 0 },
     { id: 'site-footer', toggle: siteSettings.section_footer, hasData: true }
   ];
   sections.forEach(({ id, toggle, hasData }) => {

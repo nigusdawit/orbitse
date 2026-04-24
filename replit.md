@@ -97,6 +97,8 @@ The entire template is industry-agnostic — naming, comments, and instructions 
   - `page_sections` — Registry of all site sections (built-in + custom). Controls page layout order, section visibility, and template assignment. Built-in sections (hero, highlights, experiences, testimonials, team, faq, footer) are seeded on first run. Custom sections use templates: cards_grid, text_content, image_gallery, cta_banner, stats_counter, icon_features. Has slug (unique), title, section_type (built_in/custom), template, sort_order, enabled, settings (JSONB).
   - `custom_section_items` — Content items for custom sections. Linked to page_sections via section_id (CASCADE delete). Has title, subtitle, content, image_url, link_url, link_text, icon, sort_order, extra_data (JSONB for template-specific fields).
   - `blog_posts` — Blog post content. Has slug (unique), title, subtitle, excerpt, content (HTML), cover_image, author, category, tags, status (draft/published), seo_title, seo_description, published_at, sort_order. Sample post seeded on first run.
+  - `events` — Event listings (workshops, webinars, store openings, retreats, etc.). Has slug (unique), title, description, image_url, start_at (timestamptz, required), end_at (optional), location, capacity (NULL = unlimited), price (free-form text like "Free" or "$25"), status (draft/published/cancelled), sort_order. Public site shows published + cancelled events whose end (or start) is today or later, ordered by start_at.
+  - `event_rsvps` — Visitor RSVPs for events. Linked to events via event_id (CASCADE delete). Has name, email, phone, guests, notes. Capacity is enforced at write time in the API by summing guests across rows.
   - `page_views` — Visitor analytics tracking. Has session_id, visitor_id, page_url, referrer_url, UTM params (source/medium/campaign/term/content), ip_address, browser, os, device_type, screen_resolution, language, country, duration_seconds.
   - `chatbot_settings` — AI chatbot configuration. Singleton row (id=1). Has enabled, mode, agent_name, agent_role, agent_avatar, greeting, quick_prompts (JSONB), api_endpoint, embed_code, system_prompt.
   - `chat_conversations` — Chat sessions with visitor info (session_id, ip, device_type, user_agent).
@@ -124,6 +126,9 @@ The entire template is industry-agnostic — naming, comments, and instructions 
 - `GET /api/custom-section/<section_id>/items` — Returns items for a custom section
 - `GET /api/blog` — Returns all published blog posts
 - `GET /api/blog/<slug>` — Returns a single published blog post
+- `GET /api/events` — Returns published + cancelled upcoming events with rolled-up rsvp_count
+- `GET /api/events/<slug>` — Returns a single event with rsvp_count
+- `POST /api/events/<slug>/rsvp` — Create an RSVP (validates name+email, enforces capacity, blocks cancelled)
 - `GET /api/seo` — Returns SEO settings for meta tag injection
 - `GET /api/sphere-settings` — Returns sphere view configuration and image URLs
 - `GET /api/chatbot-settings` — Returns chatbot configuration (enabled, mode, agent info, etc.)
@@ -132,6 +137,7 @@ The entire template is industry-agnostic — naming, comments, and instructions 
 - `GET /sitemap.xml` — Auto-generated XML sitemap (home, published blogs, published generated pages)
 - `GET /robots.txt` — Standard robots.txt with sitemap reference
 - `GET /blog/<slug>` — Public blog post page with SEO meta tags and JSON-LD structured data
+- `GET /event/<slug>` — Public event page with cover image, meta details, and a built-in RSVP form
 
 **Chat API:**
 - `POST /api/chat` — Streaming SSE chat. Accepts `{message, history, session_id}`, streams token/text/html/command/done events. Saves messages to chat_conversations/chat_messages. AI commands include: navigate, showSlide, generateVisual, generateHTML, generatePage, submitForm, scrollToSection, heroMessage. The AI can also collect form data conversationally and submit via the submitForm command. generatePage renders animated pages in a sandboxed iframe with full CSS freedom (animations, @keyframes, background-image).
@@ -166,6 +172,9 @@ The entire template is industry-agnostic — naming, comments, and instructions 
 - `GET/PUT /admin/api/seo` — Read and update SEO settings (meta title, description, keywords, OG image, Twitter handle, canonical URL, robots)
 - `POST /admin/api/seo/generate` — AI-powered SEO content suggestion generator (uses OpenAI to analyze site content)
 - `GET/POST/PUT/DELETE /admin/api/blog[/<id>]` — Blog post management (CRUD with draft/publish workflow)
+- `GET/POST/PUT/DELETE /admin/api/events[/<id>]` — Event management (CRUD with draft/published/cancelled status)
+- `GET /admin/api/events/<id>/rsvps` — List all RSVPs for one event (newest first)
+- `DELETE /admin/api/event-rsvps/<id>` — Remove a single RSVP
 - `GET /admin/api/analytics` — Aggregated visitor analytics (views, unique visitors, top pages, referrers, UTM, devices, browsers, OS)
 - `GET /admin/api/analytics/chart` — Daily page view counts for bar chart (last 30 days)
 - `PUT /admin/api/reorder/<type>` — Batch reorder gallery-cards, experiences, pricing, testimonials, team, faq, page-sections, custom-section-items, or blog-posts

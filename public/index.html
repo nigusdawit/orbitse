@@ -350,6 +350,29 @@ FONTS:
     </section>
 
     <!-- ================================================================
+         EVENTS SECTION
+         ================================================================
+         Lists upcoming events with date, location, price + an RSVP CTA
+         that links to /event/<slug>. Hidden by default; shown when the
+         events section is enabled in page_sections AND there is at least
+         one upcoming published event.
+    -->
+    <section id="section-events" class="snap-section landing-section" style="background: var(--bg-section-1); display: none;" data-testid="section-events">
+      <div class="max-w-container">
+        <div class="section-header fade-in-view">
+          <p class="section-eyebrow">What's Next</p>
+          <h2 class="section-title" data-testid="text-events-title">Upcoming Events</h2>
+          <p class="section-subtitle">Reserve your spot — capacity is limited.</p>
+        </div>
+
+        <!-- Event Cards Grid — populated by JavaScript -->
+        <div id="events-grid" class="events-grid" data-testid="events-grid">
+          <!-- Event preview cards are inserted here dynamically -->
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================
          VIDEO GALLERY SECTION
          ================================================================
          Curated grid of videos that play in a lightbox modal.

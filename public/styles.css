@@ -2427,6 +2427,205 @@ input, select, textarea {
 
 
 /* =============================================================================
+   17e. UPCOMING EVENTS GRID + CARDS
+   =============================================================================
+   Mirrors the blog-card frosted-glass aesthetic but adds an overlapping
+   date pill on the cover image and a footer row with capacity hint + RSVP
+   CTA. Cards link straight to /event/<slug>.
+============================================================================= */
+
+.events-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+  gap: var(--space-lg);
+  max-width: 72rem;
+  margin: 0 auto;
+}
+
+.event-card {
+  position: relative;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(4px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color var(--transition-fast), transform var(--transition-fast);
+}
+
+.event-card:hover {
+  border-color: rgba(201, 169, 110, 0.35);
+  transform: translateY(-2px);
+}
+
+.event-card-image {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+}
+
+.event-card-image-empty {
+  background: linear-gradient(135deg, rgba(201,169,110,0.08), rgba(255,255,255,0.02));
+}
+
+.event-card-image-bg {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  transition: transform 0.7s ease;
+}
+
+.event-card:hover .event-card-image-bg {
+  transform: scale(1.05);
+}
+
+.event-card-image-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(0,0,0,0.6), rgba(0,0,0,0.1) 60%, transparent);
+}
+
+/* Status badge in the top-right of the cover image */
+.event-card-badge {
+  position: absolute;
+  top: var(--space-md);
+  right: var(--space-md);
+  padding: 0.25rem 0.7rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  border-radius: 9999px;
+  backdrop-filter: blur(8px);
+  z-index: 2;
+}
+.event-card-badge.cancelled {
+  color: #ffb3b3;
+  background: rgba(220, 80, 80, 0.18);
+  border: 1px solid rgba(220, 80, 80, 0.4);
+}
+.event-card-badge.full {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+/* Date pill that overlaps the bottom-left of the cover image */
+.event-date-pill {
+  position: absolute;
+  top: calc(16 / 9 * 100% / 2 + 1rem - 30px);
+  left: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 60px; height: 60px;
+  background: rgba(6, 11, 20, 0.85);
+  border: 1px solid rgba(201, 169, 110, 0.4);
+  border-radius: 0.5rem;
+  backdrop-filter: blur(10px);
+  z-index: 3;
+  transform: translateY(0);
+  pointer-events: none;
+}
+.event-date-day {
+  font-family: var(--font-serif);
+  font-size: 1.4rem;
+  font-weight: 600;
+  color: #fff;
+  line-height: 1;
+}
+.event-date-month {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--color-accent, #c9a96e);
+  margin-top: 2px;
+}
+
+.event-card-body {
+  padding: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  flex: 1;
+}
+
+.event-card-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #fff;
+  line-height: 1.3;
+  font-family: var(--font-serif);
+  margin-top: var(--space-xs);
+}
+
+.event-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.event-meta-pill {
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0.2rem 0.6rem;
+  border-radius: 9999px;
+}
+.event-meta-pill.price {
+  color: var(--color-accent, #c9a96e);
+  border-color: rgba(201, 169, 110, 0.25);
+  background: rgba(201, 169, 110, 0.08);
+}
+
+.event-card-excerpt {
+  font-size: 0.875rem;
+  color: rgba(255, 255, 255, 0.6);
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.event-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: auto;
+  padding-top: var(--space-sm);
+  gap: var(--space-sm);
+}
+
+.event-spots-left {
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.55);
+  letter-spacing: 0.04em;
+}
+
+.event-card-cta {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-accent, #c9a96e);
+  letter-spacing: 0.03em;
+  transition: color var(--transition-fast), transform var(--transition-fast);
+}
+.event-card:hover .event-card-cta {
+  color: #fff;
+  transform: translateX(2px);
+}
+
+
+/* =============================================================================
    17d. SITE FOOTER
    =============================================================================
    A dark footer sitting outside the snap-scroll container.

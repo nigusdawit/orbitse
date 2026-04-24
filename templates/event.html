@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ event.title }} — {{ settings.site_name or 'Events' }}</title>
+    <meta name="description" content="{{ (event.description or '')[:155] }}">
+
+    <!-- Open Graph / social cards -->
+    <meta property="og:type" content="event">
+    <meta property="og:title" content="{{ event.title }}">
+    <meta property="og:description" content="{{ (event.description or '')[:155] }}">
+    {% if event.image_url %}<meta property="og:image" content="{{ event.image_url }}">{% endif %}
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --bg: {{ theme.bg }};
+            --accent: {{ theme.accent }};
+            --text: {{ theme.text }};
+            --glass-bg: {{ theme.glass_bg }};
+            --glass-border: {{ theme.glass_border }};
+            --font-serif: '{{ theme.font_serif }}', serif;
+            --font-sans: '{{ theme.font_sans }}', sans-serif;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font-sans);
+            line-height: 1.7;
+            min-height: 100vh;
+        }
+
+        .event-nav {
+            position: sticky; top: 0; z-index: 50;
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 1rem 2rem;
+            background: rgba(6, 11, 20, 0.7);
+            backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+            border-bottom: 1px solid var(--glass-border);
+        }
+        .event-nav a {
+            color: rgba(255,255,255,0.75); text-decoration: none;
+            font-size: 0.9rem; letter-spacing: 0.05em;
+            display: inline-flex; align-items: center; gap: 0.5rem;
+            padding: 0.4rem 0.9rem; border-radius: 9999px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.08);
+            transition: all 0.25s ease;
+        }
+        .event-nav a:hover { color: var(--accent); border-color: rgba(201,169,110,0.3); }
+        .event-nav .site-name {
+            font-family: var(--font-serif);
+            font-size: 1rem; letter-spacing: 0.08em;
+            color: rgba(255,255,255,0.6);
+        }
+
+        .event-hero {
+            position: relative; height: 55vh; min-height: 320px;
+            overflow: hidden; background: #0a0f1a;
+        }
+        .event-hero img {
+            width: 100%; height: 100%; object-fit: cover;
+            opacity: 0.85;
+        }
+        .event-hero::after {
+            content: ''; position: absolute; inset: 0;
+            background: linear-gradient(180deg, rgba(6,11,20,0.2) 0%, rgba(6,11,20,0.95) 100%);
+        }
+
+        .event-wrap {
+            max-width: 760px; margin: 0 auto;
+            padding: 3rem 1.5rem 5rem;
+        }
+        .event-wrap.has-hero { margin-top: -120px; position: relative; z-index: 2; }
+
+        .status-banner {
+            margin-bottom: 1.5rem; padding: 0.85rem 1.25rem;
+            border-radius: 12px;
+            background: rgba(220, 80, 80, 0.12);
+            border: 1px solid rgba(220, 80, 80, 0.35);
+            color: #ffb3b3; font-size: 0.95rem; letter-spacing: 0.02em;
+        }
+
+        .event-title {
+            font-family: var(--font-serif);
+            font-size: clamp(2.2rem, 5vw, 3.5rem);
+            line-height: 1.15; font-weight: 600;
+            margin-bottom: 1.25rem;
+            color: #fff;
+        }
+
+        .event-meta-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 1rem;
+            margin: 2rem 0;
+            padding: 1.5rem;
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 14px;
+            backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+        }
+        .event-meta-item .label {
+            display: block;
+            font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.12em;
+            color: rgba(255,255,255,0.45); margin-bottom: 0.4rem;
+        }
+        .event-meta-item .value {
+            font-size: 1rem; color: rgba(255,255,255,0.92);
+            font-weight: 500;
+        }
+
+        .event-description {
+            font-size: 1.1rem; color: rgba(255,255,255,0.82);
+            white-space: pre-wrap;
+            margin: 2rem 0;
+        }
+
+        .rsvp-card {
+            margin-top: 3rem; padding: 2rem;
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        }
+        .rsvp-card h2 {
+            font-family: var(--font-serif);
+            font-size: 1.6rem; margin-bottom: 0.4rem;
+            color: #fff;
+        }
+        .rsvp-card .helper {
+            color: rgba(255,255,255,0.6); font-size: 0.95rem; margin-bottom: 1.5rem;
+        }
+        .rsvp-form { display: grid; gap: 1rem; }
+        .rsvp-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+        @media (max-width: 540px) { .rsvp-row { grid-template-columns: 1fr; } }
+        .rsvp-form label {
+            display: block; font-size: 0.78rem;
+            text-transform: uppercase; letter-spacing: 0.08em;
+            color: rgba(255,255,255,0.55); margin-bottom: 0.4rem;
+        }
+        .rsvp-form input, .rsvp-form textarea {
+            width: 100%; padding: 0.75rem 1rem;
+            background: rgba(0,0,0,0.25);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 10px;
+            color: #fff; font-family: inherit; font-size: 0.95rem;
+            transition: border-color 0.2s ease;
+        }
+        .rsvp-form input:focus, .rsvp-form textarea:focus {
+            outline: none; border-color: var(--accent);
+        }
+        .rsvp-form textarea { min-height: 90px; resize: vertical; }
+        .rsvp-submit {
+            margin-top: 0.5rem; padding: 0.95rem 1.5rem;
+            background: var(--accent); color: #1a1208;
+            border: none; border-radius: 10px;
+            font-family: inherit; font-weight: 600; font-size: 1rem;
+            letter-spacing: 0.04em; cursor: pointer;
+            transition: transform 0.15s ease, box-shadow 0.2s ease;
+        }
+        .rsvp-submit:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(201,169,110,0.25); }
+        .rsvp-submit:disabled { opacity: 0.6; cursor: not-allowed; transform: none; box-shadow: none; }
+        .rsvp-message {
+            margin-top: 1rem; padding: 0.85rem 1rem;
+            border-radius: 10px; font-size: 0.95rem;
+            display: none;
+        }
+        .rsvp-message.success {
+            display: block;
+            background: rgba(80, 200, 120, 0.12);
+            border: 1px solid rgba(80, 200, 120, 0.35);
+            color: #a7f3c8;
+        }
+        .rsvp-message.error {
+            display: block;
+            background: rgba(220, 80, 80, 0.12);
+            border: 1px solid rgba(220, 80, 80, 0.35);
+            color: #ffb3b3;
+        }
+
+        .footer-back {
+            text-align: center; margin-top: 3rem;
+            padding-top: 2rem; border-top: 1px solid var(--glass-border);
+        }
+        .footer-back a {
+            color: rgba(255,255,255,0.7); text-decoration: none;
+            font-size: 0.9rem;
+            padding: 0.5rem 1.25rem; border-radius: 9999px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.08);
+            transition: all 0.25s ease;
+        }
+        .footer-back a:hover { color: var(--accent); border-color: rgba(201,169,110,0.3); }
+    </style>
+</head>
+<body>
+    <nav class="event-nav" aria-label="Event navigation">
+        <a href="/" data-testid="link-back-home"><span aria-hidden="true">&larr;</span> Back</a>
+        <span class="site-name" data-testid="text-site-name">{{ settings.site_name or 'Events' }}</span>
+    </nav>
+
+    {% if event.image_url %}
+    <div class="event-hero" role="img" aria-label="Event image for {{ event.title }}">
+        <img src="{{ event.image_url }}" alt="{{ event.title }}" loading="eager">
+    </div>
+    {% endif %}
+
+    <article class="event-wrap {{ 'has-hero' if event.image_url else '' }}" aria-label="{{ event.title }}">
+
+        {% if event.status == 'cancelled' %}
+        <div class="status-banner" data-testid="banner-cancelled" role="alert">
+            This event has been cancelled. RSVPs are no longer being accepted.
+        </div>
+        {% endif %}
+
+        <h1 class="event-title" data-testid="text-event-title">{{ event.title }}</h1>
+
+        <div class="event-meta-grid" data-testid="grid-event-meta">
+            <div class="event-meta-item">
+                <span class="label">When</span>
+                <span class="value" data-testid="text-event-when">
+                    {{ event.start_at.strftime('%b %d, %Y · %-I:%M %p') if event.start_at else 'TBA' }}
+                    {% if event.end_at %}
+                    <br><small style="color:rgba(255,255,255,0.55)">until {{ event.end_at.strftime('%-I:%M %p') }}</small>
+                    {% endif %}
+                </span>
+            </div>
+            {% if event.location %}
+            <div class="event-meta-item">
+                <span class="label">Where</span>
+                <span class="value" data-testid="text-event-location">{{ event.location }}</span>
+            </div>
+            {% endif %}
+            <div class="event-meta-item">
+                <span class="label">Price</span>
+                <span class="value" data-testid="text-event-price">{{ event.price or 'Free' }}</span>
+            </div>
+            {% if event.capacity is not none %}
+            <div class="event-meta-item">
+                <span class="label">Capacity</span>
+                <span class="value" data-testid="text-event-capacity">
+                    {{ event.rsvp_count }} / {{ event.capacity }} reserved
+                </span>
+            </div>
+            {% endif %}
+        </div>
+
+        {% if event.description %}
+        <div class="event-description" data-testid="text-event-description">{{ event.description }}</div>
+        {% endif %}
+
+        {% set is_full = event.capacity is not none and event.rsvp_count >= event.capacity %}
+        {% if event.status != 'cancelled' and not is_full %}
+        <section class="rsvp-card" aria-labelledby="rsvp-heading">
+            <h2 id="rsvp-heading">Reserve your spot</h2>
+            <p class="helper">We'll email you a confirmation. No payment required at this step.</p>
+
+            <form class="rsvp-form" id="rsvpForm" data-testid="form-rsvp">
+                <div class="rsvp-row">
+                    <div>
+                        <label for="rsvp-name">Your name</label>
+                        <input id="rsvp-name" name="name" type="text" required data-testid="input-rsvp-name">
+                    </div>
+                    <div>
+                        <label for="rsvp-email">Email</label>
+                        <input id="rsvp-email" name="email" type="email" required data-testid="input-rsvp-email">
+                    </div>
+                </div>
+                <div class="rsvp-row">
+                    <div>
+                        <label for="rsvp-phone">Phone (optional)</label>
+                        <input id="rsvp-phone" name="phone" type="tel" data-testid="input-rsvp-phone">
+                    </div>
+                    <div>
+                        <label for="rsvp-guests">Number of guests</label>
+                        <input id="rsvp-guests" name="guests" type="number" min="1" max="20" value="1" data-testid="input-rsvp-guests">
+                    </div>
+                </div>
+                <div>
+                    <label for="rsvp-notes">Notes (optional)</label>
+                    <textarea id="rsvp-notes" name="notes" placeholder="Dietary requirements, questions, etc." data-testid="input-rsvp-notes"></textarea>
+                </div>
+                <button type="submit" class="rsvp-submit" data-testid="button-rsvp-submit">Confirm RSVP</button>
+                <div class="rsvp-message" id="rsvpMessage" role="status" aria-live="polite" data-testid="message-rsvp"></div>
+            </form>
+        </section>
+        {% elif is_full %}
+        <div class="status-banner" data-testid="banner-full" role="status">
+            This event is fully booked. Please check back in case spots open up.
+        </div>
+        {% endif %}
+
+        <nav class="footer-back" aria-label="Return to main site">
+            <a href="/" data-testid="link-back-to-site">&larr; Back to {{ settings.site_name or 'Home' }}</a>
+        </nav>
+    </article>
+
+    <script>
+        (function() {
+            var form = document.getElementById('rsvpForm');
+            if (!form) return;
+            var slug = {{ event.slug | tojson }};
+            var msg = document.getElementById('rsvpMessage');
+            var btn = form.querySelector('.rsvp-submit');
+
+            form.addEventListener('submit', async function(e) {
+                e.preventDefault();
+                msg.className = 'rsvp-message';
+                msg.textContent = '';
+                btn.disabled = true;
+                btn.textContent = 'Sending…';
+
+                var payload = {
+                    name: form.name.value.trim(),
+                    email: form.email.value.trim(),
+                    phone: form.phone.value.trim(),
+                    guests: parseInt(form.guests.value, 10) || 1,
+                    notes: form.notes.value.trim()
+                };
+                try {
+                    var res = await fetch('/api/events/' + encodeURIComponent(slug) + '/rsvp', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    var data = await res.json().catch(function() { return {}; });
+                    if (res.ok) {
+                        msg.className = 'rsvp-message success';
+                        msg.textContent = 'You\'re in! A confirmation is on its way to ' + payload.email + '.';
+                        form.reset();
+                    } else {
+                        msg.className = 'rsvp-message error';
+                        msg.textContent = data.error || 'Something went wrong. Please try again.';
+                    }
+                } catch (err) {
+                    msg.className = 'rsvp-message error';
+                    msg.textContent = 'Network error. Please try again.';
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = 'Confirm RSVP';
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

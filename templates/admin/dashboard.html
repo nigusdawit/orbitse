@@ -1084,6 +1084,10 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
       Blog
     </button>
+    <button class="tab-btn" onclick="switchTab('events', this); loadEvents();" data-testid="tab-events">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      Events
+    </button>
     <button class="tab-btn" onclick="switchTab('pages', this)" data-testid="tab-pages">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
       Saved Pages
@@ -3305,6 +3309,134 @@ TO CUSTOMIZE THIS DASHBOARD:
         <tr><td colspan="7" class="empty-state">Loading...</td></tr>
       </tbody>
     </table>
+  </div>
+
+
+  <!-- ========================================================================
+       TAB: EVENTS
+       ========================================================================
+       Manage events: create, edit, delete, view RSVPs. Cancelled and draft
+       events are kept here for reference; the public site shows only future
+       published + cancelled events.
+  -->
+  <div id="tab-events" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Events</h2>
+        <p>Create and manage upcoming events. Visitors can RSVP from the public event page.</p>
+      </div>
+      <button class="btn btn-primary" onclick="showEventForm()" data-testid="button-add-event">+ New Event</button>
+    </div>
+
+    <!-- Event form (hidden by default) -->
+    <div id="event-form-panel" class="form-panel" style="display:none;">
+      <h3 id="event-form-title">New Event</h3>
+      <input type="hidden" id="event-form-id">
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="event-title">Title</label>
+          <input type="text" id="event-title" placeholder="Summer Workshop" data-testid="input-event-title" oninput="autoGenerateEventSlug()">
+        </div>
+        <div class="form-group">
+          <label for="event-slug">Slug (URL-friendly)</label>
+          <input type="text" id="event-slug" placeholder="summer-workshop" data-testid="input-event-slug">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="event-start">Start date &amp; time</label>
+          <input type="datetime-local" id="event-start" data-testid="input-event-start">
+        </div>
+        <div class="form-group">
+          <label for="event-end">End date &amp; time (optional)</label>
+          <input type="datetime-local" id="event-end" data-testid="input-event-end">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="event-location">Location</label>
+          <input type="text" id="event-location" placeholder="123 Main St, or 'Online'" data-testid="input-event-location">
+        </div>
+        <div class="form-group">
+          <label for="event-price">Price label</label>
+          <input type="text" id="event-price" placeholder="Free, $25, etc." value="Free" data-testid="input-event-price">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="event-capacity">Capacity (leave empty for unlimited)</label>
+          <input type="number" id="event-capacity" placeholder="50" min="0" data-testid="input-event-capacity">
+        </div>
+        <div class="form-group">
+          <label for="event-status">Status</label>
+          <select id="event-status" data-testid="select-event-status">
+            <option value="draft">Draft (admin only)</option>
+            <option value="published" selected>Published</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="event-sort-order">Sort Order</label>
+          <input type="number" id="event-sort-order" placeholder="0" value="0" data-testid="input-event-sort">
+        </div>
+        <div class="form-group">
+          <label for="event-image">Cover Image URL</label>
+          <div style="display: flex; gap: 0.5rem;">
+            <input type="url" id="event-image" placeholder="https://images.unsplash.com/..." data-testid="input-event-image" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'event-image', mediaType:'image'})" data-testid="button-pick-event-image">Pick</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('event-image')" data-testid="button-upload-event-image">Upload</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="event-description">Description</label>
+          <textarea id="event-description" rows="5" placeholder="Tell people what to expect at this event..." data-testid="input-event-description"></textarea>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="hideEventForm()" data-testid="button-cancel-event">Cancel</button>
+        <button class="btn btn-primary" onclick="saveEvent()" data-testid="button-save-event">Save Event</button>
+      </div>
+    </div>
+
+    <!-- Events data table -->
+    <table class="data-table" id="events-table">
+      <thead>
+        <tr>
+          <th>Title</th>
+          <th>When</th>
+          <th>Status</th>
+          <th>RSVPs</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="events-tbody">
+        <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+
+    <!-- RSVP modal (toggled from action button on each event row) -->
+    <div id="rsvp-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:1000; align-items:center; justify-content:center; padding:2rem;">
+      <div style="background:#0d1320; border:1px solid rgba(255,255,255,0.1); border-radius:12px; max-width:720px; width:100%; max-height:80vh; display:flex; flex-direction:column;">
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:1.25rem 1.5rem; border-bottom:1px solid rgba(255,255,255,0.08);">
+          <h3 id="rsvp-modal-title" style="margin:0;">RSVPs</h3>
+          <button class="btn btn-secondary btn-sm" onclick="closeRsvpModal()" data-testid="button-close-rsvp-modal">Close</button>
+        </div>
+        <div id="rsvp-modal-body" style="padding:1rem 1.5rem; overflow-y:auto;">
+          <div class="empty-state">Loading...</div>
+        </div>
+      </div>
+    </div>
   </div>
 
 
@@ -7008,6 +7140,247 @@ TO CUSTOMIZE THIS DASHBOARD:
         }
       } catch (err) {
         showToast('Failed to delete post', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
+    EVENTS — CRUD + RSVP viewer
+    ========================================================================
+    Mirrors the blog admin tab. Uses datetime-local inputs for start/end
+    and converts them to ISO strings on save so the API stores tz-aware
+    timestamps. The RSVP modal is opened from the row-action button and
+    fetches the live list of RSVPs for that event.
+    */
+
+    /** Convert a datetime-local input value into an ISO string (or null). */
+    function eventDtToIso(val) {
+      if (!val) return null;
+      const d = new Date(val);
+      return isNaN(d.getTime()) ? null : d.toISOString();
+    }
+
+    /** Convert an ISO timestamp into the format datetime-local expects. */
+    function isoToEventDt(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return '';
+      // strip seconds + tz, get YYYY-MM-DDTHH:MM in local time
+      const pad = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+
+    /** Load all events and render the table. */
+    async function loadEvents() {
+      try {
+        const res = await fetch('/admin/api/events');
+        const events = await res.json();
+        const tbody = document.getElementById('events-tbody');
+
+        if (!events.length) {
+          tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No events yet. Click "+ New Event" to create one.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = events.map(ev => {
+          let badge;
+          if (ev.status === 'published') {
+            badge = '<span class="badge" style="background:rgba(34,197,94,0.2); color:#22c55e; border-color:rgba(34,197,94,0.3);">Published</span>';
+          } else if (ev.status === 'cancelled') {
+            badge = '<span class="badge" style="background:rgba(220,80,80,0.2); color:#ef4444; border-color:rgba(220,80,80,0.3);">Cancelled</span>';
+          } else {
+            badge = '<span class="badge" style="background:rgba(251,191,36,0.2); color:#fbbf24; border-color:rgba(251,191,36,0.3);">Draft</span>';
+          }
+          const whenStr = ev.start_at ? new Date(ev.start_at).toLocaleString() : '\u2014';
+          const rsvpStr = ev.capacity
+            ? `${ev.rsvp_count} / ${ev.capacity}`
+            : `${ev.rsvp_count}`;
+
+          return `
+            <tr data-id="${ev.id}">
+              <td><strong>${esc(ev.title)}</strong><br><small style="color:rgba(255,255,255,0.5);">${esc(ev.location || '')}</small></td>
+              <td>${whenStr}</td>
+              <td>${badge}</td>
+              <td><button class="btn btn-secondary btn-sm" onclick="viewEventRsvps(${ev.id}, ${JSON.stringify(ev.title).replace(/"/g, '&quot;')})" data-testid="button-view-rsvps-${ev.id}">${rsvpStr}</button></td>
+              <td class="cell-actions">
+                <button class="btn btn-secondary btn-sm" onclick='editEvent(${JSON.stringify(ev).replace(/'/g, "&#39;")})' data-testid="button-edit-event-${ev.id}">Edit</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteEvent(${ev.id})" data-testid="button-delete-event-${ev.id}">Delete</button>
+              </td>
+            </tr>
+          `;
+        }).join('');
+      } catch (err) {
+        showToast('Failed to load events', 'error');
+      }
+    }
+
+    /** Show the event form for adding a new event with empty fields. */
+    function showEventForm() {
+      document.getElementById('event-form-panel').style.display = 'block';
+      document.getElementById('event-form-title').textContent = 'New Event';
+      document.getElementById('event-form-id').value = '';
+      document.getElementById('event-title').value = '';
+      document.getElementById('event-slug').value = '';
+      document.getElementById('event-start').value = '';
+      document.getElementById('event-end').value = '';
+      document.getElementById('event-location').value = '';
+      document.getElementById('event-price').value = 'Free';
+      document.getElementById('event-capacity').value = '';
+      document.getElementById('event-status').value = 'published';
+      document.getElementById('event-sort-order').value = '0';
+      document.getElementById('event-image').value = '';
+      document.getElementById('event-description').value = '';
+    }
+
+    function hideEventForm() {
+      document.getElementById('event-form-panel').style.display = 'none';
+    }
+
+    function autoGenerateEventSlug() {
+      const title = document.getElementById('event-title').value;
+      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      document.getElementById('event-slug').value = slug;
+    }
+
+    function editEvent(ev) {
+      document.getElementById('event-form-panel').style.display = 'block';
+      document.getElementById('event-form-title').textContent = 'Edit: ' + ev.title;
+      document.getElementById('event-form-id').value = ev.id;
+      document.getElementById('event-title').value = ev.title || '';
+      document.getElementById('event-slug').value = ev.slug || '';
+      document.getElementById('event-start').value = isoToEventDt(ev.start_at);
+      document.getElementById('event-end').value = isoToEventDt(ev.end_at);
+      document.getElementById('event-location').value = ev.location || '';
+      document.getElementById('event-price').value = ev.price || 'Free';
+      document.getElementById('event-capacity').value = ev.capacity == null ? '' : ev.capacity;
+      document.getElementById('event-status').value = ev.status || 'published';
+      document.getElementById('event-sort-order').value = ev.sort_order || 0;
+      document.getElementById('event-image').value = ev.image_url || '';
+      document.getElementById('event-description').value = ev.description || '';
+    }
+
+    async function saveEvent() {
+      const id = document.getElementById('event-form-id').value;
+      const capRaw = document.getElementById('event-capacity').value;
+      const data = {
+        title: document.getElementById('event-title').value,
+        slug: document.getElementById('event-slug').value,
+        start_at: eventDtToIso(document.getElementById('event-start').value),
+        end_at: eventDtToIso(document.getElementById('event-end').value),
+        location: document.getElementById('event-location').value,
+        price: document.getElementById('event-price').value,
+        capacity: capRaw === '' ? null : parseInt(capRaw, 10),
+        status: document.getElementById('event-status').value,
+        sort_order: parseInt(document.getElementById('event-sort-order').value) || 0,
+        image_url: document.getElementById('event-image').value,
+        description: document.getElementById('event-description').value
+      };
+
+      if (!data.title || !data.slug) {
+        showToast('Title and slug are required', 'error');
+        return;
+      }
+      if (!data.start_at) {
+        showToast('Start date/time is required', 'error');
+        return;
+      }
+
+      try {
+        const url = id ? `/admin/api/events/${id}` : '/admin/api/events';
+        const method = id ? 'PUT' : 'POST';
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+
+        if (res.ok) {
+          showToast(id ? 'Event updated!' : 'Event created!');
+          hideEventForm();
+          loadEvents();
+        } else {
+          const err = await res.json().catch(() => ({}));
+          showToast(err.error || 'Failed to save event', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to save event', 'error');
+      }
+    }
+
+    async function deleteEvent(eventId) {
+      if (!confirm('Delete this event? All RSVPs will also be removed. This cannot be undone.')) return;
+      try {
+        const res = await fetch(`/admin/api/events/${eventId}`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('Event deleted');
+          loadEvents();
+        } else {
+          showToast('Failed to delete event', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to delete event', 'error');
+      }
+    }
+
+    /** Open the RSVP modal and load the RSVP list for one event. */
+    async function viewEventRsvps(eventId, eventTitle) {
+      const modal = document.getElementById('rsvp-modal');
+      const titleEl = document.getElementById('rsvp-modal-title');
+      const body = document.getElementById('rsvp-modal-body');
+      titleEl.textContent = 'RSVPs — ' + eventTitle;
+      body.innerHTML = '<div class="empty-state">Loading...</div>';
+      modal.style.display = 'flex';
+
+      try {
+        const res = await fetch(`/admin/api/events/${eventId}/rsvps`);
+        const rsvps = await res.json();
+        if (!rsvps.length) {
+          body.innerHTML = '<div class="empty-state">No RSVPs yet for this event.</div>';
+          return;
+        }
+
+        body.innerHTML = `
+          <table class="data-table">
+            <thead>
+              <tr><th>Name</th><th>Email</th><th>Phone</th><th>Guests</th><th>Notes</th><th></th></tr>
+            </thead>
+            <tbody>
+              ${rsvps.map(r => `
+                <tr>
+                  <td><strong>${esc(r.name)}</strong></td>
+                  <td><a href="mailto:${esc(r.email)}" style="color:#c9a96e;">${esc(r.email)}</a></td>
+                  <td>${esc(r.phone || '\u2014')}</td>
+                  <td style="text-align:center;">${r.guests}</td>
+                  <td><small style="color:rgba(255,255,255,0.6);">${esc(r.notes || '\u2014')}</small></td>
+                  <td><button class="btn btn-danger btn-sm" onclick="deleteRsvp(${r.id}, ${eventId}, ${JSON.stringify(eventTitle).replace(/"/g, '&quot;')})" data-testid="button-delete-rsvp-${r.id}">Remove</button></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+      } catch (err) {
+        body.innerHTML = '<div class="empty-state" style="color:#ef4444;">Failed to load RSVPs.</div>';
+      }
+    }
+
+    function closeRsvpModal() {
+      document.getElementById('rsvp-modal').style.display = 'none';
+    }
+
+    async function deleteRsvp(rsvpId, eventId, eventTitle) {
+      if (!confirm('Remove this RSVP?')) return;
+      try {
+        const res = await fetch(`/admin/api/event-rsvps/${rsvpId}`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('RSVP removed');
+          viewEventRsvps(eventId, eventTitle);
+          loadEvents();
+        } else {
+          showToast('Failed to remove RSVP', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to remove RSVP', 'error');
       }
     }
 
