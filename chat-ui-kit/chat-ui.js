@@ -983,6 +983,32 @@ var ChatUI = (function () {
         break;
       }
 
+      /* showSavedPage — Reuse a previously-published AI page instead of
+         regenerating its HTML from scratch. The AI hands back a slug from
+         the page library; we fetch the saved markup and render it in the
+         canvas, exactly like a fresh generateHTML — but instant and free
+         of model token cost. */
+      case 'showSavedPage': {
+        var savedSlug = cmd.slug;
+        if (!savedSlug) break;
+        fetch('/api/generated-pages/by-slug/' + encodeURIComponent(savedSlug))
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (data) {
+            if (data && data.html) {
+              openFullscreenCanvas(data.html);
+              openSidePanel();
+            } else {
+              console.warn('Saved page not found for slug:', savedSlug);
+              chatAddMessage('agent', "I couldn't pull up that saved page just now — let me put something together for you instead.");
+            }
+          })
+          .catch(function (err) {
+            console.warn('Could not load saved page:', err);
+            chatAddMessage('agent', "I couldn't pull up that saved page just now — let me put something together for you instead.");
+          });
+        break;
+      }
+
       /* generatePage — Render an immersive animated full page in a sandboxed
          iframe with FULL CSS freedom: @keyframes, background-image, parallax,
          scroll-triggered animations. The site's theme is auto-injected. */
