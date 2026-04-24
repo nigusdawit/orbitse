@@ -731,6 +731,9 @@ def init_db():
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS seo_twitter_handle TEXT DEFAULT ''",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS seo_canonical_url TEXT DEFAULT ''",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS seo_robots TEXT DEFAULT 'index, follow'",
+                # --- Media Library: extend uploaded_images to support video & audio ---
+                "ALTER TABLE uploaded_images ADD COLUMN IF NOT EXISTS media_type VARCHAR(10) NOT NULL DEFAULT 'image'",
+                "ALTER TABLE uploaded_images ADD COLUMN IF NOT EXISTS mime_type TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS view_mode TEXT NOT NULL DEFAULT 'sections'",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_scale REAL NOT NULL DEFAULT 1.0",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_gap REAL NOT NULL DEFAULT 2.5",
@@ -3619,7 +3622,31 @@ def admin_get_default_prompt():
 # --------------- Image Upload ---------------
 
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+# Hard cap on a single uploaded file. Videos can be large, but we don't
+# want a hostile upload to fill the disk in one shot. 100 MB is enough
+# for short product/marketing videos and high-quality MP3s.
+app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024
 ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp"}
+# Allowed media extensions for the general Media Library — covers images,
+# short videos, and audio clips that businesses commonly need (logos,
+# product photos, marketing clips, podcast episodes, voice intros).
+ALLOWED_VIDEO_EXTENSIONS = {"mp4", "webm", "mov", "m4v"}
+ALLOWED_AUDIO_EXTENSIONS = {"mp3", "wav", "ogg", "m4a", "aac"}
+ALLOWED_MEDIA_EXTENSIONS = ALLOWED_EXTENSIONS | ALLOWED_VIDEO_EXTENSIONS | ALLOWED_AUDIO_EXTENSIONS
+
+def _classify_media(ext):
+    """Return ('image'|'video'|'audio'|None, mime_type) for an extension."""
+    ext = (ext or "").lower()
+    image_mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                  "gif": "image/gif", "webp": "image/webp"}
+    video_mime = {"mp4": "video/mp4", "webm": "video/webm", "mov": "video/quicktime",
+                  "m4v": "video/x-m4v"}
+    audio_mime = {"mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg",
+                  "m4a": "audio/mp4", "aac": "audio/aac"}
+    if ext in image_mime: return ("image", image_mime[ext])
+    if ext in video_mime: return ("video", video_mime[ext])
+    if ext in audio_mime: return ("audio", audio_mime[ext])
+    return (None, None)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 
@@ -3645,13 +3672,107 @@ def admin_upload_image():
     unique_name = f"{secrets.token_hex(8)}.{ext}"
     f.save(os.path.join(UPLOAD_FOLDER, unique_name))
     file_size = os.path.getsize(os.path.join(UPLOAD_FOLDER, unique_name))
+    _, mime = _classify_media(ext)
 
     execute_db(
-        "INSERT INTO uploaded_images (filename, original_name, file_size) VALUES (%s, %s, %s) RETURNING id",
-        (unique_name, f.filename, file_size)
+        "INSERT INTO uploaded_images (filename, original_name, file_size, media_type, mime_type) "
+        "VALUES (%s, %s, %s, 'image', %s) RETURNING id",
+        (unique_name, f.filename, file_size, mime or "")
     )
 
     return jsonify({"url": f"/uploads/{unique_name}", "filename": unique_name})
+
+
+# --------------- Media Library (images, videos, audio) ---------------
+
+@app.route("/admin/api/media", methods=["GET"])
+@admin_required
+def admin_list_media():
+    """GET /admin/api/media — List all uploaded media. Optional ?type=image|video|audio filter."""
+    media_type = (request.args.get("type") or "").strip().lower()
+    if media_type in ("image", "video", "audio"):
+        rows = query_db(
+            "SELECT id, filename, original_name, file_size, media_type, mime_type, uploaded_at "
+            "FROM uploaded_images WHERE media_type = %s ORDER BY uploaded_at DESC",
+            (media_type,)
+        )
+    else:
+        rows = query_db(
+            "SELECT id, filename, original_name, file_size, media_type, mime_type, uploaded_at "
+            "FROM uploaded_images ORDER BY uploaded_at DESC"
+        )
+    # Add public URL for convenience.
+    for r in rows:
+        r["url"] = f"/uploads/{r['filename']}"
+        if r.get("uploaded_at"):
+            r["uploaded_at"] = r["uploaded_at"].isoformat()
+    return jsonify(rows)
+
+
+@app.route("/admin/api/media/upload", methods=["POST"])
+@admin_required
+def admin_upload_media():
+    """POST /admin/api/media/upload — Upload one or more media files (images, videos, audio).
+    Accepts multipart 'files' (multiple) or 'file' (single). Returns list of saved media records."""
+    files = request.files.getlist("files") or []
+    if not files and "file" in request.files:
+        files = [request.files["file"]]
+    if not files:
+        return jsonify({"error": "No files provided"}), 400
+
+    saved = []
+    errors = []
+    for f in files:
+        if not f or not f.filename:
+            continue
+        ext = f.filename.rsplit(".", 1)[-1].lower() if "." in f.filename else ""
+        if ext not in ALLOWED_MEDIA_EXTENSIONS:
+            errors.append({"filename": f.filename, "error": f".{ext} not allowed"})
+            continue
+        media_type, mime = _classify_media(ext)
+        if not media_type:
+            errors.append({"filename": f.filename, "error": "Unknown media type"})
+            continue
+        unique_name = f"{secrets.token_hex(8)}.{ext}"
+        path = os.path.join(UPLOAD_FOLDER, unique_name)
+        f.save(path)
+        size = os.path.getsize(path)
+        row = query_db(
+            "INSERT INTO uploaded_images (filename, original_name, file_size, media_type, mime_type) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING id, uploaded_at",
+            (unique_name, f.filename, size, media_type, mime),
+            fetchone=True
+        )
+        saved.append({
+            "id": row["id"],
+            "filename": unique_name,
+            "original_name": f.filename,
+            "file_size": size,
+            "media_type": media_type,
+            "mime_type": mime,
+            "url": f"/uploads/{unique_name}",
+            "uploaded_at": row["uploaded_at"].isoformat() if row.get("uploaded_at") else None,
+        })
+
+    return jsonify({"saved": saved, "errors": errors})
+
+
+@app.route("/admin/api/media/<int:media_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_media(media_id):
+    """DELETE /admin/api/media/<id> — Remove a media file from disk and DB."""
+    row = query_db("SELECT filename FROM uploaded_images WHERE id = %s", (media_id,), fetchone=True)
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    # Best-effort file removal — DB delete is the source of truth.
+    try:
+        path = os.path.join(UPLOAD_FOLDER, row["filename"])
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
+    execute_db("DELETE FROM uploaded_images WHERE id = %s", (media_id,))
+    return jsonify({"ok": True})
 
 
 # --------------- Drag-and-Drop Reorder ---------------

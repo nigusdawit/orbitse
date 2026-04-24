@@ -880,6 +880,125 @@ TO CUSTOMIZE THIS DASHBOARD:
       border-radius: 0.375rem;
       margin: 0.75rem 0;
     }
+
+    /* ---------- Media Library ---------- */
+    .media-filter-pill {
+      padding: 0.4rem 0.85rem;
+      border-radius: 999px;
+      border: 1px solid var(--admin-border);
+      background: transparent;
+      color: var(--admin-text-muted);
+      font-size: 0.8125rem;
+      cursor: pointer;
+      transition: all 0.12s ease;
+    }
+    .media-filter-pill:hover {
+      color: var(--admin-text);
+      border-color: rgba(255,255,255,0.3);
+    }
+    .media-filter-pill.active {
+      background: rgba(255,255,255,0.12);
+      color: #fff;
+      border-color: rgba(255,255,255,0.25);
+    }
+    #media-dropzone.drag-over {
+      border-color: rgba(120,180,255,0.7);
+      background: rgba(120,180,255,0.08);
+      color: var(--admin-text);
+    }
+    .media-card {
+      background: var(--admin-bg);
+      border: 1px solid var(--admin-border);
+      border-radius: 10px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      transition: transform 0.12s ease, border-color 0.12s ease;
+    }
+    .media-card:hover {
+      border-color: rgba(255,255,255,0.25);
+      transform: translateY(-2px);
+    }
+    .media-card-preview {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      background: #0a0a0f;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      position: relative;
+    }
+    .media-card-preview img,
+    .media-card-preview video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .media-card-preview .audio-icon {
+      font-size: 2.5rem;
+      color: var(--admin-text-muted);
+    }
+    .media-card-preview audio {
+      position: absolute;
+      bottom: 0.5rem;
+      left: 0.5rem;
+      right: 0.5rem;
+      width: calc(100% - 1rem);
+      height: 32px;
+    }
+    .media-card-meta {
+      padding: 0.5rem 0.625rem;
+      font-size: 0.75rem;
+      color: var(--admin-text-muted);
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .media-card-name {
+      color: var(--admin-text);
+      font-size: 0.8125rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .media-card-actions {
+      display: flex;
+      gap: 0.25rem;
+      padding: 0 0.5rem 0.5rem;
+    }
+    .media-card-actions button {
+      flex: 1;
+      padding: 0.35rem 0.5rem;
+      font-size: 0.75rem;
+      border-radius: 5px;
+      border: 1px solid var(--admin-border);
+      background: transparent;
+      color: var(--admin-text-muted);
+      cursor: pointer;
+      transition: all 0.12s ease;
+    }
+    .media-card-actions button:hover {
+      color: #fff;
+      border-color: rgba(255,255,255,0.3);
+    }
+    .media-card-actions button.delete:hover {
+      color: #fca5a5;
+      border-color: rgba(239,68,68,0.4);
+    }
+    .media-type-badge {
+      position: absolute;
+      top: 0.4rem;
+      left: 0.4rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(0,0,0,0.6);
+      color: #fff;
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
   </style>
 </head>
 
@@ -968,6 +1087,10 @@ TO CUSTOMIZE THIS DASHBOARD:
     <button class="tab-btn" onclick="switchTab('pages', this)" data-testid="tab-pages">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
       Saved Pages
+    </button>
+    <button class="tab-btn" onclick="switchTab('media', this); loadMediaLibrary();" data-testid="tab-media">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+      Media Library
     </button>
     <button class="tab-btn" onclick="switchTab('sphere', this)" data-testid="tab-sphere">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
@@ -3159,6 +3282,63 @@ TO CUSTOMIZE THIS DASHBOARD:
           <tr><td colspan="5" style="text-align:center; color:#888;">Loading…</td></tr>
         </tbody>
       </table>
+    </div>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: MEDIA LIBRARY
+  ========================================================================
+  Browse, upload, and manage all uploaded media (images, videos, audio).
+  -->
+  <div id="tab-media" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Media Library</h2>
+        <p>All uploaded images, videos, and audio in one place. Drag &amp; drop to upload.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <input type="file" id="media-file-input" multiple
+               accept="image/*,video/*,audio/*" style="display:none;"
+               onchange="uploadMediaFiles(this.files); this.value='';">
+        <button class="btn-primary" onclick="document.getElementById('media-file-input').click();" data-testid="button-media-upload">
+          + Upload files
+        </button>
+      </div>
+    </div>
+
+    <!-- Filter pills -->
+    <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:1rem;" id="media-filter-bar">
+      <button class="media-filter-pill active" data-type="all" aria-pressed="true" onclick="filterMedia('all', this)" data-testid="filter-media-all">All</button>
+      <button class="media-filter-pill" data-type="image" aria-pressed="false" onclick="filterMedia('image', this)" data-testid="filter-media-image">Images</button>
+      <button class="media-filter-pill" data-type="video" aria-pressed="false" onclick="filterMedia('video', this)" data-testid="filter-media-video">Videos</button>
+      <button class="media-filter-pill" data-type="audio" aria-pressed="false" onclick="filterMedia('audio', this)" data-testid="filter-media-audio">Audio</button>
+      <input type="search" id="media-search" placeholder="Search by name…"
+             oninput="renderMediaGrid()"
+             style="margin-left:auto; min-width:220px; padding:0.5rem 0.75rem; border:1px solid var(--admin-border); border-radius:6px; background:var(--admin-bg); color:var(--admin-text);"
+             data-testid="input-media-search">
+    </div>
+
+    <!-- Drag-drop zone (becomes highlighted when dragging files over the page) -->
+    <div id="media-dropzone"
+         ondragover="event.preventDefault(); this.classList.add('drag-over');"
+         ondragleave="this.classList.remove('drag-over');"
+         ondrop="handleMediaDrop(event);"
+         style="border:2px dashed var(--admin-border); border-radius:10px; padding:1.25rem; text-align:center; color:var(--admin-text-muted); margin-bottom:1rem; transition:all 0.15s ease;"
+         data-testid="dropzone-media">
+      Drop files here to upload — images, videos (mp4/webm/mov), or audio (mp3/wav/ogg)
+    </div>
+
+    <!-- Upload progress (hidden until uploads start) -->
+    <div id="media-upload-progress" style="display:none; padding:0.75rem 1rem; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:8px; margin-bottom:1rem;"></div>
+
+    <!-- Counts summary -->
+    <div id="media-counts" style="color:var(--admin-text-muted); font-size:0.875rem; margin-bottom:0.75rem;"></div>
+
+    <!-- Grid -->
+    <div id="media-grid" data-testid="grid-media"
+         style="display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:1rem;">
+      <div style="grid-column:1/-1; text-align:center; color:var(--admin-text-muted); padding:2rem;">Loading…</div>
     </div>
   </div>
 
@@ -7022,6 +7202,200 @@ TO CUSTOMIZE THIS DASHBOARD:
     loadVoiceSettings();
     loadVoiceIntros();
     loadVoiceUsage();
+
+    /*
+    ========================================================================
+    MEDIA LIBRARY
+    ========================================================================
+    Browse, upload (drag-drop or button), filter, copy URL, and delete
+    uploaded media (images, videos, audio).
+    */
+    let mediaItems = [];
+    let mediaFilter = 'all';
+
+    async function loadMediaLibrary() {
+      try {
+        const res = await fetch('/admin/api/media');
+        if (!res.ok) throw new Error('Failed to load media');
+        mediaItems = await res.json();
+        renderMediaGrid();
+      } catch (err) {
+        document.getElementById('media-grid').innerHTML =
+          '<div style="grid-column:1/-1; text-align:center; color:#fca5a5; padding:2rem;">Failed to load media. ' + (err.message || '') + '</div>';
+      }
+    }
+
+    function filterMedia(type, btn) {
+      mediaFilter = type;
+      document.querySelectorAll('#media-filter-bar .media-filter-pill').forEach(b => {
+        b.classList.remove('active');
+        b.setAttribute('aria-pressed', 'false');
+      });
+      if (btn) {
+        btn.classList.add('active');
+        btn.setAttribute('aria-pressed', 'true');
+      }
+      renderMediaGrid();
+    }
+
+    function _humanFileSize(bytes) {
+      if (!bytes && bytes !== 0) return '';
+      const u = ['B','KB','MB','GB'];
+      let i = 0, n = bytes;
+      while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+      return (i === 0 ? n.toFixed(0) : n.toFixed(1)) + ' ' + u[i];
+    }
+
+    function _escapeAttr(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function renderMediaGrid() {
+      const grid = document.getElementById('media-grid');
+      const counts = document.getElementById('media-counts');
+      const search = (document.getElementById('media-search')?.value || '').toLowerCase().trim();
+
+      let items = mediaItems;
+      if (mediaFilter !== 'all') items = items.filter(m => m.media_type === mediaFilter);
+      if (search) items = items.filter(m =>
+        (m.original_name || '').toLowerCase().includes(search) ||
+        (m.filename || '').toLowerCase().includes(search)
+      );
+
+      // Counts summary across all items (not just filtered).
+      const totals = mediaItems.reduce((acc, m) => {
+        acc.total++;
+        acc[m.media_type] = (acc[m.media_type] || 0) + 1;
+        return acc;
+      }, { total: 0 });
+      counts.textContent =
+        `${totals.total} total · ${totals.image || 0} image${totals.image === 1 ? '' : 's'}` +
+        ` · ${totals.video || 0} video${totals.video === 1 ? '' : 's'}` +
+        ` · ${totals.audio || 0} audio` +
+        (items.length !== mediaItems.length ? ` · showing ${items.length}` : '');
+
+      if (!items.length) {
+        grid.innerHTML = '<div style="grid-column:1/-1; text-align:center; color:var(--admin-text-muted); padding:2rem;">' +
+          (mediaItems.length ? 'No media matches the current filter.' : 'No media uploaded yet. Drag files into the box above to get started.') +
+          '</div>';
+        return;
+      }
+
+      grid.innerHTML = items.map(m => {
+        const safeUrl = _escapeAttr(m.url);
+        const safeName = _escapeAttr(m.original_name || m.filename);
+        let preview = '';
+        if (m.media_type === 'image') {
+          preview = `<img src="${safeUrl}" alt="${safeName}" loading="lazy">`;
+        } else if (m.media_type === 'video') {
+          preview = `<video src="${safeUrl}" muted preload="metadata" onmouseover="this.play()" onmouseout="this.pause()"></video>`;
+        } else {
+          preview = `<div class="audio-icon">♪</div><audio src="${safeUrl}" controls preload="none"></audio>`;
+        }
+        return `
+          <div class="media-card" data-testid="card-media-${m.id}">
+            <div class="media-card-preview">
+              <span class="media-type-badge">${m.media_type}</span>
+              ${preview}
+            </div>
+            <div class="media-card-meta">
+              <div class="media-card-name" title="${safeName}" data-testid="text-media-name-${m.id}">${safeName}</div>
+              <div>${_humanFileSize(m.file_size)}</div>
+            </div>
+            <div class="media-card-actions">
+              <button onclick="copyMediaUrl('${safeUrl}', this)" data-testid="button-copy-media-${m.id}">Copy URL</button>
+              <button class="delete" onclick="deleteMediaItem(${m.id})" data-testid="button-delete-media-${m.id}">Delete</button>
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    async function copyMediaUrl(url, btn) {
+      // Resolve to absolute URL so it works when pasted elsewhere.
+      const absolute = new URL(url, window.location.origin).href;
+      try {
+        await navigator.clipboard.writeText(absolute);
+        const orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = orig; }, 1200);
+      } catch {
+        showToast('Could not copy URL', 'error');
+      }
+    }
+
+    async function deleteMediaItem(id) {
+      if (!confirm('Delete this file? This cannot be undone.')) return;
+      try {
+        const res = await fetch('/admin/api/media/' + id, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Delete failed');
+        mediaItems = mediaItems.filter(m => m.id !== id);
+        renderMediaGrid();
+        showToast('File deleted');
+      } catch (err) {
+        showToast(err.message || 'Delete failed', 'error');
+      }
+    }
+
+    function handleMediaDrop(ev) {
+      ev.preventDefault();
+      ev.currentTarget.classList.remove('drag-over');
+      const files = ev.dataTransfer?.files;
+      if (files && files.length) uploadMediaFiles(files);
+    }
+
+    async function uploadMediaFiles(files) {
+      if (!files || !files.length) return;
+      const progress = document.getElementById('media-upload-progress');
+      const list = Array.from(files);
+      let done = 0, failed = 0;
+
+      const update = () => {
+        progress.style.display = 'block';
+        progress.innerHTML = `Uploading ${done + failed} of ${list.length}…` +
+          (failed ? ` <span style="color:#fca5a5;">(${failed} failed)</span>` : '');
+      };
+      update();
+
+      // Upload sequentially to keep memory low and surface per-file errors clearly.
+      for (const file of list) {
+        const fd = new FormData();
+        fd.append('files', file);
+        try {
+          const res = await fetch('/admin/api/media/upload', { method: 'POST', body: fd });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            failed++;
+            showToast(`${file.name}: ${data.error || 'upload failed'}`, 'error');
+          } else if (data.errors && data.errors.length) {
+            failed++;
+            showToast(`${file.name}: ${data.errors[0].error}`, 'error');
+          } else {
+            done++;
+            // Prepend new items to local cache for instant feedback.
+            (data.saved || []).forEach(s => mediaItems.unshift(s));
+          }
+        } catch (err) {
+          failed++;
+          showToast(`${file.name}: ${err.message || 'upload failed'}`, 'error');
+        }
+        update();
+        renderMediaGrid();
+      }
+
+      setTimeout(() => { progress.style.display = 'none'; }, 1500);
+      if (done) showToast(`Uploaded ${done} file${done === 1 ? '' : 's'}`);
+    }
+
+    /* Block default browser behavior of opening files dropped anywhere on the
+       page — without this, dragging a file into the wrong spot would navigate
+       away from the dashboard. */
+    window.addEventListener('dragover', e => e.preventDefault());
+    window.addEventListener('drop', e => {
+      // Only swallow if NOT dropped on our explicit dropzone.
+      if (!e.target.closest || !e.target.closest('#media-dropzone')) e.preventDefault();
+    });
 
   </script>
   </main>
