@@ -4159,8 +4159,8 @@ html[data-scroll-mode="smooth"] .snap-section {
   background: #0c1220;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.5s cubic-bezier(0.22, 1, 0.36, 1),
-              transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: opacity 0.85s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.85s cubic-bezier(0.22, 1, 0.36, 1);
   transform-origin: 0% 100%;
   overflow: hidden;
   will-change: transform, opacity;
@@ -4172,7 +4172,8 @@ html[data-scroll-mode="smooth"] .snap-section {
 }
 
 /* Collapse animation: when the visitor hits Back, the overlay shrinks
-   toward the bottom-left page-archive bubble before clearing. */
+   toward the bottom-left page-archive bubble before clearing.
+   Slowed down so the motion reads as intentional, not as a glitch. */
 .immersive-page-overlay.collapsing {
   pointer-events: none;
   opacity: 0;
