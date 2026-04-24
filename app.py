@@ -929,12 +929,29 @@ app.json_encoder = CustomJSONEncoder
 def admin_required(f):
     """
     Decorator that protects a route with admin authentication.
-    Redirects to the login page if the user isn't logged in.
-    Use this on any route that should be admin-only.
+
+    For HTML page routes: redirects to the login page if not logged in
+    (so the user sees the familiar password form).
+
+    For JSON API routes (anything under /admin/api/* or any request that
+    explicitly accepts JSON / sends JSON / is XHR): returns a JSON 401
+    instead of a redirect. Without this the browser fetch silently
+    follows the 302 to /admin/login, the response body is HTML, and the
+    dashboard JS shows a generic "Could not save settings" error after
+    the admin's session expires — extremely confusing for the user.
+    Returning a real 401 lets the dashboard prompt for re-login cleanly.
     """
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if not session.get("admin_logged_in"):
+            wants_json = (
+                request.path.startswith("/admin/api/")
+                or request.is_json
+                or "application/json" in (request.headers.get("Accept") or "")
+                or request.headers.get("X-Requested-With") == "XMLHttpRequest"
+            )
+            if wants_json:
+                return jsonify({"error": "Admin session expired. Please log in again.", "auth_required": True}), 401
             return redirect(url_for("admin_login"))
         return f(*args, **kwargs)
     return decorated_function

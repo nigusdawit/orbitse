@@ -503,6 +503,27 @@ TO CUSTOMIZE THIS DASHBOARD:
       to { opacity: 1; transform: translateY(0); }
     }
 
+    /* Spinner used inside busy buttons (saving, generating, loading
+       previews). Spins the unicode glyph in the button label so admins
+       can tell something is happening — without this the button just
+       went grey and silent for the 1–3s it takes the API to respond. */
+    @keyframes btnSpin {
+      from { transform: rotate(0deg); }
+      to   { transform: rotate(360deg); }
+    }
+    .btn-spinner {
+      display: inline-block;
+      animation: btnSpin 0.9s linear infinite;
+      margin-right: 0.25rem;
+    }
+    /* Disabled buttons (used when busy) shouldn't look interactive. */
+    .btn:disabled,
+    .btn[disabled] {
+      opacity: 0.65;
+      cursor: progress;
+      pointer-events: none;
+    }
+
     .badge {
       display: inline-block;
       padding: 0.125rem 0.5rem;
@@ -2164,7 +2185,7 @@ TO CUSTOMIZE THIS DASHBOARD:
               <option value="nova">Nova (warm female)</option>
               <option value="shimmer">Shimmer (soft female)</option>
             </select>
-            <button type="button" class="btn btn-secondary" onclick="previewOpenAIVoice()" data-testid="button-preview-openai-voice" title="Listen to a sample of this voice">▶ Listen</button>
+            <button type="button" class="btn btn-secondary" onclick="previewOpenAIVoice(this)" data-testid="button-preview-openai-voice" title="Listen to a sample of this voice">▶ Listen</button>
           </div>
         </div>
         <div class="form-group">
@@ -2187,7 +2208,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       <audio id="voice-preview-player" preload="none" style="display:none;"></audio>
 
       <div class="form-actions">
-        <button class="btn btn-primary" onclick="saveVoiceSettings()" data-testid="button-save-voice-settings">Save Voice Settings</button>
+        <button class="btn btn-primary" onclick="saveVoiceSettings(this)" data-testid="button-save-voice-settings">Save Voice Settings</button>
       </div>
     </div>
 
@@ -2229,27 +2250,36 @@ TO CUSTOMIZE THIS DASHBOARD:
         </div>
       </div>
 
-      <!-- ElevenLabs voice picker — only visible when ElevenLabs is selected -->
+      <!-- ElevenLabs voice picker — only visible when ElevenLabs is selected.
+           Layout: voice + model on one row (equal grid cells), then a small
+           action bar with Listen + Refresh below. We put the buttons on
+           their own line because long ElevenLabs voice names ("Sarah —
+           Mature, Reassuring, Confident — american, young, professional…")
+           overflow the dropdown and would push inline buttons out of
+           alignment with the model column. -->
       <div id="elevenlabs-config" style="display:none; padding: 1rem; border-radius: 8px; background: rgba(201,169,110,0.05); border: 1px solid rgba(201,169,110,0.2); margin-top: 0.5rem;">
-        <div class="form-row" style="margin-bottom: 0.5rem;">
-          <div class="form-group" style="flex: 2;">
+        <div class="form-row" style="margin-bottom: 0.75rem;">
+          <div class="form-group">
             <label for="voice-elevenlabs-voice">ElevenLabs Voice</label>
-            <div style="display:flex; gap:0.5rem; align-items:stretch;">
-              <select id="voice-elevenlabs-voice" data-testid="select-elevenlabs-voice" style="flex:1;">
-                <option value="">— Loading voices…</option>
-              </select>
-              <button type="button" class="btn btn-secondary" onclick="previewElevenLabsVoice()" data-testid="button-preview-elevenlabs" title="Listen to a sample of this voice">▶ Listen</button>
-              <button type="button" class="btn btn-secondary" onclick="loadElevenLabsVoices(true)" data-testid="button-refresh-elevenlabs" title="Refresh voice list from ElevenLabs">↻</button>
-            </div>
+            <select id="voice-elevenlabs-voice" data-testid="select-elevenlabs-voice" style="min-width:0; width:100%;">
+              <option value="">— Loading voices…</option>
+            </select>
           </div>
           <div class="form-group">
             <label for="voice-elevenlabs-model">ElevenLabs Model</label>
-            <select id="voice-elevenlabs-model" data-testid="select-elevenlabs-model">
+            <select id="voice-elevenlabs-model" data-testid="select-elevenlabs-model" style="min-width:0; width:100%;">
               <option value="eleven_turbo_v2_5">Turbo v2.5 (fast, low latency)</option>
               <option value="eleven_multilingual_v2">Multilingual v2 (29 languages)</option>
               <option value="eleven_monolingual_v1">Monolingual v1 (legacy)</option>
             </select>
           </div>
+        </div>
+        <!-- Action bar: preview + refresh, kept on their own row so they
+             never get squashed by long voice names. flex-wrap so they
+             stack on narrow viewports. -->
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center; margin-bottom: 0.5rem;">
+          <button type="button" class="btn btn-secondary" onclick="previewElevenLabsVoice(this)" data-testid="button-preview-elevenlabs" title="Listen to a sample of this voice">▶ Listen</button>
+          <button type="button" class="btn btn-secondary" onclick="loadElevenLabsVoices(true, this)" data-testid="button-refresh-elevenlabs" title="Refresh voice list from your ElevenLabs account">↻ Refresh voices</button>
         </div>
         <p class="help-text" style="margin: 0; font-size: 0.8rem; color: var(--admin-text-muted);" id="elevenlabs-status-text">Loading…</p>
       </div>
@@ -6494,7 +6524,42 @@ TO CUSTOMIZE THIS DASHBOARD:
       }
     }
 
-    async function saveVoiceSettings() {
+    /* Reusable busy-state helper for buttons. Disables the button,
+       swaps the label to a spinner-prefixed loading message, and
+       returns a function that restores the original state. Centralises
+       the pattern so every async admin action gives clear feedback
+       (the previous version silently fired requests with no UI hint). */
+    function setButtonBusy(btn, loadingLabel) {
+      if (!btn) return () => {};
+      const originalHtml = btn.innerHTML;
+      const originalDisabled = btn.disabled;
+      btn.disabled = true;
+      btn.innerHTML = `<span class="btn-spinner" aria-hidden="true">⟳</span> ${loadingLabel}`;
+      return () => {
+        btn.disabled = originalDisabled;
+        btn.innerHTML = originalHtml;
+      };
+    }
+
+    /* Centralised admin-API fetch wrapper. Detects the 401 returned by
+       admin_required when the session has expired, shows a clear toast,
+       and bounces the admin to the login screen. Without this, the JS
+       saw 302 → HTML body → JSON.parse threw → user got the very
+       generic "Could not save voice settings" toast instead of being
+       told to log back in. */
+    async function adminFetch(url, options) {
+      const res = await fetch(url, options || {});
+      if (res.status === 401) {
+        showToast('Your admin session expired. Redirecting to login…', 'error');
+        setTimeout(() => { window.location.href = '/admin/login'; }, 1200);
+        const err = new Error('Admin session expired');
+        err.authExpired = true;
+        throw err;
+      }
+      return res;
+    }
+
+    async function saveVoiceSettings(btn) {
       const payload = {
         enabled_intros: document.getElementById('voice-enabled-intros').checked,
         enabled_visitor_voice: document.getElementById('voice-enabled-visitor').checked,
@@ -6509,8 +6574,9 @@ TO CUSTOMIZE THIS DASHBOARD:
         elevenlabs_voice_id: document.getElementById('voice-elevenlabs-voice').value || '',
         elevenlabs_model: document.getElementById('voice-elevenlabs-model').value,
       };
+      const restore = setButtonBusy(btn, 'Saving…');
       try {
-        const res = await fetch('/admin/api/voice-settings', {
+        const res = await adminFetch('/admin/api/voice-settings', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
@@ -6522,8 +6588,11 @@ TO CUSTOMIZE THIS DASHBOARD:
         }
         showToast('Voice settings saved');
       } catch (err) {
+        if (err.authExpired) return; /* adminFetch already handled it */
         console.error('Error saving voice settings:', err);
         showToast('Could not save voice settings', 'error');
+      } finally {
+        restore();
       }
     }
 
@@ -6600,45 +6669,77 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     /* Generic preview helper — POSTs to /api/voice/sample and plays the
-       returned audio URL through the shared <audio> element. Catches
-       config errors (missing API key, bad voice id) and shows them as
-       toast notifications instead of silent failures. */
-    async function playVoicePreview(provider, voice_id, model) {
+       returned audio URL through the shared <audio> element. The button
+       is swapped to a "Loading…" state during the fetch and a "Playing…"
+       state while audio is in flight, so the admin always sees what's
+       happening. Catches config errors (missing API key, bad voice id,
+       premium-disabled) and surfaces them as toasts instead of failing
+       silently. */
+    async function playVoicePreview(provider, voice_id, model, btn) {
       const player = document.getElementById('voice-preview-player');
+      const restore = setButtonBusy(btn, 'Loading…');
       try {
-        const res = await fetch('/admin/api/voice-sample-not-used-but-here-for-clarity', {});
-        /* (Above is dead code — use the real endpoint below) */
-      } catch (e) { /* noop */ }
-      try {
-        const res = await fetch('/api/voice/sample', {
+        const res = await adminFetch('/api/voice/sample', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ provider, voice_id, model }),
         });
-        const body = await res.json();
+        const body = await res.json().catch(() => ({}));
         if (!res.ok) {
-          showToast(body.error || 'Sample failed', 'error');
+          showToast(body.error || 'Sample generation failed', 'error');
           return;
         }
+        /* Wire up listeners BEFORE setting src so we never miss the event
+           on an instant cache-hit. We also flip the button label to
+           "Playing…" so the admin knows the audio is actually firing,
+           then restore it when playback ends or errors out. */
         player.src = body.audio_url;
-        player.play().catch(err => {
-          console.warn('Voice preview play failed:', err);
+        if (btn) {
+          btn.innerHTML = `<span class="btn-spinner" aria-hidden="true">▶</span> Playing…`;
+        }
+        const cleanup = () => {
+          player.removeEventListener('ended', cleanup);
+          player.removeEventListener('error', cleanup);
+          restore();
+        };
+        player.addEventListener('ended', cleanup, { once: true });
+        player.addEventListener('error', cleanup, { once: true });
+        try {
+          await player.play();
+        } catch (playErr) {
+          /* Browser autoplay policy: must follow a user gesture. The
+             click that called this counts, but Safari sometimes refuses
+             on first-ever audio. Tell the admin clearly. */
+          console.warn('Voice preview play failed:', playErr);
+          cleanup();
           showToast('Tap once anywhere on the page first, then try again (browser autoplay policy)', 'error');
-        });
+        }
       } catch (err) {
+        if (err.authExpired) { restore(); return; }
         console.error('Voice preview error:', err);
         showToast('Could not generate sample', 'error');
+        restore();
       }
     }
 
-    function previewOpenAIVoice() {
-      playVoicePreview('openai', document.getElementById('voice-default-voice').value, document.getElementById('voice-tts-model').value);
+    function previewOpenAIVoice(btn) {
+      playVoicePreview(
+        'openai',
+        document.getElementById('voice-default-voice').value,
+        document.getElementById('voice-tts-model').value,
+        btn,
+      );
     }
 
-    function previewElevenLabsVoice() {
+    function previewElevenLabsVoice(btn) {
       const voice = document.getElementById('voice-elevenlabs-voice').value;
       if (!voice) { showToast('Pick a voice first', 'error'); return; }
-      playVoicePreview('elevenlabs', voice, document.getElementById('voice-elevenlabs-model').value);
+      playVoicePreview(
+        'elevenlabs',
+        voice,
+        document.getElementById('voice-elevenlabs-model').value,
+        btn,
+      );
     }
 
     /* Updates the OpenAI preview button label to reflect the current
@@ -6649,18 +6750,20 @@ TO CUSTOMIZE THIS DASHBOARD:
        cached. Populates the voice dropdown and surfaces any error to
        the inline status text. */
     let _elevenLabsVoicesCache = null;
-    async function loadElevenLabsVoices(force) {
+    async function loadElevenLabsVoices(force, btn) {
       const select = document.getElementById('voice-elevenlabs-voice');
       const status = document.getElementById('elevenlabs-status-text');
       if (!force && _elevenLabsVoicesCache) {
         renderElevenLabsVoices(_elevenLabsVoicesCache, status);
         return;
       }
+      const restore = setButtonBusy(btn, 'Refreshing…');
       status.textContent = 'Loading voices from ElevenLabs…';
+      status.style.color = '';
       select.innerHTML = '<option value="">— Loading…</option>';
       try {
-        const res = await fetch('/admin/api/voice/elevenlabs-voices');
-        const body = await res.json();
+        const res = await adminFetch('/admin/api/voice/elevenlabs-voices');
+        const body = await res.json().catch(() => ({}));
         if (!res.ok) {
           select.innerHTML = '<option value="">— Unavailable —</option>';
           status.textContent = body.error || 'ElevenLabs API unavailable';
@@ -6670,10 +6773,13 @@ TO CUSTOMIZE THIS DASHBOARD:
         _elevenLabsVoicesCache = body.voices || [];
         renderElevenLabsVoices(_elevenLabsVoicesCache, status);
       } catch (err) {
+        if (err.authExpired) return;
         console.error('ElevenLabs voices fetch error:', err);
         select.innerHTML = '<option value="">— Error —</option>';
         status.textContent = 'Failed to load voices: ' + err.message;
         status.style.color = '#a64242';
+      } finally {
+        restore();
       }
     }
 
@@ -6741,7 +6847,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           <td>${intro.enabled ? '✓' : '—'}</td>
           <td>
             <button class="btn btn-sm btn-secondary" onclick="editVoiceIntro(${intro.id})" data-testid="button-edit-voice-intro-${intro.id}">Edit</button>
-            <button class="btn btn-sm btn-primary" onclick="generateVoiceIntroAudio(${intro.id})" data-testid="button-generate-voice-intro-${intro.id}">Generate</button>
+            <button class="btn btn-sm btn-primary" onclick="generateVoiceIntroAudio(${intro.id}, this)" data-testid="button-generate-voice-intro-${intro.id}">Generate</button>
             <button class="btn btn-sm btn-secondary" onclick="deleteVoiceIntro(${intro.id})" data-testid="button-delete-voice-intro-${intro.id}">Delete</button>
           </td>
         </tr>`;
@@ -6833,22 +6939,29 @@ TO CUSTOMIZE THIS DASHBOARD:
     /**
      * Trigger backend TTS generation for an intro. This calls the OpenAI
      * API and costs money — confirm with the admin before firing.
+     * Accepts the originating button so we can show a "Generating…"
+     * busy state during the (1–3s) round-trip and disable it to prevent
+     * accidental double-clicks that would double-bill the customer.
      */
-    async function generateVoiceIntroAudio(id) {
+    async function generateVoiceIntroAudio(id, btn) {
       if (!confirm('Generate audio with the OpenAI TTS API? This will use a small amount of credit.')) return;
+      const restore = setButtonBusy(btn, 'Generating…');
       try {
-        const res = await fetch(`/admin/api/voice-intros/${id}/generate`, { method: 'POST' });
-        const data = await res.json();
-        if (data.error) {
-          showToast(data.error, 'error');
-        } else {
-          showToast(data.cached ? 'Audio reused from cache' : 'Audio generated');
-          loadVoiceIntros();
-          loadVoiceUsage();
+        const res = await adminFetch(`/admin/api/voice-intros/${id}/generate`, { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) {
+          showToast(data.error || 'Could not generate audio', 'error');
+          return;
         }
+        showToast(data.cached ? 'Audio reused from cache' : 'Audio generated');
+        loadVoiceIntros();
+        loadVoiceUsage();
       } catch (err) {
+        if (err.authExpired) return;
         console.error('Error generating audio:', err);
         showToast('Could not generate audio', 'error');
+      } finally {
+        restore();
       }
     }
 
