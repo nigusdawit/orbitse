@@ -460,6 +460,32 @@ TO CUSTOMIZE THIS DASHBOARD:
       background: rgba(255,255,255,0.08);
     }
 
+    /* Native <select> popups don't inherit the admin's dark theme — the
+       browser draws <option>/<optgroup> on its own (typically white)
+       surface. Without explicit colors here the inherited light text
+       lands on a white background and the dropdown becomes unreadable
+       (see: custom-section template picker, OpenAI/ElevenLabs voice
+       pickers). Force a dark surface + light text on every option so
+       the popup matches the rest of the admin shell. Disabled options
+       (e.g. ElevenLabs voices when the integration is off) get a muted
+       but still legible tone. */
+    .form-group select option,
+    .form-group select optgroup {
+      background-color: #0f172a;
+      color: var(--admin-text);
+    }
+    .form-group select optgroup {
+      font-weight: 600;
+      color: rgba(255,255,255,0.85);
+    }
+    .form-group select option:disabled {
+      color: rgba(255,255,255,0.45);
+    }
+    .form-group select option:checked {
+      background-color: #1e3a8a;
+      color: #ffffff;
+    }
+
     .form-group textarea {
       resize: vertical;
       min-height: 80px;
