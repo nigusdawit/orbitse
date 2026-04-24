@@ -923,6 +923,13 @@ def init_db():
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS section_team BOOLEAN DEFAULT false",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS section_faq BOOLEAN DEFAULT false",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS section_footer BOOLEAN DEFAULT true",
+                # --- Landing page scroll behavior toggle ---
+                #   'snap'   — default, each section snaps fully into view (page-by-page swipe feel)
+                #   'smooth' — natural continuous scrolling, no snap points (free-scroll feel)
+                # Frontend reads this from /api/site-settings and reflects it as
+                # data-scroll-mode on <html>; styles.css turns the snap rules off
+                # under [data-scroll-mode="smooth"]. See public/styles.css §5.
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS scroll_mode TEXT NOT NULL DEFAULT 'snap'",
                 # --- Business contact information ---
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS business_phone TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS business_email TEXT NOT NULL DEFAULT ''",
@@ -4376,9 +4383,10 @@ def admin_update_social_links():
 @app.route("/admin/api/section-visibility", methods=["GET"])
 @admin_required
 def admin_get_section_visibility():
-    """GET section visibility toggles for the admin panel."""
+    """GET section visibility toggles + landing scroll mode for the admin panel."""
     info = query_db("""
-        SELECT section_testimonials, section_team, section_faq, section_footer
+        SELECT section_testimonials, section_team, section_faq, section_footer,
+               scroll_mode
         FROM site_settings WHERE id = 1
     """, fetchone=True)
     return jsonify(info or {})
@@ -4387,17 +4395,26 @@ def admin_get_section_visibility():
 @app.route("/admin/api/section-visibility", methods=["PUT"])
 @admin_required
 def admin_update_section_visibility():
-    """PUT /admin/api/section-visibility — Toggle sections on/off."""
+    """PUT /admin/api/section-visibility — Toggle sections on/off and pick scroll mode."""
     data = request.get_json()
+    # Whitelist scroll_mode to the two values the frontend knows how to honor;
+    # anything else falls back to 'snap' so a typo in the request can't put the
+    # site into an undefined state.
+    scroll_mode = data.get("scroll_mode", "snap")
+    if scroll_mode not in ("snap", "smooth"):
+        scroll_mode = "snap"
     info = execute_db(
         """UPDATE site_settings SET
              section_testimonials = %s, section_team = %s,
              section_faq = %s, section_footer = %s,
+             scroll_mode = %s,
              updated_at = NOW()
            WHERE id = 1 RETURNING
-             section_testimonials, section_team, section_faq, section_footer""",
+             section_testimonials, section_team, section_faq, section_footer,
+             scroll_mode""",
         (data.get("section_testimonials", False), data.get("section_team", False),
-         data.get("section_faq", False), data.get("section_footer", True))
+         data.get("section_faq", False), data.get("section_footer", True),
+         scroll_mode)
     )
     return jsonify(info or {})
 

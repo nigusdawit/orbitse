@@ -1416,6 +1416,21 @@ TO CUSTOMIZE THIS DASHBOARD:
             <span class="toggle-slider"></span>
           </label>
         </div>
+
+        <!-- Landing page scroll behavior. When OFF (default) each section snaps
+             into place like a swipe deck. When ON, visitors scroll the landing
+             page continuously like a normal website. Persists to
+             site_settings.scroll_mode ('snap' | 'smooth'). -->
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; background: var(--admin-bg); border-radius: var(--admin-radius); border: 1px solid var(--admin-border);">
+          <div>
+            <div style="font-weight: 500; color: #fff;">Smooth Scroll (Landing Page)</div>
+            <div style="color: var(--admin-text-muted); font-size: 0.8125rem;">Off (default): each section snaps into view like a swipe deck. On: visitors scroll the landing page continuously like a normal website.</div>
+          </div>
+          <label class="toggle-switch" data-testid="toggle-scroll-mode">
+            <input type="checkbox" id="scroll-mode-smooth" onchange="saveSectionVisibility()">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
       </div>
     </div>
   </div>
@@ -5406,6 +5421,8 @@ TO CUSTOMIZE THIS DASHBOARD:
         document.getElementById('section-team').checked = !!data.section_team;
         document.getElementById('section-faq').checked = !!data.section_faq;
         document.getElementById('section-footer').checked = data.section_footer !== false;
+        // scroll_mode is a string ('snap' | 'smooth'); the toggle is "smooth ON?"
+        document.getElementById('scroll-mode-smooth').checked = data.scroll_mode === 'smooth';
       } catch (err) {
         showToast('Failed to load section visibility', 'error');
       }
@@ -5416,7 +5433,8 @@ TO CUSTOMIZE THIS DASHBOARD:
         section_testimonials: document.getElementById('section-testimonials').checked,
         section_team: document.getElementById('section-team').checked,
         section_faq: document.getElementById('section-faq').checked,
-        section_footer: document.getElementById('section-footer').checked
+        section_footer: document.getElementById('section-footer').checked,
+        scroll_mode: document.getElementById('scroll-mode-smooth').checked ? 'smooth' : 'snap'
       };
 
       try {

@@ -224,8 +224,21 @@ function hideLoadingScreen() {
  */
 let originalHeroDescription = '';
 
+/**
+ * Reflects siteSettings.scroll_mode onto <html data-scroll-mode="..."> so the
+ * CSS rules in styles.css §5 can switch the landing container between snap
+ * (default — page-by-page swipe feel) and smooth (free continuous scroll).
+ * Safe to call repeatedly; only the data attribute is touched.
+ */
+function applyScrollMode() {
+  if (!siteSettings) return;
+  const mode = siteSettings.scroll_mode === 'smooth' ? 'smooth' : 'snap';
+  document.documentElement.setAttribute('data-scroll-mode', mode);
+}
+
 function renderHero() {
   if (!siteSettings) return;
+  applyScrollMode();
 
   /* Set hero background image or video */
   const heroBg = document.getElementById('hero-bg');

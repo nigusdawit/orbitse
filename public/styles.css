@@ -306,6 +306,21 @@ input, select, textarea {
   scroll-snap-align: start;
 }
 
+/* -------- Smooth-scroll opt-out (admin toggle) -------- */
+/* When the site_settings.scroll_mode column is set to 'smooth', script.js
+   sets data-scroll-mode="smooth" on the <html> element. We then disable
+   snap behavior so visitors can scroll the landing page continuously
+   instead of having each section lock into place. The 'snap' default
+   (column DEFAULT 'snap', also the absence of the attribute) keeps the
+   original page-by-page experience untouched.                            */
+html[data-scroll-mode="smooth"] .landing-container {
+  scroll-snap-type: none;
+  scroll-snap-stop: normal;
+}
+html[data-scroll-mode="smooth"] .snap-section {
+  scroll-snap-align: none;
+}
+
 .snap-section.landing-section {
   position: relative;
 }
