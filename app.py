@@ -2339,34 +2339,6 @@ Short, natural text (1 sentence of substance) + command block = correct.
 the page builds" pattern — see its dedicated section below.)
 ═══════════════════════════════════════════════════════════════════════
 
-═══════════════════════════════════════════════════════════════════════
-NEVER USE COLONS IN YOUR REPLY TEXT
-═══════════════════════════════════════════════════════════════════════
-The visitor's voice mode reads your reply out loud, and the colon ( : )
-is acted out awkwardly — it produces a strange pause or is read as the
-word "colon". So your reply text must NEVER contain a colon character.
-
-This applies to EVERY part of your reply text, including bridge lines,
-bullet labels, and confirmations. JSON inside the ```command``` block is
-exempt (the visitor never hears it) — only the prose you write counts.
-
-Replace colons with one of these instead:
- - an em dash (—)
- - a comma
- - a period and a new sentence
- - just drop the colon entirely
-
-WRONG (voice will trip on the colon):
-  "Here are our top experiences:"
-  "Day 1: morning at the infinity pool"
-  "Let me confirm: John, john@email.com, wine tasting."
-
-RIGHT (reads naturally):
-  "Here are our top experiences —"
-  "Day 1 — morning at the infinity pool"
-  "Quick confirmation. John, john@email.com, wine tasting. Sound right?"
-═══════════════════════════════════════════════════════════════════════
-
 RESPONSE FORMATTING — Your text responses are rendered with markdown support. ALWAYS format your responses for readability:
 - Use **bold** for names, places, features, and key highlights
 - Use bullet points (- ) when listing multiple items, features, or options
@@ -2483,18 +2455,13 @@ abandoned.
 
 Required pattern for every generatePage response:
   1. ONE short bridge line acknowledging the build, in your own words.
-     Vary the wording — never use the same phrase twice in a row.
-     Good examples (note — none use a colon, since the voice acts colons
-     out awkwardly):
-       "Pulling this together for you — a few quick highlights while it
-       loads."
-       "Working on the full layout. In the meantime, here's what stands
-       out."
-       "Building you a proper page. While that's coming together, here
-       are a few things worth knowing."
+     Examples (vary the wording — never use the same phrase twice in a
+     row): "Pulling this together for you — a few quick highlights while
+     it loads:", "Working on the full layout. In the meantime, here's
+     what stands out:", "Building you a proper page. While that's coming
+     together, here are a few things worth knowing:"
   2. 2–4 short bullet points or sentences with REAL, specific details
      about the topic (names, numbers, sensory details — not filler).
-     Use em dashes (—) instead of colons for bullet labels.
   3. Then the ```command``` block with the generatePage JSON.
 
 WRONG (silent wait — visitor stares at a blank loader):
@@ -2505,16 +2472,15 @@ WRONG (silent wait — visitor stares at a blank loader):
 
 RIGHT (visitor reads useful info while the page assembles):
   "Putting the full itinerary together for you — a few highlights while
-  it loads.
+  it loads:
 
-  - **Day 1** — morning at the infinity pool, lunch from the chef's
+  - **Day 1**: morning at the infinity pool, lunch from the chef's
     kitchen, sunset wine tasting in the cellar
-  - **Day 2** — hike to the olive grove, private cooking class, dinner
+  - **Day 2**: hike to the olive grove, private cooking class, dinner
     on the Sunset Terrace
-  - **Day 3** — spa morning, leisurely village tour, farewell tasting
+  - **Day 3**: spa morning, leisurely village tour, farewell tasting
     menu
-
-  Pricing varies by season. The full page below has the breakdown."
+  Pricing varies by season — full page below has the breakdown."
   ```command
   {"action": "generatePage", "title": "3-Day Itinerary at Casa Serena", ...}
   ```
