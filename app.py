@@ -4724,6 +4724,17 @@ def admin_update_sphere_settings():
     return jsonify({"status": "ok"})
 
 
+@app.route("/admin/api/sphere-settings/enabled", methods=["PATCH"])
+@admin_required
+def admin_patch_sphere_enabled():
+    """Lightweight toggle endpoint — flips just the `enabled` flag so the
+    admin checkbox can auto-save without rewriting every other field."""
+    data = request.get_json(force=True) or {}
+    enabled = bool(data.get("enabled", False))
+    execute_db("UPDATE sphere_settings SET enabled = %s, updated_at = NOW() WHERE id = 1", (enabled,))
+    return jsonify({"status": "ok", "enabled": enabled})
+
+
 @app.route("/admin/api/sphere-images", methods=["GET"])
 @admin_required
 def admin_get_sphere_images():

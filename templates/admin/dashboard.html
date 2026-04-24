@@ -1793,8 +1793,9 @@ TO CUSTOMIZE THIS DASHBOARD:
       <div class="form-row">
         <div class="form-group" style="flex: 0 0 auto;">
           <label>
-            <input type="checkbox" id="sphere-enabled" data-testid="checkbox-sphere-enabled">
+            <input type="checkbox" id="sphere-enabled" onchange="toggleSphereEnabled(this)" data-testid="checkbox-sphere-enabled">
             Enable Sphere View
+            <span id="sphere-enabled-status" style="margin-left:0.5rem; font-size:0.8rem; color:var(--muted, #888);"></span>
           </label>
         </div>
       </div>
@@ -6343,6 +6344,30 @@ TO CUSTOMIZE THIS DASHBOARD:
         renderSphereImages(data.custom_images || []);
       } catch (err) {
         console.error('Error loading sphere settings:', err);
+      }
+    }
+
+    /* Auto-save the enabled toggle alone, so unchecking it instantly hides
+       the public "Immersive View" button without needing the visitor to
+       remember the separate "Save Sphere Settings" button below. */
+    async function toggleSphereEnabled(checkbox) {
+      const status = document.getElementById('sphere-enabled-status');
+      if (status) { status.textContent = 'Saving…'; status.style.color = 'var(--muted, #888)'; }
+      try {
+        const res = await fetch('/admin/api/sphere-settings/enabled', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: checkbox.checked })
+        });
+        if (!res.ok) throw new Error('save failed');
+        if (status) {
+          status.textContent = checkbox.checked ? 'Enabled · saved' : 'Disabled · saved';
+          status.style.color = '#4ade80';
+          setTimeout(() => { if (status.textContent.endsWith('saved')) status.textContent = ''; }, 2500);
+        }
+      } catch (err) {
+        console.error('Error toggling sphere enabled:', err);
+        if (status) { status.textContent = 'Save failed'; status.style.color = '#f87171'; }
       }
     }
 
