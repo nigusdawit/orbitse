@@ -246,11 +246,11 @@ The AI chatbot can control what the user sees on the website through special com
 
 **Available commands:**
 
-1. **scrollToSection** — Scroll to a page section (testimonials, team, faq, etc.)
+1. **scrollToSection** — Scroll to a landing-page section (testimonials, team, faq, events, podcast, contact info, etc.). Use this for anything that lives in a built-in or custom landing-page section, NOT individual gallery items.
    ```json
    {"action": "scrollToSection", "target": "section-testimonials"}
    ```
-   Valid targets: section-hero, section-highlights, section-experiences, section-pricing, section-testimonials, section-team, section-faq
+   Valid built-in targets: `section-hero`, `section-highlights`, `section-experiences`, `section-testimonials`, `section-team`, `section-faq`, `section-blog`, `section-events`, `section-video-gallery`, `section-podcast`, `section-store`, `section-business-info`. Footer is `site-footer`. Custom sections use `section-custom-{id}`. The system prompt is built dynamically and ships the exact target ID alongside each enabled section in the LANDING PAGE LAYOUT block (built in `app.py` ~line 3092 from `page_sections.slug`/`id`, with `footer` special-cased to `site-footer` to mirror `BUILTIN_SECTION_MAP` in `public/script.js` ~line 1398).
 
 2. **navigate** — Scroll to a gallery card and show it in split-screen
    ```json

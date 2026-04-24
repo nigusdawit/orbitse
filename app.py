@@ -2628,16 +2628,43 @@ SUBMISSION BEHAVIOR — CRITICAL:
 ```
 Send this after EVERY message where the visitor provides form field data. Include ALL fields collected so far (not just the new one). This enables abandon capture — if the visitor leaves before completing the form, we still have their partial data for follow-up.
 
-8. Scroll to a specific page section:
+8. Scroll to a specific page section on the landing page:
 ```command
 {"action": "scrollToSection", "target": "SECTION_ID"}
 ```
-Valid built-in section IDs: section-hero, section-highlights, section-experiences, section-pricing, section-testimonials, section-team, section-faq, section-blog
-Custom sections use the format: section-custom-{id} (where {id} is the database ID shown in the custom section info below)
-Use this when the visitor asks about testimonials, reviews, the team, FAQ, pricing, or any custom section to scroll them directly to it. For example:
-- "Show me your reviews" → short reply + scrollToSection to section-testimonials
-- "Who's on your team?" → short reply + scrollToSection to section-team
-- "Do you have a FAQ?" → short reply + scrollToSection to section-faq
+Valid built-in section IDs (use ONLY these exact strings — do NOT invent new ones):
+  - section-hero            → top of the page (welcome / hero banner)
+  - section-highlights      → highlights / featured grid
+  - section-experiences     → experiences, services, or activities offered
+  - section-testimonials    → reviews / testimonials from past visitors
+  - section-team            → team members / staff bios
+  - section-faq             → frequently asked questions
+  - section-blog            → blog posts / articles
+  - section-events          → upcoming events / event calendar
+  - section-video-gallery   → video gallery / video showcase
+  - section-podcast         → podcast episodes / audio content
+  - section-store           → products for sale / shop
+  - section-business-info   → contact info, hours, address, location
+Custom sections use the format: section-custom-{id} — the {id} is shown for each custom section in the LANDING PAGE LAYOUT and CUSTOM SECTION blocks below. Only use IDs that appear there.
+IMPORTANT: Only target sections that are currently ENABLED (see LANDING PAGE LAYOUT below). Never scroll to a DISABLED section — the visitor cannot see it.
+
+WHEN TO USE scrollToSection (this is your PRIMARY tool for non-gallery content — use it whenever the visitor asks about something that lives in a landing-page section, not a gallery card):
+- "Show me your reviews" / "what do people say" / "any testimonials" → scrollToSection section-testimonials
+- "Who's on your team" / "meet the team" / "who runs this" → scrollToSection section-team
+- "Do you have a FAQ" / "common questions" / "I have a question about..." → scrollToSection section-faq
+- "What events are coming up" / "any upcoming events" / "show me the calendar" → scrollToSection section-events
+- "Show me your videos" / "any video tour" / "watch something" → scrollToSection section-video-gallery
+- "Any podcasts" / "listen to the podcast" / "audio content" → scrollToSection section-podcast
+- "Show me products" / "what can I buy" / "shop" / "store" → scrollToSection section-store
+- "How do I contact you" / "where are you located" / "what are your hours" / "phone number" / "address" → scrollToSection section-business-info
+- "Read your blog" / "any articles" / "latest posts" → scrollToSection section-blog
+- "Take me to the top" / "go back up" / "home" → scrollToSection section-hero
+- For any custom section the visitor asks about by name, scrollToSection to its section-custom-{id}
+
+CRITICAL DISTINCTION — navigate vs scrollToSection:
+- Use `navigate` ONLY for individual gallery cards (rooms, products, items in the gallery_cards table — they have a slug)
+- Use `scrollToSection` for everything else on the landing page (testimonials, team, FAQ, events, podcast, contact info, custom sections, etc.)
+- If the visitor's question maps to a whole section rather than a single gallery card, you MUST use scrollToSection. Do NOT try to use `navigate` with a section ID — `navigate` only works with gallery card slugs.
 
 9. Display a message on the hero section:
 ```command
@@ -3057,8 +3084,10 @@ def api_chat():
         # visible to visitors (enabled/disabled), and the template for custom
         # ones. This way the AI never references a section that's been
         # toggled off ("our team" when team section is disabled, etc.).
+        # Each line includes the exact DOM ID for the scrollToSection command
+        # so the AI can target sections precisely without guessing.
         all_sections = query_db(
-            "SELECT slug, title, section_type, template, sort_order, enabled "
+            "SELECT id, slug, title, section_type, template, sort_order, enabled "
             "FROM page_sections ORDER BY sort_order ASC"
         )
         if all_sections:
@@ -3068,14 +3097,26 @@ def api_chat():
                 stype = s.get("section_type") or "built_in"
                 tmpl = f"/{s['template']}" if (stype == "custom" and s.get("template")) else ""
                 title = s.get("title") or ""
+                # Mirror BUILTIN_SECTION_MAP in public/script.js — most slugs
+                # map to "section-{slug}" but the footer is the exception
+                # (its DOM id is "site-footer", not "section-footer").
+                if stype == "custom":
+                    target_id = f"section-custom-{s['id']}"
+                elif s["slug"] == "footer":
+                    target_id = "site-footer"
+                else:
+                    target_id = f"section-{s['slug']}"
                 layout_lines.append(
-                    f'  {s["sort_order"]}. [{status}] {s["slug"]} ({stype}{tmpl})'
+                    f'  {s["sort_order"]}. [{status}] {s["slug"]} ({stype}{tmpl}) '
+                    f'→ scrollToSection target: "{target_id}"'
                     + (f' — "{title}"' if title else "")
                 )
             active_prompt += (
                 "\n\nLANDING PAGE LAYOUT (live view of page_sections — sections "
                 "shown in display order; DISABLED sections are hidden from "
-                "visitors, so do NOT reference or link to them):\n"
+                "visitors, so do NOT reference or link to them). When the "
+                "visitor asks about a section's topic, use the scrollToSection "
+                "target shown for that section:\n"
                 + "\n".join(layout_lines)
             )
 
