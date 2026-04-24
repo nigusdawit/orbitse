@@ -4242,6 +4242,17 @@ async function chatSendMessage() {
   /* Remember the prompt so we can attach it to saved pages */
   lastUserPrompt = message;
 
+  /* If the visitor is currently inside an immersive page (a previously
+     generated or saved page), get out of it before processing the new
+     question. Otherwise the AI's bridge text and any new generatePage
+     would render behind the old page and feel stuck. The collapse
+     animation lands the page in the bottom-left bubble so they can
+     pop it back open. */
+  const immersiveOverlayEl = document.getElementById('immersive-page-overlay');
+  if (immersiveOverlayEl && immersiveOverlayEl.classList.contains('active')) {
+    closeImmersivePage();
+  }
+
   /* Track whether we need to defer the panel expansion until response arrives */
   const wasCollapsed = !chatExpanded && !splitScreenActive && !sidePanelActive;
 
@@ -6210,30 +6221,226 @@ function extractStreamingJsonString(buffer, key) {
 
 
 /**
- * Close the immersive page overlay and clear the iframe content.
+ * Close the immersive page overlay.
+ *
+ * If `animate` is true (the default) and the overlay is currently shown,
+ * we play a "collapse into the bottom-left bubble" animation, then hide
+ * and clear the frame. If false (e.g. tearing down a half-streamed page
+ * after an error), we hide instantly with no animation.
  */
-function closeImmersivePage() {
+function closeImmersivePage(animate = true) {
   const overlay = document.getElementById('immersive-page-overlay');
   if (!overlay) return;
 
-  overlay.classList.remove('active');
-
   const frame = document.getElementById('immersive-page-frame');
-  if (frame) frame.srcdoc = '';
+  const isShown = overlay.classList.contains('active');
+  const hasArchive = sessionGeneratedPages.length > 0;
 
-  /* Tear down any in-flight streaming state and detach the window
-     'message' listener so closing the overlay mid-stream doesn't leak
-     handlers or leave a stale state object that breaks the next render. */
-  resetImmersiveStreamState();
+  /* Skip the animation when we have nothing to collapse into, when the
+     overlay isn't actually visible, or when the caller explicitly opts
+     out (mid-stream error tear-down). */
+  if (!animate || !isShown || !hasArchive) {
+    overlay.classList.remove('active', 'collapsing');
+    if (frame) frame.srcdoc = '';
+    resetImmersiveStreamState();
+    return;
+  }
+
+  overlay.classList.add('collapsing');
+
+  const cleanup = () => {
+    overlay.classList.remove('active', 'collapsing');
+    if (frame) frame.srcdoc = '';
+    resetImmersiveStreamState();
+    overlay.removeEventListener('transitionend', onEnd);
+  };
+  const onEnd = (e) => {
+    if (e.target !== overlay) return;
+    if (e.propertyName !== 'transform' && e.propertyName !== 'opacity') return;
+    cleanup();
+  };
+  overlay.addEventListener('transitionend', onEnd);
+  /* Safety net in case transitionend doesn't fire (e.g. tab hidden). */
+  setTimeout(cleanup, 600);
+}
+
+
+/* ─────────────────────────────────────────────────────────────────
+   SESSION-ONLY PAGE ARCHIVE
+   ─────────────────────────────────────────────────────────────────
+   Every immersive page the visitor sees during this browser tab gets
+   recorded here so they can pop it open again from the bottom-left
+   bubble without re-asking the AI. Persisted to sessionStorage so a
+   page reload in the same tab keeps the list, but a new tab starts
+   fresh — we don't want one visitor's archive shown to another.
+*/
+let sessionGeneratedPages = [];
+const SESSION_PAGES_STORAGE_KEY = 'ai_concierge_session_pages_v1';
+const SESSION_PAGES_MAX = 12;
+
+function loadSessionPagesFromStorage() {
+  try {
+    const raw = sessionStorage.getItem(SESSION_PAGES_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      sessionGeneratedPages = parsed.filter(p => p && typeof p.html === 'string' && p.html.trim());
+    }
+  } catch (e) {
+    sessionGeneratedPages = [];
+  }
+}
+
+function persistSessionPagesToStorage() {
+  try {
+    sessionStorage.setItem(SESSION_PAGES_STORAGE_KEY, JSON.stringify(sessionGeneratedPages));
+  } catch (e) {
+    /* sessionStorage can be full or disabled — non-fatal, archive lives
+       in memory for the rest of the tab's life. */
+  }
+}
+
+/**
+ * Add a page to the session archive. Skips empty HTML and de-dupes
+ * against the most-recent entry (so the same page being re-rendered
+ * doesn't pile up).
+ */
+function archiveSessionPage(html, title) {
+  if (!html || !html.trim()) return;
+  const cleanTitle = (title && title.trim()) || 'AI Generated Page';
+  const last = sessionGeneratedPages[0];
+  if (last && last.html === html) {
+    /* Same page being re-issued — bump its timestamp instead of duplicating. */
+    last.timestamp = Date.now();
+    last.title = cleanTitle;
+  } else {
+    sessionGeneratedPages.unshift({
+      id: 'sp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+      title: cleanTitle,
+      html,
+      timestamp: Date.now()
+    });
+    if (sessionGeneratedPages.length > SESSION_PAGES_MAX) {
+      sessionGeneratedPages.length = SESSION_PAGES_MAX;
+    }
+  }
+  persistSessionPagesToStorage();
+  renderSessionPagesBubble({ pulse: true });
+}
+
+function renderSessionPagesBubble({ pulse = false } = {}) {
+  const bubble = document.getElementById('session-pages-bubble');
+  const countEl = document.getElementById('session-pages-bubble-count');
+  const listEl = document.getElementById('session-pages-popover-list');
+  if (!bubble || !countEl || !listEl) return;
+
+  const count = sessionGeneratedPages.length;
+  if (count === 0) {
+    bubble.hidden = true;
+    closeSessionPagesPopover();
+    return;
+  }
+
+  bubble.hidden = false;
+  countEl.textContent = String(count);
+
+  /* Re-render the list. Each item reopens its page on click. */
+  listEl.innerHTML = '';
+  sessionGeneratedPages.forEach((page, idx) => {
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'session-pages-popover-item';
+    btn.dataset.testid = 'button-session-page-' + idx;
+
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'session-pages-popover-item-title';
+    titleSpan.textContent = page.title;
+    btn.appendChild(titleSpan);
+
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'session-pages-popover-item-time';
+    timeSpan.textContent = formatSessionPageTime(page.timestamp);
+    btn.appendChild(timeSpan);
+
+    btn.addEventListener('click', () => reopenSessionPage(page.id));
+    li.appendChild(btn);
+    listEl.appendChild(li);
+  });
+
+  if (pulse) {
+    bubble.classList.remove('just-archived');
+    /* Force reflow so re-adding the class restarts the keyframe. */
+    void bubble.offsetWidth;
+    bubble.classList.add('just-archived');
+    setTimeout(() => bubble.classList.remove('just-archived'), 800);
+  }
+}
+
+function formatSessionPageTime(ts) {
+  if (!ts) return '';
+  const diffMs = Date.now() - ts;
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + 'm ago';
+  const hrs = Math.floor(mins / 60);
+  return hrs + 'h ago';
+}
+
+function reopenSessionPage(id) {
+  const page = sessionGeneratedPages.find(p => p.id === id);
+  if (!page) return;
+  closeSessionPagesPopover();
+  /* Bring the side panel back so the visitor still has chat available
+     while looking at the re-opened page. */
+  if (typeof openSidePanel === 'function') {
+    try { openSidePanel(); } catch (e) { /* no-op */ }
+  }
+  openImmersivePage(page.html);
+}
+
+function toggleSessionPagesPopover() {
+  const popover = document.getElementById('session-pages-popover');
+  if (!popover) return;
+  if (popover.hidden) {
+    popover.hidden = false;
+    /* Refresh timestamps in case the popover was closed for a while. */
+    renderSessionPagesBubble();
+    document.addEventListener('mousedown', sessionPagesOutsideClick, true);
+  } else {
+    closeSessionPagesPopover();
+  }
+}
+
+function closeSessionPagesPopover() {
+  const popover = document.getElementById('session-pages-popover');
+  if (popover) popover.hidden = true;
+  document.removeEventListener('mousedown', sessionPagesOutsideClick, true);
+}
+
+function sessionPagesOutsideClick(e) {
+  const bubble = document.getElementById('session-pages-bubble');
+  if (!bubble) return;
+  if (!bubble.contains(e.target)) closeSessionPagesPopover();
+}
+
+/* Restore archive on page load and render the bubble. */
+loadSessionPagesFromStorage();
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => renderSessionPagesBubble());
+} else {
+  renderSessionPagesBubble();
 }
 
 
 /**
- * Auto-save an AI-generated HTML page to the database.
+ * Auto-save an AI-generated HTML page to the database AND add it to the
+ * in-tab session archive so the visitor can re-open it from the bubble.
  * Called whenever the AI issues a generateHTML or generatePage command.
  */
 function saveGeneratedPage(html, title) {
   if (!html || !html.trim()) return;
+  archiveSessionPage(html, title);
   fetch('/api/generated-pages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
