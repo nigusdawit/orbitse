@@ -35,19 +35,28 @@ def _fetch_replit_connection():
     Returns a dict of settings or None if no connection is available.
     """
     hostname = os.environ.get("REPLIT_CONNECTORS_HOSTNAME")
-    token = os.environ.get("REPL_IDENTITY") or os.environ.get("WEB_REPL_RENEWAL")
-    if not hostname or not token:
+    repl_identity = os.environ.get("REPL_IDENTITY")
+    web_renewal = os.environ.get("WEB_REPL_RENEWAL")
+    if not hostname:
+        return None
+    if repl_identity:
+        token = "repl " + repl_identity
+    elif web_renewal:
+        token = "depl " + web_renewal
+    else:
         return None
 
+    # Production deployments should use the production environment.
+    target_env = "production" if os.environ.get("REPLIT_DEPLOYMENT") == "1" else "development"
     url = (
         f"https://{hostname}/api/v2/connection?"
-        "include_secrets=true&connector_names=stripe"
+        f"include_secrets=true&connector_names=stripe&environment={target_env}"
     )
     req = urllib.request.Request(
         url,
         headers={
             "Accept": "application/json",
-            "X_REPLIT_TOKEN": token,
+            "X-Replit-Token": token,
         },
     )
     try:
@@ -78,12 +87,14 @@ def _resolve_keys(force_refresh: bool = False):
     settings = _fetch_replit_connection()
     if settings:
         secret = (
-            settings.get("api_key")
+            settings.get("secret")
             or settings.get("secret_key")
+            or settings.get("api_key")
             or settings.get("STRIPE_SECRET_KEY")
         )
         publishable = (
-            settings.get("publishable_key")
+            settings.get("publishable")
+            or settings.get("publishable_key")
             or settings.get("PUBLISHABLE_KEY")
             or settings.get("STRIPE_PUBLISHABLE_KEY")
         )
