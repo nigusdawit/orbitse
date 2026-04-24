@@ -3576,9 +3576,12 @@ async function chatSendStreaming(message, wasCollapsed) {
     let finalReply = '';
     let pendingCommand = null;
     let inCommandBlock = false;
-    let streamBubble = null;
-    let bubbleFinalized = false;
-    let expandedForResponse = false;
+    /* Live page-render state — set when we detect a generatePage/generateHTML
+       command early in the stream so the iframe renders HTML progressively
+       as tokens arrive. `pageStreamWritten` tracks how many decoded HTML
+       chars have already been appended so we only flush the new delta. */
+    let pageStreamStarted = false;
+    let pageStreamWritten = 0;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -3626,6 +3629,32 @@ async function chatSendStreaming(message, wasCollapsed) {
               if (streamBubble) {
                 streamBubble.append(event.content);
               }
+            } else {
+              /* Inside the command block — try to live-render a generatePage
+                 or generateHTML command's HTML field as it streams in. */
+              if (!pageStreamStarted &&
+                  /\{"action"\s*:\s*"(generatePage|generateHTML)"/i.test(tokenText) &&
+                  /"html"\s*:\s*"/i.test(tokenText)) {
+                pageStreamStarted = true;
+                openImmersivePageStreaming();
+                openSidePanel();
+              }
+              if (pageStreamStarted) {
+                const extracted = extractStreamingJsonString(tokenText, 'html');
+                if (extracted && extracted.value) {
+                  /* Only flush up to the last complete tag boundary so the
+                     browser never receives a half-written tag. If no `>`
+                     is present yet, wait for the next token. */
+                  const safeEnd = extracted.complete
+                    ? extracted.value.length
+                    : extracted.value.lastIndexOf('>') + 1;
+                  if (safeEnd > pageStreamWritten) {
+                    const delta = extracted.value.substring(pageStreamWritten, safeEnd);
+                    appendImmersivePageStreaming(delta);
+                    pageStreamWritten = safeEnd;
+                  }
+                }
+              }
             }
           } else if (event.type === 'text') {
             finalReply = event.content;
@@ -3635,6 +3664,13 @@ async function chatSendStreaming(message, wasCollapsed) {
             showBarThinking(false);
             chatShowTyping(false);
             if (streamBubble) streamBubble.remove();
+            /* Tear down the live page render if the AI errored mid-stream
+               so a half-built page doesn't stick around. */
+            if (pageStreamStarted) {
+              closeImmersivePage();
+              resetImmersiveStreamState();
+              pageStreamStarted = false;
+            }
             chatAddMessage('agent', event.content);
             return;
           }
@@ -4376,7 +4412,17 @@ function executeCommand(cmd) {
     */
     case 'generatePage':
     case 'generateHTML': {
-      openImmersivePage(cmd.html || '');
+      /* If the page was already drawn live during streaming, just finalize
+         (remove the "Building" indicator, flush any remaining queue) and
+         skip the one-shot re-render — re-rendering would reset all the
+         CSS animations the visitor just watched play. Otherwise fall back
+         to the one-shot renderer for fast/non-streamed responses. */
+      if (isImmersivePageStreaming()) {
+        finishImmersivePageStreaming();
+        resetImmersiveStreamState();
+      } else {
+        openImmersivePage(cmd.html || '');
+      }
       openSidePanel();
       saveGeneratedPage(cmd.html || '', cmd.title || '');
       break;
@@ -4678,26 +4724,16 @@ function closeFullscreenCanvas() {
 }
 
 /**
- * Open the immersive page overlay with an AI-generated animated page.
- * Renders inside a sandboxed iframe for full CSS freedom — <style> tags,
- * @keyframes, background-image, animations, parallax, scroll effects all work.
+ * Build the full <!doctype>...</html> string for the immersive iframe with
+ * the site's theme tokens, fonts, and hero image injected. Used by both
+ * the one-shot `openImmersivePage` renderer and the live-streaming
+ * renderer so the two paths produce visually identical output.
  *
- * The site's theme (CSS variables, fonts, glass effects) is automatically
- * injected into the iframe <head> so the page matches the site's design.
- *
- * @param {string} html - The full HTML content (can include <style>, animations, etc.)
+ * @param {string} bodyHtml - HTML to drop inside <body>. May be empty
+ *   (when streaming, the body fills in progressively via insertAdjacentHTML).
+ * @returns {string} Complete HTML document string for use as iframe srcdoc.
  */
-function openImmersivePage(html) {
-  if (!html || !html.trim()) return;
-
-  const overlay = document.getElementById('immersive-page-overlay');
-  const frame = document.getElementById('immersive-page-frame');
-  if (!overlay || !frame) return;
-
-  /* Close the regular canvas if it was open */
-  closeFullscreenCanvas();
-
-  /* Read current theme CSS variables from the live document */
+function buildImmersivePageDoc(bodyHtml) {
   const styles = getComputedStyle(document.documentElement);
   const fontSerif = styles.getPropertyValue('--font-serif').trim() || "'Playfair Display', Georgia, serif";
   const fontSans = styles.getPropertyValue('--font-sans').trim() || "'DM Sans', -apple-system, sans-serif";
@@ -4710,10 +4746,7 @@ function openImmersivePage(html) {
   const glassBg = styles.getPropertyValue('--glass-bg').trim() || 'rgba(255, 255, 255, 0.03)';
 
   /* Resolve the landing page hero background image so AI-generated pages can
-     reference it as var(--hero-image) and visually match the rest of the site.
-     Source order: <body> data attribute set by the server → live computed
-     background-image of the .hero element → empty string (AI will fall back
-     to a gradient). */
+     reference it as var(--hero-image) and visually match the rest of the site. */
   let heroImageUrl = '';
   if (typeof siteSettings === 'object' && siteSettings && siteSettings.hero_image) {
     heroImageUrl = siteSettings.hero_image;
@@ -4727,18 +4760,39 @@ function openImmersivePage(html) {
       if (match && match[2]) heroImageUrl = match[2];
     }
   }
-  /* Build a CSS value that is always safe to drop into background:.
-     If we have a URL, expose it as url(...). Otherwise expose 'none' so
-     the AI's `background: ..., var(--hero-image)` rules degrade gracefully. */
   const heroImageCss = heroImageUrl ? `url("${heroImageUrl.replace(/"/g, '\\"')}")` : 'none';
 
-  /* Find Google Font links from the parent page to inject into the iframe */
   const fontLinks = Array.from(document.querySelectorAll('link[rel="stylesheet"][href*="fonts.googleapis.com"]'))
     .map(link => `<link rel="stylesheet" href="${link.href}">`)
     .join('\n');
 
-  /* Build the full HTML document for the iframe with theme injection */
-  const fullDoc = `<!DOCTYPE html>
+  /* Streaming bootstrap script — listens for postMessage events from the
+     parent window and appends HTML chunks into #__stream_root__. The
+     iframe is sandbox="allow-scripts" without allow-same-origin, so the
+     parent CANNOT touch our DOM directly. postMessage is the supported
+     cross-origin channel. Listener is a no-op when there's no streaming
+     (one-shot renders just write into ${'$'}{bodyHtml} below). */
+  const streamBootstrap = `
+    <script>
+      (function () {
+        window.addEventListener('message', function (e) {
+          var d = e.data;
+          if (!d || typeof d !== 'object') return;
+          var root = document.getElementById('__stream_root__');
+          if (d.type === 'append' && typeof d.html === 'string' && root) {
+            root.insertAdjacentHTML('beforeend', d.html);
+          } else if (d.type === 'finish') {
+            var pulse = document.querySelector('.__streaming_pulse__');
+            if (pulse) pulse.remove();
+          }
+        });
+        /* Tell the parent we're ready to receive chunks */
+        try { parent.postMessage({ type: '__immersive_ready__' }, '*'); } catch (e) {}
+      })();
+    <\/script>
+  `;
+
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -4773,15 +4827,209 @@ function openImmersivePage(html) {
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+    /* Tiny "building..." indicator shown only while streaming */
+    .__streaming_pulse__ {
+      position: fixed; top: 1rem; right: 1rem; z-index: 999999;
+      display: inline-flex; align-items: center; gap: 0.5rem;
+      padding: 0.4rem 0.8rem; background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 999px;
+      font-family: var(--font-sans); font-size: 0.7rem;
+      letter-spacing: 0.15em; text-transform: uppercase;
+      color: rgba(255,255,255,0.85);
+      animation: __streamFade__ 1.6s ease-in-out infinite;
+    }
+    .__streaming_pulse__::before {
+      content: ''; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--color-accent);
+      box-shadow: 0 0 8px var(--color-accent);
+    }
+    @keyframes __streamFade__ {
+      0%, 100% { opacity: 0.6; } 50% { opacity: 1; }
+    }
   </style>
+  ${streamBootstrap}
 </head>
 <body>
-${html}
+${bodyHtml}
 </body>
 </html>`;
+}
 
-  frame.srcdoc = fullDoc;
+
+/**
+ * Open the immersive page overlay with an AI-generated animated page.
+ * One-shot renderer: writes the full HTML document into the iframe at once.
+ * Used as the fallback when streaming-render didn't run (e.g. very fast
+ * responses, or commands that arrive without an HTML field).
+ *
+ * @param {string} html - The full HTML content (can include <style>, animations, etc.)
+ */
+function openImmersivePage(html) {
+  if (!html || !html.trim()) return;
+
+  const overlay = document.getElementById('immersive-page-overlay');
+  const frame = document.getElementById('immersive-page-frame');
+  if (!overlay || !frame) return;
+
+  closeFullscreenCanvas();
+
+  frame.srcdoc = buildImmersivePageDoc(html);
   overlay.classList.add('active');
+}
+
+
+/* ─────────────────────────────────────────────────────────────────
+   LIVE-STREAMING IMMERSIVE PAGE RENDER
+   ─────────────────────────────────────────────────────────────────
+   Renders an AI-generated page progressively as HTML tokens arrive
+   from the streaming chat response, instead of waiting for the full
+   command to finish. Visitors see the page assemble itself in real
+   time — like a server streaming HTML to a browser.
+
+   API:
+     openImmersivePageStreaming()   — open overlay with empty body, set up state
+     appendImmersivePageStreaming() — append a chunk of HTML to the iframe body
+     finishImmersivePageStreaming() — flush remaining queue, mark complete
+     isImmersivePageStreaming()     — true while a stream render is active
+*/
+
+let _immersiveStream = null;
+
+function openImmersivePageStreaming() {
+  const overlay = document.getElementById('immersive-page-overlay');
+  const frame = document.getElementById('immersive-page-frame');
+  if (!overlay || !frame) return null;
+
+  closeFullscreenCanvas();
+
+  /* Body has an empty mount node the bootstrap script appends into,
+     plus a small "Building" indicator that the finish step removes. */
+  const initialBody =
+    '<div class="__streaming_pulse__">Building</div>' +
+    '<div id="__stream_root__"></div>';
+
+  /* The iframe runs sandbox="allow-scripts" without allow-same-origin,
+     so the parent CANNOT touch its DOM directly. We talk to it through
+     postMessage. The bootstrap script inside the iframe sends back a
+     '__immersive_ready__' message when its listener is wired up; until
+     then, chunks queue here. */
+  const state = {
+    frame,
+    queue: [],
+    ready: false,
+    isStreaming: true
+  };
+
+  const onMessage = (e) => {
+    /* Only trust messages from THIS iframe's window — sandboxed iframes
+       have an opaque origin so we match by source identity, not by
+       e.origin string. */
+    if (!e.source || e.source !== frame.contentWindow) return;
+    if (e.data && e.data.type === '__immersive_ready__') {
+      state.ready = true;
+      _flushImmersiveStream();
+    }
+  };
+  state._onMessage = onMessage;
+  window.addEventListener('message', onMessage);
+
+  frame.srcdoc = buildImmersivePageDoc(initialBody);
+  overlay.classList.add('active');
+
+  _immersiveStream = state;
+  return _immersiveStream;
+}
+
+function _flushImmersiveStream() {
+  const state = _immersiveStream;
+  if (!state || !state.ready || state.queue.length === 0) return;
+  try {
+    const win = state.frame.contentWindow;
+    if (!win) return;
+    /* Drain the entire queue in order */
+    while (state.queue.length > 0) {
+      win.postMessage(state.queue.shift(), '*');
+    }
+  } catch (e) {
+    console.warn('Streaming page postMessage failed:', e);
+  }
+}
+
+function appendImmersivePageStreaming(deltaHtml) {
+  if (!_immersiveStream || !deltaHtml) return;
+  _immersiveStream.queue.push({ type: 'append', html: deltaHtml });
+  _flushImmersiveStream();
+}
+
+function finishImmersivePageStreaming() {
+  const state = _immersiveStream;
+  if (!state) return;
+  state.isStreaming = false;
+  state.queue.push({ type: 'finish' });
+  _flushImmersiveStream();
+}
+
+function isImmersivePageStreaming() {
+  return !!(_immersiveStream && _immersiveStream.isStreaming);
+}
+
+function resetImmersiveStreamState() {
+  if (_immersiveStream && _immersiveStream._onMessage) {
+    window.removeEventListener('message', _immersiveStream._onMessage);
+  }
+  _immersiveStream = null;
+}
+
+
+/**
+ * Decode a JSON-encoded string value from a partial buffer. Used to
+ * extract the `"html": "..."` value out of a streaming command JSON
+ * before the full JSON has arrived. Stops at the unescaped closing
+ * quote (or end of buffer if the string is still being received).
+ *
+ * @param {string} buffer - The full token buffer so far
+ * @param {string} key - The JSON key to extract (e.g. "html")
+ * @returns {{value: string, complete: boolean}|null}
+ */
+function extractStreamingJsonString(buffer, key) {
+  /* Match `"key" : "` allowing whitespace */
+  const re = new RegExp('"' + key + '"\\s*:\\s*"');
+  const m = buffer.match(re);
+  if (!m) return null;
+  let i = m.index + m[0].length;
+  let out = '';
+  while (i < buffer.length) {
+    const ch = buffer[i];
+    if (ch === '\\') {
+      if (i + 1 >= buffer.length) {
+        /* Incomplete escape — wait for more input. Don't include it yet. */
+        return { value: out, complete: false };
+      }
+      const next = buffer[i + 1];
+      switch (next) {
+        case 'n': out += '\n'; i += 2; break;
+        case 't': out += '\t'; i += 2; break;
+        case 'r': out += '\r'; i += 2; break;
+        case '"': out += '"'; i += 2; break;
+        case '\\': out += '\\'; i += 2; break;
+        case '/': out += '/'; i += 2; break;
+        case 'b': out += '\b'; i += 2; break;
+        case 'f': out += '\f'; i += 2; break;
+        case 'u':
+          if (i + 5 >= buffer.length) return { value: out, complete: false };
+          out += String.fromCharCode(parseInt(buffer.substr(i + 2, 4), 16));
+          i += 6; break;
+        default: out += next; i += 2;
+      }
+    } else if (ch === '"') {
+      return { value: out, complete: true };
+    } else {
+      out += ch;
+      i += 1;
+    }
+  }
+  return { value: out, complete: false };
 }
 
 
@@ -4796,6 +5044,11 @@ function closeImmersivePage() {
 
   const frame = document.getElementById('immersive-page-frame');
   if (frame) frame.srcdoc = '';
+
+  /* Tear down any in-flight streaming state and detach the window
+     'message' listener so closing the overlay mid-stream doesn't leak
+     handlers or leave a stale state object that breaks the next render. */
+  resetImmersiveStreamState();
 }
 
 
