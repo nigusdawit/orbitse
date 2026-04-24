@@ -4729,3 +4729,150 @@ input, select, textarea {
     font-size: 0.65rem;
   }
 }
+
+
+/* =========================================================================
+ * VOICE AGENT — UI styles
+ * =========================================================================
+ * Three pieces of voice UI that need styling:
+ *   1. .voice-intro-card — floating bottom-right "tap to listen" prompt
+ *   2. .voice-mic-btn   — microphone button injected into chat input rows
+ *   3. .voice-speaking  — pulse animation on avatars while TTS plays
+ * Designed to match the existing frosted-glass + gold accent aesthetic.
+ * ========================================================================= */
+
+/* ---- Voice intro card (proactive welcome prompt) ------------------------ */
+.voice-intro-card {
+  position: fixed;
+  bottom: 1.25rem;
+  right: 1.25rem;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0.85rem 0.75rem 0.75rem;
+  /* Frosted glass to match the rest of the site */
+  background: rgba(20, 20, 22, 0.55);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  border: 1px solid rgba(201, 169, 110, 0.35);
+  border-radius: 14px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  color: #fff;
+  cursor: pointer;
+  /* Slide in from below on first appearance */
+  animation: voice-intro-slide-in 0.45s cubic-bezier(0.2, 0.9, 0.3, 1);
+  max-width: 320px;
+}
+
+@keyframes voice-intro-slide-in {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.voice-intro-card:hover {
+  border-color: rgba(201, 169, 110, 0.6);
+}
+
+.voice-intro-card .voice-avatar {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--accent, #c9a96e), #a0824f);
+  color: #1a1a1a;
+}
+
+.voice-intro-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.voice-intro-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.voice-intro-sub {
+  font-size: 0.75rem;
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+.voice-intro-play {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent, #c9a96e);
+  color: #1a1a1a;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.voice-intro-play:hover {
+  transform: scale(1.08);
+  background: #d8b878;
+}
+
+.voice-intro-close {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 18px;
+  height: 18px;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.voice-intro-close:hover {
+  color: #fff;
+}
+
+/* ---- Microphone button (injected into chat input rows) ----------------- */
+/* Inherits .chatbot-icon-btn so size/shape match the existing visualize/
+   fullscreen icon buttons. We just add the active "listening" state. */
+.voice-mic-btn.voice-mic-active {
+  background: rgba(201, 169, 110, 0.2);
+  color: var(--accent, #c9a96e);
+  /* Subtle pulsing ring while the mic is live */
+  animation: voice-mic-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes voice-mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(201, 169, 110, 0.5); }
+  50%      { box-shadow: 0 0 0 6px rgba(201, 169, 110, 0); }
+}
+
+/* ---- Speaking indicator (pulse on avatars while TTS plays) ------------- */
+.voice-speaking {
+  animation: voice-speaking-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes voice-speaking-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(201, 169, 110, 0.4); }
+  50%      { box-shadow: 0 0 0 8px rgba(201, 169, 110, 0); }
+}
+
+/* ---- Mobile tweaks for the intro card ---------------------------------- */
+@media (max-width: 600px) {
+  .voice-intro-card {
+    bottom: 0.75rem;
+    right: 0.75rem;
+    left: 0.75rem;
+    max-width: none;
+  }
+}

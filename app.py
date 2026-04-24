@@ -45,8 +45,9 @@ import os
 import re
 import json
 import html as html_module
+import hashlib
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 
 import psycopg2
@@ -563,6 +564,83 @@ def init_db():
                     created_at  TIMESTAMP DEFAULT NOW()
                 );
                 CREATE INDEX IF NOT EXISTS idx_sphere_images_sort ON sphere_images (sort_order);
+            """)
+
+            # =================================================================
+            # VOICE AGENT TABLES
+            # =================================================================
+            # The voice agent is a proactive AI feature: it can play a
+            # personalized voice intro when a visitor lands on the site
+            # (matched against UTM source/medium/campaign), and optionally
+            # support full back-and-forth voice conversations.
+            #
+            # Three tables power the system:
+            #   1. voice_settings  — singleton row for global toggles
+            #   2. voice_intros    — predefined intro messages (pre-generated audio)
+            #   3. voice_usage_log — usage tracking (for billing and analytics)
+            # =================================================================
+
+            cur.execute("""
+                -- Singleton settings row (id=1) for global voice configuration.
+                -- Three independent toggles let the site owner enable/disable
+                -- each voice feature without affecting the others.
+                CREATE TABLE IF NOT EXISTS voice_settings (
+                    id                       INTEGER PRIMARY KEY DEFAULT 1,
+                    enabled_intros           BOOLEAN NOT NULL DEFAULT false,
+                    enabled_visitor_voice    BOOLEAN NOT NULL DEFAULT false,
+                    enabled_ai_voice         BOOLEAN NOT NULL DEFAULT false,
+                    default_voice            TEXT NOT NULL DEFAULT 'alloy',
+                    tts_model                TEXT NOT NULL DEFAULT 'tts-1',
+                    autoplay_strategy        TEXT NOT NULL DEFAULT 'gesture',
+                    updated_at               TIMESTAMP DEFAULT NOW()
+                );
+
+                -- Predefined intro voice notes. Each intro has a message text
+                -- and a pre-generated audio file (cached to avoid re-paying
+                -- TTS cost on every visit). Intros can be filtered by UTM
+                -- params or referrer so different traffic sources hear
+                -- different welcomes (e.g. Google Ads visitors hear "Welcome
+                -- from Google!", Instagram visitors hear something else).
+                CREATE TABLE IF NOT EXISTS voice_intros (
+                    id              SERIAL PRIMARY KEY,
+                    name            TEXT NOT NULL DEFAULT '',
+                    message_text    TEXT NOT NULL DEFAULT '',
+                    audio_url       TEXT NOT NULL DEFAULT '',
+                    voice_id        TEXT NOT NULL DEFAULT 'alloy',
+                    utm_source      TEXT NOT NULL DEFAULT '',
+                    utm_medium      TEXT NOT NULL DEFAULT '',
+                    utm_campaign    TEXT NOT NULL DEFAULT '',
+                    referrer_match  TEXT NOT NULL DEFAULT '',
+                    priority        INTEGER NOT NULL DEFAULT 0,
+                    enabled         BOOLEAN NOT NULL DEFAULT true,
+                    play_count      INTEGER NOT NULL DEFAULT 0,
+                    created_at      TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_voice_intros_priority ON voice_intros (priority DESC, id);
+                CREATE INDEX IF NOT EXISTS idx_voice_intros_enabled ON voice_intros (enabled);
+
+                -- Usage log — tracks every TTS generation, intro play, and
+                -- speech-to-text request. Used for billing customers based
+                -- on their voice feature consumption.
+                -- feature_type is one of: 'intro_play', 'tts_generate',
+                -- 'tts_cached', 'stt_request'.
+                CREATE TABLE IF NOT EXISTS voice_usage_log (
+                    id            SERIAL PRIMARY KEY,
+                    session_id    VARCHAR(100) DEFAULT '',
+                    feature_type  VARCHAR(40) NOT NULL DEFAULT '',
+                    char_count    INTEGER NOT NULL DEFAULT 0,
+                    voice_id      TEXT NOT NULL DEFAULT '',
+                    intro_id      INTEGER,
+                    created_at    TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_voice_usage_created ON voice_usage_log (created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_voice_usage_feature ON voice_usage_log (feature_type);
+            """)
+
+            # Seed the voice_settings singleton row (idempotent)
+            cur.execute("""
+                INSERT INTO voice_settings (id) VALUES (1)
+                ON CONFLICT (id) DO NOTHING
             """)
 
             # Seed chatbot_settings singleton if it doesn't exist
@@ -4535,6 +4613,529 @@ def admin_reorder_sphere_images():
     for i, img_id in enumerate(ids):
         execute_db("UPDATE sphere_images SET sort_order = %s WHERE id = %s", (i, img_id))
     return jsonify({"status": "ok"})
+
+
+# =============================================================================
+# VOICE AGENT API
+# =============================================================================
+# The voice agent system has three main capabilities:
+#
+#   1. Proactive intros — when a visitor lands on the site, the system
+#      checks UTM params + referrer, finds the best matching pre-recorded
+#      intro, and either auto-plays it or shows a "tap to play" button.
+#
+#   2. AI voice replies (TTS) — when enabled, the AI's text replies are
+#      converted to speech via OpenAI TTS and played back to the visitor.
+#      Audio files are cached on disk by content hash to avoid re-paying
+#      for the same text twice.
+#
+#   3. Visitor voice input (STT) — handled client-side via the browser's
+#      built-in Web Speech API (free, no API cost). The backend just
+#      receives the recognized text as a normal chat message.
+#
+# All features are toggleable from the admin dashboard, and every TTS
+# generation / intro play is logged to voice_usage_log for billing.
+# =============================================================================
+
+# Folder where TTS-generated MP3 files are cached on disk.
+# Each file is named <hash>.mp3 where hash = sha1(text + voice + model).
+VOICE_CACHE_DIR = os.path.join("uploads", "voice")
+os.makedirs(VOICE_CACHE_DIR, exist_ok=True)
+
+# Allowed OpenAI TTS voice IDs (defensive whitelist — prevents abuse if
+# someone crafts a malicious request with an arbitrary voice string).
+ALLOWED_TTS_VOICES = {"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
+ALLOWED_TTS_MODELS = {"tts-1", "tts-1-hd"}
+
+# Hard cap on TTS input length per request — prevents huge bills from
+# accidentally massive AI replies. Adjust if your use case needs longer.
+TTS_MAX_CHARS = 1500
+
+# Daily TTS character cap PER VISITOR IP. Prevents an attacker from
+# scripting thousands of varied requests to bypass the hash cache and
+# burn through your OpenAI credits. Tuned generously enough that real
+# users won't hit it but cheap enough to bound abuse damage.
+TTS_DAILY_CHARS_PER_IP = 30000
+
+# In-memory per-IP TTS budget tracker. Keyed by client IP, value is
+# (date_string, chars_used_today). Reset automatically when the date
+# rolls over. This is per-process — fine for a single-worker dev/small
+# deployment; production should use Redis if running multiple workers.
+_tts_ip_budget = {}
+
+
+def _check_tts_ip_budget(client_ip, char_count):
+    """Return True if this IP can spend `char_count` more characters today.
+
+    Mutates the in-memory tracker as a side effect to record the spend.
+    Returns False if the IP would exceed the daily cap (request should be
+    rejected with 429)."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    entry = _tts_ip_budget.get(client_ip)
+    if not entry or entry[0] != today:
+        # First request today (or budget rolled over) — start fresh
+        entry = (today, 0)
+    if entry[1] + char_count > TTS_DAILY_CHARS_PER_IP:
+        return False
+    _tts_ip_budget[client_ip] = (today, entry[1] + char_count)
+    return True
+
+
+def _voice_cache_filename(text, voice_id, model):
+    """Return the cache filename for a (text, voice, model) combination.
+
+    Uses sha1 because we only need uniqueness, not crypto strength."""
+    key = f"{model}|{voice_id}|{text}".encode("utf-8")
+    digest = hashlib.sha1(key).hexdigest()
+    return f"{digest}.mp3"
+
+
+def _log_voice_usage(feature_type, char_count=0, voice_id="", session_id="", intro_id=None):
+    """Insert a row into voice_usage_log. Used for billing and analytics.
+
+    Wrapped in try/except so logging failures never break the user-facing
+    request — voice should still work even if the log table is unavailable."""
+    try:
+        execute_db(
+            """INSERT INTO voice_usage_log
+               (session_id, feature_type, char_count, voice_id, intro_id)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (session_id or "", feature_type, char_count, voice_id, intro_id),
+        )
+    except Exception as e:
+        print(f"[voice usage log error] {e}")
+
+
+def _generate_tts_audio(text, voice_id, model):
+    """Generate TTS audio for the given text and save to cache. Returns
+    (audio_url, was_cached). If a cached file already exists, just returns
+    the URL without re-generating."""
+    # Validate inputs against whitelists
+    if voice_id not in ALLOWED_TTS_VOICES:
+        voice_id = "alloy"
+    if model not in ALLOWED_TTS_MODELS:
+        model = "tts-1"
+
+    # Trim and cap the text length to control cost
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Empty text — nothing to synthesize")
+    if len(text) > TTS_MAX_CHARS:
+        text = text[:TTS_MAX_CHARS]
+
+    # Check the cache first
+    filename = _voice_cache_filename(text, voice_id, model)
+    filepath = os.path.join(VOICE_CACHE_DIR, filename)
+    audio_url = f"/uploads/voice/{filename}"
+
+    if os.path.exists(filepath):
+        return audio_url, True  # Cache hit — no API call needed
+
+    # Cache miss — call OpenAI TTS and stream the result to disk
+    response = openai_client.audio.speech.create(
+        model=model,
+        voice=voice_id,
+        input=text,
+    )
+    # The OpenAI SDK returns a streamable response — write the binary content
+    response.stream_to_file(filepath)
+    return audio_url, False
+
+
+# -----------------------------------------------------------------------------
+# Static file serving for cached voice audio
+# -----------------------------------------------------------------------------
+
+@app.route("/uploads/voice/<path:filename>")
+def serve_voice_file(filename):
+    """Serve a cached TTS audio file. Browser will treat it as audio/mpeg
+    based on the .mp3 extension."""
+    return send_from_directory(VOICE_CACHE_DIR, filename)
+
+
+# -----------------------------------------------------------------------------
+# Public voice endpoints (called by the browser on every visit)
+# -----------------------------------------------------------------------------
+
+@app.route("/api/voice/settings", methods=["GET"])
+def api_voice_settings():
+    """Return the public-facing voice settings (just the toggles).
+    The frontend uses these to decide which voice features to wire up."""
+    settings = query_db("SELECT * FROM voice_settings WHERE id = 1", fetchone=True)
+    if not settings:
+        # Defensive default if the row hasn't been seeded yet
+        return jsonify({
+            "enabled_intros": False,
+            "enabled_visitor_voice": False,
+            "enabled_ai_voice": False,
+            "default_voice": "alloy",
+            "autoplay_strategy": "gesture",
+        })
+    return jsonify({
+        "enabled_intros": settings.get("enabled_intros", False),
+        "enabled_visitor_voice": settings.get("enabled_visitor_voice", False),
+        "enabled_ai_voice": settings.get("enabled_ai_voice", False),
+        "default_voice": settings.get("default_voice", "alloy"),
+        "autoplay_strategy": settings.get("autoplay_strategy", "gesture"),
+    })
+
+
+@app.route("/api/voice/intro", methods=["GET"])
+def api_voice_intro():
+    """Find the best matching voice intro for the current visitor based on
+    UTM params and referrer. Returns the intro audio URL + message text.
+
+    Matching strategy: each intro can have utm_source / utm_medium /
+    utm_campaign / referrer_match filters. An intro matches a visitor if
+    EVERY non-empty filter on the intro matches the visitor's value.
+    Empty filters are wildcards. Among matching intros we pick the one
+    with the highest priority (then lowest id as tie-breaker). This
+    ensures specific intros win over generic ones."""
+
+    # First check the master toggle — if intros are disabled, return nothing
+    settings = query_db("SELECT enabled_intros FROM voice_settings WHERE id = 1", fetchone=True)
+    if not settings or not settings.get("enabled_intros"):
+        return jsonify({"intro": None})
+
+    # Read visitor's traffic source signals from query string
+    utm_source = (request.args.get("utm_source") or "").strip().lower()
+    utm_medium = (request.args.get("utm_medium") or "").strip().lower()
+    utm_campaign = (request.args.get("utm_campaign") or "").strip().lower()
+    referrer = (request.args.get("referrer") or "").strip().lower()
+    session_id = (request.args.get("session_id") or "").strip()
+
+    # Pull all enabled intros once and filter in Python — keeps SQL simple
+    # and lets us do case-insensitive substring matching on referrer.
+    intros = query_db(
+        "SELECT * FROM voice_intros WHERE enabled = true AND audio_url <> '' "
+        "ORDER BY priority DESC, id ASC"
+    ) or []
+
+    chosen = None
+    for intro in intros:
+        # An intro filter matches if it's empty (wildcard) OR equals the
+        # visitor's value (case-insensitive). Referrer uses substring match
+        # so "instagram.com" matches "https://www.instagram.com/...".
+        i_source = (intro.get("utm_source") or "").strip().lower()
+        i_medium = (intro.get("utm_medium") or "").strip().lower()
+        i_campaign = (intro.get("utm_campaign") or "").strip().lower()
+        i_referrer = (intro.get("referrer_match") or "").strip().lower()
+
+        if i_source and i_source != utm_source:
+            continue
+        if i_medium and i_medium != utm_medium:
+            continue
+        if i_campaign and i_campaign != utm_campaign:
+            continue
+        if i_referrer and i_referrer not in referrer:
+            continue
+
+        chosen = intro
+        break  # Already sorted by priority — first match wins
+
+    if not chosen:
+        return jsonify({"intro": None})
+
+    # Increment play counter and log usage (best-effort, errors are silent)
+    try:
+        execute_db(
+            "UPDATE voice_intros SET play_count = play_count + 1 WHERE id = %s",
+            (chosen["id"],),
+        )
+    except Exception as e:
+        print(f"[intro play_count update error] {e}")
+
+    _log_voice_usage(
+        feature_type="intro_play",
+        char_count=len(chosen.get("message_text") or ""),
+        voice_id=chosen.get("voice_id") or "",
+        session_id=session_id,
+        intro_id=chosen["id"],
+    )
+
+    return jsonify({
+        "intro": {
+            "id": chosen["id"],
+            "name": chosen.get("name") or "",
+            "audio_url": chosen.get("audio_url") or "",
+            "message_text": chosen.get("message_text") or "",
+            "voice_id": chosen.get("voice_id") or "",
+        }
+    })
+
+
+@app.route("/api/voice/tts", methods=["POST"])
+def api_voice_tts():
+    """Generate TTS audio for arbitrary text (used for AI replies in full
+    voice mode). Caches results by content hash so repeated text is free.
+
+    Only works if enabled_ai_voice is on — otherwise returns 403. Always
+    logs usage so we can bill clients accurately."""
+    settings = query_db("SELECT * FROM voice_settings WHERE id = 1", fetchone=True)
+    if not settings or not settings.get("enabled_ai_voice"):
+        return jsonify({"error": "AI voice is disabled"}), 403
+
+    data = request.get_json(silent=True) or {}
+    text = (data.get("text") or "").strip()
+    voice_id = (data.get("voice") or settings.get("default_voice") or "alloy").strip()
+    model = (settings.get("tts_model") or "tts-1").strip()
+    session_id = (data.get("session_id") or "").strip()
+
+    if not text:
+        return jsonify({"error": "Missing text"}), 400
+
+    # Per-IP daily budget check — prevents abuse via cache-busting requests.
+    # We only consume budget for fresh generations, so check by hashing first
+    # to see if the request would be a cache hit (cache hits cost $0 and are
+    # always allowed). request.remote_addr is fine in dev; behind a proxy
+    # you'd want to honor X-Forwarded-For.
+    cache_filename = _voice_cache_filename(
+        text[:TTS_MAX_CHARS],
+        voice_id if voice_id in ALLOWED_TTS_VOICES else "alloy",
+        model if model in ALLOWED_TTS_MODELS else "tts-1",
+    )
+    will_be_cached = os.path.exists(os.path.join(VOICE_CACHE_DIR, cache_filename))
+    if not will_be_cached:
+        client_ip = request.remote_addr or "unknown"
+        if not _check_tts_ip_budget(client_ip, len(text)):
+            return jsonify({"error": "Daily voice quota exceeded for your address"}), 429
+
+    try:
+        audio_url, was_cached = _generate_tts_audio(text, voice_id, model)
+    except Exception as e:
+        print(f"[TTS generation error] {e}")
+        return jsonify({"error": "TTS generation failed"}), 500
+
+    # Log usage — distinguish cached hits (no cost) from real generations
+    _log_voice_usage(
+        feature_type="tts_cached" if was_cached else "tts_generate",
+        char_count=len(text),
+        voice_id=voice_id,
+        session_id=session_id,
+    )
+
+    return jsonify({
+        "audio_url": audio_url,
+        "cached": was_cached,
+        "voice": voice_id,
+    })
+
+
+@app.route("/api/voice/log", methods=["POST"])
+def api_voice_log():
+    """Public endpoint for the frontend to log non-server-initiated events
+    like visitor STT (speech-to-text) usage. The browser's Web Speech API
+    is free, but we still log how often it's used for client billing."""
+    data = request.get_json(silent=True) or {}
+    feature_type = (data.get("feature_type") or "").strip()
+    if feature_type not in ("stt_request",):
+        return jsonify({"error": "Invalid feature_type"}), 400
+    _log_voice_usage(
+        feature_type=feature_type,
+        char_count=int(data.get("char_count") or 0),
+        session_id=(data.get("session_id") or "").strip(),
+    )
+    return jsonify({"status": "ok"})
+
+
+# -----------------------------------------------------------------------------
+# Admin voice endpoints
+# -----------------------------------------------------------------------------
+
+@app.route("/admin/api/voice-settings", methods=["GET"])
+@admin_required
+def admin_get_voice_settings():
+    """Return the full voice settings record for the admin dashboard."""
+    settings = query_db("SELECT * FROM voice_settings WHERE id = 1", fetchone=True)
+    if not settings:
+        execute_db("INSERT INTO voice_settings (id) VALUES (1) ON CONFLICT DO NOTHING")
+        settings = query_db("SELECT * FROM voice_settings WHERE id = 1", fetchone=True)
+    return jsonify(settings or {})
+
+
+@app.route("/admin/api/voice-settings", methods=["PUT"])
+@admin_required
+def admin_update_voice_settings():
+    """Update the global voice toggles and defaults."""
+    data = request.get_json(force=True) or {}
+
+    # Validate enum-like fields against whitelists. If the admin somehow
+    # submits a bad value (custom client, typo in JS), we reject it rather
+    # than letting the bad value live in the DB and crash later TTS calls.
+    if "default_voice" in data and data["default_voice"] not in ALLOWED_TTS_VOICES:
+        return jsonify({"error": "Invalid voice"}), 400
+    if "tts_model" in data and data["tts_model"] not in ALLOWED_TTS_MODELS:
+        return jsonify({"error": "Invalid TTS model"}), 400
+    if "autoplay_strategy" in data and data["autoplay_strategy"] not in ("gesture", "auto"):
+        return jsonify({"error": "Invalid autoplay strategy"}), 400
+
+    # Whitelist columns we allow updating
+    allowed = {
+        "enabled_intros", "enabled_visitor_voice", "enabled_ai_voice",
+        "default_voice", "tts_model", "autoplay_strategy",
+    }
+    cols = []
+    vals = []
+    for key in allowed:
+        if key in data:
+            cols.append(f"{key} = %s")
+            vals.append(data[key])
+    if not cols:
+        return jsonify({"status": "no changes"})
+    cols.append("updated_at = NOW()")
+    vals.append(1)
+    execute_db(
+        f"UPDATE voice_settings SET {', '.join(cols)} WHERE id = %s",
+        tuple(vals),
+    )
+    return jsonify({"status": "ok"})
+
+
+@app.route("/admin/api/voice-intros", methods=["GET"])
+@admin_required
+def admin_list_voice_intros():
+    """List all voice intros, ordered by priority then creation time."""
+    intros = query_db(
+        "SELECT * FROM voice_intros ORDER BY priority DESC, id ASC"
+    ) or []
+    return jsonify(intros)
+
+
+@app.route("/admin/api/voice-intros", methods=["POST"])
+@admin_required
+def admin_create_voice_intro():
+    """Create a new voice intro. Audio is NOT generated yet — the admin
+    clicks 'Generate Audio' separately so they can preview the text first."""
+    data = request.get_json(force=True) or {}
+    row = execute_db(
+        """INSERT INTO voice_intros
+           (name, message_text, voice_id, utm_source, utm_medium, utm_campaign,
+            referrer_match, priority, enabled)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (
+            (data.get("name") or "").strip(),
+            (data.get("message_text") or "").strip(),
+            (data.get("voice_id") or "alloy").strip(),
+            (data.get("utm_source") or "").strip(),
+            (data.get("utm_medium") or "").strip(),
+            (data.get("utm_campaign") or "").strip(),
+            (data.get("referrer_match") or "").strip(),
+            int(data.get("priority") or 0),
+            bool(data.get("enabled", True)),
+        ),
+    )
+    new_id = row["id"] if isinstance(row, dict) else None
+    return jsonify({"id": new_id, "status": "created"})
+
+
+@app.route("/admin/api/voice-intros/<int:intro_id>", methods=["PUT"])
+@admin_required
+def admin_update_voice_intro(intro_id):
+    """Update an intro's metadata. Note: changing message_text or voice_id
+    does NOT regenerate audio automatically — admin must click 'Generate'
+    to refresh the audio file (so they can preview text changes first)."""
+    data = request.get_json(force=True) or {}
+    allowed = {
+        "name", "message_text", "voice_id", "utm_source", "utm_medium",
+        "utm_campaign", "referrer_match", "priority", "enabled",
+    }
+    cols = []
+    vals = []
+    for key in allowed:
+        if key in data:
+            cols.append(f"{key} = %s")
+            vals.append(data[key])
+    if not cols:
+        return jsonify({"status": "no changes"})
+    vals.append(intro_id)
+    execute_db(
+        f"UPDATE voice_intros SET {', '.join(cols)} WHERE id = %s",
+        tuple(vals),
+    )
+    return jsonify({"status": "ok"})
+
+
+@app.route("/admin/api/voice-intros/<int:intro_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_voice_intro(intro_id):
+    """Delete an intro. The cached audio file (if any) is left on disk —
+    other intros may share the same hash, and disk cleanup is cheap."""
+    execute_db("DELETE FROM voice_intros WHERE id = %s", (intro_id,))
+    return jsonify({"status": "deleted"})
+
+
+@app.route("/admin/api/voice-intros/<int:intro_id>/generate", methods=["POST"])
+@admin_required
+def admin_generate_intro_audio(intro_id):
+    """Generate (or re-generate) the audio file for a specific intro.
+    This actually calls the OpenAI TTS API — costs money — so we expose
+    it as an explicit button in the admin panel rather than auto-running."""
+    intro = query_db("SELECT * FROM voice_intros WHERE id = %s", (intro_id,), fetchone=True)
+    if not intro:
+        return jsonify({"error": "Intro not found"}), 404
+
+    text = (intro.get("message_text") or "").strip()
+    if not text:
+        return jsonify({"error": "Intro has no message text"}), 400
+
+    voice_id = intro.get("voice_id") or "alloy"
+    settings = query_db("SELECT tts_model FROM voice_settings WHERE id = 1", fetchone=True)
+    model = (settings.get("tts_model") if settings else "tts-1") or "tts-1"
+
+    try:
+        audio_url, was_cached = _generate_tts_audio(text, voice_id, model)
+    except Exception as e:
+        print(f"[Admin TTS generation error] {e}")
+        return jsonify({"error": str(e)}), 500
+
+    execute_db(
+        "UPDATE voice_intros SET audio_url = %s WHERE id = %s",
+        (audio_url, intro_id),
+    )
+    _log_voice_usage(
+        feature_type="tts_cached" if was_cached else "tts_generate",
+        char_count=len(text),
+        voice_id=voice_id,
+        intro_id=intro_id,
+    )
+    return jsonify({"audio_url": audio_url, "cached": was_cached})
+
+
+@app.route("/admin/api/voice-usage", methods=["GET"])
+@admin_required
+def admin_voice_usage():
+    """Return aggregated voice usage stats for the admin billing dashboard.
+    Shows totals for today, this week, this month, plus a breakdown by
+    feature type. This is what we'd use to invoice clients."""
+    now = datetime.now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = today_start - timedelta(days=7)
+    month_start = today_start - timedelta(days=30)
+
+    def _count_chars(since):
+        """Sum character counts for paid features (TTS generations) since
+        the given datetime. Cached hits and intro plays are not billable."""
+        row = query_db(
+            "SELECT COUNT(*) AS c, COALESCE(SUM(char_count), 0) AS chars "
+            "FROM voice_usage_log WHERE created_at >= %s AND feature_type = 'tts_generate'",
+            (since,),
+            fetchone=True,
+        )
+        return {"requests": row["c"] if row else 0, "chars": row["chars"] if row else 0}
+
+    breakdown = query_db(
+        "SELECT feature_type, COUNT(*) AS count, COALESCE(SUM(char_count), 0) AS chars "
+        "FROM voice_usage_log WHERE created_at >= %s "
+        "GROUP BY feature_type ORDER BY count DESC",
+        (month_start,),
+    ) or []
+
+    return jsonify({
+        "today": _count_chars(today_start),
+        "week": _count_chars(week_start),
+        "month": _count_chars(month_start),
+        "breakdown_30d": breakdown,
+    })
 
 
 # =============================================================================

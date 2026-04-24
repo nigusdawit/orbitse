@@ -962,6 +962,10 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
       Chat History
     </button>
+    <button class="tab-btn" onclick="switchTab('voice', this)" data-testid="tab-voice">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+      Voice Agent
+    </button>
     <button class="tab-btn" onclick="switchTab('forms', this)" data-testid="tab-forms">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>
       Forms
@@ -2091,6 +2095,234 @@ TO CUSTOMIZE THIS DASHBOARD:
         <button class="btn btn-secondary btn-sm" onclick="document.getElementById('chat-detail-panel').style.display='none'" data-testid="button-close-chat-detail">Close</button>
       </div>
       <div id="chat-detail-messages" style="max-height: 400px; overflow-y: auto;"></div>
+    </div>
+  </div>
+
+
+  <!--
+  ========================================================================
+  TAB: VOICE AGENT
+  ========================================================================
+  Manage the proactive AI voice features:
+  - Three master toggles (intros / visitor mic / AI voice replies)
+  - Voice intros library — pre-recorded welcome messages targeted by
+    UTM source / medium / campaign / referrer (e.g. different welcomes
+    for Google Ads vs Instagram traffic)
+  - Usage stats — character counts and request totals for client billing
+
+  HOW IT WORKS:
+  - Settings stored in voice_settings (singleton row, id=1)
+  - Intros stored in voice_intros; audio is generated on demand and cached
+  - Every TTS generation and intro play is logged to voice_usage_log,
+    which powers the usage stats panel
+  -->
+  <div id="tab-voice" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Voice Agent</h2>
+        <p>Add a proactive voice layer to your site: personalized welcome messages, voice input, and AI voice replies.</p>
+      </div>
+    </div>
+
+    <!-- ============== Section 1: Master toggles + defaults ============== -->
+    <div class="form-card" id="voice-settings-form">
+      <h3 style="margin-top:0;">Voice Settings</h3>
+
+      <div class="form-row">
+        <div class="form-group" style="flex: 1;">
+          <label>
+            <input type="checkbox" id="voice-enabled-intros" data-testid="checkbox-voice-intros">
+            Enable Welcome Intros
+          </label>
+          <p class="help-text" style="margin-top:0.25rem; font-size:0.8rem; color: var(--admin-text-muted);">Plays a personalized voice note when visitors land on your site.</p>
+        </div>
+        <div class="form-group" style="flex: 1;">
+          <label>
+            <input type="checkbox" id="voice-enabled-visitor" data-testid="checkbox-voice-visitor">
+            Enable Visitor Voice Input
+          </label>
+          <p class="help-text" style="margin-top:0.25rem; font-size:0.8rem; color: var(--admin-text-muted);">Adds a microphone button so visitors can speak to the chat. Free (uses browser).</p>
+        </div>
+        <div class="form-group" style="flex: 1;">
+          <label>
+            <input type="checkbox" id="voice-enabled-ai" data-testid="checkbox-voice-ai">
+            Enable AI Voice Replies
+          </label>
+          <p class="help-text" style="margin-top:0.25rem; font-size:0.8rem; color: var(--admin-text-muted);">Speaks every AI reply aloud. Uses paid TTS — every request is logged for billing.</p>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="voice-default-voice">Default Voice</label>
+          <select id="voice-default-voice" data-testid="select-voice-default">
+            <option value="alloy">Alloy (neutral, balanced)</option>
+            <option value="echo">Echo (warm male)</option>
+            <option value="fable">Fable (British male)</option>
+            <option value="onyx">Onyx (deep male)</option>
+            <option value="nova">Nova (warm female)</option>
+            <option value="shimmer">Shimmer (soft female)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="voice-tts-model">TTS Model</label>
+          <select id="voice-tts-model" data-testid="select-voice-model">
+            <option value="tts-1">tts-1 (faster, lower cost)</option>
+            <option value="tts-1-hd">tts-1-hd (higher quality)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="voice-autoplay-strategy">Intro Autoplay</label>
+          <select id="voice-autoplay-strategy" data-testid="select-voice-autoplay">
+            <option value="gesture">Show "Tap to listen" card</option>
+            <option value="auto">Try to autoplay (fallback to card)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="saveVoiceSettings()" data-testid="button-save-voice-settings">Save Voice Settings</button>
+      </div>
+    </div>
+
+    <!-- ============== Section 2: Voice intros library ============== -->
+    <div style="margin-top: 1.5rem;">
+      <div class="section-header-admin">
+        <div>
+          <h3>Welcome Intros</h3>
+          <p>Pre-record different welcome messages for different traffic sources. The intro with the most matching filters wins (ties broken by priority).</p>
+        </div>
+        <button class="btn btn-primary" onclick="showAddVoiceIntroForm()" data-testid="button-add-voice-intro">+ New Intro</button>
+      </div>
+
+      <!-- Inline create / edit form. Hidden until "+ New Intro" is clicked. -->
+      <div id="voice-intro-form" class="form-card" style="display:none; margin-bottom: 1rem;">
+        <input type="hidden" id="voice-intro-id" value="">
+
+        <div class="form-row">
+          <div class="form-group" style="flex: 2;">
+            <label for="voice-intro-name">Intro Name (internal)</label>
+            <input type="text" id="voice-intro-name" placeholder="e.g. Google Ads visitors" data-testid="input-voice-intro-name">
+          </div>
+          <div class="form-group">
+            <label for="voice-intro-voice">Voice</label>
+            <select id="voice-intro-voice" data-testid="select-voice-intro-voice">
+              <option value="alloy">Alloy</option>
+              <option value="echo">Echo</option>
+              <option value="fable">Fable</option>
+              <option value="onyx">Onyx</option>
+              <option value="nova">Nova</option>
+              <option value="shimmer">Shimmer</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex: 0 0 100px;">
+            <label for="voice-intro-priority">Priority</label>
+            <input type="number" id="voice-intro-priority" value="0" data-testid="input-voice-intro-priority">
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group" style="flex: 1;">
+            <label for="voice-intro-message">Message Text</label>
+            <textarea id="voice-intro-message" rows="3" placeholder="Welcome! Thanks for visiting from Google. I'm here to help you find what you're looking for." data-testid="textarea-voice-intro-message"></textarea>
+            <p class="help-text" style="margin-top:0.25rem; font-size:0.8rem; color: var(--admin-text-muted);">Click "Generate Audio" after saving to record this in the chosen voice.</p>
+          </div>
+        </div>
+
+        <!-- UTM / referrer targeting filters. Empty = match any visitor. -->
+        <div class="form-row">
+          <div class="form-group">
+            <label for="voice-intro-utm-source">UTM Source filter</label>
+            <input type="text" id="voice-intro-utm-source" placeholder="e.g. google" data-testid="input-voice-intro-utm-source">
+          </div>
+          <div class="form-group">
+            <label for="voice-intro-utm-medium">UTM Medium filter</label>
+            <input type="text" id="voice-intro-utm-medium" placeholder="e.g. cpc" data-testid="input-voice-intro-utm-medium">
+          </div>
+          <div class="form-group">
+            <label for="voice-intro-utm-campaign">UTM Campaign filter</label>
+            <input type="text" id="voice-intro-utm-campaign" placeholder="e.g. spring_sale" data-testid="input-voice-intro-utm-campaign">
+          </div>
+          <div class="form-group">
+            <label for="voice-intro-referrer">Referrer contains</label>
+            <input type="text" id="voice-intro-referrer" placeholder="e.g. instagram.com" data-testid="input-voice-intro-referrer">
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group" style="flex: 0 0 auto;">
+            <label>
+              <input type="checkbox" id="voice-intro-enabled" checked data-testid="checkbox-voice-intro-enabled">
+              Enabled
+            </label>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn btn-secondary" onclick="hideVoiceIntroForm()" data-testid="button-cancel-voice-intro">Cancel</button>
+          <button class="btn btn-primary" onclick="saveVoiceIntro()" data-testid="button-save-voice-intro">Save Intro</button>
+        </div>
+      </div>
+
+      <table class="data-table" id="voice-intros-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Voice</th>
+            <th>Targeting</th>
+            <th>Audio</th>
+            <th>Plays</th>
+            <th>Pri</th>
+            <th>On</th>
+            <th style="width:200px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="voice-intros-body" data-testid="voice-intros-body">
+          <tr><td colspan="8" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ============== Section 3: Usage stats (for billing) ============== -->
+    <div style="margin-top: 1.5rem;">
+      <div class="section-header-admin">
+        <div>
+          <h3>Usage Stats</h3>
+          <p>Voice generation usage. Only "tts_generate" requests cost money — cached hits and visitor mic input are free.</p>
+        </div>
+        <button class="btn btn-secondary" onclick="loadVoiceUsage()" data-testid="button-refresh-voice-usage">Refresh</button>
+      </div>
+
+      <div id="voice-usage-stats" class="form-panel" style="display:flex; gap:2rem; flex-wrap:wrap;">
+        <div>
+          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Today (paid)</div>
+          <div id="voice-stat-today-req" style="font-size: 1.25rem; font-weight: 600; color: #fff;">0 requests</div>
+          <div id="voice-stat-today-chars" style="color: var(--admin-text-muted); font-size: 0.8rem;">0 characters</div>
+        </div>
+        <div>
+          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Last 7 Days</div>
+          <div id="voice-stat-week-req" style="font-size: 1.25rem; font-weight: 600; color: #fff;">0 requests</div>
+          <div id="voice-stat-week-chars" style="color: var(--admin-text-muted); font-size: 0.8rem;">0 characters</div>
+        </div>
+        <div>
+          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Last 30 Days</div>
+          <div id="voice-stat-month-req" style="font-size: 1.25rem; font-weight: 600; color: #fff;">0 requests</div>
+          <div id="voice-stat-month-chars" style="color: var(--admin-text-muted); font-size: 0.8rem;">0 characters</div>
+        </div>
+      </div>
+
+      <table class="data-table" style="margin-top: 1rem;">
+        <thead>
+          <tr>
+            <th>Feature</th>
+            <th>Requests (30d)</th>
+            <th>Characters (30d)</th>
+          </tr>
+        </thead>
+        <tbody id="voice-usage-breakdown" data-testid="voice-usage-breakdown">
+          <tr><td colspan="3" class="empty-state">No usage yet.</td></tr>
+        </tbody>
+      </table>
     </div>
   </div>
 
@@ -6149,6 +6381,244 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     loadSphereSettings();
+
+
+    /* ===================================================================
+     * VOICE AGENT — admin handlers
+     * ===================================================================
+     * Three concerns:
+     *   1. Voice settings (toggles + defaults) — load and save the singleton row
+     *   2. Voice intros — list, create, edit, delete, generate audio
+     *   3. Usage stats — render aggregated counters for billing
+     * ================================================================= */
+
+    /* ---------- 1. Settings ---------- */
+
+    async function loadVoiceSettings() {
+      try {
+        const res = await fetch('/admin/api/voice-settings');
+        const data = await res.json();
+        document.getElementById('voice-enabled-intros').checked = !!data.enabled_intros;
+        document.getElementById('voice-enabled-visitor').checked = !!data.enabled_visitor_voice;
+        document.getElementById('voice-enabled-ai').checked = !!data.enabled_ai_voice;
+        document.getElementById('voice-default-voice').value = data.default_voice || 'alloy';
+        document.getElementById('voice-tts-model').value = data.tts_model || 'tts-1';
+        document.getElementById('voice-autoplay-strategy').value = data.autoplay_strategy || 'gesture';
+      } catch (err) {
+        console.error('Error loading voice settings:', err);
+      }
+    }
+
+    async function saveVoiceSettings() {
+      const payload = {
+        enabled_intros: document.getElementById('voice-enabled-intros').checked,
+        enabled_visitor_voice: document.getElementById('voice-enabled-visitor').checked,
+        enabled_ai_voice: document.getElementById('voice-enabled-ai').checked,
+        default_voice: document.getElementById('voice-default-voice').value,
+        tts_model: document.getElementById('voice-tts-model').value,
+        autoplay_strategy: document.getElementById('voice-autoplay-strategy').value,
+      };
+      try {
+        await fetch('/admin/api/voice-settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        showToast('Voice settings saved');
+      } catch (err) {
+        console.error('Error saving voice settings:', err);
+        showToast('Could not save voice settings', 'error');
+      }
+    }
+
+    /* ---------- 2. Intros — CRUD ---------- */
+
+    /* Holds the most recently fetched intros so re-renders don't need a refetch. */
+    let voiceIntrosCache = [];
+
+    async function loadVoiceIntros() {
+      try {
+        const res = await fetch('/admin/api/voice-intros');
+        voiceIntrosCache = await res.json() || [];
+        renderVoiceIntros();
+      } catch (err) {
+        console.error('Error loading voice intros:', err);
+      }
+    }
+
+    function renderVoiceIntros() {
+      const tbody = document.getElementById('voice-intros-body');
+      if (!voiceIntrosCache.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No intros yet. Click "+ New Intro" to create one.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = voiceIntrosCache.map(intro => {
+        /* Build a compact "targeting" summary like "src=google, med=cpc" */
+        const filters = [];
+        if (intro.utm_source) filters.push('src=' + esc(intro.utm_source));
+        if (intro.utm_medium) filters.push('med=' + esc(intro.utm_medium));
+        if (intro.utm_campaign) filters.push('cam=' + esc(intro.utm_campaign));
+        if (intro.referrer_match) filters.push('ref~' + esc(intro.referrer_match));
+        const targeting = filters.length ? filters.join(', ') : '<em>any visitor</em>';
+
+        const audioCell = intro.audio_url
+          ? `<audio controls preload="none" src="${esc(intro.audio_url)}" style="height:28px; max-width:160px;"></audio>`
+          : '<span style="color: var(--admin-text-muted); font-size: 0.8rem;">not generated</span>';
+
+        return `<tr data-testid="row-voice-intro-${intro.id}">
+          <td>${esc(intro.name) || '<em>(unnamed)</em>'}</td>
+          <td>${esc(intro.voice_id || '')}</td>
+          <td style="font-size: 0.8rem;">${targeting}</td>
+          <td>${audioCell}</td>
+          <td>${intro.play_count || 0}</td>
+          <td>${intro.priority || 0}</td>
+          <td>${intro.enabled ? '✓' : '—'}</td>
+          <td>
+            <button class="btn btn-sm btn-secondary" onclick="editVoiceIntro(${intro.id})" data-testid="button-edit-voice-intro-${intro.id}">Edit</button>
+            <button class="btn btn-sm btn-primary" onclick="generateVoiceIntroAudio(${intro.id})" data-testid="button-generate-voice-intro-${intro.id}">Generate</button>
+            <button class="btn btn-sm btn-secondary" onclick="deleteVoiceIntro(${intro.id})" data-testid="button-delete-voice-intro-${intro.id}">Delete</button>
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    function showAddVoiceIntroForm() {
+      /* Reset form to a blank "create" state */
+      document.getElementById('voice-intro-id').value = '';
+      document.getElementById('voice-intro-name').value = '';
+      document.getElementById('voice-intro-voice').value = document.getElementById('voice-default-voice').value || 'alloy';
+      document.getElementById('voice-intro-priority').value = '0';
+      document.getElementById('voice-intro-message').value = '';
+      document.getElementById('voice-intro-utm-source').value = '';
+      document.getElementById('voice-intro-utm-medium').value = '';
+      document.getElementById('voice-intro-utm-campaign').value = '';
+      document.getElementById('voice-intro-referrer').value = '';
+      document.getElementById('voice-intro-enabled').checked = true;
+      document.getElementById('voice-intro-form').style.display = 'block';
+    }
+
+    function hideVoiceIntroForm() {
+      document.getElementById('voice-intro-form').style.display = 'none';
+    }
+
+    function editVoiceIntro(id) {
+      const intro = voiceIntrosCache.find(i => i.id === id);
+      if (!intro) return;
+      document.getElementById('voice-intro-id').value = intro.id;
+      document.getElementById('voice-intro-name').value = intro.name || '';
+      document.getElementById('voice-intro-voice').value = intro.voice_id || 'alloy';
+      document.getElementById('voice-intro-priority').value = intro.priority || 0;
+      document.getElementById('voice-intro-message').value = intro.message_text || '';
+      document.getElementById('voice-intro-utm-source').value = intro.utm_source || '';
+      document.getElementById('voice-intro-utm-medium').value = intro.utm_medium || '';
+      document.getElementById('voice-intro-utm-campaign').value = intro.utm_campaign || '';
+      document.getElementById('voice-intro-referrer').value = intro.referrer_match || '';
+      document.getElementById('voice-intro-enabled').checked = !!intro.enabled;
+      document.getElementById('voice-intro-form').style.display = 'block';
+    }
+
+    async function saveVoiceIntro() {
+      const id = document.getElementById('voice-intro-id').value;
+      const payload = {
+        name: document.getElementById('voice-intro-name').value.trim(),
+        message_text: document.getElementById('voice-intro-message').value.trim(),
+        voice_id: document.getElementById('voice-intro-voice').value,
+        utm_source: document.getElementById('voice-intro-utm-source').value.trim(),
+        utm_medium: document.getElementById('voice-intro-utm-medium').value.trim(),
+        utm_campaign: document.getElementById('voice-intro-utm-campaign').value.trim(),
+        referrer_match: document.getElementById('voice-intro-referrer').value.trim(),
+        priority: parseInt(document.getElementById('voice-intro-priority').value, 10) || 0,
+        enabled: document.getElementById('voice-intro-enabled').checked,
+      };
+      if (!payload.message_text) {
+        showToast('Message text is required', 'error');
+        return;
+      }
+      try {
+        const url = id
+          ? `/admin/api/voice-intros/${id}`
+          : '/admin/api/voice-intros';
+        const method = id ? 'PUT' : 'POST';
+        await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        hideVoiceIntroForm();
+        loadVoiceIntros();
+        showToast(id ? 'Intro updated' : 'Intro created');
+      } catch (err) {
+        console.error('Error saving voice intro:', err);
+        showToast('Could not save intro', 'error');
+      }
+    }
+
+    async function deleteVoiceIntro(id) {
+      if (!confirm('Delete this intro?')) return;
+      try {
+        await fetch(`/admin/api/voice-intros/${id}`, { method: 'DELETE' });
+        loadVoiceIntros();
+        showToast('Intro deleted');
+      } catch (err) {
+        console.error('Error deleting voice intro:', err);
+      }
+    }
+
+    /**
+     * Trigger backend TTS generation for an intro. This calls the OpenAI
+     * API and costs money — confirm with the admin before firing.
+     */
+    async function generateVoiceIntroAudio(id) {
+      if (!confirm('Generate audio with the OpenAI TTS API? This will use a small amount of credit.')) return;
+      try {
+        const res = await fetch(`/admin/api/voice-intros/${id}/generate`, { method: 'POST' });
+        const data = await res.json();
+        if (data.error) {
+          showToast(data.error, 'error');
+        } else {
+          showToast(data.cached ? 'Audio reused from cache' : 'Audio generated');
+          loadVoiceIntros();
+          loadVoiceUsage();
+        }
+      } catch (err) {
+        console.error('Error generating audio:', err);
+        showToast('Could not generate audio', 'error');
+      }
+    }
+
+    /* ---------- 3. Usage stats ---------- */
+
+    async function loadVoiceUsage() {
+      try {
+        const res = await fetch('/admin/api/voice-usage');
+        const data = await res.json();
+
+        document.getElementById('voice-stat-today-req').textContent = (data.today.requests || 0) + ' requests';
+        document.getElementById('voice-stat-today-chars').textContent = (data.today.chars || 0).toLocaleString() + ' characters';
+        document.getElementById('voice-stat-week-req').textContent = (data.week.requests || 0) + ' requests';
+        document.getElementById('voice-stat-week-chars').textContent = (data.week.chars || 0).toLocaleString() + ' characters';
+        document.getElementById('voice-stat-month-req').textContent = (data.month.requests || 0) + ' requests';
+        document.getElementById('voice-stat-month-chars').textContent = (data.month.chars || 0).toLocaleString() + ' characters';
+
+        const tbody = document.getElementById('voice-usage-breakdown');
+        if (!data.breakdown_30d || !data.breakdown_30d.length) {
+          tbody.innerHTML = '<tr><td colspan="3" class="empty-state">No usage in the last 30 days.</td></tr>';
+        } else {
+          tbody.innerHTML = data.breakdown_30d.map(row =>
+            `<tr><td>${esc(row.feature_type)}</td><td>${row.count}</td><td>${(row.chars || 0).toLocaleString()}</td></tr>`
+          ).join('');
+        }
+      } catch (err) {
+        console.error('Error loading voice usage:', err);
+      }
+    }
+
+    /* Load all three sections on page load. They're cheap reads, so we don't
+       need to lazy-load on tab switch. */
+    loadVoiceSettings();
+    loadVoiceIntros();
+    loadVoiceUsage();
+
   </script>
   </main>
   </div>
