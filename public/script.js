@@ -4793,6 +4793,23 @@ function buildImmersivePageDoc(bodyHtml, streamToken) {
           } else if (d.type === 'finish') {
             var pulse = document.querySelector('.__streaming_pulse__');
             if (pulse) pulse.remove();
+            /* insertAdjacentHTML parses <script> tags into the DOM but
+               does NOT execute them. Re-run any inline/external scripts
+               the AI included (e.g. IntersectionObserver setups that toggle
+               .visible on .animate-in elements) by cloning each one into a
+               fresh <script> element, which the browser DOES execute. */
+            try {
+              var scripts = root ? root.querySelectorAll('script') : [];
+              for (var i = 0; i < scripts.length; i++) {
+                var old = scripts[i];
+                var s = document.createElement('script');
+                for (var a = 0; a < old.attributes.length; a++) {
+                  s.setAttribute(old.attributes[a].name, old.attributes[a].value);
+                }
+                s.text = old.textContent || '';
+                old.parentNode.replaceChild(s, old);
+              }
+            } catch (err) {}
           }
         });
         /* Tell the parent we're ready to receive chunks. Re-post on a few
