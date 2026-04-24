@@ -413,6 +413,25 @@
    * on what the admin configured AND what the visitor's browser supports.
    */
   function toggleVoiceInput(inputEl, sendEl, micBtn) {
+    // If the AI (or the welcome intro) is currently speaking, the visitor
+    // tapping the mic clearly means "let me talk" — so cut the audio off
+    // immediately rather than making them shout over it. We skip this when
+    // the click is going to STOP an in-progress recording, so the existing
+    // "click again to stop" semantics keep working unchanged.
+    const isStoppingRecording =
+      VOICE.recognitionActive ||
+      VOICE.recordingActive ||
+      (VOICE.mediaRecorder && VOICE.mediaRecorder.state === "recording");
+    if (!isStoppingRecording) {
+      // stopCurrentAudio() centrally clears the audio, the streaming
+      // sentence queue, and the .voice-speaking highlight in one call.
+      // The "ended" listener inside playAudioUrl will fire on pause()
+      // for some browsers but not all, so stopCurrentAudio also nulls
+      // VOICE.currentAudio so the cleanup closure detects the swap and
+      // doesn't reset state we just changed.
+      stopCurrentAudio();
+    }
+
     const provider = effectiveSttProvider();
     if (provider === "whisper") {
       toggleWhisperRecording(inputEl, sendEl, micBtn);

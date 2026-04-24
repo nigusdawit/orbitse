@@ -5087,6 +5087,43 @@ def api_generated_page_by_slug(slug):
         "WHERE slug = %s AND status = 'published'",
         (slug,), fetchone=True
     )
+
+    # Fuzzy fallback. Saved page slugs include a trailing "-<timestamp>"
+    # suffix appended at creation time (e.g. "wine-cellar-1777058143"),
+    # but the model sometimes emits the bare stem ("wine-cellar") or a
+    # stem from an older draft that has since been re-published with a
+    # different timestamp. Rather than failing the request and forcing
+    # the visitor to rephrase, we look for the most recently updated
+    # PUBLISHED page whose slug shares the same stem and return that.
+    # We only match on the stem (everything before the final "-<digits>")
+    # so we never silently swap to an unrelated page that happens to
+    # share a prefix.
+    if not page:
+        # Strip a single trailing "-<digits>" group to get the stem.
+        # If the requested slug has no timestamp suffix, the stem is
+        # just the slug itself. Stem must be non-empty after stripping.
+        stem = re.sub(r"-\d+$", "", slug).strip("-")
+        if stem and _GENERATED_PAGE_SLUG_RE.match(stem):
+            # Match published pages whose slug equals the stem OR is the
+            # stem followed by a hyphen and ONLY digits (the timestamp
+            # suffix our slug-builder appends at create time). We require
+            # digits-only so a stem like "wine" can't accidentally match
+            # "wine-tour-1234" — only "wine-1234" / "wine-99" etc. count
+            # as the same page. Postgres' `~` operator runs the regex.
+            stem_regex = "^" + re.escape(stem) + "-[0-9]+$"
+            page = query_db(
+                "SELECT id, title, html, slug FROM generated_pages "
+                "WHERE status = 'published' "
+                "AND (slug = %s OR slug ~ %s) "
+                "ORDER BY updated_at DESC LIMIT 1",
+                (stem, stem_regex), fetchone=True
+            )
+            if page:
+                app.logger.info(
+                    "by-slug fuzzy match: requested '%s' -> served '%s'",
+                    slug, page.get("slug", "")
+                )
+
     if not page:
         return jsonify({"error": "Page not found"}), 404
     return jsonify({
