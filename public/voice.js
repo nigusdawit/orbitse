@@ -188,10 +188,28 @@
    * autoplay strategy and what the browser actually allows.
    */
   async function maybePlayIntro() {
-    if (!VOICE.settings || !VOICE.settings.enabled_intros) return;
+    // Detect "force" mode: if the URL has ?intro=force or ?intro=test, bypass
+    // the session-already-played gate AND clear the flag so admins can reload
+    // the page repeatedly to QA the intro without opening a new tab each time.
+    const forceParam = (getQueryParams().intro || "").toLowerCase();
+    const forceIntro = forceParam === "force" || forceParam === "test";
+    if (forceIntro) {
+      try { sessionStorage.removeItem(INTRO_PLAYED_KEY); } catch (e) {}
+    }
+
+    if (!VOICE.settings || !VOICE.settings.enabled_intros) {
+      console.info("[voice-intro] skipped: intros are disabled in voice settings");
+      return;
+    }
 
     // Already played in this tab/session — don't pester the visitor on every nav
-    if (sessionStorage.getItem(INTRO_PLAYED_KEY) === "1") return;
+    if (!forceIntro && sessionStorage.getItem(INTRO_PLAYED_KEY) === "1") {
+      console.info(
+        "[voice-intro] skipped: already played in this browser tab. " +
+        "Open in a new tab, or add ?intro=force to the URL, to test again."
+      );
+      return;
+    }
 
     const params = getQueryParams();
     const url = "/api/voice/intro?" + new URLSearchParams({
@@ -205,13 +223,24 @@
     let data;
     try {
       const res = await fetch(url);
-      if (!res.ok) return;
+      if (!res.ok) {
+        console.warn("[voice-intro] /api/voice/intro returned", res.status);
+        return;
+      }
       data = await res.json();
     } catch (e) {
-      return; // Network failure — fail silent, voice is non-critical
+      console.warn("[voice-intro] network error fetching intro:", e);
+      return;
     }
 
-    if (!data || !data.intro || !data.intro.audio_url) return;
+    if (!data || !data.intro || !data.intro.audio_url) {
+      console.info(
+        "[voice-intro] skipped: no intro matched this visitor. " +
+        "Check that an enabled intro exists with audio generated, and that " +
+        "its UTM/referrer filters either match the current page or are blank."
+      );
+      return;
+    }
 
     // Show the "Tap to play" card. Even with autoplay strategy, browsers
     // typically refuse the very first audio.play() before any user gesture,
@@ -235,7 +264,9 @@
   /** Mark the intro as played for this session so it doesn't repeat. */
   function markIntroPlayed() {
     VOICE.introPlayed = true;
-    sessionStorage.setItem(INTRO_PLAYED_KEY, "1");
+    // Wrap in try/catch — Safari private mode and some hardened browsers
+    // throw QuotaExceededError on sessionStorage.setItem even when empty.
+    try { sessionStorage.setItem(INTRO_PLAYED_KEY, "1"); } catch (e) {}
   }
 
   /**

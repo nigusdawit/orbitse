@@ -2513,8 +2513,17 @@ TO CUSTOMIZE THIS DASHBOARD:
         <div>
           <h3>Welcome Intros</h3>
           <p>Pre-record different welcome messages for different traffic sources. The intro with the most matching filters wins (ties broken by priority).</p>
+          <p style="font-size:.85rem; opacity:.75; margin-top:.25rem;">
+            Intros only play once per browser tab so visitors aren't pestered on every reload.
+            Use the <strong>Test on site</strong> button to force a replay for QA.
+          </p>
         </div>
-        <button class="btn btn-primary" onclick="showAddVoiceIntroForm()" data-testid="button-add-voice-intro">+ New Intro</button>
+        <div style="display:flex; gap:.5rem;">
+          <button class="btn btn-secondary"
+                  onclick="window.open('/?intro=force', '_blank')"
+                  data-testid="button-test-voice-intro">▶ Test on site</button>
+          <button class="btn btn-primary" onclick="showAddVoiceIntroForm()" data-testid="button-add-voice-intro">+ New Intro</button>
+        </div>
       </div>
 
       <!-- Inline create / edit form. Hidden until "+ New Intro" is clicked. -->
