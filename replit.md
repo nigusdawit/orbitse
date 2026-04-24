@@ -15,6 +15,7 @@ The site features:
 - **Admin dashboard** at `/admin` (password-protected) for editing all content via a web interface
 - **Database-driven content** — changes in admin are instantly visible on the public site
 - **AI System Prompt Editor** — edit the AI's system prompt from admin without touching code
+- **AI Live Site View** — every chat message injects the current site state into the AI's context: brand identity, theme tokens, gallery cards, experiences, pricing, dynamic forms, testimonials, team, FAQs, blog posts, last 25 AI-generated pages, business contact, the full landing page layout (every section in display order with enabled/DISABLED status), and items inside admin-created custom sections (title, subtitle, content, icon, image, link)
 - **Image Upload System** — upload images directly from admin, stored in `/uploads/`
 - **Drag-and-Drop Reordering** — reorder gallery cards, experiences, pricing, testimonials, team, and FAQ by dragging rows
 - **Toggleable Sections** — enable/disable Testimonials, Team, FAQ, and Footer from admin

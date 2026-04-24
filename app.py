@@ -2478,13 +2478,46 @@ def api_chat():
             if biz_lines:
                 active_prompt += f"\n\nBUSINESS CONTACT INFO:\n" + "\n".join(biz_lines)
 
-        # ----- 11. CUSTOM SECTIONS -----
-        # Content from admin-created custom sections so the AI knows about them.
-        # Also includes the section ID so the AI can use scrollToSection.
+        # ----- 10b. LANDING PAGE LAYOUT -----
+        # Live "view" of page_sections — tells the AI which sections exist on
+        # the landing page, the display order, whether each is currently
+        # visible to visitors (enabled/disabled), and the template for custom
+        # ones. This way the AI never references a section that's been
+        # toggled off ("our team" when team section is disabled, etc.).
+        all_sections = query_db(
+            "SELECT slug, title, section_type, template, sort_order, enabled "
+            "FROM page_sections ORDER BY sort_order ASC"
+        )
+        if all_sections:
+            layout_lines = []
+            for s in all_sections:
+                status = "enabled" if s.get("enabled") else "DISABLED"
+                stype = s.get("section_type") or "built_in"
+                tmpl = f"/{s['template']}" if (stype == "custom" and s.get("template")) else ""
+                title = s.get("title") or ""
+                layout_lines.append(
+                    f'  {s["sort_order"]}. [{status}] {s["slug"]} ({stype}{tmpl})'
+                    + (f' — "{title}"' if title else "")
+                )
+            active_prompt += (
+                "\n\nLANDING PAGE LAYOUT (live view of page_sections — sections "
+                "shown in display order; DISABLED sections are hidden from "
+                "visitors, so do NOT reference or link to them):\n"
+                + "\n".join(layout_lines)
+            )
+
+        # ----- 11. CUSTOM SECTIONS — items in admin-created sections -----
+        # Content items from custom sections (cards_grid, stats_counter,
+        # icon_features, etc.) so the AI can describe and link to them.
+        # Includes the section ID for the scrollToSection command.
+        # Only enabled custom sections are included — disabled ones are
+        # already listed (with status) in the LANDING PAGE LAYOUT block above.
         custom_sections = query_db("""
             SELECT ps.id as section_id, ps.slug, ps.title, ps.template,
                    csi.title as item_title, csi.subtitle as item_subtitle,
-                   csi.content as item_content
+                   csi.content as item_content, csi.image_url as item_image,
+                   csi.link_url as item_link, csi.link_text as item_link_text,
+                   csi.icon as item_icon
             FROM page_sections ps
             JOIN custom_section_items csi ON csi.section_id = ps.id
             WHERE ps.enabled = true AND ps.section_type = 'custom'
@@ -2493,20 +2526,42 @@ def api_chat():
         if custom_sections:
             current_section = None
             current_section_id = None
+            current_template = None
             section_lines = []
+
+            def _flush():
+                if current_section and section_lines:
+                    tmpl_note = f", template: {current_template}" if current_template else ""
+                    active_prompt_local = (
+                        f"\n\nCUSTOM SECTION — {current_section.upper().replace('-', ' ')} "
+                        f"(scrollToSection target: section-custom-{current_section_id}{tmpl_note}):\n"
+                        + "\n".join(section_lines)
+                    )
+                    return active_prompt_local
+                return ""
+
             for row in custom_sections:
                 if row["slug"] != current_section:
-                    if current_section and section_lines:
-                        active_prompt += f"\n\nCUSTOM SECTION — {current_section.upper().replace('-', ' ')} (scrollToSection target: section-custom-{current_section_id}):\n" + "\n".join(section_lines)
+                    flushed = _flush()
+                    if flushed:
+                        active_prompt += flushed
                     current_section = row["slug"]
                     current_section_id = row["section_id"]
+                    current_template = row.get("template") or ""
                     section_lines = []
                 line = f'  - {row["item_title"]}'
+                if row.get("item_icon"): line += f' [{row["item_icon"]}]'
                 if row.get("item_subtitle"): line += f' — {row["item_subtitle"]}'
                 if row.get("item_content"): line += f': {row["item_content"]}'
+                if row.get("item_image"): line += f' (image: {row["item_image"]})'
+                if row.get("item_link"):
+                    lt = row.get("item_link_text") or row["item_link"]
+                    line += f' [link: "{lt}" → {row["item_link"]}]'
                 section_lines.append(line)
-            if current_section and section_lines:
-                active_prompt += f"\n\nCUSTOM SECTION — {current_section.upper().replace('-', ' ')} (scrollToSection target: section-custom-{current_section_id}):\n" + "\n".join(section_lines)
+
+            flushed = _flush()
+            if flushed:
+                active_prompt += flushed
 
     except Exception:
         pass
