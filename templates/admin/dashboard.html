@@ -1100,6 +1100,16 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
       Podcast
     </button>
+
+    <div class="sidebar-group-label">Store</div>
+    <button class="tab-btn" onclick="switchTab('products', this); loadProducts();" data-testid="tab-products">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+      Products
+    </button>
+    <button class="tab-btn" onclick="switchTab('orders', this); loadOrders();" data-testid="tab-orders">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+      Orders
+    </button>
     <button class="tab-btn" onclick="switchTab('sphere', this)" data-testid="tab-sphere">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
       Sphere View
@@ -3524,6 +3534,140 @@ TO CUSTOMIZE THIS DASHBOARD:
 
   <!--
   ========================================================================
+  TAB: PRODUCTS
+  ========================================================================
+  Manage storefront products (CRUD), inventory adjustments, active toggle.
+  -->
+  <div id="tab-products" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Products</h2>
+        <p>Sell physical or digital goods. Enable the "Store" section in Page Layout to show the storefront publicly.</p>
+        <p id="products-stripe-status" style="margin:0.5rem 0 0; font-size:0.85rem;"></p>
+      </div>
+      <button class="btn btn-primary" onclick="showProductForm()" data-testid="button-new-product">+ New Product</button>
+    </div>
+
+    <div id="product-form-panel" style="display:none; padding:1rem; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:8px; margin-bottom:1rem;">
+      <h3 id="product-form-title" style="margin-top:0;">New Product</h3>
+      <input type="hidden" id="product-form-id">
+      <div class="form-row">
+        <div class="form-group">
+          <label for="product-name">Name</label>
+          <input type="text" id="product-name" data-testid="input-product-name">
+        </div>
+        <div class="form-group">
+          <label for="product-slug">Slug</label>
+          <input type="text" id="product-slug" placeholder="auto-from-name" data-testid="input-product-slug">
+        </div>
+        <div class="form-group">
+          <label for="product-sort-order">Sort Order</label>
+          <input type="number" id="product-sort-order" value="0" data-testid="input-product-sort">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="product-price">Price</label>
+          <input type="number" id="product-price" step="0.01" min="0" placeholder="29.99" data-testid="input-product-price">
+        </div>
+        <div class="form-group">
+          <label for="product-currency">Currency</label>
+          <input type="text" id="product-currency" value="USD" maxlength="3" data-testid="input-product-currency">
+        </div>
+        <div class="form-group">
+          <label for="product-stock">Stock</label>
+          <input type="number" id="product-stock" value="0" min="0" data-testid="input-product-stock">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column:1/-1;">
+          <label for="product-image">Image URL</label>
+          <div style="display:flex; gap:0.5rem;">
+            <input type="url" id="product-image" placeholder="https://…" style="flex:1;" data-testid="input-product-image">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'product-image', mediaType:'image'})" data-testid="button-pick-product-image">Pick</button>
+          </div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column:1/-1;">
+          <label for="product-description">Description</label>
+          <textarea id="product-description" rows="3" data-testid="input-product-description"></textarea>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label style="display:flex; align-items:center; gap:0.5rem;">
+            <input type="checkbox" id="product-active" checked data-testid="input-product-active">
+            <span>Active (visible on storefront)</span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label style="display:flex; align-items:center; gap:0.5rem;">
+            <input type="checkbox" id="product-track-inventory" checked data-testid="input-product-track-inventory">
+            <span>Track inventory (mark sold out at 0)</span>
+          </label>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="hideProductForm()" data-testid="button-cancel-product">Cancel</button>
+        <button class="btn btn-primary" onclick="saveProduct()" data-testid="button-save-product">Save</button>
+      </div>
+    </div>
+
+    <table class="data-table" id="products-table">
+      <thead>
+        <tr><th>Image</th><th>Name</th><th>Price</th><th>Stock</th><th>Active</th><th>Sort</th><th></th></tr>
+      </thead>
+      <tbody id="products-tbody">
+        <tr><td colspan="7" style="text-align:center; color:var(--admin-text-muted); padding:1.5rem;">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: ORDERS
+  ========================================================================
+  List recent orders, filter by status, view details, issue refunds via
+  the Stripe Refund API.
+  -->
+  <div id="tab-orders" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Orders</h2>
+        <p>Track customer orders. Refunds are processed instantly through Stripe.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <label style="font-size:0.85rem; color:var(--admin-text-muted);">Status</label>
+        <select id="orders-filter-status" onchange="loadOrders()" data-testid="select-orders-filter">
+          <option value="">All</option>
+          <option value="pending">Pending</option>
+          <option value="paid">Paid</option>
+          <option value="refunded">Refunded</option>
+          <option value="failed">Failed</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="loadOrders()" data-testid="button-refresh-orders">Refresh</button>
+      </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1rem;">
+      <table class="data-table" id="orders-table" style="margin:0;">
+        <thead>
+          <tr><th>Order #</th><th>Customer</th><th>Total</th><th>Status</th><th>Placed</th></tr>
+        </thead>
+        <tbody id="orders-tbody">
+          <tr><td colspan="5" style="text-align:center; color:var(--admin-text-muted); padding:1.5rem;">Loading…</td></tr>
+        </tbody>
+      </table>
+
+      <div id="order-detail-panel" style="background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:8px; padding:1rem; min-height:200px;">
+        <p style="color:var(--admin-text-muted); margin:0;">Select an order to view details.</p>
+      </div>
+    </div>
+  </div>
+
+  <!--
+  ========================================================================
   TAB: ANALYTICS
   ========================================================================
   Visitor analytics dashboard showing page views, sessions, devices,
@@ -5517,6 +5661,255 @@ TO CUSTOMIZE THIS DASHBOARD:
         if (res.ok) { showToast('Episode deleted'); loadPodcast(); }
         else { showToast('Failed to delete', 'error'); }
       } catch (err) { showToast('Failed to delete', 'error'); }
+    }
+
+
+    /*
+    ========================================================================
+    PRODUCTS — CRUD + Inventory
+    ========================================================================
+    */
+
+    let _productsCache = [];
+
+    function fmtMoneyAdmin(cents, currency) {
+      const cur = (currency || 'USD').toUpperCase();
+      try {
+        return new Intl.NumberFormat(undefined, { style: 'currency', currency: cur })
+          .format((cents || 0) / 100);
+      } catch (_) { return '$' + ((cents || 0) / 100).toFixed(2); }
+    }
+
+    async function loadProducts() {
+      try {
+        const [prodRes, cfgRes] = await Promise.all([
+          fetch('/admin/api/products'),
+          fetch('/api/storefront-config'),
+        ]);
+        const items = await prodRes.json();
+        const cfg = await cfgRes.json();
+        _productsCache = items;
+
+        const status = document.getElementById('products-stripe-status');
+        if (status) {
+          if (cfg.stripe_configured) {
+            status.innerHTML = '<span style="color:#10b981;">✓ Stripe is connected.</span>';
+          } else {
+            status.innerHTML = '<span style="color:#f59e0b;">⚠ Stripe is not yet connected — you can manage products, but checkout will be disabled until Stripe is set up.</span>';
+          }
+        }
+
+        const tbody = document.getElementById('products-tbody');
+        if (!items.length) {
+          tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:var(--admin-text-muted); padding:1.5rem;">No products yet. Click "+ New Product" to add one.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = items.map(p => `
+          <tr data-testid="row-product-${p.id}">
+            <td>${p.image_url ? `<img src="${escapeAttr(p.image_url)}" style="width:48px;height:48px;object-fit:cover;border-radius:6px;">` : '<span style="color:var(--admin-text-muted);">—</span>'}</td>
+            <td><strong>${escapeHtmlAdmin(p.name)}</strong><br><span style="color:var(--admin-text-muted); font-size:0.8rem;">${escapeHtmlAdmin(p.slug)}</span></td>
+            <td>${fmtMoneyAdmin(p.price_cents, p.currency)}</td>
+            <td>
+              <input type="number" min="0" value="${p.stock || 0}" style="width:70px;" onchange="adjustStock(${p.id}, this.value)" data-testid="input-stock-${p.id}">
+            </td>
+            <td>${p.active ? '<span style="color:#10b981;">●</span> Yes' : '<span style="color:#9ca3af;">○</span> No'}</td>
+            <td>${p.sort_order || 0}</td>
+            <td style="white-space:nowrap;">
+              <button class="btn btn-sm btn-secondary" onclick='editProduct(${p.id})' data-testid="button-edit-product-${p.id}">Edit</button>
+              <button class="btn btn-sm btn-danger" onclick="deleteProduct(${p.id})" data-testid="button-delete-product-${p.id}">Delete</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        document.getElementById('products-tbody').innerHTML = '<tr><td colspan="7" style="color:#ef4444; padding:1rem;">Failed to load products.</td></tr>';
+      }
+    }
+
+    function escapeHtmlAdmin(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+    function escapeAttr(s) { return escapeHtmlAdmin(s); }
+
+    function showProductForm() {
+      document.getElementById('product-form-title').textContent = 'New Product';
+      document.getElementById('product-form-id').value = '';
+      document.getElementById('product-name').value = '';
+      document.getElementById('product-slug').value = '';
+      document.getElementById('product-sort-order').value = 0;
+      document.getElementById('product-price').value = '';
+      document.getElementById('product-currency').value = 'USD';
+      document.getElementById('product-stock').value = 0;
+      document.getElementById('product-image').value = '';
+      document.getElementById('product-description').value = '';
+      document.getElementById('product-active').checked = true;
+      document.getElementById('product-track-inventory').checked = true;
+      document.getElementById('product-form-panel').style.display = 'block';
+    }
+    function hideProductForm() { document.getElementById('product-form-panel').style.display = 'none'; }
+
+    function editProduct(id) {
+      const p = _productsCache.find(x => x.id === id);
+      if (!p) return;
+      document.getElementById('product-form-title').textContent = 'Edit Product';
+      document.getElementById('product-form-id').value = p.id;
+      document.getElementById('product-name').value = p.name || '';
+      document.getElementById('product-slug').value = p.slug || '';
+      document.getElementById('product-sort-order').value = p.sort_order || 0;
+      document.getElementById('product-price').value = ((p.price_cents || 0) / 100).toFixed(2);
+      document.getElementById('product-currency').value = p.currency || 'USD';
+      document.getElementById('product-stock').value = p.stock || 0;
+      document.getElementById('product-image').value = p.image_url || '';
+      document.getElementById('product-description').value = p.description || '';
+      document.getElementById('product-active').checked = !!p.active;
+      document.getElementById('product-track-inventory').checked = p.track_inventory !== false;
+      document.getElementById('product-form-panel').style.display = 'block';
+    }
+
+    async function saveProduct() {
+      const id = document.getElementById('product-form-id').value;
+      const priceFloat = parseFloat(document.getElementById('product-price').value || '0');
+      const payload = {
+        name: document.getElementById('product-name').value.trim(),
+        slug: document.getElementById('product-slug').value.trim(),
+        sort_order: parseInt(document.getElementById('product-sort-order').value || '0', 10),
+        price_cents: Math.round(priceFloat * 100),
+        currency: (document.getElementById('product-currency').value || 'USD').toUpperCase(),
+        stock: parseInt(document.getElementById('product-stock').value || '0', 10),
+        image_url: document.getElementById('product-image').value.trim(),
+        description: document.getElementById('product-description').value.trim(),
+        active: document.getElementById('product-active').checked,
+        track_inventory: document.getElementById('product-track-inventory').checked,
+      };
+      if (!payload.name) { showToast('Name is required', 'error'); return; }
+      if (payload.price_cents <= 0) { showToast('Price must be greater than 0', 'error'); return; }
+      try {
+        const url = id ? `/admin/api/products/${id}` : '/admin/api/products';
+        const method = id ? 'PUT' : 'POST';
+        const res = await fetch(url, {
+          method, headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) { showToast(id ? 'Product updated' : 'Product created'); hideProductForm(); loadProducts(); }
+        else { showToast(data.error || 'Failed to save', 'error'); }
+      } catch (err) { showToast('Failed to save', 'error'); }
+    }
+
+    async function deleteProduct(id) {
+      if (!confirm('Delete this product? Existing orders are preserved.')) return;
+      try {
+        const res = await fetch(`/admin/api/products/${id}`, { method: 'DELETE' });
+        if (res.ok) { showToast('Product deleted'); loadProducts(); }
+        else { showToast('Failed to delete', 'error'); }
+      } catch (err) { showToast('Failed to delete', 'error'); }
+    }
+
+    async function adjustStock(id, value) {
+      const stock = Math.max(0, parseInt(value || '0', 10));
+      try {
+        const res = await fetch(`/admin/api/products/${id}/stock`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ stock }),
+        });
+        if (res.ok) showToast('Stock updated');
+        else showToast('Failed to update stock', 'error');
+      } catch (err) { showToast('Failed to update stock', 'error'); }
+    }
+
+
+    /*
+    ========================================================================
+    ORDERS — List, Detail, Refund
+    ========================================================================
+    */
+
+    async function loadOrders() {
+      const status = document.getElementById('orders-filter-status').value;
+      const url = status ? `/admin/api/orders?status=${encodeURIComponent(status)}` : '/admin/api/orders';
+      try {
+        const res = await fetch(url);
+        const items = await res.json();
+        const tbody = document.getElementById('orders-tbody');
+        if (!items.length) {
+          tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--admin-text-muted); padding:1.5rem;">No orders yet.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = items.map(o => {
+          const placed = o.created_at ? new Date(o.created_at).toLocaleString() : '';
+          const statusColor = { paid: '#10b981', pending: '#f59e0b', refunded: '#6b7280', failed: '#ef4444' }[o.status] || '#6b7280';
+          return `
+            <tr style="cursor:pointer;" onclick="loadOrderDetail(${o.id})" data-testid="row-order-${o.id}">
+              <td><strong>${escapeHtmlAdmin(o.order_number)}</strong></td>
+              <td>${escapeHtmlAdmin(o.customer_name || o.customer_email || '—')}</td>
+              <td>${fmtMoneyAdmin(o.total_cents, o.currency)}</td>
+              <td><span style="color:${statusColor}; font-weight:600;">${escapeHtmlAdmin(o.status)}</span></td>
+              <td style="font-size:0.85rem;">${placed}</td>
+            </tr>`;
+        }).join('');
+      } catch (err) {
+        document.getElementById('orders-tbody').innerHTML = '<tr><td colspan="5" style="color:#ef4444; padding:1rem;">Failed to load orders.</td></tr>';
+      }
+    }
+
+    async function loadOrderDetail(id) {
+      const panel = document.getElementById('order-detail-panel');
+      panel.innerHTML = '<p style="color:var(--admin-text-muted);">Loading…</p>';
+      try {
+        const res = await fetch(`/admin/api/orders/${id}`);
+        if (!res.ok) throw new Error('not found');
+        const o = await res.json();
+        const placed = o.created_at ? new Date(o.created_at).toLocaleString() : '';
+        const paid = o.paid_at ? new Date(o.paid_at).toLocaleString() : '';
+        const items = (o.items || []).map(it => `
+          <tr>
+            <td>${escapeHtmlAdmin(it.product_name)}</td>
+            <td style="text-align:right;">${it.quantity}</td>
+            <td style="text-align:right;">${fmtMoneyAdmin(it.unit_price_cents, o.currency)}</td>
+            <td style="text-align:right;">${fmtMoneyAdmin(it.unit_price_cents * it.quantity, o.currency)}</td>
+          </tr>`).join('');
+        const addr = o.shipping_address || {};
+        const addrLines = [addr.line1, addr.city, addr.postal_code, addr.country].filter(Boolean).join(', ');
+        const refundBtn = o.status === 'paid'
+          ? `<button class="btn btn-danger" onclick="refundOrder(${o.id})" data-testid="button-refund-${o.id}">Refund</button>`
+          : '';
+        panel.innerHTML = `
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.75rem;">
+            <h3 style="margin:0;" data-testid="text-order-detail-${o.id}">${escapeHtmlAdmin(o.order_number)}</h3>
+            <span style="font-weight:600; text-transform:uppercase; font-size:0.8rem;">${escapeHtmlAdmin(o.status)}</span>
+          </div>
+          <p style="margin:0.25rem 0;"><strong>Customer:</strong> ${escapeHtmlAdmin(o.customer_name || '—')} &lt;${escapeHtmlAdmin(o.customer_email || '')}&gt;</p>
+          ${addrLines ? `<p style="margin:0.25rem 0;"><strong>Address:</strong> ${escapeHtmlAdmin(addrLines)}</p>` : ''}
+          <p style="margin:0.25rem 0; font-size:0.85rem; color:var(--admin-text-muted);">Placed: ${placed}${paid ? ' · Paid: ' + paid : ''}</p>
+          <table class="data-table" style="margin:0.75rem 0;">
+            <thead><tr><th>Item</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Unit</th><th style="text-align:right;">Subtotal</th></tr></thead>
+            <tbody>${items}</tbody>
+          </table>
+          <div style="display:flex; justify-content:space-between; padding:0.5rem 0; border-top:1px solid var(--admin-border); font-weight:600;">
+            <span>Total</span><span>${fmtMoneyAdmin(o.total_cents, o.currency)}</span>
+          </div>
+          ${o.stripe_payment_intent_id ? `<p style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.5rem; word-break:break-all;">PaymentIntent: ${escapeHtmlAdmin(o.stripe_payment_intent_id)}</p>` : ''}
+          <div style="margin-top:0.75rem;">${refundBtn}</div>`;
+      } catch (err) {
+        panel.innerHTML = '<p style="color:#ef4444;">Failed to load order.</p>';
+      }
+    }
+
+    async function refundOrder(id) {
+      if (!confirm('Issue a full refund for this order? This processes immediately through Stripe.')) return;
+      try {
+        const res = await fetch(`/admin/api/orders/${id}/refund`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          showToast('Refund issued');
+          loadOrders();
+          loadOrderDetail(id);
+        } else {
+          showToast(data.error || 'Refund failed', 'error');
+        }
+      } catch (err) { showToast('Refund failed', 'error'); }
     }
 
 

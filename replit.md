@@ -365,13 +365,25 @@ Add new sections inside the `.landing-container` div with classes `snap-section 
 - `AI_INTEGRATIONS_OPENAI_BASE_URL` — OpenAI base URL (set by Replit AI Integrations)
 - `SENTRY_DSN` — (Optional) Sentry error tracking DSN
 - `SENTRY_ENV` — (Optional) Sentry environment tag (default: "production")
+- `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` — (Optional fallback) Used if the Replit Stripe connection is not configured
+- `STRIPE_WEBHOOK_SECRET` — (Optional) Validates incoming Stripe webhooks; if unset, signatures are not enforced (dev only)
 
 ### Python Packages
 - `flask` — Web framework
 - `psycopg2-binary` — PostgreSQL driver
 - `openai` — OpenAI API client for the AI chatbot
+- `stripe` — Stripe SDK for payments, customers, and refunds
 - `gunicorn` — Production WSGI server
 - `sentry-sdk[flask]` — Error tracking (optional, enabled via SENTRY_DSN)
+
+### Storefront & Payments
+The template includes a full storefront ("Store" page section) with cart, Stripe Elements
+checkout, and Stripe-emailed receipts. Stripe is sourced via the Replit Stripe connection
+(preferred — keys auto-rotated by Replit) with a raw `STRIPE_SECRET_KEY` env var fallback.
+Webhook endpoint `/api/stripe/webhook` handles `payment_intent.succeeded` (marks order paid,
+decrements stock), `payment_intent.payment_failed`, and `charge.refunded`. Admin tabs
+"Products" and "Orders" provide CRUD, inventory adjustments, and one-click refunds.
+Database tables: `products`, `customers`, `orders`, `order_items`.
 
 ### CDN Dependencies
 - Google Fonts (Playfair Display, DM Sans, plus dynamic fonts via Theme Editor)

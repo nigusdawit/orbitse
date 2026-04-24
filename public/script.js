@@ -71,6 +71,12 @@ let pageSections = [];
 let sphereSettings = null;
 let videoGalleryItems = [];
 let podcastEpisodes = [];
+let storeProducts = [];
+let storefrontConfig = { stripe_publishable_key: '', stripe_configured: false, currency: 'USD' };
+let cart = [];          /* { product_id, name, price_cents, quantity, image_url } */
+let stripeInstance = null;
+let stripeElements = null;
+let stripeCardElement = null;
 let sphereInstance = null;
 let currentSlideIndex = 0;
 let scrollCooldown = false;
@@ -97,7 +103,7 @@ let touchStartY = null;
 async function loadAllData() {
   try {
     /* Fetch all data sources in parallel for speed */
-    const [settingsRes, cardsRes, expRes, pricingRes, testimonialsRes, teamRes, faqRes, blogRes, bizRes, sectionsRes, sphereRes, videoGalleryRes, podcastRes] = await Promise.all([
+    const [settingsRes, cardsRes, expRes, pricingRes, testimonialsRes, teamRes, faqRes, blogRes, bizRes, sectionsRes, sphereRes, videoGalleryRes, podcastRes, productsRes, storeConfigRes] = await Promise.all([
       fetch('/api/site-settings'),
       fetch('/api/gallery-cards'),
       fetch('/api/experiences'),
@@ -110,7 +116,9 @@ async function loadAllData() {
       fetch('/api/page-sections'),
       fetch('/api/sphere-settings'),
       fetch('/api/video-gallery'),
-      fetch('/api/podcast')
+      fetch('/api/podcast'),
+      fetch('/api/products'),
+      fetch('/api/storefront-config')
     ]);
 
     siteSettings = await settingsRes.json();
@@ -126,6 +134,9 @@ async function loadAllData() {
     sphereSettings = await sphereRes.json();
     videoGalleryItems = await videoGalleryRes.json();
     podcastEpisodes = await podcastRes.json();
+    storeProducts = await productsRes.json();
+    storefrontConfig = await storeConfigRes.json();
+    loadCartFromStorage();
 
     renderHero();
     renderHighlights();
@@ -137,6 +148,8 @@ async function loadAllData() {
     renderBlogSection();
     renderVideoGallery();
     renderPodcast();
+    renderStore();
+    renderCartButton();
     renderBusinessInfoSection();
     renderFooter();
     renderGallerySlides();
@@ -624,6 +637,384 @@ function renderPodcast() {
 }
 
 
+/* ============================================================ *
+ *  STORE — products grid, cart drawer, Stripe checkout          *
+ * ============================================================ */
+
+const CART_STORAGE_KEY = 'cs_cart_v1';
+
+function loadCartFromStorage() {
+  try {
+    cart = JSON.parse(localStorage.getItem(CART_STORAGE_KEY) || '[]');
+    if (!Array.isArray(cart)) cart = [];
+  } catch (_) {
+    cart = [];
+  }
+}
+
+function saveCart() {
+  try { localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(cart)); } catch (_) {}
+}
+
+function formatMoney(cents, currency) {
+  const cur = (currency || storefrontConfig.currency || 'USD').toUpperCase();
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency: cur })
+      .format((cents || 0) / 100);
+  } catch (_) {
+    return `$${((cents || 0) / 100).toFixed(2)}`;
+  }
+}
+
+function renderStore() {
+  const grid = document.getElementById('store-grid');
+  if (!grid) return;
+  if (!storeProducts.length) { grid.innerHTML = ''; return; }
+
+  grid.innerHTML = storeProducts.map(p => {
+    const outOfStock = p.track_inventory && (p.stock || 0) <= 0;
+    const img = p.image_url
+      ? `<img class="store-card-img" src="${escapeHtml(p.image_url)}" alt="${escapeHtml(p.name)}" loading="lazy">`
+      : `<div class="store-card-img store-card-img-placeholder">Product</div>`;
+    return `
+      <article class="store-card fade-in-view" data-testid="card-product-${p.id}">
+        ${img}
+        <div class="store-card-body">
+          <h3 class="store-card-title" data-testid="text-product-name-${p.id}">${escapeHtml(p.name)}</h3>
+          ${p.description ? `<p class="store-card-desc">${escapeHtml(p.description)}</p>` : ''}
+          <div class="store-card-foot">
+            <span class="store-card-price" data-testid="text-product-price-${p.id}">${formatMoney(p.price_cents, p.currency)}</span>
+            ${outOfStock
+              ? `<span class="store-card-soldout" data-testid="status-soldout-${p.id}">Sold out</span>`
+              : `<button type="button" class="btn btn-dark store-add-btn" data-product-id="${p.id}" data-testid="button-add-cart-${p.id}">Add to cart</button>`}
+          </div>
+        </div>
+      </article>`;
+  }).join('');
+
+  grid.querySelectorAll('.store-add-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = parseInt(btn.getAttribute('data-product-id'), 10);
+      addToCart(id);
+    });
+  });
+}
+
+function addToCart(productId) {
+  const p = storeProducts.find(x => x.id === productId);
+  if (!p) return;
+  const existing = cart.find(c => c.product_id === productId);
+  if (existing) {
+    existing.quantity += 1;
+  } else {
+    cart.push({
+      product_id: p.id,
+      name: p.name,
+      price_cents: p.price_cents,
+      currency: p.currency,
+      image_url: p.image_url,
+      quantity: 1,
+    });
+  }
+  saveCart();
+  renderCartButton();
+  openCartDrawer();
+}
+
+function changeCartQty(productId, delta) {
+  const item = cart.find(c => c.product_id === productId);
+  if (!item) return;
+  item.quantity = Math.max(0, item.quantity + delta);
+  if (item.quantity === 0) {
+    cart = cart.filter(c => c.product_id !== productId);
+  }
+  saveCart();
+  renderCartDrawer();
+  renderCartButton();
+}
+
+function removeFromCart(productId) {
+  cart = cart.filter(c => c.product_id !== productId);
+  saveCart();
+  renderCartDrawer();
+  renderCartButton();
+}
+
+function cartTotalCents() {
+  return cart.reduce((sum, i) => sum + (i.price_cents * i.quantity), 0);
+}
+
+function cartItemCount() {
+  return cart.reduce((sum, i) => sum + i.quantity, 0);
+}
+
+function renderCartButton() {
+  let btn = document.getElementById('cart-fab');
+  /* Only show the cart button if there are products at all (i.e. store is active). */
+  if (!storeProducts.length) {
+    if (btn) btn.remove();
+    return;
+  }
+  if (!btn) {
+    btn = document.createElement('button');
+    btn.id = 'cart-fab';
+    btn.type = 'button';
+    btn.className = 'cart-fab';
+    btn.setAttribute('aria-label', 'Open cart');
+    btn.setAttribute('data-testid', 'button-open-cart');
+    btn.addEventListener('click', openCartDrawer);
+    document.body.appendChild(btn);
+  }
+  const count = cartItemCount();
+  btn.innerHTML = `
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/>
+      <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>
+    </svg>
+    <span class="cart-fab-count" data-testid="text-cart-count">${count}</span>`;
+  btn.style.display = count > 0 ? 'flex' : 'flex';  /* always visible when store active */
+}
+
+function ensureCartDrawer() {
+  let dr = document.getElementById('cart-drawer');
+  if (dr) return dr;
+  dr = document.createElement('div');
+  dr.id = 'cart-drawer';
+  dr.className = 'cart-drawer';
+  dr.innerHTML = `
+    <div class="cart-drawer-backdrop" data-testid="backdrop-cart"></div>
+    <aside class="cart-drawer-panel" role="dialog" aria-modal="true" aria-label="Shopping cart">
+      <header class="cart-drawer-head">
+        <h3>Your cart</h3>
+        <button type="button" class="cart-drawer-close" aria-label="Close" data-testid="button-close-cart">&times;</button>
+      </header>
+      <div id="cart-drawer-body" class="cart-drawer-body"></div>
+      <footer class="cart-drawer-foot">
+        <div class="cart-total-row"><span>Total</span><strong id="cart-drawer-total">$0.00</strong></div>
+        <button type="button" id="cart-checkout-btn" class="btn btn-dark cart-checkout-btn" data-testid="button-checkout">Checkout</button>
+      </footer>
+    </aside>`;
+  document.body.appendChild(dr);
+  dr.querySelector('.cart-drawer-backdrop').addEventListener('click', closeCartDrawer);
+  dr.querySelector('.cart-drawer-close').addEventListener('click', closeCartDrawer);
+  dr.querySelector('#cart-checkout-btn').addEventListener('click', openCheckoutModal);
+  return dr;
+}
+
+function openCartDrawer() {
+  const dr = ensureCartDrawer();
+  renderCartDrawer();
+  dr.classList.add('cart-drawer-open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeCartDrawer() {
+  const dr = document.getElementById('cart-drawer');
+  if (dr) dr.classList.remove('cart-drawer-open');
+  document.body.style.overflow = '';
+}
+
+function renderCartDrawer() {
+  ensureCartDrawer();
+  const body = document.getElementById('cart-drawer-body');
+  const total = document.getElementById('cart-drawer-total');
+  const checkoutBtn = document.getElementById('cart-checkout-btn');
+  if (!cart.length) {
+    body.innerHTML = '<p class="cart-empty">Your cart is empty.</p>';
+    if (total) total.textContent = formatMoney(0);
+    if (checkoutBtn) checkoutBtn.disabled = true;
+    return;
+  }
+  body.innerHTML = cart.map(i => `
+    <div class="cart-line" data-testid="cart-line-${i.product_id}">
+      ${i.image_url ? `<img src="${escapeHtml(i.image_url)}" alt="" class="cart-line-img">` : '<div class="cart-line-img cart-line-img-placeholder"></div>'}
+      <div class="cart-line-info">
+        <div class="cart-line-name">${escapeHtml(i.name)}</div>
+        <div class="cart-line-price">${formatMoney(i.price_cents, i.currency)}</div>
+        <div class="cart-line-qty">
+          <button type="button" data-act="dec" data-id="${i.product_id}" aria-label="Decrease" data-testid="button-qty-dec-${i.product_id}">&minus;</button>
+          <span data-testid="text-qty-${i.product_id}">${i.quantity}</span>
+          <button type="button" data-act="inc" data-id="${i.product_id}" aria-label="Increase" data-testid="button-qty-inc-${i.product_id}">+</button>
+          <button type="button" data-act="rm"  data-id="${i.product_id}" class="cart-line-remove" data-testid="button-remove-${i.product_id}">Remove</button>
+        </div>
+      </div>
+    </div>
+  `).join('');
+  body.querySelectorAll('button[data-act]').forEach(b => {
+    const id = parseInt(b.getAttribute('data-id'), 10);
+    const act = b.getAttribute('data-act');
+    b.addEventListener('click', () => {
+      if (act === 'inc') changeCartQty(id, +1);
+      else if (act === 'dec') changeCartQty(id, -1);
+      else if (act === 'rm') removeFromCart(id);
+    });
+  });
+  if (total) total.textContent = formatMoney(cartTotalCents());
+  if (checkoutBtn) checkoutBtn.disabled = false;
+}
+
+/* ---- Checkout modal ---- */
+
+function ensureCheckoutModal() {
+  let m = document.getElementById('checkout-modal');
+  if (m) return m;
+  m = document.createElement('div');
+  m.id = 'checkout-modal';
+  m.className = 'checkout-modal';
+  m.innerHTML = `
+    <div class="checkout-modal-backdrop"></div>
+    <div class="checkout-modal-panel" role="dialog" aria-modal="true" aria-label="Checkout">
+      <header class="checkout-modal-head">
+        <h3>Checkout</h3>
+        <button type="button" class="checkout-modal-close" aria-label="Close" data-testid="button-close-checkout">&times;</button>
+      </header>
+      <div class="checkout-modal-body">
+        <div id="checkout-summary" class="checkout-summary"></div>
+        <form id="checkout-form" class="checkout-form" autocomplete="on">
+          <label>Full name<input type="text" name="name" required autocomplete="name" data-testid="input-checkout-name"></label>
+          <label>Email<input type="email" name="email" required autocomplete="email" data-testid="input-checkout-email"></label>
+          <label>Address line 1<input type="text" name="line1" autocomplete="address-line1" data-testid="input-checkout-line1"></label>
+          <div class="checkout-form-row">
+            <label>City<input type="text" name="city" autocomplete="address-level2" data-testid="input-checkout-city"></label>
+            <label>Postal code<input type="text" name="postal_code" autocomplete="postal-code" data-testid="input-checkout-postal"></label>
+          </div>
+          <label>Country<input type="text" name="country" autocomplete="country" data-testid="input-checkout-country"></label>
+          <fieldset class="checkout-card">
+            <legend>Card details</legend>
+            <div id="checkout-card-element" class="checkout-card-element" data-testid="checkout-card-element"></div>
+            <div id="checkout-card-errors" class="checkout-card-errors" role="alert"></div>
+          </fieldset>
+          <button type="submit" id="checkout-pay-btn" class="btn btn-dark checkout-pay-btn" data-testid="button-pay">Pay</button>
+          <p class="checkout-note">Payment securely processed by Stripe.</p>
+        </form>
+        <div id="checkout-success" class="checkout-success" style="display:none;"></div>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+  m.querySelector('.checkout-modal-backdrop').addEventListener('click', closeCheckoutModal);
+  m.querySelector('.checkout-modal-close').addEventListener('click', closeCheckoutModal);
+  m.querySelector('#checkout-form').addEventListener('submit', submitCheckout);
+  return m;
+}
+
+async function openCheckoutModal() {
+  if (!cart.length) return;
+  if (!storefrontConfig.stripe_configured || !storefrontConfig.stripe_publishable_key) {
+    alert('The store is not yet configured to accept payments. Please try again later.');
+    return;
+  }
+  if (!window.Stripe) {
+    alert('Stripe.js failed to load. Please check your connection and reload.');
+    return;
+  }
+  closeCartDrawer();
+  const m = ensureCheckoutModal();
+  document.getElementById('checkout-form').style.display = '';
+  document.getElementById('checkout-success').style.display = 'none';
+  m.classList.add('checkout-modal-open');
+  document.body.style.overflow = 'hidden';
+
+  /* Render summary */
+  const summary = document.getElementById('checkout-summary');
+  summary.innerHTML = cart.map(i =>
+    `<div class="checkout-summary-line">
+       <span>${escapeHtml(i.name)} &times; ${i.quantity}</span>
+       <span>${formatMoney(i.price_cents * i.quantity, i.currency)}</span>
+     </div>`
+  ).join('') + `<div class="checkout-summary-total"><span>Total</span><strong>${formatMoney(cartTotalCents())}</strong></div>`;
+
+  /* Lazy-init Stripe + card element on first open */
+  if (!stripeInstance) {
+    stripeInstance = window.Stripe(storefrontConfig.stripe_publishable_key);
+    stripeElements = stripeInstance.elements();
+    stripeCardElement = stripeElements.create('card', {
+      style: { base: { fontSize: '16px', color: '#0a0a0f' } },
+    });
+    stripeCardElement.mount('#checkout-card-element');
+    stripeCardElement.on('change', (e) => {
+      document.getElementById('checkout-card-errors').textContent = (e.error && e.error.message) || '';
+    });
+  }
+}
+
+function closeCheckoutModal() {
+  const m = document.getElementById('checkout-modal');
+  if (m) m.classList.remove('checkout-modal-open');
+  document.body.style.overflow = '';
+}
+
+async function submitCheckout(ev) {
+  ev.preventDefault();
+  const form = ev.target;
+  const payBtn = document.getElementById('checkout-pay-btn');
+  const errBox = document.getElementById('checkout-card-errors');
+  errBox.textContent = '';
+  payBtn.disabled = true;
+  payBtn.textContent = 'Processing…';
+
+  const fd = new FormData(form);
+  const customer = {
+    name: fd.get('name') || '',
+    email: fd.get('email') || '',
+    address: {
+      line1: fd.get('line1') || '',
+      city: fd.get('city') || '',
+      postal_code: fd.get('postal_code') || '',
+      country: fd.get('country') || '',
+    },
+  };
+
+  try {
+    const res = await fetch('/api/checkout/create-payment-intent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: cart.map(i => ({ product_id: i.product_id, quantity: i.quantity })),
+        customer,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Checkout failed');
+
+    const result = await stripeInstance.confirmCardPayment(data.client_secret, {
+      payment_method: {
+        card: stripeCardElement,
+        billing_details: {
+          name: customer.name,
+          email: customer.email,
+          address: customer.address,
+        },
+      },
+      receipt_email: customer.email,
+    });
+    if (result.error) throw new Error(result.error.message || 'Payment declined');
+
+    /* Success — clear cart and show receipt. */
+    cart = [];
+    saveCart();
+    renderCartButton();
+    form.style.display = 'none';
+    const success = document.getElementById('checkout-success');
+    success.innerHTML = `
+      <h3>Thank you!</h3>
+      <p>Your order <strong data-testid="text-order-number">${escapeHtml(data.order_number)}</strong> was received.</p>
+      <p>A receipt has been emailed to <strong>${escapeHtml(customer.email)}</strong>.</p>
+      <button type="button" class="btn btn-dark" onclick="closeCheckoutModal()" data-testid="button-checkout-done">Done</button>`;
+    success.style.display = '';
+    /* Refresh products so updated stock reflects on the storefront. */
+    try {
+      const p = await fetch('/api/products');
+      storeProducts = await p.json();
+      renderStore();
+    } catch (_) {}
+  } catch (err) {
+    errBox.textContent = err.message || String(err);
+  } finally {
+    payBtn.disabled = false;
+    payBtn.textContent = 'Pay';
+  }
+}
+
 /**
  * Renders the Business Info & Contact section on the landing page.
  * Pulls data from the businessInfo global (fetched from /api/business-info)
@@ -881,6 +1272,7 @@ const BUILTIN_SECTION_MAP = {
   'business-info': 'section-business-info',
   'video-gallery': 'section-video-gallery',
   'podcast': 'section-podcast',
+  'store': 'section-store',
   'footer': 'site-footer'
 };
 
@@ -965,6 +1357,7 @@ function checkBuiltinHasData(slug) {
     case 'business-info': return !!(businessInfo.business_phone || businessInfo.business_email || businessInfo.business_address || businessInfo.business_map_embed || (businessInfo.business_hours && businessInfo.business_hours.length > 0));
     case 'video-gallery': return videoGalleryItems.length > 0;
     case 'podcast': return podcastEpisodes.length > 0;
+    case 'store': return storeProducts.length > 0;
     case 'footer': return true;
     default: return true;
   }

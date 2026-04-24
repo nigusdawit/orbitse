@@ -80,6 +80,8 @@ FONTS:
        unexpected HTML/JS in AI responses. All innerHTML assignments of
        AI-generated content pass through DOMPurify.sanitize() first. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.4/purify.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <!-- Stripe.js — used by the storefront checkout drawer to confirm card payments. -->
+  <script src="https://js.stripe.com/v3/"></script>
 
   <!-- JSON_LD_INJECT — This placeholder is replaced server-side by Flask
        with JSON-LD structured data (Organization + WebSite schemas) for
@@ -378,6 +380,24 @@ FONTS:
           <p class="section-subtitle">Press play on any episode below.</p>
         </div>
         <div id="podcast-grid" class="podcast-grid" data-testid="podcast-grid"></div>
+      </div>
+    </section>
+
+    <!-- ================================================================
+         STORE SECTION
+         ================================================================
+         Lists products from the database with an Add-to-Cart workflow.
+         A floating cart button + slide-in drawer handles checkout via
+         Stripe.js (PaymentIntent + Elements). Managed via admin: Store tab.
+    -->
+    <section id="section-store" class="snap-section landing-section" style="background: var(--bg-section-1); display: none;" data-testid="section-store">
+      <div class="max-w-container">
+        <div class="section-header fade-in-view">
+          <p class="section-eyebrow">Shop</p>
+          <h2 class="section-title" data-testid="text-store-title">Store</h2>
+          <p class="section-subtitle">Browse products and check out securely.</p>
+        </div>
+        <div id="store-grid" class="store-grid" data-testid="store-grid"></div>
       </div>
     </section>
 

@@ -54,6 +54,8 @@ import httpx
 import psycopg2
 import psycopg2.extras
 import sentry_sdk
+
+import stripe_client
 from flask import (
     Flask, request, jsonify, send_from_directory,
     render_template, session, redirect, url_for, Response, stream_with_context
@@ -560,6 +562,66 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_podcast_sort ON podcast_episodes (sort_order);
 
                 -- =============================================================
+                -- COMMERCE — Products, Customers, Orders, Order Items
+                -- =============================================================
+                CREATE TABLE IF NOT EXISTS products (
+                    id              SERIAL PRIMARY KEY,
+                    slug            VARCHAR(150) UNIQUE NOT NULL,
+                    name            TEXT NOT NULL DEFAULT '',
+                    description     TEXT NOT NULL DEFAULT '',
+                    price_cents     INTEGER NOT NULL DEFAULT 0,
+                    currency        VARCHAR(3) NOT NULL DEFAULT 'USD',
+                    image_url       TEXT NOT NULL DEFAULT '',
+                    gallery_images  JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    stock           INTEGER NOT NULL DEFAULT 0,
+                    track_inventory BOOLEAN NOT NULL DEFAULT true,
+                    active          BOOLEAN NOT NULL DEFAULT true,
+                    sort_order      INTEGER NOT NULL DEFAULT 0,
+                    created_at      TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_products_active ON products (active);
+                CREATE INDEX IF NOT EXISTS idx_products_sort ON products (sort_order);
+
+                CREATE TABLE IF NOT EXISTS customers (
+                    id                 SERIAL PRIMARY KEY,
+                    email              VARCHAR(255) UNIQUE NOT NULL,
+                    name               TEXT NOT NULL DEFAULT '',
+                    stripe_customer_id VARCHAR(100) DEFAULT '',
+                    created_at         TIMESTAMP DEFAULT NOW()
+                );
+
+                CREATE TABLE IF NOT EXISTS orders (
+                    id                       SERIAL PRIMARY KEY,
+                    order_number             VARCHAR(40) UNIQUE NOT NULL,
+                    customer_id              INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+                    customer_email           VARCHAR(255) NOT NULL DEFAULT '',
+                    customer_name            TEXT NOT NULL DEFAULT '',
+                    status                   VARCHAR(20) NOT NULL DEFAULT 'pending',
+                    subtotal_cents           INTEGER NOT NULL DEFAULT 0,
+                    total_cents              INTEGER NOT NULL DEFAULT 0,
+                    currency                 VARCHAR(3) NOT NULL DEFAULT 'USD',
+                    stripe_payment_intent_id VARCHAR(100) DEFAULT '',
+                    stripe_charge_id         VARCHAR(100) DEFAULT '',
+                    shipping_address         JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    notes                    TEXT NOT NULL DEFAULT '',
+                    created_at               TIMESTAMP DEFAULT NOW(),
+                    paid_at                  TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status);
+                CREATE INDEX IF NOT EXISTS idx_orders_created ON orders (created_at);
+                CREATE INDEX IF NOT EXISTS idx_orders_pi ON orders (stripe_payment_intent_id);
+
+                CREATE TABLE IF NOT EXISTS order_items (
+                    id               SERIAL PRIMARY KEY,
+                    order_id         INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+                    product_id       INTEGER REFERENCES products(id) ON DELETE SET NULL,
+                    product_name     TEXT NOT NULL DEFAULT '',
+                    unit_price_cents INTEGER NOT NULL DEFAULT 0,
+                    quantity         INTEGER NOT NULL DEFAULT 1
+                );
+                CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items (order_id);
+
+                -- =============================================================
                 -- PAGE VIEWS — Visitor Analytics
                 -- =============================================================
                 -- Tracks individual page views for the visitor analytics
@@ -857,6 +919,12 @@ def init_db():
             cur.execute("""
                 INSERT INTO page_sections (slug, title, section_type, template, sort_order, enabled)
                 VALUES ('podcast', 'Podcast', 'built_in', 'podcast', 9, false)
+                ON CONFLICT (slug) DO NOTHING
+            """)
+
+            cur.execute("""
+                INSERT INTO page_sections (slug, title, section_type, template, sort_order, enabled)
+                VALUES ('store', 'Store', 'built_in', 'store', 10, false)
                 ON CONFLICT (slug) DO NOTHING
             """)
 
@@ -5904,6 +5972,618 @@ def admin_voice_usage():
         "month": _count_chars(month_start),
         "breakdown_30d": breakdown,
     })
+
+
+# =============================================================================
+# COMMERCE — Products, Cart, Stripe Checkout, Orders, Refunds
+# =============================================================================
+# Public storefront APIs are open. Admin-only routes require @admin_required.
+# Stripe authentication is resolved per-call by stripe_client.get_stripe(),
+# which prefers the Replit Stripe connection and falls back to the
+# STRIPE_SECRET_KEY env var.
+
+def _product_row_to_dict(row):
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "slug": row["slug"],
+        "name": row["name"],
+        "description": row["description"],
+        "price_cents": row["price_cents"],
+        "price": round(row["price_cents"] / 100, 2),
+        "currency": row["currency"],
+        "image_url": row["image_url"],
+        "gallery_images": row["gallery_images"] or [],
+        "stock": row["stock"],
+        "track_inventory": row["track_inventory"],
+        "active": row["active"],
+        "sort_order": row["sort_order"],
+    }
+
+
+def _generate_order_number() -> str:
+    """Short, human-friendly order number e.g. 'CS-7F3K9X'."""
+    return "CS-" + secrets.token_hex(4).upper()
+
+
+@app.route("/api/storefront-config", methods=["GET"])
+def api_storefront_config():
+    """Public Stripe publishable key for the storefront JS to init Stripe.js."""
+    pub = stripe_client.get_publishable_key()
+    return jsonify({
+        "stripe_publishable_key": pub,
+        "stripe_configured": bool(pub) and stripe_client.is_configured(),
+        "currency": "USD",
+    })
+
+
+@app.route("/api/products", methods=["GET"])
+def api_products_list():
+    """Public list of active products."""
+    rows = query_db(
+        "SELECT * FROM products WHERE active = true ORDER BY sort_order ASC, id ASC"
+    ) or []
+    return jsonify([_product_row_to_dict(r) for r in rows])
+
+
+@app.route("/api/products/<string:slug>", methods=["GET"])
+def api_product_detail(slug):
+    row = query_db(
+        "SELECT * FROM products WHERE slug = %s AND active = true",
+        (slug,),
+        fetchone=True,
+    )
+    if not row:
+        return jsonify({"error": "Product not found"}), 404
+    return jsonify(_product_row_to_dict(row))
+
+
+@app.route("/api/checkout/create-payment-intent", methods=["POST"])
+def api_checkout_create_payment_intent():
+    """Create an order (status='pending') and a matching Stripe PaymentIntent.
+
+    Request body:
+      {
+        "items": [{"product_id": 1, "quantity": 2}, ...],
+        "customer": {"email": "...", "name": "...",
+                     "address": {"line1": "...", "city": "...", ...}},
+        "notes": "optional"
+      }
+    Response:
+      {"client_secret": "pi_..._secret_...", "order_number": "CS-..."}
+    """
+    if not stripe_client.is_configured():
+        return jsonify({"error": "Payments are not yet configured."}), 503
+
+    data = request.get_json(silent=True) or {}
+    items_in = data.get("items") or []
+    customer_in = data.get("customer") or {}
+    email = (customer_in.get("email") or "").strip().lower()
+    name = (customer_in.get("name") or "").strip()
+    address = customer_in.get("address") or {}
+    notes = (data.get("notes") or "").strip()
+
+    if not email or "@" not in email:
+        return jsonify({"error": "A valid email is required."}), 400
+    if not items_in:
+        return jsonify({"error": "Cart is empty."}), 400
+
+    # Validate cart against the database (price + stock).
+    # We need an explicit transaction so we can rollback on Stripe failures —
+    # get_db() returns autocommit=True by default, so override it here.
+    conn = get_db()
+    conn.autocommit = False
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            ids = [int(it.get("product_id")) for it in items_in if it.get("product_id")]
+            if not ids:
+                return jsonify({"error": "No valid items in cart."}), 400
+
+            cur.execute(
+                "SELECT * FROM products WHERE id = ANY(%s) AND active = true FOR UPDATE",
+                (ids,),
+            )
+            db_products = {row["id"]: row for row in cur.fetchall()}
+
+            line_items = []
+            subtotal = 0
+            currency = None
+            for it in items_in:
+                pid = int(it.get("product_id") or 0)
+                qty = max(1, int(it.get("quantity") or 1))
+                p = db_products.get(pid)
+                if not p:
+                    return jsonify({"error": f"Product {pid} unavailable."}), 400
+                if p["track_inventory"] and p["stock"] < qty:
+                    return jsonify({
+                        "error": f"Not enough stock for '{p['name']}'. "
+                                 f"Only {p['stock']} left."
+                    }), 400
+                # Reject mixed-currency carts — Stripe charges a single currency.
+                if currency is None:
+                    currency = p["currency"]
+                elif p["currency"] != currency:
+                    return jsonify({
+                        "error": "All items in the cart must share the same currency."
+                    }), 400
+                line_items.append({
+                    "product_id": pid,
+                    "name": p["name"],
+                    "unit_price_cents": p["price_cents"],
+                    "quantity": qty,
+                })
+                subtotal += p["price_cents"] * qty
+            currency = currency or "USD"
+
+            # Reserve stock now (decrement) inside the same transaction as the
+            # FOR UPDATE lock — prevents overselling. Restored on
+            # payment_intent.payment_failed / canceled webhooks.
+            for li in line_items:
+                p = db_products.get(li["product_id"])
+                if p and p["track_inventory"]:
+                    cur.execute(
+                        "UPDATE products SET stock = stock - %s "
+                        "WHERE id = %s AND track_inventory = true",
+                        (li["quantity"], li["product_id"]),
+                    )
+
+            total = subtotal  # No tax/shipping yet — extend here later.
+
+            # Find or create the customer row.
+            cur.execute("SELECT * FROM customers WHERE email = %s", (email,))
+            cust = cur.fetchone()
+            if cust:
+                customer_id = cust["id"]
+                if name and not cust["name"]:
+                    cur.execute(
+                        "UPDATE customers SET name = %s WHERE id = %s",
+                        (name, customer_id),
+                    )
+            else:
+                cur.execute(
+                    "INSERT INTO customers (email, name) VALUES (%s, %s) RETURNING id",
+                    (email, name),
+                )
+                customer_id = cur.fetchone()["id"]
+
+            # Create the pending order.
+            order_number = _generate_order_number()
+            cur.execute(
+                """
+                INSERT INTO orders
+                  (order_number, customer_id, customer_email, customer_name,
+                   status, subtotal_cents, total_cents, currency,
+                   shipping_address, notes)
+                VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    order_number, customer_id, email, name,
+                    subtotal, total, currency,
+                    json.dumps(address), notes,
+                ),
+            )
+            order_id = cur.fetchone()["id"]
+
+            for li in line_items:
+                cur.execute(
+                    """
+                    INSERT INTO order_items
+                      (order_id, product_id, product_name, unit_price_cents, quantity)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (order_id, li["product_id"], li["name"],
+                     li["unit_price_cents"], li["quantity"]),
+                )
+
+            # Create the Stripe PaymentIntent.
+            try:
+                stripe = stripe_client.get_stripe()
+                intent = stripe.PaymentIntent.create(
+                    amount=total,
+                    currency=currency.lower(),
+                    receipt_email=email,
+                    description=f"Order {order_number}",
+                    metadata={
+                        "order_id": str(order_id),
+                        "order_number": order_number,
+                    },
+                    automatic_payment_methods={"enabled": True},
+                )
+            except Exception as e:
+                conn.rollback()
+                return jsonify({"error": f"Stripe error: {e}"}), 502
+
+            cur.execute(
+                "UPDATE orders SET stripe_payment_intent_id = %s WHERE id = %s",
+                (intent.id, order_id),
+            )
+            conn.commit()
+            return jsonify({
+                "client_secret": intent.client_secret,
+                "order_number": order_number,
+                "order_id": order_id,
+            })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/orders/<string:order_number>", methods=["GET"])
+def api_order_detail(order_number):
+    """Public receipt info — only safe summary fields are returned."""
+    order = query_db(
+        "SELECT id, order_number, status, total_cents, currency, "
+        "customer_email, customer_name, created_at, paid_at "
+        "FROM orders WHERE order_number = %s",
+        (order_number,),
+        fetchone=True,
+    )
+    if not order:
+        return jsonify({"error": "Order not found"}), 404
+    items = query_db(
+        "SELECT product_name, unit_price_cents, quantity FROM order_items "
+        "WHERE order_id = %s ORDER BY id ASC",
+        (order["id"],),
+    ) or []
+    out = dict(order)
+    out["items"] = [dict(i) for i in items]
+    return jsonify(out)
+
+
+@app.route("/api/stripe/webhook", methods=["POST"])
+def api_stripe_webhook():
+    """Stripe sends events here. Always returns 200 once we've processed."""
+    payload = request.get_data(as_text=False)
+    sig_header = request.headers.get("Stripe-Signature", "")
+    secret = stripe_client.get_webhook_secret()
+
+    try:
+        stripe = stripe_client.get_stripe()
+    except RuntimeError:
+        return jsonify({"error": "Stripe not configured"}), 503
+
+    if secret:
+        try:
+            event = stripe.Webhook.construct_event(payload, sig_header, secret)
+        except (stripe.error.SignatureVerificationError, ValueError) as e:
+            return jsonify({"error": f"Invalid signature: {e}"}), 400
+    elif os.environ.get("STRIPE_WEBHOOK_INSECURE_DEV") == "1":
+        # Dev-only escape hatch — must be explicitly enabled.
+        try:
+            event = json.loads(payload.decode("utf-8") or "{}")
+        except ValueError:
+            return jsonify({"error": "Invalid payload"}), 400
+    else:
+        # No webhook secret configured — refuse to process unverified events.
+        # Set STRIPE_WEBHOOK_SECRET (recommended) or STRIPE_WEBHOOK_INSECURE_DEV=1.
+        return jsonify({
+            "error": "Webhook signing secret not configured. "
+                     "Set STRIPE_WEBHOOK_SECRET to enable webhook processing."
+        }), 503
+
+    event_type = event.get("type") if isinstance(event, dict) else event["type"]
+    obj = (event.get("data", {}) if isinstance(event, dict) else event["data"]).get("object", {})
+
+    if event_type == "payment_intent.succeeded":
+        _handle_payment_succeeded(obj)
+    elif event_type == "payment_intent.payment_failed":
+        _handle_payment_failed(obj)
+    elif event_type == "charge.refunded":
+        _handle_charge_refunded(obj)
+
+    return jsonify({"received": True})
+
+
+def _handle_payment_succeeded(intent):
+    pi_id = intent.get("id")
+    charge_id = ""
+    charges = intent.get("charges", {}).get("data") or []
+    if charges:
+        charge_id = charges[0].get("id", "")
+    elif intent.get("latest_charge"):
+        charge_id = intent.get("latest_charge")
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, status FROM orders WHERE stripe_payment_intent_id = %s FOR UPDATE",
+                (pi_id,),
+            )
+            order = cur.fetchone()
+            if not order or order["status"] == "paid":
+                conn.commit()
+                return
+            # Stock was already reserved (decremented) at intent creation.
+            cur.execute(
+                "UPDATE orders SET status='paid', paid_at=NOW(), stripe_charge_id=%s "
+                "WHERE id = %s",
+                (charge_id, order["id"]),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+
+
+def _restore_reserved_stock(cur, order_id):
+    """Restore previously-reserved (decremented) stock for an order.
+    Caller is responsible for the surrounding transaction.
+    """
+    cur.execute(
+        "SELECT product_id, quantity FROM order_items WHERE order_id = %s",
+        (order_id,),
+    )
+    for row in cur.fetchall():
+        pid = row["product_id"] if isinstance(row, dict) else row[0]
+        qty = row["quantity"] if isinstance(row, dict) else row[1]
+        if pid:
+            cur.execute(
+                "UPDATE products SET stock = stock + %s "
+                "WHERE id = %s AND track_inventory = true",
+                (qty, pid),
+            )
+
+
+def _handle_payment_failed(intent):
+    """Mark a pending order as failed and put reserved stock back."""
+    pi_id = intent.get("id")
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, status FROM orders WHERE stripe_payment_intent_id = %s FOR UPDATE",
+                (pi_id,),
+            )
+            order = cur.fetchone()
+            if not order or order["status"] != "pending":
+                conn.commit()
+                return
+            _restore_reserved_stock(cur, order["id"])
+            cur.execute(
+                "UPDATE orders SET status='failed' WHERE id = %s",
+                (order["id"],),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+
+
+def _handle_charge_refunded(charge):
+    """Mark order as refunded; restore stock so it can be sold again."""
+    pi_id = charge.get("payment_intent")
+    if not pi_id:
+        return
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, status FROM orders WHERE stripe_payment_intent_id = %s FOR UPDATE",
+                (pi_id,),
+            )
+            order = cur.fetchone()
+            if not order or order["status"] == "refunded":
+                conn.commit()
+                return
+            _restore_reserved_stock(cur, order["id"])
+            cur.execute(
+                "UPDATE orders SET status='refunded' WHERE id = %s",
+                (order["id"],),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+
+
+# --- Admin: Products CRUD ---------------------------------------------------
+
+def _slugify(text: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return s or secrets.token_hex(4)
+
+
+@app.route("/admin/api/products", methods=["GET"])
+@admin_required
+def admin_products_list():
+    rows = query_db(
+        "SELECT * FROM products ORDER BY sort_order ASC, id ASC"
+    ) or []
+    return jsonify([_product_row_to_dict(r) for r in rows])
+
+
+@app.route("/admin/api/products", methods=["POST"])
+@admin_required
+def admin_products_create():
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Name is required"}), 400
+    slug = _slugify(data.get("slug") or name)
+    # Ensure unique slug.
+    existing = query_db("SELECT id FROM products WHERE slug = %s", (slug,), fetchone=True)
+    if existing:
+        slug = f"{slug}-{secrets.token_hex(2)}"
+
+    price_cents = int(round(float(data.get("price") or 0) * 100))
+    if "price_cents" in data:
+        price_cents = int(data["price_cents"])
+
+    row = query_db(
+        """
+        INSERT INTO products
+          (slug, name, description, price_cents, currency, image_url,
+           gallery_images, stock, track_inventory, active, sort_order)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (
+            slug,
+            name,
+            (data.get("description") or "").strip(),
+            price_cents,
+            (data.get("currency") or "USD").upper(),
+            (data.get("image_url") or "").strip(),
+            json.dumps(data.get("gallery_images") or []),
+            int(data.get("stock") or 0),
+            bool(data.get("track_inventory", True)),
+            bool(data.get("active", True)),
+            int(data.get("sort_order") or 0),
+        ),
+        fetchone=True,
+    
+    )
+    return jsonify(_product_row_to_dict(row)), 201
+
+
+@app.route("/admin/api/products/<int:pid>", methods=["PUT"])
+@admin_required
+def admin_products_update(pid):
+    data = request.get_json(silent=True) or {}
+    existing = query_db("SELECT * FROM products WHERE id = %s", (pid,), fetchone=True)
+    if not existing:
+        return jsonify({"error": "Not found"}), 404
+
+    name = (data.get("name") or existing["name"]).strip()
+    slug = (data.get("slug") or existing["slug"]).strip() or existing["slug"]
+    price_cents = existing["price_cents"]
+    if "price" in data:
+        price_cents = int(round(float(data["price"]) * 100))
+    if "price_cents" in data:
+        price_cents = int(data["price_cents"])
+
+    row = query_db(
+        """
+        UPDATE products SET
+          slug=%s, name=%s, description=%s, price_cents=%s, currency=%s,
+          image_url=%s, gallery_images=%s, stock=%s, track_inventory=%s,
+          active=%s, sort_order=%s
+        WHERE id = %s
+        RETURNING *
+        """,
+        (
+            slug, name,
+            data.get("description", existing["description"]),
+            price_cents,
+            (data.get("currency") or existing["currency"]).upper(),
+            data.get("image_url", existing["image_url"]),
+            json.dumps(data.get("gallery_images", existing["gallery_images"] or [])),
+            int(data.get("stock", existing["stock"])),
+            bool(data.get("track_inventory", existing["track_inventory"])),
+            bool(data.get("active", existing["active"])),
+            int(data.get("sort_order", existing["sort_order"])),
+            pid,
+        ),
+        fetchone=True,
+    
+    )
+    return jsonify(_product_row_to_dict(row))
+
+
+@app.route("/admin/api/products/<int:pid>", methods=["DELETE"])
+@admin_required
+def admin_products_delete(pid):
+    query_db("DELETE FROM products WHERE id = %s", (pid,))
+    return jsonify({"success": True})
+
+
+@app.route("/admin/api/products/<int:pid>/stock", methods=["PATCH"])
+@admin_required
+def admin_products_stock(pid):
+    data = request.get_json(silent=True) or {}
+    if "stock" not in data:
+        return jsonify({"error": "stock required"}), 400
+    row = query_db(
+        "UPDATE products SET stock = %s WHERE id = %s RETURNING *",
+        (int(data["stock"]), pid),
+        fetchone=True,
+    
+    )
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(_product_row_to_dict(row))
+
+
+# --- Admin: Orders ----------------------------------------------------------
+
+@app.route("/admin/api/orders", methods=["GET"])
+@admin_required
+def admin_orders_list():
+    status = (request.args.get("status") or "").strip()
+    if status:
+        rows = query_db(
+            "SELECT * FROM orders WHERE status = %s ORDER BY created_at DESC",
+            (status,),
+        ) or []
+    else:
+        rows = query_db("SELECT * FROM orders ORDER BY created_at DESC") or []
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/admin/api/orders/<int:oid>", methods=["GET"])
+@admin_required
+def admin_orders_detail(oid):
+    order = query_db("SELECT * FROM orders WHERE id = %s", (oid,), fetchone=True)
+    if not order:
+        return jsonify({"error": "Not found"}), 404
+    items = query_db(
+        "SELECT * FROM order_items WHERE order_id = %s ORDER BY id ASC", (oid,)
+    ) or []
+    out = dict(order)
+    out["items"] = [dict(i) for i in items]
+    return jsonify(out)
+
+
+@app.route("/admin/api/orders/<int:oid>/refund", methods=["POST"])
+@admin_required
+def admin_orders_refund(oid):
+    """Refund full or partial via Stripe. Body: {"amount_cents": optional}."""
+    data = request.get_json(silent=True) or {}
+    order = query_db("SELECT * FROM orders WHERE id = %s", (oid,), fetchone=True)
+    if not order:
+        return jsonify({"error": "Order not found"}), 404
+    if order["status"] not in ("paid",):
+        return jsonify({"error": f"Cannot refund order in status '{order['status']}'"}), 400
+    if not order["stripe_payment_intent_id"]:
+        return jsonify({"error": "Order has no Stripe payment to refund"}), 400
+
+    try:
+        stripe = stripe_client.get_stripe()
+        kwargs = {"payment_intent": order["stripe_payment_intent_id"]}
+        if data.get("amount_cents"):
+            kwargs["amount"] = int(data["amount_cents"])
+        refund = stripe.Refund.create(**kwargs)
+    except Exception as e:
+        return jsonify({"error": f"Stripe refund failed: {e}"}), 502
+
+    # Stripe refund succeeded — mark refunded and restore stock atomically.
+    # If this DB update fails, the charge.refunded webhook from Stripe will
+    # reconcile the state on its next delivery.
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, status FROM orders WHERE id = %s FOR UPDATE",
+                (oid,),
+            )
+            row = cur.fetchone()
+            if row and row["status"] != "refunded":
+                _restore_reserved_stock(cur, oid)
+                cur.execute(
+                    "UPDATE orders SET status='refunded' WHERE id = %s",
+                    (oid,),
+                )
+            conn.commit()
+    except Exception as e:
+        conn.rollback()
+        app.logger.exception("Refund DB update failed after successful Stripe refund %s: %s", refund.id, e)
+        # Stripe webhook will eventually reconcile.
+    finally:
+        conn.close()
+
+    return jsonify({"success": True, "refund_id": refund.id})
 
 
 # =============================================================================
