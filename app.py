@@ -4696,12 +4696,21 @@ TTS_MAX_CHARS = 1500
 # burn through your OpenAI credits. Tuned generously enough that real
 # users won't hit it but cheap enough to bound abuse damage.
 TTS_DAILY_CHARS_PER_IP = 30000
+# Per-IP daily Whisper STT request cap. Whisper bills per-minute of
+# audio, so we throttle by request count rather than chars. 100 voice
+# inputs per IP per day is a generous chat budget but blocks scripted
+# abuse that would burn the customer's OpenAI credits.
+STT_DAILY_REQUESTS_PER_IP = 100
 
 # In-memory per-IP TTS budget tracker. Keyed by client IP, value is
 # (date_string, chars_used_today). Reset automatically when the date
 # rolls over. This is per-process — fine for a single-worker dev/small
 # deployment; production should use Redis if running multiple workers.
 _tts_ip_budget = {}
+# Same shape, separate dict for Whisper STT request counts. Keeping
+# the trackers separate means TTS and STT abuse don't pollute each
+# other's daily totals.
+_stt_ip_budget = {}
 
 
 def _check_tts_ip_budget(client_ip, char_count):
@@ -5088,6 +5097,21 @@ def api_voice_stt():
     if not openai_direct_client:
         return jsonify({"error": "OPENAI_API_KEY not configured"}), 503
 
+    # Per-IP daily request cap — Whisper bills per minute of uploaded
+    # audio, so even with the 5MB size cap an attacker could hammer this
+    # endpoint and burn the customer's OpenAI credits. Reuse the same
+    # in-memory tracker shape as the TTS budget; we count *requests*
+    # rather than chars (we don't know the transcript length until after
+    # we pay for it).
+    client_ip = request.remote_addr or "unknown"
+    today = datetime.now().strftime("%Y-%m-%d")
+    stt_entry = _stt_ip_budget.get(client_ip)
+    if not stt_entry or stt_entry[0] != today:
+        stt_entry = (today, 0)
+    if stt_entry[1] >= STT_DAILY_REQUESTS_PER_IP:
+        return jsonify({"error": "Daily voice-input quota exceeded for your address"}), 429
+    _stt_ip_budget[client_ip] = (today, stt_entry[1] + 1)
+
     if "audio" not in request.files:
         return jsonify({"error": "Missing audio file"}), 400
     audio_file = request.files["audio"]
@@ -5148,6 +5172,17 @@ def api_voice_sample():
     # Standard sample text — kept short to minimize cost and identical
     # across voices so admins can A/B compare.
     sample_text = data.get("sample_text") or "Hi! Thanks for visiting. This is a sample of how I sound."
+
+    # Premium gating — even though sample previews are admin-only and
+    # short, ElevenLabs costs real money per character. The master
+    # premium toggle exists precisely so trial accounts / restricted
+    # tiers can be locked out of paid providers entirely. Honor it here
+    # too, otherwise an admin could rack up ElevenLabs charges by
+    # auditioning voices while the kill-switch is supposedly off.
+    if provider == "elevenlabs":
+        settings_row = query_db("SELECT premium_enabled FROM voice_settings WHERE id = 1", fetchone=True)
+        if not settings_row or not settings_row.get("premium_enabled"):
+            return jsonify({"error": "Enable premium providers before previewing ElevenLabs voices"}), 403
 
     try:
         if provider == "elevenlabs":
@@ -5397,7 +5432,10 @@ def admin_generate_intro_audio(intro_id):
     model = (settings.get("tts_model") if settings else "tts-1") or "tts-1"
 
     try:
-        audio_url, was_cached = _generate_tts_audio(text, voice_id, model)
+        # _generate_tts_audio returns 3 values now (audio_url, was_cached,
+        # used_provider). Intros currently always use OpenAI TTS so we
+        # ignore the provider tag — we only need the URL/cache flag.
+        audio_url, was_cached, _used_provider = _generate_tts_audio(text, voice_id, model)
     except Exception as e:
         print(f"[Admin TTS generation error] {e}")
         return jsonify({"error": str(e)}), 500
@@ -5428,10 +5466,15 @@ def admin_voice_usage():
 
     def _count_chars(since):
         """Sum character counts for paid features (TTS generations) since
-        the given datetime. Cached hits and intro plays are not billable."""
+        the given datetime. Cached hits and intro plays are not billable.
+        Matches all provider-specific tags via LIKE — runtime now logs
+        'tts_generate_openai' and 'tts_generate_elevenlabs' (and the
+        legacy 'tts_generate' from older rows) so a literal equality check
+        would miss every new request and silently zero out the dashboard."""
         row = query_db(
             "SELECT COUNT(*) AS c, COALESCE(SUM(char_count), 0) AS chars "
-            "FROM voice_usage_log WHERE created_at >= %s AND feature_type = 'tts_generate'",
+            "FROM voice_usage_log WHERE created_at >= %s "
+            "AND (feature_type = 'tts_generate' OR feature_type LIKE 'tts_generate\\_%%' ESCAPE '\\')",
             (since,),
             fetchone=True,
         )
