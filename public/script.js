@@ -4733,7 +4733,7 @@ function closeFullscreenCanvas() {
  *   (when streaming, the body fills in progressively via insertAdjacentHTML).
  * @returns {string} Complete HTML document string for use as iframe srcdoc.
  */
-function buildImmersivePageDoc(bodyHtml) {
+function buildImmersivePageDoc(bodyHtml, streamToken) {
   const styles = getComputedStyle(document.documentElement);
   const fontSerif = styles.getPropertyValue('--font-serif').trim() || "'Playfair Display', Georgia, serif";
   const fontSans = styles.getPropertyValue('--font-sans').trim() || "'DM Sans', -apple-system, sans-serif";
@@ -4772,22 +4772,32 @@ function buildImmersivePageDoc(bodyHtml) {
      parent CANNOT touch our DOM directly. postMessage is the supported
      cross-origin channel. Listener is a no-op when there's no streaming
      (one-shot renders just write into ${'$'}{bodyHtml} below). */
+  const tokenJs = JSON.stringify(streamToken || '');
   const streamBootstrap = `
     <script>
       (function () {
+        var STREAM_TOKEN = ${tokenJs};
         window.addEventListener('message', function (e) {
           var d = e.data;
           if (!d || typeof d !== 'object') return;
+          if (d.token && d.token !== STREAM_TOKEN) return;
           var root = document.getElementById('__stream_root__');
           if (d.type === 'append' && typeof d.html === 'string' && root) {
-            root.insertAdjacentHTML('beforeend', d.html);
+            try { root.insertAdjacentHTML('beforeend', d.html); } catch (err) {}
           } else if (d.type === 'finish') {
             var pulse = document.querySelector('.__streaming_pulse__');
             if (pulse) pulse.remove();
           }
         });
-        /* Tell the parent we're ready to receive chunks */
-        try { parent.postMessage({ type: '__immersive_ready__' }, '*'); } catch (e) {}
+        /* Tell the parent we're ready to receive chunks. Re-post on a few
+           short timers in case the parent attaches its listener slightly
+           after the iframe finishes loading. */
+        function ping() {
+          try { parent.postMessage({ type: '__immersive_ready__', token: STREAM_TOKEN }, '*'); } catch (e) {}
+        }
+        ping();
+        setTimeout(ping, 50);
+        setTimeout(ping, 200);
       })();
     <\/script>
   `;
@@ -4918,15 +4928,20 @@ function openImmersivePageStreaming() {
     frame,
     queue: [],
     ready: false,
-    isStreaming: true
+    isStreaming: true,
+    token: 'tok_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10)
   };
 
   const onMessage = (e) => {
-    /* Only trust messages from THIS iframe's window — sandboxed iframes
-       have an opaque origin so we match by source identity, not by
-       e.origin string. */
-    if (!e.source || e.source !== frame.contentWindow) return;
-    if (e.data && e.data.type === '__immersive_ready__') {
+    /* Sandboxed iframes (no allow-same-origin) have an opaque origin and
+       e.source may be a separate WindowProxy that does not strict-equal
+       frame.contentWindow in all browsers. We instead use a per-stream
+       handshake token embedded in the bootstrap so we only accept the
+       handshake message that matches THIS stream. */
+    const data = e.data;
+    if (!data || typeof data !== 'object') return;
+    if (data.token !== state.token) return;
+    if (data.type === '__immersive_ready__') {
       state.ready = true;
       _flushImmersiveStream();
     }
@@ -4934,7 +4949,7 @@ function openImmersivePageStreaming() {
   state._onMessage = onMessage;
   window.addEventListener('message', onMessage);
 
-  frame.srcdoc = buildImmersivePageDoc(initialBody);
+  frame.srcdoc = buildImmersivePageDoc(initialBody, state.token);
   overlay.classList.add('active');
 
   _immersiveStream = state;
