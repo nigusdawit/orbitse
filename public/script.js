@@ -4052,6 +4052,13 @@ function chatCreateStreamBubble() {
     },
     remove() {
       bubbles.forEach(({ el }) => el.remove());
+    },
+    /* Direct DOM-element refs for the streaming bubbles — used by the
+       voice module to highlight the bubble while sentence-streaming TTS
+       plays back, and to attach the click-to-replay speaker badge after
+       finalize. */
+    getBubbles() {
+      return bubbles.map(({ el }) => el);
     }
   };
 }
@@ -4095,6 +4102,12 @@ async function chatSendStreaming(message, wasCollapsed) {
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
+    /* Begin sentence-streaming TTS — speaks each sentence as soon as it
+       finishes during the AI reply stream, rather than waiting for the
+       whole message. No-op if voice is disabled or muted. */
+    if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakBegin === 'function') {
+      window.VoiceAgent.streamSpeakBegin();
+    }
     let buffer = '';
     let tokenText = '';
     let displayTokens = '';
@@ -4147,8 +4160,16 @@ async function chatSendStreaming(message, wasCollapsed) {
               if (streamBubble && displayTokens) {
                 streamBubble.finalize(displayTokens);
                 bubbleFinalized = true;
+                /* Finalize sentence-streaming TTS for the pre-command text. */
+                if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakEnd === 'function') {
+                  window.VoiceAgent.streamSpeakEnd(displayTokens, streamBubble.getBubbles());
+                }
               } else if (streamBubble) {
                 streamBubble.remove();
+                /* Nothing to speak — cancel any queued sentences. */
+                if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakCancel === 'function') {
+                  window.VoiceAgent.streamSpeakCancel();
+                }
               }
               streamBubble = null;
             }
@@ -4156,6 +4177,12 @@ async function chatSendStreaming(message, wasCollapsed) {
               displayTokens += event.content;
               if (streamBubble) {
                 streamBubble.append(event.content);
+              }
+              /* Feed accumulated display text to sentence-streaming TTS so it
+                 can detect newly-completed sentences and start speaking them
+                 in parallel with the rest of the AI's reply still arriving. */
+              if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakFeed === 'function') {
+                window.VoiceAgent.streamSpeakFeed(displayTokens);
               }
             } else {
               /* Inside the command block — try to live-render a generatePage
@@ -4201,6 +4228,12 @@ async function chatSendStreaming(message, wasCollapsed) {
               closeImmersivePage();
               resetImmersiveStreamState();
               pageStreamStarted = false;
+            }
+            /* Cancel any sentence-streaming TTS that was already speaking
+               half-formed sentences — the error message will be spoken via
+               the standard chatAddMessage hook instead. */
+            if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakCancel === 'function') {
+              window.VoiceAgent.streamSpeakCancel();
             }
             chatAddMessage('agent', event.content);
             return;
@@ -4270,6 +4303,11 @@ async function chatSendStreaming(message, wasCollapsed) {
     if (isSubmitForm) {
       if (streamBubble) { streamBubble.remove(); streamBubble = null; }
       displayText = '';
+      /* Don't speak the AI's interim "submitting…" text — the form
+         confirmation will arrive separately through chatAddMessage. */
+      if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakCancel === 'function') {
+        window.VoiceAgent.streamSpeakCancel();
+      }
       const heroEl = document.getElementById('hero-description');
       if (heroEl) {
         heroEl.textContent = '';
@@ -4298,8 +4336,14 @@ async function chatSendStreaming(message, wasCollapsed) {
       if (displayText && streamBubble && !bubbleFinalized) {
         streamBubble.finalize(displayText);
         bubbleFinalized = true;
+        if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakEnd === 'function') {
+          window.VoiceAgent.streamSpeakEnd(displayText, streamBubble.getBubbles());
+        }
       } else if (!displayText && streamBubble) {
         streamBubble.remove();
+        if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakCancel === 'function') {
+          window.VoiceAgent.streamSpeakCancel();
+        }
       }
       chatHistory.push({ role: 'assistant', content: displayText || '' });
       persistChatHistory();
@@ -4413,7 +4457,14 @@ async function chatSendStreaming(message, wasCollapsed) {
 
       if (displayText && streamBubble) {
         streamBubble.finalize(displayText);
+        if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakEnd === 'function') {
+          window.VoiceAgent.streamSpeakEnd(displayText, streamBubble.getBubbles());
+        }
       } else if (displayText && !bubbleFinalized) {
+        /* No streamBubble — voice will be spoken via the chatAddMessage hook. */
+        if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakCancel === 'function') {
+          window.VoiceAgent.streamSpeakCancel();
+        }
         chatAddMessage('agent', displayText);
       }
       if (pendingCommand) {
@@ -4424,9 +4475,15 @@ async function chatSendStreaming(message, wasCollapsed) {
       /* ── EXPANDED MODE: show response in chat panel as usual ── */
       if (displayText && streamBubble) {
         streamBubble.finalize(displayText);
+        if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakEnd === 'function') {
+          window.VoiceAgent.streamSpeakEnd(displayText, streamBubble.getBubbles());
+        }
         chatHistory.push({ role: 'assistant', content: displayText });
         persistChatHistory();
       } else if (displayText && !bubbleFinalized) {
+        if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakCancel === 'function') {
+          window.VoiceAgent.streamSpeakCancel();
+        }
         chatAddMessage('agent', displayText);
         chatHistory.push({ role: 'assistant', content: displayText });
         persistChatHistory();
@@ -4446,6 +4503,9 @@ async function chatSendStreaming(message, wasCollapsed) {
         persistChatHistory();
       } else if (streamBubble) {
         streamBubble.remove();
+        if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakCancel === 'function') {
+          window.VoiceAgent.streamSpeakCancel();
+        }
       }
 
       if (pendingCommand) {
@@ -4453,10 +4513,28 @@ async function chatSendStreaming(message, wasCollapsed) {
       }
     }
 
+    /* Safety-net teardown: every success path above explicitly calls
+       streamSpeakEnd or streamSpeakCancel, but if a future branch is added
+       that forgets to, this guard prevents VOICE.stream from leaking across
+       messages. streamSpeakCancel is a no-op when the stream is already
+       finalized or stopped. */
+    if (window.VoiceAgent && window.VoiceAgent.state &&
+        window.VoiceAgent.state.stream &&
+        !window.VoiceAgent.state.stream.finalized &&
+        !window.VoiceAgent.state.stream.stopped &&
+        typeof window.VoiceAgent.streamSpeakCancel === 'function') {
+      window.VoiceAgent.streamSpeakCancel();
+    }
+
   } catch (error) {
     console.error('Chat error:', error);
     showBarThinking(false);
     chatShowTyping(false);
+    /* Tear down any in-flight sentence-streaming TTS so the visitor doesn't
+       keep hearing fragments of an aborted reply. */
+    if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakCancel === 'function') {
+      window.VoiceAgent.streamSpeakCancel();
+    }
     chatAddMessage('agent', 'I apologize, but I\'m having trouble connecting right now. Please try again in a moment.');
   }
 }

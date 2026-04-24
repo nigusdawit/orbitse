@@ -2196,8 +2196,10 @@ RIGHT: Hero background literally contains var(--hero-image) so the page extends 
 
 6. Submit a form with data collected in conversation:
 ```command
-{"action": "submitForm", "slug": "FORM_SLUG", "fields": {"field_name": "value", "another_field": "value"}}
+{"action": "submitForm", "slug": "EXACT_SLUG_FROM_AVAILABLE_FORMS", "fields": {"field_name": "value", "another_field": "value"}}
 ```
+CRITICAL — SLUG MUST MATCH EXACTLY: The "slug" value MUST be copied verbatim from the (slug: "...") line in the AVAILABLE FORMS section above. Do NOT abbreviate, shorten, or guess. If AVAILABLE FORMS lists (slug: "booking-request"), use "booking-request" — NOT "booking", NOT "book", NOT "reservation". If AVAILABLE FORMS lists (slug: "contact-us"), use "contact-us" — NOT "contact". Same rule for field names: use the EXACT field "name" values from AVAILABLE FORMS, not your own paraphrased versions. The system rejects unknown slugs and unknown field names.
+
 CRITICAL: When you say you will submit or finalize a booking/form, you MUST include the submitForm command block in that SAME message. Do NOT just say "I'll submit now" without the actual command — saying it without the command does nothing. The command block is what actually triggers the submission.
 
 Use this when you have collected ALL required information from the visitor through conversation.
@@ -4700,13 +4702,40 @@ def api_partial_save(slug):
         return jsonify({"success": True, "id": result["id"] if result else None, "action": "created"}), 201
 
 
+def _resolve_form_slug(slug):
+    """Look up an active form by slug with forgiving matching.
+
+    The AI sometimes shortens slugs (saying "booking" when the real slug is
+    "booking-request"), which would otherwise return a hard 404. We try
+    exact match first, then fall back to an unambiguous substring match
+    against active forms. If exactly one active form's slug contains the
+    requested string (or vice versa), we use it. Multiple matches → still
+    treat as "not found" so we don't submit to the wrong form.
+    """
+    if not slug:
+        return None
+    s = slug.strip().lower()
+    form = query_db(
+        "SELECT id, name, slug FROM custom_forms WHERE LOWER(slug) = %s AND status = 'active'",
+        (s,), fetchone=True
+    )
+    if form:
+        return form
+    # Fuzzy: bidirectional substring containment, exactly one match wins.
+    candidates = query_db(
+        "SELECT id, name, slug FROM custom_forms "
+        "WHERE status = 'active' AND (LOWER(slug) LIKE %s OR %s LIKE '%%' || LOWER(slug) || '%%')",
+        (f"%{s}%", s)
+    )
+    if candidates and len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
 @app.route("/api/forms/<slug>/submit", methods=["POST"])
 def api_submit_form(slug):
     """POST /api/forms/<slug>/submit — Accept a dynamic form submission."""
-    form = query_db(
-        "SELECT id, name FROM custom_forms WHERE slug = %s AND status = 'active'",
-        (slug,), fetchone=True
-    )
+    form = _resolve_form_slug(slug)
     if not form:
         return jsonify({"error": "Form not found"}), 404
 

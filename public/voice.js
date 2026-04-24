@@ -59,6 +59,9 @@
     speakSeq: 0,               // Monotonic counter — increments on every speak
                                // request so a slow older fetch can't interrupt
                                // playback of a newer message.
+    stream: null,              // Active sentence-streaming TTS state (see
+                               // streamSpeakBegin). Null when no AI message is
+                               // currently being spoken sentence-by-sentence.
   };
 
   // sessionStorage key for "intro was already played in this tab"
@@ -108,11 +111,19 @@
     return out;
   }
 
-  /** Stop and clear any currently playing voice audio. Removes pulse class. */
+  /** Stop and clear any currently playing voice audio. Removes pulse class.
+   *  Also tears down any active sentence-streaming queue so a half-spoken
+   *  reply doesn't keep talking after the visitor mutes or sends a new
+   *  message. */
   function stopCurrentAudio() {
     if (VOICE.currentAudio) {
       try { VOICE.currentAudio.pause(); } catch (e) {}
       VOICE.currentAudio = null;
+    }
+    if (VOICE.stream) {
+      VOICE.stream.stopped = true;
+      VOICE.stream.queue.length = 0;
+      VOICE.stream = null;
     }
     document.querySelectorAll(".voice-speaking").forEach((el) => {
       el.classList.remove("voice-speaking");
@@ -759,6 +770,255 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Sentence-streaming TTS — speak the AI reply as soon as each sentence
+  // finishes, instead of waiting for the entire message. This shaves several
+  // seconds off perceived latency on longer replies because the user hears
+  // the first sentence within ~1s of the AI emitting it.
+  //
+  // Flow (see callers in script.js / chatSendStreaming):
+  //   streamSpeakBegin()                     - reset state, cancel any prior
+  //   streamSpeakFeed(accumDisplayText)      - extract any newly-completed
+  //                                            sentences and queue them
+  //   streamSpeakEnd(finalText, bubbles)     - speak any non-terminated tail,
+  //                                            attach finalized bubbles for
+  //                                            highlighting + replay-badge
+  //   streamSpeakCancel()                    - hard-stop (errors, mute, etc.)
+  //
+  // Each sentence triggers an independent /prepare round-trip in parallel,
+  // and a single sequential audio queue plays them in order.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Find sentence boundaries in `text` past `cursor`. Returns the newly-
+   * completed sentence fragments and how many chars to advance the cursor.
+   * When `allowTail` is true, any non-terminated trailing text is also
+   * returned (used at end-of-stream).
+   */
+  function extractStreamSentences(text, cursor, allowTail) {
+    const tail = (text || "").substring(cursor);
+    if (!tail) return { sentences: [], advance: 0 };
+    const sentences = [];
+    let lastEnd = 0;
+    // Match . ! ? (optional closing quote/paren) then whitespace, OR a
+    // hard newline. Newlines hard-break so list items / paragraphs become
+    // separate spoken units even without sentence punctuation.
+    const re = /([.!?]+["')\]]?(?=\s|$)|\n+)/g;
+    let m;
+    while ((m = re.exec(tail)) !== null) {
+      const end = m.index + m[0].length;
+      // Skip common abbreviations that look like sentence ends. Match
+      // against the few chars before the period so "Mr." / "e.g." / "etc."
+      // don't break the sentence early.
+      const before = tail.substring(Math.max(0, m.index - 5), m.index);
+      // Abbreviations + ordered-list markers (1. 2. 10.) — the trailing
+      // \d guard prevents splitting "1. Item" or "section 1." mid-sentence.
+      if (/(\bMr|\bMrs|\bMs|\bDr|\bSr|\bJr|\bSt|\bvs|\betc|\be\.g|\bi\.e|\bNo|\bInc|\bLtd|\bCo|\d)$/i.test(before)) continue;
+      const sentence = tail.substring(lastEnd, end).trim();
+      if (sentence) sentences.push(sentence);
+      lastEnd = end;
+    }
+    if (allowTail && lastEnd < tail.length) {
+      const remaining = tail.substring(lastEnd).trim();
+      if (remaining) sentences.push(remaining);
+      lastEnd = tail.length;
+    }
+    return { sentences, advance: lastEnd };
+  }
+
+  /**
+   * Begin a new sentence-streaming session. Cancels any prior stream so
+   * the new reply doesn't get queued behind the old one. Returns the new
+   * state object (mostly for tests; callers don't need to hold it).
+   */
+  function streamSpeakBegin() {
+    if (!VOICE.settings || !VOICE.settings.enabled_ai_voice) return null;
+    if (isVoiceMuted()) return null;
+    // Tear down any prior stream so its sentences don't keep playing on
+    // top of the new reply.
+    if (VOICE.stream) {
+      VOICE.stream.stopped = true;
+      VOICE.stream.queue.length = 0;
+      VOICE.stream.bubbles.forEach((el) => el.classList.remove("voice-speaking"));
+    }
+    if (VOICE.currentAudio) {
+      try { VOICE.currentAudio.pause(); } catch (e) {}
+      VOICE.currentAudio = null;
+    }
+    // Bump speakSeq so any in-flight legacy speakText drops on arrival.
+    VOICE.speakSeq++;
+    const state = {
+      cursor: 0,
+      queue: [],            // Pending prepare-promises
+      bubbles: [],          // DOM elements highlighted while sentences play
+      playing: false,       // True while the queue runner loop is active
+      finalized: false,     // True once streamSpeakEnd has been called
+      stopped: false,       // True if streamSpeakCancel was called
+      spoke: false,         // True once at least one sentence was queued
+      sessionId: getSessionId(),
+    };
+    VOICE.stream = state;
+    return state;
+  }
+
+  /**
+   * Feed the latest accumulated display text. Detects newly-completed
+   * sentences past the cursor and queues them for synthesis + playback.
+   * Safe to call on every token — extra calls with no new sentences are
+   * cheap no-ops.
+   */
+  function streamSpeakFeed(accumText) {
+    const state = VOICE.stream;
+    if (!state || state.stopped || state.finalized) return;
+    if (isVoiceMuted()) return;
+    const len = (accumText || "").length;
+    // If the accumulated text shrank (e.g. command-block trim stripped
+    // trailing tokens) clamp the cursor so we don't read past the end.
+    if (state.cursor > len) state.cursor = len;
+    const { sentences, advance } = extractStreamSentences(accumText, state.cursor, false);
+    if (advance > 0) state.cursor += advance;
+    for (const s of sentences) queueStreamSentence(state, s);
+  }
+
+  /**
+   * Mark the stream complete. Speaks any non-terminated tail and binds
+   * the finalized bubble references for highlighting + replay-badge.
+   * Calling without `bubbles` keeps whatever was set previously.
+   */
+  function streamSpeakEnd(finalText, bubbles) {
+    const state = VOICE.stream;
+    // Guard against double-finalize: chatSendStreaming has 4 finalize sites
+    // and a safety-net teardown, so we may be called more than once with the
+    // same text. Bail if already finalized/stopped.
+    if (!state || state.stopped || state.finalized) return;
+    if (Array.isArray(bubbles) && bubbles.length) {
+      state.bubbles = bubbles.filter(Boolean);
+      // Mark each bubble so the chat:agent-message listener / chatAddMessage
+      // hook know not to re-speak the same text via the legacy whole-message
+      // path. Also tag + badge so click-to-replay still works.
+      state.bubbles.forEach((el) => {
+        if (!el) return;
+        el.__voiceStreamSpoken = true;
+        if (!el.hasAttribute("data-voice-tagged")) {
+          el.setAttribute("data-voice-tagged", "1");
+          el.__voiceText = finalText || "";
+          attachSpeakerBadge(el);
+        } else {
+          // Refresh the stored text in case finalize cleaned it
+          el.__voiceText = finalText || el.__voiceText || "";
+        }
+      });
+    }
+    const len = (finalText || "").length;
+    if (state.cursor > len) state.cursor = len;
+    if (typeof finalText === "string" && finalText.length > state.cursor) {
+      const { sentences, advance } = extractStreamSentences(finalText, state.cursor, true);
+      if (advance > 0) state.cursor += advance;
+      for (const s of sentences) queueStreamSentence(state, s);
+    }
+    state.finalized = true;
+    // If nothing got queued and the queue runner isn't active, clear
+    // ourselves so the next message starts cleanly.
+    if (!state.spoke && !state.playing && VOICE.stream === state) {
+      VOICE.stream = null;
+    }
+  }
+
+  /**
+   * Hard-stop the active stream — pauses current audio, clears the queue,
+   * removes the speaking indicator. Safe to call when no stream is active.
+   */
+  function streamSpeakCancel() {
+    const state = VOICE.stream;
+    if (!state) return;
+    state.stopped = true;
+    state.queue.length = 0;
+    if (VOICE.currentAudio) {
+      try { VOICE.currentAudio.pause(); } catch (e) {}
+      VOICE.currentAudio = null;
+    }
+    state.bubbles.forEach((el) => el.classList.remove("voice-speaking"));
+    VOICE.stream = null;
+  }
+
+  /**
+   * Internal: enqueue one sentence — fires its /prepare in parallel and
+   * appends to the playback queue. Starts the queue runner if idle.
+   */
+  function queueStreamSentence(state, rawSentence) {
+    const clean = cleanTextForTTS(rawSentence);
+    if (!clean) return;
+    state.spoke = true;
+    // Fire prepare immediately (in parallel with any earlier sentences
+    // still being synthesized) so all sentences can be in-flight at once.
+    const prepPromise = fetch("/api/voice/tts/stream/prepare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: clean,
+        voice: (VOICE.settings && VOICE.settings.default_voice) || "alloy",
+        session_id: state.sessionId,
+      }),
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+    state.queue.push(prepPromise);
+    // Fire-and-forget — runStreamQueue handles its own per-sentence errors,
+    // but attach a terminal catch so future changes can't surface unhandled
+    // rejections in the console.
+    if (!state.playing) runStreamQueue(state).catch(() => {});
+  }
+
+  /**
+   * Internal: drain the queue one sentence at a time, awaiting each audio
+   * to finish before starting the next so playback order matches reading
+   * order. Re-enters automatically if new sentences arrive while playing.
+   */
+  async function runStreamQueue(state) {
+    state.playing = true;
+    while (!state.stopped && state.queue.length > 0) {
+      const prepPromise = state.queue.shift();
+      let prepared;
+      try { prepared = await prepPromise; } catch (e) { prepared = null; }
+      if (state.stopped) break;
+      const url = prepared && (prepared.audio_url || prepared.stream_url);
+      if (!url) continue;
+      await playStreamSentenceAudio(state, url);
+    }
+    state.playing = false;
+    // If finalized + drained + still the active stream → clear the slot
+    // so a subsequent message can begin a fresh stream cleanly.
+    if (state.finalized && state.queue.length === 0 && VOICE.stream === state) {
+      state.bubbles.forEach((el) => el.classList.remove("voice-speaking"));
+      VOICE.stream = null;
+    }
+  }
+
+  /**
+   * Internal: play a single sentence audio. Highlights the stream bubbles
+   * while playing. Resolves when audio ends, errors, or fails to start.
+   * Does NOT call stopCurrentAudio (that would tear down our own queue);
+   * we manage VOICE.currentAudio directly so external mute still works.
+   */
+  function playStreamSentenceAudio(state, url) {
+    return new Promise((resolve) => {
+      const audio = new Audio(url);
+      VOICE.currentAudio = audio;
+      state.bubbles.forEach((el) => el.classList.add("voice-speaking"));
+      let resolved = false;
+      const cleanup = () => {
+        if (resolved) return;
+        resolved = true;
+        state.bubbles.forEach((el) => el.classList.remove("voice-speaking"));
+        if (VOICE.currentAudio === audio) VOICE.currentAudio = null;
+        resolve();
+      };
+      audio.addEventListener("ended", cleanup);
+      audio.addEventListener("error", cleanup);
+      audio.play().then(() => { /* started — wait for ended */ }, cleanup);
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // Initialization — load settings, then wire up enabled features
   // ---------------------------------------------------------------------------
 
@@ -835,6 +1095,16 @@
         el.__voiceText = text;
         attachSpeakerBadge(el);
       });
+      // Don't double-speak: this listener fires synchronously inside
+      // streamBubble.finalize(), which is itself called right before
+      // script.js invokes streamSpeakEnd(). If the sentence-streaming path
+      // is currently speaking this reply (or has already flagged these
+      // bubbles), skip the redundant whole-message speakText — otherwise
+      // its stopCurrentAudio() call would tear down our active queue and
+      // restart the entire reply from the top.
+      const alreadyStreamed = els.some((el) => el && el.__voiceStreamSpoken);
+      const streamActive = VOICE.stream && !VOICE.stream.stopped;
+      if (alreadyStreamed || streamActive) return;
       if (isVoiceMuted()) {
         els.forEach((el) => el.classList.add("voice-tap-to-play"));
       } else {
@@ -896,13 +1166,19 @@
     btn.setAttribute("aria-pressed", muted ? "false" : "true");
   }
 
-  // Expose a small public API for debugging / programmatic control
+  // Expose a small public API for debugging / programmatic control.
+  // The streamSpeak* methods are called by chatSendStreaming in script.js
+  // to drive sentence-by-sentence TTS during the AI reply stream.
   window.VoiceAgent = {
     state: VOICE,
     play: playAudioUrl,
     stop: stopCurrentAudio,
     speak: speakText,
     refresh: init,
+    streamSpeakBegin: streamSpeakBegin,
+    streamSpeakFeed: streamSpeakFeed,
+    streamSpeakEnd: streamSpeakEnd,
+    streamSpeakCancel: streamSpeakCancel,
   };
 
   // Self-initialize when the DOM is ready
