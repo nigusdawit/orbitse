@@ -1025,34 +1025,13 @@ FONTS:
   The site's theme (colors, fonts, glass effects) is auto-injected.
   -->
   <div id="immersive-page-overlay" class="immersive-page-overlay" data-testid="immersive-page-overlay">
-    <button class="canvas-close-btn" onclick="closeImmersivePage(true); closeSidePanel();" data-testid="button-immersive-close">
+    <button class="canvas-close-btn" onclick="closeImmersivePage(); closeSidePanel();" data-testid="button-immersive-close">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="m15 18-6-6 6-6"/>
       </svg>
       Back
     </button>
     <iframe id="immersive-page-frame" class="immersive-page-frame" sandbox="allow-scripts" data-testid="immersive-page-frame"></iframe>
-  </div>
-
-  <!--
-  ============================================================================
-  SESSION PAGE ARCHIVE BUBBLE — Bottom-left, lets the visitor revisit any
-  immersive page generated earlier in this session. Hidden until at least
-  one page has been archived. Closing an immersive page collapses into it.
-  ============================================================================
-  -->
-  <div id="page-archive-bubble" class="page-archive-bubble" data-testid="page-archive-bubble" hidden>
-    <button type="button" class="page-archive-bubble-btn" onclick="togglePageArchivePopover()" data-testid="button-page-archive-toggle" aria-label="Open recent pages" aria-haspopup="true" aria-expanded="false" aria-controls="page-archive-popover">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-        <polyline points="14 2 14 8 20 8"/>
-      </svg>
-      <span id="page-archive-bubble-count" class="page-archive-bubble-count" data-testid="text-page-archive-count">0</span>
-    </button>
-    <div id="page-archive-popover" class="page-archive-popover" data-testid="page-archive-popover" role="menu" hidden>
-      <div class="page-archive-popover-header">Recent pages</div>
-      <ul id="page-archive-popover-list" class="page-archive-popover-list" data-testid="list-page-archive"></ul>
-    </div>
   </div>
 
   <!--

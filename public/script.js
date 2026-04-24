@@ -4239,12 +4239,6 @@ async function chatSendMessage() {
 
   if (!message) return;
 
-  /* If a previously-generated immersive page is still open from an earlier
-     turn, close it now so the visitor isn't stuck staring at the old page
-     while the AI talks about (or builds) something new. The next response
-     will reopen the overlay if it issues generatePage / showSavedPage. */
-  closeImmersivePage();
-
   /* Remember the prompt so we can attach it to saved pages */
   lastUserPrompt = message;
 
@@ -5443,9 +5437,6 @@ function executeCommand(cmd) {
           if (data && data.html) {
             openImmersivePage(data.html);
             openSidePanel();
-            /* Add the saved page to the in-session archive so the visitor
-               can re-open it from the bottom-left bubble later. */
-            archiveSessionPage(data.html, data.title || cmd.title || 'Saved page');
           } else {
             console.warn('Saved page not found for slug:', savedSlug);
             chatAddMessage('agent', fallbackMsg);
@@ -6220,218 +6211,21 @@ function extractStreamingJsonString(buffer, key) {
 
 /**
  * Close the immersive page overlay and clear the iframe content.
- *
- * @param {boolean} [animate=false] - If true, plays a "collapse to bottom-left
- *   bubble" animation before clearing. Use true for visitor-initiated closes
- *   (the Back button) and false for system-initiated closes (a new question
- *   came in, a new immersive page is about to open, etc).
  */
-function closeImmersivePage(animate) {
+function closeImmersivePage() {
   const overlay = document.getElementById('immersive-page-overlay');
   if (!overlay) return;
 
-  /* If the overlay isn't actually open, just make sure the streaming state
-     is reset and bail. Avoids running the collapse animation on nothing. */
-  if (!overlay.classList.contains('active')) {
-    resetImmersiveStreamState();
-    return;
-  }
-
-  /* If a collapse animation is already in flight (e.g. the visitor hit
-     Back, which also triggers closeSidePanel → closeImmersivePage()),
-     don't kill it by tearing the overlay down synchronously. The original
-     animated call will finish the close on transitionend. */
-  if (overlay.classList.contains('collapsing')) {
-    return;
-  }
+  overlay.classList.remove('active');
 
   const frame = document.getElementById('immersive-page-frame');
+  if (frame) frame.srcdoc = '';
 
-  const finishClose = () => {
-    overlay.classList.remove('active');
-    overlay.classList.remove('collapsing');
-    if (frame) frame.srcdoc = '';
-    resetImmersiveStreamState();
-  };
-
-  if (animate) {
-    /* Force a reflow so the browser registers the starting transform
-       before we add the .collapsing class — without this the transition
-       can be skipped entirely if the overlay was just made active. */
-    void overlay.offsetWidth;
-    overlay.classList.add('collapsing');
-    /* Match the CSS transition duration; use transitionend as primary
-       and a setTimeout as a safety net in case the event doesn't fire
-       (e.g. tab backgrounded mid-animation). */
-    let done = false;
-    const onEnd = () => {
-      if (done) return;
-      done = true;
-      overlay.removeEventListener('transitionend', onEnd);
-      finishClose();
-    };
-    overlay.addEventListener('transitionend', onEnd);
-    setTimeout(onEnd, 600);
-  } else {
-    finishClose();
-  }
+  /* Tear down any in-flight streaming state and detach the window
+     'message' listener so closing the overlay mid-stream doesn't leak
+     handlers or leave a stale state object that breaks the next render. */
+  resetImmersiveStreamState();
 }
-
-
-/* ─────────────────────────────────────────────────────────────────
-   SESSION PAGE ARCHIVE
-   ─────────────────────────────────────────────────────────────────
-   Keeps every immersive page the visitor has seen this browser
-   session in memory, so they can revisit them from the bottom-left
-   bubble without re-asking the AI to rebuild. Capped to a sensible
-   max so memory doesn't grow unbounded over a long session. */
-
-const PAGE_ARCHIVE_MAX = 12;
-let sessionPageArchive = [];
-
-/**
- * Add a generated/saved page to the in-session archive and refresh the
- * bottom-left bubble. Deduplicates against the same html so re-opening
- * an existing entry doesn't create duplicate items.
- */
-function archiveSessionPage(html, title) {
-  if (!html || !html.trim()) return;
-  const cleanTitle = (title && title.trim()) ? title.trim() : 'Generated page';
-
-  /* Dedup — if this exact html is already in the archive, just bump it
-     to the front (most-recent-first ordering) instead of duplicating. */
-  const existingIdx = sessionPageArchive.findIndex(p => p.html === html);
-  if (existingIdx >= 0) {
-    const existing = sessionPageArchive.splice(existingIdx, 1)[0];
-    existing.openedAt = Date.now();
-    if (cleanTitle && cleanTitle !== 'Generated page') existing.title = cleanTitle;
-    sessionPageArchive.unshift(existing);
-  } else {
-    sessionPageArchive.unshift({
-      id: 'sess_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
-      title: cleanTitle,
-      html,
-      openedAt: Date.now()
-    });
-    if (sessionPageArchive.length > PAGE_ARCHIVE_MAX) {
-      sessionPageArchive.length = PAGE_ARCHIVE_MAX;
-    }
-  }
-
-  renderPageArchiveBubble({ pulse: true });
-}
-
-/**
- * Update the bottom-left bubble's count + popover list to match the
- * current sessionPageArchive. Hides the bubble entirely when empty.
- */
-function renderPageArchiveBubble(opts) {
-  const bubble = document.getElementById('page-archive-bubble');
-  const count = document.getElementById('page-archive-bubble-count');
-  const list = document.getElementById('page-archive-popover-list');
-  if (!bubble || !count || !list) return;
-
-  if (sessionPageArchive.length === 0) {
-    bubble.hidden = true;
-    bubble.classList.remove('pulsing');
-    const popover = document.getElementById('page-archive-popover');
-    if (popover) popover.hidden = true;
-    list.innerHTML = '';
-    count.textContent = '0';
-    return;
-  }
-
-  bubble.hidden = false;
-  count.textContent = String(sessionPageArchive.length);
-
-  /* Render list — each entry is a button so it's keyboard-accessible.
-     Titles are escaped to prevent any AI-supplied markup leaking into the DOM. */
-  list.innerHTML = sessionPageArchive.map(p => `
-    <li>
-      <button type="button"
-              class="page-archive-popover-item"
-              data-page-id="${escapeHtml(p.id)}"
-              data-testid="button-page-archive-item-${escapeHtml(p.id)}">
-        <span class="page-archive-popover-item-title">${escapeHtml(p.title)}</span>
-        <span class="page-archive-popover-item-time">${formatPageArchiveTime(p.openedAt)}</span>
-      </button>
-    </li>
-  `).join('');
-
-  /* Wire up click handlers — re-bind every render since innerHTML wiped them. */
-  list.querySelectorAll('.page-archive-popover-item').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-page-id');
-      reopenArchivedPage(id);
-    });
-  });
-
-  if (opts && opts.pulse) {
-    bubble.classList.remove('pulsing');
-    /* Force reflow so the animation restarts cleanly even if the bubble
-       was just pulsed a moment ago. */
-    void bubble.offsetWidth;
-    bubble.classList.add('pulsing');
-    setTimeout(() => bubble.classList.remove('pulsing'), 950);
-  }
-}
-
-function formatPageArchiveTime(ts) {
-  if (!ts) return '';
-  const diffSec = Math.max(1, Math.floor((Date.now() - ts) / 1000));
-  if (diffSec < 60) return `${diffSec}s ago`;
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  return `${diffHr}h ago`;
-}
-
-function togglePageArchivePopover() {
-  const popover = document.getElementById('page-archive-popover');
-  const btn = document.querySelector('#page-archive-bubble .page-archive-bubble-btn');
-  if (!popover) return;
-  popover.hidden = !popover.hidden;
-  if (btn) btn.setAttribute('aria-expanded', popover.hidden ? 'false' : 'true');
-  /* When opening, refresh the time labels so "30s ago" stays current. */
-  if (!popover.hidden) renderPageArchiveBubble();
-}
-
-function closePageArchivePopover() {
-  const popover = document.getElementById('page-archive-popover');
-  const btn = document.querySelector('#page-archive-bubble .page-archive-bubble-btn');
-  if (!popover || popover.hidden) return;
-  popover.hidden = true;
-  if (btn) btn.setAttribute('aria-expanded', 'false');
-}
-
-function reopenArchivedPage(id) {
-  const entry = sessionPageArchive.find(p => p.id === id);
-  if (!entry) return;
-  /* Close the popover and any current immersive view, then open the entry.
-     openImmersivePage handles activating the overlay and rendering. */
-  closePageArchivePopover();
-  closeImmersivePage(false);
-  openImmersivePage(entry.html);
-  openSidePanel();
-  /* Bump it to the front of the archive so it shows as most-recent. */
-  archiveSessionPage(entry.html, entry.title);
-}
-
-/* Close the popover when the visitor clicks anywhere outside it. */
-document.addEventListener('click', (e) => {
-  const bubble = document.getElementById('page-archive-bubble');
-  const popover = document.getElementById('page-archive-popover');
-  if (!bubble || !popover || popover.hidden) return;
-  if (bubble.contains(e.target)) return;
-  closePageArchivePopover();
-});
-
-/* Escape closes the popover from anywhere on the page. */
-document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape') return;
-  const popover = document.getElementById('page-archive-popover');
-  if (popover && !popover.hidden) closePageArchivePopover();
-});
 
 
 /**
@@ -6440,12 +6234,6 @@ document.addEventListener('keydown', (e) => {
  */
 function saveGeneratedPage(html, title) {
   if (!html || !html.trim()) return;
-
-  /* Always add to the in-session archive immediately, regardless of whether
-     the server-side save succeeds — the visitor just watched this page get
-     built and should be able to revisit it from the bottom-left bubble. */
-  archiveSessionPage(html, title || 'AI Generated Page');
-
   fetch('/api/generated-pages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
