@@ -455,15 +455,33 @@
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     const recognition = new SR();
     recognition.lang = navigator.language || "en-US";
-    recognition.continuous = false;       // Stop after one utterance
+    /* continuous = true keeps the recognition session open across pauses,
+       so a brief breath in the middle of a sentence doesn't end the turn.
+       We add our own 2-second silence watchdog below to decide when the
+       visitor is actually done speaking. */
+    recognition.continuous = true;
     recognition.interimResults = true;    // Stream partial results into the input
     VOICE.recognition = recognition;
     VOICE.recognitionActive = true;
     micBtn.classList.add("voice-mic-active");
 
     let finalText = "";
+    /* Silence watchdog — when the user pauses for SILENCE_MS without any
+       new speech, we conclude they're done and stop the recognition. */
+    const SILENCE_MS = 2000;
+    let silenceTimer = null;
+    let userManuallyStopped = false;
+    const armSilenceTimer = () => {
+      if (silenceTimer) clearTimeout(silenceTimer);
+      silenceTimer = setTimeout(() => {
+        try { recognition.stop(); } catch (e) {}
+      }, SILENCE_MS);
+    };
 
     recognition.onresult = (event) => {
+      // Any new result (interim or final) means the visitor is still talking
+      // — push the silence cutoff back so we don't cut them off mid-thought.
+      armSilenceTimer();
       // Collect all results — interim shows up live in the input box
       let interim = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -477,12 +495,25 @@
       inputEl.value = (finalText + interim).trim();
     };
 
+    /* onspeechstart fires the moment the engine first detects speech —
+       arm the watchdog from that point so we have a baseline. */
+    recognition.onspeechstart = () => {
+      armSilenceTimer();
+    };
+
+    /* Expose a way for the click-to-stop path (toggleSpeechRecognition's
+       early return at the top) to mark this as a manual stop, so onend
+       skips the silence-timer cleanup that's already moot. */
+    recognition.__markManualStop = () => { userManuallyStopped = true; };
+
     recognition.onerror = () => {
+      if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
       VOICE.recognitionActive = false;
       micBtn.classList.remove("voice-mic-active");
     };
 
     recognition.onend = () => {
+      if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
       VOICE.recognitionActive = false;
       micBtn.classList.remove("voice-mic-active");
 
