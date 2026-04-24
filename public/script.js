@@ -4239,6 +4239,12 @@ async function chatSendMessage() {
 
   if (!message) return;
 
+  /* If a previously-generated immersive page is still open from an earlier
+     turn, close it now so the visitor isn't stuck staring at the old page
+     while the AI talks about (or builds) something new. The next response
+     will reopen the overlay if it issues generatePage / showSavedPage. */
+  closeImmersivePage();
+
   /* Remember the prompt so we can attach it to saved pages */
   lastUserPrompt = message;
 
