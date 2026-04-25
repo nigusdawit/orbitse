@@ -13808,7 +13808,15 @@ TO CUSTOMIZE THIS DASHBOARD:
       container.innerHTML = Automations.steps.map((s, idx) => {
         const action = actions.find(a => a.kind === s.kind) || {label: s.kind, config_fields: []};
         const cfgFormId = 'step-cfg-' + idx;
-        const fieldsHtml = action.config_fields.map(f => renderConfigField(f, (s.config || {})[f.name], cfgFormId + '-' + f.name)).join('');
+        // Actions flagged with config_ui === 'rule_builder' (currently
+        // just `condition`) get the recursive AND/OR rule-builder UI
+        // instead of the flat config-field form. Their saved config is
+        // either a legacy leaf {field, operator, value} or a new
+        // {combinator, rules} group; we normalize on render so both
+        // round-trip cleanly through the same builder.
+        const fieldsHtml = (action.config_ui === 'rule_builder')
+          ? renderRuleGroup(normalizeRuleTreeForEdit(s.config || {}), idx, 'config', [])
+          : action.config_fields.map(f => renderConfigField(f, (s.config || {})[f.name], cfgFormId + '-' + f.name)).join('');
         const actionOpts = actions.map(a =>
           `<option value="${escapeHtml(a.kind)}" ${a.kind === s.kind ? 'selected' : ''}>${escapeHtml(a.label)}</option>`
         ).join('');
@@ -13841,55 +13849,250 @@ TO CUSTOMIZE THIS DASHBOARD:
       attachStepMergeTagAutocompletes();
     }
 
-    /* Per-step "Only run when…" filter row. Inputs share data-when-key
-       attributes that readWhenForm() walks to assemble {field, operator,
-       value}. Empty rows are dropped server-side so they don't pollute
-       the saved automation. */
+    /* =====================================================================
+       Per-step "Only run when…" filter and the standalone condition
+       action's config — both use the same recursive AND/OR rule builder.
+
+       The on-disk shape is either:
+         leaf:  {field, operator, value}
+         group: {combinator: 'AND' | 'OR', rules: [<node>, ...]}
+       with arbitrarily nested sub-groups. The editor always presents
+       a group at the root for the AND/OR selector; legacy single-leaf
+       data is wrapped in an implicit AND group on render and the
+       backend cleaner accepts either shape.
+
+       Empty leaves (blank field with a non-unary operator) and empty
+       groups are dropped at save time so half-built filters never
+       reach the saved row.
+       ===================================================================== */
+
     function renderWhenFilter(when, idx) {
-      const ops = (Automations.metadata && Automations.metadata.condition_operators) || [];
-      const currentOp = (when.operator || '').toLowerCase() || 'eq';
-      const opOpts = ops.map(o =>
-        `<option value="${escapeHtml(o.value)}" ${o.value === currentOp ? 'selected' : ''}>${escapeHtml(o.label)}</option>`
-      ).join('');
-      const isUnary = currentOp === 'blank' || currentOp === 'not_blank';
+      const tree = normalizeRuleTreeForEdit(when);
+      const hasContent = ruleNodeIsMeaningful(tree);
       const scopeId = 'step-when-' + idx;
       return `
-        <details class="form-group" style="margin:0.5rem 0 0.75rem 0; padding:0.5rem 0.75rem; background:rgba(99,102,241,0.06); border:1px dashed rgba(99,102,241,0.35); border-radius:6px;" ${(when.field || isUnary) ? 'open' : ''}>
+        <details class="form-group" style="margin:0.5rem 0 0.75rem 0; padding:0.5rem 0.75rem; background:rgba(99,102,241,0.06); border:1px dashed rgba(99,102,241,0.35); border-radius:6px;" ${hasContent ? 'open' : ''}>
           <summary style="cursor:pointer; font-size:0.85rem; color:var(--admin-text-muted);" data-testid="summary-step-when-${idx}">Only run when… (optional)</summary>
-          <div id="${scopeId}" style="display:flex; gap:0.5rem; align-items:center; margin-top:0.5rem; flex-wrap:wrap;">
-            <input type="text" data-when-key="field" data-merge-tag-input="1" autocomplete="off" placeholder="{% raw %}{{trigger.fields.plan}}{% endraw %}" value="${escapeHtml(when.field || '')}" style="flex:1 1 200px;" data-testid="input-step-when-field-${idx}">
-            <select data-when-key="operator" onchange="onWhenOperatorChange(${idx}, this.value)" data-testid="select-step-when-op-${idx}">${opOpts}</select>
-            <input type="text" data-when-key="value" placeholder="Premium" value="${escapeHtml(when.value || '')}" ${isUnary ? 'disabled style="flex:1 1 160px; opacity:0.5;"' : 'style="flex:1 1 160px;"'} data-testid="input-step-when-value-${idx}">
+          <div id="${scopeId}" style="margin-top:0.5rem;">
+            ${renderRuleGroup(tree, idx, 'when', [])}
           </div>
           <small style="display:block; margin-top:0.4rem; color:var(--admin-text-muted);">
-            Leave the first field blank to always run this step. Merge tags work here too — e.g. <code>{% raw %}{{trigger.fields.plan}}{% endraw %}</code>.
+            Combine multiple checks with AND / OR. Leave every field blank to always run this step. Merge tags work — e.g. <code>{% raw %}{{trigger.fields.plan}}{% endraw %}</code>.
           </small>
         </details>`;
     }
 
-    /* When the operator switches to/from a unary one (blank/not_blank),
-       toggle the value input so it's clear no value is needed. */
-    function onWhenOperatorChange(idx, op) {
+    /* Always present the editable shape as a group so the UI can show
+       AND / OR controls. Legacy leaves get wrapped in a single-rule
+       AND group; missing / empty trees become an empty starter group
+       with one blank rule so the user always has something to type
+       into. */
+    function normalizeRuleTreeForEdit(node) {
+      if (node && typeof node === 'object' && Array.isArray(node.rules)) {
+        return {
+          combinator: (String(node.combinator || 'AND').toUpperCase() === 'OR') ? 'OR' : 'AND',
+          rules: node.rules.map(normalizeRuleNodeForEdit).filter(Boolean),
+        };
+      }
+      if (node && typeof node === 'object' && (node.field || node.operator || node.value)) {
+        return {
+          combinator: 'AND',
+          rules: [normalizeRuleNodeForEdit(node)],
+        };
+      }
+      return {combinator: 'AND', rules: [{field: '', operator: 'eq', value: ''}]};
+    }
+
+    function normalizeRuleNodeForEdit(node) {
+      if (!node || typeof node !== 'object') return null;
+      if (Array.isArray(node.rules)) {
+        return {
+          combinator: (String(node.combinator || 'AND').toUpperCase() === 'OR') ? 'OR' : 'AND',
+          rules: node.rules.map(normalizeRuleNodeForEdit).filter(Boolean),
+        };
+      }
+      const field = (node.field == null) ? '' : String(node.field);
+      const operator = String(node.operator || 'eq').toLowerCase();
+      const value = (node.value == null) ? '' : String(node.value);
+      return {field, operator, value};
+    }
+
+    /* True if at least one leaf in the tree has a non-empty field, or
+       uses a unary operator (blank / not_blank) that doesn't need one. */
+    function ruleNodeIsMeaningful(node) {
+      if (!node || typeof node !== 'object') return false;
+      if (Array.isArray(node.rules)) {
+        return node.rules.some(ruleNodeIsMeaningful);
+      }
+      const op = String(node.operator || '').toLowerCase();
+      return Boolean((node.field || '').trim()) || op === 'blank' || op === 'not_blank';
+    }
+
+    /* Render an AND/OR group. `path` is the array of indices from the
+       step's root tree to this group; the root group has path []. */
+    function renderRuleGroup(group, idx, scope, path) {
+      const combinator = group.combinator === 'OR' ? 'OR' : 'AND';
+      const pathStr = path.length ? path.join('-') : 'root';
+      const isRoot = path.length === 0;
+      const removeBtn = isRoot ? '' :
+        `<button type="button" class="btn btn-secondary btn-sm" onclick="ruleRemoveNode(${idx}, '${scope}', [${path.join(',')}])" data-testid="button-rule-remove-group-${idx}-${scope}-${pathStr}" title="Remove this group">×</button>`;
+      const childrenHtml = (group.rules || []).map((child, j) => {
+        const childPath = path.concat([j]);
+        if (Array.isArray(child.rules)) {
+          return `<div class="rule-node">${renderRuleGroup(child, idx, scope, childPath)}</div>`;
+        }
+        return `<div class="rule-node">${renderRuleLeaf(child, idx, scope, childPath)}</div>`;
+      }).join('');
+      return `
+        <div class="rule-group" data-combinator="${combinator}" data-rule-path="${path.join('.')}" style="border:1px dashed rgba(99,102,241,0.4); border-radius:6px; padding:0.5rem 0.6rem; margin-bottom:0.4rem; background:rgba(99,102,241,0.04);">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem; margin-bottom:0.4rem;">
+            <div style="display:flex; align-items:center; gap:0.4rem; font-size:0.8rem; color:var(--admin-text-muted);">
+              <span>Match</span>
+              <select onchange="ruleSetCombinator(${idx}, '${scope}', [${path.join(',')}], this.value)" data-testid="select-rule-combinator-${idx}-${scope}-${pathStr}">
+                <option value="AND" ${combinator === 'AND' ? 'selected' : ''}>ALL of (AND)</option>
+                <option value="OR" ${combinator === 'OR' ? 'selected' : ''}>ANY of (OR)</option>
+              </select>
+            </div>
+            ${removeBtn}
+          </div>
+          <div class="rule-children" style="display:flex; flex-direction:column; gap:0.4rem;">
+            ${childrenHtml || '<div style="font-size:0.8rem; color:var(--admin-text-muted); padding:0.25rem 0;">No rules yet.</div>'}
+          </div>
+          <div style="margin-top:0.4rem; display:flex; gap:0.4rem;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="ruleAddLeaf(${idx}, '${scope}', [${path.join(',')}])" data-testid="button-rule-add-leaf-${idx}-${scope}-${pathStr}">+ Rule</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="ruleAddGroup(${idx}, '${scope}', [${path.join(',')}])" data-testid="button-rule-add-group-${idx}-${scope}-${pathStr}">+ Group</button>
+          </div>
+        </div>`;
+    }
+
+    function renderRuleLeaf(leaf, idx, scope, path) {
+      const ops = (Automations.metadata && Automations.metadata.condition_operators) || [];
+      const currentOp = (leaf.operator || 'eq').toLowerCase();
+      const opOpts = ops.map(o =>
+        `<option value="${escapeHtml(o.value)}" ${o.value === currentOp ? 'selected' : ''}>${escapeHtml(o.label)}</option>`
+      ).join('');
+      const isUnary = currentOp === 'blank' || currentOp === 'not_blank';
+      const pathStr = path.join('-');
+      return `
+        <div class="rule-leaf" data-rule-path="${path.join('.')}" style="display:flex; gap:0.4rem; align-items:center; flex-wrap:wrap;">
+          <input type="text" data-rule-key="field" data-merge-tag-input="1" autocomplete="off" placeholder="{% raw %}{{trigger.fields.plan}}{% endraw %}" value="${escapeHtml(leaf.field || '')}" style="flex:1 1 200px;" data-testid="input-rule-field-${idx}-${scope}-${pathStr}">
+          <select data-rule-key="operator" onchange="ruleSetOperator(${idx}, '${scope}', [${path.join(',')}], this.value)" data-testid="select-rule-op-${idx}-${scope}-${pathStr}">${opOpts}</select>
+          <input type="text" data-rule-key="value" placeholder="Premium" value="${escapeHtml(leaf.value || '')}" ${isUnary ? 'disabled style="flex:1 1 160px; opacity:0.5;"' : 'style="flex:1 1 160px;"'} data-testid="input-rule-value-${idx}-${scope}-${pathStr}">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="ruleRemoveNode(${idx}, '${scope}', [${path.join(',')}])" data-testid="button-rule-remove-${idx}-${scope}-${pathStr}" title="Remove this rule">×</button>
+        </div>`;
+    }
+
+    /* Walk the .rule-group / .rule-leaf DOM built by renderRuleGroup
+       and assemble the matching tree. Returns null when the tree is
+       entirely empty so the caller can skip persisting it. */
+    function readRuleTreeFromScope(scopeRoot) {
+      if (!scopeRoot) return null;
+      const rootGroup = scopeRoot.querySelector(':scope > .rule-group')
+        || scopeRoot.querySelector('.rule-group');
+      if (!rootGroup) return null;
+      const tree = readRuleNodeFromDom(rootGroup);
+      return ruleNodeIsMeaningful(tree) ? tree : null;
+    }
+
+    function readRuleNodeFromDom(el) {
+      if (!el) return null;
+      if (el.classList.contains('rule-leaf')) {
+        const f = el.querySelector('[data-rule-key="field"]');
+        const o = el.querySelector('[data-rule-key="operator"]');
+        const v = el.querySelector('[data-rule-key="value"]');
+        return {
+          field: f ? f.value : '',
+          operator: o ? (o.value || 'eq').toLowerCase() : 'eq',
+          value: v ? v.value : '',
+        };
+      }
+      // group
+      const combinator = el.getAttribute('data-combinator') === 'OR' ? 'OR' : 'AND';
+      const childWrappers = Array.from(el.querySelectorAll(':scope > .rule-children > .rule-node'));
+      const rules = childWrappers.map(wrap => {
+        const inner = wrap.querySelector(':scope > .rule-leaf, :scope > .rule-group');
+        return inner ? readRuleNodeFromDom(inner) : null;
+      }).filter(Boolean);
+      return {combinator, rules};
+    }
+
+    /* Mutators — read the latest DOM into state before mutating so any
+       unsaved keystrokes survive the re-render. Each takes a path
+       array pointing at the target group/leaf relative to the step's
+       tree root. */
+    function _ruleStateRoot(stepIdx, scope) {
+      const step = Automations.steps[stepIdx];
+      if (scope === 'when') {
+        if (!step.when || !Array.isArray(step.when.rules)) {
+          step.when = normalizeRuleTreeForEdit(step.when);
+        }
+        return step.when;
+      }
+      // condition action's config
+      if (!step.config || !Array.isArray(step.config.rules)) {
+        step.config = normalizeRuleTreeForEdit(step.config);
+      }
+      return step.config;
+    }
+
+    function _getRuleNodeAt(root, path) {
+      let cursor = root;
+      for (const i of path) {
+        cursor = cursor.rules[i];
+      }
+      return cursor;
+    }
+
+    function ruleAddLeaf(stepIdx, scope, path) {
       collectStepsFromForm();
-      // Persist via collect, then re-render so the disabled state updates.
-      Automations.steps[idx].when = Automations.steps[idx].when || {};
-      Automations.steps[idx].when.operator = op;
+      const root = _ruleStateRoot(stepIdx, scope);
+      const grp = _getRuleNodeAt(root, path);
+      if (!Array.isArray(grp.rules)) grp.rules = [];
+      grp.rules.push({field: '', operator: 'eq', value: ''});
       renderStepsList();
     }
 
-    function readWhenForm(scopeId) {
-      const root = document.getElementById(scopeId);
-      if (!root) return null;
-      const out = {};
-      root.querySelectorAll('[data-when-key]').forEach(el => {
-        out[el.getAttribute('data-when-key')] = el.value;
-      });
-      // Drop entirely empty filters so we don't persist noise.
-      const op = (out.operator || '').toLowerCase();
-      if (!(out.field || '').trim() && op !== 'blank' && op !== 'not_blank') {
-        return null;
+    function ruleAddGroup(stepIdx, scope, path) {
+      collectStepsFromForm();
+      const root = _ruleStateRoot(stepIdx, scope);
+      const grp = _getRuleNodeAt(root, path);
+      if (!Array.isArray(grp.rules)) grp.rules = [];
+      // Default a new sub-group to OR — the typical reason to nest is
+      // "(A AND B) OR C" style logic, so OR is the more useful starter.
+      grp.rules.push({combinator: 'OR', rules: [{field: '', operator: 'eq', value: ''}]});
+      renderStepsList();
+    }
+
+    function ruleRemoveNode(stepIdx, scope, path) {
+      collectStepsFromForm();
+      if (!path.length) return;
+      const root = _ruleStateRoot(stepIdx, scope);
+      const parent = _getRuleNodeAt(root, path.slice(0, -1));
+      parent.rules.splice(path[path.length - 1], 1);
+      // If removing the last rule of the root group leaves it empty,
+      // drop a fresh blank starter so the UI never renders an
+      // unactionable "No rules yet" root for either the per-step
+      // `when` filter or the condition action's own config.
+      if (path.length === 1 && parent.rules.length === 0) {
+        parent.rules.push({field: '', operator: 'eq', value: ''});
       }
-      return out;
+      renderStepsList();
+    }
+
+    function ruleSetCombinator(stepIdx, scope, path, combinator) {
+      collectStepsFromForm();
+      const root = _ruleStateRoot(stepIdx, scope);
+      const grp = _getRuleNodeAt(root, path);
+      grp.combinator = combinator === 'OR' ? 'OR' : 'AND';
+      renderStepsList();
+    }
+
+    function ruleSetOperator(stepIdx, scope, path, op) {
+      collectStepsFromForm();
+      const root = _ruleStateRoot(stepIdx, scope);
+      const leaf = _getRuleNodeAt(root, path);
+      leaf.operator = (op || 'eq').toLowerCase();
+      renderStepsList();
     }
 
     function addAutomationStep() {
@@ -13930,10 +14133,21 @@ TO CUSTOMIZE THIS DASHBOARD:
     function collectStepsFromForm() {
       // Pull the latest values from each step's config form back into the
       // in-memory steps list so they survive a re-render.
+      const actions = (Automations.metadata && Automations.metadata.actions) || [];
       Automations.steps.forEach((s, idx) => {
-        const cfg = readConfigForm('step-cfg-' + idx);
-        s.config = cfg;
-        const when = readWhenForm('step-when-' + idx);
+        const action = actions.find(a => a.kind === s.kind);
+        if (action && action.config_ui === 'rule_builder') {
+          // The rule-builder owns the entire config — read the full
+          // tree out of the DOM. Empty trees collapse to {AND, []}
+          // so the backend can flag "no rules" cleanly on save.
+          const cfgRoot = document.getElementById('step-cfg-' + idx);
+          const tree = readRuleTreeFromScope(cfgRoot);
+          s.config = tree || {combinator: 'AND', rules: []};
+        } else {
+          s.config = readConfigForm('step-cfg-' + idx);
+        }
+        const whenScope = document.getElementById('step-when-' + idx);
+        const when = readRuleTreeFromScope(whenScope);
         if (when) {
           s.when = when;
         } else {

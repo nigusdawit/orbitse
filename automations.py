@@ -343,16 +343,13 @@ ACTION_TYPES = [
     {
         "kind": "condition",
         "label": "Branch — only continue if a condition is true",
-        "config_fields": [
-            # `merge_tag_field` is identical to `text` server-side; the dashboard
-            # uses the kind to attach the merge-tag autocomplete (suggesting
-            # trigger.* paths and prior step outputs).
-            {"name": "field", "label": "When this value", "kind": "merge_tag_field", "required": True,
-             "placeholder": "{{trigger.fields.plan}}"},
-            {"name": "operator", "label": "matches", "kind": "select",
-             "options": CONDITION_OPERATORS},
-            {"name": "value", "label": "this value", "kind": "text", "placeholder": "Premium"},
-        ],
+        # The dashboard renders its own AND/OR rule-builder for this
+        # action when it sees `config_ui: rule_builder`, so no plain
+        # config_fields are needed. The saved config is either a single
+        # leaf {field, operator, value} or a {combinator, rules} group
+        # with arbitrarily nested AND/OR sub-groups.
+        "config_ui": "rule_builder",
+        "config_fields": [],
         "outputs": ["passed", "summary"],
     },
 ]
@@ -755,6 +752,7 @@ def _coerce_number(s: Any) -> Optional[float]:
 
 
 def _evaluate_condition(left: Any, op: str, right: Any) -> bool:
+    """Single leaf comparison. Used as the bottom of the rule-tree walker."""
     L = "" if left is None else str(left)
     R = "" if right is None else str(right)
     op = (op or "eq").strip().lower()
@@ -788,8 +786,60 @@ def _evaluate_condition(left: Any, op: str, right: Any) -> bool:
     return False
 
 
-def _describe_condition(cfg: Dict[str, Any]) -> str:
-    """Human-readable rendering used in run-log skip reasons."""
+# -----------------------------------------------------------------------------
+# RULE TREES — AND/OR groups of leaf comparisons
+# -----------------------------------------------------------------------------
+#
+# A "rule node" is either a leaf or a group:
+#
+#   leaf:   {"field": "...", "operator": "eq", "value": "..."}
+#   group:  {"combinator": "AND" | "OR", "rules": [<node>, ...]}
+#
+# Both the standalone `condition` action and the per-step `when` filter
+# accept either shape. Legacy data (saved before AND/OR groups existed)
+# is always a single leaf and continues to work unchanged — the walker
+# treats a leaf as a one-rule group internally.
+
+def _is_rule_group(node: Any) -> bool:
+    """A node is a group if it carries a `rules` list."""
+    return isinstance(node, dict) and isinstance(node.get("rules"), list)
+
+
+def _has_meaningful_rules(node: Any) -> bool:
+    """True if any leaf in the tree has a non-empty field, or uses a unary
+    operator (blank / not_blank) which doesn't need a left-hand value."""
+    if not isinstance(node, dict):
+        return False
+    if _is_rule_group(node):
+        return any(_has_meaningful_rules(r) for r in node.get("rules") or [])
+    field = node.get("field")
+    op = (node.get("operator") or "").strip().lower()
+    return bool(
+        (isinstance(field, str) and field.strip())
+        or op in ("blank", "not_blank")
+    )
+
+
+def _validate_rule_operators(node: Any) -> Optional[str]:
+    """Walk the tree; return the first unknown-operator error, else None."""
+    if not isinstance(node, dict):
+        return None
+    if _is_rule_group(node):
+        combinator = (node.get("combinator") or "AND").strip().upper()
+        if combinator not in ("AND", "OR"):
+            return f"Unknown combinator: {node.get('combinator')!r}"
+        for r in node.get("rules") or []:
+            err = _validate_rule_operators(r)
+            if err:
+                return err
+        return None
+    op = (node.get("operator") or "eq").strip().lower()
+    if op not in _VALID_OPERATORS:
+        return f"Unknown operator: {op!r}"
+    return None
+
+
+def _describe_rule_leaf(cfg: Dict[str, Any]) -> str:
     field = cfg.get("field")
     op = (cfg.get("operator") or "eq").strip().lower()
     value = cfg.get("value")
@@ -801,20 +851,94 @@ def _describe_condition(cfg: Dict[str, Any]) -> str:
     return f"{field_str!r} {op_label} {value_str!r}"
 
 
+def _describe_rule_node(node: Any) -> str:
+    """Human-readable rendering used in run-log skip reasons. Renders
+    groups like `(A AND B)` so admins can see exactly which sub-rule
+    short-circuited the branch."""
+    if not isinstance(node, dict):
+        return "(empty rule)"
+    if _is_rule_group(node):
+        combinator = (node.get("combinator") or "AND").strip().upper()
+        if combinator not in ("AND", "OR"):
+            combinator = "AND"
+        rules = node.get("rules") or []
+        if not rules:
+            return "(empty group)"
+        parts = [_describe_rule_node(r) for r in rules]
+        if len(parts) == 1:
+            return parts[0]
+        return "(" + f" {combinator} ".join(parts) + ")"
+    return _describe_rule_leaf(node)
+
+
+def _evaluate_rule_node(node: Any) -> Tuple[bool, str]:
+    """Evaluate a rule tree. Returns (passed, summary).
+
+    `summary` always describes the sub-rule(s) that determined the
+    outcome — the first false rule under AND, the first true rule under
+    OR, or the whole group otherwise — so run-log skip reasons point
+    admins straight at the failing branch.
+
+    Short-circuits: AND stops on the first false, OR stops on the first
+    true. An empty group (no leaves at all) evaluates to True so a
+    half-built filter doesn't accidentally block every run."""
+    if not isinstance(node, dict):
+        return True, "(no condition)"
+    if _is_rule_group(node):
+        combinator = (node.get("combinator") or "AND").strip().upper()
+        if combinator not in ("AND", "OR"):
+            combinator = "AND"
+        rules = node.get("rules") or []
+        if not rules:
+            return True, "(empty group)"
+        if combinator == "AND":
+            for r in rules:
+                ok, summary = _evaluate_rule_node(r)
+                if not ok:
+                    # Surface the first failing sub-rule so the skip
+                    # reason names the actual culprit, not the whole tree.
+                    return False, summary
+            return True, _describe_rule_node(node)
+        # OR
+        for r in rules:
+            ok, summary = _evaluate_rule_node(r)
+            if ok:
+                return True, summary
+        # Every branch failed — describe the whole OR group so admins
+        # see all the alternatives that came up false.
+        return False, _describe_rule_node(node)
+    # leaf
+    op = (node.get("operator") or "eq").strip().lower()
+    if op not in _VALID_OPERATORS:
+        op = "eq"
+    passed = _evaluate_condition(node.get("field"), op, node.get("value"))
+    return passed, _describe_rule_leaf(node)
+
+
+def _describe_condition(cfg: Dict[str, Any]) -> str:
+    """Backwards-compatible alias used by older call sites.
+    Accepts either a legacy leaf `{field, operator, value}` or a group
+    `{combinator, rules}`."""
+    return _describe_rule_node(cfg)
+
+
 def _action_condition(cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
     """Evaluate the condition. Always succeeds; the run engine inspects
-    `passed` afterward to decide whether to skip the rest of the run."""
-    operator = (cfg.get("operator") or "eq").strip().lower()
-    if operator not in _VALID_OPERATORS:
-        return {"ok": False, "error": f"Unknown operator: {operator!r}"}
-    field_str = "" if cfg.get("field") is None else str(cfg.get("field"))
-    if not field_str.strip() and operator not in ("blank", "not_blank"):
-        return {"ok": False, "error": "Condition's left-hand value is empty."}
-    passed = _evaluate_condition(cfg.get("field"), operator, cfg.get("value"))
+    `passed` afterward to decide whether to skip the rest of the run.
+
+    Accepts either a legacy single-rule cfg `{field, operator, value}`
+    or a rule-group cfg `{combinator, rules: [...]}` with arbitrarily
+    nested AND/OR sub-groups."""
+    op_err = _validate_rule_operators(cfg)
+    if op_err:
+        return {"ok": False, "error": op_err}
+    if not _has_meaningful_rules(cfg):
+        return {"ok": False, "error": "Condition has no rules to evaluate."}
+    passed, summary = _evaluate_rule_node(cfg)
     return {
         "ok": True,
         "passed": passed,
-        "summary": _describe_condition(cfg),
+        "summary": summary,
     }
 
 
@@ -1059,37 +1183,25 @@ def _execute_run(run_id: int) -> None:
         kind = step.get("kind") or ""
 
         # Per-step "Only run when…" filter. If present and false, skip
-        # this single step and move on. The filter dict mirrors a
-        # condition action's config (field/operator/value) and runs
-        # through the same merge-tag rendering + evaluator so behavior is
-        # identical to a standalone condition step.
+        # this single step and move on. The filter mirrors a condition
+        # action's config (a leaf rule or a {combinator, rules} group)
+        # and runs through the same merge-tag rendering + tree
+        # evaluator so behavior is identical to a standalone condition
+        # step.
         when = step.get("when")
-        if isinstance(when, dict):
-            field_raw = when.get("field")
-            op_raw = (when.get("operator") or "").strip().lower()
-            has_filter = (
-                (isinstance(field_raw, str) and field_raw.strip())
-                or op_raw in ("blank", "not_blank")
-            )
-            if has_filter:
-                rendered_when = render_deep(when, ctx)
-                op = (rendered_when.get("operator") or "eq").strip().lower()
-                if op not in _VALID_OPERATORS:
-                    op = "eq"
-                passed = _evaluate_condition(
-                    rendered_when.get("field"), op, rendered_when.get("value"),
-                )
-                if not passed:
-                    step_results.append({
-                        "step": idx,
-                        "kind": kind,
-                        "name": step.get("name") or "",
-                        "skipped": True,
-                        "ok": True,
-                        "reason": "Only-run-when condition was false: "
-                                  + _describe_condition(rendered_when),
-                    })
-                    continue
+        if isinstance(when, dict) and _has_meaningful_rules(when):
+            rendered_when = render_deep(when, ctx)
+            passed, summary = _evaluate_rule_node(rendered_when)
+            if not passed:
+                step_results.append({
+                    "step": idx,
+                    "kind": kind,
+                    "name": step.get("name") or "",
+                    "skipped": True,
+                    "ok": True,
+                    "reason": "Only-run-when condition was false: " + summary,
+                })
+                continue
 
         impl = _ACTION_DISPATCH.get(kind)
         if not impl:

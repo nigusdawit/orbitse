@@ -11271,6 +11271,85 @@ _AUTOMATION_TRIGGER_KINDS = {t["kind"] for t in automations.TRIGGER_TYPES}
 _AUTOMATION_ACTION_KINDS = {a["kind"] for a in automations.ACTION_TYPES}
 
 
+# Hard caps for the rule tree on a single `when` filter or condition
+# action's config. These prevent a malicious or runaway editor from
+# saving a tree large enough to choke the evaluator or the JSONB row.
+_RULE_MAX_DEPTH = 5
+_RULE_MAX_LEAVES = 50
+
+
+def _clean_rule_tree(node, path, valid_operators, depth=0, counter=None):
+    """Recursively clean a rule tree (used by both the per-step `when`
+    filter and the standalone condition action's config).
+
+    Accepts either a leaf `{field, operator, value}` or a group
+    `{combinator: AND|OR, rules: [<node>, ...]}` with arbitrarily
+    nested sub-groups. Empty leaves (no field + non-unary operator)
+    are dropped; an entirely-empty tree returns None so the caller
+    can skip persisting it.
+
+    Raises ValueError on shape problems, unknown operators/combinators,
+    or if the tree exceeds the depth/leaf-count caps."""
+    if counter is None:
+        counter = [0]
+    if depth > _RULE_MAX_DEPTH:
+        raise ValueError(f"{path}: rule nesting too deep (max {_RULE_MAX_DEPTH}).")
+    if not isinstance(node, dict):
+        raise ValueError(f"{path}: rule must be an object.")
+    # Treat anything with a `rules` key OR an explicit `combinator` as a
+    # group; that way a group can be empty (rules: []) and still be
+    # recognized correctly.
+    is_group = isinstance(node.get("rules"), list) or "combinator" in node
+    if is_group:
+        combinator_in = node.get("combinator")
+        if combinator_in is None:
+            combinator = "AND"
+        elif isinstance(combinator_in, str):
+            combinator = combinator_in.strip().upper() or "AND"
+        else:
+            raise ValueError(f"{path}: combinator must be a string.")
+        if combinator not in ("AND", "OR"):
+            raise ValueError(
+                f"{path}: combinator must be AND or OR (got {combinator_in!r})."
+            )
+        rules_in = node.get("rules") or []
+        if not isinstance(rules_in, list):
+            raise ValueError(f"{path}.rules must be a list.")
+        cleaned_rules = []
+        for j, r in enumerate(rules_in):
+            cleaned = _clean_rule_tree(
+                r, f"{path}.rules[{j}]", valid_operators, depth + 1, counter,
+            )
+            if cleaned is not None:
+                cleaned_rules.append(cleaned)
+        if not cleaned_rules:
+            return None
+        return {"combinator": combinator, "rules": cleaned_rules}
+    # Leaf node.
+    counter[0] += 1
+    if counter[0] > _RULE_MAX_LEAVES:
+        raise ValueError(f"too many rules (max {_RULE_MAX_LEAVES}).")
+    op_in = node.get("operator")
+    if op_in is None:
+        op = "eq"
+    elif isinstance(op_in, str):
+        op = op_in.strip().lower() or "eq"
+    else:
+        raise ValueError(f"{path}: operator must be a string.")
+    if op not in valid_operators:
+        raise ValueError(f"{path}: unknown operator: {op_in!r}")
+    field = node.get("field")
+    field_str = field.strip() if isinstance(field, str) else ""
+    value = node.get("value")
+    if not isinstance(value, str):
+        value = "" if value is None else str(value)
+    if not field_str and op not in ("blank", "not_blank"):
+        # Empty rule — drop it so half-built filters don't pollute the
+        # saved row.
+        return None
+    return {"field": field_str, "operator": op, "value": value}
+
+
 def _validate_automation_payload(data):
     """Raise ValueError if the inbound payload from the editor is malformed."""
     if not isinstance(data, dict):
@@ -11298,32 +11377,36 @@ def _validate_automation_payload(data):
         cfg = s.get("config") or {}
         if not isinstance(cfg, dict):
             raise ValueError(f"Step {i} config must be an object.")
+        # The standalone condition action's config IS a rule tree, so
+        # validate it through the same cleaner. Other actions store
+        # their fields freely under config and we leave the dict alone.
+        if kind == "condition":
+            cleaned_cfg = _clean_rule_tree(
+                cfg, f"step {i} condition", valid_operators,
+            )
+            if cleaned_cfg is None:
+                raise ValueError(
+                    f"Step {i}: condition needs at least one rule with a non-empty field."
+                )
+            cfg = cleaned_cfg
         cleaned_step = {
             "kind": kind,
             "name": (s.get("name") or "").strip(),
             "config": cfg,
         }
-        # Optional per-step "Only run when…" filter — same shape as a
-        # condition action's config. Only persisted when the admin
-        # actually filled in a left-hand value (or chose a unary operator
-        # like "is blank") so empty filters don't pollute the saved row.
+        # Optional per-step "Only run when…" filter. Accepts either a
+        # legacy leaf `{field, operator, value}` or a `{combinator,
+        # rules}` group with arbitrarily nested AND/OR sub-groups. Only
+        # persisted when the admin actually entered at least one rule
+        # with a non-empty field (or chose a unary operator like "is
+        # blank") so empty filters don't pollute the saved row.
         when_raw = s.get("when")
         if isinstance(when_raw, dict):
-            field = when_raw.get("field")
-            field_str = field.strip() if isinstance(field, str) else ""
-            op_in = when_raw.get("operator")
-            op = (op_in or "eq").strip().lower() if isinstance(op_in, str) else "eq"
-            if op not in valid_operators:
-                raise ValueError(f"Step {i} 'when' filter has unknown operator: {op_in!r}")
-            value = when_raw.get("value")
-            if not isinstance(value, str):
-                value = "" if value is None else str(value)
-            if field_str or op in ("blank", "not_blank"):
-                cleaned_step["when"] = {
-                    "field": field if isinstance(field, str) else field_str,
-                    "operator": op,
-                    "value": value,
-                }
+            cleaned_when = _clean_rule_tree(
+                when_raw, f"step {i} 'when' filter", valid_operators,
+            )
+            if cleaned_when is not None:
+                cleaned_step["when"] = cleaned_when
         cleaned_steps.append(cleaned_step)
     return {
         "name": name,
