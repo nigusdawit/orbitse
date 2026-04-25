@@ -944,6 +944,7 @@
       finalized: false,     // True once streamSpeakEnd has been called
       stopped: false,       // True if streamSpeakCancel was called
       spoke: false,         // True once at least one sentence was queued
+      queued: 0,            // How many sentences have been queued for TTS
       sessionId: getSessionId(),
     };
     VOICE.stream = state;
@@ -1034,10 +1035,20 @@
    * Internal: enqueue one sentence — fires its /prepare in parallel and
    * appends to the playback queue. Starts the queue runner if idle.
    */
+  // Cap how many sentences the voice will speak per reply. Longer replies
+  // are typically rendered to the canvas / immersive page (see script.js's
+  // long-content branch), and the visitor doesn't want the AI to read out
+  // a 12-sentence essay aloud — they want a short spoken comment plus the
+  // visual. Speak up to MAX_SPOKEN_SENTENCES (the "comment"), then fall
+  // silent and let the rendered text carry the rest.
+  const MAX_SPOKEN_SENTENCES = 4;
+
   function queueStreamSentence(state, rawSentence) {
+    if (state.queued >= MAX_SPOKEN_SENTENCES) return;
     const clean = cleanTextForTTS(rawSentence);
     if (!clean) return;
     state.spoke = true;
+    state.queued++;
     // Fire prepare immediately (in parallel with any earlier sentences
     // still being synthesized) so all sentences can be in-flight at once.
     const prepPromise = fetch("/api/voice/tts/stream/prepare", {

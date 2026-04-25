@@ -4470,6 +4470,23 @@ function renderMarkdown(text) {
   /* Inline code (`) */
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
 
+  /* Images — ![alt](url). MUST run before links and before the bold/italic
+     rules, otherwise the `*` characters in URL-encoded params get eaten by
+     the italic rule and the visitor sees raw `![alt](url)` text in the
+     bubble. We only allow http/https URLs (no javascript:, no data: large
+     payloads) and escape the alt text. */
+  html = html.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, (_, alt, url) => {
+    return '<img src="' + url + '" alt="' + escapeHtml(alt) + '" loading="lazy" '
+         + 'style="max-width:100%;height:auto;border-radius:0.5rem;margin:0.5rem 0;display:block;">';
+  });
+
+  /* Links — [text](url). Same http/https whitelist as images. Open in a
+     new tab so the visitor doesn't lose the chat session. */
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, text, url) => {
+    return '<a href="' + url + '" target="_blank" rel="noopener noreferrer">'
+         + escapeHtml(text) + '</a>';
+  });
+
   /* Headings — ### H3, ## H2 (process before bold which also uses *) */
   html = html.replace(/^### (.+)$/gm, '<h4>$1</h4>');
   html = html.replace(/^## (.+)$/gm, '<h3>$1</h3>');
