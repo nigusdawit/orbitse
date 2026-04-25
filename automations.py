@@ -196,6 +196,29 @@ TRIGGER_TYPES = [
 ]
 
 
+# Operator catalogue shared by the `condition` action and the per-step
+# `when` filter UI. Single source of truth: the dashboard reads this via
+# /metadata, the action below references it directly for its operator
+# select, and `_evaluate_condition` derives its valid-operator set from
+# it — so adding/renaming an operator is a one-line change.
+CONDITION_OPERATORS = [
+    {"value": "eq", "label": "equals"},
+    {"value": "neq", "label": "does not equal"},
+    {"value": "contains", "label": "contains"},
+    {"value": "not_contains", "label": "does not contain"},
+    {"value": "starts_with", "label": "starts with"},
+    {"value": "ends_with", "label": "ends with"},
+    {"value": "blank", "label": "is blank"},
+    {"value": "not_blank", "label": "is not blank"},
+    {"value": "gt", "label": "is greater than (number)"},
+    {"value": "gte", "label": "is at least (number)"},
+    {"value": "lt", "label": "is less than (number)"},
+    {"value": "lte", "label": "is at most (number)"},
+]
+_OPERATOR_LABELS = {o["value"]: o["label"] for o in CONDITION_OPERATORS}
+_VALID_OPERATORS = set(_OPERATOR_LABELS.keys())
+
+
 ACTION_TYPES = [
     {
         "kind": "send_email",
@@ -262,6 +285,18 @@ ACTION_TYPES = [
             {"name": "seconds", "label": "Seconds to wait", "kind": "number", "required": True, "min": 1, "max": DELAY_STEP_MAX_SECONDS},
         ],
         "outputs": ["slept"],
+    },
+    {
+        "kind": "condition",
+        "label": "Branch — only continue if a condition is true",
+        "config_fields": [
+            {"name": "field", "label": "When this value", "kind": "text", "required": True,
+             "placeholder": "{{trigger.fields.plan}}"},
+            {"name": "operator", "label": "matches", "kind": "select",
+             "options": CONDITION_OPERATORS},
+            {"name": "value", "label": "this value", "kind": "text", "placeholder": "Premium"},
+        ],
+        "outputs": ["passed", "summary"],
     },
 ]
 
@@ -513,6 +548,86 @@ def _action_save_to_table(cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str,
     return {"ok": True, "id": result.get("id") if result else None, "table": table}
 
 
+# --- CONDITIONALS ----------------------------------------------------------
+# Used both by the standalone `condition` action (which gates the rest of
+# the run) and the per-step `when` filter (which gates a single step). The
+# evaluator is intentionally string-shaped so merge tags drop in cleanly:
+# anything coercible to a number is compared numerically for >/</>=, and
+# everything else is compared as strings.
+
+def _coerce_number(s: Any) -> Optional[float]:
+    if isinstance(s, bool):
+        return None
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def _evaluate_condition(left: Any, op: str, right: Any) -> bool:
+    L = "" if left is None else str(left)
+    R = "" if right is None else str(right)
+    op = (op or "eq").strip().lower()
+    if op == "blank":
+        return L.strip() == ""
+    if op == "not_blank":
+        return L.strip() != ""
+    if op == "eq":
+        return L == R
+    if op == "neq":
+        return L != R
+    if op == "contains":
+        return R in L
+    if op == "not_contains":
+        return R not in L
+    if op == "starts_with":
+        return L.startswith(R)
+    if op == "ends_with":
+        return L.endswith(R)
+    if op in ("gt", "gte", "lt", "lte"):
+        ln, rn = _coerce_number(L), _coerce_number(R)
+        if ln is None or rn is None:
+            return False
+        if op == "gt":
+            return ln > rn
+        if op == "gte":
+            return ln >= rn
+        if op == "lt":
+            return ln < rn
+        return ln <= rn
+    return False
+
+
+def _describe_condition(cfg: Dict[str, Any]) -> str:
+    """Human-readable rendering used in run-log skip reasons."""
+    field = cfg.get("field")
+    op = (cfg.get("operator") or "eq").strip().lower()
+    value = cfg.get("value")
+    op_label = _OPERATOR_LABELS.get(op, op)
+    field_str = "" if field is None else str(field)
+    if op in ("blank", "not_blank"):
+        return f"{field_str!r} {op_label}"
+    value_str = "" if value is None else str(value)
+    return f"{field_str!r} {op_label} {value_str!r}"
+
+
+def _action_condition(cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Evaluate the condition. Always succeeds; the run engine inspects
+    `passed` afterward to decide whether to skip the rest of the run."""
+    operator = (cfg.get("operator") or "eq").strip().lower()
+    if operator not in _VALID_OPERATORS:
+        return {"ok": False, "error": f"Unknown operator: {operator!r}"}
+    field_str = "" if cfg.get("field") is None else str(cfg.get("field"))
+    if not field_str.strip() and operator not in ("blank", "not_blank"):
+        return {"ok": False, "error": "Condition's left-hand value is empty."}
+    passed = _evaluate_condition(cfg.get("field"), operator, cfg.get("value"))
+    return {
+        "ok": True,
+        "passed": passed,
+        "summary": _describe_condition(cfg),
+    }
+
+
 def _action_delay(cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
     try:
         seconds = int(cfg.get("seconds") or 0)
@@ -539,6 +654,7 @@ _ACTION_DISPATCH: Dict[str, Callable[[Dict[str, Any], Dict[str, Any]], Dict[str,
     "http_request": _action_http_request,
     "save_to_table": _action_save_to_table,
     "delay": _action_delay,
+    "condition": _action_condition,
 }
 
 
@@ -751,6 +867,40 @@ def _execute_run(run_id: int) -> None:
             break
 
         kind = step.get("kind") or ""
+
+        # Per-step "Only run when…" filter. If present and false, skip
+        # this single step and move on. The filter dict mirrors a
+        # condition action's config (field/operator/value) and runs
+        # through the same merge-tag rendering + evaluator so behavior is
+        # identical to a standalone condition step.
+        when = step.get("when")
+        if isinstance(when, dict):
+            field_raw = when.get("field")
+            op_raw = (when.get("operator") or "").strip().lower()
+            has_filter = (
+                (isinstance(field_raw, str) and field_raw.strip())
+                or op_raw in ("blank", "not_blank")
+            )
+            if has_filter:
+                rendered_when = render_deep(when, ctx)
+                op = (rendered_when.get("operator") or "eq").strip().lower()
+                if op not in _VALID_OPERATORS:
+                    op = "eq"
+                passed = _evaluate_condition(
+                    rendered_when.get("field"), op, rendered_when.get("value"),
+                )
+                if not passed:
+                    step_results.append({
+                        "step": idx,
+                        "kind": kind,
+                        "name": step.get("name") or "",
+                        "skipped": True,
+                        "ok": True,
+                        "reason": "Only-run-when condition was false: "
+                                  + _describe_condition(rendered_when),
+                    })
+                    continue
+
         impl = _ACTION_DISPATCH.get(kind)
         if not impl:
             step_results.append({
@@ -792,6 +942,24 @@ def _execute_run(run_id: int) -> None:
         if not output.get("ok", False):
             final_status = "failed"
             error_text = f"Step {idx} ({kind}) failed: {output.get('error') or 'unknown error'}"
+            break
+
+        # Standalone "condition" step: if it evaluated false, mark all
+        # remaining steps as skipped (with a reason that points back to
+        # this gate) and finish the run successfully.
+        if kind == "condition" and not output.get("passed", True):
+            summary = output.get("summary") or "(condition was false)"
+            for j_off, j_step in enumerate(steps[idx:], start=idx + 1):
+                if not isinstance(j_step, dict):
+                    continue
+                step_results.append({
+                    "step": j_off,
+                    "kind": j_step.get("kind") or "",
+                    "name": j_step.get("name") or "",
+                    "skipped": True,
+                    "ok": True,
+                    "reason": f"Skipped because the branch at step {idx} was false ({summary}).",
+                })
             break
 
     _finish_run(run_id, final_status, step_results, error_text)
@@ -1009,6 +1177,11 @@ def trigger_metadata() -> List[Dict[str, Any]]:
 
 def action_metadata() -> List[Dict[str, Any]]:
     return ACTION_TYPES
+
+
+def condition_operator_metadata() -> List[Dict[str, Any]]:
+    """Operator catalogue for the per-step "Only run when…" picker."""
+    return CONDITION_OPERATORS
 
 
 def status_summary() -> Dict[str, Any]:

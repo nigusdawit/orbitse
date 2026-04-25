@@ -10033,6 +10033,7 @@ def _validate_automation_payload(data):
     if not isinstance(steps, list):
         raise ValueError("action_steps must be a list.")
     cleaned_steps = []
+    valid_operators = {o["value"] for o in automations.CONDITION_OPERATORS}
     for i, s in enumerate(steps, start=1):
         if not isinstance(s, dict):
             raise ValueError(f"Step {i} must be an object.")
@@ -10042,11 +10043,33 @@ def _validate_automation_payload(data):
         cfg = s.get("config") or {}
         if not isinstance(cfg, dict):
             raise ValueError(f"Step {i} config must be an object.")
-        cleaned_steps.append({
+        cleaned_step = {
             "kind": kind,
             "name": (s.get("name") or "").strip(),
             "config": cfg,
-        })
+        }
+        # Optional per-step "Only run when…" filter — same shape as a
+        # condition action's config. Only persisted when the admin
+        # actually filled in a left-hand value (or chose a unary operator
+        # like "is blank") so empty filters don't pollute the saved row.
+        when_raw = s.get("when")
+        if isinstance(when_raw, dict):
+            field = when_raw.get("field")
+            field_str = field.strip() if isinstance(field, str) else ""
+            op_in = when_raw.get("operator")
+            op = (op_in or "eq").strip().lower() if isinstance(op_in, str) else "eq"
+            if op not in valid_operators:
+                raise ValueError(f"Step {i} 'when' filter has unknown operator: {op_in!r}")
+            value = when_raw.get("value")
+            if not isinstance(value, str):
+                value = "" if value is None else str(value)
+            if field_str or op in ("blank", "not_blank"):
+                cleaned_step["when"] = {
+                    "field": field if isinstance(field, str) else field_str,
+                    "operator": op,
+                    "value": value,
+                }
+        cleaned_steps.append(cleaned_step)
     return {
         "name": name,
         "description": (data.get("description") or "").strip(),
@@ -10068,6 +10091,7 @@ def admin_automations_metadata():
     return jsonify({
         "triggers": automations.trigger_metadata(),
         "actions": automations.action_metadata(),
+        "condition_operators": automations.condition_operator_metadata(),
         "tables": _internal_db_schema(),
         "forms": [{"id": f["id"], "name": f["name"], "slug": f["slug"]} for f in forms],
         "limits": automations.status_summary(),

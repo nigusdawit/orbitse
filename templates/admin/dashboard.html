@@ -12826,9 +12826,61 @@ TO CUSTOMIZE THIS DASHBOARD:
                 <input type="text" value="${escapeHtml(s.name || '')}" oninput="updateStepName(${idx}, this.value)" placeholder="Notify staff" data-testid="input-step-name-${idx}">
               </div>
             </div>
+            ${renderWhenFilter(s.when || {}, idx)}
             <div id="${cfgFormId}">${fieldsHtml}</div>
           </div>`;
       }).join('');
+    }
+
+    /* Per-step "Only run when…" filter row. Inputs share data-when-key
+       attributes that readWhenForm() walks to assemble {field, operator,
+       value}. Empty rows are dropped server-side so they don't pollute
+       the saved automation. */
+    function renderWhenFilter(when, idx) {
+      const ops = (Automations.metadata && Automations.metadata.condition_operators) || [];
+      const currentOp = (when.operator || '').toLowerCase() || 'eq';
+      const opOpts = ops.map(o =>
+        `<option value="${escapeHtml(o.value)}" ${o.value === currentOp ? 'selected' : ''}>${escapeHtml(o.label)}</option>`
+      ).join('');
+      const isUnary = currentOp === 'blank' || currentOp === 'not_blank';
+      const scopeId = 'step-when-' + idx;
+      return `
+        <details class="form-group" style="margin:0.5rem 0 0.75rem 0; padding:0.5rem 0.75rem; background:rgba(99,102,241,0.06); border:1px dashed rgba(99,102,241,0.35); border-radius:6px;" ${(when.field || isUnary) ? 'open' : ''}>
+          <summary style="cursor:pointer; font-size:0.85rem; color:var(--admin-text-muted);" data-testid="summary-step-when-${idx}">Only run when… (optional)</summary>
+          <div id="${scopeId}" style="display:flex; gap:0.5rem; align-items:center; margin-top:0.5rem; flex-wrap:wrap;">
+            <input type="text" data-when-key="field" placeholder="{{trigger.fields.plan}}" value="${escapeHtml(when.field || '')}" style="flex:1 1 200px;" data-testid="input-step-when-field-${idx}">
+            <select data-when-key="operator" onchange="onWhenOperatorChange(${idx}, this.value)" data-testid="select-step-when-op-${idx}">${opOpts}</select>
+            <input type="text" data-when-key="value" placeholder="Premium" value="${escapeHtml(when.value || '')}" ${isUnary ? 'disabled style="flex:1 1 160px; opacity:0.5;"' : 'style="flex:1 1 160px;"'} data-testid="input-step-when-value-${idx}">
+          </div>
+          <small style="display:block; margin-top:0.4rem; color:var(--admin-text-muted);">
+            Leave the first field blank to always run this step. Merge tags work here too — e.g. <code>{% raw %}{{trigger.fields.plan}}{% endraw %}</code>.
+          </small>
+        </details>`;
+    }
+
+    /* When the operator switches to/from a unary one (blank/not_blank),
+       toggle the value input so it's clear no value is needed. */
+    function onWhenOperatorChange(idx, op) {
+      collectStepsFromForm();
+      // Persist via collect, then re-render so the disabled state updates.
+      Automations.steps[idx].when = Automations.steps[idx].when || {};
+      Automations.steps[idx].when.operator = op;
+      renderStepsList();
+    }
+
+    function readWhenForm(scopeId) {
+      const root = document.getElementById(scopeId);
+      if (!root) return null;
+      const out = {};
+      root.querySelectorAll('[data-when-key]').forEach(el => {
+        out[el.getAttribute('data-when-key')] = el.value;
+      });
+      // Drop entirely empty filters so we don't persist noise.
+      const op = (out.operator || '').toLowerCase();
+      if (!(out.field || '').trim() && op !== 'blank' && op !== 'not_blank') {
+        return null;
+      }
+      return out;
     }
 
     function addAutomationStep() {
@@ -12872,6 +12924,12 @@ TO CUSTOMIZE THIS DASHBOARD:
       Automations.steps.forEach((s, idx) => {
         const cfg = readConfigForm('step-cfg-' + idx);
         s.config = cfg;
+        const when = readWhenForm('step-when-' + idx);
+        if (when) {
+          s.when = when;
+        } else {
+          delete s.when;
+        }
       });
     }
 
@@ -13045,17 +13103,32 @@ TO CUSTOMIZE THIS DASHBOARD:
     function renderRunDetail(run, compact) {
       const c = run.status === 'succeeded' ? '#22c55e' : (run.status === 'failed' || run.status === 'timeout') ? '#ef4444' : '#94a3b8';
       const stepRows = (run.step_results || []).map(s => {
-        const ok = s.ok ? '#22c55e' : '#ef4444';
+        // Skipped steps (per-step "when" filter or downstream of a false
+        // condition step) get a neutral grey treatment; everything else
+        // is green/red based on `ok`.
+        const borderColor = s.skipped ? '#94a3b8' : (s.ok ? '#22c55e' : '#ef4444');
+        const badge = s.skipped
+          ? '<span style="color:#94a3b8;">skipped</span>'
+          : `<span style="color:${borderColor};">${s.ok ? 'ok' : 'failed'} · ${s.elapsed_ms || 0}ms</span>`;
+        if (s.skipped) {
+          return `
+            <div style="margin:0.75rem 0; padding:0.75rem; background:rgba(255,255,255,0.03); border-left:3px solid ${borderColor}; border-radius:6px;" data-testid="step-result-${s.step}">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <strong>Step ${s.step}: ${escapeHtml(s.kind || '')}${s.name ? ' — ' + escapeHtml(s.name) : ''}</strong>
+                ${badge}
+              </div>
+              <div style="color:#94a3b8;margin-top:0.4rem;" data-testid="step-skip-reason-${s.step}">${escapeHtml(s.reason || 'Skipped')}</div>
+            </div>`;
+        }
         const out = s.output || {};
         const outStr = JSON.stringify(out, null, 2);
         const cfgStr = JSON.stringify(s.config || {}, null, 2);
         return `
-          <div style="margin:0.75rem 0; padding:0.75rem; background:rgba(255,255,255,0.03); border-left:3px solid ${ok}; border-radius:6px;">
+          <div style="margin:0.75rem 0; padding:0.75rem; background:rgba(255,255,255,0.03); border-left:3px solid ${borderColor}; border-radius:6px;" data-testid="step-result-${s.step}">
             <div style="display:flex;justify-content:space-between;align-items:center;">
               <strong>Step ${s.step}: ${escapeHtml(s.kind)}${s.name ? ' — ' + escapeHtml(s.name) : ''}</strong>
-              <span style="color:${ok};">${s.ok ? 'ok' : 'failed'} · ${s.elapsed_ms || 0}ms</span>
+              ${badge}
             </div>
-            ${s.skipped ? `<div style="color:#94a3b8;margin-top:0.4rem;">Skipped: ${escapeHtml(s.reason || '')}</div>` : ''}
             <details style="margin-top:0.5rem;"><summary style="cursor:pointer;color:var(--admin-text-muted);font-size:0.8rem;">Config (rendered)</summary><pre style="font-size:0.75rem;overflow:auto;max-height:200px;background:rgba(0,0,0,0.3);padding:0.5rem;border-radius:4px;">${escapeHtml(cfgStr)}</pre></details>
             <details ${compact ? '' : 'open'} style="margin-top:0.4rem;"><summary style="cursor:pointer;color:var(--admin-text-muted);font-size:0.8rem;">Output</summary><pre style="font-size:0.75rem;overflow:auto;max-height:300px;background:rgba(0,0,0,0.3);padding:0.5rem;border-radius:4px;">${escapeHtml(outStr)}</pre></details>
           </div>`;
