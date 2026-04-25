@@ -1225,10 +1225,12 @@ TO CUSTOMIZE THIS DASHBOARD:
       border-radius: 6px;
     }
 
-    /* Generic modal used by dashboards/widgets/connections */
+    /* Generic modal used by dashboards/widgets/connections.
+       Theme-matches the dark admin shell so labels/buttons stay readable. */
     .db-modal {
       position: fixed; inset: 0;
-      background: rgba(0,0,0,0.45);
+      background: rgba(0,0,0,0.65);
+      backdrop-filter: blur(4px);
       z-index: 1000;
       display: flex;
       align-items: center;
@@ -1236,7 +1238,9 @@ TO CUSTOMIZE THIS DASHBOARD:
       padding: 1rem;
     }
     .db-modal-card {
-      background: #fff;
+      background: #0f1623;
+      color: var(--admin-text, #e4e4e7);
+      border: 1px solid var(--admin-border-light, rgba(255,255,255,0.12));
       border-radius: 12px;
       width: 100%;
       max-width: 480px;
@@ -1244,101 +1248,212 @@ TO CUSTOMIZE THIS DASHBOARD:
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+      box-shadow: 0 24px 80px rgba(0,0,0,0.5);
     }
-    .db-modal-card-wide { max-width: 720px; }
+    .db-modal-card-wide { max-width: 760px; }
     .db-modal-head {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 0.9rem 1.2rem;
-      border-bottom: 1px solid var(--border, #e5e5e5);
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--admin-border, rgba(255,255,255,0.08));
     }
-    .db-modal-head h3 { margin: 0; font-size: 1.05rem; }
+    .db-modal-head h3 { margin: 0; font-size: 1.05rem; color: var(--admin-text, #fff); }
     .db-modal-close {
       background: transparent;
       border: 0;
-      font-size: 1.5rem;
+      font-size: 1.6rem;
       cursor: pointer;
       line-height: 1;
-      color: var(--muted-fg, #888);
+      color: var(--admin-text-muted, rgba(255,255,255,0.55));
     }
+    .db-modal-close:hover { color: var(--admin-text, #fff); }
     .db-modal-body {
-      padding: 1.1rem 1.2rem;
+      padding: 1.1rem 1.25rem;
       overflow-y: auto;
+      color: var(--admin-text, #e4e4e7);
+    }
+    .db-modal-body h4 {
+      color: var(--admin-text, #fff);
+      margin: 1rem 0 0.5rem 0;
+    }
+    .db-modal-body hr {
+      border: 0;
+      border-top: 1px solid var(--admin-border, rgba(255,255,255,0.08));
+      margin: 1.25rem 0;
     }
     .db-modal-body label {
       display: block;
       margin-bottom: 0.85rem;
-      font-size: 0.85rem;
+      font-size: 0.82rem;
       font-weight: 500;
+      color: var(--admin-text, #e4e4e7);
     }
     .db-modal-body input[type="text"],
+    .db-modal-body input[type="number"],
     .db-modal-body textarea,
     .db-modal-body select {
       display: block;
       width: 100%;
-      margin-top: 0.3rem;
-      padding: 0.55rem 0.7rem;
-      border: 1px solid var(--border, #ddd);
+      margin-top: 0.35rem;
+      padding: 0.6rem 0.75rem;
+      border: 1px solid var(--admin-border-light, rgba(255,255,255,0.15));
       border-radius: 8px;
       font-family: inherit;
       font-size: 0.9rem;
-      background: #fff;
+      background: rgba(255,255,255,0.04);
+      color: var(--admin-text, #fff);
     }
-    .db-modal-body textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .db-modal-body input:focus,
+    .db-modal-body textarea:focus,
+    .db-modal-body select:focus {
+      outline: none;
+      border-color: rgba(255,255,255,0.35);
+      background: rgba(255,255,255,0.07);
+    }
+    .db-modal-body select option { background: #0f1623; color: #fff; }
+    .db-modal-body textarea {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
     .db-form-row {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 0.8rem;
+      gap: 0.85rem;
     }
     @media (max-width: 600px) {
       .db-form-row { grid-template-columns: 1fr; }
     }
     .db-modal-foot {
-      padding: 0.9rem 1.2rem;
-      border-top: 1px solid var(--border, #e5e5e5);
+      padding: 0.95rem 1.25rem;
+      border-top: 1px solid var(--admin-border, rgba(255,255,255,0.08));
+      background: rgba(255,255,255,0.02);
       display: flex;
       gap: 0.5rem;
       justify-content: flex-end;
       align-items: center;
     }
-    .widget-source-panel { margin-top: 0.5rem; }
+    .widget-source-panel {
+      margin-top: 0.4rem;
+      padding: 0.9rem;
+      border: 1px solid var(--admin-border, rgba(255,255,255,0.08));
+      border-radius: 10px;
+      background: rgba(255,255,255,0.02);
+    }
     .widget-hint {
       font-size: 0.78rem;
-      color: var(--muted-fg, #888);
+      color: var(--admin-text-muted, rgba(255,255,255,0.5));
       margin: 0.4rem 0 0 0;
     }
     .widget-preview {
       margin-top: 1rem;
       padding: 0.85rem;
-      border: 1px dashed var(--border, #ddd);
+      border: 1px dashed var(--admin-border-light, rgba(255,255,255,0.15));
       border-radius: 8px;
-      background: #fafafa;
-      font-size: 0.85rem;
+      background: rgba(255,255,255,0.03);
+      font-size: 0.82rem;
+      color: var(--admin-text, #e4e4e7);
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 220px;
+      overflow: auto;
     }
     .conn-row {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 0.55rem 0;
-      border-bottom: 1px solid var(--border, #eee);
+      padding: 0.65rem 0;
+      border-bottom: 1px solid var(--admin-border, rgba(255,255,255,0.06));
       font-size: 0.875rem;
     }
     .conn-row:last-child { border-bottom: 0; }
     .conn-row .conn-meta {
-      color: var(--muted-fg, #888);
+      color: var(--admin-text-muted, rgba(255,255,255,0.5));
       font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
     }
+
+    /* Visual chart-type picker (cards instead of a select) */
+    .widget-type-picker {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.5rem;
+      margin-top: 0.35rem;
+    }
+    @media (max-width: 600px) {
+      .widget-type-picker { grid-template-columns: repeat(2, 1fr); }
+    }
+    .wt-option {
+      cursor: pointer;
+      border: 1px solid var(--admin-border, rgba(255,255,255,0.1));
+      border-radius: 8px;
+      padding: 0.65rem 0.4rem;
+      text-align: center;
+      background: rgba(255,255,255,0.02);
+      font-size: 0.78rem;
+      color: var(--admin-text-muted, rgba(255,255,255,0.6));
+      transition: all 0.12s ease;
+      user-select: none;
+    }
+    .wt-option:hover {
+      border-color: rgba(255,255,255,0.3);
+      color: var(--admin-text, #fff);
+    }
+    .wt-option.active {
+      border-color: #4a6cf7;
+      background: rgba(74,108,247,0.15);
+      color: #fff;
+    }
+    .wt-icon {
+      display: block;
+      margin: 0 auto 0.25rem auto;
+      width: 20px;
+      height: 20px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+    }
+
+    /* Multi-column checkbox grid for table-mode widget */
+    .col-pick-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 0.4rem 0.85rem;
+      margin-top: 0.4rem;
+      max-height: 180px;
+      overflow-y: auto;
+      padding: 0.65rem;
+      border: 1px solid var(--admin-border, rgba(255,255,255,0.08));
+      border-radius: 8px;
+      background: rgba(255,255,255,0.02);
+    }
+    .col-pick-grid label {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      margin: 0;
+      font-weight: 400;
+      font-size: 0.82rem;
+      cursor: pointer;
+    }
+    .col-pick-grid input[type="checkbox"] {
+      margin: 0;
+      accent-color: #4a6cf7;
+    }
+    .col-pick-grid .col-kind {
+      color: var(--admin-text-muted, rgba(255,255,255,0.4));
+      font-size: 0.7rem;
+    }
+
     .btn-link {
       background: transparent;
       border: 0;
-      color: var(--accent, #4a6cf7);
+      color: #6c8aff;
       cursor: pointer;
       font-size: 0.875rem;
       padding: 0.35rem 0.5rem;
     }
-    .btn-link:hover { text-decoration: underline; }
+    .btn-link:hover { text-decoration: underline; color: #8ea7ff; }
   </style>
 </head>
 
@@ -1629,23 +1744,41 @@ TO CUSTOMIZE THIS DASHBOARD:
         <button class="db-modal-close" onclick="closeWidgetModal()" aria-label="Close">&times;</button>
       </div>
       <div class="db-modal-body">
-        <div class="db-form-row">
-          <label>Title
-            <input type="text" id="widget-name" data-testid="input-widget-name" placeholder="e.g. Visitors this week">
-          </label>
-          <label>Display as
-            <select id="widget-type" data-testid="select-widget-type" onchange="onWidgetTypeChange()">
-              <option value="kpi">Big number (KPI)</option>
-              <option value="line">Line chart</option>
-              <option value="bar">Bar chart</option>
-              <option value="table">Table</option>
-            </select>
-          </label>
-        </div>
-        <label>Data source
+        <label>Title
+          <input type="text" id="widget-name" data-testid="input-widget-name" placeholder="e.g. Visitors this week">
+        </label>
+
+        <label>Display as
+          <div class="widget-type-picker" id="widget-type-picker" role="radiogroup" aria-label="Chart type" onkeydown="onWidgetTypePickerKeydown(event)">
+            <div class="wt-option active" role="radio" tabindex="0" aria-checked="true"
+                 data-value="kpi" data-testid="widget-type-kpi" onclick="setWidgetType('kpi')">
+              <svg class="wt-icon" viewBox="0 0 24 24" aria-hidden="true"><text x="12" y="17" text-anchor="middle" font-size="14" fill="currentColor" stroke="none">42</text></svg>
+              Big number
+            </div>
+            <div class="wt-option" role="radio" tabindex="-1" aria-checked="false"
+                 data-value="line" data-testid="widget-type-line" onclick="setWidgetType('line')">
+              <svg class="wt-icon" viewBox="0 0 24 24" aria-hidden="true"><polyline points="3,17 8,11 13,14 21,5"/></svg>
+              Line chart
+            </div>
+            <div class="wt-option" role="radio" tabindex="-1" aria-checked="false"
+                 data-value="bar" data-testid="widget-type-bar" onclick="setWidgetType('bar')">
+              <svg class="wt-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="11" width="3" height="9"/><rect x="10" y="6" width="3" height="14"/><rect x="16" y="14" width="3" height="6"/></svg>
+              Bar chart
+            </div>
+            <div class="wt-option" role="radio" tabindex="-1" aria-checked="false"
+                 data-value="table" data-testid="widget-type-table" onclick="setWidgetType('table')">
+              <svg class="wt-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="10" y1="4" x2="10" y2="20"/></svg>
+              Table
+            </div>
+          </div>
+          <input type="hidden" id="widget-type" value="kpi">
+        </label>
+
+        <label>Where does the data come from?
           <select id="widget-source-type" data-testid="select-widget-source" onchange="onWidgetSourceChange()">
-            <option value="builtin">Built-in metric (this site)</option>
-            <option value="external_postgres">External Postgres database</option>
+            <option value="builtin">Pre-made metric (visitors, leads, chats…)</option>
+            <option value="internal_db">From this site's database (pick a table)</option>
+            <option value="external_postgres">External Postgres database (write SQL)</option>
             <option value="external_rest">REST API endpoint</option>
           </select>
         </label>
@@ -1663,6 +1796,113 @@ TO CUSTOMIZE THIS DASHBOARD:
                 <option value="30d">Last 30 days</option>
                 <option value="90d">Last 90 days</option>
                 <option value="all">All time</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <!-- Internal DB picker (no SQL needed) -->
+        <div id="widget-source-internal_db" class="widget-source-panel" style="display:none;">
+          <label>Table
+            <select id="widget-idb-table" data-testid="select-idb-table" onchange="onInternalDbTableChange()">
+              <option value="">— pick a table —</option>
+            </select>
+          </label>
+
+          <!-- KPI mode: single-number aggregation -->
+          <div id="widget-idb-kpi" style="display:none;">
+            <div class="db-form-row">
+              <label>Show
+                <select id="widget-idb-aggfn-kpi" data-testid="select-idb-aggfn-kpi" onchange="onIdbAggFnChange('kpi')">
+                  <option value="count">Total row count</option>
+                  <option value="sum">Sum of a column</option>
+                  <option value="avg">Average of a column</option>
+                  <option value="min">Minimum of a column</option>
+                  <option value="max">Maximum of a column</option>
+                </select>
+              </label>
+              <label id="widget-idb-aggcol-kpi-wrap" style="display:none;">Of column
+                <select id="widget-idb-aggcol-kpi" data-testid="select-idb-aggcol-kpi"></select>
+              </label>
+            </div>
+          </div>
+
+          <!-- Chart mode: grouped values -->
+          <div id="widget-idb-chart" style="display:none;">
+            <label>Group by column
+              <select id="widget-idb-groupcol" data-testid="select-idb-groupcol" onchange="onIdbGroupColChange()"></select>
+            </label>
+            <div class="db-form-row" id="widget-idb-bucket-wrap" style="display:none;">
+              <label>Bucket
+                <select id="widget-idb-bucket" data-testid="select-idb-bucket">
+                  <option value="day" selected>Day</option>
+                  <option value="week">Week</option>
+                  <option value="month">Month</option>
+                  <option value="quarter">Quarter</option>
+                  <option value="year">Year</option>
+                </select>
+              </label>
+              <label>Top how many?
+                <input type="number" id="widget-idb-limit-chart" min="1" max="500" value="50" data-testid="input-idb-limit-chart">
+              </label>
+            </div>
+            <div class="db-form-row">
+              <label>Show
+                <select id="widget-idb-aggfn-chart" data-testid="select-idb-aggfn-chart" onchange="onIdbAggFnChange('chart')">
+                  <option value="count">Row count</option>
+                  <option value="sum">Sum of column</option>
+                  <option value="avg">Average of column</option>
+                  <option value="min">Minimum of column</option>
+                  <option value="max">Maximum of column</option>
+                </select>
+              </label>
+              <label id="widget-idb-aggcol-chart-wrap" style="display:none;">Of column
+                <select id="widget-idb-aggcol-chart" data-testid="select-idb-aggcol-chart"></select>
+              </label>
+            </div>
+          </div>
+
+          <!-- Table mode: pick columns to display -->
+          <div id="widget-idb-table-mode" style="display:none;">
+            <label>Columns to show
+              <div id="widget-idb-cols" class="col-pick-grid"
+                   data-testid="grid-idb-cols">
+                <span class="widget-hint" style="margin:0;">Pick a table first.</span>
+              </div>
+            </label>
+            <div class="db-form-row">
+              <label>Sort by
+                <select id="widget-idb-sortcol" data-testid="select-idb-sortcol"></select>
+              </label>
+              <label>Order
+                <select id="widget-idb-sortdir" data-testid="select-idb-sortdir">
+                  <option value="desc" selected>Newest / largest first</option>
+                  <option value="asc">Oldest / smallest first</option>
+                </select>
+              </label>
+            </div>
+            <label>How many rows?
+              <input type="number" id="widget-idb-limit-table" min="1" max="500" value="25" data-testid="input-idb-limit-table">
+            </label>
+          </div>
+
+          <!-- Optional time filter (any mode) -->
+          <hr>
+          <h4 style="font-size:0.85rem;font-weight:600;margin:0 0 0.5rem 0;">Optional time filter</h4>
+          <div class="db-form-row">
+            <label>Date column
+              <select id="widget-idb-datecol" data-testid="select-idb-datecol">
+                <option value="">— none —</option>
+              </select>
+            </label>
+            <label>Range
+              <select id="widget-idb-range" data-testid="select-idb-range">
+                <option value="all" selected>All time</option>
+                <option value="1d">Last 24 hours</option>
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="90d">Last 90 days</option>
+                <option value="365d">Last 365 days</option>
               </select>
             </label>
           </div>
@@ -9671,6 +9911,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     let __currentDashboard = null;        // { id, name, description, widgets: [...] }
     let __builtinMetricsCatalog = [];     // [{key, default_type, label}, ...]
     let __externalConnections = [];       // [{id, name, kind}, ...]
+    let __dbSchema = null;                // { table_name: [{name, kind}, ...] }
     let __editingWidgetId = null;         // null means creating
     const __widgetCharts = {};            // widget_id -> Chart instance
 
@@ -9686,6 +9927,13 @@ TO CUSTOMIZE THIS DASHBOARD:
         const r = await fetch('/admin/api/external-connections', { credentials: 'same-origin' });
         if (r.ok) __externalConnections = await r.json();
       } catch (e) { /* non-fatal */ }
+      // Lazy-load the internal-db schema for the no-code picker.
+      if (!__dbSchema) {
+        try {
+          const r = await fetch('/admin/api/dashboards/db-tables', { credentials: 'same-origin' });
+          if (r.ok) __dbSchema = await r.json();
+        } catch (e) { /* non-fatal */ }
+      }
 
       try {
         const res = await fetch('/admin/api/dashboards', { credentials: 'same-origin' });
@@ -9944,11 +10192,124 @@ TO CUSTOMIZE THIS DASHBOARD:
         : '<option value="">— No REST connections (add one in Data Connections) —</option>';
     }
 
+    /* ----- Visual chart-type picker ----- */
+    function setWidgetType(t) {
+      document.getElementById('widget-type').value = t;
+      document.querySelectorAll('#widget-type-picker .wt-option').forEach(el => {
+        const on = el.dataset.value === t;
+        el.classList.toggle('active', on);
+        el.setAttribute('aria-checked', on ? 'true' : 'false');
+        el.setAttribute('tabindex', on ? '0' : '-1');
+      });
+      // Show/hide internal-db sub-panels appropriate to this chart type.
+      _refreshInternalDbModeUI();
+    }
+    function onWidgetTypePickerKeydown(ev) {
+      // ARIA radiogroup keyboard support: arrows move selection, space/enter activates.
+      const opts = Array.from(document.querySelectorAll('#widget-type-picker .wt-option'));
+      const i = opts.findIndex(el => el === document.activeElement);
+      let next = i;
+      if (ev.key === 'ArrowRight' || ev.key === 'ArrowDown') {
+        next = (i + 1 + opts.length) % opts.length;
+      } else if (ev.key === 'ArrowLeft' || ev.key === 'ArrowUp') {
+        next = (i - 1 + opts.length) % opts.length;
+      } else if (ev.key === ' ' || ev.key === 'Enter') {
+        if (i >= 0) { setWidgetType(opts[i].dataset.value); ev.preventDefault(); }
+        return;
+      } else { return; }
+      ev.preventDefault();
+      setWidgetType(opts[next].dataset.value);
+      opts[next].focus();
+    }
+
+    /* ----- Internal DB picker helpers ----- */
+    function _populateInternalDbTableSelect() {
+      const sel = document.getElementById('widget-idb-table');
+      if (!sel) return;
+      const tables = Object.keys(__dbSchema || {}).sort();
+      sel.innerHTML = '<option value="">— pick a table —</option>' +
+        tables.map(t => `<option value="${escapeHTML(t)}">${escapeHTML(t)}</option>`).join('');
+    }
+
+    function _idbColsForTable(tableName) {
+      return (__dbSchema && __dbSchema[tableName]) || [];
+    }
+
+    function _fillSelect(elId, options, includeBlank) {
+      const el = document.getElementById(elId);
+      if (!el) return;
+      const blank = includeBlank ? '<option value="">— none —</option>' : '';
+      el.innerHTML = blank + options.map(o =>
+        `<option value="${escapeHTML(o.value)}">${escapeHTML(o.label)}</option>`
+      ).join('');
+    }
+
+    function onInternalDbTableChange() {
+      const table = document.getElementById('widget-idb-table').value;
+      const cols = _idbColsForTable(table);
+      const numCols  = cols.filter(c => c.kind === 'number').map(c => ({value: c.name, label: c.name}));
+      const dateCols = cols.filter(c => c.kind === 'date').map(c => ({value: c.name, label: c.name}));
+      const allCols  = cols.map(c => ({value: c.name, label: `${c.name}  (${c.kind})`}));
+      const groupCols = cols.filter(c => c.kind !== 'json').map(c => ({value: c.name, label: `${c.name}  (${c.kind})`}));
+
+      _fillSelect('widget-idb-aggcol-kpi',   numCols,  false);
+      _fillSelect('widget-idb-aggcol-chart', numCols,  false);
+      _fillSelect('widget-idb-groupcol',     groupCols,false);
+      _fillSelect('widget-idb-sortcol',      allCols,  false);
+      _fillSelect('widget-idb-datecol',      dateCols, true);
+
+      // Build the "columns to show" checkbox grid for table mode.
+      const grid = document.getElementById('widget-idb-cols');
+      if (grid) {
+        if (!cols.length) {
+          grid.innerHTML = '<span class="widget-hint" style="margin:0;">Pick a table first.</span>';
+        } else {
+          grid.innerHTML = cols.map(c => `
+            <label>
+              <input type="checkbox" value="${escapeHTML(c.name)}" data-testid="check-idb-col-${escapeHTML(c.name)}">
+              <span>${escapeHTML(c.name)}</span>
+              <span class="col-kind">${escapeHTML(c.kind)}</span>
+            </label>`).join('');
+        }
+      }
+      onIdbGroupColChange();
+    }
+
+    function onIdbAggFnChange(mode) {
+      const fn = document.getElementById('widget-idb-aggfn-' + mode).value;
+      const wrap = document.getElementById('widget-idb-aggcol-' + mode + '-wrap');
+      if (wrap) wrap.style.display = (fn === 'count') ? 'none' : 'block';
+    }
+
+    function onIdbGroupColChange() {
+      // Show the date-bucket picker only when the grouping column is a date.
+      const sel = document.getElementById('widget-idb-groupcol');
+      const groupCol = sel ? sel.value : '';
+      const table = document.getElementById('widget-idb-table').value;
+      const col = _idbColsForTable(table).find(c => c.name === groupCol);
+      const wrap = document.getElementById('widget-idb-bucket-wrap');
+      if (wrap) wrap.style.display = (col && col.kind === 'date') ? 'grid' : 'none';
+    }
+
+    function _refreshInternalDbModeUI() {
+      const wt = document.getElementById('widget-type').value;
+      const isInternal = document.getElementById('widget-source-type').value === 'internal_db';
+      document.getElementById('widget-idb-kpi').style.display        = (isInternal && wt === 'kpi') ? 'block' : 'none';
+      document.getElementById('widget-idb-chart').style.display      = (isInternal && (wt === 'line' || wt === 'bar')) ? 'block' : 'none';
+      document.getElementById('widget-idb-table-mode').style.display = (isInternal && wt === 'table') ? 'block' : 'none';
+      if (isInternal) {
+        onIdbAggFnChange('kpi');
+        onIdbAggFnChange('chart');
+        onIdbGroupColChange();
+      }
+    }
+
     function openWidgetEditor(widgetId) {
       if (!__currentDashboard) return;
       __editingWidgetId = widgetId;
       _populateBuiltinMetricSelect();
       _populateConnectionSelects();
+      _populateInternalDbTableSelect();
       document.getElementById('widget-preview').style.display = 'none';
       document.getElementById('widget-preview').innerHTML = '';
 
@@ -9957,12 +10318,53 @@ TO CUSTOMIZE THIS DASHBOARD:
         if (!w) return;
         document.getElementById('widget-modal-title').textContent = 'Edit Widget';
         document.getElementById('widget-name').value = w.name;
-        document.getElementById('widget-type').value = w.widget_type;
+        setWidgetType(w.widget_type || 'kpi');
         document.getElementById('widget-source-type').value = w.source_type;
         const cfg = w.source_config || {};
         if (w.source_type === 'builtin') {
           if (cfg.metric) document.getElementById('widget-builtin-metric').value = cfg.metric;
           if (cfg.range)  document.getElementById('widget-builtin-range').value  = cfg.range;
+        } else if (w.source_type === 'internal_db') {
+          // Restore the picker state from the saved config.
+          if (cfg.table) {
+            document.getElementById('widget-idb-table').value = cfg.table;
+            onInternalDbTableChange();
+          }
+          if (cfg.agg_fn) {
+            const aggSel = (w.widget_type === 'kpi') ? 'widget-idb-aggfn-kpi' : 'widget-idb-aggfn-chart';
+            const el = document.getElementById(aggSel); if (el) el.value = cfg.agg_fn;
+          }
+          if (cfg.agg_col) {
+            const c1 = document.getElementById('widget-idb-aggcol-kpi');   if (c1) c1.value = cfg.agg_col;
+            const c2 = document.getElementById('widget-idb-aggcol-chart'); if (c2) c2.value = cfg.agg_col;
+          }
+          if (cfg.group_col) {
+            const g = document.getElementById('widget-idb-groupcol'); if (g) g.value = cfg.group_col;
+          }
+          if (cfg.bucket) {
+            const b = document.getElementById('widget-idb-bucket'); if (b) b.value = cfg.bucket;
+          }
+          if (cfg.date_col) {
+            const d = document.getElementById('widget-idb-datecol'); if (d) d.value = cfg.date_col;
+          }
+          if (cfg.range) {
+            const r = document.getElementById('widget-idb-range'); if (r) r.value = cfg.range;
+          }
+          if (Array.isArray(cfg.columns)) {
+            cfg.columns.forEach(name => {
+              const cb = document.querySelector(`#widget-idb-cols input[value="${CSS.escape(name)}"]`);
+              if (cb) cb.checked = true;
+            });
+          }
+          if (cfg.sort_col) {
+            const s = document.getElementById('widget-idb-sortcol'); if (s) s.value = cfg.sort_col;
+          }
+          const sd = document.getElementById('widget-idb-sortdir');
+          if (sd) sd.value = (cfg.sort_desc === false) ? 'asc' : 'desc';
+          if (cfg.limit) {
+            const lc = document.getElementById('widget-idb-limit-chart'); if (lc) lc.value = cfg.limit;
+            const lt = document.getElementById('widget-idb-limit-table'); if (lt) lt.value = cfg.limit;
+          }
         } else if (w.source_type === 'external_postgres') {
           if (cfg.connection_id) document.getElementById('widget-pg-connection').value = cfg.connection_id;
           document.getElementById('widget-pg-query').value = cfg.query || '';
@@ -9974,9 +10376,11 @@ TO CUSTOMIZE THIS DASHBOARD:
       } else {
         document.getElementById('widget-modal-title').textContent = 'New Widget';
         document.getElementById('widget-name').value = '';
-        document.getElementById('widget-type').value = 'kpi';
+        setWidgetType('kpi');
         document.getElementById('widget-source-type').value = 'builtin';
         document.getElementById('widget-builtin-range').value = '7d';
+        document.getElementById('widget-idb-table').value = '';
+        onInternalDbTableChange();
         document.getElementById('widget-pg-query').value = '';
         document.getElementById('widget-rest-path').value = '';
         document.getElementById('widget-rest-value-path').value = '';
@@ -9990,10 +10394,11 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     function onWidgetSourceChange() {
       const src = document.getElementById('widget-source-type').value;
-      ['builtin', 'external_postgres', 'external_rest'].forEach(k => {
+      ['builtin', 'internal_db', 'external_postgres', 'external_rest'].forEach(k => {
         const panel = document.getElementById('widget-source-' + k);
         if (panel) panel.style.display = (k === src) ? 'block' : 'none';
       });
+      _refreshInternalDbModeUI();
     }
     function onWidgetTypeChange() { /* Reserved for future per-type UI tweaks. */ }
 
@@ -10007,6 +10412,35 @@ TO CUSTOMIZE THIS DASHBOARD:
           metric: document.getElementById('widget-builtin-metric').value,
           range:  document.getElementById('widget-builtin-range').value,
         };
+      } else if (source_type === 'internal_db') {
+        const cfg = { table: document.getElementById('widget-idb-table').value };
+        const dateCol = document.getElementById('widget-idb-datecol').value;
+        if (dateCol) {
+          cfg.date_col = dateCol;
+          cfg.range    = document.getElementById('widget-idb-range').value;
+        }
+        if (widget_type === 'kpi') {
+          cfg.agg_fn = document.getElementById('widget-idb-aggfn-kpi').value;
+          if (cfg.agg_fn !== 'count') {
+            cfg.agg_col = document.getElementById('widget-idb-aggcol-kpi').value;
+          }
+        } else if (widget_type === 'line' || widget_type === 'bar') {
+          cfg.group_col = document.getElementById('widget-idb-groupcol').value;
+          cfg.bucket    = document.getElementById('widget-idb-bucket').value;
+          cfg.agg_fn    = document.getElementById('widget-idb-aggfn-chart').value;
+          if (cfg.agg_fn !== 'count') {
+            cfg.agg_col = document.getElementById('widget-idb-aggcol-chart').value;
+          }
+          cfg.limit = parseInt(document.getElementById('widget-idb-limit-chart').value, 10) || 50;
+        } else if (widget_type === 'table') {
+          const checked = Array.from(document.querySelectorAll('#widget-idb-cols input:checked'))
+                              .map(el => el.value);
+          cfg.columns   = checked;
+          cfg.sort_col  = document.getElementById('widget-idb-sortcol').value;
+          cfg.sort_desc = document.getElementById('widget-idb-sortdir').value === 'desc';
+          cfg.limit     = parseInt(document.getElementById('widget-idb-limit-table').value, 10) || 25;
+        }
+        source_config = cfg;
       } else if (source_type === 'external_postgres') {
         source_config = {
           connection_id: parseInt(document.getElementById('widget-pg-connection').value, 10) || null,
@@ -10022,10 +10456,39 @@ TO CUSTOMIZE THIS DASHBOARD:
       return { name, widget_type, source_type, source_config };
     }
 
+    function _validateWidgetPayload(p) {
+      if (!p.name) return 'Please enter a title.';
+      const cfg = p.source_config || {};
+      if (p.source_type === 'internal_db') {
+        if (!cfg.table) return 'Please pick a table.';
+        if (p.widget_type === 'kpi') {
+          if (cfg.agg_fn !== 'count' && !cfg.agg_col) {
+            return 'Please pick a number column to aggregate.';
+          }
+        } else if (p.widget_type === 'line' || p.widget_type === 'bar') {
+          if (!cfg.group_col) return 'Please pick a "Group by" column.';
+          if (cfg.agg_fn !== 'count' && !cfg.agg_col) {
+            return 'Please pick a number column to aggregate.';
+          }
+        } else if (p.widget_type === 'table') {
+          if (!cfg.columns || !cfg.columns.length) {
+            return 'Please tick at least one column to show.';
+          }
+        }
+      } else if (p.source_type === 'external_postgres') {
+        if (!cfg.connection_id) return 'Please pick a Postgres connection (or add one in Data Connections).';
+        if (!cfg.query)         return 'Please enter a SELECT query.';
+      } else if (p.source_type === 'external_rest') {
+        if (!cfg.connection_id) return 'Please pick a REST connection (or add one in Data Connections).';
+      }
+      return null;
+    }
+
     async function saveWidgetModal() {
       if (!__currentDashboard) return;
       const payload = _collectWidgetForm();
-      if (!payload.name) { alert('Please enter a title.'); return; }
+      const err = _validateWidgetPayload(payload);
+      if (err) { alert(err); return; }
       try {
         let url, method;
         if (__editingWidgetId) {

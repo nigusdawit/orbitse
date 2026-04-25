@@ -8602,6 +8602,198 @@ def admin_dashboards_builtin_metrics():
     ])
 
 
+# =============================================================================
+# INTERNAL DB SCHEMA — powers the no-code "From this site's database" source
+# =============================================================================
+# We let admins build widgets by picking a table + columns + chart type,
+# instead of writing SQL. To do that safely, we introspect the public schema
+# once per request and only allow widgets to reference tables/columns that
+# actually exist (i.e. we never interpolate raw user input as identifiers).
+
+# Tables we DO NOT want to expose in the no-code picker. These either contain
+# auth/secret material or would be confusing/dangerous in a dashboard.
+_INTERNAL_DB_TABLE_BLOCKLIST = {
+    "admin_users",          # password hashes
+    "admin_sessions",       # session tokens
+    "voice_settings",       # may contain api keys
+    "site_settings",        # huge config blob, not analytics-shaped
+    "chatbot_settings",     # contains system prompts
+}
+
+
+def _internal_db_schema():
+    """Introspect this site's Postgres schema. Returns:
+       { table_name: [ {name, kind}, ... ], ... }
+    where `kind` is one of 'number', 'date', 'bool', 'json', 'text'."""
+    rows = query_db("""
+        SELECT table_name, column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+        ORDER BY table_name, ordinal_position
+    """) or []
+    NUMBER = {"integer", "bigint", "smallint", "numeric", "double precision",
+              "real", "decimal"}
+    DATE   = {"timestamp without time zone", "timestamp with time zone",
+              "date", "time without time zone", "time with time zone"}
+    out = {}
+    for r in rows:
+        tname = r["table_name"]
+        if tname in _INTERNAL_DB_TABLE_BLOCKLIST:
+            continue
+        dt = (r["data_type"] or "").lower()
+        if dt in NUMBER:   kind = "number"
+        elif dt in DATE:   kind = "date"
+        elif dt == "boolean": kind = "bool"
+        elif dt in ("jsonb", "json"): kind = "json"
+        else: kind = "text"
+        out.setdefault(tname, []).append({"name": r["column_name"], "kind": kind})
+    return out
+
+
+@app.route("/admin/api/dashboards/db-tables", methods=["GET"])
+@admin_required
+def admin_dashboards_db_tables():
+    """Return the whitelist of internal db tables + their columns for the
+    no-code widget builder UI."""
+    return jsonify(_internal_db_schema())
+
+
+# Aggregation functions we accept from the UI. The string is used in raw SQL
+# *after* whitelist-matching, so it's safe.
+_AGG_FNS = {"count", "sum", "avg", "min", "max"}
+# Date bucket sizes for grouping.
+_DATE_BUCKETS = {"day", "week", "month", "quarter", "year"}
+# Time-range filters.
+_RANGE_INTERVALS = {
+    "1d": "1 day", "7d": "7 days", "30d": "30 days",
+    "90d": "90 days", "365d": "365 days",
+}
+
+
+def _qident(name):
+    """Quote a SQL identifier safely (after whitelist validation)."""
+    if not isinstance(name, str) or not name:
+        raise ValueError("Invalid identifier.")
+    # Defense in depth: identifiers should never contain a quote. After our
+    # whitelist check this can't happen, but double-quote-escape just in case.
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _run_internal_db(widget_type, cfg):
+    """Execute an 'internal_db' widget config built by the no-code picker.
+    All table/column references are validated against the live schema before
+    being pasted into SQL — no string interpolation of raw user input."""
+    schema = _internal_db_schema()
+    table = cfg.get("table")
+    if not table or table not in schema:
+        raise ValueError("Pick a table.")
+    cols_by_name = {c["name"]: c["kind"] for c in schema[table]}
+
+    def col_kind(name, allowed=None):
+        if name not in cols_by_name:
+            raise ValueError(f"Unknown column: {name}")
+        if allowed and cols_by_name[name] not in allowed:
+            raise ValueError(f"Column '{name}' is not a {'/'.join(allowed)}.")
+        return cols_by_name[name]
+
+    # Optional time filter — applied to a chosen date column.
+    where_sql = "WHERE 1=1"
+    params = []
+    date_col = cfg.get("date_col")
+    range_key = cfg.get("range") or "all"
+    if date_col and range_key in _RANGE_INTERVALS:
+        col_kind(date_col, allowed=("date",))
+        where_sql += f" AND {_qident(date_col)} >= NOW() - INTERVAL %s"
+        params.append(_RANGE_INTERVALS[range_key])
+
+    agg_fn = (cfg.get("agg_fn") or "count").lower()
+    if agg_fn not in _AGG_FNS:
+        raise ValueError("Invalid aggregation.")
+
+    # ---------- KPI: a single number ----------
+    if widget_type == "kpi":
+        if agg_fn == "count":
+            agg_sql = "COUNT(*)"
+            label = "Row count"
+        else:
+            agg_col = cfg.get("agg_col")
+            col_kind(agg_col, allowed=("number",))
+            agg_sql = f"{agg_fn.upper()}({_qident(agg_col)})"
+            label = f"{agg_fn.title()} of {agg_col}"
+        sql = f"SELECT {agg_sql} AS n FROM {_qident(table)} {where_sql}"
+        row = query_db(sql, tuple(params), fetchone=True) or {"n": 0}
+        return {"value": row.get("n") or 0,
+                "label": cfg.get("label") or label}
+
+    # ---------- Line / Bar: grouped values ----------
+    if widget_type in ("line", "bar"):
+        group_col = cfg.get("group_col")
+        if not group_col:
+            raise ValueError("Pick a 'Group by' column.")
+        gkind = col_kind(group_col)
+
+        # Date columns get bucketed; text/number columns are grouped raw.
+        if gkind == "date":
+            bucket = cfg.get("bucket") or "day"
+            if bucket not in _DATE_BUCKETS:
+                raise ValueError("Invalid date bucket.")
+            label_expr = f"DATE_TRUNC('{bucket}', {_qident(group_col)})"
+            order_clause = "ORDER BY 1 ASC"
+        else:
+            label_expr = f"{_qident(group_col)}::text"
+            order_clause = "ORDER BY 2 DESC"  # top values first
+
+        if agg_fn == "count":
+            agg_sql = "COUNT(*)"
+        else:
+            agg_col = cfg.get("agg_col")
+            col_kind(agg_col, allowed=("number",))
+            agg_sql = f"{agg_fn.upper()}({_qident(agg_col)})"
+
+        limit = max(1, min(int(cfg.get("limit") or 50), 500))
+        sql = (f"SELECT {label_expr} AS lbl, {agg_sql} AS val "
+               f"FROM {_qident(table)} {where_sql} GROUP BY 1 "
+               f"{order_clause} LIMIT {limit}")
+        rows = query_db(sql, tuple(params)) or []
+        # For date charts, sort ascending for natural left-to-right reading.
+        # _shape already ensured ASC for dates above.
+        labels, values = [], []
+        for r in rows:
+            lbl = r.get("lbl")
+            if isinstance(lbl, datetime):
+                lbl = lbl.date().isoformat()
+            elif hasattr(lbl, "isoformat"):
+                lbl = lbl.isoformat()
+            labels.append(str(lbl) if lbl is not None else "(none)")
+            try:
+                values.append(float(r.get("val") or 0))
+            except (TypeError, ValueError):
+                values.append(0)
+        return {"labels": labels, "values": values}
+
+    # ---------- Table: a few rows of selected columns ----------
+    if widget_type == "table":
+        show_cols = cfg.get("columns") or []
+        if not isinstance(show_cols, list) or not show_cols:
+            raise ValueError("Pick at least one column to show.")
+        for c in show_cols:
+            col_kind(c)
+        sort_col = cfg.get("sort_col") or show_cols[0]
+        col_kind(sort_col)
+        sort_dir = "DESC" if cfg.get("sort_desc", True) else "ASC"
+        limit = max(1, min(int(cfg.get("limit") or 25), 500))
+        col_list = ", ".join(_qident(c) for c in show_cols)
+        sql = (f"SELECT {col_list} FROM {_qident(table)} {where_sql} "
+               f"ORDER BY {_qident(sort_col)} {sort_dir} LIMIT {limit}")
+        rows = query_db(sql, tuple(params)) or []
+        return {
+            "columns": show_cols,
+            "rows": [[_jsonable(r.get(c)) for c in show_cols] for r in rows],
+        }
+
+    raise ValueError("Unsupported widget type for this source.")
+
+
 # ----- External Postgres execution -----------------------------------------
 # Safety:
 #   - The query must start with SELECT or WITH (no INSERT/UPDATE/DELETE).
@@ -8902,7 +9094,7 @@ def admin_create_widget(did):
     source_config = body.get("source_config") or {}
     if widget_type not in ("kpi", "table", "line", "bar"):
         return jsonify({"error": "Invalid widget type."}), 400
-    if source_type not in ("builtin", "external_postgres", "external_rest"):
+    if source_type not in ("builtin", "internal_db", "external_postgres", "external_rest"):
         return jsonify({"error": "Invalid source type."}), 400
     if not name:
         return jsonify({"error": "Name is required."}), 400
@@ -8932,7 +9124,7 @@ def admin_update_widget(did, wid):
     source_config = body.get("source_config") or {}
     if widget_type not in ("kpi", "table", "line", "bar"):
         return jsonify({"error": "Invalid widget type."}), 400
-    if source_type not in ("builtin", "external_postgres", "external_rest"):
+    if source_type not in ("builtin", "internal_db", "external_postgres", "external_rest"):
         return jsonify({"error": "Invalid source type."}), 400
     execute_db(
         "UPDATE dashboard_widgets SET name = %s, widget_type = %s, "
@@ -8974,6 +9166,8 @@ def admin_run_widget(wid):
                 return jsonify({"error": "Unknown built-in metric."}), 400
             fn = BUILTIN_METRICS[metric_key][0]
             data = fn(cfg)
+        elif row["source_type"] == "internal_db":
+            data = _run_internal_db(row["widget_type"], cfg)
         elif row["source_type"] == "external_postgres":
             conn_id = cfg.get("connection_id")
             query = cfg.get("query", "")
