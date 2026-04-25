@@ -5800,6 +5800,42 @@ TO CUSTOMIZE THIS DASHBOARD:
           </tbody>
         </table>
       </div>
+
+      <!--
+        RETENTION SETTINGS — admins can change how long automation_runs
+        rows are kept around without redeploying. Empty input = "use the
+        env-var default" so a fresh install behaves exactly as before.
+        The effective values (whatever the cleanup tick will actually use
+        on its next pass) are echoed in the status banner above.
+      -->
+      <div class="form-panel" style="margin-top:1.5rem;" data-testid="panel-automation-settings">
+        <h3 style="margin-top:0;">Run history retention</h3>
+        <p style="color:var(--admin-text-muted); font-size:0.85rem; margin-top:0;">
+          Older run records are deleted automatically by a daily cleanup pass.
+          Pick how much history you want to keep — for example, "7 days" for a
+          chatty webhook, or "365 days" for a quiet nightly job. Leave a field
+          blank to fall back to the built-in default.
+        </p>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="automation-retention-days">Days of run history to keep</label>
+            <input type="number" id="automation-retention-days" min="1" max="3650" step="1"
+                   placeholder="default" data-testid="input-retention-days">
+            <small id="automation-retention-days-hint" style="color:var(--admin-text-muted); font-size:0.8rem;"></small>
+          </div>
+          <div class="form-group">
+            <label for="automation-retention-keep">Minimum runs to keep per automation</label>
+            <input type="number" id="automation-retention-keep" min="0" max="100000" step="1"
+                   placeholder="default" data-testid="input-retention-keep">
+            <small id="automation-retention-keep-hint" style="color:var(--admin-text-muted); font-size:0.8rem;"></small>
+          </div>
+        </div>
+        <div class="form-actions" style="display:flex; gap:0.5rem; align-items:center;">
+          <button class="btn btn-primary btn-sm" onclick="saveAutomationSettings()" data-testid="button-save-retention">Save</button>
+          <button class="btn btn-secondary btn-sm" onclick="resetAutomationSettings()" data-testid="button-reset-retention">Reset to defaults</button>
+          <span id="automation-settings-status" style="font-size:0.82rem; color:var(--admin-text-muted);"></span>
+        </div>
+      </div>
     </div>
 
     <!-- EDITOR VIEW -->
@@ -13392,6 +13428,12 @@ TO CUSTOMIZE THIS DASHBOARD:
         if (!r.ok) throw new Error(rows.error || 'Load failed');
         renderAutomationsTable(rows);
         renderAutomationsStatusBanner();
+        // Kick off the retention-settings fetch in the background so the
+        // panel below the table populates without blocking the table render.
+        loadAutomationSettings().catch(e => {
+          document.getElementById('automation-settings-status').textContent =
+            'Could not load settings: ' + (e && e.message || e);
+        });
       } catch (e) {
         tbody.innerHTML = `<tr><td colspan="6" class="empty-state">${escapeHtml(e.message)}</td></tr>`;
       }
@@ -13400,12 +13442,94 @@ TO CUSTOMIZE THIS DASHBOARD:
     function renderAutomationsStatusBanner() {
       const banner = document.getElementById('automations-status-banner');
       const lim = (Automations.metadata && Automations.metadata.limits) || {};
+      // The retention sub-object is exposed via status_summary() so we can
+      // surface the *effective* values (DB override or env default) right
+      // next to the engine limits. Per the task spec, this is where admins
+      // expect to see "what is actually running" at a glance.
+      const ret = lim.retention || {};
+      const days = ret.retention_days;
+      const keep = ret.keep_recent_per_automation;
+      const overrides = ret.db_overrides || {};
+      const daysTag = overrides.retention_days ? 'custom' : 'default';
+      const keepTag = overrides.keep_recent_per_automation ? 'custom' : 'default';
       banner.innerHTML = `
         <div style="padding:0.6rem 0.85rem; background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.3); border-radius:8px; font-size:0.82rem; color:var(--admin-text-muted);">
           Engine: ${lim.in_flight ?? 0} of ${lim.max_concurrent_runs ?? '?'} workers busy
           · ${lim.max_runs_per_hour ?? '?'} runs/hour per automation
           · ${lim.max_run_seconds ?? '?'}s overall timeout
+          · <span data-testid="text-effective-retention">retention: keep ${days ?? '?'} days (${daysTag}), min ${keep ?? '?'} runs each (${keepTag})</span>
         </div>`;
+    }
+
+    // ----- RETENTION SETTINGS ----------------------------------------------
+    // The form below the automations table writes to the singleton
+    // `automation_settings` row. An empty input clears the override and
+    // falls back to the env-var default; the hint under each input shows
+    // exactly what that default is so the admin knows what "blank" means.
+
+    async function loadAutomationSettings() {
+      const r = await fetch('/admin/api/automations/settings', { credentials: 'same-origin' });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Load failed');
+      Automations.settings = data;
+      const eff = data.effective || {};
+      const daysIn = document.getElementById('automation-retention-days');
+      const keepIn = document.getElementById('automation-retention-keep');
+      // Show the override value (DB row) if set, otherwise leave blank so
+      // the placeholder hints at the default.
+      daysIn.value = (data.retention_days == null) ? '' : data.retention_days;
+      keepIn.value = (data.keep_recent_per_automation == null) ? '' : data.keep_recent_per_automation;
+      document.getElementById('automation-retention-days-hint').textContent =
+        `Default: ${eff.default_retention_days ?? '?'} days. Currently using: ${eff.retention_days ?? '?'} days.`;
+      document.getElementById('automation-retention-keep-hint').textContent =
+        `Default: ${eff.default_keep_recent_per_automation ?? '?'} runs. Currently using: ${eff.keep_recent_per_automation ?? '?'} runs.`;
+      const status = document.getElementById('automation-settings-status');
+      if (data.updated_at) {
+        status.textContent = 'Last saved: ' + new Date(data.updated_at).toLocaleString();
+      } else {
+        status.textContent = '';
+      }
+      // Keep the metadata cache in sync so the status banner above the
+      // table reflects the new values without a full page reload.
+      if (Automations.metadata && Automations.metadata.limits) {
+        Automations.metadata.limits.retention = eff;
+        renderAutomationsStatusBanner();
+      }
+    }
+
+    async function saveAutomationSettings() {
+      const daysRaw = document.getElementById('automation-retention-days').value.trim();
+      const keepRaw = document.getElementById('automation-retention-keep').value.trim();
+      const status = document.getElementById('automation-settings-status');
+      // Send empty inputs as JSON null so the backend clears the override.
+      const body = {
+        retention_days: daysRaw === '' ? null : Number(daysRaw),
+        keep_recent_per_automation: keepRaw === '' ? null : Number(keepRaw),
+      };
+      status.textContent = 'Saving…';
+      try {
+        const r = await fetch('/admin/api/automations/settings', {
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Save failed');
+        // Reload to repaint hints + the "Last saved" stamp from the server.
+        await loadAutomationSettings();
+        status.textContent = 'Saved. Cleanup will apply on its next pass.';
+      } catch (e) {
+        status.textContent = 'Save failed: ' + (e && e.message || e);
+      }
+    }
+
+    async function resetAutomationSettings() {
+      // Clear both inputs and re-save so the override row goes back to
+      // NULLs, restoring env-var defaults.
+      document.getElementById('automation-retention-days').value = '';
+      document.getElementById('automation-retention-keep').value = '';
+      await saveAutomationSettings();
     }
 
     function renderAutomationsTable(rows) {

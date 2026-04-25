@@ -63,15 +63,28 @@ DELAY_STEP_MAX_SECONDS = int(os.environ.get("AUTOMATIONS_DELAY_MAX", "300"))
 AI_STEP_TIMEOUT_SECONDS = int(os.environ.get("AUTOMATIONS_AI_TIMEOUT", "30"))
 
 # Run-history retention. The cleanup tick deletes any `automation_runs` row
-# older than RETENTION_DAYS, but always keeps the most recent
-# RETENTION_KEEP_RECENT rows per automation regardless of age — so a quiet
+# older than the effective retention-days value, but always keeps the most
+# recent keep-recent-per-automation rows regardless of age — so a quiet
 # automation never loses *all* its history. A busy webhook capped at
 # 60 runs/hour writes ~525k rows/year per automation; this keeps the table
 # (and the editor's "recent runs" panel) bounded.
+#
+# These two env vars are the *fallback* defaults. Admins can override them
+# at runtime from the Automations UI; the override is stored in the
+# `automation_settings` singleton row and read by `_effective_retention()`
+# on each cleanup pass. When no override is set, the env-var values win,
+# preserving the pre-existing behaviour of installs that never visit the
+# settings panel.
 RETENTION_DAYS = max(1, int(os.environ.get("AUTOMATIONS_RETENTION_DAYS", "30")))
 RETENTION_KEEP_RECENT = max(
     0, int(os.environ.get("AUTOMATIONS_RETENTION_KEEP_RECENT", "100"))
 )
+# Hard upper bounds we apply to whatever the admin enters in the UI. The
+# DB column is plain INTEGER, so we clamp here to keep absurd values (e.g.
+# 10-year retention) from being silently accepted. These bounds also gate
+# the `app.py` PUT route that writes to the table.
+RETENTION_DAYS_MAX = 3650          # 10 years
+RETENTION_KEEP_RECENT_MAX = 100000
 # How often the cleanup pass actually does work (cheap NO-OP otherwise).
 RETENTION_TICK_INTERVAL_SECONDS = max(
     60, int(os.environ.get("AUTOMATIONS_RETENTION_TICK_SECONDS", "86400"))
@@ -1472,17 +1485,72 @@ _last_cleanup_at: float = 0.0
 _cleanup_lock = threading.Lock()
 
 
+def _effective_retention() -> Dict[str, Any]:
+    """Resolve the *current* retention values, preferring the singleton
+    `automation_settings` row over the env-var defaults so admin saves take
+    effect on the very next tick without a redeploy.
+
+    Both columns are nullable; a NULL means "no override, fall back to the
+    env var". We also clamp DB values into the same sane bounds the UI
+    enforces so a hand-edited row can't make the cleanup loop misbehave.
+    `db_overrides` reports which fields are coming from the DB so callers
+    (the admin status panel) can show a clear "(default)" vs "(custom)"
+    label."""
+    days = RETENTION_DAYS
+    keep = RETENTION_KEEP_RECENT
+    overrides = {"retention_days": False, "keep_recent_per_automation": False}
+    try:
+        row = _query_db(
+            "SELECT retention_days, keep_recent_per_automation "
+            "FROM automation_settings WHERE id = 1",
+            fetchone=True,
+        )
+    except Exception as e:
+        # Don't let a transient DB hiccup crash the scheduler tick — fall
+        # back to env-var defaults silently and log so it shows up in the
+        # logs without spamming.
+        print(f"[automations] could not read automation_settings: {e}")
+        row = None
+    if row:
+        rd = row.get("retention_days") if isinstance(row, dict) else row["retention_days"]
+        if rd is not None:
+            try:
+                days = max(1, min(RETENTION_DAYS_MAX, int(rd)))
+                overrides["retention_days"] = True
+            except (TypeError, ValueError):
+                pass
+        kr = (row.get("keep_recent_per_automation")
+              if isinstance(row, dict) else row["keep_recent_per_automation"])
+        if kr is not None:
+            try:
+                keep = max(0, min(RETENTION_KEEP_RECENT_MAX, int(kr)))
+                overrides["keep_recent_per_automation"] = True
+            except (TypeError, ValueError):
+                pass
+    return {
+        "retention_days": days,
+        "keep_recent_per_automation": keep,
+        "db_overrides": overrides,
+    }
+
+
 def _cleanup_runs_tick() -> None:
-    """Delete `automation_runs` older than RETENTION_DAYS, but always keep
-    the most recent RETENTION_KEEP_RECENT rows per automation regardless of
-    age. Idempotent and safe to call frequently — internally rate-limited
-    to once per RETENTION_TICK_INTERVAL_SECONDS."""
+    """Delete terminal `automation_runs` older than the effective retention
+    horizon, but always keep the most recent N rows per automation (where
+    N is the effective keep-recent value). Idempotent and safe to call
+    frequently — internally rate-limited to once per
+    RETENTION_TICK_INTERVAL_SECONDS. Reads its two knobs through
+    `_effective_retention()` on every pass so admin edits to the
+    `automation_settings` singleton take effect without a restart."""
     global _last_cleanup_at
     now = time.time()
     with _cleanup_lock:
         if now - _last_cleanup_at < RETENTION_TICK_INTERVAL_SECONDS:
             return
         _last_cleanup_at = now
+    eff = _effective_retention()
+    days = eff["retention_days"]
+    keep = eff["keep_recent_per_automation"]
     try:
         # Two safety rules baked into the SQL:
         #
@@ -1517,11 +1585,14 @@ def _cleanup_runs_tick() -> None:
                AND ranked.rn > %s
                AND r.queued_at < NOW() - (INTERVAL '1 day' * %s)
             """,
-            (RETENTION_KEEP_RECENT, RETENTION_DAYS),
+            (keep, days),
         )
         n = int(deleted) if isinstance(deleted, int) else 0
         if n:
-            print(f"[automations] retention cleanup deleted {n} old run(s)")
+            print(
+                f"[automations] retention cleanup deleted {n} old run(s) "
+                f"(keep_recent={keep}, retention_days={days})"
+            )
     except Exception as e:
         # Roll back the cooldown so the next tick will retry instead of
         # silently waiting another full day on transient DB errors.
@@ -1531,11 +1602,22 @@ def _cleanup_runs_tick() -> None:
 
 
 def retention_settings() -> Dict[str, Any]:
-    """Exposed via status_summary for the admin "Status" view."""
+    """Exposed via `status_summary` for the admin "Status" view, and also
+    consumed by the GET handler that backs the settings form. Returns the
+    *effective* values (DB override or env-var fallback) plus the env-var
+    defaults and the per-field override flags so the UI can render a
+    "default vs custom" indicator and offer a one-click "reset to default"
+    by clearing the override."""
+    eff = _effective_retention()
     return {
-        "retention_days": RETENTION_DAYS,
-        "keep_recent_per_automation": RETENTION_KEEP_RECENT,
+        "retention_days": eff["retention_days"],
+        "keep_recent_per_automation": eff["keep_recent_per_automation"],
         "tick_interval_seconds": RETENTION_TICK_INTERVAL_SECONDS,
+        "default_retention_days": RETENTION_DAYS,
+        "default_keep_recent_per_automation": RETENTION_KEEP_RECENT,
+        "max_retention_days": RETENTION_DAYS_MAX,
+        "max_keep_recent_per_automation": RETENTION_KEEP_RECENT_MAX,
+        "db_overrides": eff["db_overrides"],
     }
 
 

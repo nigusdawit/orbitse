@@ -1315,6 +1315,11 @@ def init_db():
             #                       queued → running → succeeded|failed|
             #                       timeout|cancelled. step_results captures
             #                       per-step output for the run-log drilldown.
+            #
+            #   automation_settings Singleton (id=1) holding admin-tunable
+            #                       overrides for the run-history retention
+            #                       knobs. NULL columns mean "use the
+            #                       AUTOMATIONS_RETENTION_* env-var default".
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS automations (
                     id                  SERIAL PRIMARY KEY,
@@ -1375,6 +1380,19 @@ def init_db():
                     ON automation_versions (automation_id, version_no DESC);
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_versions_unique
                     ON automation_versions (automation_id, version_no);
+
+                -- Singleton (id=1) holding the admin-tunable retention knobs
+                -- the cleanup tick reads on each pass. NULL columns mean
+                -- "fall back to the AUTOMATIONS_RETENTION_* env-var defaults"
+                -- so existing installations behave exactly as before until
+                -- an admin saves an override from the UI.
+                CREATE TABLE IF NOT EXISTS automation_settings (
+                    id                          INTEGER PRIMARY KEY DEFAULT 1,
+                    retention_days              INTEGER,
+                    keep_recent_per_automation  INTEGER,
+                    updated_at                  TIMESTAMP DEFAULT NOW()
+                );
+                INSERT INTO automation_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
             """)
 
             # Seed a default "Contact / Inquiry" form if no forms exist yet
@@ -10290,6 +10308,7 @@ _INTERNAL_DB_TABLE_BLOCKLIST = {
     "voice_settings",       # may contain api keys
     "site_settings",        # huge config blob, not analytics-shaped
     "chatbot_settings",     # contains system prompts
+    "automation_settings",  # admin-only retention knobs, single row
 }
 
 
@@ -11435,6 +11454,122 @@ def admin_automations_metadata():
         "limits": automations.status_summary(),
         "public_base_url": _public_base_url(),
     })
+
+
+@app.route("/admin/api/automations/settings", methods=["GET"])
+@admin_required
+def admin_automations_settings_get():
+    """Return the run-history retention knobs in the shape the editor needs:
+    the *effective* values (DB override or env-var fallback), the env-var
+    defaults so the form can show a "default: N" hint next to each input,
+    and whether the current value is a DB override or the default. The
+    `automation_settings` row is seeded by `init_db` so it always exists."""
+    row = query_db(
+        "SELECT retention_days, keep_recent_per_automation, updated_at "
+        "FROM automation_settings WHERE id = 1",
+        fetchone=True,
+    )
+    if not row:
+        # Defensive seed in case the row was manually deleted — keeps this
+        # endpoint idempotent.
+        execute_db(
+            "INSERT INTO automation_settings (id) VALUES (1) "
+            "ON CONFLICT (id) DO NOTHING"
+        )
+        row = query_db(
+            "SELECT retention_days, keep_recent_per_automation, updated_at "
+            "FROM automation_settings WHERE id = 1",
+            fetchone=True,
+        ) or {}
+    return jsonify({
+        "retention_days": row.get("retention_days"),
+        "keep_recent_per_automation": row.get("keep_recent_per_automation"),
+        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+        "effective": automations.retention_settings(),
+    })
+
+
+@app.route("/admin/api/automations/settings", methods=["PUT"])
+@admin_required
+def admin_automations_settings_put():
+    """Save (or clear) the admin-tunable retention knobs. Each field is
+    optional: omitted or explicitly null means "remove the override and
+    fall back to the env-var default". We clamp into the same bounds the
+    cleanup tick enforces so a typo can't disable retention entirely or
+    blow up the cleanup query with a nonsense interval."""
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"error": "Body must be a JSON object."}), 400
+
+    def _opt_clamped_int(key, lo, hi):
+        """Return one of:
+          - (None, None)         field absent or explicitly null → clear override
+          - (int, None)          field is a valid clamped int   → write override
+          - (None, error_str)    field is present but invalid   → 400
+        We can't use `False` as a sentinel here (it would compare equal to 0
+        which is a legitimate value for keep_recent_per_automation), hence
+        the explicit (value, error) tuple. Floats with a non-zero fractional
+        part are rejected explicitly so a typoed `1.9` doesn't get silently
+        truncated to `1`; whole-number floats like `7.0` are accepted (the
+        browser's number input can emit them)."""
+        if key not in body or body.get(key) is None:
+            return (None, None)
+        raw = body.get(key)
+        # Allow the JS form to send "" to mean "clear", same as null.
+        if isinstance(raw, str) and raw.strip() == "":
+            return (None, None)
+        # Refuse bool — Python treats True/False as 1/0 ints and we don't
+        # want a stray boolean payload to silently set retention to 1 day.
+        if isinstance(raw, bool):
+            return (None, f"{key} must be an integer")
+        if isinstance(raw, float):
+            if not raw.is_integer():
+                return (None, f"{key} must be a whole number")
+            n = int(raw)
+        elif isinstance(raw, int):
+            n = raw
+        elif isinstance(raw, str):
+            try:
+                # int() rejects "1.9" outright, which is what we want for
+                # string payloads — the browser sends digit strings.
+                n = int(raw.strip())
+            except ValueError:
+                return (None, f"{key} must be an integer")
+        else:
+            return (None, f"{key} must be an integer")
+        if n < lo or n > hi:
+            return (None, f"{key} must be between {lo} and {hi}")
+        return (n, None)
+
+    days, err = _opt_clamped_int(
+        "retention_days", 1, automations.RETENTION_DAYS_MAX
+    )
+    if err:
+        return jsonify({"error": err}), 400
+    keep, err = _opt_clamped_int(
+        "keep_recent_per_automation", 0,
+        automations.RETENTION_KEEP_RECENT_MAX,
+    )
+    if err:
+        return jsonify({"error": err}), 400
+
+    # UPSERT (rather than plain UPDATE) so the save succeeds even if the
+    # singleton row was somehow deleted out-of-band — otherwise an UPDATE
+    # would silently no-op and the GET that follows would re-seed a fresh
+    # all-NULL row, dropping the values the admin just submitted.
+    execute_db(
+        """
+        INSERT INTO automation_settings
+            (id, retention_days, keep_recent_per_automation, updated_at)
+        VALUES (1, %s, %s, NOW())
+        ON CONFLICT (id) DO UPDATE
+           SET retention_days = EXCLUDED.retention_days,
+               keep_recent_per_automation = EXCLUDED.keep_recent_per_automation,
+               updated_at = NOW()
+        """,
+        (days, keep),
+    )
+    return admin_automations_settings_get()
 
 
 @app.route("/admin/api/automations", methods=["GET"])
