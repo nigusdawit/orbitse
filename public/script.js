@@ -901,16 +901,30 @@ function renderCartButton() {
     btn.setAttribute('aria-label', 'Open cart');
     btn.setAttribute('data-testid', 'button-open-cart');
     btn.addEventListener('click', openCartDrawer);
-    document.body.appendChild(btn);
+  }
+  /* Place the cart bubble inline in the header next to "Get Started"
+     (#btn-reserve-hero) so it's reachable on both desktop and mobile
+     without covering hero content. Falls back to a fixed FAB if the
+     header isn't on the current page. */
+  const heroBtn = document.getElementById('btn-reserve-hero');
+  const heroParent = heroBtn ? heroBtn.parentElement : null;
+  if (heroParent) {
+    btn.classList.add('cart-fab-inline');
+    if (btn.parentElement !== heroParent || btn.nextSibling !== heroBtn) {
+      heroParent.insertBefore(btn, heroBtn);
+    }
+  } else {
+    btn.classList.remove('cart-fab-inline');
+    if (!btn.parentElement) document.body.appendChild(btn);
   }
   const count = cartItemCount();
   btn.innerHTML = `
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/>
       <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>
     </svg>
     <span class="cart-fab-count" data-testid="text-cart-count">${count}</span>`;
-  btn.style.display = count > 0 ? 'flex' : 'flex';  /* always visible when store active */
+  btn.style.display = 'flex';  /* always visible when store active */
 }
 
 function ensureCartDrawer() {
@@ -1387,13 +1401,107 @@ function renderFooter() {
 /**
  * Scrolls the page to a specific section by ID.
  * Used by footer navigation links and the AI scrollToSection command.
+ *
+ * On mobile we also collapse the chat to a small launcher so the
+ * destination section isn't immediately covered by the floating bar.
+ * The user can tap the launcher to bring the chat back at any time.
  */
 function scrollToSection(sectionId) {
   const target = document.getElementById(sectionId);
   if (target) {
     target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (_isMobileChatViewport()) chatMinimizeForNav();
   }
 }
+
+/* Match the chatbot mobile breakpoint defined in styles.css. */
+function _isMobileChatViewport() {
+  return typeof window.matchMedia === 'function'
+      && window.matchMedia('(max-width: 768px)').matches;
+}
+
+/**
+ * Shrink the chat bar to a small launcher pill in the bottom-right
+ * so it doesn't cover content while the user reads a section.
+ * Also closes the expanded panel if it happened to be open and clears
+ * any inline `bottom` set by the mobile keyboard handler so the CSS
+ * launcher position takes over cleanly.
+ */
+function chatMinimizeForNav() {
+  const c = document.getElementById('chatbot-container');
+  if (!c) return;
+  if (c.classList.contains('expanded') && typeof chatToggleExpand === 'function') {
+    chatToggleExpand();
+  }
+  /* Clear the inline keyboard offset so .minimized's CSS bottom
+     placement is not overridden if the soft keyboard was just open. */
+  c.style.bottom = '';
+  c.classList.remove('keyboard-open');
+  c.classList.add('minimized');
+
+  /* Promote the bar to a real focusable launcher control for keyboard
+     and screen-reader users. We add the attributes here (instead of
+     baking them into HTML) so they only apply while minimized. */
+  const bar = document.getElementById('chatbot-bar');
+  if (bar) {
+    bar.setAttribute('role', 'button');
+    bar.setAttribute('tabindex', '0');
+    bar.setAttribute('aria-label', 'Open chat');
+  }
+}
+
+/**
+ * Restore the chat bar from the minimized launcher state to its full
+ * collapsed-bar size. Called when the user taps or keyboard-activates
+ * the launcher.
+ */
+function chatRestoreFromMinimized() {
+  const c = document.getElementById('chatbot-container');
+  if (c) c.classList.remove('minimized');
+  /* Strip the launcher-only ARIA attributes so the bar goes back to
+     its normal compound-widget semantics (input + buttons). */
+  const bar = document.getElementById('chatbot-bar');
+  if (bar) {
+    bar.removeAttribute('role');
+    bar.removeAttribute('tabindex');
+    bar.removeAttribute('aria-label');
+    /* Move keyboard focus into the input so the user can start typing
+       immediately after activating the launcher. */
+    const input = document.getElementById('chatbot-bar-input');
+    if (input) { try { input.focus(); } catch (_) {} }
+  }
+}
+
+/* When the chat is minimized, intercept any tap inside the chat
+   container in the capture phase and restore it instead of letting
+   the underlying input/buttons fire. This way the launcher always
+   feels like a single "open" tap, no matter where the finger lands. */
+document.addEventListener('click', (e) => {
+  const c = document.getElementById('chatbot-container');
+  if (c && c.classList.contains('minimized') && c.contains(e.target)) {
+    e.preventDefault();
+    e.stopPropagation();
+    chatRestoreFromMinimized();
+  }
+}, true);
+
+/* Keyboard activation for the minimized launcher (Enter / Space). */
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+  const c = document.getElementById('chatbot-container');
+  if (!c || !c.classList.contains('minimized')) return;
+  if (!c.contains(e.target)) return;
+  e.preventDefault();
+  chatRestoreFromMinimized();
+});
+
+/* Catch any plain anchor link to a section as well so visitors who
+   tap the in-page hash links get the same auto-minimize behavior. */
+document.addEventListener('click', (e) => {
+  if (!_isMobileChatViewport()) return;
+  const a = e.target && e.target.closest && e.target.closest('a[href^="#section-"]');
+  if (a) chatMinimizeForNav();
+}, false);
 
 
 /**
@@ -5672,6 +5780,9 @@ function executeCommand(cmd) {
       /* Scroll the landing container to the target section */
       setTimeout(() => {
         target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        if (typeof _isMobileChatViewport === 'function' && _isMobileChatViewport()) {
+          chatMinimizeForNav();
+        }
       }, 300);
       break;
     }

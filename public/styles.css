@@ -4883,6 +4883,48 @@ html[data-scroll-mode="smooth"] .snap-section {
   .side-chat-panel {
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }
+
+  /* Minimized launcher state — applied automatically when the visitor
+     taps a navigation link on mobile so the destination section isn't
+     covered by the chat bar. Tapping the launcher restores the full
+     bar (handled by chatRestoreFromMinimized in script.js). */
+  .chatbot-container.minimized {
+    width: auto;
+    left: auto;
+    right: 0.75rem;
+    /* !important so the inline `bottom` set by the mobile-keyboard
+       handler can't push the launcher off the corner if the keyboard
+       happens to close after we minimize. */
+    bottom: 0.75rem !important;
+    transform: none;
+    transition: bottom 0.15s ease-out, right 0.15s ease-out;
+  }
+  /* Visible focus ring for keyboard users on the launcher. */
+  .chatbot-container.minimized .chatbot-bar:focus-visible {
+    outline: 2px solid rgba(201, 169, 110, 0.85);
+    outline-offset: 2px;
+  }
+  .chatbot-container.minimized .chatbot-bar {
+    padding: 0.35rem;
+    gap: 0;
+    border-radius: 9999px;
+    cursor: pointer;
+    background: rgba(255, 255, 255, 0.16);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+  }
+  /* Hide everything except the avatar so we get a clean launcher pill. */
+  .chatbot-container.minimized .chatbot-bar > *:not(.chatbot-avatar) {
+    display: none !important;
+  }
+  .chatbot-container.minimized .chatbot-avatar {
+    width: 2rem;
+    height: 2rem;
+  }
+  /* If the chat happens to be in the .expanded state when minimize
+     fires we also force the panel hidden so the launcher stays small. */
+  .chatbot-container.minimized .chatbot-panel {
+    display: none !important;
+  }
 }
 
 
@@ -5578,7 +5620,10 @@ html[data-scroll-mode="smooth"] .snap-section {
 .store-card-price { font-weight: 700; color: #111827; }
 .store-card-soldout { color: #ef4444; font-size: 0.85rem; font-weight: 600; }
 
-/* Floating cart button */
+/* Floating cart button (legacy / fallback when the header isn't on
+   the current page — e.g. standalone routes). The default placement
+   is INLINE in the top-right of the header next to "Get Started"
+   (.cart-fab-inline below). */
 .cart-fab {
   position: fixed;
   bottom: 1.25rem;
@@ -5596,6 +5641,31 @@ html[data-scroll-mode="smooth"] .snap-section {
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 .cart-fab:hover { transform: scale(1.05); box-shadow: 0 10px 24px rgba(0,0,0,0.3); }
+
+/* Inline placement in the top header next to the Get Started button.
+   Same visual size / count badge as the FAB but drops the fixed
+   positioning + heavy shadow so it sits naturally in the nav row. */
+.cart-fab.cart-fab-inline {
+  position: relative;
+  bottom: auto;
+  right: auto;
+  width: 44px;
+  height: 44px;
+  background: rgba(255,255,255,0.08);
+  color: inherit;
+  border: 1px solid rgba(201,169,110,0.35);
+  box-shadow: none;
+}
+.cart-fab.cart-fab-inline:hover {
+  transform: none;
+  background: rgba(255,255,255,0.16);
+  box-shadow: none;
+}
+/* Keep at least a 44x44 touch target on small phones (WCAG 2.5.5). */
+@media (max-width: 480px) {
+  .cart-fab.cart-fab-inline { width: 44px; height: 44px; }
+}
+
 .cart-fab-count {
   position: absolute;
   top: -4px; right: -4px;
