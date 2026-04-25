@@ -20,14 +20,25 @@ This module powers the admin "Web Scraper" tab. Two input modes are supported:
                   clear note if web search is not available on the
                   configured OpenAI client.
 
+Rendered fetch (optional):
+  Many marketing/booking sites are React/Vue SPAs that ship an empty
+  HTML shell and assemble content client-side. Plain HTTP GETs return
+  almost nothing useful. When the admin enables "rendered fetch" we
+  retry through a headless-browser rendering provider (ScrapingBee or
+  Browserless) configured via env vars. The same SSRF host validation
+  and content-type allowlist still apply to the *target* URL — only
+  the actual GET is delegated to the provider.
+
 Out of scope (v1):
-  - Headless browser rendering for JS-only pages.
   - Crawling multiple pages or following links.
   - Authenticated pages.
 
 The module exposes a small, opinionated API:
 
     fetch_url(url, disallowed_domains)        -> {ok, text, content_type, ...}
+    fetch_url_rendered(url, disallowed_domains)
+                                              -> same shape as fetch_url
+    render_provider_status()                  -> {configured, provider, reason}
     research_objective(client, direct_client,
                        objective, target_shape, custom_schema)
                                               -> {ok, text, sources, ...}
@@ -42,6 +53,7 @@ from __future__ import annotations
 import html as html_module
 import ipaddress
 import json
+import os
 import re
 import socket
 from typing import Any
@@ -417,6 +429,248 @@ def fetch_url(url: str, disallowed_domains: list[str] | None = None) -> dict[str
         return {"ok": False, "error": f"HTTP error: {e}"}
     except Exception as e:  # noqa: BLE001 — surface anything unexpected to the UI
         return {"ok": False, "error": f"Unexpected fetch error: {e}"}
+
+
+# =============================================================================
+# RENDERED FETCH (headless-browser path for JS-only pages)
+# =============================================================================
+#
+# Plain `fetch_url` is a single HTTP GET. Modern SPA marketing/booking sites
+# render their content with React/Vue after the initial HTML loads, so a GET
+# returns a near-empty shell. When the admin opts in to "rendered fetch" we
+# delegate the GET to a hosted headless-browser provider that runs the JS
+# and returns the post-render HTML.
+#
+# Two providers are supported, selected by the SCRAPER_RENDER_PROVIDER env
+# var (default: "scrapingbee"):
+#
+#   scrapingbee   GET https://app.scrapingbee.com/api/v1/?api_key=…&url=…
+#                 Requires SCRAPINGBEE_API_KEY.
+#   browserless   POST {BROWSERLESS_URL}/content?token=…  with {"url": …}
+#                 Requires BROWSERLESS_TOKEN. BROWSERLESS_URL defaults to
+#                 https://chrome.browserless.io.
+#
+# We deliberately keep this provider-agnostic and side-effect-free at import
+# time so the worker can call render_provider_status() to surface a clear
+# message in the admin UI when nothing is configured.
+#
+# A rendered fetch typically takes 5-30 seconds (browser launch + JS run)
+# so we use a generous timeout but still keep the size cap and content-type
+# allowlist that protect the model from binary blobs and the worker thread
+# from runaway responses.
+
+# Rendering is slower than a plain GET — give it a longer budget. Hosted
+# providers usually return within 10-20s; we pad a bit so a busy provider
+# doesn't tip into a false timeout error.
+_RENDER_TIMEOUT_SECONDS = 45.0
+
+
+def _render_provider_config() -> dict[str, Any]:
+    """Resolve the rendering provider + credentials from env vars.
+
+    Returns a dict with at least ``provider`` (str) and ``configured`` (bool).
+    On failure, ``reason`` explains what's missing so the admin UI can
+    show an actionable message (e.g. "set SCRAPINGBEE_API_KEY").
+    """
+    provider = (os.getenv("SCRAPER_RENDER_PROVIDER") or "scrapingbee").strip().lower()
+    if provider == "scrapingbee":
+        api_key = (os.getenv("SCRAPINGBEE_API_KEY") or "").strip()
+        if not api_key:
+            return {
+                "provider": provider,
+                "configured": False,
+                "reason": "Set SCRAPINGBEE_API_KEY to enable rendered fetch.",
+            }
+        return {
+            "provider": provider,
+            "configured": True,
+            "api_key": api_key,
+            "endpoint": "https://app.scrapingbee.com/api/v1/",
+        }
+    if provider == "browserless":
+        token = (os.getenv("BROWSERLESS_TOKEN") or "").strip()
+        base = (os.getenv("BROWSERLESS_URL") or "https://chrome.browserless.io").strip()
+        if not token:
+            return {
+                "provider": provider,
+                "configured": False,
+                "reason": "Set BROWSERLESS_TOKEN to enable rendered fetch.",
+            }
+        return {
+            "provider": provider,
+            "configured": True,
+            "token": token,
+            "endpoint": base.rstrip("/") + "/content",
+        }
+    return {
+        "provider": provider,
+        "configured": False,
+        "reason": (
+            f"Unknown SCRAPER_RENDER_PROVIDER '{provider}'. "
+            "Supported: scrapingbee, browserless."
+        ),
+    }
+
+
+def render_provider_status() -> dict[str, Any]:
+    """Public, secret-free view of the rendering config for the admin UI."""
+    cfg = _render_provider_config()
+    return {
+        "provider": cfg.get("provider", ""),
+        "configured": bool(cfg.get("configured")),
+        "reason": cfg.get("reason", ""),
+    }
+
+
+def fetch_url_rendered(
+    url: str,
+    disallowed_domains: list[str] | None = None,
+) -> dict[str, Any]:
+    """Fetch ``url`` through a headless-browser rendering provider.
+
+    Same return shape as :func:`fetch_url` so callers can swap one for the
+    other. The target host is SSRF-validated before we hand the URL to the
+    provider — this stops an admin (or a redirect chain) from asking the
+    rendering API to fetch private/loopback addresses on our behalf.
+
+    The actual provider call goes to a known hosted endpoint
+    (``app.scrapingbee.com`` or ``chrome.browserless.io``) so the outbound
+    leg of the request can't be redirected somewhere unexpected.
+    """
+    disallowed = disallowed_domains or []
+
+    parsed = urlparse((url or "").strip())
+    if parsed.scheme not in ("http", "https"):
+        return {"ok": False, "error": "URL must start with http:// or https://."}
+    if not parsed.hostname:
+        return {"ok": False, "error": "URL is missing a hostname."}
+
+    err = _validate_host(parsed.hostname, disallowed)
+    if err:
+        return {"ok": False, "error": err}
+
+    cfg = _render_provider_config()
+    if not cfg.get("configured"):
+        return {
+            "ok": False,
+            "error": cfg.get("reason", "Rendered fetch is not configured."),
+        }
+
+    provider = cfg["provider"]
+
+    # Build the streaming request the same way the plain-fetch path does so
+    # we can enforce the same hard in-flight byte cap (rather than buffering
+    # the whole provider response and only checking its size after the fact).
+    if provider == "scrapingbee":
+        method = "GET"
+        endpoint = cfg["endpoint"]
+        request_kwargs: dict[str, Any] = {
+            "params": {
+                "api_key": cfg["api_key"],
+                "url": url,
+                "render_js": "true",
+                # Block ads/trackers so the provider returns the page body
+                # faster and we don't pay for noise.
+                "block_ads": "true",
+                "block_resources": "false",
+            },
+            "headers": {"User-Agent": _USER_AGENT},
+        }
+    elif provider == "browserless":
+        method = "POST"
+        endpoint = cfg["endpoint"]
+        request_kwargs = {
+            "params": {"token": cfg["token"]},
+            "json": {
+                "url": url,
+                "gotoOptions": {"waitUntil": "networkidle2"},
+            },
+            "headers": {
+                "User-Agent": _USER_AGENT,
+                "Content-Type": "application/json",
+            },
+        }
+    else:
+        return {
+            "ok": False,
+            "error": f"Unsupported rendering provider '{provider}'.",
+        }
+
+    try:
+        with httpx.Client(timeout=_RENDER_TIMEOUT_SECONDS) as client:
+            with client.stream(method, endpoint, **request_kwargs) as response:
+                if response.status_code >= 400:
+                    # Read a small slice of the error body so we can surface
+                    # the provider's actual reason ("Invalid API key", "Render
+                    # limit reached", etc.) instead of a bare status code.
+                    err_bytes, _ = _read_capped(response, 4096)
+                    body_excerpt = err_bytes.decode("utf-8", errors="replace")[:200].strip()
+                    msg = (
+                        f"Rendered fetch provider returned HTTP {response.status_code}"
+                        + (f": {body_excerpt}" if body_excerpt else ".")
+                    )
+                    return {
+                        "ok": False, "error": msg,
+                        "status": response.status_code,
+                    }
+
+                # Reject early on declared-too-large responses, then enforce
+                # the cap during the actual stream as a defense in depth.
+                declared = response.headers.get("content-length")
+                if declared and declared.isdigit() and int(declared) > _MAX_BYTES:
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"Rendered response is {int(declared):,} bytes, "
+                            f"which exceeds our {_MAX_BYTES:,}-byte cap. "
+                            "Try a smaller page."
+                        ),
+                    }
+
+                body_bytes, truncated = _read_capped(response, _MAX_BYTES)
+                if truncated:
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"Rendered response exceeded our {_MAX_BYTES:,}-byte cap. "
+                            "Try a smaller page."
+                        ),
+                    }
+
+                # Both providers return rendered HTML, but the provider's
+                # own content-type may be missing or generic — fall back to
+                # text/html so clean_html() takes the HTML path.
+                content_type = response.headers.get("content-type", "") or "text/html"
+                if not _content_type_allowed(content_type):
+                    content_type = "text/html"
+
+                encoding = response.charset_encoding or "utf-8"
+                try:
+                    body_text = body_bytes.decode(encoding, errors="replace")
+                except LookupError:
+                    body_text = body_bytes.decode("utf-8", errors="replace")
+
+                return {
+                    "ok": True,
+                    "status": response.status_code,
+                    "content_type": content_type,
+                    "body": body_text,
+                    "final_url": url,
+                    "rendered": True,
+                    "render_provider": provider,
+                }
+    except httpx.TimeoutException:
+        return {
+            "ok": False,
+            "error": (
+                f"Rendered fetch timed out after {_RENDER_TIMEOUT_SECONDS:.0f}s. "
+                "Try a smaller page or disable rendered fetch."
+            ),
+        }
+    except httpx.HTTPError as e:
+        return {"ok": False, "error": f"Rendered fetch HTTP error: {e}"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"Unexpected rendered-fetch error: {e}"}
 
 
 # =============================================================================

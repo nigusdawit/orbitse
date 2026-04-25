@@ -4604,9 +4604,25 @@ TO CUSTOMIZE THIS DASHBOARD:
       <div id="scraper-current-actions" style="margin-top: 1rem; display:flex; gap:0.5rem; flex-wrap:wrap;"></div>
     </div>
 
-    <!-- Settings: disallowed domains -->
+    <!-- Settings: disallowed domains + rendered fetch -->
     <div class="form-panel">
-      <h3>Disallowed domains</h3>
+      <h3>Scraper settings</h3>
+
+      <div class="form-group" style="margin-top: 0.5rem;">
+        <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer;">
+          <input type="checkbox" id="scraper-render-enabled" data-testid="toggle-scraper-render">
+          <span><strong>Use rendered fetch for JavaScript-only pages</strong></span>
+        </label>
+        <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin: 0.4rem 0 0 1.6rem;">
+          When a page returns an empty React/Vue shell, retry through a hosted
+          headless browser (ScrapingBee or Browserless). Rendered fetches are
+          slower (5–30s) and usually billed per request by the provider, so
+          this is off by default.
+        </p>
+        <p id="scraper-render-status" style="font-size: 0.8125rem; margin: 0.4rem 0 0 1.6rem;"></p>
+      </div>
+
+      <h4 style="margin-top: 1.25rem;">Disallowed domains</h4>
       <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 0.75rem;">
         Comma- or newline-separated. Subdomains are blocked too (e.g. <code>evil.com</code> blocks <code>shop.evil.com</code>).
         Private/loopback IP ranges are always blocked regardless of this list.
@@ -12245,26 +12261,44 @@ TO CUSTOMIZE THIS DASHBOARD:
     };
 
     async function loadScraperTab() {
-      // First time we open the tab: pull the shape catalog + settings, then jobs.
+      // Pull shape catalog (cached) + settings (always fresh so render
+      // status and the toggle reflect any env-var changes), then jobs.
       try {
+        const r = await fetch('/admin/api/scraper-settings', { credentials: 'same-origin' });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Settings load failed');
         if (!Scraper.shapes) {
-          const r = await fetch('/admin/api/scraper-settings', { credentials: 'same-origin' });
-          const data = await r.json();
-          if (!r.ok) throw new Error(data.error || 'Settings load failed');
           Scraper.shapes = data.target_shapes || [];
           const sel = document.getElementById('scraper-target-shape');
           sel.innerHTML = Scraper.shapes.map(s =>
             `<option value="${escapeHtml(s.key)}">${escapeHtml(s.label)}</option>`
           ).join('');
-          document.getElementById('scraper-disallowed-domains').value = data.disallowed_domains || '';
           updateScraperFormVisibility();
         }
+        document.getElementById('scraper-disallowed-domains').value = data.disallowed_domains || '';
+        document.getElementById('scraper-render-enabled').checked = !!data.render_enabled;
+        renderScraperRenderStatus(data.render_status || {});
       } catch (e) {
         document.getElementById('scraper-form-message').innerHTML =
           `<span style="color:#c33;">${escapeHtml(e.message)}</span>`;
       }
       loadScrapeJobs();
       loadScrapeSchedules();
+    }
+
+    function renderScraperRenderStatus(status) {
+      // Translate the provider-config dict into a colored one-liner so
+      // the admin instantly sees whether the toggle will actually work.
+      const el = document.getElementById('scraper-render-status');
+      if (!el) return;
+      const provider = status.provider || 'scrapingbee';
+      if (status.configured) {
+        el.innerHTML = `<span style="color:#28a745;">✓ Provider configured: <strong>${escapeHtml(provider)}</strong>.</span>`;
+      } else {
+        const reason = status.reason || `Provider '${provider}' is not configured.`;
+        el.innerHTML = `<span style="color:#c33;">${escapeHtml(reason)}</span> ` +
+          `<span style="color: var(--admin-text-muted);">Add the secret in Replit and reload this tab.</span>`;
+      }
     }
 
     function updateScraperFormVisibility() {
@@ -12784,15 +12818,22 @@ TO CUSTOMIZE THIS DASHBOARD:
       const msgEl = document.getElementById('scraper-settings-message');
       msgEl.innerHTML = '';
       const value = document.getElementById('scraper-disallowed-domains').value;
+      const renderEnabled = document.getElementById('scraper-render-enabled').checked;
       try {
         const r = await fetch('/admin/api/scraper-settings', {
           method: 'PUT', credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ disallowed_domains: value }),
+          body: JSON.stringify({
+            disallowed_domains: value,
+            render_enabled: renderEnabled,
+          }),
         });
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || 'Save failed');
         msgEl.innerHTML = '<span style="color:#28a745;">Saved.</span>';
+        // Refresh the configured-status line in case the admin saved the
+        // toggle on while the provider key isn't actually set yet.
+        if (data.render_status) renderScraperRenderStatus(data.render_status);
       } catch (e) {
         msgEl.innerHTML = `<span style="color:#c33;">${escapeHtml(e.message)}</span>`;
       }

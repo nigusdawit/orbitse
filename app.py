@@ -1593,6 +1593,13 @@ def init_db():
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS "
                 "scraper_disallowed_domains TEXT NOT NULL DEFAULT ''"
             )
+            # Toggle for the headless-browser fallback path used on JS-only
+            # pages. Off by default so plain GETs (free, fast) stay the
+            # default and the rendered path is opt-in for SPA scraping.
+            cur.execute(
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS "
+                "scraper_render_enabled BOOLEAN NOT NULL DEFAULT false"
+            )
 
             # ---------- Recurring scrape schedules ------------------------
             # A "schedule" is a saved scrape template (mode/url/objective/
@@ -10818,6 +10825,20 @@ def _scrape_get_disallowed_domains() -> list[str]:
     return scraper.parse_disallowed_domains(raw or "")
 
 
+def _scrape_get_render_enabled() -> bool:
+    """Whether the admin opted in to the headless rendering fallback.
+
+    The toggle alone doesn't make rendered fetch work — a provider key
+    (e.g. SCRAPINGBEE_API_KEY) must also be configured. We surface that
+    status separately on the settings endpoint.
+    """
+    row = query_db(
+        "SELECT scraper_render_enabled FROM site_settings WHERE id = 1",
+        fetchone=True,
+    )
+    return bool((row or {}).get("scraper_render_enabled")) if row else False
+
+
 def _scrape_serialize_job(row: dict) -> dict:
     """Convert a DB row into a JSON-friendly dict for the UI."""
     if not row:
@@ -10864,19 +10885,48 @@ def _scrape_run_job(job_id: int) -> None:
                 _scrape_finish_job(job_id, error=fetched.get("error", "Fetch failed."))
                 return
             cleaned = scraper.clean_html(fetched["body"], fetched.get("content_type", ""))
+            note = ""
+            rendered_used = False
+            # Auto-fallback: if the cleaned body looks like a JS-only SPA shell
+            # (and the admin has opted in to rendered fetch), retry through the
+            # headless-browser provider so SPA sites become scrapeable too.
+            if (not cleaned or scraper.looks_js_only(cleaned)) and _scrape_get_render_enabled():
+                rendered = scraper.fetch_url_rendered(url, disallowed_domains=disallowed)
+                if rendered.get("ok"):
+                    fetched = rendered
+                    cleaned = scraper.clean_html(
+                        rendered["body"], rendered.get("content_type", ""),
+                    )
+                    rendered_used = True
+                    note = (
+                        f"Used rendered fetch ({rendered.get('render_provider', 'headless')}) "
+                        "because the plain page looked JavaScript-only."
+                    )
+                else:
+                    # Render attempt failed — keep going with the original
+                    # cleaned text and surface the reason in the note so the
+                    # admin can fix their provider config.
+                    note = (
+                        "Tried rendered fetch but it failed: "
+                        + str(rendered.get("error") or "unknown error")
+                    )
             if not cleaned:
                 _scrape_finish_job(
                     job_id,
                     error="Page had no readable text after cleaning.",
                 )
                 return
-            note = ""
-            if scraper.looks_js_only(cleaned):
-                # Not a hard failure — extraction may still glean something useful
-                # — but the admin should know the page is probably JS-rendered.
+            if not rendered_used and not note and scraper.looks_js_only(cleaned):
+                # Plain fetch only, no prior note from a failed render attempt,
+                # and the page still looks JS-only. Tell the admin so they know
+                # to enable rendered fetch. We deliberately don't overwrite a
+                # rendered-fetch failure note above — that one is more
+                # actionable than this generic hint.
                 note = (
                     "This page looks JavaScript-only — very little text was "
-                    "available without a real browser. Results may be sparse."
+                    "available without a real browser. Enable 'Use rendered "
+                    "fetch' in Web Scraper settings to retry through a "
+                    "headless browser."
                 )
             try:
                 record = scraper.extract_with_ai(
@@ -10898,6 +10948,8 @@ def _scrape_run_job(job_id: int) -> None:
                     "content_type": fetched.get("content_type", ""),
                     "cleaned_chars": len(cleaned),
                     "note": note,
+                    "rendered": rendered_used,
+                    "render_provider": fetched.get("render_provider", "") if rendered_used else "",
                 },
             }
             _scrape_finish_job(job_id, result=payload)
@@ -11418,12 +11470,20 @@ def admin_push_scrape_job(job_id):
 @app.route("/admin/api/scraper-settings", methods=["GET"])
 @admin_required
 def admin_get_scraper_settings():
-    """Expose the disallowed-domains list + the available target shapes."""
+    """Expose admin-editable scraper settings + capability metadata.
+
+    Returns the disallowed-domains list, the available target shapes, the
+    rendered-fetch toggle, and a status object describing whether the
+    headless-browser provider is actually configured (so the UI can show
+    a clear message instead of silently failing on the next JS-only page).
+    """
     row = query_db(
-        "SELECT scraper_disallowed_domains FROM site_settings WHERE id = 1",
+        "SELECT scraper_disallowed_domains, scraper_render_enabled "
+        "FROM site_settings WHERE id = 1",
         fetchone=True,
     )
     raw = (row or {}).get("scraper_disallowed_domains", "") if row else ""
+    render_enabled = bool((row or {}).get("scraper_render_enabled")) if row else False
     shapes = []
     for key, meta in scraper.TARGET_SHAPES.items():
         shapes.append({
@@ -11435,26 +11495,35 @@ def admin_get_scraper_settings():
     return jsonify({
         "disallowed_domains": raw or "",
         "target_shapes": shapes,
+        "render_enabled": render_enabled,
+        "render_status": scraper.render_provider_status(),
     })
 
 
 @app.route("/admin/api/scraper-settings", methods=["PUT"])
 @admin_required
 def admin_update_scraper_settings():
-    """Persist the disallowed-domains list. Stored verbatim; parsed at fetch time."""
+    """Persist scraper settings. Values are validated; provider keys are env-only."""
     data = request.get_json(silent=True) or {}
     raw = data.get("disallowed_domains", "")
     if not isinstance(raw, str):
         return jsonify({"error": "disallowed_domains must be a string."}), 400
+    render_enabled = bool(data.get("render_enabled", False))
     # Make sure the singleton row exists before we update.
     execute_db(
         "INSERT INTO site_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING",
     )
     execute_db(
-        "UPDATE site_settings SET scraper_disallowed_domains = %s, updated_at = NOW() WHERE id = 1",
-        (raw[:8000],),
+        "UPDATE site_settings SET scraper_disallowed_domains = %s, "
+        "scraper_render_enabled = %s, updated_at = NOW() WHERE id = 1",
+        (raw[:8000], render_enabled),
     )
-    return jsonify({"success": True, "disallowed_domains": raw[:8000]})
+    return jsonify({
+        "success": True,
+        "disallowed_domains": raw[:8000],
+        "render_enabled": render_enabled,
+        "render_status": scraper.render_provider_status(),
+    })
 
 
 # -----------------------------------------------------------------------------
