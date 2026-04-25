@@ -4195,12 +4195,15 @@ html[data-scroll-mode="smooth"] .snap-section {
   }
   /* On phones the side chat panel sits along the bottom of the viewport
      (~40% tall when open, ~4rem when minimized). Shrink the iframe's
-     visible height to match so the AI-generated page content doesn't end
-     up rendered behind the panel and look like nothing came through. */
-  body:has(.side-chat-panel.active:not(.minimized)) .immersive-page-frame {
+     visible height to match so the AI-generated page content doesn't
+     end up rendered behind the panel and look like nothing came
+     through. We use body.side-panel-active / body.side-panel-minimized
+     (mirrored from JS) instead of :has() so this works in every
+     browser, not just the ones that support :has(). */
+  body.side-panel-active .immersive-page-frame {
     height: calc(100% - 40vh);
   }
-  body:has(.side-chat-panel.active.minimized) .immersive-page-frame {
+  body.side-panel-active.side-panel-minimized .immersive-page-frame {
     height: calc(100% - 4rem - env(safe-area-inset-bottom, 0px));
   }
 }
@@ -4228,12 +4231,13 @@ html[data-scroll-mode="smooth"] .snap-section {
   }
   /* When the AI's side chat panel is shown (during navigate / generatePage),
      it expands to ~40% of the viewport height across the bottom edge.
-     Push the page-archive bubble above it so the visitor can always tap it. */
-  body:has(.side-chat-panel.active:not(.minimized)) .page-archive-bubble {
+     Push the page-archive bubble above it so the visitor can always
+     tap it. Uses the JS-mirrored body classes for cross-browser support. */
+  body.side-panel-active .page-archive-bubble {
     bottom: calc(40vh + 1rem);
   }
-  /* Minimized side panel only shows its header bar (~3rem). */
-  body:has(.side-chat-panel.active.minimized) .page-archive-bubble {
+  /* Minimized side panel only shows its slim header bar (~3rem). */
+  body.side-panel-active.side-panel-minimized .page-archive-bubble {
     bottom: calc(5rem + env(safe-area-inset-bottom, 0px));
   }
 }
@@ -5670,7 +5674,7 @@ html[data-scroll-mode="smooth"] .snap-section {
    clutter to the corner where the Back button / page-archive bubble live. */
 body:has(.immersive-page-overlay.active) .cart-fab,
 body:has(.fullscreen-canvas.active) .cart-fab,
-body:has(.side-chat-panel.active) .cart-fab {
+body.side-panel-active .cart-fab {
   display: none !important;
 }
 

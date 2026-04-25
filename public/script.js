@@ -5906,10 +5906,31 @@ function openSidePanel() {
   if (galleryView) galleryView.classList.add('side-panel-active');
   if (landingView) landingView.classList.add('side-panel-active');
 
-  /* Reset minimized state and show the side panel */
-  panel.classList.remove('minimized');
+  /* Reset minimized state and show the side panel.
+     Special case for mobile: when an immersive AI page or fullscreen
+     canvas is already open, the side panel would otherwise expand to
+     ~40% of the viewport and dominate the screen. Start it minimized
+     instead so the visitor can see the generated page; they can tap
+     the maximize button to expand the chat when they want to read it. */
+  const overlayActive =
+    !!document.getElementById('immersive-page-overlay')?.classList.contains('active') ||
+    !!document.getElementById('fullscreen-canvas')?.classList.contains('active');
+  const isMobile = window.innerWidth <= 768;
+  const startMinimized = isMobile && overlayActive;
+
   const minIcon = document.getElementById('side-minimize-icon');
-  if (minIcon) minIcon.innerHTML = '<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>';
+  if (startMinimized) {
+    panel.classList.add('minimized');
+    if (minIcon) minIcon.innerHTML = '<path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/>';
+    document.body.classList.add('side-panel-minimized');
+  } else {
+    panel.classList.remove('minimized');
+    if (minIcon) minIcon.innerHTML = '<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>';
+    document.body.classList.remove('side-panel-minimized');
+  }
+  /* Body class mirror so simple CSS selectors can react reliably in
+     every browser (avoids relying on :has()). */
+  document.body.classList.add('side-panel-active');
 
   sidePanelActive = true;
   panel.classList.add('active');
@@ -6649,6 +6670,9 @@ function closeSidePanel() {
   sidePanelActive = false;
   panel.classList.remove('active');
   panel.classList.remove('history-open');
+  panel.classList.remove('minimized');
+  document.body.classList.remove('side-panel-active');
+  document.body.classList.remove('side-panel-minimized');
 
   /* Hide the history if it was open */
   const history = document.getElementById('side-panel-history');
@@ -6689,6 +6713,11 @@ function toggleSidePanelMinimize() {
   if (!panel) return;
 
   const isMinimized = panel.classList.toggle('minimized');
+  /* Mirror onto <body> so layout-shift CSS rules (page-archive bubble
+     lift, immersive iframe height) can target a simple class instead
+     of relying on :has(). */
+  document.body.classList.toggle('side-panel-minimized', isMinimized);
+
   const icon = document.getElementById('side-minimize-icon');
   if (!icon) return;
 
