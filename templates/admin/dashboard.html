@@ -4431,6 +4431,228 @@ TO CUSTOMIZE THIS DASHBOARD:
        SERVICES TAB — Bookable services + add-ons + availability + bookings
        ==================================================================== -->
   <div id="tab-services" class="tab-content">
+    <style>
+      /* Master/detail layout for services — stacks on mobile, sidebar
+         becomes a horizontal scroll strip so users can still flip
+         between services on a phone without losing the editor. */
+      .svc-layout {
+        display: grid;
+        grid-template-columns: 300px 1fr;
+        gap: 1rem;
+        align-items: start;
+      }
+      .svc-sidebar {
+        border: 1px solid var(--admin-border, rgba(255,255,255,0.1));
+        border-radius: 8px;
+        padding: 0.75rem;
+        max-height: 78vh;
+        overflow-y: auto;
+        position: sticky;
+        top: 0.5rem;
+      }
+      .svc-detail {
+        border: 1px solid var(--admin-border, rgba(255,255,255,0.1));
+        border-radius: 8px;
+        padding: 1rem;
+        min-height: 60vh;
+      }
+      .svc-row {
+        padding: 0.75rem;
+        border-radius: 6px;
+        cursor: pointer;
+        margin-bottom: 0.4rem;
+        border: 1px solid transparent;
+        background: rgba(255,255,255,0.02);
+        transition: background 0.15s, border-color 0.15s;
+      }
+      .svc-row:hover { background: rgba(255,255,255,0.05); }
+      .svc-row.is-active {
+        border-color: var(--accent, #c9a96e);
+        background: rgba(201,169,110,0.10);
+      }
+      /* Sub-tab pills above the editor */
+      .svc-subtabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        border-bottom: 1px solid rgba(255,255,255,0.1);
+        margin-bottom: 1rem;
+        padding-bottom: 0.5rem;
+      }
+      .svc-subtab {
+        padding: 0.5rem 0.9rem;
+        border-radius: 6px 6px 0 0;
+        border: none;
+        cursor: pointer;
+        background: transparent;
+        color: inherit;
+        font-weight: 600;
+        font-size: 0.9rem;
+      }
+      .svc-subtab.is-active {
+        background: var(--accent, #c9a96e);
+        color: #0b0b0b;
+      }
+      /* Form section panels (reuse the .form-panel look) */
+      .svc-section {
+        background: rgba(255,255,255,0.03);
+        border: 1px solid var(--admin-border, rgba(255,255,255,0.08));
+        border-radius: 8px;
+        padding: 1rem 1.1rem;
+        margin-bottom: 1rem;
+      }
+      .svc-section h3 {
+        margin: 0 0 0.25rem;
+        font-size: 1rem;
+      }
+      .svc-section .svc-section-help {
+        margin: 0 0 1rem;
+        opacity: 0.7;
+        font-size: 0.85rem;
+      }
+      /* Auto-fit grid for fields inside a section. Each field sits in
+         its own column on desktop and stacks neatly on phone. */
+      .svc-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 0.85rem;
+      }
+      .svc-grid--wide {
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      }
+      .svc-field { display: flex; flex-direction: column; gap: 0.3rem; }
+      .svc-field > label,
+      .svc-field > .svc-label {
+        font-size: 0.8rem;
+        font-weight: 600;
+        opacity: 0.85;
+      }
+      .svc-field input,
+      .svc-field select,
+      .svc-field textarea {
+        font-size: 16px; /* Prevents iOS zoom-on-focus */
+        padding: 0.55rem 0.65rem;
+        border-radius: 6px;
+        border: 1px solid var(--admin-border, rgba(255,255,255,0.15));
+        background: rgba(0,0,0,0.25);
+        color: inherit;
+        font-family: inherit;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      .svc-field textarea { resize: vertical; min-height: 4.5rem; }
+      .svc-money {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        align-items: center;
+        gap: 0.4rem;
+      }
+      .svc-money .svc-money-prefix {
+        opacity: 0.6;
+        font-weight: 600;
+      }
+      .svc-toggle {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        padding: 0.6rem;
+        border-radius: 6px;
+        background: rgba(255,255,255,0.04);
+        cursor: pointer;
+      }
+      .svc-toggle input { width: auto; }
+      .svc-help {
+        font-size: 0.78rem;
+        opacity: 0.7;
+        margin: -0.1rem 0 0;
+      }
+      /* Add-on / rule cards (mobile-friendly replacement for tables) */
+      .svc-cards { display: grid; gap: 0.6rem; }
+      .svc-card {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid var(--admin-border, rgba(255,255,255,0.1));
+        border-radius: 8px;
+        padding: 0.75rem;
+        display: grid;
+        gap: 0.5rem;
+      }
+      .svc-card-head {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+      .svc-card-actions {
+        display: flex;
+        gap: 0.4rem;
+        flex-wrap: wrap;
+        margin-top: 0.25rem;
+      }
+      .svc-card-actions button {
+        padding: 0.4rem 0.75rem;
+        border-radius: 6px;
+        border: 1px solid var(--admin-border, rgba(255,255,255,0.15));
+        background: rgba(255,255,255,0.05);
+        color: inherit;
+        cursor: pointer;
+        font-size: 0.85rem;
+      }
+      .svc-card-actions button.danger {
+        color: #f87171;
+        border-color: rgba(248,113,113,0.4);
+      }
+      .svc-empty {
+        opacity: 0.6;
+        text-align: center;
+        padding: 1.5rem 1rem;
+        font-size: 0.9rem;
+      }
+      /* Bookings table → horizontally scrollable on phone */
+      .svc-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+      .svc-table-wrap table { width: 100%; border-collapse: collapse; min-width: 720px; }
+      .svc-table-wrap th, .svc-table-wrap td {
+        padding: 0.55rem 0.5rem;
+        border-bottom: 1px solid rgba(255,255,255,0.06);
+        vertical-align: top;
+        font-size: 0.875rem;
+      }
+      .svc-pill {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 99px;
+        font-size: 0.75rem;
+        font-weight: 600;
+      }
+
+      @media (max-width: 820px) {
+        .svc-layout {
+          grid-template-columns: 1fr;
+        }
+        .svc-sidebar {
+          position: static;
+          max-height: none;
+          padding: 0.5rem;
+          display: flex;
+          gap: 0.4rem;
+          overflow-x: auto;
+          overflow-y: hidden;
+        }
+        .svc-sidebar #services-list {
+          display: flex;
+          gap: 0.4rem;
+          flex: 1;
+        }
+        .svc-row {
+          flex: 0 0 auto;
+          margin-bottom: 0;
+          min-width: 180px;
+        }
+        .svc-detail {
+          padding: 0.75rem;
+        }
+        .svc-section { padding: 0.85rem; }
+      }
+    </style>
     <div class="section-header-admin">
       <div>
         <h2>Services</h2>
@@ -4439,17 +4661,17 @@ TO CUSTOMIZE THIS DASHBOARD:
       <button class="btn-add" onclick="openServiceEditor(null)" data-testid="button-add-service">+ Add Service</button>
     </div>
 
-    <div style="display: grid; grid-template-columns: 320px 1fr; gap: 1rem; min-height: 60vh;">
-      <!-- LEFT: list of services -->
-      <div style="border: 1px solid var(--border, rgba(255,255,255,0.1)); border-radius: 8px; padding: 0.75rem; overflow-y: auto; max-height: 75vh;">
+    <div class="svc-layout">
+      <!-- LEFT: list of services (becomes a horizontal scroll bar on phone) -->
+      <aside class="svc-sidebar">
         <div id="services-list" data-testid="services-list">
-          <p style="opacity: 0.6; text-align: center; padding: 2rem 1rem;">Loading services...</p>
+          <p style="opacity:0.6;text-align:center;padding:2rem 1rem;">Loading services...</p>
         </div>
-      </div>
+      </aside>
 
-      <!-- RIGHT: editor / bookings tabs -->
-      <div id="service-detail-pane" data-testid="service-detail-pane" style="border: 1px solid var(--border, rgba(255,255,255,0.1)); border-radius: 8px; padding: 1rem; min-height: 60vh;">
-        <p style="opacity: 0.6; text-align: center; padding: 4rem 1rem;">Select a service on the left, or click "+ Add Service" to create your first one.</p>
+      <!-- RIGHT: editor / sub-tabs -->
+      <div id="service-detail-pane" class="svc-detail" data-testid="service-detail-pane">
+        <p style="opacity:0.6;text-align:center;padding:4rem 1rem;">Select a service on the left, or click "+ Add Service" to create your first one.</p>
       </div>
     </div>
 
@@ -14881,15 +15103,13 @@ TO CUSTOMIZE THIS DASHBOARD:
         const pmLabel = ({rsvp:'RSVP',deposit:'Deposit',full:'Full pay',contract:'Contract'})[s.pricing_model]||s.pricing_model;
         return `
           <div onclick="window._svcSelect(${s.id})" data-testid="row-service-${s.id}"
-               style="padding:0.75rem;border-radius:6px;cursor:pointer;margin-bottom:0.4rem;
-                      border:1px solid ${isActive?'var(--accent, #c9a96e)':'transparent'};
-                      background:${isActive?'rgba(201,169,110,0.08)':'rgba(255,255,255,0.02)'};">
+               class="svc-row${isActive?' is-active':''}">
             <div style="display:flex;align-items:center;gap:0.5rem;">
-              <span style="width:8px;height:8px;border-radius:50%;background:${dot};display:inline-block;"></span>
-              <strong style="flex:1;">${esc(s.name)}</strong>
-              <span style="opacity:0.6;font-size:0.75rem;">${pmLabel}</span>
+              <span style="width:8px;height:8px;border-radius:50%;background:${dot};display:inline-block;flex:0 0 auto;"></span>
+              <strong style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.name)}</strong>
+              <span style="opacity:0.6;font-size:0.75rem;flex:0 0 auto;">${pmLabel}</span>
             </div>
-            <div style="opacity:0.6;font-size:0.8rem;margin-top:0.25rem;">/${esc(s.slug)}${s.pending_bookings_count?` &middot; ${s.pending_bookings_count} pending`:''}</div>
+            <div style="opacity:0.6;font-size:0.8rem;margin-top:0.25rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">/${esc(s.slug)}${s.pending_bookings_count?` &middot; ${s.pending_bookings_count} pending`:''}</div>
           </div>`;
       }).join('');
     }
@@ -14921,17 +15141,16 @@ TO CUSTOMIZE THIS DASHBOARD:
         contract_template_url:'', contract_template_name:'', addons:[]};
 
       const subTabs = s.id ? ['details','addons','availability','bookings'] : ['details'];
+      const labels = {details:'Details', addons:'Add-ons', availability:'Availability', bookings:'Bookings'};
       pane.innerHTML = `
-        <div style="display:flex;gap:0.5rem;border-bottom:1px solid rgba(255,255,255,0.1);margin-bottom:1rem;padding-bottom:0.5rem;">
+        <div class="svc-subtabs">
           ${subTabs.map(t=>`
             <button onclick="window._svcSubTab('${t}')" data-testid="subtab-${t}"
-                    style="padding:0.5rem 1rem;border-radius:6px 6px 0 0;border:none;cursor:pointer;
-                           background:${activeSubTab===t?'var(--accent,#c9a96e)':'transparent'};
-                           color:${activeSubTab===t?'#0b0b0b':'inherit'};font-weight:600;">
-              ${t.charAt(0).toUpperCase()+t.slice(1)}
+                    class="svc-subtab${activeSubTab===t?' is-active':''}">
+              ${labels[t]||t}
             </button>`).join('')}
           <span style="flex:1;"></span>
-          ${s.id ? `<button onclick="window._svcDelete(${s.id})" style="background:transparent;border:1px solid #b91c1c;color:#f87171;padding:0.4rem 0.8rem;border-radius:6px;cursor:pointer;" data-testid="button-delete-service">Delete</button>` : ''}
+          ${s.id ? `<button onclick="window._svcDelete(${s.id})" class="svc-subtab" style="color:#f87171;border:1px solid rgba(248,113,113,0.4);border-radius:6px;" data-testid="button-delete-service">Delete</button>` : ''}
         </div>
         <div id="svc-subpane"></div>
       `;
@@ -14949,62 +15168,239 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     // ---------- details form ----------
+    // Pricing-model presets for plain-language helper text + which money
+    // fields to show. Keeps the markup declarative.
+    const PRICING_MODELS = {
+      rsvp:     {label:'Free RSVP',      help:'No payment. Clients reserve a spot for free.', showBase:false, showDeposit:false},
+      deposit:  {label:'Deposit',        help:'Client pays a deposit now; the rest is collected later.', showBase:true,  showDeposit:true},
+      full:     {label:'Full payment',   help:'Client pays the full price up front via Stripe Checkout.', showBase:true,  showDeposit:false},
+      contract: {label:'Contract',       help:'Client downloads a template, signs offline, then uploads the signed copy.', showBase:false, showDeposit:false},
+    };
+
+    function centsToDollars(c){
+      const n = parseInt(c||0, 10);
+      return (n/100).toFixed(2);
+    }
+    function dollarsToCents(d){
+      const n = parseFloat(String(d||'0').replace(/[^0-9.\-]/g,''));
+      if(isNaN(n)) return 0;
+      return Math.round(n * 100);
+    }
+
     function renderDetailsForm(s){
+      const pm = s.pricing_model || 'rsvp';
+      const cal = !!s.requires_calendar;
+      const cur = (s.currency||'usd').toUpperCase();
+      const showContract = pm === 'contract';
+
+      const pricingFields = `
+        <div class="svc-grid">
+          <div class="svc-field" data-show-when="base">
+            <label for="svc-fld-base">Total price</label>
+            <div class="svc-money">
+              <span class="svc-money-prefix" data-testid="text-currency-prefix">${esc(cur)}</span>
+              <input id="svc-fld-base" type="number" min="0" step="0.01" name="base_price_dollars"
+                     value="${centsToDollars(s.base_price_cents)}" data-testid="input-base-dollars">
+            </div>
+            <p class="svc-help">Shown to the client as the full service price.</p>
+          </div>
+          <div class="svc-field" data-show-when="deposit">
+            <label for="svc-fld-deposit">Deposit collected now</label>
+            <div class="svc-money">
+              <span class="svc-money-prefix">${esc(cur)}</span>
+              <input id="svc-fld-deposit" type="number" min="0" step="0.01" name="deposit_dollars"
+                     value="${centsToDollars(s.deposit_cents)}" data-testid="input-deposit-dollars">
+            </div>
+            <p class="svc-help">Charged via Stripe at booking time.</p>
+          </div>
+          <div class="svc-field">
+            <label for="svc-fld-currency">Currency code</label>
+            <input id="svc-fld-currency" name="currency" value="${esc(s.currency||'usd')}" maxlength="6" data-testid="input-currency">
+            <p class="svc-help">3-letter ISO code (usd, eur, gbp…).</p>
+          </div>
+        </div>`;
+
+      const contractBlock = s.id ? `
+        <div class="svc-section" data-show-when="contract" data-testid="section-contract-template">
+          <h3>Contract template</h3>
+          <p class="svc-section-help">Upload a PDF, DOC, or DOCX file. Clients will download it, sign offline, and upload the signed copy back to you.</p>
+          ${s.contract_template_url
+            ? `<p>Current template: <a href="${esc(s.contract_template_url)}" target="_blank" data-testid="link-current-template">${esc(s.contract_template_name||'template')}</a></p>`
+            : '<p style="opacity:0.6;">No template uploaded yet.</p>'}
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;margin-top:0.5rem;">
+            <input type="file" id="svc-contract-file" accept=".pdf,.doc,.docx" data-testid="input-contract-template-file" style="flex:1;min-width:200px;">
+            <button type="button" class="btn-add" onclick="window._svcUploadTpl(${s.id})" data-testid="button-upload-template">Upload template</button>
+          </div>
+        </div>` : `
+        <div class="svc-section" data-show-when="contract">
+          <h3>Contract template</h3>
+          <p class="svc-section-help">Save the service first, then you'll be able to upload a contract template here.</p>
+        </div>`;
+
+      const schedulingBlock = `
+        <div class="svc-section" data-show-when="calendar">
+          <h3>Time slots</h3>
+          <p class="svc-section-help">How long each appointment runs and how many people can book the same slot. The weekly schedule itself is set on the <strong>Availability</strong> tab.</p>
+          <div class="svc-grid">
+            <div class="svc-field">
+              <label for="svc-fld-duration">Appointment length (minutes)</label>
+              <input id="svc-fld-duration" type="number" name="duration_minutes" value="${s.duration_minutes||60}" min="5" step="5" data-testid="input-duration">
+            </div>
+            <div class="svc-field">
+              <label for="svc-fld-capacity">People per slot</label>
+              <input id="svc-fld-capacity" type="number" name="capacity_per_slot" value="${s.capacity_per_slot||1}" min="1" data-testid="input-capacity">
+              <p class="svc-help">Set to 1 for one-on-one bookings.</p>
+            </div>
+          </div>
+        </div>`;
+
       return `
-        <form id="svc-details-form" data-testid="form-service-details" style="display:grid;gap:0.85rem;max-width:60rem;">
-          <div style="display:grid;grid-template-columns:2fr 1fr;gap:0.85rem;">
-            <label>Name<input name="name" value="${esc(s.name)}" required data-testid="input-service-name"></label>
-            <label>Slug (URL)<input name="slug" value="${esc(s.slug)}" placeholder="auto" data-testid="input-service-slug"></label>
-          </div>
-          <label>Short description (1 line)
-            <input name="short_description" value="${esc(s.short_description)}" maxlength="500" data-testid="input-service-short">
-          </label>
-          <label>Long description
-            <textarea name="long_description" rows="4" data-testid="input-service-long">${esc(s.long_description)}</textarea>
-          </label>
-          <label>Hero image URL
-            <input name="image_url" value="${esc(s.image_url)}" placeholder="/uploads/..." data-testid="input-service-image">
-          </label>
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0.85rem;">
-            <label>Pricing model
-              <select name="pricing_model" data-testid="select-pricing-model">
-                ${['rsvp','deposit','full','contract'].map(m=>`<option value="${m}" ${s.pricing_model===m?'selected':''}>${m}</option>`).join('')}
-              </select>
-            </label>
-            <label>Currency<input name="currency" value="${esc(s.currency||'usd')}" data-testid="input-currency"></label>
-            <label>Base price (cents)<input type="number" name="base_price_cents" value="${s.base_price_cents||0}" min="0" data-testid="input-base-cents"></label>
-            <label>Deposit (cents)<input type="number" name="deposit_cents" value="${s.deposit_cents||0}" min="0" data-testid="input-deposit-cents"></label>
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0.85rem;">
-            <label>Duration (minutes)<input type="number" name="duration_minutes" value="${s.duration_minutes||60}" min="5" data-testid="input-duration"></label>
-            <label>Capacity per slot<input type="number" name="capacity_per_slot" value="${s.capacity_per_slot||1}" min="1" data-testid="input-capacity"></label>
-            <label>Sort order<input type="number" name="sort_order" value="${s.sort_order||0}" data-testid="input-sort-order"></label>
-            <label style="display:flex;align-items:center;gap:0.4rem;margin-top:1.5rem;">
-              <input type="checkbox" name="is_active" ${s.is_active?'checked':''} data-testid="check-active">Active
-            </label>
-          </div>
-          <label style="display:flex;align-items:center;gap:0.4rem;">
-            <input type="checkbox" name="requires_calendar" ${s.requires_calendar?'checked':''} data-testid="check-requires-calendar">
-            Calendar-backed (clients pick a date and time)
-          </label>
+        <form id="svc-details-form" data-testid="form-service-details">
 
-          ${s.id ? `
-          <fieldset style="border:1px solid rgba(255,255,255,0.1);padding:0.75rem;border-radius:6px;">
-            <legend>Contract template (only used when pricing model is "contract")</legend>
-            <p style="opacity:0.7;font-size:0.85rem;margin:0 0 0.5rem;">Upload a PDF / DOC / DOCX template that clients will download, sign, and re-upload.</p>
-            ${s.contract_template_url ? `<p>Current: <a href="${esc(s.contract_template_url)}" target="_blank" data-testid="link-current-template">${esc(s.contract_template_name||'template')}</a></p>` : '<p style="opacity:0.6;">No template uploaded yet.</p>'}
-            <input type="file" id="svc-contract-file" accept=".pdf,.doc,.docx" data-testid="input-contract-template-file">
-            <button type="button" onclick="window._svcUploadTpl(${s.id})" data-testid="button-upload-template" style="margin-left:0.5rem;">Upload</button>
-          </fieldset>` : ''}
+          <div class="svc-section">
+            <h3>Basics</h3>
+            <p class="svc-section-help">What clients see in the listing.</p>
+            <div class="svc-grid svc-grid--wide">
+              <div class="svc-field" style="grid-column:1/-1;">
+                <label for="svc-fld-name">Service name</label>
+                <input id="svc-fld-name" name="name" value="${esc(s.name)}" required data-testid="input-service-name" placeholder="e.g. 60-minute Strategy Session">
+              </div>
+              <div class="svc-field" style="grid-column:1/-1;">
+                <label for="svc-fld-short">Short description</label>
+                <input id="svc-fld-short" name="short_description" value="${esc(s.short_description)}" maxlength="500" data-testid="input-service-short" placeholder="One sentence shown on the card.">
+              </div>
+              <div class="svc-field" style="grid-column:1/-1;">
+                <label for="svc-fld-long">Full description</label>
+                <textarea id="svc-fld-long" name="long_description" rows="4" data-testid="input-service-long" placeholder="Optional. Shown when a client opens the booking modal.">${esc(s.long_description)}</textarea>
+              </div>
+              <div class="svc-field" style="grid-column:1/-1;">
+                <label for="svc-fld-image">Hero image URL</label>
+                <input id="svc-fld-image" name="image_url" value="${esc(s.image_url)}" placeholder="/uploads/example.jpg" data-testid="input-service-image">
+                <p class="svc-help">Optional. Paste a URL or use the Media Library to copy a link.</p>
+              </div>
+              <div class="svc-field">
+                <label for="svc-fld-slug">URL slug</label>
+                <input id="svc-fld-slug" name="slug" value="${esc(s.slug)}" placeholder="auto-generated from name" data-testid="input-service-slug">
+                <p class="svc-help">Leave blank to auto-create from the name.</p>
+              </div>
+            </div>
+          </div>
 
-          <div style="display:flex;gap:0.75rem;">
-            <button type="submit" class="btn-add" data-testid="button-save-service">${s.id?'Save changes':'Create service'}</button>
+          <div class="svc-section">
+            <h3>How clients pay</h3>
+            <p class="svc-section-help">Pick the pricing model that fits this service. Only the relevant fields will appear below.</p>
+            <div class="svc-grid">
+              <div class="svc-field" style="grid-column:1/-1;">
+                <label for="svc-fld-pm">Pricing model</label>
+                <select id="svc-fld-pm" name="pricing_model" data-testid="select-pricing-model">
+                  ${Object.entries(PRICING_MODELS).map(([k,v])=>`<option value="${k}" ${pm===k?'selected':''}>${esc(v.label)}</option>`).join('')}
+                </select>
+                <p class="svc-help" id="svc-pm-help">${esc(PRICING_MODELS[pm].help)}</p>
+              </div>
+            </div>
+            <div id="svc-pricing-fields" style="margin-top:0.5rem;">
+              ${pricingFields}
+            </div>
+          </div>
+
+          <div class="svc-section">
+            <h3>Scheduling</h3>
+            <p class="svc-section-help">Turn this off for services without a fixed date and time (e.g. "Free quote").</p>
+            <label class="svc-toggle">
+              <input type="checkbox" name="requires_calendar" ${cal?'checked':''} data-testid="check-requires-calendar" id="svc-fld-cal">
+              <span><strong>Clients pick a date and time</strong></span>
+            </label>
+          </div>
+
+          <div id="svc-scheduling-block">
+            ${schedulingBlock}
+          </div>
+
+          <div id="svc-contract-block">
+            ${contractBlock}
+          </div>
+
+          <div class="svc-section">
+            <h3>Visibility</h3>
+            <div class="svc-grid">
+              <div class="svc-field">
+                <label class="svc-toggle" style="margin-top:1rem;">
+                  <input type="checkbox" name="is_active" ${s.is_active?'checked':''} data-testid="check-active">
+                  <span><strong>Active</strong> — show this service to clients</span>
+                </label>
+              </div>
+              <div class="svc-field">
+                <label for="svc-fld-sort">Display order</label>
+                <input id="svc-fld-sort" type="number" name="sort_order" value="${s.sort_order||0}" data-testid="input-sort-order">
+                <p class="svc-help">Lower numbers show first.</p>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:0.75rem;flex-wrap:wrap;justify-content:flex-end;margin-top:0.5rem;">
+            <button type="submit" class="btn-add" data-testid="button-save-service" style="min-width:170px;">${s.id?'Save changes':'Create service'}</button>
           </div>
         </form>`;
     }
 
+    // Toggle which fields are visible inside the pricing section based
+    // on the current pricing-model selection. Also re-renders dependent
+    // sections (calendar / contract) without losing other field values.
+    function _svcApplyConditional(form){
+      const pmEl = form.querySelector('[name=pricing_model]');
+      const calEl = form.querySelector('[name=requires_calendar]');
+      const pm = pmEl ? pmEl.value : 'rsvp';
+      const cal = calEl ? calEl.checked : false;
+      const cfg = PRICING_MODELS[pm] || PRICING_MODELS.rsvp;
+
+      // Update model help text
+      const help = form.querySelector('#svc-pm-help');
+      if(help) help.textContent = cfg.help;
+
+      // Show/hide money fields inside the pricing section
+      form.querySelectorAll('[data-show-when=base]').forEach(el=>{
+        el.style.display = cfg.showBase ? '' : 'none';
+      });
+      form.querySelectorAll('[data-show-when=deposit]').forEach(el=>{
+        el.style.display = cfg.showDeposit ? '' : 'none';
+      });
+
+      // Sync the currency prefix on EVERY money input as the user retypes the code.
+      const curEl = form.querySelector('[name=currency]');
+      if(curEl){
+        const code = (curEl.value||'usd').toUpperCase();
+        form.querySelectorAll('.svc-money-prefix').forEach(p=>{ p.textContent = code; });
+      }
+
+      // Show/hide contract section
+      const contractWrap = document.getElementById('svc-contract-block');
+      if(contractWrap){
+        contractWrap.style.display = pm === 'contract' ? '' : 'none';
+      }
+      // Show/hide scheduling section
+      const schedWrap = document.getElementById('svc-scheduling-block');
+      if(schedWrap){
+        schedWrap.style.display = cal ? '' : 'none';
+      }
+    }
+
     function bindDetailsForm(s){
       const form = document.getElementById('svc-details-form');
+      if(!form) return;
+
+      // Live updates as the user changes pricing model / currency / calendar toggle
+      form.addEventListener('change', (e)=>{
+        const t = e.target;
+        if(t && (t.name==='pricing_model' || t.name==='requires_calendar' || t.name==='currency')){
+          _svcApplyConditional(form);
+        }
+      });
+      form.addEventListener('input', (e)=>{
+        if(e.target && e.target.name==='currency') _svcApplyConditional(form);
+      });
+      // Initial pass — collapses irrelevant fields if loading an existing service
+      _svcApplyConditional(form);
+
       form.addEventListener('submit', async (ev)=>{
         ev.preventDefault();
         const fd = new FormData(form);
@@ -15012,8 +15408,17 @@ TO CUSTOMIZE THIS DASHBOARD:
         fd.forEach((v,k)=>{ body[k] = v; });
         body.is_active = form.querySelector('[name=is_active]').checked;
         body.requires_calendar = form.querySelector('[name=requires_calendar]').checked;
-        ['base_price_cents','deposit_cents','duration_minutes','capacity_per_slot','sort_order']
-          .forEach(k=>{ body[k] = parseInt(body[k]||0, 10); });
+
+        // Convert dollar inputs back to cents before sending to the API.
+        body.base_price_cents = dollarsToCents(body.base_price_dollars);
+        body.deposit_cents    = dollarsToCents(body.deposit_dollars);
+        delete body.base_price_dollars;
+        delete body.deposit_dollars;
+
+        ['duration_minutes','capacity_per_slot','sort_order'].forEach(k=>{
+          body[k] = parseInt(body[k]||0, 10);
+        });
+
         try {
           let saved;
           if(s.id) saved = await jsend('/admin/api/services/'+s.id, 'PUT', body);
@@ -15053,30 +15458,68 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     // ---------- addons ----------
     function renderAddonsList(s){
-      const rows = (s.addons||[]).map(a=>`
-        <tr data-testid="row-addon-${a.id}">
-          <td><input value="${esc(a.name)}" data-k="name" data-testid="input-addon-name-${a.id}"></td>
-          <td><input value="${esc(a.description||'')}" data-k="description" data-testid="input-addon-desc-${a.id}"></td>
-          <td><input type="number" value="${a.price_cents||0}" data-k="price_cents" min="0" style="width:7rem;" data-testid="input-addon-price-${a.id}"></td>
-          <td><input type="number" value="${a.sort_order||0}" data-k="sort_order" style="width:5rem;" data-testid="input-addon-sort-${a.id}"></td>
-          <td style="text-align:center;"><input type="checkbox" ${a.is_active?'checked':''} data-k="is_active" data-testid="check-addon-active-${a.id}"></td>
-          <td style="white-space:nowrap;">
-            <button onclick="window._addonSave(${a.id}, this)" data-testid="button-save-addon-${a.id}">Save</button>
-            <button onclick="window._addonDelete(${a.id})" style="color:#f87171;" data-testid="button-delete-addon-${a.id}">Delete</button>
-          </td>
-        </tr>`).join('');
+      const cur = (s.currency||'usd').toUpperCase();
+      const cards = (s.addons||[]).map(a=>`
+        <div class="svc-card" data-testid="row-addon-${a.id}" data-addon-id="${a.id}">
+          <div class="svc-grid">
+            <div class="svc-field" style="grid-column:1/-1;">
+              <label>Name</label>
+              <input value="${esc(a.name)}" data-k="name" data-testid="input-addon-name-${a.id}">
+            </div>
+            <div class="svc-field" style="grid-column:1/-1;">
+              <label>Description (optional)</label>
+              <input value="${esc(a.description||'')}" data-k="description" data-testid="input-addon-desc-${a.id}">
+            </div>
+            <div class="svc-field">
+              <label>Price</label>
+              <div class="svc-money">
+                <span class="svc-money-prefix">${esc(cur)}</span>
+                <input type="number" min="0" step="0.01" value="${centsToDollars(a.price_cents)}" data-k="price_dollars" data-testid="input-addon-price-${a.id}">
+              </div>
+            </div>
+            <div class="svc-field">
+              <label>Sort order</label>
+              <input type="number" value="${a.sort_order||0}" data-k="sort_order" data-testid="input-addon-sort-${a.id}">
+            </div>
+            <div class="svc-field">
+              <label class="svc-toggle" style="margin-top:1rem;">
+                <input type="checkbox" ${a.is_active?'checked':''} data-k="is_active" data-testid="check-addon-active-${a.id}">
+                <span>Active</span>
+              </label>
+            </div>
+          </div>
+          <div class="svc-card-actions">
+            <button type="button" onclick="window._addonSave(${a.id}, this)" data-testid="button-save-addon-${a.id}">Save</button>
+            <button type="button" class="danger" onclick="window._addonDelete(${a.id})" data-testid="button-delete-addon-${a.id}">Delete</button>
+          </div>
+        </div>`).join('');
       return `
-        <p style="opacity:0.7;">Optional extras a client can add at booking time. Each is added to the total.</p>
-        <table style="width:100%;border-collapse:collapse;" data-testid="table-addons">
-          <thead><tr style="text-align:left;opacity:0.7;">
-            <th>Name</th><th>Description</th><th>Price (cents)</th><th>Sort</th><th>Active</th><th></th>
-          </tr></thead>
-          <tbody id="addons-tbody">${rows || '<tr><td colspan="6" style="opacity:0.6;padding:1rem;text-align:center;">No add-ons yet.</td></tr>'}</tbody>
-        </table>
-        <div style="margin-top:1rem;display:flex;gap:0.5rem;align-items:end;">
-          <input id="new-addon-name" placeholder="New add-on name" data-testid="input-new-addon-name">
-          <input id="new-addon-price" type="number" placeholder="Price in cents" value="0" data-testid="input-new-addon-price">
-          <button onclick="window._addonCreate(${s.id})" class="btn-add" data-testid="button-create-addon">+ Add</button>
+        <div class="svc-section">
+          <h3>Add-ons</h3>
+          <p class="svc-section-help">Optional extras a client can add at booking time. Each is added to the total.</p>
+          <div class="svc-cards" data-testid="table-addons">
+            ${cards || '<p class="svc-empty">No add-ons yet.</p>'}
+          </div>
+        </div>
+        <div class="svc-section">
+          <h3>Add a new add-on</h3>
+          <div class="svc-grid">
+            <div class="svc-field">
+              <label for="new-addon-name">Name</label>
+              <input id="new-addon-name" placeholder="e.g. Professional photos" data-testid="input-new-addon-name">
+            </div>
+            <div class="svc-field">
+              <label for="new-addon-price">Price</label>
+              <div class="svc-money">
+                <span class="svc-money-prefix">${esc(cur)}</span>
+                <input id="new-addon-price" type="number" min="0" step="0.01" placeholder="0.00" value="0" data-testid="input-new-addon-price">
+              </div>
+            </div>
+            <div class="svc-field" style="justify-content:end;">
+              <span class="svc-label">&nbsp;</span>
+              <button type="button" onclick="window._addonCreate(${s.id})" class="btn-add" data-testid="button-create-addon">+ Add add-on</button>
+            </div>
+          </div>
         </div>`;
     }
 
@@ -15087,14 +15530,20 @@ TO CUSTOMIZE THIS DASHBOARD:
       rowEl.querySelectorAll('[data-k]').forEach(el=>{
         const k = el.dataset.k;
         if(el.type==='checkbox') out[k] = el.checked;
-        else if(el.type==='number') out[k] = parseInt(el.value||0, 10);
-        else out[k] = el.value;
+        else if(k === 'price_dollars'){
+          out['price_cents'] = dollarsToCents(el.value);
+        } else if(el.type==='number'){
+          out[k] = parseInt(el.value||0, 10);
+        } else {
+          out[k] = el.value;
+        }
       });
       return out;
     }
 
     window._addonSave = async function(id, btn){
-      const row = btn.closest('tr');
+      const row = btn.closest('.svc-card') || btn.closest('tr');
+      if(!row){ toast('Could not find this add-on row.', false); return; }
       try { await jsend('/admin/api/addons/'+id, 'PUT', _readAddonRow(row)); toast('Saved.'); await refreshActiveService(); }
       catch(e){ toast(e.message, false); }
     };
@@ -15105,7 +15554,8 @@ TO CUSTOMIZE THIS DASHBOARD:
     };
     window._addonCreate = async function(svcId){
       const name  = document.getElementById('new-addon-name').value.trim();
-      const price = parseInt(document.getElementById('new-addon-price').value||0, 10);
+      // Input is in dollars (step="0.01"); convert to cents to match the API contract.
+      const price = dollarsToCents(document.getElementById('new-addon-price').value);
       if(!name){ toast('Name required', false); return; }
       try { await jsend('/admin/api/services/'+svcId+'/addons', 'POST', {name, price_cents:price, is_active:true}); toast('Added.'); await refreshActiveService(); }
       catch(e){ toast(e.message, false); }
@@ -15128,51 +15578,134 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     function renderAvailability(s, data){
       const dows = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-      const ruleRows = (data.rules||[]).map(r=>`
-        <tr data-testid="row-rule-${r.id}">
-          <td><select data-k="day_of_week" data-testid="select-rule-dow-${r.id}">${dows.map((d,i)=>`<option value="${i}" ${r.day_of_week===i?'selected':''}>${d}</option>`).join('')}</select></td>
-          <td><input type="time" value="${(r.start_time||'09:00:00').substring(0,5)}" data-k="start_time" data-testid="input-rule-start-${r.id}"></td>
-          <td><input type="time" value="${(r.end_time||'17:00:00').substring(0,5)}" data-k="end_time" data-testid="input-rule-end-${r.id}"></td>
-          <td><input type="number" value="${r.slot_minutes||60}" min="5" style="width:5rem;" data-k="slot_minutes" data-testid="input-rule-slot-${r.id}"></td>
-          <td><input type="checkbox" ${r.is_active?'checked':''} data-k="is_active" data-testid="check-rule-active-${r.id}"></td>
-          <td><button onclick="window._ruleSave(${r.id}, this)" data-testid="button-save-rule-${r.id}">Save</button>
-              <button onclick="window._ruleDelete(${r.id})" style="color:#f87171;" data-testid="button-delete-rule-${r.id}">Delete</button></td>
-        </tr>`).join('');
-      const ovrRows = (data.overrides||[]).map(o=>`
-        <tr data-testid="row-override-${o.id}">
-          <td>${esc(o.override_date)}</td>
-          <td>${esc(o.override_kind)}</td>
-          <td>${o.start_time?esc((o.start_time||'').substring(0,5)+' – '+(o.end_time||'').substring(0,5)):'whole day'}</td>
-          <td>${esc(o.note||'')}</td>
-          <td><button onclick="window._ovrDelete(${o.id})" style="color:#f87171;" data-testid="button-delete-override-${o.id}">Delete</button></td>
-        </tr>`).join('');
+      const ruleCards = (data.rules||[]).map(r=>`
+        <div class="svc-card" data-testid="row-rule-${r.id}">
+          <div class="svc-grid">
+            <div class="svc-field">
+              <label>Day of week</label>
+              <select data-k="day_of_week" data-testid="select-rule-dow-${r.id}">
+                ${dows.map((d,i)=>`<option value="${i}" ${r.day_of_week===i?'selected':''}>${d}</option>`).join('')}
+              </select>
+            </div>
+            <div class="svc-field">
+              <label>Start time</label>
+              <input type="time" value="${(r.start_time||'09:00:00').substring(0,5)}" data-k="start_time" data-testid="input-rule-start-${r.id}">
+            </div>
+            <div class="svc-field">
+              <label>End time</label>
+              <input type="time" value="${(r.end_time||'17:00:00').substring(0,5)}" data-k="end_time" data-testid="input-rule-end-${r.id}">
+            </div>
+            <div class="svc-field">
+              <label>Slot length (minutes)</label>
+              <input type="number" value="${r.slot_minutes||60}" min="5" step="5" data-k="slot_minutes" data-testid="input-rule-slot-${r.id}">
+            </div>
+            <div class="svc-field">
+              <label class="svc-toggle" style="margin-top:1rem;">
+                <input type="checkbox" ${r.is_active?'checked':''} data-k="is_active" data-testid="check-rule-active-${r.id}">
+                <span>Active</span>
+              </label>
+            </div>
+          </div>
+          <div class="svc-card-actions">
+            <button type="button" onclick="window._ruleSave(${r.id}, this)" data-testid="button-save-rule-${r.id}">Save</button>
+            <button type="button" class="danger" onclick="window._ruleDelete(${r.id})" data-testid="button-delete-rule-${r.id}">Delete</button>
+          </div>
+        </div>`).join('');
+
+      const ovrCards = (data.overrides||[]).map(o=>{
+        const time = o.start_time
+          ? esc((o.start_time||'').substring(0,5)+' – '+(o.end_time||'').substring(0,5))
+          : '<span style="opacity:0.6;">whole day</span>';
+        const kindColor = o.override_kind === 'open' ? '#15803d' : '#7f1d1d';
+        return `
+        <div class="svc-card" data-testid="row-override-${o.id}">
+          <div class="svc-card-head">
+            <span class="svc-pill" style="background:${kindColor};color:#fff;">${esc(o.override_kind)}</span>
+            <strong>${esc(o.override_date)}</strong>
+            <span style="opacity:0.7;font-size:0.85rem;">${time}</span>
+          </div>
+          ${o.note ? `<p style="margin:0;opacity:0.75;font-size:0.9rem;">${esc(o.note)}</p>` : ''}
+          <div class="svc-card-actions">
+            <button type="button" class="danger" onclick="window._ovrDelete(${o.id})" data-testid="button-delete-override-${o.id}">Delete</button>
+          </div>
+        </div>`;
+      }).join('');
+
       return `
-        <h3 style="margin-top:0;">Recurring weekly availability</h3>
-        <table style="width:100%;border-collapse:collapse;" data-testid="table-rules">
-          <thead><tr style="text-align:left;opacity:0.7;"><th>Day</th><th>Start</th><th>End</th><th>Slot (min)</th><th>Active</th><th></th></tr></thead>
-          <tbody>${ruleRows || '<tr><td colspan="6" style="opacity:0.6;padding:0.6rem;">No rules yet.</td></tr>'}</tbody>
-        </table>
-        <div style="margin-top:0.75rem;display:flex;gap:0.5rem;align-items:end;">
-          <select id="new-rule-dow" data-testid="select-new-rule-dow">${dows.map((d,i)=>`<option value="${i}">${d}</option>`).join('')}</select>
-          <input id="new-rule-start" type="time" value="09:00" data-testid="input-new-rule-start">
-          <input id="new-rule-end" type="time" value="17:00" data-testid="input-new-rule-end">
-          <input id="new-rule-slot" type="number" value="60" min="5" style="width:6rem;" data-testid="input-new-rule-slot">
-          <button onclick="window._ruleCreate(${s.id})" class="btn-add" data-testid="button-create-rule">+ Add rule</button>
+        <div class="svc-section">
+          <h3>Recurring weekly availability</h3>
+          <p class="svc-section-help">Pick the days and times this service is bookable. Slot length controls how long each appointment is.</p>
+          <div class="svc-cards" data-testid="table-rules">
+            ${ruleCards || '<p class="svc-empty">No weekly rules yet — add one below.</p>'}
+          </div>
         </div>
 
-        <h3 style="margin-top:1.5rem;">Date overrides</h3>
-        <p style="opacity:0.7;">Block a holiday or open a one-off date.</p>
-        <table style="width:100%;border-collapse:collapse;" data-testid="table-overrides">
-          <thead><tr style="text-align:left;opacity:0.7;"><th>Date</th><th>Kind</th><th>Time</th><th>Note</th><th></th></tr></thead>
-          <tbody>${ovrRows || '<tr><td colspan="5" style="opacity:0.6;padding:0.6rem;">No overrides.</td></tr>'}</tbody>
-        </table>
-        <div style="margin-top:0.75rem;display:grid;grid-template-columns:repeat(6, auto);gap:0.4rem;align-items:end;">
-          <input id="new-ovr-date" type="date" data-testid="input-new-ovr-date">
-          <select id="new-ovr-kind" data-testid="select-new-ovr-kind"><option value="block">block</option><option value="open">open</option></select>
-          <input id="new-ovr-start" type="time" placeholder="start" data-testid="input-new-ovr-start">
-          <input id="new-ovr-end" type="time" placeholder="end" data-testid="input-new-ovr-end">
-          <input id="new-ovr-note" placeholder="note (optional)" data-testid="input-new-ovr-note">
-          <button onclick="window._ovrCreate(${s.id})" class="btn-add" data-testid="button-create-override">+ Add override</button>
+        <div class="svc-section">
+          <h3>Add a weekly rule</h3>
+          <div class="svc-grid">
+            <div class="svc-field">
+              <label for="new-rule-dow">Day</label>
+              <select id="new-rule-dow" data-testid="select-new-rule-dow">${dows.map((d,i)=>`<option value="${i}">${d}</option>`).join('')}</select>
+            </div>
+            <div class="svc-field">
+              <label for="new-rule-start">Start</label>
+              <input id="new-rule-start" type="time" value="09:00" data-testid="input-new-rule-start">
+            </div>
+            <div class="svc-field">
+              <label for="new-rule-end">End</label>
+              <input id="new-rule-end" type="time" value="17:00" data-testid="input-new-rule-end">
+            </div>
+            <div class="svc-field">
+              <label for="new-rule-slot">Slot length (minutes)</label>
+              <input id="new-rule-slot" type="number" value="60" min="5" step="5" data-testid="input-new-rule-slot">
+            </div>
+            <div class="svc-field" style="justify-content:end;">
+              <span class="svc-label">&nbsp;</span>
+              <button type="button" onclick="window._ruleCreate(${s.id})" class="btn-add" data-testid="button-create-rule">+ Add rule</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="svc-section">
+          <h3>Date overrides</h3>
+          <p class="svc-section-help">Block a holiday or open a one-off date that's outside the weekly schedule.</p>
+          <div class="svc-cards" data-testid="table-overrides">
+            ${ovrCards || '<p class="svc-empty">No overrides.</p>'}
+          </div>
+        </div>
+
+        <div class="svc-section">
+          <h3>Add a date override</h3>
+          <div class="svc-grid">
+            <div class="svc-field">
+              <label for="new-ovr-date">Date</label>
+              <input id="new-ovr-date" type="date" data-testid="input-new-ovr-date">
+            </div>
+            <div class="svc-field">
+              <label for="new-ovr-kind">Kind</label>
+              <select id="new-ovr-kind" data-testid="select-new-ovr-kind">
+                <option value="block">Block — make this date unavailable</option>
+                <option value="open">Open — add availability on this date</option>
+              </select>
+            </div>
+            <div class="svc-field">
+              <label for="new-ovr-start">Start (optional)</label>
+              <input id="new-ovr-start" type="time" data-testid="input-new-ovr-start">
+            </div>
+            <div class="svc-field">
+              <label for="new-ovr-end">End (optional)</label>
+              <input id="new-ovr-end" type="time" data-testid="input-new-ovr-end">
+            </div>
+            <div class="svc-field" style="grid-column:1/-1;">
+              <label for="new-ovr-note">Note (optional)</label>
+              <input id="new-ovr-note" placeholder="e.g. Closed for holiday" data-testid="input-new-ovr-note">
+            </div>
+            <div class="svc-field" style="justify-content:end;">
+              <span class="svc-label">&nbsp;</span>
+              <button type="button" onclick="window._ovrCreate(${s.id})" class="btn-add" data-testid="button-create-override">+ Add override</button>
+            </div>
+          </div>
+          <p class="svc-help" style="margin-top:0.5rem;">Leave start/end blank to apply to the whole day.</p>
         </div>`;
     }
 
@@ -15188,7 +15721,8 @@ TO CUSTOMIZE THIS DASHBOARD:
       catch(e){ toast(e.message, false); }
     };
     window._ruleSave = async function(id, btn){
-      const row = btn.closest('tr');
+      const row = btn.closest('.svc-card') || btn.closest('tr');
+      if(!row){ toast('Could not find this rule row.', false); return; }
       try { await jsend('/admin/api/rules/'+id, 'PUT', _readAddonRow(row)); toast('Saved.'); loadAvailability(activeSvc); }
       catch(e){ toast(e.message, false); }
     };
@@ -15227,7 +15761,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     function renderBookingsTable(rows, svc){
-      if(!rows.length) return '<p style="opacity:0.6;padding:1rem;">No bookings yet.</p>';
+      if(!rows.length) return '<p class="svc-empty">No bookings yet.</p>';
       const cur = (svc && svc.currency)||'usd';
       const trs = rows.map(b=>`
         <tr data-testid="row-booking-${b.id}">
@@ -15236,7 +15770,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           <td>${b.scheduled_date?esc(b.scheduled_date+' '+(b.scheduled_start||'').substring(0,5)):'<span style="opacity:0.5;">—</span>'}</td>
           <td>${esc(b.pricing_model)}</td>
           <td>${money(b.total_cents, b.currency||cur)}<br><small style="opacity:0.7;">paid ${money(b.amount_paid_cents, b.currency||cur)}</small></td>
-          <td><span style="padding:2px 8px;border-radius:99px;background:${b.status==='confirmed'?'#15803d':b.status==='cancelled'?'#7f1d1d':'#52525b'};">${esc(b.status)}</span><br><small style="opacity:0.7;">pay: ${esc(b.payment_status)}</small></td>
+          <td><span class="svc-pill" style="background:${b.status==='confirmed'?'#15803d':b.status==='cancelled'?'#7f1d1d':'#52525b'};color:#fff;">${esc(b.status)}</span><br><small style="opacity:0.7;">pay: ${esc(b.payment_status)}</small></td>
           <td>${b.signed_contract_url?`<a href="${esc(b.signed_contract_url)}" target="_blank" data-testid="link-signed-${b.id}">Signed contract</a>`:'<span style="opacity:0.5;">—</span>'}</td>
           <td style="white-space:nowrap;">
             <select onchange="window._bookingSetStatus(${b.id}, this.value)" data-testid="select-booking-status-${b.id}">
@@ -15244,9 +15778,9 @@ TO CUSTOMIZE THIS DASHBOARD:
             </select>
           </td>
         </tr>`).join('');
-      return `<table style="width:100%;border-collapse:collapse;" data-testid="table-bookings">
+      return `<div class="svc-table-wrap"><table data-testid="table-bookings">
         <thead><tr style="text-align:left;opacity:0.7;"><th>Client</th><th>Service</th><th>When</th><th>Model</th><th>Total</th><th>Status</th><th>Contract</th><th></th></tr></thead>
-        <tbody>${trs}</tbody></table>`;
+        <tbody>${trs}</tbody></table></div>`;
     }
 
     window._bookingSetStatus = async function(id, status){

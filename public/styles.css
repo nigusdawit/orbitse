@@ -5823,3 +5823,70 @@ html[data-scroll-mode="smooth"] .snap-section {
   .checkout-form-row { grid-template-columns: 1fr; }
   .cart-drawer-panel { width: 100%; }
 }
+
+/* =============================================================================
+   SERVICE BOOKING MODAL
+   =============================================================================
+   Mobile-friendly defaults for the public-facing service booking modal.
+   Inputs use 16px font to prevent iOS zoom-on-focus, slot buttons get
+   larger tap targets, and the modal padding tightens up on small screens.
+============================================================================= */
+
+#service-booking-modal {
+  /* Stay above sticky headers, snap-scroll containers, and ai_concierge */
+  z-index: 99999 !important;
+}
+
+#service-booking-modal input,
+#service-booking-modal select,
+#service-booking-modal textarea {
+  font-size: 16px;
+  font-family: inherit;
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0.6rem 0.7rem;
+  margin-top: 0.25rem;
+}
+
+#service-booking-modal input:focus,
+#service-booking-modal select:focus,
+#service-booking-modal textarea:focus {
+  outline: none;
+  border-color: var(--accent, #c9a96e);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+#service-booking-modal label {
+  display: block;
+  margin-bottom: 0.7rem;
+  font-size: 0.9rem;
+}
+
+#service-booking-modal #svc-slots button {
+  min-height: 44px; /* Apple HIG touch target */
+  padding: 0.55rem 0.95rem;
+  font-size: 1rem;
+}
+
+#service-booking-modal h2 {
+  font-size: 1.4rem;
+  line-height: 1.25;
+}
+
+@media (max-width: 480px) {
+  #service-booking-modal { padding: 0.5rem !important; }
+  #service-booking-modal > div {
+    padding: 1rem !important;
+    max-height: 95vh !important;
+    border-radius: 10px !important;
+  }
+  #service-booking-modal h2 {
+    font-size: 1.2rem;
+    padding-right: 1.75rem; /* room for the X button */
+  }
+  #service-booking-modal fieldset { padding: 0.6rem !important; }
+}
