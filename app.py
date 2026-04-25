@@ -69,6 +69,7 @@ from cryptography.fernet import Fernet, InvalidToken
 import stripe_client
 import messaging
 import automations
+import scraper
 from flask import (
     Flask, request, jsonify, send_from_directory,
     render_template, session, redirect, url_for, Response, stream_with_context,
@@ -1544,6 +1545,48 @@ def init_db():
                         0
                     ) ON CONFLICT (slug) DO NOTHING
                 """)
+
+            # =============================================================
+            # AI WEB SCRAPER
+            # =============================================================
+            # One row per scrape job. The admin pastes a URL OR an objective,
+            # picks a target shape, and we run the job in the background.
+            #
+            #   input_mode      'url' or 'objective'
+            #   url             Source URL when input_mode='url' (else '').
+            #   objective       Free-text ask when input_mode='objective'.
+            #   target_shape    'free_form' | 'gallery_card' | 'pricing_tier'
+            #                   | 'blog_post' | 'contact_details' | 'custom'
+            #   custom_schema   Admin-supplied JSON schema (custom shape only).
+            #   status          'queued' | 'running' | 'done' | 'failed'
+            #   result_json     Extracted record (shape-specific) once done.
+            #   error           Short user-facing failure message, if any.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS scrape_jobs (
+                    id              SERIAL PRIMARY KEY,
+                    input_mode      VARCHAR(20) NOT NULL DEFAULT 'url',
+                    url             TEXT NOT NULL DEFAULT '',
+                    objective       TEXT NOT NULL DEFAULT '',
+                    target_shape    VARCHAR(40) NOT NULL DEFAULT 'free_form',
+                    custom_schema   JSONB,
+                    status          VARCHAR(20) NOT NULL DEFAULT 'queued',
+                    result_json     JSONB,
+                    error           TEXT NOT NULL DEFAULT '',
+                    requested_at    TIMESTAMP DEFAULT NOW(),
+                    completed_at    TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_scrape_jobs_status
+                    ON scrape_jobs (status);
+                CREATE INDEX IF NOT EXISTS idx_scrape_jobs_requested
+                    ON scrape_jobs (requested_at DESC);
+            """)
+            # Admin-editable disallowed-domain list lives on site_settings as
+            # a comma/newline-separated string — keeps it editable from one
+            # form panel without an extra table.
+            cur.execute(
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS "
+                "scraper_disallowed_domains TEXT NOT NULL DEFAULT ''"
+            )
     finally:
         conn.close()
 
@@ -10546,6 +10589,448 @@ def public_automation_webhook(token):
     if rid is None:
         return jsonify({"error": "Rate limit reached for this automation."}), 429
     return jsonify({"ok": True, "run_id": rid}), 202
+
+
+# =============================================================================
+# AI WEB SCRAPER — admin endpoints + background worker
+# =============================================================================
+# Lets an admin paste any public URL (or describe an objective) and have AI
+# return a structured record. The job runs on a daemon thread; the UI polls
+# /admin/api/scrape-jobs/<id> for status. See scraper.py for the safe fetch,
+# HTML cleaning, SSRF protection, and OpenAI extraction logic.
+
+_SCRAPE_VALID_SHAPES = set(scraper.TARGET_SHAPES.keys())
+_SCRAPE_VALID_INPUT_MODES = ("url", "objective")
+
+
+def _scrape_get_disallowed_domains() -> list[str]:
+    """Read the admin's blocklist from site_settings and parse it once."""
+    row = query_db(
+        "SELECT scraper_disallowed_domains FROM site_settings WHERE id = 1",
+        fetchone=True,
+    )
+    raw = (row or {}).get("scraper_disallowed_domains", "") if row else ""
+    return scraper.parse_disallowed_domains(raw or "")
+
+
+def _scrape_serialize_job(row: dict) -> dict:
+    """Convert a DB row into a JSON-friendly dict for the UI."""
+    if not row:
+        return {}
+    out = dict(row)
+    for k in ("requested_at", "completed_at"):
+        v = out.get(k)
+        if isinstance(v, datetime):
+            out[k] = v.isoformat()
+    return out
+
+
+def _scrape_run_job(job_id: int) -> None:
+    """Background worker: fetch + clean + AI-extract for one job.
+
+    Runs on its own daemon thread. We move the row from 'queued' -> 'running'
+    -> 'done'/'failed', writing a short user-facing error message on failure
+    so the admin sees something actionable rather than a stack trace.
+    """
+    try:
+        execute_db(
+            "UPDATE scrape_jobs SET status = 'running' WHERE id = %s",
+            (job_id,),
+        )
+        job = query_db(
+            "SELECT * FROM scrape_jobs WHERE id = %s",
+            (job_id,), fetchone=True,
+        )
+        if not job:
+            return
+
+        input_mode = job.get("input_mode") or "url"
+        target_shape = job.get("target_shape") or "free_form"
+        custom_schema = job.get("custom_schema") if target_shape == "custom" else None
+
+        if input_mode == "url":
+            url = (job.get("url") or "").strip()
+            if not url:
+                _scrape_finish_job(job_id, error="Missing URL.")
+                return
+            disallowed = _scrape_get_disallowed_domains()
+            fetched = scraper.fetch_url(url, disallowed_domains=disallowed)
+            if not fetched.get("ok"):
+                _scrape_finish_job(job_id, error=fetched.get("error", "Fetch failed."))
+                return
+            cleaned = scraper.clean_html(fetched["body"], fetched.get("content_type", ""))
+            if not cleaned:
+                _scrape_finish_job(
+                    job_id,
+                    error="Page had no readable text after cleaning.",
+                )
+                return
+            note = ""
+            if scraper.looks_js_only(cleaned):
+                # Not a hard failure — extraction may still glean something useful
+                # — but the admin should know the page is probably JS-rendered.
+                note = (
+                    "This page looks JavaScript-only — very little text was "
+                    "available without a real browser. Results may be sparse."
+                )
+            try:
+                record = scraper.extract_with_ai(
+                    openai_client,
+                    source_text=cleaned,
+                    target_shape=target_shape,
+                    custom_schema=custom_schema,
+                    source_kind="url",
+                    source_label=fetched.get("final_url", url),
+                )
+            except Exception as e:  # noqa: BLE001
+                _scrape_finish_job(job_id, error=f"AI extraction failed: {e}")
+                return
+            payload = {
+                "record": record,
+                "source": {
+                    "kind": "url",
+                    "url": fetched.get("final_url", url),
+                    "content_type": fetched.get("content_type", ""),
+                    "cleaned_chars": len(cleaned),
+                    "note": note,
+                },
+            }
+            _scrape_finish_job(job_id, result=payload)
+            return
+
+        if input_mode == "objective":
+            objective = (job.get("objective") or "").strip()
+            if not objective:
+                _scrape_finish_job(job_id, error="Missing objective.")
+                return
+            research = scraper.research_objective(
+                openai_client, openai_direct_client, objective,
+            )
+            if not research.get("ok"):
+                _scrape_finish_job(job_id, error=research.get("error", "Research failed."))
+                return
+            try:
+                record = scraper.extract_with_ai(
+                    openai_client,
+                    source_text=research["text"],
+                    target_shape=target_shape,
+                    custom_schema=custom_schema,
+                    source_kind="objective",
+                    source_label=objective,
+                )
+            except Exception as e:  # noqa: BLE001
+                _scrape_finish_job(job_id, error=f"AI extraction failed: {e}")
+                return
+            payload = {
+                "record": record,
+                "source": {
+                    "kind": "objective",
+                    "objective": objective,
+                    "web_used": research.get("web_used", False),
+                    "sources": research.get("sources", []),
+                    "research_text": research.get("text", "")[:8000],
+                    "note": research.get("note", ""),
+                },
+            }
+            _scrape_finish_job(job_id, result=payload)
+            return
+
+        _scrape_finish_job(job_id, error=f"Unknown input mode '{input_mode}'.")
+    except Exception as e:  # noqa: BLE001 — never let the worker thread die silently
+        try:
+            _scrape_finish_job(job_id, error=f"Internal error: {e}")
+        except Exception:
+            pass
+
+
+def _scrape_finish_job(job_id: int, result=None, error: str = "") -> None:
+    """Write the terminal status, result, and error message in one update."""
+    if error:
+        execute_db(
+            """UPDATE scrape_jobs
+               SET status = 'failed', error = %s,
+                   completed_at = NOW()
+               WHERE id = %s""",
+            (error[:1000], job_id),
+        )
+    else:
+        execute_db(
+            """UPDATE scrape_jobs
+               SET status = 'done', error = '',
+                   result_json = %s::jsonb, completed_at = NOW()
+               WHERE id = %s""",
+            (json.dumps(result or {}), job_id),
+        )
+
+
+def _scrape_kick_off(job_id: int) -> None:
+    """Spawn the worker thread for a queued job (idempotent w.r.t. status)."""
+    threading.Thread(
+        target=_scrape_run_job, args=(job_id,), daemon=True,
+    ).start()
+
+
+@app.route("/admin/api/scrape-jobs", methods=["GET"])
+@admin_required
+def admin_list_scrape_jobs():
+    """GET /admin/api/scrape-jobs — newest first."""
+    rows = query_db(
+        "SELECT * FROM scrape_jobs ORDER BY requested_at DESC LIMIT 200",
+    )
+    return jsonify([_scrape_serialize_job(r) for r in (rows or [])])
+
+
+@app.route("/admin/api/scrape-jobs", methods=["POST"])
+@admin_required
+def admin_create_scrape_job():
+    """POST /admin/api/scrape-jobs — enqueue + kick off a new job."""
+    data = request.get_json(silent=True) or {}
+    input_mode = (data.get("input_mode") or "url").strip().lower()
+    if input_mode not in _SCRAPE_VALID_INPUT_MODES:
+        return jsonify({"error": "input_mode must be 'url' or 'objective'."}), 400
+
+    target_shape = (data.get("target_shape") or "free_form").strip()
+    if target_shape not in _SCRAPE_VALID_SHAPES:
+        return jsonify({"error": f"Unknown target_shape '{target_shape}'."}), 400
+
+    url = (data.get("url") or "").strip()
+    objective = (data.get("objective") or "").strip()
+    if input_mode == "url" and not url:
+        return jsonify({"error": "URL is required in URL mode."}), 400
+    if input_mode == "objective" and not objective:
+        return jsonify({"error": "Objective is required in Objective mode."}), 400
+
+    custom_schema = data.get("custom_schema")
+    if target_shape == "custom":
+        # Allow either an already-parsed object OR a raw JSON string from the UI.
+        if isinstance(custom_schema, str):
+            raw = custom_schema.strip()
+            if raw:
+                try:
+                    custom_schema = json.loads(raw)
+                except json.JSONDecodeError as e:
+                    return jsonify({"error": f"custom_schema is not valid JSON: {e}"}), 400
+            else:
+                custom_schema = None
+        if custom_schema is not None and not isinstance(custom_schema, dict):
+            return jsonify({"error": "custom_schema must be a JSON object."}), 400
+    else:
+        custom_schema = None
+
+    row = execute_db(
+        """INSERT INTO scrape_jobs
+             (input_mode, url, objective, target_shape, custom_schema, status)
+           VALUES (%s, %s, %s, %s, %s::jsonb, 'queued')
+           RETURNING *""",
+        (
+            input_mode, url, objective, target_shape,
+            json.dumps(custom_schema) if custom_schema is not None else None,
+        ),
+    )
+    if not row:
+        return jsonify({"error": "Failed to create job."}), 500
+    _scrape_kick_off(row["id"])
+    return jsonify(_scrape_serialize_job(row)), 201
+
+
+@app.route("/admin/api/scrape-jobs/<int:job_id>", methods=["GET"])
+@admin_required
+def admin_get_scrape_job(job_id):
+    """GET /admin/api/scrape-jobs/<id> — used by the UI poller."""
+    row = query_db("SELECT * FROM scrape_jobs WHERE id = %s", (job_id,), fetchone=True)
+    if not row:
+        return jsonify({"error": "Job not found."}), 404
+    return jsonify(_scrape_serialize_job(row))
+
+
+@app.route("/admin/api/scrape-jobs/<int:job_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_scrape_job(job_id):
+    """DELETE /admin/api/scrape-jobs/<id>."""
+    count = execute_db("DELETE FROM scrape_jobs WHERE id = %s", (job_id,))
+    if not count:
+        return jsonify({"error": "Job not found."}), 404
+    return jsonify({"success": True})
+
+
+@app.route("/admin/api/scrape-jobs/<int:job_id>/rerun", methods=["POST"])
+@admin_required
+def admin_rerun_scrape_job(job_id):
+    """POST .../rerun — reset a job back to 'queued' and kick the worker.
+
+    The status check + reset happens in a single statement so a double-click
+    can't spawn two background workers for the same job.
+    """
+    row = execute_db(
+        """UPDATE scrape_jobs
+           SET status = 'queued', error = '',
+               result_json = NULL, completed_at = NULL
+           WHERE id = %s AND status NOT IN ('queued', 'running')
+           RETURNING *""",
+        (job_id,),
+    )
+    if not row:
+        # Either the job doesn't exist or it's already in flight — distinguish
+        # the two so the UI can show a useful message.
+        existing = query_db(
+            "SELECT id, status FROM scrape_jobs WHERE id = %s", (job_id,), fetchone=True,
+        )
+        if not existing:
+            return jsonify({"error": "Job not found."}), 404
+        return jsonify({
+            "error": f"Job is already {existing['status']} — wait for it to finish before re-running.",
+        }), 409
+    _scrape_kick_off(row["id"])
+    return jsonify(_scrape_serialize_job(row))
+
+
+@app.route("/admin/api/scrape-jobs/<int:job_id>/push", methods=["POST"])
+@admin_required
+def admin_push_scrape_job(job_id):
+    """POST .../push — copy the extracted record into the matching real table.
+
+    The admin chooses the target via the request body (``target``), but we
+    only allow it if the job's target_shape declares a ``push_target`` —
+    e.g. a 'free_form' job has no real table to land in.
+    """
+    row = query_db("SELECT * FROM scrape_jobs WHERE id = %s", (job_id,), fetchone=True)
+    if not row:
+        return jsonify({"error": "Job not found."}), 404
+    if row["status"] != "done":
+        return jsonify({"error": "Job has not completed successfully yet."}), 400
+
+    shape_meta = scraper.TARGET_SHAPES.get(row["target_shape"]) or {}
+    push_target = shape_meta.get("push_target")
+    if not push_target:
+        return jsonify({"error": "This target shape can't be pushed to a real table."}), 400
+
+    result = row.get("result_json") or {}
+    record = result.get("record") or {}
+    if not record:
+        return jsonify({"error": "No extracted record on this job."}), 400
+
+    if push_target == "gallery_card":
+        slug = re.sub(r"[^a-z0-9]+", "-",
+                      (record.get("title") or f"scraped-{job_id}").lower()).strip("-")
+        if not slug:
+            slug = f"scraped-{job_id}"
+        # Gallery slugs are unique — append the job id if there's a clash so
+        # the push never silently fails.
+        existing = query_db("SELECT 1 FROM gallery_cards WHERE slug = %s", (slug,), fetchone=True)
+        if existing:
+            slug = f"{slug}-{job_id}"
+        details = record.get("details") or []
+        if not isinstance(details, list):
+            details = [str(details)]
+        new_row = execute_db(
+            """INSERT INTO gallery_cards
+                 (slug, title, subtitle, image_url, video_url, category, description, details, price, sort_order)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+               RETURNING id, slug""",
+            (
+                slug,
+                str(record.get("title") or "Untitled"),
+                str(record.get("subtitle") or ""),
+                str(record.get("image_url") or ""),
+                "",
+                str(record.get("category") or "Scraped"),
+                str(record.get("description") or ""),
+                json.dumps(details),
+                str(record.get("price") or "") or None,
+                0,
+            ),
+        )
+        return jsonify({"success": True, "target": "gallery_card", "row": new_row})
+
+    if push_target == "pricing_tier":
+        new_row = execute_db(
+            """INSERT INTO pricing_seasons (label, date_range, price_range, sort_order)
+               VALUES (%s, %s, %s, %s)
+               RETURNING id, label""",
+            (
+                str(record.get("label") or "Scraped tier"),
+                str(record.get("date_range") or ""),
+                str(record.get("price_range") or ""),
+                0,
+            ),
+        )
+        return jsonify({"success": True, "target": "pricing_tier", "row": new_row})
+
+    if push_target == "blog_post":
+        title = str(record.get("title") or "Scraped post")
+        slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or f"scraped-{job_id}"
+        existing = query_db("SELECT 1 FROM blog_posts WHERE slug = %s", (slug,), fetchone=True)
+        if existing:
+            slug = f"{slug}-{job_id}"
+        new_row = execute_db(
+            """INSERT INTO blog_posts
+                 (slug, title, subtitle, excerpt, content, cover_image,
+                  author, category, tags, status, seo_title, seo_description,
+                  published_at, sort_order)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'draft', %s, %s, NULL, 0)
+               RETURNING id, slug""",
+            (
+                slug,
+                title,
+                str(record.get("subtitle") or ""),
+                str(record.get("excerpt") or ""),
+                str(record.get("content") or ""),
+                str(record.get("cover_image") or ""),
+                str(record.get("author") or ""),
+                str(record.get("category") or ""),
+                str(record.get("tags") or ""),
+                title,
+                str(record.get("excerpt") or "")[:160],
+            ),
+        )
+        return jsonify({"success": True, "target": "blog_post", "row": new_row})
+
+    return jsonify({"error": f"Unsupported push target '{push_target}'."}), 400
+
+
+@app.route("/admin/api/scraper-settings", methods=["GET"])
+@admin_required
+def admin_get_scraper_settings():
+    """Expose the disallowed-domains list + the available target shapes."""
+    row = query_db(
+        "SELECT scraper_disallowed_domains FROM site_settings WHERE id = 1",
+        fetchone=True,
+    )
+    raw = (row or {}).get("scraper_disallowed_domains", "") if row else ""
+    shapes = []
+    for key, meta in scraper.TARGET_SHAPES.items():
+        shapes.append({
+            "key": key,
+            "label": meta["label"],
+            "description": meta["description"],
+            "push_target": meta.get("push_target"),
+        })
+    return jsonify({
+        "disallowed_domains": raw or "",
+        "target_shapes": shapes,
+    })
+
+
+@app.route("/admin/api/scraper-settings", methods=["PUT"])
+@admin_required
+def admin_update_scraper_settings():
+    """Persist the disallowed-domains list. Stored verbatim; parsed at fetch time."""
+    data = request.get_json(silent=True) or {}
+    raw = data.get("disallowed_domains", "")
+    if not isinstance(raw, str):
+        return jsonify({"error": "disallowed_domains must be a string."}), 400
+    # Make sure the singleton row exists before we update.
+    execute_db(
+        "INSERT INTO site_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING",
+    )
+    execute_db(
+        "UPDATE site_settings SET scraper_disallowed_domains = %s, updated_at = NOW() WHERE id = 1",
+        (raw[:8000],),
+    )
+    return jsonify({"success": True, "disallowed_domains": raw[:8000]})
+
+
+# =============================================================================
 # AI REVIEW COLLECTOR
 # =============================================================================
 # After a customer completes a purchase, booking, or stay, this module sends

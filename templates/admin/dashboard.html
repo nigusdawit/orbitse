@@ -1557,6 +1557,10 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
       Saved Pages
     </button>
+    <button class="tab-btn" onclick="switchTab('scraper', this); loadScraperTab();" data-testid="tab-scraper">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><path d="M8 11h6"/><path d="M11 8v6"/></svg>
+      Web Scraper
+    </button>
     <button class="tab-btn" onclick="switchTab('media', this); loadMediaLibrary();" data-testid="tab-media">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
       Media Library
@@ -4410,6 +4414,128 @@ TO CUSTOMIZE THIS DASHBOARD:
         </thead>
         <tbody id="pages-table-body" data-testid="table-pages-body">
           <tr><td colspan="5" style="text-align:center; color:#888;">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: WEB SCRAPER
+  ========================================================================
+  Paste a URL or describe an objective, pick a target shape, and the AI
+  fetches/cleans/extracts a structured record. Background jobs poll for
+  status. The result can be pushed into a real table (gallery, blog,
+  pricing) as a draft.
+  -->
+  <div id="tab-scraper" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Web Scraper</h2>
+        <p>Pull structured data from any public URL — or have AI research an objective for you.</p>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="loadScrapeJobs()" data-testid="button-scraper-refresh">Refresh</button>
+    </div>
+
+    <!-- New-job form -->
+    <div class="form-panel">
+      <h3>New scrape</h3>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label>Input mode</label>
+          <select id="scraper-input-mode" onchange="updateScraperFormVisibility()" data-testid="select-scraper-input-mode">
+            <option value="url">URL — paste a public link</option>
+            <option value="objective">Objective — describe what to find</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Target shape</label>
+          <select id="scraper-target-shape" onchange="updateScraperFormVisibility()" data-testid="select-scraper-target-shape">
+            <option value="free_form">Free-form notes</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row" id="scraper-url-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="scraper-url-input">URL</label>
+          <input type="url" id="scraper-url-input" placeholder="https://example.com/some-page" data-testid="input-scraper-url">
+        </div>
+      </div>
+
+      <div class="form-row" id="scraper-objective-row" style="display:none;">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="scraper-objective-input">Objective</label>
+          <textarea id="scraper-objective-input" rows="3" placeholder="e.g. Find competitor pricing for project management SaaS aimed at agencies." data-testid="input-scraper-objective"></textarea>
+          <small style="color: var(--admin-text-muted); font-size: 0.75rem;">Uses OpenAI's web search when available; otherwise answers from training knowledge with a clear note.</small>
+        </div>
+      </div>
+
+      <div class="form-row" id="scraper-custom-schema-row" style="display:none;">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="scraper-custom-schema">Custom JSON schema</label>
+          <textarea id="scraper-custom-schema" rows="6" placeholder='{"product_name": "string", "price_usd": "number", "in_stock": "boolean"}' data-testid="input-scraper-custom-schema" style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8125rem;"></textarea>
+          <small style="color: var(--admin-text-muted); font-size: 0.75rem;">Plain JSON describing the keys you want back. Example values are just type hints — leave blank to let the AI choose keys.</small>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="submitScrapeJob()" data-testid="button-scraper-submit">Start scrape</button>
+      </div>
+      <div id="scraper-form-message" style="margin-top: 0.75rem; font-size: 0.875rem;"></div>
+    </div>
+
+    <!-- Active job result viewer (only shown after a job has started) -->
+    <div id="scraper-current-panel" class="form-panel" style="display:none;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
+        <h3 id="scraper-current-title" style="margin:0;">Scrape result</h3>
+        <div style="display:flex; gap:0.5rem;">
+          <button class="btn btn-secondary btn-sm" onclick="closeScraperCurrent()" data-testid="button-scraper-close">Close</button>
+        </div>
+      </div>
+      <div id="scraper-current-meta" style="margin-top: 0.5rem; font-size: 0.8125rem; color: var(--admin-text-muted);"></div>
+      <div id="scraper-current-status" style="margin-top: 1rem;"></div>
+      <div id="scraper-current-result" style="margin-top: 1rem;"></div>
+      <div id="scraper-current-actions" style="margin-top: 1rem; display:flex; gap:0.5rem; flex-wrap:wrap;"></div>
+    </div>
+
+    <!-- Settings: disallowed domains -->
+    <div class="form-panel">
+      <h3>Disallowed domains</h3>
+      <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 0.75rem;">
+        Comma- or newline-separated. Subdomains are blocked too (e.g. <code>evil.com</code> blocks <code>shop.evil.com</code>).
+        Private/loopback IP ranges are always blocked regardless of this list.
+      </p>
+      <div class="form-group">
+        <textarea id="scraper-disallowed-domains" rows="3" placeholder="evil.com, internal.example.org" data-testid="input-scraper-disallowed"></textarea>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary btn-sm" onclick="saveScraperSettings()" data-testid="button-scraper-save-settings">Save</button>
+      </div>
+      <div id="scraper-settings-message" style="margin-top: 0.5rem; font-size: 0.8125rem;"></div>
+    </div>
+
+    <!-- History -->
+    <div class="section-header-admin" style="margin-top: 1.5rem;">
+      <div>
+        <h2 style="font-size: 1.125rem;">History</h2>
+        <p>Past scrape jobs. Click "View" to see results, push to a real table, re-run, or delete.</p>
+      </div>
+    </div>
+    <div style="overflow-x:auto;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Source</th>
+            <th>Target</th>
+            <th>Status</th>
+            <th>Requested</th>
+            <th style="width: 260px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="scrape-jobs-tbody" data-testid="table-scrape-jobs">
+          <tr><td colspan="5" class="empty-state" style="text-align:center; color:#888;">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -12000,6 +12126,304 @@ TO CUSTOMIZE THIS DASHBOARD:
       if (!r.ok) throw new Error('Could not load automation metadata');
       Automations.metadata = await r.json();
       return Automations.metadata;
+    }
+
+    // ============================================================
+    // WEB SCRAPER TAB
+    // ============================================================
+    // Loaded on demand. Polls running jobs every 2s for live status
+    // transitions queued -> running -> done|failed.
+    const Scraper = {
+      shapes: null,            // [{key,label,description,push_target}]
+      currentJobId: null,      // job currently being viewed in the result panel
+      pollTimer: null,
+    };
+
+    async function loadScraperTab() {
+      // First time we open the tab: pull the shape catalog + settings, then jobs.
+      try {
+        if (!Scraper.shapes) {
+          const r = await fetch('/admin/api/scraper-settings', { credentials: 'same-origin' });
+          const data = await r.json();
+          if (!r.ok) throw new Error(data.error || 'Settings load failed');
+          Scraper.shapes = data.target_shapes || [];
+          const sel = document.getElementById('scraper-target-shape');
+          sel.innerHTML = Scraper.shapes.map(s =>
+            `<option value="${escapeHtml(s.key)}">${escapeHtml(s.label)}</option>`
+          ).join('');
+          document.getElementById('scraper-disallowed-domains').value = data.disallowed_domains || '';
+          updateScraperFormVisibility();
+        }
+      } catch (e) {
+        document.getElementById('scraper-form-message').innerHTML =
+          `<span style="color:#c33;">${escapeHtml(e.message)}</span>`;
+      }
+      loadScrapeJobs();
+    }
+
+    function updateScraperFormVisibility() {
+      const mode = document.getElementById('scraper-input-mode').value;
+      const shape = document.getElementById('scraper-target-shape').value;
+      document.getElementById('scraper-url-row').style.display = (mode === 'url') ? '' : 'none';
+      document.getElementById('scraper-objective-row').style.display = (mode === 'objective') ? '' : 'none';
+      document.getElementById('scraper-custom-schema-row').style.display = (shape === 'custom') ? '' : 'none';
+    }
+
+    async function loadScrapeJobs() {
+      const tbody = document.getElementById('scrape-jobs-tbody');
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:#888;">Loading…</td></tr>';
+      try {
+        const r = await fetch('/admin/api/scrape-jobs', { credentials: 'same-origin' });
+        const rows = await r.json();
+        if (!r.ok) throw new Error(rows.error || 'Load failed');
+        renderScrapeJobsTable(rows);
+      } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:#c33;">${escapeHtml(e.message)}</td></tr>`;
+      }
+    }
+
+    function shapeLabel(key) {
+      const s = (Scraper.shapes || []).find(x => x.key === key);
+      return s ? s.label : key;
+    }
+
+    function renderScrapeJobsTable(rows) {
+      const tbody = document.getElementById('scrape-jobs-tbody');
+      if (!rows || rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty-state" style="text-align:center; color:#888;">No scrape jobs yet — submit one above.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows.map(job => {
+        const src = job.input_mode === 'objective'
+          ? `<em>Objective:</em> ${escapeHtml((job.objective || '').slice(0, 80))}`
+          : `<a href="${escapeHtml(job.url || '')}" target="_blank" rel="noopener">${escapeHtml((job.url || '').slice(0, 80))}</a>`;
+        const statusColor = ({
+          done: '#28a745', failed: '#dc3545', running: '#0d6efd', queued: '#6c757d'
+        })[job.status] || '#6c757d';
+        const requested = job.requested_at ? new Date(job.requested_at).toLocaleString() : '';
+        return `
+          <tr data-testid="row-scrape-job-${job.id}">
+            <td>${src}</td>
+            <td>${escapeHtml(shapeLabel(job.target_shape))}</td>
+            <td><span style="color:${statusColor}; font-weight:600;" data-testid="status-scrape-job-${job.id}">${escapeHtml(job.status)}</span></td>
+            <td style="font-size:0.8125rem; color: var(--admin-text-muted);">${escapeHtml(requested)}</td>
+            <td>
+              <button class="btn btn-secondary btn-xs" onclick="viewScrapeJob(${job.id})" data-testid="button-view-scrape-${job.id}">View</button>
+              <button class="btn btn-secondary btn-xs" onclick="rerunScrapeJob(${job.id})" data-testid="button-rerun-scrape-${job.id}">Re-run</button>
+              <button class="btn btn-danger btn-xs" onclick="deleteScrapeJob(${job.id})" data-testid="button-delete-scrape-${job.id}">Delete</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    async function submitScrapeJob() {
+      const msgEl = document.getElementById('scraper-form-message');
+      msgEl.innerHTML = '';
+      const inputMode = document.getElementById('scraper-input-mode').value;
+      const targetShape = document.getElementById('scraper-target-shape').value;
+      const url = document.getElementById('scraper-url-input').value.trim();
+      const objective = document.getElementById('scraper-objective-input').value.trim();
+      const customSchema = document.getElementById('scraper-custom-schema').value.trim();
+
+      if (inputMode === 'url' && !url) {
+        msgEl.innerHTML = '<span style="color:#c33;">URL is required.</span>';
+        return;
+      }
+      if (inputMode === 'objective' && !objective) {
+        msgEl.innerHTML = '<span style="color:#c33;">Objective is required.</span>';
+        return;
+      }
+
+      const body = { input_mode: inputMode, target_shape: targetShape };
+      if (inputMode === 'url') body.url = url;
+      if (inputMode === 'objective') body.objective = objective;
+      if (targetShape === 'custom' && customSchema) body.custom_schema = customSchema;
+
+      try {
+        const r = await fetch('/admin/api/scrape-jobs', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Submit failed');
+        msgEl.innerHTML = `<span style="color:#28a745;">Job #${data.id} queued — running now.</span>`;
+        loadScrapeJobs();
+        viewScrapeJob(data.id);
+      } catch (e) {
+        msgEl.innerHTML = `<span style="color:#c33;">${escapeHtml(e.message)}</span>`;
+      }
+    }
+
+    function closeScraperCurrent() {
+      Scraper.currentJobId = null;
+      if (Scraper.pollTimer) { clearTimeout(Scraper.pollTimer); Scraper.pollTimer = null; }
+      document.getElementById('scraper-current-panel').style.display = 'none';
+    }
+
+    async function viewScrapeJob(jobId) {
+      Scraper.currentJobId = jobId;
+      if (Scraper.pollTimer) { clearTimeout(Scraper.pollTimer); Scraper.pollTimer = null; }
+      const panel = document.getElementById('scraper-current-panel');
+      panel.style.display = '';
+      document.getElementById('scraper-current-title').textContent = `Scrape job #${jobId}`;
+      document.getElementById('scraper-current-meta').textContent = '';
+      document.getElementById('scraper-current-status').innerHTML = '<em>Loading…</em>';
+      document.getElementById('scraper-current-result').innerHTML = '';
+      document.getElementById('scraper-current-actions').innerHTML = '';
+      pollScrapeJob(jobId);
+    }
+
+    async function pollScrapeJob(jobId) {
+      if (Scraper.currentJobId !== jobId) return;
+      try {
+        const r = await fetch(`/admin/api/scrape-jobs/${jobId}`, { credentials: 'same-origin' });
+        const job = await r.json();
+        if (!r.ok) throw new Error(job.error || 'Poll failed');
+        renderScrapeJobDetail(job);
+        // Keep polling while the job is still in flight.
+        if (job.status === 'queued' || job.status === 'running') {
+          Scraper.pollTimer = setTimeout(() => pollScrapeJob(jobId), 2000);
+        } else {
+          // Final state: refresh the history table so the user sees it there too.
+          loadScrapeJobs();
+        }
+      } catch (e) {
+        document.getElementById('scraper-current-status').innerHTML =
+          `<span style="color:#c33;">${escapeHtml(e.message)}</span>`;
+      }
+    }
+
+    function renderScrapeJobDetail(job) {
+      const meta = [];
+      meta.push(`Mode: <strong>${escapeHtml(job.input_mode || 'url')}</strong>`);
+      meta.push(`Target: <strong>${escapeHtml(shapeLabel(job.target_shape))}</strong>`);
+      if (job.url) meta.push(`URL: <a href="${escapeHtml(job.url)}" target="_blank" rel="noopener">${escapeHtml(job.url)}</a>`);
+      if (job.objective) meta.push(`Objective: ${escapeHtml(job.objective)}`);
+      document.getElementById('scraper-current-meta').innerHTML = meta.join(' &middot; ');
+
+      const statusColor = ({
+        done: '#28a745', failed: '#dc3545', running: '#0d6efd', queued: '#6c757d'
+      })[job.status] || '#6c757d';
+      let statusHtml = `<span style="color:${statusColor}; font-weight:600;" data-testid="current-status-scrape">Status: ${escapeHtml(job.status)}</span>`;
+      if (job.status === 'queued' || job.status === 'running') {
+        statusHtml += ' <span style="color: var(--admin-text-muted);">(refreshing every 2s…)</span>';
+      }
+      if (job.error) {
+        statusHtml += `<div style="margin-top:0.5rem; color:#c33;">${escapeHtml(job.error)}</div>`;
+      }
+      document.getElementById('scraper-current-status').innerHTML = statusHtml;
+
+      const resultEl = document.getElementById('scraper-current-result');
+      const actionsEl = document.getElementById('scraper-current-actions');
+      if (job.status === 'done' && job.result_json) {
+        const result = job.result_json;
+        const record = result.record || {};
+        const source = result.source || {};
+        let sourceNote = '';
+        if (source.note) {
+          sourceNote = `<div style="background:#fffbe6; border:1px solid #ffe58f; padding:0.5rem 0.75rem; border-radius:4px; margin-bottom:0.75rem; font-size:0.8125rem;">${escapeHtml(source.note)}</div>`;
+        }
+        let sourcesList = '';
+        if (Array.isArray(source.sources) && source.sources.length) {
+          sourcesList = `<div style="margin-top:0.5rem; font-size:0.8125rem;"><strong>Sources used:</strong><ul style="margin:0.25rem 0 0 1.25rem; padding:0;">${
+            source.sources.slice(0, 10).map(s => {
+              const url = (s && (s.url || s.href)) || '';
+              const title = (s && (s.title || s.text)) || url;
+              if (!url) return `<li>${escapeHtml(String(title))}</li>`;
+              return `<li><a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(String(title))}</a></li>`;
+            }).join('')
+          }</ul></div>`;
+        }
+        resultEl.innerHTML = `
+          ${sourceNote}
+          <div style="margin-bottom:0.5rem; font-weight:600;">Extracted record:</div>
+          <pre style="background:#f6f8fa; border:1px solid #e1e4e8; border-radius:4px; padding:0.75rem; font-size:0.8125rem; max-height:400px; overflow:auto;" data-testid="text-scrape-result">${escapeHtml(JSON.stringify(record, null, 2))}</pre>
+          ${sourcesList}
+        `;
+        const shape = (Scraper.shapes || []).find(s => s.key === job.target_shape);
+        const pushTarget = shape && shape.push_target;
+        if (pushTarget) {
+          actionsEl.innerHTML = `
+            <button class="btn btn-primary btn-sm" onclick="pushScrapeJob(${job.id})" data-testid="button-push-scrape-${job.id}">Push to ${escapeHtml(pushTarget.replace('_', ' '))}</button>
+            <button class="btn btn-secondary btn-sm" onclick="rerunScrapeJob(${job.id})" data-testid="button-rerun-current">Re-run</button>
+          `;
+        } else {
+          actionsEl.innerHTML = `
+            <span style="color: var(--admin-text-muted); font-size:0.8125rem;">This shape has no push target.</span>
+            <button class="btn btn-secondary btn-sm" onclick="rerunScrapeJob(${job.id})" data-testid="button-rerun-current">Re-run</button>
+          `;
+        }
+      } else if (job.status === 'failed') {
+        resultEl.innerHTML = '';
+        actionsEl.innerHTML = `<button class="btn btn-secondary btn-sm" onclick="rerunScrapeJob(${job.id})" data-testid="button-rerun-current">Re-run</button>`;
+      } else {
+        resultEl.innerHTML = '';
+        actionsEl.innerHTML = '';
+      }
+    }
+
+    async function rerunScrapeJob(jobId) {
+      try {
+        const r = await fetch(`/admin/api/scrape-jobs/${jobId}/rerun`, {
+          method: 'POST', credentials: 'same-origin',
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Re-run failed');
+        loadScrapeJobs();
+        viewScrapeJob(jobId);
+      } catch (e) {
+        alert(e.message);
+      }
+    }
+
+    async function deleteScrapeJob(jobId) {
+      if (!confirm(`Delete scrape job #${jobId}?`)) return;
+      try {
+        const r = await fetch(`/admin/api/scrape-jobs/${jobId}`, {
+          method: 'DELETE', credentials: 'same-origin',
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Delete failed');
+        if (Scraper.currentJobId === jobId) closeScraperCurrent();
+        loadScrapeJobs();
+      } catch (e) {
+        alert(e.message);
+      }
+    }
+
+    async function pushScrapeJob(jobId) {
+      try {
+        const r = await fetch(`/admin/api/scrape-jobs/${jobId}/push`, {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Push failed');
+        alert(`Pushed to ${data.target}. Open the matching tab to edit and publish.`);
+      } catch (e) {
+        alert(e.message);
+      }
+    }
+
+    async function saveScraperSettings() {
+      const msgEl = document.getElementById('scraper-settings-message');
+      msgEl.innerHTML = '';
+      const value = document.getElementById('scraper-disallowed-domains').value;
+      try {
+        const r = await fetch('/admin/api/scraper-settings', {
+          method: 'PUT', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ disallowed_domains: value }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Save failed');
+        msgEl.innerHTML = '<span style="color:#28a745;">Saved.</span>';
+      } catch (e) {
+        msgEl.innerHTML = `<span style="color:#c33;">${escapeHtml(e.message)}</span>`;
+      }
     }
 
     async function loadAutomations() {
