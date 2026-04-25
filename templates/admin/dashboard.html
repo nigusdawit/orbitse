@@ -1454,6 +1454,39 @@ TO CUSTOMIZE THIS DASHBOARD:
       padding: 0.35rem 0.5rem;
     }
     .btn-link:hover { text-decoration: underline; color: #8ea7ff; }
+
+    /* Merge-tag autocomplete: shared dropdown attached to inputs that
+       accept merge-tag paths (condition `field`, per-step "Only run
+       when…" field). Position is computed at show-time so it floats
+       below the active input. */
+    .merge-tag-autocomplete {
+      position: absolute;
+      z-index: 2000;
+      background: var(--admin-card-bg, #1b2235);
+      color: var(--admin-text, #e4e4e7);
+      border: 1px solid var(--admin-border, rgba(255,255,255,0.15));
+      border-radius: 6px;
+      max-height: 240px;
+      overflow-y: auto;
+      min-width: 220px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+      font-size: 0.82rem;
+    }
+    .merge-tag-autocomplete-item {
+      padding: 0.4rem 0.65rem;
+      cursor: pointer;
+      font-family: 'SFMono-Regular', Consolas, Menlo, monospace;
+      white-space: nowrap;
+    }
+    .merge-tag-autocomplete-item:hover,
+    .merge-tag-autocomplete-item.active {
+      background: rgba(99,102,241,0.22);
+    }
+    .merge-tag-autocomplete-empty {
+      padding: 0.4rem 0.65rem;
+      color: var(--admin-text-muted, rgba(255,255,255,0.5));
+      font-style: italic;
+    }
   </style>
 </head>
 
@@ -13349,6 +13382,270 @@ TO CUSTOMIZE THIS DASHBOARD:
       return '{}';
     }
 
+    {% raw %}
+    /* =====================================================================
+       MERGE-TAG AUTOCOMPLETE
+       Shared dropdown that suggests valid merge-tag paths for any input
+       that opted in via data-merge-tag-input="1". Sources of suggestions:
+         - `trigger.<path>` extracted from the test payload textarea (or,
+           if empty, the sample payload for the chosen trigger type)
+         - `stepN.<output>` and `<slug>.<output>` for every step earlier
+           than the current one, derived from each action's metadata
+       Wrapped in {% raw %} because the helpers below assemble literal
+       `{{…}}` strings and Jinja would otherwise try to evaluate them at
+       template-compile time.
+       ===================================================================== */
+
+    let __mergeTagDropdown = null;
+    let __mergeTagActiveInput = null;
+    let __mergeTagSuggestions = [];
+    let __mergeTagSelectedIndex = 0;
+
+    function ensureMergeTagDropdown() {
+      if (__mergeTagDropdown) return __mergeTagDropdown;
+      const el = document.createElement('div');
+      el.className = 'merge-tag-autocomplete';
+      el.style.display = 'none';
+      el.setAttribute('data-testid', 'merge-tag-autocomplete');
+      // mousedown on a suggestion would normally blur the input first.
+      // Preventing the default keeps the input focused so the click handler
+      // sees the still-active input when it fires.
+      el.addEventListener('mousedown', (e) => { e.preventDefault(); });
+      document.body.appendChild(el);
+      __mergeTagDropdown = el;
+      return el;
+    }
+
+    function extractMergeTagPaths(obj, prefix) {
+      const paths = [];
+      if (obj === null || typeof obj !== 'object') return paths;
+      if (Array.isArray(obj)) {
+        // Just take element 0 — exposing every index would flood the dropdown
+        // and most trigger payloads only ever have a representative item.
+        if (obj.length > 0) {
+          const p = prefix ? prefix + '.0' : '0';
+          paths.push(p);
+          extractMergeTagPaths(obj[0], p).forEach(c => paths.push(c));
+        }
+        return paths;
+      }
+      for (const key of Object.keys(obj)) {
+        const p = prefix ? prefix + '.' + key : key;
+        paths.push(p);
+        extractMergeTagPaths(obj[key], p).forEach(c => paths.push(c));
+      }
+      return paths;
+    }
+
+    function getTriggerMergeTagSuggestions() {
+      const out = ['trigger'];
+      let payloadText = '';
+      const ta = document.getElementById('automation-test-payload');
+      if (ta && ta.value && ta.value.trim()) {
+        payloadText = ta.value;
+      } else {
+        const sel = document.getElementById('automation-trigger-type');
+        payloadText = sampleTriggerPayload(sel ? sel.value : '');
+      }
+      let parsed = null;
+      try { parsed = JSON.parse(payloadText); } catch (e) { parsed = null; }
+      if (parsed && typeof parsed === 'object') {
+        extractMergeTagPaths(parsed, '').forEach(p => out.push('trigger.' + p));
+      }
+      return out;
+    }
+
+    function getStepOutputMergeTagSuggestions(stepIdx) {
+      const out = [];
+      const actions = (Automations.metadata && Automations.metadata.actions) || [];
+      for (let i = 0; i < stepIdx; i++) {
+        const s = Automations.steps[i];
+        if (!s) continue;
+        const action = actions.find(a => a.kind === s.kind);
+        if (!action) continue;
+        const stepKey = 'step' + (i + 1);
+        out.push(stepKey);
+        // Match the slugify rule used server-side in _execute_run() so
+        // suggestions match what actually lands in the run context.
+        const slug = ((s.name || '').trim()).toLowerCase()
+          .replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
+        if (slug) out.push(slug);
+        const outputs = action.outputs || [];
+        outputs.forEach(o => {
+          let name = o;
+          if (o === '<output_key>') {
+            // ai_draft exposes its result under whatever key the user typed.
+            const ok = ((s.config && s.config.output_key) || '').toString().trim();
+            if (!ok) return;
+            name = ok;
+          }
+          out.push(stepKey + '.' + name);
+          if (slug) out.push(slug + '.' + name);
+        });
+      }
+      return out;
+    }
+
+    function getMergeTagSuggestions(stepIdx) {
+      const merged = [];
+      const seen = new Set();
+      const all = getTriggerMergeTagSuggestions()
+        .concat(getStepOutputMergeTagSuggestions(stepIdx));
+      all.forEach(p => {
+        if (!seen.has(p)) { seen.add(p); merged.push(p); }
+      });
+      return merged;
+    }
+
+    function getActiveMergeTagToken(input) {
+      // If the caret is inside an open `{{ … }}`, treat the partial token
+      // as the query and replace just that segment. Otherwise treat the
+      // entire input as a query and replace the whole field on accept.
+      const v = input.value || '';
+      const caret = (typeof input.selectionStart === 'number') ? input.selectionStart : v.length;
+      const before = v.slice(0, caret);
+      const after = v.slice(caret);
+      const idxOpen = before.lastIndexOf('{{');
+      const idxClose = before.lastIndexOf('}}');
+      if (idxOpen !== -1 && idxOpen > idxClose) {
+        const query = before.slice(idxOpen + 2);
+        const afterClose = after.indexOf('}}');
+        return {
+          query: query.trim(),
+          replaceStart: idxOpen,
+          replaceEnd: afterClose !== -1 ? caret + afterClose + 2 : caret,
+        };
+      }
+      // Field already holds a closed merge tag (e.g. {{trigger.fields.email}})
+      // and the caret is not inside an open token. Strip the wrapping braces
+      // so the user sees matches for the path they already chose without
+      // having to delete the {{ / }} first.
+      const stripped = v.trim().replace(/^\{\{\s*/, '').replace(/\s*\}\}$/, '');
+      return { query: stripped, replaceStart: 0, replaceEnd: v.length };
+    }
+
+    function applyMergeTagSuggestion(input, suggestion) {
+      const info = getActiveMergeTagToken(input);
+      const v = input.value || '';
+      const newText = '{{' + suggestion + '}}';
+      input.value = v.slice(0, info.replaceStart) + newText + v.slice(info.replaceEnd);
+      const newCaret = info.replaceStart + newText.length;
+      try { input.setSelectionRange(newCaret, newCaret); } catch (e) {}
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    function renderMergeTagDropdown() {
+      const dd = ensureMergeTagDropdown();
+      if (!__mergeTagSuggestions.length) {
+        dd.innerHTML = '<div class="merge-tag-autocomplete-empty">No matching merge tags</div>';
+        return;
+      }
+      dd.innerHTML = __mergeTagSuggestions.map((s, i) =>
+        '<div class="merge-tag-autocomplete-item' + (i === __mergeTagSelectedIndex ? ' active' : '') +
+        '" data-merge-tag-index="' + i + '" data-testid="merge-tag-suggestion-' + escapeHtml(s) + '">{{' +
+        escapeHtml(s) + '}}</div>'
+      ).join('');
+      dd.querySelectorAll('[data-merge-tag-index]').forEach(el => {
+        el.addEventListener('click', () => {
+          const i = parseInt(el.getAttribute('data-merge-tag-index'), 10);
+          const sug = __mergeTagSuggestions[i];
+          if (__mergeTagActiveInput && sug) {
+            applyMergeTagSuggestion(__mergeTagActiveInput, sug);
+            hideMergeTagDropdown();
+          }
+        });
+      });
+    }
+
+    function positionMergeTagDropdown(input) {
+      const dd = ensureMergeTagDropdown();
+      const rect = input.getBoundingClientRect();
+      // position:absolute + window.scroll* keeps the dropdown anchored to
+      // the input as the page scrolls.
+      dd.style.position = 'absolute';
+      dd.style.left = (rect.left + window.scrollX) + 'px';
+      dd.style.top = (rect.bottom + window.scrollY + 4) + 'px';
+      dd.style.minWidth = Math.max(rect.width, 220) + 'px';
+    }
+
+    function showMergeTagDropdown(input, getSuggestionsFn) {
+      const dd = ensureMergeTagDropdown();
+      __mergeTagActiveInput = input;
+      const all = getSuggestionsFn() || [];
+      const info = getActiveMergeTagToken(input);
+      const q = (info.query || '').toLowerCase();
+      const filtered = q ? all.filter(s => s.toLowerCase().includes(q)) : all;
+      __mergeTagSuggestions = filtered.slice(0, 50);
+      __mergeTagSelectedIndex = 0;
+      renderMergeTagDropdown();
+      positionMergeTagDropdown(input);
+      dd.style.display = '';
+    }
+
+    function hideMergeTagDropdown() {
+      const dd = __mergeTagDropdown;
+      if (dd) dd.style.display = 'none';
+      __mergeTagActiveInput = null;
+    }
+
+    function attachMergeTagAutocomplete(input, getSuggestionsFn) {
+      // Idempotent: a step re-render replaces the input element entirely,
+      // so the flag is safely scoped to the live element and won't leak
+      // listeners across renders.
+      if (!input || input.__mergeTagAttached) return;
+      input.__mergeTagAttached = true;
+      input.setAttribute('autocomplete', 'off');
+      const show = () => showMergeTagDropdown(input, getSuggestionsFn);
+      input.addEventListener('focus', show);
+      input.addEventListener('input', show);
+      input.addEventListener('click', show);
+      input.addEventListener('blur', () => setTimeout(hideMergeTagDropdown, 150));
+      input.addEventListener('keydown', (e) => {
+        if (!__mergeTagDropdown || __mergeTagDropdown.style.display === 'none') return;
+        if (!__mergeTagSuggestions.length) return;
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          __mergeTagSelectedIndex = (__mergeTagSelectedIndex + 1) % __mergeTagSuggestions.length;
+          renderMergeTagDropdown();
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          __mergeTagSelectedIndex = (__mergeTagSelectedIndex - 1 + __mergeTagSuggestions.length) % __mergeTagSuggestions.length;
+          renderMergeTagDropdown();
+        } else if (e.key === 'Enter') {
+          const sug = __mergeTagSuggestions[__mergeTagSelectedIndex];
+          if (sug) {
+            e.preventDefault();
+            applyMergeTagSuggestion(input, sug);
+            hideMergeTagDropdown();
+          }
+        } else if (e.key === 'Escape') {
+          hideMergeTagDropdown();
+        }
+      });
+    }
+
+    function attachStepMergeTagAutocompletes() {
+      // Walk every step and wire any flagged input found inside its
+      // when-filter row or its config form. The step index is bound into
+      // the suggestion-getter so prior steps' outputs are visible but
+      // later (downstream) steps' outputs are not.
+      Automations.steps.forEach((s, idx) => {
+        const fn = () => getMergeTagSuggestions(idx);
+        const whenRoot = document.getElementById('step-when-' + idx);
+        const cfgRoot = document.getElementById('step-cfg-' + idx);
+        if (whenRoot) {
+          whenRoot.querySelectorAll('[data-merge-tag-input]')
+            .forEach(el => attachMergeTagAutocomplete(el, fn));
+        }
+        if (cfgRoot) {
+          cfgRoot.querySelectorAll('[data-merge-tag-input]')
+            .forEach(el => attachMergeTagAutocomplete(el, fn));
+        }
+      });
+    }
+    {% endraw %}
+
     function renderTriggerConfigForm() {
       const sel = document.getElementById('automation-trigger-type');
       const kind = sel.value;
@@ -13420,6 +13717,10 @@ TO CUSTOMIZE THIS DASHBOARD:
           `<option value="${escapeHtml(t)}" ${String(v) === t ? 'selected' : ''}>${escapeHtml(t)}</option>`
         )).join('');
         control = `<select id="${idAttr}" data-cfg-key="${escapeHtml(field.name)}">${opts}</select>`;
+      } else if (field.kind === 'merge_tag_field') {
+        // Plain text input flagged for the merge-tag autocomplete attach pass
+        // (see attachStepMergeTagAutocompletes()).
+        control = `<input type="text" id="${idAttr}" value="${escapeHtml(String(v))}" ${field.placeholder ? 'placeholder="' + escapeHtml(field.placeholder) + '"' : ''} data-cfg-key="${escapeHtml(field.name)}" data-merge-tag-input="1" autocomplete="off">`;
       } else {
         control = `<input type="text" id="${idAttr}" value="${escapeHtml(String(v))}" ${field.placeholder ? 'placeholder="' + escapeHtml(field.placeholder) + '"' : ''} data-cfg-key="${escapeHtml(field.name)}">`;
       }
@@ -13485,6 +13786,9 @@ TO CUSTOMIZE THIS DASHBOARD:
             <div id="${cfgFormId}">${fieldsHtml}</div>
           </div>`;
       }).join('');
+      // Wire merge-tag autocomplete onto every flagged input. Done after
+      // innerHTML so the elements actually exist in the DOM.
+      attachStepMergeTagAutocompletes();
     }
 
     /* Per-step "Only run when…" filter row. Inputs share data-when-key
@@ -13503,7 +13807,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         <details class="form-group" style="margin:0.5rem 0 0.75rem 0; padding:0.5rem 0.75rem; background:rgba(99,102,241,0.06); border:1px dashed rgba(99,102,241,0.35); border-radius:6px;" ${(when.field || isUnary) ? 'open' : ''}>
           <summary style="cursor:pointer; font-size:0.85rem; color:var(--admin-text-muted);" data-testid="summary-step-when-${idx}">Only run when… (optional)</summary>
           <div id="${scopeId}" style="display:flex; gap:0.5rem; align-items:center; margin-top:0.5rem; flex-wrap:wrap;">
-            <input type="text" data-when-key="field" placeholder="{% raw %}{{trigger.fields.plan}}{% endraw %}" value="${escapeHtml(when.field || '')}" style="flex:1 1 200px;" data-testid="input-step-when-field-${idx}">
+            <input type="text" data-when-key="field" data-merge-tag-input="1" autocomplete="off" placeholder="{% raw %}{{trigger.fields.plan}}{% endraw %}" value="${escapeHtml(when.field || '')}" style="flex:1 1 200px;" data-testid="input-step-when-field-${idx}">
             <select data-when-key="operator" onchange="onWhenOperatorChange(${idx}, this.value)" data-testid="select-step-when-op-${idx}">${opOpts}</select>
             <input type="text" data-when-key="value" placeholder="Premium" value="${escapeHtml(when.value || '')}" ${isUnary ? 'disabled style="flex:1 1 160px; opacity:0.5;"' : 'style="flex:1 1 160px;"'} data-testid="input-step-when-value-${idx}">
           </div>

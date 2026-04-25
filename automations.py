@@ -344,7 +344,10 @@ ACTION_TYPES = [
         "kind": "condition",
         "label": "Branch — only continue if a condition is true",
         "config_fields": [
-            {"name": "field", "label": "When this value", "kind": "text", "required": True,
+            # `merge_tag_field` is identical to `text` server-side; the dashboard
+            # uses the kind to attach the merge-tag autocomplete (suggesting
+            # trigger.* paths and prior step outputs).
+            {"name": "field", "label": "When this value", "kind": "merge_tag_field", "required": True,
              "placeholder": "{{trigger.fields.plan}}"},
             {"name": "operator", "label": "matches", "kind": "select",
              "options": CONDITION_OPERATORS},
