@@ -14117,6 +14117,150 @@ TO CUSTOMIZE THIS DASHBOARD:
         }
       });
     }
+
+    /* =====================================================================
+       MERGE-TAG SAVE-TIME VALIDATION
+       Walks every text input / textarea inside each step's when-filter
+       and config scope, extracts every {{path}} token and flags any
+       whose path isn't in that step's suggestion set (same source the
+       autocomplete uses — sample/test trigger payload + prior step
+       outputs). Returns a list of {stepLabel, fieldLabel, path,
+       suggestion} so the caller can surface a non-blocking warning.
+
+       Catches typos like {{trigger.fields.emial}} and forward references
+       like {{step5.text}} from a step 2 filter. Tokens that the run
+       silently evaluates to "" today usually flip a condition to the
+       wrong branch, which is the failure mode this validator targets.
+       ===================================================================== */
+
+    // Mirrors _MERGE_RE in automations.py so this validator flags exactly
+    // the tokens the run-time renderer actually substitutes. Anything that
+    // doesn't match this pattern is left as literal text at run time too,
+    // so it isn't a "merge tag that quietly evaluates to empty" — it's
+    // just user-typed text and outside this validator's scope.
+    const _MERGE_TAG_TOKEN_RE = /\{\{\s*([a-zA-Z0-9_\.]+)\s*\}\}/g;
+
+    function _mergeTagEditDistance(a, b) {
+      if (a === b) return 0;
+      if (!a.length) return b.length;
+      if (!b.length) return a.length;
+      const dp = new Array(b.length + 1);
+      for (let j = 0; j <= b.length; j++) dp[j] = j;
+      for (let i = 1; i <= a.length; i++) {
+        let prev = dp[0];
+        dp[0] = i;
+        for (let j = 1; j <= b.length; j++) {
+          const tmp = dp[j];
+          dp[j] = (a.charAt(i - 1) === b.charAt(j - 1))
+            ? prev
+            : Math.min(prev, dp[j - 1], dp[j]) + 1;
+          prev = tmp;
+        }
+      }
+      return dp[b.length];
+    }
+
+    function _bestMergeTagSuggestion(path, suggestions) {
+      // Cheap "did you mean" — pick the closest path within a sane edit
+      // budget (3 edits, or up to 30% of the path length, whichever is
+      // larger). Anything farther than that is more confusing than
+      // helpful so we leave the suggestion blank.
+      let best = null;
+      let bestD = Infinity;
+      for (const s of suggestions) {
+        const d = _mergeTagEditDistance(path, s);
+        if (d < bestD) { bestD = d; best = s; }
+      }
+      const budget = Math.max(3, Math.floor(path.length * 0.3));
+      return (best && bestD <= budget && bestD > 0) ? best : null;
+    }
+
+    function _describeMergeTagInput(input, scope, stepIdx) {
+      // Try to derive a human-friendly name for this input so the
+      // warning message can pinpoint exactly which field is broken.
+      const ruleKey = input.getAttribute('data-rule-key');
+      if (ruleKey === 'field') {
+        return scope === 'when' ? 'When this value' : 'Condition field';
+      }
+      if (ruleKey === 'value') {
+        return scope === 'when' ? 'When-filter value' : 'Condition value';
+      }
+      const cfgKey = input.getAttribute('data-cfg-key');
+      if (cfgKey) {
+        const step = Automations.steps[stepIdx];
+        const actions = (Automations.metadata && Automations.metadata.actions) || [];
+        const action = actions.find(a => a.kind === (step && step.kind));
+        if (action && Array.isArray(action.config_fields)) {
+          const f = action.config_fields.find(f => f.name === cfgKey);
+          if (f && f.label) return f.label;
+        }
+        return cfgKey;
+      }
+      return 'field';
+    }
+
+    function _validateMergeTagsInScope(scopeRoot, scope, stepIdx, sugSet, suggestions, issues) {
+      if (!scopeRoot) return;
+      const inputs = scopeRoot.querySelectorAll('input[type="text"], textarea');
+      inputs.forEach(input => {
+        const v = input.value || '';
+        if (v.indexOf('{{') === -1) return;
+        const seen = new Set();
+        _MERGE_TAG_TOKEN_RE.lastIndex = 0;
+        let m;
+        while ((m = _MERGE_TAG_TOKEN_RE.exec(v)) !== null) {
+          const path = m[1];
+          if (sugSet.has(path)) continue;
+          if (seen.has(path)) continue;
+          seen.add(path);
+          issues.push({
+            stepIdx,
+            scope,
+            fieldLabel: _describeMergeTagInput(input, scope, stepIdx),
+            path,
+            suggestion: _bestMergeTagSuggestion(path, suggestions),
+          });
+        }
+      });
+    }
+
+    function validateAutomationMergeTags() {
+      const issues = [];
+      Automations.steps.forEach((s, idx) => {
+        const suggestions = getMergeTagSuggestions(idx);
+        const sugSet = new Set(suggestions);
+        const whenRoot = document.getElementById('step-when-' + idx);
+        const cfgRoot = document.getElementById('step-cfg-' + idx);
+        _validateMergeTagsInScope(whenRoot, 'when', idx, sugSet, suggestions, issues);
+        _validateMergeTagsInScope(cfgRoot, 'config', idx, sugSet, suggestions, issues);
+      });
+      return issues;
+    }
+
+    function formatMergeTagWarning(issues) {
+      // Plain text — fed through window.confirm() which doesn't render
+      // HTML. One issue per line, prefixed with the step number and the
+      // field label so the admin can find the offending input fast.
+      const lines = issues.map(it => {
+        const step = Automations.steps[it.stepIdx];
+        const stepName = (step && step.name && step.name.trim()) ? ' "' + step.name.trim() + '"' : '';
+        const sug = it.suggestion ? ' — did you mean {{' + it.suggestion + '}}?' : '';
+        return '• Step ' + (it.stepIdx + 1) + stepName +
+          " '" + it.fieldLabel + "' references {{" + it.path + '}}' + sug;
+      });
+      return [
+        "Some merge tags don't match any field that will exist at run time:",
+        '',
+      ].concat(lines).concat([
+        '',
+        'This usually means a typo or a reference to a step that runs later. ' +
+        'The run will silently turn each unknown tag into an empty string, ' +
+        'which can flip conditions to the wrong branch.',
+        '',
+        'Save anyway? (Click OK if you know the path will exist — e.g. a ' +
+        'webhook payload that varies. Click Cancel to fix the fields first.)',
+      ]).join('\n');
+    }
     {% endraw %}
 
     function renderTriggerConfigForm() {
@@ -14688,6 +14832,16 @@ TO CUSTOMIZE THIS DASHBOARD:
         action_steps: Automations.steps,
       };
       if (!payload.name) { showToast && showToast('Name is required', 'error'); return; }
+      // Non-blocking merge-tag sanity check: catches typos and forward
+      // references that would otherwise render to "" at run time and
+      // silently flip a condition. Admin can still confirm-through if
+      // they know the path will exist (e.g. webhook payload that
+      // varies between hits).
+      const mergeTagIssues = validateAutomationMergeTags();
+      if (mergeTagIssues.length) {
+        const ok = window.confirm(formatMergeTagWarning(mergeTagIssues));
+        if (!ok) return;
+      }
       const id = document.getElementById('automation-id').value;
       const url = id ? '/admin/api/automations/' + id : '/admin/api/automations';
       const method = id ? 'PUT' : 'POST';
