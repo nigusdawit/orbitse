@@ -1025,6 +1025,320 @@ TO CUSTOMIZE THIS DASHBOARD:
       text-transform: uppercase;
       letter-spacing: 0.05em;
     }
+
+    /* =====================================================================
+       OVERVIEW + CUSTOM DASHBOARDS — KPI cards, panels, modals
+       ===================================================================== */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin: 1rem 0 1.5rem 0;
+    }
+    .kpi-card {
+      background: var(--card-bg, #fff);
+      border: 1px solid var(--border, #e5e5e5);
+      border-radius: 12px;
+      padding: 1.1rem 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+      min-height: 96px;
+    }
+    .kpi-card .kpi-label {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted-fg, #888);
+    }
+    .kpi-card .kpi-value {
+      font-size: 1.85rem;
+      font-weight: 700;
+      line-height: 1.1;
+    }
+    .kpi-card .kpi-sub {
+      font-size: 0.78rem;
+      color: var(--muted-fg, #888);
+    }
+    .kpi-card .kpi-sub.up { color: #2e7d32; }
+    .kpi-card .kpi-sub.down { color: #c62828; }
+    .kpi-skeleton {
+      background: linear-gradient(90deg, #f0f0f0 0%, #e6e6e6 50%, #f0f0f0 100%);
+      background-size: 200% 100%;
+      animation: kpiShimmer 1.4s infinite linear;
+      border: 1px solid transparent;
+    }
+    @keyframes kpiShimmer {
+      0%   { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
+    .overview-row {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    @media (max-width: 960px) {
+      .overview-row { grid-template-columns: 1fr; }
+    }
+    .overview-panel {
+      background: var(--card-bg, #fff);
+      border: 1px solid var(--border, #e5e5e5);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .overview-panel-head {
+      padding: 0.85rem 1.1rem;
+      border-bottom: 1px solid var(--border, #e5e5e5);
+    }
+    .overview-panel-head h3 { margin: 0; font-size: 1rem; }
+    .overview-panel-body { padding: 1rem 1.1rem; }
+    .overview-recent-item {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.65rem 0;
+      border-bottom: 1px solid var(--border, #eee);
+      font-size: 0.875rem;
+    }
+    .overview-recent-item:last-child { border-bottom: 0; }
+    .overview-recent-item .ori-meta {
+      color: var(--muted-fg, #888);
+      font-size: 0.78rem;
+      white-space: nowrap;
+    }
+    .overview-empty {
+      color: var(--muted-fg, #888);
+      font-size: 0.875rem;
+      padding: 0.5rem 0;
+    }
+
+    /* Dashboards list grid */
+    .dashboards-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    .dashboard-card {
+      background: var(--card-bg, #fff);
+      border: 1px solid var(--border, #e5e5e5);
+      border-radius: 12px;
+      padding: 1.1rem;
+      cursor: pointer;
+      transition: transform 0.12s ease, box-shadow 0.12s ease;
+    }
+    .dashboard-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 14px rgba(0,0,0,0.06);
+    }
+    .dashboard-card h3 { margin: 0 0 0.35rem 0; font-size: 1.05rem; }
+    .dashboard-card p { margin: 0; font-size: 0.85rem; color: var(--muted-fg, #888); }
+    .dashboard-card .dc-meta {
+      margin-top: 0.65rem;
+      font-size: 0.75rem;
+      color: var(--muted-fg, #888);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .dashboard-empty {
+      grid-column: 1 / -1;
+      padding: 2rem;
+      text-align: center;
+      color: var(--muted-fg, #888);
+      border: 1px dashed var(--border, #ddd);
+      border-radius: 12px;
+    }
+
+    /* Widgets grid */
+    .widgets-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1rem;
+    }
+    .widget-card {
+      background: var(--card-bg, #fff);
+      border: 1px solid var(--border, #e5e5e5);
+      border-radius: 12px;
+      padding: 1rem 1.1rem;
+      display: flex;
+      flex-direction: column;
+      min-height: 160px;
+    }
+    .widget-card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.5rem;
+    }
+    .widget-card-head h4 { margin: 0; font-size: 0.95rem; }
+    .widget-card-actions { display: flex; gap: 0.35rem; }
+    .widget-card-actions button {
+      background: transparent;
+      border: 0;
+      color: var(--muted-fg, #888);
+      cursor: pointer;
+      font-size: 0.78rem;
+      padding: 2px 6px;
+    }
+    .widget-card-actions button:hover { color: var(--text, #111); }
+    .widget-body { flex: 1; min-height: 100px; position: relative; }
+    .widget-body.kpi {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .widget-body .w-kpi-value {
+      font-size: 2.25rem;
+      font-weight: 700;
+      line-height: 1.1;
+    }
+    .widget-body .w-kpi-label {
+      font-size: 0.85rem;
+      color: var(--muted-fg, #888);
+      margin-top: 0.25rem;
+    }
+    .widget-body table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+    .widget-body th, .widget-body td {
+      text-align: left;
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--border, #eee);
+    }
+    .widget-body th {
+      font-weight: 600;
+      color: var(--muted-fg, #888);
+      text-transform: uppercase;
+      font-size: 0.7rem;
+      letter-spacing: 0.04em;
+    }
+    .widget-error {
+      color: #c62828;
+      font-size: 0.85rem;
+      padding: 0.5rem;
+      background: #fff5f5;
+      border-radius: 6px;
+    }
+
+    /* Generic modal used by dashboards/widgets/connections */
+    .db-modal {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .db-modal-card {
+      background: #fff;
+      border-radius: 12px;
+      width: 100%;
+      max-width: 480px;
+      max-height: 90vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+    }
+    .db-modal-card-wide { max-width: 720px; }
+    .db-modal-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.9rem 1.2rem;
+      border-bottom: 1px solid var(--border, #e5e5e5);
+    }
+    .db-modal-head h3 { margin: 0; font-size: 1.05rem; }
+    .db-modal-close {
+      background: transparent;
+      border: 0;
+      font-size: 1.5rem;
+      cursor: pointer;
+      line-height: 1;
+      color: var(--muted-fg, #888);
+    }
+    .db-modal-body {
+      padding: 1.1rem 1.2rem;
+      overflow-y: auto;
+    }
+    .db-modal-body label {
+      display: block;
+      margin-bottom: 0.85rem;
+      font-size: 0.85rem;
+      font-weight: 500;
+    }
+    .db-modal-body input[type="text"],
+    .db-modal-body textarea,
+    .db-modal-body select {
+      display: block;
+      width: 100%;
+      margin-top: 0.3rem;
+      padding: 0.55rem 0.7rem;
+      border: 1px solid var(--border, #ddd);
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 0.9rem;
+      background: #fff;
+    }
+    .db-modal-body textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .db-form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.8rem;
+    }
+    @media (max-width: 600px) {
+      .db-form-row { grid-template-columns: 1fr; }
+    }
+    .db-modal-foot {
+      padding: 0.9rem 1.2rem;
+      border-top: 1px solid var(--border, #e5e5e5);
+      display: flex;
+      gap: 0.5rem;
+      justify-content: flex-end;
+      align-items: center;
+    }
+    .widget-source-panel { margin-top: 0.5rem; }
+    .widget-hint {
+      font-size: 0.78rem;
+      color: var(--muted-fg, #888);
+      margin: 0.4rem 0 0 0;
+    }
+    .widget-preview {
+      margin-top: 1rem;
+      padding: 0.85rem;
+      border: 1px dashed var(--border, #ddd);
+      border-radius: 8px;
+      background: #fafafa;
+      font-size: 0.85rem;
+    }
+    .conn-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.55rem 0;
+      border-bottom: 1px solid var(--border, #eee);
+      font-size: 0.875rem;
+    }
+    .conn-row:last-child { border-bottom: 0; }
+    .conn-row .conn-meta {
+      color: var(--muted-fg, #888);
+      font-size: 0.78rem;
+    }
+    .btn-link {
+      background: transparent;
+      border: 0;
+      color: var(--accent, #4a6cf7);
+      cursor: pointer;
+      font-size: 0.875rem;
+      padding: 0.35rem 0.5rem;
+    }
+    .btn-link:hover { text-decoration: underline; }
   </style>
 </head>
 
@@ -1063,8 +1377,18 @@ TO CUSTOMIZE THIS DASHBOARD:
   Vertical menu grouped by function. Each button switches to its tab panel.
   -->
   <nav class="sidebar" id="admin-sidebar" role="navigation" aria-label="Admin navigation">
+    <div class="sidebar-group-label">Insights</div>
+    <button class="tab-btn active" onclick="switchTab('overview', this); loadOverview();" data-testid="tab-overview">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
+      Overview
+    </button>
+    <button class="tab-btn" onclick="switchTab('dashboards', this); loadDashboards();" data-testid="tab-dashboards">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+      Custom Dashboards
+    </button>
+
     <div class="sidebar-group-label">Layout</div>
-    <button class="tab-btn active" onclick="switchTab('page-layout', this)" data-testid="tab-page-layout">
+    <button class="tab-btn" onclick="switchTab('page-layout', this)" data-testid="tab-page-layout">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
       Page Layout
     </button>
@@ -1184,7 +1508,252 @@ TO CUSTOMIZE THIS DASHBOARD:
   Shows all sections (built-in and custom) as draggable rows.
   Admins can reorder, toggle visibility, and create custom sections.
   -->
-  <div id="tab-page-layout" class="tab-content active">
+  <!--
+  ========================================================================
+  OVERVIEW TAB — landing dashboard with KPI cards + recent submissions
+  ========================================================================
+  Loaded on demand by loadOverview(). Shows visitors, leads, chats,
+  revenue (if any), a 14-day visitor sparkline, and the latest leads.
+  -->
+  <div id="tab-overview" class="tab-content active">
+    <div class="content-header">
+      <h2>Overview</h2>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <span id="overview-updated" style="font-size:0.8125rem; color:var(--muted-fg, #888);"></span>
+        <button class="btn-secondary" onclick="loadOverview()" data-testid="button-overview-refresh">Refresh</button>
+      </div>
+    </div>
+
+    <div class="kpi-grid" id="overview-kpi-grid">
+      <!-- Filled by loadOverview() -->
+      <div class="kpi-card kpi-skeleton"></div>
+      <div class="kpi-card kpi-skeleton"></div>
+      <div class="kpi-card kpi-skeleton"></div>
+      <div class="kpi-card kpi-skeleton"></div>
+    </div>
+
+    <div class="overview-row">
+      <div class="overview-panel">
+        <div class="overview-panel-head">
+          <h3>Visitors, last 14 days</h3>
+        </div>
+        <div class="overview-panel-body" style="height: 260px;">
+          <canvas id="overview-trend-chart"></canvas>
+        </div>
+      </div>
+      <div class="overview-panel">
+        <div class="overview-panel-head">
+          <h3>Recent submissions</h3>
+        </div>
+        <div class="overview-panel-body">
+          <div id="overview-recent-list" data-testid="list-overview-recent">
+            <div class="overview-empty">Loading…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!--
+  ========================================================================
+  CUSTOM DASHBOARDS TAB — admin-built KPI/chart boards
+  ========================================================================
+  Three views inside one tab:
+    1. Dashboard list  (#dashboards-list-view)
+    2. Dashboard editor / viewer for a selected board (#dashboard-detail-view)
+    3. Connections manager (modal)
+  Widget editor is also a modal.
+  -->
+  <div id="tab-dashboards" class="tab-content">
+    <div id="dashboards-list-view">
+      <div class="content-header">
+        <h2>Custom Dashboards</h2>
+        <div style="display:flex; gap:0.5rem;">
+          <button class="btn-secondary" onclick="openConnectionsModal()" data-testid="button-manage-connections">Data Connections</button>
+          <button class="btn-primary" onclick="openCreateDashboardModal()" data-testid="button-create-dashboard">New Dashboard</button>
+        </div>
+      </div>
+
+      <p style="color: var(--muted-fg, #888); max-width: 60ch;">
+        Build your own dashboards with cards and charts. Pull numbers from this
+        site's built-in metrics, your own outside database, or a REST endpoint.
+      </p>
+
+      <div id="dashboards-grid" class="dashboards-grid">
+        <div class="dashboard-empty">Loading…</div>
+      </div>
+    </div>
+
+    <div id="dashboard-detail-view" style="display:none;">
+      <div class="content-header">
+        <button class="btn-link" onclick="closeDashboardDetail()" data-testid="button-back-dashboards">&larr; All dashboards</button>
+        <div style="display:flex; gap:0.5rem; flex-wrap: wrap;">
+          <button class="btn-secondary" onclick="refreshAllWidgets()" data-testid="button-refresh-widgets">Refresh</button>
+          <button class="btn-secondary" onclick="openEditDashboardModal()" data-testid="button-edit-dashboard">Rename</button>
+          <button class="btn-primary" onclick="openWidgetEditor(null)" data-testid="button-add-widget">Add Widget</button>
+          <button class="btn-danger" onclick="deleteCurrentDashboard()" data-testid="button-delete-dashboard">Delete</button>
+        </div>
+      </div>
+      <h2 id="dashboard-detail-title" style="margin: 0 0 0.25rem 0;"></h2>
+      <p id="dashboard-detail-description" style="color: var(--muted-fg, #888); margin: 0 0 1.25rem 0;"></p>
+      <div id="dashboard-widgets-grid" class="widgets-grid"></div>
+    </div>
+  </div>
+
+  <!-- Modals for Custom Dashboards -->
+  <div id="dashboard-modal" class="db-modal" style="display:none;">
+    <div class="db-modal-card">
+      <div class="db-modal-head">
+        <h3 id="dashboard-modal-title">New Dashboard</h3>
+        <button class="db-modal-close" onclick="closeDashboardModal()" aria-label="Close">&times;</button>
+      </div>
+      <div class="db-modal-body">
+        <label>Name
+          <input type="text" id="dashboard-modal-name" data-testid="input-dashboard-name" placeholder="e.g. Weekly Operations">
+        </label>
+        <label>Description (optional)
+          <textarea id="dashboard-modal-description" rows="2" data-testid="input-dashboard-description"></textarea>
+        </label>
+      </div>
+      <div class="db-modal-foot">
+        <button class="btn-secondary" onclick="closeDashboardModal()">Cancel</button>
+        <button class="btn-primary" onclick="saveDashboardModal()" data-testid="button-save-dashboard">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="widget-modal" class="db-modal" style="display:none;">
+    <div class="db-modal-card db-modal-card-wide">
+      <div class="db-modal-head">
+        <h3 id="widget-modal-title">New Widget</h3>
+        <button class="db-modal-close" onclick="closeWidgetModal()" aria-label="Close">&times;</button>
+      </div>
+      <div class="db-modal-body">
+        <div class="db-form-row">
+          <label>Title
+            <input type="text" id="widget-name" data-testid="input-widget-name" placeholder="e.g. Visitors this week">
+          </label>
+          <label>Display as
+            <select id="widget-type" data-testid="select-widget-type" onchange="onWidgetTypeChange()">
+              <option value="kpi">Big number (KPI)</option>
+              <option value="line">Line chart</option>
+              <option value="bar">Bar chart</option>
+              <option value="table">Table</option>
+            </select>
+          </label>
+        </div>
+        <label>Data source
+          <select id="widget-source-type" data-testid="select-widget-source" onchange="onWidgetSourceChange()">
+            <option value="builtin">Built-in metric (this site)</option>
+            <option value="external_postgres">External Postgres database</option>
+            <option value="external_rest">REST API endpoint</option>
+          </select>
+        </label>
+
+        <!-- Built-in metric panel -->
+        <div id="widget-source-builtin" class="widget-source-panel">
+          <div class="db-form-row">
+            <label>Metric
+              <select id="widget-builtin-metric" data-testid="select-widget-metric"></select>
+            </label>
+            <label>Time range
+              <select id="widget-builtin-range" data-testid="select-widget-range">
+                <option value="1d">Last 24 hours</option>
+                <option value="7d" selected>Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="90d">Last 90 days</option>
+                <option value="all">All time</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <!-- External Postgres panel -->
+        <div id="widget-source-external_postgres" class="widget-source-panel" style="display:none;">
+          <label>Connection
+            <select id="widget-pg-connection" data-testid="select-widget-pg-conn"></select>
+          </label>
+          <label>SQL query (SELECT only)
+            <textarea id="widget-pg-query" rows="6" data-testid="input-widget-pg-query"
+              placeholder="SELECT day, COUNT(*) FROM events GROUP BY day ORDER BY day"></textarea>
+          </label>
+          <p class="widget-hint">
+            For KPIs, the first cell of the first row is used. For charts, the
+            first column is the label and the second is the value.
+          </p>
+        </div>
+
+        <!-- REST panel -->
+        <div id="widget-source-external_rest" class="widget-source-panel" style="display:none;">
+          <label>Connection
+            <select id="widget-rest-connection" data-testid="select-widget-rest-conn"></select>
+          </label>
+          <label>Path (appended to base URL)
+            <input type="text" id="widget-rest-path" placeholder="/v1/metrics/active-users" data-testid="input-widget-rest-path">
+          </label>
+          <label>Value path (for KPI; dot notation, e.g. data.0.count)
+            <input type="text" id="widget-rest-value-path" placeholder="data.count" data-testid="input-widget-rest-value">
+          </label>
+        </div>
+
+        <div id="widget-preview" class="widget-preview" style="display:none;"></div>
+      </div>
+      <div class="db-modal-foot">
+        <button class="btn-link" onclick="previewWidget()" data-testid="button-preview-widget">Preview</button>
+        <div style="flex:1"></div>
+        <button class="btn-secondary" onclick="closeWidgetModal()">Cancel</button>
+        <button class="btn-primary" onclick="saveWidgetModal()" data-testid="button-save-widget">Save Widget</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="connections-modal" class="db-modal" style="display:none;">
+    <div class="db-modal-card db-modal-card-wide">
+      <div class="db-modal-head">
+        <h3>Data Connections</h3>
+        <button class="db-modal-close" onclick="closeConnectionsModal()" aria-label="Close">&times;</button>
+      </div>
+      <div class="db-modal-body">
+        <p style="color:var(--muted-fg,#888); margin-top:0;">
+          Add an outside Postgres database or a REST endpoint. Credentials are
+          encrypted before they touch the database.
+        </p>
+        <div id="connections-list" data-testid="list-connections"></div>
+        <hr>
+        <h4 style="margin-bottom:0.5rem;">Add new connection</h4>
+        <div class="db-form-row">
+          <label>Name
+            <input type="text" id="conn-name" placeholder="e.g. Reporting warehouse" data-testid="input-conn-name">
+          </label>
+          <label>Kind
+            <select id="conn-kind" onchange="onConnKindChange()" data-testid="select-conn-kind">
+              <option value="postgres">Postgres database (URL)</option>
+              <option value="rest">REST API endpoint</option>
+            </select>
+          </label>
+        </div>
+        <div id="conn-postgres-fields">
+          <label>Connection URL
+            <input type="text" id="conn-pg-url" placeholder="postgres://user:pass@host:5432/db" data-testid="input-conn-pg-url">
+          </label>
+        </div>
+        <div id="conn-rest-fields" style="display:none;">
+          <label>Base URL
+            <input type="text" id="conn-rest-url" placeholder="https://api.example.com" data-testid="input-conn-rest-url">
+          </label>
+          <label>Headers (JSON, e.g. {"Authorization":"Bearer abc"})
+            <textarea id="conn-rest-headers" rows="3" data-testid="input-conn-rest-headers">{}</textarea>
+          </label>
+        </div>
+      </div>
+      <div class="db-modal-foot">
+        <button class="btn-secondary" onclick="closeConnectionsModal()">Close</button>
+        <button class="btn-primary" onclick="saveNewConnection()" data-testid="button-save-connection">Add Connection</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-page-layout" class="tab-content">
     <div class="section-header-admin">
       <div>
         <h2>Page Layout</h2>
@@ -4057,6 +4626,8 @@ TO CUSTOMIZE THIS DASHBOARD:
 
   <!-- SortableJS CDN for drag-and-drop reordering -->
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.3/Sortable.min.js"></script>
+  <!-- Chart.js — used by the Overview and Custom Dashboards tabs -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
   <script>
     /*
@@ -8968,6 +9539,673 @@ TO CUSTOMIZE THIS DASHBOARD:
     /* Click outside the modal panel to close. */
     document.getElementById('media-picker-modal')?.addEventListener('click', (e) => {
       if (e.target.id === 'media-picker-modal') closeMediaPicker();
+    });
+
+    /* =====================================================================
+       OVERVIEW TAB
+       ===================================================================== */
+    let __overviewTrendChart = null;
+
+    function _fmtNumber(n) {
+      if (n === null || n === undefined) return '0';
+      const num = Number(n);
+      if (!isFinite(num)) return String(n);
+      if (Math.abs(num) >= 1000) return num.toLocaleString();
+      return String(Math.round(num * 100) / 100);
+    }
+    function _fmtMoney(n) {
+      const num = Number(n) || 0;
+      return '$' + num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    function _fmtRelative(iso) {
+      if (!iso) return '';
+      const t = new Date(iso).getTime();
+      if (!t) return '';
+      const diff = Math.max(0, Date.now() - t) / 1000;
+      if (diff < 60) return 'just now';
+      if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+      if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+      return Math.floor(diff / 86400) + 'd ago';
+    }
+
+    async function loadOverview() {
+      const grid = document.getElementById('overview-kpi-grid');
+      if (grid) {
+        grid.innerHTML = '<div class="kpi-card kpi-skeleton"></div>'.repeat(4);
+      }
+      try {
+        const res = await fetch('/admin/api/overview/stats', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        renderOverviewKPIs(data);
+        renderOverviewTrend(data.visitor_trend || []);
+        renderOverviewRecent(data.recent_submissions || []);
+        const updatedEl = document.getElementById('overview-updated');
+        if (updatedEl) updatedEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      } catch (e) {
+        console.error('overview load failed', e);
+        if (grid) grid.innerHTML = '<div class="overview-empty">Could not load overview stats.</div>';
+      }
+    }
+
+    function renderOverviewKPIs(d) {
+      const grid = document.getElementById('overview-kpi-grid');
+      if (!grid) return;
+      const cards = [
+        { label: 'Visitors today',   value: _fmtNumber(d.visitors_today), sub: _fmtNumber(d.visitors_week) + ' this week' },
+        { label: 'Page views today', value: _fmtNumber(d.pageviews_today), sub: '' },
+        { label: 'New leads today',  value: _fmtNumber(d.leads_today),    sub: _fmtNumber(d.leads_week) + ' this week' },
+        { label: 'Chat sessions today', value: _fmtNumber(d.chats_today), sub: _fmtNumber(d.chats_week) + ' this week' },
+      ];
+      if ((d.revenue_week || 0) > 0 || (d.revenue_today || 0) > 0) {
+        cards.push({ label: 'Revenue today', value: _fmtMoney(d.revenue_today), sub: _fmtMoney(d.revenue_week) + ' this week' });
+      }
+      grid.innerHTML = cards.map((c, i) => `
+        <div class="kpi-card" data-testid="kpi-card-${i}">
+          <div class="kpi-label">${escapeHTML(c.label)}</div>
+          <div class="kpi-value" data-testid="kpi-value-${i}">${escapeHTML(c.value)}</div>
+          <div class="kpi-sub">${escapeHTML(c.sub)}</div>
+        </div>
+      `).join('');
+    }
+
+    function renderOverviewTrend(trend) {
+      const canvas = document.getElementById('overview-trend-chart');
+      if (!canvas || typeof Chart === 'undefined') return;
+      const labels = trend.map(p => p.day);
+      const values = trend.map(p => p.n);
+      if (__overviewTrendChart) {
+        __overviewTrendChart.data.labels = labels;
+        __overviewTrendChart.data.datasets[0].data = values;
+        __overviewTrendChart.update();
+        return;
+      }
+      __overviewTrendChart = new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Visitors',
+            data: values,
+            borderColor: '#4a6cf7',
+            backgroundColor: 'rgba(74, 108, 247, 0.12)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 2,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: { beginAtZero: true, ticks: { precision: 0 } },
+            x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 7 } },
+          },
+        },
+      });
+    }
+
+    function renderOverviewRecent(items) {
+      const container = document.getElementById('overview-recent-list');
+      if (!container) return;
+      if (!items.length) {
+        container.innerHTML = '<div class="overview-empty">No submissions yet.</div>';
+        return;
+      }
+      container.innerHTML = items.map(it => `
+        <div class="overview-recent-item" data-testid="recent-item-${it.id}">
+          <div>
+            <div style="font-weight:500;">${escapeHTML(it.form_name)}</div>
+            <div style="color:var(--muted-fg,#888); font-size:0.8rem;">${escapeHTML(it.preview || '—')}</div>
+          </div>
+          <div class="ori-meta">${escapeHTML(_fmtRelative(it.submitted_at))}</div>
+        </div>
+      `).join('');
+    }
+
+    /* =====================================================================
+       CUSTOM DASHBOARDS
+       ===================================================================== */
+    let __dashboardsList = [];
+    let __currentDashboard = null;        // { id, name, description, widgets: [...] }
+    let __builtinMetricsCatalog = [];     // [{key, default_type, label}, ...]
+    let __externalConnections = [];       // [{id, name, kind}, ...]
+    let __editingWidgetId = null;         // null means creating
+    const __widgetCharts = {};            // widget_id -> Chart instance
+
+    async function loadDashboards() {
+      // Fetch the metrics catalog and connections lazily once.
+      if (!__builtinMetricsCatalog.length) {
+        try {
+          const r = await fetch('/admin/api/dashboards/builtin-metrics', { credentials: 'same-origin' });
+          if (r.ok) __builtinMetricsCatalog = await r.json();
+        } catch (e) { /* non-fatal */ }
+      }
+      try {
+        const r = await fetch('/admin/api/external-connections', { credentials: 'same-origin' });
+        if (r.ok) __externalConnections = await r.json();
+      } catch (e) { /* non-fatal */ }
+
+      try {
+        const res = await fetch('/admin/api/dashboards', { credentials: 'same-origin' });
+        __dashboardsList = res.ok ? await res.json() : [];
+      } catch (e) {
+        __dashboardsList = [];
+      }
+      renderDashboardsList();
+    }
+
+    function renderDashboardsList() {
+      const grid = document.getElementById('dashboards-grid');
+      if (!grid) return;
+      if (!__dashboardsList.length) {
+        grid.innerHTML = `<div class="dashboard-empty">
+          No dashboards yet. Click <strong>New Dashboard</strong> to build your first one.
+        </div>`;
+        return;
+      }
+      grid.innerHTML = __dashboardsList.map(d => `
+        <div class="dashboard-card" onclick="openDashboardDetail(${d.id})" data-testid="card-dashboard-${d.id}">
+          <h3>${escapeHTML(d.name)}</h3>
+          <p>${escapeHTML(d.description || 'No description')}</p>
+          <div class="dc-meta">Created ${escapeHTML((d.created_at || '').slice(0, 10))}</div>
+        </div>
+      `).join('');
+    }
+
+    /* ----- Dashboard create / edit / delete modal ----- */
+    function openCreateDashboardModal() {
+      __editingDashboardId = null;
+      document.getElementById('dashboard-modal-title').textContent = 'New Dashboard';
+      document.getElementById('dashboard-modal-name').value = '';
+      document.getElementById('dashboard-modal-description').value = '';
+      document.getElementById('dashboard-modal').style.display = 'flex';
+    }
+    let __editingDashboardId = null;
+    function openEditDashboardModal() {
+      if (!__currentDashboard) return;
+      __editingDashboardId = __currentDashboard.id;
+      document.getElementById('dashboard-modal-title').textContent = 'Edit Dashboard';
+      document.getElementById('dashboard-modal-name').value = __currentDashboard.name;
+      document.getElementById('dashboard-modal-description').value = __currentDashboard.description || '';
+      document.getElementById('dashboard-modal').style.display = 'flex';
+    }
+    function closeDashboardModal() {
+      document.getElementById('dashboard-modal').style.display = 'none';
+    }
+    async function saveDashboardModal() {
+      const name = document.getElementById('dashboard-modal-name').value.trim();
+      const description = document.getElementById('dashboard-modal-description').value.trim();
+      if (!name) { alert('Please enter a name.'); return; }
+      try {
+        if (__editingDashboardId) {
+          const r = await fetch('/admin/api/dashboards/' + __editingDashboardId, {
+            method: 'PUT',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, description }),
+          });
+          if (!r.ok) throw new Error((await r.json()).error || 'Save failed');
+          closeDashboardModal();
+          await openDashboardDetail(__editingDashboardId);
+          await loadDashboards();
+        } else {
+          const r = await fetch('/admin/api/dashboards', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, description }),
+          });
+          if (!r.ok) throw new Error((await r.json()).error || 'Save failed');
+          const created = await r.json();
+          closeDashboardModal();
+          await loadDashboards();
+          await openDashboardDetail(created.id);
+        }
+      } catch (e) {
+        alert('Could not save: ' + e.message);
+      }
+    }
+
+    async function deleteCurrentDashboard() {
+      if (!__currentDashboard) return;
+      if (!confirm('Delete this dashboard and all its widgets? This cannot be undone.')) return;
+      try {
+        const r = await fetch('/admin/api/dashboards/' + __currentDashboard.id, {
+          method: 'DELETE', credentials: 'same-origin',
+        });
+        if (!r.ok) throw new Error('Delete failed');
+        closeDashboardDetail();
+        await loadDashboards();
+      } catch (e) {
+        alert('Delete failed: ' + e.message);
+      }
+    }
+
+    /* ----- Dashboard detail (the board itself) ----- */
+    async function openDashboardDetail(id) {
+      try {
+        const r = await fetch('/admin/api/dashboards/' + id, { credentials: 'same-origin' });
+        if (!r.ok) throw new Error('Load failed');
+        __currentDashboard = await r.json();
+        document.getElementById('dashboards-list-view').style.display = 'none';
+        document.getElementById('dashboard-detail-view').style.display = 'block';
+        document.getElementById('dashboard-detail-title').textContent = __currentDashboard.name;
+        document.getElementById('dashboard-detail-description').textContent = __currentDashboard.description || '';
+        renderDashboardWidgets();
+      } catch (e) {
+        alert('Could not open dashboard: ' + e.message);
+      }
+    }
+
+    function closeDashboardDetail() {
+      __currentDashboard = null;
+      // Tear down chart instances to avoid leaks.
+      Object.values(__widgetCharts).forEach(c => { try { c.destroy(); } catch(e){} });
+      Object.keys(__widgetCharts).forEach(k => delete __widgetCharts[k]);
+      document.getElementById('dashboard-detail-view').style.display = 'none';
+      document.getElementById('dashboards-list-view').style.display = 'block';
+    }
+
+    function renderDashboardWidgets() {
+      const grid = document.getElementById('dashboard-widgets-grid');
+      if (!grid || !__currentDashboard) return;
+      const widgets = __currentDashboard.widgets || [];
+      if (!widgets.length) {
+        grid.innerHTML = `<div class="dashboard-empty">
+          No widgets yet. Click <strong>Add Widget</strong> to add one.
+        </div>`;
+        return;
+      }
+      grid.innerHTML = widgets.map(w => `
+        <div class="widget-card" data-widget-id="${w.id}" data-testid="widget-card-${w.id}">
+          <div class="widget-card-head">
+            <h4>${escapeHTML(w.name)}</h4>
+            <div class="widget-card-actions">
+              <button onclick="runWidget(${w.id})" data-testid="button-widget-refresh-${w.id}">Refresh</button>
+              <button onclick="openWidgetEditor(${w.id})" data-testid="button-widget-edit-${w.id}">Edit</button>
+              <button onclick="deleteWidget(${w.id})" data-testid="button-widget-delete-${w.id}">Delete</button>
+            </div>
+          </div>
+          <div class="widget-body" id="widget-body-${w.id}">
+            <div class="overview-empty">Loading…</div>
+          </div>
+        </div>
+      `).join('');
+      widgets.forEach(w => runWidget(w.id));
+    }
+
+    function refreshAllWidgets() {
+      if (!__currentDashboard) return;
+      (__currentDashboard.widgets || []).forEach(w => runWidget(w.id));
+    }
+
+    async function runWidget(widgetId) {
+      const widget = (__currentDashboard?.widgets || []).find(x => x.id === widgetId);
+      const body = document.getElementById('widget-body-' + widgetId);
+      if (!body) return;
+      body.innerHTML = '<div class="overview-empty">Loading…</div>';
+      try {
+        const r = await fetch('/admin/api/dashboards/widgets/' + widgetId + '/run', {
+          method: 'POST', credentials: 'same-origin',
+        });
+        const payload = await r.json();
+        if (!r.ok) throw new Error(payload.error || 'Run failed');
+        renderWidgetData(widgetId, widget?.widget_type || payload.widget_type, payload.data);
+      } catch (e) {
+        body.innerHTML = '<div class="widget-error">' + escapeHTML(e.message) + '</div>';
+      }
+    }
+
+    function renderWidgetData(widgetId, widgetType, data) {
+      const body = document.getElementById('widget-body-' + widgetId);
+      if (!body) return;
+      // Tear down any existing chart on this widget before re-rendering.
+      if (__widgetCharts[widgetId]) {
+        try { __widgetCharts[widgetId].destroy(); } catch(e) {}
+        delete __widgetCharts[widgetId];
+      }
+      if (widgetType === 'kpi') {
+        body.className = 'widget-body kpi';
+        body.innerHTML = `
+          <div class="w-kpi-value" data-testid="widget-kpi-value-${widgetId}">${escapeHTML(_fmtNumber(data.value))}</div>
+          <div class="w-kpi-label">${escapeHTML(data.label || '')}</div>
+        `;
+        return;
+      }
+      body.className = 'widget-body';
+      if (widgetType === 'table') {
+        const cols = data.columns || [];
+        const rows = data.rows || [];
+        if (!rows.length) {
+          body.innerHTML = '<div class="overview-empty">No rows.</div>';
+          return;
+        }
+        body.innerHTML = `
+          <div style="max-height: 240px; overflow-y: auto;">
+            <table>
+              <thead><tr>${cols.map(c => `<th>${escapeHTML(String(c))}</th>`).join('')}</tr></thead>
+              <tbody>${rows.map(r => `<tr>${r.map(cell => `<td>${escapeHTML(String(cell ?? ''))}</td>`).join('')}</tr>`).join('')}</tbody>
+            </table>
+          </div>`;
+        return;
+      }
+      if (widgetType === 'line' || widgetType === 'bar') {
+        body.innerHTML = '<div style="height: 220px;"><canvas></canvas></div>';
+        const canvas = body.querySelector('canvas');
+        if (!canvas || typeof Chart === 'undefined') return;
+        __widgetCharts[widgetId] = new Chart(canvas.getContext('2d'), {
+          type: widgetType,
+          data: {
+            labels: data.labels || [],
+            datasets: [{
+              label: '',
+              data: data.values || [],
+              borderColor: '#4a6cf7',
+              backgroundColor: widgetType === 'bar' ? '#4a6cf7' : 'rgba(74,108,247,0.15)',
+              fill: widgetType === 'line',
+              tension: 0.3,
+              pointRadius: 2,
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              y: { beginAtZero: true },
+              x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
+            },
+          },
+        });
+      }
+    }
+
+    /* ----- Widget editor modal ----- */
+    function _populateBuiltinMetricSelect() {
+      const sel = document.getElementById('widget-builtin-metric');
+      if (!sel) return;
+      sel.innerHTML = __builtinMetricsCatalog.map(m =>
+        `<option value="${m.key}" data-default-type="${m.default_type}">${escapeHTML(m.label)}</option>`
+      ).join('');
+    }
+
+    function _populateConnectionSelects() {
+      const pgSel = document.getElementById('widget-pg-connection');
+      const restSel = document.getElementById('widget-rest-connection');
+      const pgConns = __externalConnections.filter(c => c.kind === 'postgres');
+      const restConns = __externalConnections.filter(c => c.kind === 'rest');
+      if (pgSel) pgSel.innerHTML = pgConns.length
+        ? pgConns.map(c => `<option value="${c.id}">${escapeHTML(c.name)}</option>`).join('')
+        : '<option value="">— No Postgres connections (add one in Data Connections) —</option>';
+      if (restSel) restSel.innerHTML = restConns.length
+        ? restConns.map(c => `<option value="${c.id}">${escapeHTML(c.name)}</option>`).join('')
+        : '<option value="">— No REST connections (add one in Data Connections) —</option>';
+    }
+
+    function openWidgetEditor(widgetId) {
+      if (!__currentDashboard) return;
+      __editingWidgetId = widgetId;
+      _populateBuiltinMetricSelect();
+      _populateConnectionSelects();
+      document.getElementById('widget-preview').style.display = 'none';
+      document.getElementById('widget-preview').innerHTML = '';
+
+      if (widgetId) {
+        const w = (__currentDashboard.widgets || []).find(x => x.id === widgetId);
+        if (!w) return;
+        document.getElementById('widget-modal-title').textContent = 'Edit Widget';
+        document.getElementById('widget-name').value = w.name;
+        document.getElementById('widget-type').value = w.widget_type;
+        document.getElementById('widget-source-type').value = w.source_type;
+        const cfg = w.source_config || {};
+        if (w.source_type === 'builtin') {
+          if (cfg.metric) document.getElementById('widget-builtin-metric').value = cfg.metric;
+          if (cfg.range)  document.getElementById('widget-builtin-range').value  = cfg.range;
+        } else if (w.source_type === 'external_postgres') {
+          if (cfg.connection_id) document.getElementById('widget-pg-connection').value = cfg.connection_id;
+          document.getElementById('widget-pg-query').value = cfg.query || '';
+        } else if (w.source_type === 'external_rest') {
+          if (cfg.connection_id) document.getElementById('widget-rest-connection').value = cfg.connection_id;
+          document.getElementById('widget-rest-path').value = cfg.path || '';
+          document.getElementById('widget-rest-value-path').value = cfg.value_path || '';
+        }
+      } else {
+        document.getElementById('widget-modal-title').textContent = 'New Widget';
+        document.getElementById('widget-name').value = '';
+        document.getElementById('widget-type').value = 'kpi';
+        document.getElementById('widget-source-type').value = 'builtin';
+        document.getElementById('widget-builtin-range').value = '7d';
+        document.getElementById('widget-pg-query').value = '';
+        document.getElementById('widget-rest-path').value = '';
+        document.getElementById('widget-rest-value-path').value = '';
+      }
+      onWidgetSourceChange();
+      document.getElementById('widget-modal').style.display = 'flex';
+    }
+    function closeWidgetModal() {
+      document.getElementById('widget-modal').style.display = 'none';
+    }
+
+    function onWidgetSourceChange() {
+      const src = document.getElementById('widget-source-type').value;
+      ['builtin', 'external_postgres', 'external_rest'].forEach(k => {
+        const panel = document.getElementById('widget-source-' + k);
+        if (panel) panel.style.display = (k === src) ? 'block' : 'none';
+      });
+    }
+    function onWidgetTypeChange() { /* Reserved for future per-type UI tweaks. */ }
+
+    function _collectWidgetForm() {
+      const name = document.getElementById('widget-name').value.trim();
+      const widget_type = document.getElementById('widget-type').value;
+      const source_type = document.getElementById('widget-source-type').value;
+      let source_config = {};
+      if (source_type === 'builtin') {
+        source_config = {
+          metric: document.getElementById('widget-builtin-metric').value,
+          range:  document.getElementById('widget-builtin-range').value,
+        };
+      } else if (source_type === 'external_postgres') {
+        source_config = {
+          connection_id: parseInt(document.getElementById('widget-pg-connection').value, 10) || null,
+          query: document.getElementById('widget-pg-query').value.trim(),
+        };
+      } else if (source_type === 'external_rest') {
+        source_config = {
+          connection_id: parseInt(document.getElementById('widget-rest-connection').value, 10) || null,
+          path: document.getElementById('widget-rest-path').value.trim(),
+          value_path: document.getElementById('widget-rest-value-path').value.trim(),
+        };
+      }
+      return { name, widget_type, source_type, source_config };
+    }
+
+    async function saveWidgetModal() {
+      if (!__currentDashboard) return;
+      const payload = _collectWidgetForm();
+      if (!payload.name) { alert('Please enter a title.'); return; }
+      try {
+        let url, method;
+        if (__editingWidgetId) {
+          url = `/admin/api/dashboards/${__currentDashboard.id}/widgets/${__editingWidgetId}`;
+          method = 'PUT';
+        } else {
+          url = `/admin/api/dashboards/${__currentDashboard.id}/widgets`;
+          method = 'POST';
+        }
+        const r = await fetch(url, {
+          method, credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!r.ok) throw new Error((await r.json()).error || 'Save failed');
+        closeWidgetModal();
+        await openDashboardDetail(__currentDashboard.id); // refresh widgets
+      } catch (e) {
+        alert('Could not save widget: ' + e.message);
+      }
+    }
+
+    async function deleteWidget(widgetId) {
+      if (!__currentDashboard) return;
+      if (!confirm('Delete this widget?')) return;
+      try {
+        const r = await fetch(
+          `/admin/api/dashboards/${__currentDashboard.id}/widgets/${widgetId}`,
+          { method: 'DELETE', credentials: 'same-origin' });
+        if (!r.ok) throw new Error('Delete failed');
+        await openDashboardDetail(__currentDashboard.id);
+      } catch (e) {
+        alert('Delete failed: ' + e.message);
+      }
+    }
+
+    /* Live-preview a widget without saving it. The widget must already exist
+       (preview re-runs the saved version) — for new widgets, we show a hint. */
+    async function previewWidget() {
+      const preview = document.getElementById('widget-preview');
+      if (!__editingWidgetId) {
+        preview.style.display = 'block';
+        preview.textContent = 'Save the widget first, then click Preview to see live data.';
+        return;
+      }
+      preview.style.display = 'block';
+      preview.textContent = 'Loading…';
+      try {
+        const r = await fetch('/admin/api/dashboards/widgets/' + __editingWidgetId + '/run', {
+          method: 'POST', credentials: 'same-origin',
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Run failed');
+        preview.textContent = JSON.stringify(data.data, null, 2);
+      } catch (e) {
+        preview.textContent = 'Error: ' + e.message;
+      }
+    }
+
+    /* ----- External connections modal ----- */
+    function openConnectionsModal() {
+      renderConnectionsList();
+      document.getElementById('conn-name').value = '';
+      document.getElementById('conn-pg-url').value = '';
+      document.getElementById('conn-rest-url').value = '';
+      document.getElementById('conn-rest-headers').value = '{}';
+      document.getElementById('conn-kind').value = 'postgres';
+      onConnKindChange();
+      document.getElementById('connections-modal').style.display = 'flex';
+    }
+    function closeConnectionsModal() {
+      document.getElementById('connections-modal').style.display = 'none';
+    }
+    function onConnKindChange() {
+      const kind = document.getElementById('conn-kind').value;
+      document.getElementById('conn-postgres-fields').style.display = (kind === 'postgres') ? 'block' : 'none';
+      document.getElementById('conn-rest-fields').style.display = (kind === 'rest') ? 'block' : 'none';
+    }
+
+    function renderConnectionsList() {
+      const list = document.getElementById('connections-list');
+      if (!list) return;
+      if (!__externalConnections.length) {
+        list.innerHTML = '<div class="overview-empty">No connections yet.</div>';
+        return;
+      }
+      list.innerHTML = __externalConnections.map(c => `
+        <div class="conn-row" data-testid="conn-row-${c.id}">
+          <div>
+            <div style="font-weight:500;">${escapeHTML(c.name)}</div>
+            <div class="conn-meta">${escapeHTML(c.kind)}</div>
+          </div>
+          <div style="display:flex; gap:0.4rem;">
+            <button class="btn-link" onclick="testConnection(${c.id})" data-testid="button-conn-test-${c.id}">Test</button>
+            <button class="btn-link" onclick="deleteConnection(${c.id})" data-testid="button-conn-delete-${c.id}">Delete</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function saveNewConnection() {
+      const name = document.getElementById('conn-name').value.trim();
+      const kind = document.getElementById('conn-kind').value;
+      if (!name) { alert('Please enter a name.'); return; }
+      let config;
+      if (kind === 'postgres') {
+        config = document.getElementById('conn-pg-url').value.trim();
+        if (!config) { alert('Please paste a Postgres connection URL.'); return; }
+      } else {
+        const url = document.getElementById('conn-rest-url').value.trim();
+        let headers = {};
+        try {
+          headers = JSON.parse(document.getElementById('conn-rest-headers').value || '{}');
+        } catch (e) { alert('Headers must be valid JSON.'); return; }
+        if (!url) { alert('Please enter the base URL.'); return; }
+        config = { url, headers };
+      }
+      try {
+        const r = await fetch('/admin/api/external-connections', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, kind, config }),
+        });
+        if (!r.ok) throw new Error((await r.json()).error || 'Save failed');
+        const created = await r.json();
+        __externalConnections.push(created);
+        renderConnectionsList();
+        document.getElementById('conn-name').value = '';
+        document.getElementById('conn-pg-url').value = '';
+        document.getElementById('conn-rest-url').value = '';
+        document.getElementById('conn-rest-headers').value = '{}';
+      } catch (e) {
+        alert('Could not save: ' + e.message);
+      }
+    }
+
+    async function testConnection(id) {
+      try {
+        const r = await fetch('/admin/api/external-connections/' + id + '/test', {
+          method: 'POST', credentials: 'same-origin',
+        });
+        const data = await r.json();
+        alert((data.success ? 'OK — ' : 'Failed — ') + (data.message || ''));
+      } catch (e) {
+        alert('Test failed: ' + e.message);
+      }
+    }
+
+    async function deleteConnection(id) {
+      if (!confirm('Delete this connection? Widgets that use it will stop working.')) return;
+      try {
+        const r = await fetch('/admin/api/external-connections/' + id, {
+          method: 'DELETE', credentials: 'same-origin',
+        });
+        if (!r.ok) throw new Error('Delete failed');
+        __externalConnections = __externalConnections.filter(c => c.id !== id);
+        renderConnectionsList();
+      } catch (e) {
+        alert('Delete failed: ' + e.message);
+      }
+    }
+
+    /* Click-outside-to-close for the new modals. */
+    ['dashboard-modal', 'widget-modal', 'connections-modal'].forEach(mid => {
+      document.getElementById(mid)?.addEventListener('click', (e) => {
+        if (e.target.id === mid) {
+          if (mid === 'dashboard-modal')   closeDashboardModal();
+          if (mid === 'widget-modal')      closeWidgetModal();
+          if (mid === 'connections-modal') closeConnectionsModal();
+        }
+      });
+    });
+
+    /* Auto-load the Overview tab on page load — it's the default tab.
+       Defensive: only fires if the overview grid actually exists in the DOM,
+       so a future template that omits the tab won't trigger a stray fetch. */
+    document.addEventListener('DOMContentLoaded', () => {
+      if (document.getElementById('overview-kpi-grid')) {
+        loadOverview();
+      }
     });
 
   </script>

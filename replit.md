@@ -329,6 +329,26 @@ The AI uses `generateVisual` for simple data displays and `generateHTML` for ric
 - **Status tracking**: partial (abandoned) → new → reviewed → contacted → archived
 - Default "Contact Request" form is seeded on first run with 8 fields (name, email, service, start date, end date, quantity, phone, details)
 
+### Overview Dashboard (default landing tab)
+- Admin → Overview tab is the new default landing view (was Page Layout)
+- KPI cards show visitors today / this week, page views today, new leads, chat sessions, and revenue (auto-hidden when zero)
+- 14-day visitor trend chart powered by Chart.js
+- Recent submissions list with form name, preview, and relative time
+- Manual Refresh button + "Updated HH:MM:SS" indicator
+- Backend endpoint: `GET /admin/api/overview/stats` aggregates from `page_views`, `form_submissions`, `chat_conversations`, `orders`
+
+### Custom Dashboards Builder
+- Admin → Custom Dashboards tab — create your own boards with cards and charts
+- Three data source types per widget:
+  1. **Built-in metric** — visitors, page views, leads, chats, visitors-by-day, top pages, recent leads
+  2. **External Postgres** — paste a connection URL once, then write SELECT queries
+  3. **REST API** — paste base URL + optional headers (e.g. Authorization), then per-widget path + value path
+- Four widget types: KPI (big number), Line chart, Bar chart, Table
+- External credentials are encrypted at rest with Fernet (key derived from `FLASK_SECRET_KEY`)
+- External Postgres safety: SELECT/WITH only, comments stripped before regex check, multi-statement blocked, **opened in a read-only Postgres session** (engine-enforced), 5s statement timeout, 500-row cap
+- Tables added: `external_data_connections`, `dashboards`, `dashboard_widgets` (cascade delete)
+- All endpoints under `/admin/api/dashboards/*` and `/admin/api/external-connections/*` are admin-gated
+
 ### Theme / Color Editor
 - Admin → Theme tab with color pickers + text inputs for: background, section 1, section 2, accent, text, glass border, glass background
 - Font dropdowns for heading (serif) and body (sans-serif) with 12+ Google Fonts each

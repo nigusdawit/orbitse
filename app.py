@@ -59,10 +59,12 @@ import uuid as _uuid
 from datetime import datetime, timedelta
 from functools import wraps
 
+import base64
 import httpx
 import psycopg2
 import psycopg2.extras
 import sentry_sdk
+from cryptography.fernet import Fernet, InvalidToken
 
 import stripe_client
 from flask import (
@@ -232,6 +234,49 @@ def execute_db(sql, params=None):
             return cur.rowcount
     finally:
         conn.close()
+
+
+# =============================================================================
+# ENCRYPTION — used to store external data-source credentials at rest
+# =============================================================================
+# We let admins paste connection strings (Postgres URLs, REST API tokens) for
+# their custom dashboards. Those go straight into the DB, so they MUST be
+# encrypted at rest. We derive a Fernet key from FLASK_SECRET_KEY so the
+# user doesn't have to manage a separate secret.
+
+def _get_fernet():
+    secret = os.environ.get("FLASK_SECRET_KEY", "").strip()
+    if not secret:
+        # Match the same fallback path used elsewhere — a persisted local secret
+        # so dev/restart cycles don't lose access to encrypted blobs.
+        try:
+            with open(".flask_secret", "r") as f:
+                secret = f.read().strip()
+        except FileNotFoundError:
+            secret = ""
+    if not secret:
+        # Last-resort ephemeral key — encrypted blobs won't survive restart.
+        # Same risk profile as not having a session secret at all.
+        secret = "dev-fallback-secret-replace-me"
+    digest = hashlib.sha256(secret.encode("utf-8")).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def encrypt_secret(plaintext):
+    """Encrypt a string for safe storage in the DB. Returns base64 token text."""
+    if plaintext is None:
+        return ""
+    return _get_fernet().encrypt(plaintext.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_secret(token):
+    """Decrypt a token previously produced by encrypt_secret. Returns '' on failure."""
+    if not token:
+        return ""
+    try:
+        return _get_fernet().decrypt(token.encode("utf-8")).decode("utf-8")
+    except (InvalidToken, ValueError):
+        return ""
 
 
 # =============================================================================
@@ -964,6 +1009,65 @@ def init_db():
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_gap REAL NOT NULL DEFAULT 2.5",
             ]:
                 cur.execute(col_sql)
+
+            # =============================================================
+            # CUSTOM DASHBOARDS — admin-built KPI/chart boards
+            # =============================================================
+            # Three tables power the custom dashboard builder:
+            #
+            #   external_data_connections
+            #     Reusable named connections to outside data sources
+            #     (Postgres URL, REST API endpoint). Credentials are
+            #     stored encrypted at rest via encrypt_secret().
+            #
+            #   dashboards
+            #     A named board the admin builds. Holds zero or more
+            #     widgets and renders them in a simple stacked grid.
+            #
+            #   dashboard_widgets
+            #     One card on a dashboard. Each widget has a type
+            #     (kpi / table / line / bar) and a data source config
+            #     (built-in metric or external connection + query).
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS external_data_connections (
+                    id              SERIAL PRIMARY KEY,
+                    name            VARCHAR(120) NOT NULL,
+                    kind            VARCHAR(40)  NOT NULL DEFAULT 'postgres',
+                    -- For 'postgres': encrypted full connection URL.
+                    -- For 'rest':     encrypted JSON {"url":"...", "headers":{...}}
+                    encrypted_config TEXT NOT NULL DEFAULT '',
+                    created_at      TIMESTAMP DEFAULT NOW()
+                );
+
+                CREATE TABLE IF NOT EXISTS dashboards (
+                    id          SERIAL PRIMARY KEY,
+                    name        VARCHAR(160) NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    sort_order  INTEGER NOT NULL DEFAULT 0,
+                    created_at  TIMESTAMP DEFAULT NOW()
+                );
+
+                CREATE TABLE IF NOT EXISTS dashboard_widgets (
+                    id              SERIAL PRIMARY KEY,
+                    dashboard_id    INTEGER NOT NULL
+                        REFERENCES dashboards(id) ON DELETE CASCADE,
+                    name            VARCHAR(160) NOT NULL,
+                    -- 'kpi' | 'table' | 'line' | 'bar'
+                    widget_type     VARCHAR(20)  NOT NULL DEFAULT 'kpi',
+                    -- 'builtin' | 'external_postgres' | 'external_rest'
+                    source_type     VARCHAR(30)  NOT NULL DEFAULT 'builtin',
+                    -- Free-form JSON config: depends on source_type.
+                    -- builtin            -> {"metric":"visitors","range":"7d"}
+                    -- external_postgres  -> {"connection_id":3,"query":"SELECT ..."}
+                    -- external_rest      -> {"connection_id":4,"path":"/users",
+                    --                       "value_path":"data.count"}
+                    source_config   JSONB        NOT NULL DEFAULT '{}'::jsonb,
+                    sort_order      INTEGER      NOT NULL DEFAULT 0,
+                    created_at      TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_widgets_dashboard
+                    ON dashboard_widgets (dashboard_id);
+            """)
 
             # Seed a default "Contact / Inquiry" form if no forms exist yet
             # This is sample data — customize it from the admin panel for your industry
@@ -8203,6 +8307,739 @@ def admin_orders_refund(oid):
         conn.close()
 
     return jsonify({"success": True, "refund_id": refund.id})
+
+
+# =============================================================================
+# OVERVIEW DASHBOARD — KPIs aggregated from existing tables
+# =============================================================================
+# Powers the "Overview" landing tab in the admin dashboard. Returns the
+# top-line numbers an operator wants to see at a glance: visitors today
+# and this week, new leads (form submissions), active chat sessions, and
+# the most recent submissions for a quick scan.
+
+@app.route("/admin/api/overview/stats", methods=["GET"])
+@admin_required
+def admin_overview_stats():
+    try:
+        # Visitors — distinct sessions in page_views over the time window.
+        # We use distinct session_id rather than raw row count so a single
+        # visitor browsing many pages is counted once (the more accurate
+        # "people in the door" number).
+        visitors_today = query_db(
+            "SELECT COUNT(DISTINCT session_id) AS n FROM page_views "
+            "WHERE created_at >= NOW() - INTERVAL '1 day'",
+            fetchone=True,
+        ) or {"n": 0}
+        visitors_week = query_db(
+            "SELECT COUNT(DISTINCT session_id) AS n FROM page_views "
+            "WHERE created_at >= NOW() - INTERVAL '7 days'",
+            fetchone=True,
+        ) or {"n": 0}
+        pageviews_today = query_db(
+            "SELECT COUNT(*) AS n FROM page_views "
+            "WHERE created_at >= NOW() - INTERVAL '1 day'",
+            fetchone=True,
+        ) or {"n": 0}
+
+        # Leads — form submissions counted as new business.
+        leads_today = query_db(
+            "SELECT COUNT(*) AS n FROM form_submissions "
+            "WHERE submitted_at >= NOW() - INTERVAL '1 day'",
+            fetchone=True,
+        ) or {"n": 0}
+        leads_week = query_db(
+            "SELECT COUNT(*) AS n FROM form_submissions "
+            "WHERE submitted_at >= NOW() - INTERVAL '7 days'",
+            fetchone=True,
+        ) or {"n": 0}
+
+        # Chat conversations — distinct sessions in the chat table.
+        chats_today = query_db(
+            "SELECT COUNT(*) AS n FROM chat_conversations "
+            "WHERE started_at >= NOW() - INTERVAL '1 day'",
+            fetchone=True,
+        ) or {"n": 0}
+        chats_week = query_db(
+            "SELECT COUNT(*) AS n FROM chat_conversations "
+            "WHERE started_at >= NOW() - INTERVAL '7 days'",
+            fetchone=True,
+        ) or {"n": 0}
+
+        # Revenue — only meaningful if there are paid orders. Sum of
+        # totals on completed orders in the window. If the orders table
+        # has different column names, this returns 0 silently.
+        try:
+            revenue_today = query_db(
+                "SELECT COALESCE(SUM(total_amount), 0) AS n FROM orders "
+                "WHERE status IN ('paid','fulfilled','completed') "
+                "AND created_at >= NOW() - INTERVAL '1 day'",
+                fetchone=True,
+            ) or {"n": 0}
+            revenue_week = query_db(
+                "SELECT COALESCE(SUM(total_amount), 0) AS n FROM orders "
+                "WHERE status IN ('paid','fulfilled','completed') "
+                "AND created_at >= NOW() - INTERVAL '7 days'",
+                fetchone=True,
+            ) or {"n": 0}
+        except Exception:
+            revenue_today = {"n": 0}
+            revenue_week = {"n": 0}
+
+        # Recent submissions (last 8) — title comes from the parent form,
+        # preview is the first non-empty field value as a string.
+        recent_submissions_rows = query_db("""
+            SELECT s.id, s.form_id, s.submission_data, s.submitted_at,
+                   s.confirmation_number, f.name AS form_name
+            FROM form_submissions s
+            LEFT JOIN custom_forms f ON f.id = s.form_id
+            ORDER BY s.submitted_at DESC
+            LIMIT 8
+        """) or []
+
+        recent_submissions = []
+        for row in recent_submissions_rows:
+            data = row.get("submission_data") or {}
+            preview_parts = []
+            for key in ("name", "full_name", "email", "phone", "subject"):
+                val = data.get(key) if isinstance(data, dict) else None
+                if val:
+                    preview_parts.append(str(val))
+                if len(preview_parts) >= 2:
+                    break
+            if not preview_parts and isinstance(data, dict):
+                # Fall back to first scalar field
+                for v in data.values():
+                    if v and not isinstance(v, (dict, list)):
+                        preview_parts.append(str(v))
+                        break
+            recent_submissions.append({
+                "id": row["id"],
+                "form_name": row.get("form_name") or "Form",
+                "preview": " — ".join(preview_parts)[:140],
+                "confirmation_number": row.get("confirmation_number") or "",
+                "submitted_at": row["submitted_at"].isoformat()
+                    if row.get("submitted_at") else "",
+            })
+
+        # Visitors over the last 14 days, for the small trend sparkline.
+        trend_rows = query_db("""
+            SELECT DATE_TRUNC('day', created_at)::date AS day,
+                   COUNT(DISTINCT session_id) AS n
+            FROM page_views
+            WHERE created_at >= NOW() - INTERVAL '14 days'
+            GROUP BY 1
+            ORDER BY 1
+        """) or []
+        trend = [
+            {"day": r["day"].isoformat() if r.get("day") else "",
+             "n": int(r["n"] or 0)}
+            for r in trend_rows
+        ]
+
+        return jsonify({
+            "visitors_today": int(visitors_today["n"] or 0),
+            "visitors_week":  int(visitors_week["n"]  or 0),
+            "pageviews_today": int(pageviews_today["n"] or 0),
+            "leads_today": int(leads_today["n"] or 0),
+            "leads_week":  int(leads_week["n"]  or 0),
+            "chats_today": int(chats_today["n"] or 0),
+            "chats_week":  int(chats_week["n"]  or 0),
+            "revenue_today": float(revenue_today["n"] or 0),
+            "revenue_week":  float(revenue_week["n"]  or 0),
+            "recent_submissions": recent_submissions,
+            "visitor_trend": trend,
+        })
+    except Exception as e:
+        app.logger.exception("overview stats failed: %s", e)
+        return jsonify({"error": "Failed to load stats"}), 500
+
+
+# =============================================================================
+# CUSTOM DASHBOARDS — admin-built KPI/chart boards
+# =============================================================================
+# A small builder-style feature. Admin creates dashboards, each holding
+# one or more widgets. Each widget pulls data from either:
+#   - a built-in metric (uses this app's own tables)
+#   - an external Postgres database (admin pastes a connection URL,
+#     stored encrypted, and a SELECT query)
+#   - a REST endpoint (GET, returns JSON; admin picks a value path)
+# Widget types: kpi (single number), table, line chart, bar chart.
+
+# ----- Built-in metric registry --------------------------------------------
+# Each entry returns either:
+#   {"value": <number>, "label": "..."}                  for KPIs
+#   {"labels": [...], "values": [...]}                   for line/bar
+#   {"columns": [...], "rows": [[...], ...]}             for tables
+
+def _builtin_range_clause(range_key, column):
+    """Return a 'AND <column> >= NOW() - INTERVAL ...' clause for the range."""
+    rng = (range_key or "7d").lower()
+    intervals = {
+        "1d": "1 day", "7d": "7 days", "30d": "30 days", "90d": "90 days",
+        "all": None,
+    }
+    interval = intervals.get(rng, "7 days")
+    if interval is None:
+        return "", []
+    return f" AND {column} >= NOW() - INTERVAL %s ", [interval]
+
+
+def _builtin_metric_visitors(cfg):
+    rng = cfg.get("range", "7d")
+    clause, params = _builtin_range_clause(rng, "created_at")
+    row = query_db(
+        f"SELECT COUNT(DISTINCT session_id) AS n FROM page_views WHERE 1=1 {clause}",
+        tuple(params), fetchone=True,
+    ) or {"n": 0}
+    return {"value": int(row["n"] or 0), "label": f"Visitors ({rng})"}
+
+
+def _builtin_metric_pageviews(cfg):
+    rng = cfg.get("range", "7d")
+    clause, params = _builtin_range_clause(rng, "created_at")
+    row = query_db(
+        f"SELECT COUNT(*) AS n FROM page_views WHERE 1=1 {clause}",
+        tuple(params), fetchone=True,
+    ) or {"n": 0}
+    return {"value": int(row["n"] or 0), "label": f"Page views ({rng})"}
+
+
+def _builtin_metric_leads(cfg):
+    rng = cfg.get("range", "7d")
+    clause, params = _builtin_range_clause(rng, "submitted_at")
+    row = query_db(
+        f"SELECT COUNT(*) AS n FROM form_submissions WHERE 1=1 {clause}",
+        tuple(params), fetchone=True,
+    ) or {"n": 0}
+    return {"value": int(row["n"] or 0), "label": f"Leads ({rng})"}
+
+
+def _builtin_metric_chats(cfg):
+    rng = cfg.get("range", "7d")
+    clause, params = _builtin_range_clause(rng, "started_at")
+    row = query_db(
+        f"SELECT COUNT(*) AS n FROM chat_conversations WHERE 1=1 {clause}",
+        tuple(params), fetchone=True,
+    ) or {"n": 0}
+    return {"value": int(row["n"] or 0), "label": f"Chat sessions ({rng})"}
+
+
+def _builtin_metric_visitors_by_day(cfg):
+    rng = cfg.get("range", "30d")
+    interval_map = {"7d": "7 days", "30d": "30 days", "90d": "90 days"}
+    interval = interval_map.get(rng, "30 days")
+    rows = query_db("""
+        SELECT DATE_TRUNC('day', created_at)::date AS day,
+               COUNT(DISTINCT session_id) AS n
+        FROM page_views
+        WHERE created_at >= NOW() - INTERVAL %s
+        GROUP BY 1
+        ORDER BY 1
+    """, (interval,)) or []
+    return {
+        "labels": [r["day"].isoformat() if r.get("day") else "" for r in rows],
+        "values": [int(r["n"] or 0) for r in rows],
+    }
+
+
+def _builtin_metric_top_pages(cfg):
+    rng = cfg.get("range", "7d")
+    interval_map = {"1d": "1 day", "7d": "7 days", "30d": "30 days"}
+    interval = interval_map.get(rng, "7 days")
+    rows = query_db("""
+        SELECT page_url, COUNT(*) AS views
+        FROM page_views
+        WHERE created_at >= NOW() - INTERVAL %s
+        GROUP BY page_url
+        ORDER BY views DESC
+        LIMIT 10
+    """, (interval,)) or []
+    return {
+        "columns": ["Page", "Views"],
+        "rows": [[r["page_url"], int(r["views"] or 0)] for r in rows],
+    }
+
+
+def _builtin_metric_recent_leads(cfg):
+    rows = query_db("""
+        SELECT s.submitted_at, f.name AS form_name, s.confirmation_number
+        FROM form_submissions s
+        LEFT JOIN custom_forms f ON f.id = s.form_id
+        ORDER BY s.submitted_at DESC
+        LIMIT 15
+    """) or []
+    return {
+        "columns": ["When", "Form", "Confirmation"],
+        "rows": [
+            [r["submitted_at"].strftime("%Y-%m-%d %H:%M") if r.get("submitted_at") else "",
+             r.get("form_name") or "",
+             r.get("confirmation_number") or ""]
+            for r in rows
+        ],
+    }
+
+
+# Map metric key -> (function, default widget_type, friendly label).
+# The frontend uses this to populate the metric picker dropdown.
+BUILTIN_METRICS = {
+    "visitors":         (_builtin_metric_visitors,        "kpi",   "Unique visitors"),
+    "pageviews":        (_builtin_metric_pageviews,       "kpi",   "Page views"),
+    "leads":            (_builtin_metric_leads,           "kpi",   "Form submissions"),
+    "chats":            (_builtin_metric_chats,           "kpi",   "Chat sessions"),
+    "visitors_by_day":  (_builtin_metric_visitors_by_day, "line",  "Visitors by day"),
+    "top_pages":        (_builtin_metric_top_pages,       "table", "Top pages"),
+    "recent_leads":     (_builtin_metric_recent_leads,    "table", "Recent leads"),
+}
+
+
+@app.route("/admin/api/dashboards/builtin-metrics", methods=["GET"])
+@admin_required
+def admin_dashboards_builtin_metrics():
+    """Return the catalog of built-in metrics for the widget builder UI."""
+    return jsonify([
+        {"key": k, "default_type": meta[1], "label": meta[2]}
+        for k, meta in BUILTIN_METRICS.items()
+    ])
+
+
+# ----- External Postgres execution -----------------------------------------
+# Safety:
+#   - The query must start with SELECT or WITH (no INSERT/UPDATE/DELETE).
+#   - Statement timeout enforced server-side (5s).
+#   - Hard cap of 500 rows returned.
+#   - No multi-statement queries (split on ';' guard).
+
+_SELECT_ONLY_RE = re.compile(r'^\s*(SELECT|WITH)\b', re.IGNORECASE)
+
+def _strip_sql_comments(q):
+    """Remove SQL comments so the SELECT-only regex can't be bypassed by
+    tricks like  /* anything */ UPDATE foo  or  -- comment\nUPDATE foo."""
+    # /* ... */ block comments (non-greedy, multi-line)
+    q = re.sub(r"/\*.*?\*/", " ", q, flags=re.DOTALL)
+    # -- line comments to end of line
+    q = re.sub(r"--[^\n]*", " ", q)
+    return q.strip()
+
+
+def _run_external_postgres(connection_url, query, max_rows=500, timeout_ms=5000):
+    cleaned = _strip_sql_comments(query or "")
+    if not _SELECT_ONLY_RE.match(cleaned):
+        raise ValueError("Only SELECT (or WITH) queries are allowed.")
+    # Reject obvious multi-statement attempts (after comments are stripped).
+    if ";" in cleaned.rstrip(";"):
+        raise ValueError("Only a single statement is allowed.")
+    conn = psycopg2.connect(connection_url, connect_timeout=5)
+    try:
+        # DEFENSE IN DEPTH: even if the regex above is bypassed (e.g. via
+        # dollar-quoted strings or a function that performs writes), the
+        # session is opened read-only at the engine level. Postgres itself
+        # rejects INSERT/UPDATE/DELETE/DDL inside a read-only transaction.
+        conn.set_session(readonly=True, autocommit=False)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SET statement_timeout = %s", (int(timeout_ms),))
+            cur.execute(query)
+            if not cur.description:
+                conn.rollback()
+                return {"columns": [], "rows": []}
+            cols = [d.name for d in cur.description]
+            rows = cur.fetchmany(max_rows)
+            result = {
+                "columns": cols,
+                "rows": [
+                    [_jsonable(row.get(c)) for c in cols]
+                    for row in rows
+                ],
+            }
+        conn.rollback()  # close the read-only transaction cleanly
+        return result
+    finally:
+        conn.close()
+
+
+def _jsonable(v):
+    """Convert DB values to JSON-safe scalars."""
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    if isinstance(v, datetime):
+        return v.isoformat()
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    return str(v)
+
+
+# ----- External REST execution ---------------------------------------------
+# Admin gives us a base URL + headers (e.g. an API token), and per-widget a
+# path and a JSONPath-lite "value_path" like "data.0.count" to pull out a
+# single number. Tables can omit value_path to dump the whole response shape.
+
+def _run_external_rest(base_cfg, widget_cfg, max_rows=500):
+    import requests as _requests
+    url = (base_cfg.get("url") or "").rstrip("/")
+    path = widget_cfg.get("path") or ""
+    full = url + path if path.startswith("/") else (url + "/" + path if path else url)
+    headers = base_cfg.get("headers") or {}
+    resp = _requests.get(full, headers=headers, timeout=10)
+    resp.raise_for_status()
+    body = resp.json()
+    value_path = (widget_cfg.get("value_path") or "").strip()
+    if value_path:
+        cur = body
+        for part in value_path.split("."):
+            if part == "":
+                continue
+            if isinstance(cur, list):
+                try:
+                    cur = cur[int(part)]
+                except (ValueError, IndexError):
+                    cur = None
+                    break
+            elif isinstance(cur, dict):
+                cur = cur.get(part)
+            else:
+                cur = None
+                break
+        return {"value": cur, "label": widget_cfg.get("label") or path or "REST value"}
+    # No value_path: try to render as a table if it's a list of dicts.
+    if isinstance(body, list) and body and isinstance(body[0], dict):
+        cols = list(body[0].keys())
+        rows = [[_jsonable(item.get(c)) for c in cols] for item in body[:max_rows]]
+        return {"columns": cols, "rows": rows}
+    return {"value": _jsonable(body), "label": widget_cfg.get("label") or "REST value"}
+
+
+# ----- External connections CRUD -------------------------------------------
+
+def _serialize_connection(row, include_secret=False):
+    out = {
+        "id": row["id"],
+        "name": row["name"],
+        "kind": row["kind"],
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else "",
+    }
+    if include_secret:
+        out["config"] = decrypt_secret(row.get("encrypted_config", ""))
+    return out
+
+
+@app.route("/admin/api/external-connections", methods=["GET"])
+@admin_required
+def admin_list_external_connections():
+    rows = query_db(
+        "SELECT id, name, kind, encrypted_config, created_at "
+        "FROM external_data_connections ORDER BY name"
+    ) or []
+    return jsonify([_serialize_connection(r) for r in rows])
+
+
+@app.route("/admin/api/external-connections", methods=["POST"])
+@admin_required
+def admin_create_external_connection():
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    kind = (body.get("kind") or "postgres").strip()
+    config = body.get("config") or ""
+    if not name:
+        return jsonify({"error": "Name is required."}), 400
+    if kind not in ("postgres", "rest"):
+        return jsonify({"error": "Unsupported connection kind."}), 400
+    # For REST, expect a dict {url, headers}; we store it as JSON text encrypted.
+    if kind == "rest":
+        if isinstance(config, dict):
+            config = json.dumps(config)
+        elif not isinstance(config, str):
+            return jsonify({"error": "REST config must be an object."}), 400
+    elif kind == "postgres":
+        if not isinstance(config, str) or not config.strip():
+            return jsonify({"error": "Postgres connection URL is required."}), 400
+    encrypted = encrypt_secret(config if isinstance(config, str) else json.dumps(config))
+    row = execute_db(
+        "INSERT INTO external_data_connections (name, kind, encrypted_config) "
+        "VALUES (%s, %s, %s) "
+        "RETURNING id, name, kind, encrypted_config, created_at",
+        (name, kind, encrypted),
+    )
+    return jsonify(_serialize_connection(row)), 201
+
+
+@app.route("/admin/api/external-connections/<int:cid>", methods=["DELETE"])
+@admin_required
+def admin_delete_external_connection(cid):
+    execute_db("DELETE FROM external_data_connections WHERE id = %s", (cid,))
+    return jsonify({"success": True})
+
+
+@app.route("/admin/api/external-connections/<int:cid>/test", methods=["POST"])
+@admin_required
+def admin_test_external_connection(cid):
+    row = query_db(
+        "SELECT id, name, kind, encrypted_config FROM external_data_connections WHERE id = %s",
+        (cid,), fetchone=True,
+    )
+    if not row:
+        return jsonify({"error": "Connection not found"}), 404
+    config = decrypt_secret(row["encrypted_config"])
+    try:
+        if row["kind"] == "postgres":
+            test_conn = psycopg2.connect(config, connect_timeout=5)
+            test_conn.close()
+            return jsonify({"success": True, "message": "Connected successfully."})
+        else:
+            cfg = json.loads(config)
+            import requests as _requests
+            r = _requests.get(cfg.get("url", ""),
+                              headers=cfg.get("headers", {}),
+                              timeout=10)
+            return jsonify({
+                "success": r.ok,
+                "message": f"HTTP {r.status_code}",
+            })
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)[:240]}), 200
+
+
+# ----- Dashboards CRUD -----------------------------------------------------
+
+def _serialize_dashboard(row, widgets=None):
+    out = {
+        "id": row["id"],
+        "name": row["name"],
+        "description": row.get("description") or "",
+        "sort_order": row.get("sort_order", 0),
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else "",
+    }
+    if widgets is not None:
+        out["widgets"] = widgets
+    return out
+
+
+def _serialize_widget(row):
+    return {
+        "id": row["id"],
+        "dashboard_id": row["dashboard_id"],
+        "name": row["name"],
+        "widget_type": row["widget_type"],
+        "source_type": row["source_type"],
+        "source_config": row.get("source_config") or {},
+        "sort_order": row.get("sort_order", 0),
+    }
+
+
+@app.route("/admin/api/dashboards", methods=["GET"])
+@admin_required
+def admin_list_dashboards():
+    rows = query_db(
+        "SELECT id, name, description, sort_order, created_at "
+        "FROM dashboards ORDER BY sort_order, id"
+    ) or []
+    return jsonify([_serialize_dashboard(r) for r in rows])
+
+
+@app.route("/admin/api/dashboards", methods=["POST"])
+@admin_required
+def admin_create_dashboard():
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    description = (body.get("description") or "").strip()
+    if not name:
+        return jsonify({"error": "Name is required."}), 400
+    row = execute_db(
+        "INSERT INTO dashboards (name, description) VALUES (%s, %s) "
+        "RETURNING id, name, description, sort_order, created_at",
+        (name, description),
+    )
+    return jsonify(_serialize_dashboard(row)), 201
+
+
+@app.route("/admin/api/dashboards/<int:did>", methods=["GET"])
+@admin_required
+def admin_get_dashboard(did):
+    row = query_db(
+        "SELECT id, name, description, sort_order, created_at "
+        "FROM dashboards WHERE id = %s",
+        (did,), fetchone=True,
+    )
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    widget_rows = query_db(
+        "SELECT id, dashboard_id, name, widget_type, source_type, source_config, sort_order "
+        "FROM dashboard_widgets WHERE dashboard_id = %s ORDER BY sort_order, id",
+        (did,),
+    ) or []
+    return jsonify(_serialize_dashboard(row, [_serialize_widget(w) for w in widget_rows]))
+
+
+@app.route("/admin/api/dashboards/<int:did>", methods=["PUT"])
+@admin_required
+def admin_update_dashboard(did):
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    description = (body.get("description") or "").strip()
+    if not name:
+        return jsonify({"error": "Name is required."}), 400
+    execute_db(
+        "UPDATE dashboards SET name = %s, description = %s WHERE id = %s",
+        (name, description, did),
+    )
+    return jsonify({"success": True})
+
+
+@app.route("/admin/api/dashboards/<int:did>", methods=["DELETE"])
+@admin_required
+def admin_delete_dashboard(did):
+    execute_db("DELETE FROM dashboards WHERE id = %s", (did,))
+    return jsonify({"success": True})
+
+
+# ----- Widget CRUD ---------------------------------------------------------
+
+@app.route("/admin/api/dashboards/<int:did>/widgets", methods=["POST"])
+@admin_required
+def admin_create_widget(did):
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    widget_type = (body.get("widget_type") or "kpi").strip()
+    source_type = (body.get("source_type") or "builtin").strip()
+    source_config = body.get("source_config") or {}
+    if widget_type not in ("kpi", "table", "line", "bar"):
+        return jsonify({"error": "Invalid widget type."}), 400
+    if source_type not in ("builtin", "external_postgres", "external_rest"):
+        return jsonify({"error": "Invalid source type."}), 400
+    if not name:
+        return jsonify({"error": "Name is required."}), 400
+    # Determine sort_order — append to end.
+    last = query_db(
+        "SELECT COALESCE(MAX(sort_order), -1) AS m FROM dashboard_widgets "
+        "WHERE dashboard_id = %s", (did,), fetchone=True,
+    ) or {"m": -1}
+    sort_order = int(last["m"]) + 1
+    row = execute_db(
+        "INSERT INTO dashboard_widgets (dashboard_id, name, widget_type, "
+        "source_type, source_config, sort_order) "
+        "VALUES (%s, %s, %s, %s, %s::jsonb, %s) "
+        "RETURNING id, dashboard_id, name, widget_type, source_type, source_config, sort_order",
+        (did, name, widget_type, source_type, json.dumps(source_config), sort_order),
+    )
+    return jsonify(_serialize_widget(row)), 201
+
+
+@app.route("/admin/api/dashboards/<int:did>/widgets/<int:wid>", methods=["PUT"])
+@admin_required
+def admin_update_widget(did, wid):
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    widget_type = (body.get("widget_type") or "kpi").strip()
+    source_type = (body.get("source_type") or "builtin").strip()
+    source_config = body.get("source_config") or {}
+    if widget_type not in ("kpi", "table", "line", "bar"):
+        return jsonify({"error": "Invalid widget type."}), 400
+    if source_type not in ("builtin", "external_postgres", "external_rest"):
+        return jsonify({"error": "Invalid source type."}), 400
+    execute_db(
+        "UPDATE dashboard_widgets SET name = %s, widget_type = %s, "
+        "source_type = %s, source_config = %s::jsonb "
+        "WHERE id = %s AND dashboard_id = %s",
+        (name, widget_type, source_type, json.dumps(source_config), wid, did),
+    )
+    return jsonify({"success": True})
+
+
+@app.route("/admin/api/dashboards/<int:did>/widgets/<int:wid>", methods=["DELETE"])
+@admin_required
+def admin_delete_widget(did, wid):
+    execute_db(
+        "DELETE FROM dashboard_widgets WHERE id = %s AND dashboard_id = %s",
+        (wid, did),
+    )
+    return jsonify({"success": True})
+
+
+# ----- Widget execution ----------------------------------------------------
+
+@app.route("/admin/api/dashboards/widgets/<int:wid>/run", methods=["POST"])
+@admin_required
+def admin_run_widget(wid):
+    """Execute the widget's data source and return rendered data."""
+    row = query_db(
+        "SELECT id, name, widget_type, source_type, source_config "
+        "FROM dashboard_widgets WHERE id = %s",
+        (wid,), fetchone=True,
+    )
+    if not row:
+        return jsonify({"error": "Widget not found"}), 404
+    cfg = row.get("source_config") or {}
+    try:
+        if row["source_type"] == "builtin":
+            metric_key = cfg.get("metric")
+            if metric_key not in BUILTIN_METRICS:
+                return jsonify({"error": "Unknown built-in metric."}), 400
+            fn = BUILTIN_METRICS[metric_key][0]
+            data = fn(cfg)
+        elif row["source_type"] == "external_postgres":
+            conn_id = cfg.get("connection_id")
+            query = cfg.get("query", "")
+            if not conn_id or not query:
+                return jsonify({"error": "Connection and query are required."}), 400
+            conn_row = query_db(
+                "SELECT encrypted_config FROM external_data_connections "
+                "WHERE id = %s AND kind = 'postgres'",
+                (conn_id,), fetchone=True,
+            )
+            if not conn_row:
+                return jsonify({"error": "Connection not found."}), 404
+            url = decrypt_secret(conn_row["encrypted_config"])
+            raw = _run_external_postgres(url, query)
+            data = _shape_external_data_for_widget(raw, row["widget_type"], cfg)
+        elif row["source_type"] == "external_rest":
+            conn_id = cfg.get("connection_id")
+            if not conn_id:
+                return jsonify({"error": "Connection is required."}), 400
+            conn_row = query_db(
+                "SELECT encrypted_config FROM external_data_connections "
+                "WHERE id = %s AND kind = 'rest'",
+                (conn_id,), fetchone=True,
+            )
+            if not conn_row:
+                return jsonify({"error": "Connection not found."}), 404
+            base_cfg = json.loads(decrypt_secret(conn_row["encrypted_config"]) or "{}")
+            data = _run_external_rest(base_cfg, cfg)
+        else:
+            return jsonify({"error": "Unknown source type."}), 400
+        return jsonify({
+            "widget_type": row["widget_type"],
+            "name": row["name"],
+            "data": data,
+        })
+    except Exception as e:
+        app.logger.exception("widget run failed (id=%s): %s", wid, e)
+        return jsonify({"error": str(e)[:240]}), 400
+
+
+def _shape_external_data_for_widget(raw, widget_type, cfg):
+    """Convert a {columns, rows} table result into the shape a given widget
+    type expects. KPI takes the first cell; line/bar use first column as
+    labels and second as numeric values."""
+    cols = raw.get("columns") or []
+    rows = raw.get("rows") or []
+    if widget_type == "kpi":
+        if not rows or not rows[0]:
+            return {"value": 0, "label": cfg.get("label") or "Value"}
+        return {
+            "value": rows[0][0],
+            "label": cfg.get("label") or (cols[0] if cols else "Value"),
+        }
+    if widget_type in ("line", "bar"):
+        if len(cols) < 2:
+            raise ValueError("Chart needs at least 2 columns (label, value).")
+        labels = [str(r[0]) if r else "" for r in rows]
+        values = []
+        for r in rows:
+            try:
+                values.append(float(r[1]) if len(r) > 1 and r[1] is not None else 0)
+            except (TypeError, ValueError):
+                values.append(0)
+        return {"labels": labels, "values": values}
+    # table
+    return {"columns": cols, "rows": rows}
 
 
 # =============================================================================
