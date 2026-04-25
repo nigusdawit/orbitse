@@ -986,6 +986,12 @@ def init_db():
                 "ALTER TABLE custom_forms ADD COLUMN IF NOT EXISTS form_type VARCHAR(40) NOT NULL DEFAULT 'standard'",
                 "ALTER TABLE custom_forms ADD COLUMN IF NOT EXISTS linked_service_id INTEGER",
                 "ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS visitor_id VARCHAR(100) DEFAULT ''",
+                # --- AI lookup-tool observability: each assistant turn can
+                #     record which lookup_* tools the model called (with args
+                #     and row counts) so the admin can see in chat history
+                #     which slices of the site the AI actually pulled into
+                #     context to answer that turn.
+                "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS tool_calls_json JSONB",
                 # --- Section visibility toggles (admin can show/hide entire sections) ---
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS section_testimonials BOOLEAN DEFAULT false",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS section_team BOOLEAN DEFAULT false",
@@ -3839,6 +3845,800 @@ def parse_command_from_text(text):
     return clean, cmd
 
 
+# =============================================================================
+# CHAT LOOKUP TOOLS — Targeted on-demand retrieval for the AI
+# =============================================================================
+# Instead of stuffing the entire site contents into the system prompt every
+# turn, the AI receives a compact SITE INDEX (just names + slugs per
+# category) and a set of OpenAI function-calling tools. When it needs detail,
+# it calls the matching lookup_* tool with narrow filters and only the slice
+# it asked for travels back into context.
+#
+# This dramatically reduces tokens-per-turn AND scales as content grows: a
+# blog with 500 posts no longer drags every excerpt into every chat message.
+#
+# Each lookup function:
+#   - Accepts narrow filters (slug, category, free-text query, limit)
+#   - Returns a small JSON list of just the fields useful in a chat reply
+#     (no internal IDs, no raw image bytes, descriptions trimmed)
+#   - Is wired into CHAT_TOOLS (OpenAI tool schema) and CHAT_LOOKUP_FUNCTIONS
+#     (name -> function map) below
+# =============================================================================
+
+def _trim_text(s, n=300):
+    """Trim a string to n characters, adding an ellipsis if it had to be cut."""
+    if not s:
+        return ""
+    s = str(s).strip()
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _format_money_cents(cents, currency="usd"):
+    """Render an integer cents value as a display string ('$49.00')."""
+    if cents is None:
+        return None
+    sym = {"usd": "$", "eur": "€", "gbp": "£", "cad": "$", "aud": "$"}.get(
+        (currency or "").lower(), ""
+    )
+    try:
+        return f"{sym}{int(cents) / 100:.2f}"
+    except Exception:
+        return None
+
+
+# ---- Lookup functions: each queries one table with narrow filters ----------
+
+def lookup_gallery_cards(slug=None, category=None, query=None, limit=5):
+    """Full details for landing-page gallery cards (rooms, services,
+    products, experiences shown as cards). Filter by exact slug, category,
+    or free-text query across title/subtitle/description."""
+    sql = (
+        "SELECT slug, title, subtitle, category, description, details, "
+        "price, image_url FROM gallery_cards WHERE 1=1"
+    )
+    params = []
+    if slug:
+        sql += " AND slug = %s"
+        params.append(slug)
+    if category:
+        sql += " AND category ILIKE %s"
+        params.append(f"%{category}%")
+    if query:
+        sql += (
+            " AND (title ILIKE %s OR subtitle ILIKE %s OR "
+            "description ILIKE %s OR category ILIKE %s)"
+        )
+        q = f"%{query}%"
+        params.extend([q, q, q, q])
+    sql += " ORDER BY sort_order ASC LIMIT %s"
+    params.append(max(1, min(int(limit or 5), 20)))
+    rows = query_db(sql, tuple(params)) or []
+    out = []
+    for r in rows:
+        details = r.get("details")
+        if isinstance(details, str):
+            try:
+                details = json.loads(details)
+            except Exception:
+                details = []
+        out.append({
+            "slug": r["slug"],
+            "title": r["title"],
+            "subtitle": _trim_text(r.get("subtitle"), 200),
+            "category": r.get("category"),
+            "description": _trim_text(r.get("description"), 600),
+            "details": details if isinstance(details, list) else [],
+            "price": r.get("price"),
+            "image_url": r.get("image_url") or None,
+        })
+    return out
+
+
+def lookup_services(slug=None, query=None, limit=5):
+    """Bookable services with description, duration, and pricing."""
+    sql = (
+        "SELECT slug, name, short_description, long_description, "
+        "duration_minutes, pricing_model, base_price_cents, currency "
+        "FROM services WHERE is_active = TRUE"
+    )
+    params = []
+    if slug:
+        sql += " AND slug = %s"
+        params.append(slug)
+    if query:
+        sql += (
+            " AND (name ILIKE %s OR short_description ILIKE %s "
+            "OR long_description ILIKE %s)"
+        )
+        q = f"%{query}%"
+        params.extend([q, q, q])
+    sql += " ORDER BY sort_order ASC LIMIT %s"
+    params.append(max(1, min(int(limit or 5), 20)))
+    rows = query_db(sql, tuple(params)) or []
+    out = []
+    for r in rows:
+        out.append({
+            "slug": r["slug"],
+            "name": r["name"],
+            "short_description": _trim_text(r.get("short_description"), 250),
+            "long_description": _trim_text(r.get("long_description"), 1000),
+            "duration_minutes": r.get("duration_minutes"),
+            "pricing_model": r.get("pricing_model"),
+            "price": _format_money_cents(
+                r.get("base_price_cents"), r.get("currency")
+            ),
+        })
+    return out
+
+
+def lookup_experiences(query=None, limit=10):
+    """Curated experiences/activities offered (descriptions)."""
+    sql = "SELECT name, description, icon FROM experiences"
+    params = []
+    if query:
+        sql += " WHERE (name ILIKE %s OR description ILIKE %s)"
+        q = f"%{query}%"
+        params.extend([q, q])
+    sql += " ORDER BY sort_order ASC LIMIT %s"
+    params.append(max(1, min(int(limit or 10), 30)))
+    rows = query_db(sql, tuple(params)) or []
+    return [
+        {
+            "name": r["name"],
+            "description": _trim_text(r.get("description"), 500),
+            "icon": r.get("icon"),
+        }
+        for r in rows
+    ]
+
+
+def lookup_pricing(query=None):
+    """Seasonal pricing tiers / rate ranges."""
+    sql = "SELECT label, date_range, price_range FROM pricing_seasons"
+    params = []
+    if query:
+        sql += (
+            " WHERE (label ILIKE %s OR date_range ILIKE %s "
+            "OR price_range ILIKE %s)"
+        )
+        q = f"%{query}%"
+        params.extend([q, q, q])
+    sql += " ORDER BY sort_order ASC"
+    rows = query_db(sql, tuple(params)) or []
+    return [
+        {
+            "label": r["label"],
+            "dates": r.get("date_range"),
+            "price": r.get("price_range"),
+        }
+        for r in rows
+    ]
+
+
+def lookup_products(slug=None, query=None, limit=10):
+    """Shop products with description, price, and stock status."""
+    sql = (
+        "SELECT slug, name, description, price_cents, currency, "
+        "stock, track_inventory FROM products WHERE active = TRUE"
+    )
+    params = []
+    if slug:
+        sql += " AND slug = %s"
+        params.append(slug)
+    if query:
+        sql += " AND (name ILIKE %s OR description ILIKE %s)"
+        q = f"%{query}%"
+        params.extend([q, q])
+    sql += " ORDER BY sort_order ASC LIMIT %s"
+    params.append(max(1, min(int(limit or 10), 30)))
+    rows = query_db(sql, tuple(params)) or []
+    out = []
+    for r in rows:
+        in_stock = (not r.get("track_inventory")) or (r.get("stock", 0) > 0)
+        out.append({
+            "slug": r["slug"],
+            "name": r["name"],
+            "description": _trim_text(r.get("description"), 600),
+            "price": _format_money_cents(
+                r.get("price_cents"), r.get("currency")
+            ),
+            "in_stock": in_stock,
+        })
+    return out
+
+
+def lookup_events(slug=None, query=None, upcoming_only=True, limit=10):
+    """Events / workshops / classes. Defaults to upcoming only."""
+    sql = (
+        "SELECT slug, title, description, start_at, end_at, location, "
+        "capacity, price FROM events WHERE status = 'published'"
+    )
+    params = []
+    if slug:
+        sql += " AND slug = %s"
+        params.append(slug)
+    if query:
+        sql += (
+            " AND (title ILIKE %s OR description ILIKE %s "
+            "OR location ILIKE %s)"
+        )
+        q = f"%{query}%"
+        params.extend([q, q, q])
+    if upcoming_only:
+        sql += " AND start_at >= NOW()"
+    sql += " ORDER BY start_at ASC LIMIT %s"
+    params.append(max(1, min(int(limit or 10), 30)))
+    rows = query_db(sql, tuple(params)) or []
+    out = []
+    for r in rows:
+        sa = r.get("start_at")
+        ea = r.get("end_at")
+        out.append({
+            "slug": r["slug"],
+            "title": r["title"],
+            "description": _trim_text(r.get("description"), 600),
+            "start": sa.isoformat() if sa else None,
+            "end": ea.isoformat() if ea else None,
+            "location": r.get("location"),
+            "price": r.get("price"),
+            "capacity": r.get("capacity"),
+        })
+    return out
+
+
+def lookup_blog(slug=None, category=None, query=None, limit=5,
+                include_body=False):
+    """Blog posts. By default returns excerpts; set include_body=True only
+    when the visitor explicitly wants the full article body."""
+    fields = (
+        "slug, title, subtitle, excerpt, category, tags, author, "
+        "published_at"
+    )
+    if include_body:
+        fields += ", content"
+    sql = f"SELECT {fields} FROM blog_posts WHERE status = 'published'"
+    params = []
+    if slug:
+        sql += " AND slug = %s"
+        params.append(slug)
+    if category:
+        sql += " AND category ILIKE %s"
+        params.append(f"%{category}%")
+    if query:
+        sql += (
+            " AND (title ILIKE %s OR subtitle ILIKE %s OR excerpt ILIKE %s "
+            "OR tags ILIKE %s OR content ILIKE %s)"
+        )
+        q = f"%{query}%"
+        params.extend([q, q, q, q, q])
+    sql += " ORDER BY sort_order ASC, published_at DESC LIMIT %s"
+    params.append(max(1, min(int(limit or 5), 15)))
+    rows = query_db(sql, tuple(params)) or []
+    out = []
+    for r in rows:
+        item = {
+            "slug": r["slug"],
+            "title": r["title"],
+            "subtitle": _trim_text(r.get("subtitle"), 200),
+            "excerpt": _trim_text(r.get("excerpt"), 400),
+            "category": r.get("category"),
+            "tags": r.get("tags"),
+            "author": r.get("author"),
+        }
+        pa = r.get("published_at")
+        if pa:
+            item["published_at"] = pa.isoformat() if hasattr(pa, "isoformat") else str(pa)
+        if include_body:
+            item["content"] = _trim_text(r.get("content"), 4000)
+        out.append(item)
+    return out
+
+
+def lookup_team(query=None, limit=10):
+    """Team / staff bios."""
+    sql = "SELECT name, title, bio FROM team_members"
+    params = []
+    if query:
+        sql += " WHERE (name ILIKE %s OR title ILIKE %s OR bio ILIKE %s)"
+        q = f"%{query}%"
+        params.extend([q, q, q])
+    sql += " ORDER BY sort_order ASC LIMIT %s"
+    params.append(max(1, min(int(limit or 10), 30)))
+    rows = query_db(sql, tuple(params)) or []
+    return [
+        {
+            "name": r["name"],
+            "title": r.get("title"),
+            "bio": _trim_text(r.get("bio"), 700),
+        }
+        for r in rows
+    ]
+
+
+def lookup_faq(query=None, limit=8):
+    """FAQ entries (question/answer pairs)."""
+    sql = "SELECT question, answer FROM faqs"
+    params = []
+    if query:
+        sql += " WHERE (question ILIKE %s OR answer ILIKE %s)"
+        q = f"%{query}%"
+        params.extend([q, q])
+    sql += " ORDER BY sort_order ASC LIMIT %s"
+    params.append(max(1, min(int(limit or 8), 30)))
+    rows = query_db(sql, tuple(params)) or []
+    return [
+        {
+            "question": r["question"],
+            "answer": _trim_text(r.get("answer"), 900),
+        }
+        for r in rows
+    ]
+
+
+def lookup_testimonials(query=None, min_rating=None, limit=5):
+    """Customer reviews / testimonials. Useful for social proof."""
+    sql = (
+        "SELECT reviewer_name, reviewer_role, content, rating "
+        "FROM testimonials WHERE 1=1"
+    )
+    params = []
+    if min_rating:
+        sql += " AND rating >= %s"
+        params.append(int(min_rating))
+    if query:
+        sql += " AND (content ILIKE %s OR reviewer_name ILIKE %s)"
+        q = f"%{query}%"
+        params.extend([q, q])
+    sql += " ORDER BY sort_order ASC LIMIT %s"
+    params.append(max(1, min(int(limit or 5), 30)))
+    rows = query_db(sql, tuple(params)) or []
+    return [
+        {
+            "reviewer": r["reviewer_name"],
+            "role": r.get("reviewer_role"),
+            "content": _trim_text(r.get("content"), 500),
+            "rating": r.get("rating"),
+        }
+        for r in rows
+    ]
+
+
+def lookup_business_info():
+    """Business contact details, address, and weekly hours."""
+    biz = query_db(
+        "SELECT business_phone, business_email, business_address, "
+        "business_hours FROM site_settings WHERE id = 1",
+        fetchone=True,
+    )
+    if not biz:
+        return {}
+    out = {
+        "phone": biz.get("business_phone") or None,
+        "email": biz.get("business_email") or None,
+        "address": biz.get("business_address") or None,
+    }
+    hours = biz.get("business_hours")
+    if hours and isinstance(hours, list):
+        out["hours"] = [
+            {"day": h.get("day"), "open": h.get("open"), "close": h.get("close")}
+            for h in hours
+            if h.get("day")
+        ]
+    return out
+
+
+def lookup_custom_section_items(section_slug=None, section_id=None):
+    """Items inside an admin-created custom section (cards_grid,
+    stats_counter, icon_features, etc.)."""
+    base_sql = (
+        "SELECT csi.title, csi.subtitle, csi.content, csi.image_url, "
+        "csi.link_url, csi.link_text, csi.icon, ps.slug as section_slug, "
+        "ps.title as section_title, ps.template "
+        "FROM custom_section_items csi "
+        "JOIN page_sections ps ON ps.id = csi.section_id "
+        "WHERE ps.enabled = TRUE"
+    )
+    if section_id:
+        rows = query_db(
+            base_sql + " AND ps.id = %s ORDER BY csi.sort_order ASC",
+            (int(section_id),),
+        ) or []
+    elif section_slug:
+        rows = query_db(
+            base_sql + " AND ps.slug = %s ORDER BY csi.sort_order ASC",
+            (section_slug,),
+        ) or []
+    else:
+        return []
+    return [
+        {
+            "title": r.get("title"),
+            "subtitle": _trim_text(r.get("subtitle"), 200),
+            "content": _trim_text(r.get("content"), 600),
+            "icon": r.get("icon"),
+            "image_url": r.get("image_url") or None,
+            "link_url": r.get("link_url") or None,
+            "link_text": r.get("link_text") or None,
+        }
+        for r in rows
+    ]
+
+
+def lookup_generated_page(slug):
+    """Look up a previously-published AI-generated page by slug."""
+    page = query_db(
+        "SELECT slug, title, prompt FROM generated_pages "
+        "WHERE slug = %s AND status = 'published'",
+        (slug,),
+        fetchone=True,
+    )
+    return page or {}
+
+
+# ---- Compact SITE INDEX: names + slugs only, no descriptions ---------------
+
+def build_site_index():
+    """Compact catalog of what exists on the site, injected into every chat
+    turn. Names + slugs only — no descriptions, details, features, or body
+    text. Gives the AI awareness so it can suggest things spontaneously, and
+    points it at the right lookup_* tool when it needs full detail."""
+    parts = []
+
+    cards = query_db(
+        "SELECT slug, title, category, price FROM gallery_cards "
+        "ORDER BY sort_order ASC LIMIT 200"
+    ) or []
+    if cards:
+        lines = []
+        for c in cards:
+            line = f'  - "{c["slug"]}" — "{c["title"]}"'
+            if c.get("category"):
+                line += f' [{c["category"]}]'
+            if c.get("price"):
+                line += f' ({c["price"]})'
+            lines.append(line)
+        parts.append(
+            f"GALLERY CARDS ({len(cards)} total) — for full description, "
+            f"details, image, call lookup_gallery_cards:\n" + "\n".join(lines)
+        )
+
+    services = query_db(
+        "SELECT slug, name FROM services WHERE is_active = TRUE "
+        "ORDER BY sort_order ASC LIMIT 200"
+    ) or []
+    if services:
+        lines = [f'  - "{s["slug"]}" — "{s["name"]}"' for s in services]
+        parts.append(
+            f"BOOKABLE SERVICES ({len(services)} total) — for full "
+            f"description, duration, price, call lookup_services:\n"
+            + "\n".join(lines)
+        )
+
+    experiences = query_db(
+        "SELECT name FROM experiences ORDER BY sort_order ASC LIMIT 200"
+    ) or []
+    if experiences:
+        lines = [f'  - "{e["name"]}"' for e in experiences]
+        parts.append(
+            f"EXPERIENCES OFFERED ({len(experiences)} total) — for full "
+            f"description, call lookup_experiences:\n" + "\n".join(lines)
+        )
+
+    pricing = query_db(
+        "SELECT label FROM pricing_seasons ORDER BY sort_order ASC LIMIT 100"
+    ) or []
+    if pricing:
+        lines = [f'  - "{p["label"]}"' for p in pricing]
+        parts.append(
+            f"PRICING TIERS ({len(pricing)} total) — for date ranges and "
+            f"prices, call lookup_pricing:\n" + "\n".join(lines)
+        )
+
+    products = query_db(
+        "SELECT slug, name FROM products WHERE active = TRUE "
+        "ORDER BY sort_order ASC LIMIT 200"
+    ) or []
+    if products:
+        lines = [f'  - "{p["slug"]}" — "{p["name"]}"' for p in products]
+        parts.append(
+            f"SHOP PRODUCTS ({len(products)} total) — for full description, "
+            f"price, stock, call lookup_products:\n" + "\n".join(lines)
+        )
+
+    events = query_db(
+        "SELECT slug, title, start_at FROM events "
+        "WHERE status = 'published' AND start_at >= NOW() "
+        "ORDER BY start_at ASC LIMIT 100"
+    ) or []
+    if events:
+        lines = []
+        for e in events:
+            when = (
+                e["start_at"].strftime("%b %d, %Y")
+                if e.get("start_at") and hasattr(e["start_at"], "strftime")
+                else "TBD"
+            )
+            lines.append(f'  - "{e["slug"]}" — "{e["title"]}" ({when})')
+        parts.append(
+            f"UPCOMING EVENTS ({len(events)} total) — for full description, "
+            f"location, capacity, call lookup_events:\n" + "\n".join(lines)
+        )
+
+    blog = query_db(
+        "SELECT slug, title, category FROM blog_posts "
+        "WHERE status = 'published' "
+        "ORDER BY sort_order ASC, published_at DESC LIMIT 200"
+    ) or []
+    if blog:
+        lines = []
+        for b in blog:
+            line = f'  - "{b["slug"]}" — "{b["title"]}"'
+            if b.get("category"):
+                line += f' [{b["category"]}]'
+            lines.append(line)
+        parts.append(
+            f"BLOG POSTS ({len(blog)} total) — for excerpt or full body, "
+            f"call lookup_blog (set include_body=true only if visitor wants "
+            f"the article text):\n" + "\n".join(lines)
+        )
+
+    team = query_db(
+        "SELECT name, title FROM team_members "
+        "ORDER BY sort_order ASC LIMIT 100"
+    ) or []
+    if team:
+        lines = []
+        for t in team:
+            line = f'  - "{t["name"]}"'
+            if t.get("title"):
+                line += f' — {t["title"]}'
+            lines.append(line)
+        parts.append(
+            f"TEAM ({len(team)} total) — for full bio, call lookup_team:\n"
+            + "\n".join(lines)
+        )
+
+    faqs = query_db(
+        "SELECT question FROM faqs ORDER BY sort_order ASC LIMIT 200"
+    ) or []
+    if faqs:
+        lines = [f'  - "{_trim_text(f["question"], 140)}"' for f in faqs]
+        parts.append(
+            f"FAQ ({len(faqs)} total) — for the answer, call lookup_faq:\n"
+            + "\n".join(lines)
+        )
+
+    tcount = query_db(
+        "SELECT COUNT(*) AS c FROM testimonials", fetchone=True
+    )
+    if tcount and tcount.get("c"):
+        parts.append(
+            f"TESTIMONIALS ({tcount['c']} total) — call lookup_testimonials "
+            f"when social proof would help the visitor decide."
+        )
+
+    parts.append(
+        "BUSINESS INFO — call lookup_business_info for phone, email, "
+        "address, and weekly hours."
+    )
+
+    return "\n\n".join(parts) if parts else ""
+
+
+# ---- OpenAI tool schemas (mirrors the lookup functions above) --------------
+
+CHAT_TOOLS = [
+    {"type": "function", "function": {
+        "name": "lookup_gallery_cards",
+        "description": (
+            "Get full details (description, details list, price, image) "
+            "for landing-page gallery cards. Use when the visitor asks "
+            "about a specific card by name/slug, or wants to browse a "
+            "category. Pass narrow filters — do not request everything."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "slug": {"type": "string", "description": "Exact card slug from the SITE INDEX, when known."},
+            "category": {"type": "string", "description": "Filter by category."},
+            "query": {"type": "string", "description": "Free-text search across title/subtitle/description/category."},
+            "limit": {"type": "integer", "description": "Max results (default 5, max 20)."},
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_services",
+        "description": (
+            "Get full details (description, duration, price) for bookable "
+            "services. Use when the visitor asks about a service or wants "
+            "to book one."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "slug": {"type": "string"},
+            "query": {"type": "string"},
+            "limit": {"type": "integer"},
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_experiences",
+        "description": "Get full descriptions of curated experiences/activities offered.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string"},
+            "limit": {"type": "integer"},
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_pricing",
+        "description": "Get seasonal pricing tiers / date ranges / rate ranges.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string"},
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_products",
+        "description": "Get full details for shop products (description, price, stock).",
+        "parameters": {"type": "object", "properties": {
+            "slug": {"type": "string"},
+            "query": {"type": "string"},
+            "limit": {"type": "integer"},
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_events",
+        "description": "Get full details for events/workshops. Defaults to upcoming only.",
+        "parameters": {"type": "object", "properties": {
+            "slug": {"type": "string"},
+            "query": {"type": "string"},
+            "upcoming_only": {"type": "boolean", "description": "If false, includes past events. Default true."},
+            "limit": {"type": "integer"},
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_blog",
+        "description": (
+            "Get blog post excerpts, or the full article body when "
+            "include_body=true (use sparingly — only when the visitor "
+            "actually wants the article text, not a summary)."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "slug": {"type": "string"},
+            "category": {"type": "string"},
+            "query": {"type": "string"},
+            "include_body": {"type": "boolean"},
+            "limit": {"type": "integer"},
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_team",
+        "description": "Get full bios for team/staff members.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string"},
+            "limit": {"type": "integer"},
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_faq",
+        "description": "Get full Q/A pairs from the FAQ. Use when the visitor's question matches an FAQ topic.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string"},
+            "limit": {"type": "integer"},
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_testimonials",
+        "description": "Get customer testimonials/reviews. Useful for social proof when the visitor is hesitating.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string"},
+            "min_rating": {"type": "integer"},
+            "limit": {"type": "integer"},
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_business_info",
+        "description": "Get the business's phone, email, address, and weekly hours.",
+        "parameters": {"type": "object", "properties": {}},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_custom_section_items",
+        "description": (
+            "Get the items inside an admin-created custom section "
+            "(cards_grid, stats_counter, icon_features, etc.). Pass either "
+            "section_slug or section_id from the LANDING PAGE LAYOUT."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "section_slug": {"type": "string"},
+            "section_id": {"type": "integer"},
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_generated_page",
+        "description": (
+            "Look up the original prompt for a previously-published AI-"
+            "generated page by slug. Rare — usually you'd just navigate the "
+            "visitor to it via showSavedPage."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "slug": {"type": "string"},
+        }, "required": ["slug"]},
+    }},
+]
+
+
+CHAT_LOOKUP_FUNCTIONS = {
+    "lookup_gallery_cards": lookup_gallery_cards,
+    "lookup_services": lookup_services,
+    "lookup_experiences": lookup_experiences,
+    "lookup_pricing": lookup_pricing,
+    "lookup_products": lookup_products,
+    "lookup_events": lookup_events,
+    "lookup_blog": lookup_blog,
+    "lookup_team": lookup_team,
+    "lookup_faq": lookup_faq,
+    "lookup_testimonials": lookup_testimonials,
+    "lookup_business_info": lookup_business_info,
+    "lookup_custom_section_items": lookup_custom_section_items,
+    "lookup_generated_page": lookup_generated_page,
+}
+
+
+def execute_chat_tool(name, args_json):
+    """Execute one tool call by name. Returns (result_json_str, log_entry).
+
+    log_entry is a small dict for admin observability (which lookup ran,
+    what filters, how many rows, how long). It does NOT travel back to the
+    model — it's persisted alongside the assistant's chat_message row.
+    """
+    import time as _time
+    started = _time.time()
+    try:
+        args = json.loads(args_json) if args_json else {}
+        if not isinstance(args, dict):
+            args = {}
+    except Exception:
+        args = {}
+
+    fn = CHAT_LOOKUP_FUNCTIONS.get(name)
+    if fn is None:
+        return (
+            json.dumps({"error": f"Unknown tool: {name}"}),
+            {"name": name, "args": args, "error": "unknown_tool", "ms": 0},
+        )
+
+    try:
+        result = fn(**args)
+    except TypeError:
+        # Drop args the function doesn't accept (model occasionally invents
+        # parameters) and retry once with only the supported subset.
+        try:
+            import inspect
+            sig = inspect.signature(fn)
+            clean = {k: v for k, v in args.items() if k in sig.parameters}
+            result = fn(**clean)
+        except Exception as e:
+            return (
+                json.dumps({"error": str(e)}),
+                {
+                    "name": name, "args": args, "error": str(e),
+                    "ms": int((_time.time() - started) * 1000),
+                },
+            )
+    except Exception as e:
+        return (
+            json.dumps({"error": str(e)}),
+            {
+                "name": name, "args": args, "error": str(e),
+                "ms": int((_time.time() - started) * 1000),
+            },
+        )
+
+    ms = int((_time.time() - started) * 1000)
+    rows = (
+        len(result) if isinstance(result, list)
+        else (1 if result else 0)
+    )
+    return (
+        json.dumps(result, default=str),
+        {"name": name, "args": args, "rows": rows, "ms": ms},
+    )
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """
@@ -3926,53 +4726,43 @@ def api_chat():
     active_prompt = active_prompt.replace("{THEME_PLACEHOLDER}", theme_block)
 
     # =========================================================================
-    # AI KNOWLEDGE BASE — Dynamic Content Injection
+    # AI KNOWLEDGE — Compact site index + on-demand lookup tools
     # =========================================================================
     #
-    # HOW IT WORKS:
-    # Every time a visitor sends a chat message, the AI receives a system
-    # prompt that includes ALL of the site's real content. This is what makes
-    # the AI feel "alive" — it knows the actual business name, room names,
-    # prices, experiences, and descriptions rather than giving generic answers.
+    # HOW IT WORKS (changed from "stuff everything every turn" to RAG-style):
+    # The system prompt receives a SHORT site index (just the names + slugs
+    # of every card/service/experience/blog post/etc.) plus a set of OpenAI
+    # function-calling tools. When the AI needs the description, details,
+    # price, or body text for a specific item, it CALLS the matching
+    # lookup_* tool and only that targeted slice travels back into context.
     #
-    # The content is pulled fresh from the database on each request, so any
-    # changes made in the admin panel are immediately reflected in the AI's
-    # knowledge without restarting the server.
+    # WHAT STAYS INLINE (small, always-needed every turn):
+    #   1. SITE IDENTITY      — site name, subtitle, tagline, hero copy
+    #   2. SITE INDEX         — name+slug catalog of all content (no detail)
+    #   3. FORMS              — full field schemas (required-field tracking
+    #                           depends on this being inlined)
+    #   4. PAGE LIBRARY       — slugs+titles of saved AI-generated pages
+    #   5. LANDING PAGE LAYOUT — section order + scrollToSection targets
+    #   6. TOOL USAGE         — instructions on how to call the lookup tools
     #
-    # WHAT'S CURRENTLY INJECTED:
-    #   1. SITE IDENTITY    — site name, subtitle, tagline, hero title/description
-    #   2. GALLERY CARDS    — slug, title, subtitle, category, description, details, price
-    #   3. EXPERIENCES      — name, description, duration, price
-    #   4. PRICING          — label, price, description, features
+    # WHAT MOVED BEHIND TOOLS (call lookup_* on demand, with narrow filters):
+    #   - Gallery card descriptions, details, images        → lookup_gallery_cards
+    #   - Bookable service descriptions, duration, prices   → lookup_services
+    #   - Experience descriptions                           → lookup_experiences
+    #   - Pricing tier date/price ranges                    → lookup_pricing
+    #   - Shop product descriptions, prices, stock          → lookup_products
+    #   - Event descriptions, locations, capacities         → lookup_events
+    #   - Blog post excerpts and full bodies                → lookup_blog
+    #   - Team member bios                                  → lookup_team
+    #   - FAQ answers                                       → lookup_faq
+    #   - Testimonials / reviews                            → lookup_testimonials
+    #   - Business phone/email/address/hours                → lookup_business_info
+    #   - Items inside an admin custom section              → lookup_custom_section_items
     #
-    # HOW TO ADD MORE KNOWLEDGE:
-    # To teach the AI about a new type of content, follow this pattern:
-    #
-    #   Step 1: Query your database table
-    #       data = query_db("SELECT column1, column2 FROM your_table ORDER BY sort_order ASC")
-    #
-    #   Step 2: Format the results as readable text lines
-    #       lines = [f'  - {row["column1"]}: {row["column2"]}' for row in data]
-    #
-    #   Step 3: Append to the active prompt with a clear section header
-    #       active_prompt += f"\n\nYOUR SECTION NAME:\n" + "\n".join(lines)
-    #
-    # EXAMPLES OF THINGS YOU COULD ADD:
-    #   - FAQ entries:        query faq table, format as Q&A pairs
-    #   - Team/staff bios:    query staff table, include name/role/bio
-    #   - Location/hours:     query settings for address, phone, hours
-    #   - Testimonials:       query reviews table, include name/quote/rating
-    #   - Policies:           query policies table (cancellation, check-in, etc.)
-    #   - Menu items:         query menu table with names, descriptions, prices
-    #   - Blog/news posts:    query posts table for recent titles and summaries
-    #
-    # TIPS:
-    #   - Keep each section clearly labeled (the AI uses headers to find info)
-    #   - Only include fields the AI would actually reference in conversation
-    #   - The more specific the data, the more natural the AI sounds
-    #   - All injected content counts toward the AI's context window, so
-    #     avoid dumping huge text blocks — summarize where possible
-    #   - Wrap everything in try/except so a missing table won't break chat
+    # WHY: token cost grew linearly with site content. A site with 500 blog
+    # posts and 200 products was sending 50k+ tokens of context PER TURN.
+    # The index is hundreds of tokens regardless of how big the site gets,
+    # and the model only pulls in detail when it's actually needed.
     # =========================================================================
 
     try:
@@ -3982,42 +4772,15 @@ def api_chat():
         if settings:
             active_prompt += f"\n\nSITE IDENTITY:\n- Name: {settings.get('site_name', '')}\n- Subtitle: {settings.get('site_subtitle', '')}\n- Tagline: {settings.get('hero_tagline', '')}\n- Title: {settings.get('hero_title', '')}\n- Description: {settings.get('hero_description', '')}"
 
-        # ----- 2. GALLERY CARDS -----
-        # Each card represents a key item (room, product, service, etc.)
-        # The slug is critical — the AI uses it for the navigate command
-        cards = query_db("SELECT slug, title, subtitle, category, description, details, price FROM gallery_cards ORDER BY sort_order ASC")
-        if cards:
-            card_lines = []
-            for c in cards:
-                line = f'  - slug: "{c["slug"]}", title: "{c["title"]}"'
-                if c.get("subtitle"): line += f', subtitle: "{c["subtitle"]}"'
-                if c.get("category"): line += f', category: "{c["category"]}"'
-                if c.get("description"): line += f', description: "{c["description"]}"'
-                if c.get("details"): line += f', details: "{c["details"]}"'
-                if c.get("price"): line += f', price: "{c["price"]}"'
-                card_lines.append(line)
-            active_prompt += f"\n\nGALLERY CARDS (use exact slug values for navigate targets):\n" + "\n".join(card_lines)
+        # ----- 2. SITE INDEX -----
+        # Compact catalog of every content category (names + slugs only,
+        # no descriptions). Lets the AI suggest items spontaneously and
+        # know which lookup_* tool to call for full detail.
+        site_index = build_site_index()
+        if site_index:
+            active_prompt += "\n\nSITE INDEX (everything that exists on this site — call the matching lookup_* tool for full detail when the visitor asks about any specific item):\n\n" + site_index
 
-        # ----- 3. EXPERIENCES -----
-        # Activities, services, or add-ons the business offers
-        experiences = query_db("SELECT name, description, duration, price FROM experiences ORDER BY sort_order ASC")
-        if experiences:
-            exp_lines = [f'  - {e["name"]}: {e.get("description", "")} (duration: {e.get("duration", "N/A")}, price: {e.get("price", "N/A")})' for e in experiences]
-            active_prompt += f"\n\nEXPERIENCES OFFERED:\n" + "\n".join(exp_lines)
-
-        # ----- 4. PRICING -----
-        # Seasonal tiers, packages, or rate information
-        pricing = query_db("SELECT label, price, description, features FROM pricing_seasons ORDER BY sort_order ASC")
-        if pricing:
-            price_lines = []
-            for p in pricing:
-                line = f'  - {p["label"]}: {p.get("price", "N/A")}'
-                if p.get("description"): line += f' — {p["description"]}'
-                if p.get("features"): line += f' | Features: {p["features"]}'
-                price_lines.append(line)
-            active_prompt += f"\n\nPRICING:\n" + "\n".join(price_lines)
-
-        # ----- 5. AVAILABLE FORMS -----
+        # ----- 3. AVAILABLE FORMS -----
         # Lets the AI know which forms exist and what fields they have,
         # so it can collect information conversationally and submit
         forms = query_db("SELECT id, name, slug, description FROM custom_forms WHERE status = 'active' ORDER BY sort_order ASC")
@@ -4083,44 +4846,7 @@ def api_chat():
                 + "\n\n".join(form_lines)
             )
 
-        # ----- 6. TESTIMONIALS / REVIEWS -----
-        # Customer reviews with star ratings so the AI can reference real feedback
-        testimonials = query_db("SELECT reviewer_name, reviewer_role, content, rating FROM testimonials ORDER BY sort_order ASC")
-        if testimonials:
-            test_lines = [f'  - {t["reviewer_name"]} ({t.get("reviewer_role", "")}): "{t["content"]}" — {t.get("rating", 5)}★' for t in testimonials]
-            active_prompt += f"\n\nCUSTOMER TESTIMONIALS:\n" + "\n".join(test_lines)
-
-        # ----- 7. TEAM / ABOUT -----
-        # Staff bios so the AI can tell visitors about the team
-        team = query_db("SELECT name, title, bio FROM team_members ORDER BY sort_order ASC")
-        if team:
-            team_lines = [f'  - {m["name"]} — {m.get("title", "")}: {m.get("bio", "")}' for m in team]
-            active_prompt += f"\n\nOUR TEAM:\n" + "\n".join(team_lines)
-
-        # ----- 8. FAQ -----
-        # Common questions and answers the AI should know by heart
-        faqs = query_db("SELECT question, answer FROM faqs ORDER BY sort_order ASC")
-        if faqs:
-            faq_lines = [f'  Q: {f["question"]}\n  A: {f["answer"]}' for f in faqs]
-            active_prompt += f"\n\nFREQUENTLY ASKED QUESTIONS:\n" + "\n\n".join(faq_lines)
-
-        # ----- 9. BLOG POSTS -----
-        # Published blog post titles and excerpts so the AI can reference
-        # them and suggest reading specific articles to visitors
-        blog_posts = query_db(
-            "SELECT title, slug, excerpt, category FROM blog_posts WHERE status = 'published' ORDER BY sort_order ASC, published_at DESC"
-        )
-        if blog_posts:
-            blog_lines = [
-                f'  - "{bp["title"]}" (slug: "{bp["slug"]}", category: {bp.get("category", "General")}): {bp.get("excerpt", "")}'
-                for bp in blog_posts
-            ]
-            active_prompt += (
-                f"\n\nBLOG POSTS (you can suggest visitors read these at /blog/<slug>):\n"
-                + "\n".join(blog_lines)
-            )
-
-        # ----- 9b. PAGE LIBRARY (published AI-generated pages) -----
+        # ----- 4. PAGE LIBRARY (published AI-generated pages) -----
         # Live catalog of pages the admin has already reviewed and published.
         # The model uses this to answer repeat questions via showSavedPage
         # instead of regenerating the same HTML for every visitor — that's
@@ -4189,26 +4915,7 @@ def api_chat():
                     + "\n".join(draft_lines)
                 )
 
-        # ----- 10. BUSINESS INFO -----
-        # Contact details, hours, and address so the AI can share them
-        biz = query_db("""
-            SELECT business_phone, business_email, business_address, business_hours
-            FROM site_settings WHERE id = 1
-        """, fetchone=True)
-        if biz:
-            biz_lines = []
-            if biz.get("business_phone"): biz_lines.append(f"  - Phone: {biz['business_phone']}")
-            if biz.get("business_email"): biz_lines.append(f"  - Email: {biz['business_email']}")
-            if biz.get("business_address"): biz_lines.append(f"  - Address: {biz['business_address']}")
-            hours = biz.get("business_hours")
-            if hours and isinstance(hours, list) and len(hours) > 0:
-                hours_str = ", ".join([f'{h.get("day", "")}: {h.get("open", "")}–{h.get("close", "")}' for h in hours if h.get("day")])
-                if hours_str:
-                    biz_lines.append(f"  - Hours: {hours_str}")
-            if biz_lines:
-                active_prompt += f"\n\nBUSINESS CONTACT INFO:\n" + "\n".join(biz_lines)
-
-        # ----- 10b. LANDING PAGE LAYOUT -----
+        # ----- 5. LANDING PAGE LAYOUT -----
         # Live "view" of page_sections — tells the AI which sections exist on
         # the landing page, the display order, whether each is currently
         # visible to visitors (enabled/disabled), and the template for custom
@@ -4250,65 +4957,35 @@ def api_chat():
                 + "\n".join(layout_lines)
             )
 
-        # ----- 11. CUSTOM SECTIONS — items in admin-created sections -----
-        # Content items from custom sections (cards_grid, stats_counter,
-        # icon_features, etc.) so the AI can describe and link to them.
-        # Includes the section ID for the scrollToSection command.
-        # Only enabled custom sections are included — disabled ones are
-        # already listed (with status) in the LANDING PAGE LAYOUT block above.
-        custom_sections = query_db("""
-            SELECT ps.id as section_id, ps.slug, ps.title, ps.template,
-                   csi.title as item_title, csi.subtitle as item_subtitle,
-                   csi.content as item_content, csi.image_url as item_image,
-                   csi.link_url as item_link, csi.link_text as item_link_text,
-                   csi.icon as item_icon
-            FROM page_sections ps
-            JOIN custom_section_items csi ON csi.section_id = ps.id
-            WHERE ps.enabled = true AND ps.section_type = 'custom'
-            ORDER BY ps.sort_order, csi.sort_order
-        """)
-        if custom_sections:
-            current_section = None
-            current_section_id = None
-            current_template = None
-            section_lines = []
-
-            def _flush():
-                if current_section and section_lines:
-                    tmpl_note = f", template: {current_template}" if current_template else ""
-                    active_prompt_local = (
-                        f"\n\nCUSTOM SECTION — {current_section.upper().replace('-', ' ')} "
-                        f"(scrollToSection target: section-custom-{current_section_id}{tmpl_note}):\n"
-                        + "\n".join(section_lines)
-                    )
-                    return active_prompt_local
-                return ""
-
-            for row in custom_sections:
-                if row["slug"] != current_section:
-                    flushed = _flush()
-                    if flushed:
-                        active_prompt += flushed
-                    current_section = row["slug"]
-                    current_section_id = row["section_id"]
-                    current_template = row.get("template") or ""
-                    section_lines = []
-                line = f'  - {row["item_title"]}'
-                if row.get("item_icon"): line += f' [{row["item_icon"]}]'
-                if row.get("item_subtitle"): line += f' — {row["item_subtitle"]}'
-                if row.get("item_content"): line += f': {row["item_content"]}'
-                if row.get("item_image"): line += f' (image: {row["item_image"]})'
-                if row.get("item_link"):
-                    lt = row.get("item_link_text") or row["item_link"]
-                    line += f' [link: "{lt}" → {row["item_link"]}]'
-                section_lines.append(line)
-
-            flushed = _flush()
-            if flushed:
-                active_prompt += flushed
-
     except Exception:
         pass
+
+    # ----- 6. TOOL USAGE INSTRUCTIONS -----
+    # Tells the AI when (and when NOT) to call the lookup_* tools so it
+    # uses them appropriately and doesn't waste rounds on data already
+    # visible in the SITE INDEX or system prompt.
+    active_prompt += (
+        "\n\nLOOKUP TOOL USAGE:\n"
+        "  - The SITE INDEX above shows you EVERYTHING that exists on this "
+        "site by name + slug. Use it to suggest items by name spontaneously.\n"
+        "  - When the visitor asks about a SPECIFIC item — for its "
+        "description, details, price, hours, body text, bio, answer, "
+        "etc. — and that detail is NOT already in your context, CALL the "
+        "matching lookup_* tool to fetch it. Do not guess and do not invent.\n"
+        "  - Always pass the NARROWEST filter possible (slug if you have it, "
+        "otherwise a category or short query). Do not call a lookup with no "
+        "arguments unless you genuinely need the full small list (FAQ, "
+        "experiences, business info).\n"
+        "  - One round is usually enough. Never call the same tool with the "
+        "same arguments twice in a single turn.\n"
+        "  - Information you can already see (SITE IDENTITY, SITE INDEX "
+        "names/slugs, FORMS schema, PAGE LIBRARY, LANDING PAGE LAYOUT) does "
+        "NOT need a lookup call.\n"
+        "  - After you have what you need from the tool(s), reply to the "
+        "visitor in plain language and include the appropriate ```command``` "
+        "block if any action is needed (navigate, scrollToSection, "
+        "submitForm, generatePage, showSavedPage, etc.)."
+    )
 
     messages = [{"role": "system", "content": active_prompt}]
     for h in history[-20:]:
@@ -4339,23 +5016,113 @@ def api_chat():
 
     def generate():
         try:
-            stream = openai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=messages,
-                max_tokens=4096,
-                temperature=0.7,
-                stream=True,
-            )
+            # ---- Streaming tool-call loop ---------------------------------
+            # Each pass through the loop opens one streaming completion. We
+            # accumulate visible text tokens (forwarding them to the visitor
+            # as SSE 'token' events) AND tool_call deltas (silent — only used
+            # to invoke server-side lookups). When the round ends with
+            # finish_reason=="tool_calls", we execute each requested tool,
+            # append the assistant+tool messages to the running message list,
+            # and loop back into another streaming completion. Otherwise we
+            # break and emit the final text/command events.
+            #
+            # Capped at 4 rounds per visitor turn to bound cost — in practice
+            # one or two rounds is enough (1 lookup + 1 reply).
+            full_text = ""        # all visible reply tokens, every round
+            tool_logs = []        # observability — what lookups ran
+            max_rounds = 4
 
-            full_text = ""
+            for _round_idx in range(max_rounds):
+                stream = openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=messages,
+                    tools=CHAT_TOOLS,
+                    tool_choice="auto",
+                    max_tokens=4096,
+                    temperature=0.7,
+                    stream=True,
+                )
 
-            for chunk in stream:
-                if not chunk.choices:
+                round_text = ""
+                # Tool-call deltas arrive piecewise across many chunks,
+                # keyed by index. We assemble them into complete tool calls
+                # before executing.
+                tool_calls_acc = {}
+                finish_reason = None
+
+                for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    choice = chunk.choices[0]
+                    delta = choice.delta
+
+                    if delta and getattr(delta, "content", None):
+                        round_text += delta.content
+                        yield f"data: {json.dumps({'type': 'token', 'content': delta.content})}\n\n"
+
+                    if delta and getattr(delta, "tool_calls", None):
+                        for tc in delta.tool_calls:
+                            idx = tc.index
+                            slot = tool_calls_acc.setdefault(
+                                idx, {"id": "", "name": "", "args": ""}
+                            )
+                            if tc.id:
+                                slot["id"] = tc.id
+                            fn = getattr(tc, "function", None)
+                            if fn is not None:
+                                if getattr(fn, "name", None):
+                                    slot["name"] = fn.name
+                                if getattr(fn, "arguments", None):
+                                    slot["args"] += fn.arguments
+
+                    if choice.finish_reason:
+                        finish_reason = choice.finish_reason
+
+                full_text += round_text
+
+                # If the model wants to call tools, execute them and loop.
+                # Otherwise the response is final — break out and parse it.
+                if finish_reason == "tool_calls" and tool_calls_acc:
+                    tcs = []
+                    for idx in sorted(tool_calls_acc.keys()):
+                        slot = tool_calls_acc[idx]
+                        if not slot["name"]:
+                            continue
+                        tcs.append({
+                            "id": slot["id"] or f"call_{idx}",
+                            "type": "function",
+                            "function": {
+                                "name": slot["name"],
+                                "arguments": slot["args"] or "{}",
+                            },
+                        })
+                    if not tcs:
+                        # Defensive: nothing actionable, treat as finished.
+                        break
+
+                    # Append the assistant turn (with its tool_calls) so the
+                    # API can match each tool result back to its call.
+                    messages.append({
+                        "role": "assistant",
+                        "content": round_text or None,
+                        "tool_calls": tcs,
+                    })
+                    # Execute each tool and append its result message.
+                    for tc in tcs:
+                        result_str, log_entry = execute_chat_tool(
+                            tc["function"]["name"],
+                            tc["function"]["arguments"],
+                        )
+                        tool_logs.append(log_entry)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": result_str,
+                        })
+                    # Loop into the next streaming round.
                     continue
-                delta = chunk.choices[0].delta
-                if delta and delta.content:
-                    full_text += delta.content
-                    yield f"data: {json.dumps({'type': 'token', 'content': delta.content})}\n\n"
+
+                break
 
             reply, cmd = parse_command_from_text(full_text)
             if reply:
@@ -4407,9 +5174,17 @@ def api_chat():
                         "INSERT INTO chat_messages (conversation_id, role, content) VALUES (%s, 'user', %s) RETURNING id",
                         (conv_id, message)
                     )
+                    # Persist tool_logs alongside the assistant turn so the
+                    # admin can see in chat history exactly which lookup_*
+                    # tools the AI called and with what filters.
                     execute_db(
-                        "INSERT INTO chat_messages (conversation_id, role, content, command_json) VALUES (%s, 'assistant', %s, %s) RETURNING id",
-                        (conv_id, reply or full_text, json.dumps(cmd) if cmd else None)
+                        "INSERT INTO chat_messages (conversation_id, role, content, command_json, tool_calls_json) VALUES (%s, 'assistant', %s, %s, %s) RETURNING id",
+                        (
+                            conv_id,
+                            reply or full_text,
+                            json.dumps(cmd) if cmd else None,
+                            json.dumps(tool_logs) if tool_logs else None,
+                        )
                     )
                 except Exception:
                     pass

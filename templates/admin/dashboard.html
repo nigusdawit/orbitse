@@ -6939,10 +6939,41 @@ TO CUSTOMIZE THIS DASHBOARD:
           `Conversation — ${new Date(conv.started_at).toLocaleString()} (${conv.device_type || 'desktop'})`;
 
         const msgs = data.messages || [];
+        // Helper: render a compact list of which lookup_* tools the AI
+        // called for an assistant turn. tool_calls_json is a JSONB array
+        // of { name, args, rows, ms } (or { name, args, error, ms }) so
+        // the admin can spot wrong/missing lookups at a glance.
+        const renderToolCalls = (tcRaw) => {
+          if (!tcRaw) return '';
+          let calls = tcRaw;
+          if (typeof calls === 'string') {
+            try { calls = JSON.parse(calls); } catch (_) { return ''; }
+          }
+          if (!Array.isArray(calls) || !calls.length) return '';
+          const items = calls.map(c => {
+            const argStr = c.args && Object.keys(c.args).length
+              ? Object.entries(c.args)
+                  .map(([k, v]) => `${esc(k)}=${esc(String(v))}`)
+                  .join(', ')
+              : '(no args)';
+            const stat = c.error
+              ? `<span style="color:#ef4444;">error: ${esc(c.error)}</span>`
+              : `<span style="color:#22c55e;">${c.rows ?? 0} row${c.rows === 1 ? '' : 's'}</span>`;
+            const ms = (c.ms != null) ? ` · ${c.ms}ms` : '';
+            return `<div style="font-family:ui-monospace,monospace; font-size:0.72rem; line-height:1.4;">
+              <span style="color:#a78bfa;">${esc(c.name || 'unknown')}</span>(<span style="color:#94a3b8;">${argStr}</span>) → ${stat}${ms}
+            </div>`;
+          }).join('');
+          return `<div class="chat-msg-tools" style="margin-top:0.5rem; padding:0.5rem 0.65rem; background:rgba(168,85,247,0.08); border-left:3px solid rgba(168,85,247,0.5); border-radius:4px;">
+            <div style="font-size:0.7rem; text-transform:uppercase; letter-spacing:0.06em; color:#a78bfa; margin-bottom:0.3rem;">AI looked up</div>
+            ${items}
+          </div>`;
+        };
         container.innerHTML = msgs.map(m => `
           <div class="chat-msg chat-msg-${m.role}">
             <div class="chat-msg-role">${m.role}</div>
             <div>${esc(m.content)}</div>
+            ${m.role === 'assistant' ? renderToolCalls(m.tool_calls_json) : ''}
           </div>
         `).join('');
 
