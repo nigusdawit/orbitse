@@ -2105,6 +2105,7 @@ TO CUSTOMIZE THIS DASHBOARD:
               <option value="video_gallery">Video Gallery</option>
               <option value="podcast">Podcast Episodes</option>
               <option value="products">Products / Shop</option>
+              <option value="services">Services / Bookings</option>
             </optgroup>
           </select>
         </div>
@@ -6967,21 +6968,28 @@ TO CUSTOMIZE THIS DASHBOARD:
           return;
         }
 
-        tbody.innerHTML = forms.map(f => `
+        tbody.innerHTML = forms.map(f => {
+          const isManaged = f.form_type === 'service_booking';
+          const managedBadge = isManaged
+            ? `<span class="badge" style="background:rgba(168,85,247,0.18); color:#c4b5fd; margin-left:0.35rem;" title="Auto-managed by a Service. Edit the linked service to change fields.">Service Booking</span>`
+            : '';
+          return `
           <tr data-id="${f.id}">
-            <td><strong>${esc(f.name)}</strong></td>
+            <td><strong>${esc(f.name)}</strong>${managedBadge}</td>
             <td><code style="font-size:0.75rem; background:rgba(255,255,255,0.05); padding:0.15rem 0.4rem; border-radius:3px;">${esc(f.slug)}</code></td>
             <td><span class="badge" style="background:${f.status === 'active' ? 'rgba(34,197,94,0.2); color:#22c55e' : 'rgba(239,68,68,0.2); color:#ef4444'}">${f.status}</span></td>
             <td>${f.field_count || 0}</td>
             <td>${f.submission_count || 0}</td>
             <td>${f.created_at ? new Date(f.created_at).toLocaleDateString() : '—'}</td>
             <td style="display:flex; gap:0.25rem; flex-wrap:wrap;">
-              <button class="btn btn-secondary btn-sm" onclick="editForm(${f.id})" data-testid="button-edit-form-${f.id}">Edit</button>
-              <button class="btn btn-secondary btn-sm" onclick="viewSubmissions(${f.id})" data-testid="button-subs-form-${f.id}">Submissions</button>
-              <button class="btn btn-secondary btn-sm" onclick="deleteForm(${f.id})" data-testid="button-delete-form-${f.id}" style="color:#ef4444;">Delete</button>
+              ${isManaged
+                ? `<button class="btn btn-secondary btn-sm" onclick="viewSubmissions(${f.id})" data-testid="button-subs-form-${f.id}">Submissions</button>`
+                : `<button class="btn btn-secondary btn-sm" onclick="editForm(${f.id})" data-testid="button-edit-form-${f.id}">Edit</button>
+                   <button class="btn btn-secondary btn-sm" onclick="viewSubmissions(${f.id})" data-testid="button-subs-form-${f.id}">Submissions</button>
+                   <button class="btn btn-secondary btn-sm" onclick="deleteForm(${f.id})" data-testid="button-delete-form-${f.id}" style="color:#ef4444;">Delete</button>`}
             </td>
-          </tr>
-        `).join('');
+          </tr>`;
+        }).join('');
       } catch (err) {
         showToast('Failed to load forms', 'error');
       }
@@ -8554,7 +8562,8 @@ TO CUSTOMIZE THIS DASHBOARD:
       rsvp_form: 'RSVP / Ticket Form',
       video_gallery: 'Video Gallery',
       podcast: 'Podcast Episodes',
-      products: 'Products / Shop'
+      products: 'Products / Shop',
+      services: 'Services / Bookings'
     };
 
     /** Templates that auto-pull data from existing libraries (events,
@@ -8562,7 +8571,7 @@ TO CUSTOMIZE THIS DASHBOARD:
      *  We hide the "Items" management UI for these so the admin doesn't
      *  get confused by an empty items table. */
     const DATA_DRIVEN_TEMPLATES = new Set([
-      'events', 'rsvp_form', 'video_gallery', 'podcast', 'products'
+      'events', 'rsvp_form', 'video_gallery', 'podcast', 'products', 'services'
     ]);
 
     async function loadPageSections() {
@@ -8857,6 +8866,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         case 'video_gallery':
         case 'podcast':
         case 'products':
+        case 'services':
           return [];
         default:
           return [

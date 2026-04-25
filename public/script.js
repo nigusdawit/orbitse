@@ -1412,6 +1412,7 @@ const BUILTIN_SECTION_MAP = {
   'video-gallery': 'section-video-gallery',
   'podcast': 'section-podcast',
   'store': 'section-store',
+  'services': 'section-services',
   'footer': 'site-footer'
 };
 
@@ -1498,6 +1499,7 @@ function checkBuiltinHasData(slug) {
     case 'video-gallery': return videoGalleryItems.length > 0;
     case 'podcast': return podcastEpisodes.length > 0;
     case 'store': return storeProducts.length > 0;
+    case 'services': return Array.isArray(services) && services.some(s => s && s.is_active);
     case 'footer': return true;
     default: return true;
   }
@@ -1663,6 +1665,9 @@ function renderCustomSectionHTML(section, items) {
       break;
     case 'products':
       contentHTML = renderProductsCustomTemplate(section.id);
+      break;
+    case 'services':
+      contentHTML = renderServicesCustomTemplate(section.id, sTitle);
       break;
     default:
       contentHTML = renderCardsGridTemplate(items, section.id, sTitle);
@@ -1939,8 +1944,61 @@ function renderPodcastCustomTemplate(sectionId) {
 }
 
 
-/** Storefront product cards. Wires the existing addToCart() flow so the
- *  global cart drawer / Stripe checkout continue to work unchanged. */
+/** Services / Bookings cards. Wires each card's CTA to the existing
+ *  service booking modal (window.openServiceModal) so the booking
+ *  flow continues to work unchanged when shown via a custom section. */
+function renderServicesCustomTemplate(sectionId, sectionTitle) {
+  const list = (typeof services !== 'undefined' && services)
+    ? services.filter(s => s && s.is_active) : [];
+  if (!list.length) {
+    return '<p class="section-subtitle" style="text-align:center;">No services available right now.</p>';
+  }
+  /* Wire each card's CTA to the existing booking modal once the
+     section is in the DOM. Wrapper id is "section-custom-<id>" set
+     by renderCustomSectionHTML. */
+  setTimeout(() => {
+    const root = document.getElementById('section-custom-' + sectionId);
+    if (!root) return;
+    root.querySelectorAll('[data-svc-slug]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const slug = btn.getAttribute('data-svc-slug');
+        if (slug && typeof window.openServiceModal === 'function') {
+          window.openServiceModal(slug);
+        }
+      });
+    });
+  }, 0);
+  return `<div class="services-grid" data-testid="grid-custom-services-${sectionId}">
+    ${list.map(s => {
+      const priceLine =
+        s.pricing_model === 'rsvp'    ? 'Free RSVP' :
+        s.pricing_model === 'deposit' ? `Deposit ${formatMoney(s.deposit_cents, s.currency)} (Total ${formatMoney(s.base_price_cents, s.currency)})` :
+        s.pricing_model === 'full'    ? formatMoney(s.base_price_cents, s.currency) :
+                                        'Quote on request';
+      const cta =
+        s.pricing_model === 'rsvp'     ? 'Reserve' :
+        s.pricing_model === 'contract' ? 'Request' :
+        s.pricing_model === 'deposit'  ? 'Book' : 'Book';
+      const img = s.image_url
+        ? `<img class="service-card-img" src="${escapeHtml(s.image_url)}" alt="${escapeHtml(s.name)}" loading="lazy" style="width:100%;height:180px;object-fit:cover;border-radius:8px 8px 0 0;">`
+        : '';
+      return `
+        <article class="service-card fade-in-view" data-testid="card-custom-service-${s.id}" style="border:1px solid rgba(255,255,255,0.12);border-radius:8px;overflow:hidden;display:flex;flex-direction:column;">
+          ${img}
+          <div class="service-card-body" style="padding:1rem;display:flex;flex-direction:column;flex:1;">
+            <h3 class="service-card-title" style="margin:0 0 0.5rem;">${escapeHtml(s.name)}</h3>
+            ${s.short_description ? `<p class="service-card-desc" style="opacity:0.85;margin:0 0 0.75rem;flex:1;">${escapeHtml(s.short_description)}</p>` : ''}
+            <div class="service-card-foot" style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;">
+              <span class="service-card-price"><strong>${escapeHtml(priceLine)}</strong></span>
+              <button type="button" class="btn btn-primary" data-svc-slug="${escapeHtml(s.slug)}" data-testid="button-book-custom-service-${s.id}">${escapeHtml(cta)}</button>
+            </div>
+          </div>
+        </article>`;
+    }).join('')}
+  </div>`;
+}
+
+
 function renderProductsCustomTemplate(sectionId) {
   const products = (typeof storeProducts !== 'undefined' && storeProducts) || [];
   if (!products.length) {
@@ -6805,7 +6863,19 @@ function syncSplitToChat() {
     const section = document.getElementById('section-services');
     if(!grid || !section) return;
     const active = (services||[]).filter(s=>s.is_active);
-    if(!active.length){ section.style.display = 'none'; return; }
+    /* Visibility is owned by Page Layout (applySectionOrder). We only
+       paint the grid here; if there are no active services AND the
+       layout system isn't loaded yet, fall back to hiding inline so
+       the empty section never flashes on screen. */
+    if(!active.length){
+      grid.innerHTML = '';
+      if(typeof pageSections === 'undefined' || !pageSections || !pageSections.length){
+        section.style.display = 'none';
+      }
+      return;
+    }
+    /* Let the layout decide; if it's already run we just clear the
+       inline display so its rules take over. */
     section.style.display = '';
     grid.innerHTML = active.map(s=>{
       const priceLine =
@@ -6843,7 +6913,7 @@ function syncSplitToChat() {
       const r = await fetch('/api/services/'+encodeURIComponent(slug));
       if(!r.ok) throw new Error('Service not found');
       const svc = await r.json();
-      modalState = {svc, addons:{}, date:'', start:''};
+      modalState = {svc, addons:{}, date:'', start:'', sessionId: _bookingSessionId(), partialTimer: null, partialSent: false};
       renderModalForm();
     } catch(e){
       body.innerHTML = '<p style="color:#f87171;text-align:center;padding:2rem;">'+escHtml(e.message)+'</p>';
@@ -6895,6 +6965,74 @@ function syncSplitToChat() {
         <p id="svc-form-msg" style="margin-top:0.75rem;color:#f87171;text-align:center;"></p>
       </form>`;
     document.getElementById('svc-book-form').addEventListener('submit', submitBooking);
+
+    /* Wire partial-save (abandoned-cart) capture: any time the
+       client edits the form we debounce a save so the admin's Forms
+       tab shows them even if they never click Book. We only fire
+       once we have at least an email — keeps anonymous noise out. */
+    const f = document.getElementById('svc-book-form');
+    const trigger = () => {
+      if(!modalState) return;
+      clearTimeout(modalState.partialTimer);
+      modalState.partialTimer = setTimeout(_savePartialBooking, 800);
+    };
+    f.addEventListener('input', trigger);
+    f.addEventListener('change', trigger);
+  }
+
+  /* Stable per-tab id so partial saves and the final booking row map
+     to the same submission. Mirrors the regular Forms partial flow. */
+  function _bookingSessionId(){
+    try {
+      let sid = sessionStorage.getItem('svc_booking_session_id');
+      if(!sid){
+        sid = 'svc-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,10);
+        sessionStorage.setItem('svc_booking_session_id', sid);
+      }
+      return sid;
+    } catch(e){
+      return 'svc-' + Date.now().toString(36);
+    }
+  }
+
+  function _bookingTrackingMeta(){
+    let q = {};
+    try { q = Object.fromEntries(new URLSearchParams(window.location.search)); } catch(e){}
+    return {
+      session_id: modalState ? modalState.sessionId : '',
+      page_url:  window.location.href,
+      referrer:  document.referrer || '',
+      language:  (navigator && navigator.language) || '',
+      screen_resolution: (window.screen ? (window.screen.width + 'x' + window.screen.height) : ''),
+      utm_source:   q.utm_source   || '',
+      utm_medium:   q.utm_medium   || '',
+      utm_campaign: q.utm_campaign || '',
+      utm_term:     q.utm_term     || '',
+      utm_content:  q.utm_content  || '',
+    };
+  }
+
+  async function _savePartialBooking(){
+    if(!modalState) return;
+    const f = document.getElementById('svc-book-form');
+    if(!f) return;
+    const email = (f.client_email && f.client_email.value || '').trim();
+    if(!email) return;  // Don't log empty/anonymous attempts.
+    const fields = {
+      client_name:     (f.client_name  && f.client_name.value  || '').trim(),
+      client_email:    email,
+      client_phone:    (f.client_phone && f.client_phone.value || '').trim(),
+      notes:           (f.notes        && f.notes.value        || '').trim(),
+      scheduled_date:  modalState.date  || '',
+      scheduled_start: modalState.start || '',
+    };
+    try {
+      await fetch('/api/services/'+encodeURIComponent(modalState.svc.slug)+'/booking-partial', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(Object.assign({fields}, _bookingTrackingMeta())),
+      });
+      modalState.partialSent = true;
+    } catch(e){ /* best-effort, don't block the form */ }
   }
 
   function todayStr(){
@@ -6979,7 +7117,7 @@ function syncSplitToChat() {
       return;
     }
 
-    const body = {
+    const body = Object.assign({
       client_name:  form.client_name.value.trim(),
       client_email: form.client_email.value.trim(),
       client_phone: form.client_phone.value.trim(),
@@ -6987,7 +7125,7 @@ function syncSplitToChat() {
       addon_ids:    addonIds,
       scheduled_date:  modalState.date  || null,
       scheduled_start: modalState.start || null,
-    };
+    }, _bookingTrackingMeta());
 
     const submitBtn = form.querySelector('button[type=submit]');
     submitBtn.disabled = true;

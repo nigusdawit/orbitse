@@ -977,6 +977,14 @@ def init_db():
                 "ALTER TABLE form_submissions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
                 "ALTER TABLE form_submissions ADD COLUMN IF NOT EXISTS confirmation_number VARCHAR(20) DEFAULT ''",
                 "ALTER TABLE form_fields ADD COLUMN IF NOT EXISTS step INTEGER NOT NULL DEFAULT 1",
+                # --- Service-booking forms: lets each service appear in the
+                #     Forms tab so admins can see submissions + abandoned
+                #     carts using the same UI/analytics as regular forms.
+                #     form_type='service_booking' marks an auto-managed form
+                #     (admin can't edit/delete fields). linked_service_id
+                #     links the form back to its service row.
+                "ALTER TABLE custom_forms ADD COLUMN IF NOT EXISTS form_type VARCHAR(40) NOT NULL DEFAULT 'standard'",
+                "ALTER TABLE custom_forms ADD COLUMN IF NOT EXISTS linked_service_id INTEGER",
                 "ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS visitor_id VARCHAR(100) DEFAULT ''",
                 # --- Section visibility toggles (admin can show/hide entire sections) ---
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS section_testimonials BOOLEAN DEFAULT false",
@@ -1510,6 +1518,16 @@ def init_db():
             cur.execute("""
                 INSERT INTO page_sections (slug, title, section_type, template, sort_order, enabled)
                 VALUES ('events', 'Upcoming Events', 'built_in', 'events', 11, false)
+                ON CONFLICT (slug) DO NOTHING
+            """)
+
+            # Services / Bookings section — disabled by default; admin
+            # turns it on once at least one service is set up. The DOM id
+            # in public/index.html is "section-services" (mirrored in
+            # BUILTIN_SECTION_MAP in public/script.js).
+            cur.execute("""
+                INSERT INTO page_sections (slug, title, section_type, template, sort_order, enabled)
+                VALUES ('services', 'Services', 'built_in', 'services', 12, false)
                 ON CONFLICT (slug) DO NOTHING
             """)
 
@@ -6184,10 +6202,45 @@ def admin_get_form(form_id):
     return jsonify(form)
 
 
+def _form_is_managed(form_id):
+    """Return (form_row, is_managed). Managed forms (form_type != 'standard')
+    are auto-created by features like Service Bookings — admins can browse
+    submissions but must NOT edit/delete the form itself or its fields,
+    otherwise the feature that owns the form breaks."""
+    row = query_db(
+        "SELECT id, form_type, name FROM custom_forms WHERE id = %s",
+        (form_id,), fetchone=True,
+    )
+    if not row:
+        return (None, False)
+    return (row, (row.get("form_type") or "standard") != "standard")
+
+
+def _reject_if_managed(form_id):
+    """Helper for admin mutation endpoints — returns a Flask response if the
+    form is system-managed, or None if it's a normal admin-editable form."""
+    row, managed = _form_is_managed(form_id)
+    if not row:
+        return jsonify({"error": "Form not found"}), 404
+    if managed:
+        return jsonify({
+            "error": (
+                f"This is an auto-managed form ({row.get('name','')}). "
+                "It is owned by another feature (e.g. Service Bookings) and "
+                "cannot be edited or deleted from the Forms tab. "
+                "You can still view its submissions and analytics."
+            )
+        }), 403
+    return None
+
+
 @app.route("/admin/api/forms/<int:form_id>", methods=["PUT"])
 @admin_required
 def admin_update_form(form_id):
     """PUT /admin/api/forms/<id> — Update form settings."""
+    blocked = _reject_if_managed(form_id)
+    if blocked:
+        return blocked
     data = request.get_json()
     result = execute_db(
         """UPDATE custom_forms SET
@@ -6212,6 +6265,9 @@ def admin_update_form(form_id):
 @admin_required
 def admin_delete_form(form_id):
     """DELETE /admin/api/forms/<id> — Delete a form (cascades fields and submissions)."""
+    blocked = _reject_if_managed(form_id)
+    if blocked:
+        return blocked
     sub_count = query_db("SELECT COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s", (form_id,), fetchone=True)
     if sub_count and sub_count["cnt"] > 0:
         confirm = request.args.get("confirm") == "true"
@@ -6227,6 +6283,9 @@ def admin_delete_form(form_id):
 @admin_required
 def admin_add_field(form_id):
     """POST /admin/api/forms/<id>/fields — Add a field to a form."""
+    blocked = _reject_if_managed(form_id)
+    if blocked:
+        return blocked
     data = request.get_json()
     if not data or not data.get("label"):
         return jsonify({"error": "Field label is required"}), 400
@@ -6261,6 +6320,9 @@ def admin_add_field(form_id):
 @admin_required
 def admin_update_field(form_id, field_id):
     """PUT /admin/api/forms/<id>/fields/<field_id> — Update a field."""
+    blocked = _reject_if_managed(form_id)
+    if blocked:
+        return blocked
     data = request.get_json()
     options_val = json.dumps(data["options"]) if data.get("options") else None
     step_val = max(1, int(data.get("step", 1))) if data.get("step") else 1
@@ -6295,6 +6357,9 @@ def admin_update_field(form_id, field_id):
 @admin_required
 def admin_delete_field(form_id, field_id):
     """DELETE /admin/api/forms/<id>/fields/<field_id> — Remove a field."""
+    blocked = _reject_if_managed(form_id)
+    if blocked:
+        return blocked
     result = execute_db("DELETE FROM form_fields WHERE id = %s AND form_id = %s RETURNING id", (field_id, form_id))
     if not result:
         return jsonify({"error": "Field not found"}), 404
@@ -6305,6 +6370,9 @@ def admin_delete_field(form_id, field_id):
 @admin_required
 def admin_reorder_fields(form_id):
     """PUT /admin/api/forms/<id>/fields/reorder — Batch reorder fields."""
+    blocked = _reject_if_managed(form_id)
+    if blocked:
+        return blocked
     data = request.get_json()
     order = data.get("order", [])
     for item in order:
@@ -9242,6 +9310,171 @@ def _send_booking_confirmation(booking, service):
         app.logger.warning("Booking confirmation email failed: %s", e)
 
 
+def _ensure_service_booking_form(service):
+    """Make sure there is a custom_forms row for this service so its
+    bookings (and abandoned attempts) show up in the Forms tab.
+
+    Returns the form id, or None if the row could not be created.
+    Idempotent — safe to call on every booking and partial save.
+    """
+    if not service:
+        return None
+    svc_id = service.get("id")
+    svc_name = (service.get("name") or "").strip() or f"Service #{svc_id}"
+    svc_slug = (service.get("slug") or "").strip() or f"service-{svc_id}"
+    form_slug = f"service-booking-{svc_slug}"[:100]
+
+    existing = query_db(
+        "SELECT id FROM custom_forms WHERE form_type = 'service_booking' "
+        "AND linked_service_id = %s LIMIT 1",
+        (svc_id,), fetchone=True,
+    )
+    if existing:
+        return existing["id"]
+
+    # Re-use a row pre-existing under the same slug if any (e.g. re-created
+    # service with same slug) — bind it to this service.
+    by_slug = query_db(
+        "SELECT id FROM custom_forms WHERE slug = %s LIMIT 1",
+        (form_slug,), fetchone=True,
+    )
+    if by_slug:
+        execute_db(
+            "UPDATE custom_forms SET form_type = 'service_booking', "
+            "linked_service_id = %s, name = %s, updated_at = NOW() "
+            "WHERE id = %s",
+            (svc_id, f"Service Booking — {svc_name}", by_slug["id"]),
+        )
+        return by_slug["id"]
+
+    try:
+        result = execute_db(
+            """INSERT INTO custom_forms
+               (name, slug, description, status, submit_button_text,
+                success_message, sort_order, form_type, linked_service_id)
+               VALUES (%s, %s, %s, 'active', 'Book',
+                       'Thanks! Your booking request was received.',
+                       COALESCE((SELECT MAX(sort_order)+1 FROM custom_forms), 0),
+                       'service_booking', %s)
+               RETURNING id""",
+            (
+                f"Service Booking — {svc_name}",
+                form_slug,
+                f"Auto-managed form that mirrors bookings + abandoned carts for the '{svc_name}' service.",
+                svc_id,
+            ),
+        )
+        return result["id"] if result else None
+    except Exception:
+        # Race / duplicate-slug — re-query and bind.
+        again = query_db(
+            "SELECT id FROM custom_forms WHERE slug = %s LIMIT 1",
+            (form_slug,), fetchone=True,
+        )
+        return again["id"] if again else None
+
+
+def _booking_submission_payload(svc, booking_dict, raw_data, addons):
+    """Shape the JSONB body we store on form_submissions for a service
+    booking, in the same flat key/value style the regular Forms UI
+    already renders. Keeping the same keys for both partial saves and
+    final submissions means abandoned-cart recovery just works."""
+    addons_label = ", ".join(a.get("name", "") for a in (addons or [])) if addons else ""
+    return {
+        "service_name":     svc.get("name", ""),
+        "service_slug":     svc.get("slug", ""),
+        "pricing_model":    svc.get("pricing_model", ""),
+        "client_name":      (raw_data or {}).get("client_name", "")
+                            or (booking_dict or {}).get("client_name", ""),
+        "client_email":     (raw_data or {}).get("client_email", "")
+                            or (booking_dict or {}).get("client_email", ""),
+        "client_phone":     (raw_data or {}).get("client_phone", "")
+                            or (booking_dict or {}).get("client_phone", ""),
+        "notes":            (raw_data or {}).get("notes", "")
+                            or (booking_dict or {}).get("notes", ""),
+        "scheduled_date":   str((booking_dict or {}).get("scheduled_date")
+                                or (raw_data or {}).get("scheduled_date") or ""),
+        "scheduled_start":  str((booking_dict or {}).get("scheduled_start")
+                                or (raw_data or {}).get("scheduled_start") or ""),
+        "addons":           addons_label,
+        "total_cents":      int((booking_dict or {}).get("total_cents") or 0),
+        "currency":         (booking_dict or {}).get("currency", svc.get("currency") or "usd"),
+        "booking_token":    (booking_dict or {}).get("booking_token", ""),
+    }
+
+
+@app.route("/api/services/<string:slug>/booking-partial", methods=["POST"])
+def api_service_booking_partial(slug):
+    """POST /api/services/<slug>/booking-partial — Save partial booking
+    data so the Forms tab can show abandoned carts. Mirrors the
+    /api/forms/<slug>/partial flow but is keyed off the service slug."""
+    svc = query_db(
+        "SELECT id, slug, name, pricing_model, currency FROM services "
+        "WHERE slug = %s AND is_active = TRUE",
+        (slug,), fetchone=True,
+    )
+    if not svc:
+        return jsonify({"error": "Service not found"}), 404
+
+    data = request.get_json() or {}
+    session_id = (data.get("session_id") or "").strip()
+    if not session_id:
+        return jsonify({"error": "session_id required"}), 400
+
+    fields = data.get("fields") or {}
+    # Stamp service identifiers onto every partial save so admin's
+    # submissions list is self-explanatory.
+    fields = dict(fields)
+    fields.setdefault("service_name", svc.get("name", ""))
+    fields.setdefault("service_slug", svc.get("slug", ""))
+    fields.setdefault("pricing_model", svc.get("pricing_model", ""))
+
+    form_id = _ensure_service_booking_form(svc)
+    if not form_id:
+        return jsonify({"error": "Could not register booking form"}), 500
+
+    ua_string = request.headers.get("User-Agent", "")
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+    browser, os_name, device = _parse_ua(ua_string)
+
+    existing = query_db(
+        "SELECT id, status FROM form_submissions "
+        "WHERE form_id = %s AND session_id = %s "
+        "ORDER BY submitted_at DESC LIMIT 1",
+        (form_id, session_id), fetchone=True,
+    )
+    if existing and existing["status"] == "partial":
+        execute_db(
+            "UPDATE form_submissions SET submission_data = %s::jsonb, "
+            "updated_at = NOW() WHERE id = %s",
+            (json.dumps(fields), existing["id"]),
+        )
+        return jsonify({"success": True, "id": existing["id"], "action": "updated"})
+    if existing and existing["status"] != "partial":
+        # Already booked in this session — don't reopen as partial.
+        return jsonify({"success": True, "id": existing["id"], "action": "already_submitted"})
+
+    result = execute_db(
+        """INSERT INTO form_submissions
+            (form_id, submission_data, status, device_type, user_agent,
+             referrer_url, utm_source, utm_medium, utm_campaign, utm_term, utm_content,
+             page_url, ip_address, browser, os, screen_resolution, language, session_id)
+           VALUES (%s, %s::jsonb, 'partial', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+           RETURNING id""",
+        (
+            form_id, json.dumps(fields), device, ua_string[:500],
+            data.get("referrer", ""),
+            data.get("utm_source", ""), data.get("utm_medium", ""),
+            data.get("utm_campaign", ""), data.get("utm_term", ""),
+            data.get("utm_content", ""),
+            data.get("page_url", ""), ip, browser, os_name,
+            data.get("screen_resolution", ""), data.get("language", ""),
+            session_id,
+        ),
+    )
+    return jsonify({"success": True, "id": result["id"] if result else None, "action": "created"}), 201
+
+
 @app.route("/api/services/<string:slug>/book", methods=["POST"])
 def api_book_service(slug):
     """Create a booking. Dispatches per pricing model and returns either:
@@ -9372,6 +9605,76 @@ def api_book_service(slug):
     finally:
         conn.autocommit = True
     booking_dict = _service_to_dict(booking)
+
+    # ----- Mirror this booking into the Forms tab so admins can track
+    # all bookings + abandoned carts in one place. Best-effort —
+    # never block the booking response if logging fails. ------------
+    try:
+        svc_dict = _service_to_dict(svc)
+        form_id = _ensure_service_booking_form(svc_dict)
+        if form_id:
+            ua_string = request.headers.get("User-Agent", "")
+            ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+            browser, os_name, device = _parse_ua(ua_string)
+            session_id = (data.get("session_id") or "").strip()
+            payload = _booking_submission_payload(svc_dict, booking_dict, data, addons)
+            conf_number = booking_token[:20]
+
+            existing_partial = None
+            if session_id:
+                existing_partial = query_db(
+                    "SELECT id FROM form_submissions "
+                    "WHERE form_id = %s AND session_id = %s AND status = 'partial' "
+                    "ORDER BY submitted_at DESC LIMIT 1",
+                    (form_id, session_id), fetchone=True,
+                )
+
+            if existing_partial:
+                execute_db(
+                    """UPDATE form_submissions SET
+                         submission_data = %s::jsonb, status = 'new',
+                         updated_at = NOW(), submitted_at = NOW(),
+                         confirmation_number = %s,
+                         device_type = %s, user_agent = %s,
+                         referrer_url = %s, utm_source = %s, utm_medium = %s,
+                         utm_campaign = %s, utm_term = %s, utm_content = %s,
+                         page_url = %s, ip_address = %s, browser = %s, os = %s,
+                         screen_resolution = %s, language = %s
+                       WHERE id = %s""",
+                    (
+                        json.dumps(payload), conf_number,
+                        device, ua_string[:500],
+                        data.get("referrer", ""), data.get("utm_source", ""),
+                        data.get("utm_medium", ""), data.get("utm_campaign", ""),
+                        data.get("utm_term", ""), data.get("utm_content", ""),
+                        data.get("page_url", ""), ip, browser, os_name,
+                        data.get("screen_resolution", ""), data.get("language", ""),
+                        existing_partial["id"],
+                    ),
+                )
+            else:
+                execute_db(
+                    """INSERT INTO form_submissions
+                        (form_id, submission_data, status, confirmation_number,
+                         device_type, user_agent, referrer_url,
+                         utm_source, utm_medium, utm_campaign, utm_term, utm_content,
+                         page_url, ip_address, browser, os, screen_resolution,
+                         language, session_id)
+                       VALUES (%s, %s::jsonb, 'new', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        form_id, json.dumps(payload), conf_number,
+                        device, ua_string[:500],
+                        data.get("referrer", ""),
+                        data.get("utm_source", ""), data.get("utm_medium", ""),
+                        data.get("utm_campaign", ""), data.get("utm_term", ""),
+                        data.get("utm_content", ""),
+                        data.get("page_url", ""), ip, browser, os_name,
+                        data.get("screen_resolution", ""), data.get("language", ""),
+                        session_id,
+                    ),
+                )
+    except Exception as _form_log_err:
+        app.logger.warning("Service-booking form mirror failed: %s", _form_log_err)
 
     if pricing_model in ("deposit", "full"):
         if not stripe_client.is_configured():
