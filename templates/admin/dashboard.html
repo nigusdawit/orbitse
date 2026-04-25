@@ -14064,21 +14064,96 @@ TO CUSTOMIZE THIS DASHBOARD:
         webhookInfo.style.display = '';
         const base = (Automations.metadata.public_base_url || window.location.origin || '').replace(/\/$/, '');
         const tok = (Automations.current && Automations.current.webhook_token) || '';
+        const aid = (Automations.current && Automations.current.id) || null;
         if (tok) {
           const url = base + '/automations/hook/' + tok;
+          // The rejections panel is rendered as a sibling section so we
+          // can replace its contents asynchronously after the fetch
+          // resolves without disturbing the URL / regenerate controls
+          // above it. The panel itself stays hidden until the saved
+          // automation actually has signature verification configured —
+          // there's nothing meaningful to log without it.
           webhookInfo.innerHTML = `
             <div><strong>Your webhook URL:</strong></div>
             <div style="margin:0.4rem 0;font-family:monospace;word-break:break-all;background:rgba(0,0,0,0.25);padding:0.5rem;border-radius:6px;" data-testid="text-webhook-url">${escapeHtml(url)}</div>
             <div>POST any JSON to this URL to fire the automation. The body becomes the trigger data.</div>
             <div style="margin-top:0.5rem;">
               <button class="btn btn-secondary btn-sm" onclick="regenerateWebhookToken()" data-testid="button-regenerate-webhook">Regenerate URL (invalidates the old one)</button>
-            </div>`;
+            </div>
+            <div id="automation-webhook-rejections-panel" style="margin-top:0.75rem;"></div>`;
+          // Only fetch rejections when this automation actually has a
+          // signature scheme configured — otherwise the verifier never
+          // runs, no rejections can ever be logged, and the request is
+          // pure noise on every editor open.
+          const hasScheme = !!(Automations.current
+            && Automations.current.trigger_config
+            && (Automations.current.trigger_config.signature_scheme || '').trim());
+          if (aid && hasScheme) {
+            loadWebhookRejections(aid);
+          }
         } else {
           webhookInfo.innerHTML = '<div>Save this automation once and the webhook URL will appear here.</div>';
         }
       } else {
         webhookInfo.style.display = 'none';
       }
+    }
+
+    /* Fetch the most recent rejected webhook hits for the current
+       automation and render them into the collapsible panel under the
+       webhook URL. Errors are surfaced inline (not via toast) so a
+       transient fetch failure doesn't drown the editor in red — the
+       admin opening the editor probably doesn't care that this side
+       panel can't load right now. */
+    async function loadWebhookRejections(aid) {
+      const panel = document.getElementById('automation-webhook-rejections-panel');
+      if (!panel) return;
+      try {
+        const r = await fetch('/admin/api/automations/' + aid + '/webhook-rejections', { credentials: 'same-origin' });
+        if (!r.ok) {
+          panel.innerHTML = '';
+          return;
+        }
+        const items = await r.json();
+        renderWebhookRejections(panel, items || []);
+      } catch (e) {
+        panel.innerHTML = '';
+      }
+    }
+
+    function renderWebhookRejections(panel, items) {
+      // Hide the panel entirely when there's nothing to show — empty
+      // state would just be clutter under the URL banner. The panel
+      // only appears once at least one bad signature has been logged.
+      if (!items || !items.length) {
+        panel.innerHTML = '';
+        return;
+      }
+      const rowsHtml = items.map((it, idx) => {
+        const when = it.created_at ? new Date(it.created_at).toLocaleString() : '';
+        const ip = it.source_ip || '(unknown)';
+        const reason = it.reason || '(no detail)';
+        const excerpt = it.header_excerpt || '';
+        return `
+          <div style="padding:0.5rem 0; border-top:1px solid rgba(255,255,255,0.08);" data-testid="rejection-row-${it.id}">
+            <div style="display:flex;justify-content:space-between;gap:0.75rem;flex-wrap:wrap;">
+              <span style="font-weight:600;" data-testid="text-rejection-reason-${it.id}">${escapeHtml(reason)}</span>
+              <span style="color:var(--admin-text-muted); font-size:0.8rem;" data-testid="text-rejection-when-${it.id}">${escapeHtml(when)}</span>
+            </div>
+            <div style="font-size:0.8rem; color:var(--admin-text-muted); margin-top:0.15rem;">
+              from <span style="font-family:monospace;" data-testid="text-rejection-ip-${it.id}">${escapeHtml(ip)}</span>
+            </div>
+            ${excerpt ? `<details style="margin-top:0.3rem;"><summary style="cursor:pointer; font-size:0.8rem; color:var(--admin-text-muted);">Show request headers</summary><pre style="margin:0.3rem 0 0; padding:0.4rem; background:rgba(0,0,0,0.25); border-radius:4px; font-size:0.75rem; white-space:pre-wrap; word-break:break-all;" data-testid="text-rejection-headers-${it.id}">${escapeHtml(excerpt)}</pre></details>` : ''}
+          </div>`;
+      }).join('');
+      panel.innerHTML = `
+        <details style="background:rgba(220,38,38,0.08); border:1px solid rgba(220,38,38,0.35); border-radius:6px; padding:0.5rem 0.75rem;" data-testid="details-webhook-rejections">
+          <summary style="cursor:pointer; font-weight:600; color:#fca5a5;" data-testid="summary-webhook-rejections">Recent rejected hits (${items.length})</summary>
+          <div style="margin-top:0.4rem; font-size:0.85rem;">
+            Webhook posts that failed signature verification before a run was queued. Use this to spot misconfigured senders, expired keys, or attempted abuse.
+            ${rowsHtml}
+          </div>
+        </details>`;
     }
 
     function renderConfigField(field, value, idAttr) {

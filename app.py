@@ -1393,6 +1393,26 @@ def init_db():
                     updated_at                  TIMESTAMP DEFAULT NOW()
                 );
                 INSERT INTO automation_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+                -- Per-automation log of webhook posts that failed signature
+                -- verification BEFORE a run row was queued. Without this an
+                -- admin who turned on signing has no visible record when a
+                -- third party (or attacker) sends bad signatures, so they
+                -- can't tell a misconfigured secret from active abuse.
+                -- `header_excerpt` is a small truncated dump of relevant
+                -- request headers (signature header, content-type, UA) to
+                -- help diagnose sender misconfiguration; we never store the
+                -- raw body to avoid retaining attacker-controlled blobs.
+                CREATE TABLE IF NOT EXISTS automation_webhook_rejections (
+                    id              SERIAL PRIMARY KEY,
+                    automation_id   INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+                    reason          TEXT NOT NULL DEFAULT '',
+                    source_ip       VARCHAR(64) NOT NULL DEFAULT '',
+                    header_excerpt  TEXT NOT NULL DEFAULT '',
+                    created_at      TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_webhook_rejections_automation
+                    ON automation_webhook_rejections (automation_id, created_at DESC);
             """)
 
             # Seed a default "Contact / Inquiry" form if no forms exist yet
@@ -11769,6 +11789,125 @@ def admin_automations_run_detail(rid):
     return jsonify(_row_run(row))
 
 
+# --- Webhook signature rejection log ---------------------------------------
+# When a signed webhook fails verification we log a small breadcrumb row so
+# the admin can see misconfigured senders / expired keys / abuse attempts in
+# the editor without grepping server logs. The body itself is NEVER stored —
+# we only keep a curated header excerpt for diagnosis.
+
+# Headers worth surfacing for diagnosis. We keep the list short so the
+# excerpt stays small and safe to render in the editor: any signature
+# header (so the admin can compare schemes), the standard transport
+# headers, and the user-agent.
+_WEBHOOK_REJECTION_HEADER_KEYS = (
+    "X-Signature", "X-Hub-Signature", "X-Hub-Signature-256",
+    "Stripe-Signature", "Content-Type", "Content-Length",
+    "User-Agent", "X-Forwarded-For",
+)
+# Hard cap on the per-row excerpt so a sender pumping 10KB of headers
+# can't bloat the table. Plenty of room for the few headers we keep.
+_WEBHOOK_REJECTION_EXCERPT_MAX = 1000
+
+
+def _build_header_excerpt(req, extra_keys=()) -> str:
+    """Render a compact, truncated dump of the headers we care about for
+    debugging a rejected webhook. Each header value is independently
+    clamped so a single huge header can't crowd the rest out.
+
+    `extra_keys` lets the caller add any per-automation custom signature
+    header name (e.g. an HMAC config that uses a non-default header)
+    so the excerpt always shows the header the verifier actually
+    looked at — otherwise an admin debugging a custom-header setup
+    would see "Missing signature header 'X-My-Hook-Sig'." with no
+    indication of which signature-shaped headers the sender DID send."""
+    parts = []
+    seen = set()
+    headers = req.headers if req is not None else {}
+    keys = list(extra_keys) + list(_WEBHOOK_REJECTION_HEADER_KEYS)
+    for key in keys:
+        if not key:
+            continue
+        lk = key.lower()
+        if lk in seen:
+            continue
+        seen.add(lk)
+        val = headers.get(key, "") if hasattr(headers, "get") else ""
+        if not val:
+            continue
+        # Clamp each individual value so one outlier header can't blow
+        # past the overall budget on its own.
+        clamped = val if len(val) <= 200 else (val[:197] + "...")
+        parts.append(f"{key}: {clamped}")
+    excerpt = "\n".join(parts)
+    if len(excerpt) > _WEBHOOK_REJECTION_EXCERPT_MAX:
+        excerpt = excerpt[:_WEBHOOK_REJECTION_EXCERPT_MAX - 3] + "..."
+    return excerpt
+
+
+def _log_webhook_rejection(automation_id, reason, req, trigger_cfg=None) -> None:
+    """Persist a single rejected-webhook breadcrumb. Called from the
+    public webhook handler right before it returns 401. Keep this fast
+    and never raise — the caller already wraps it in a try/except so
+    a logging hiccup can't turn a clean 401 into a 500.
+
+    `trigger_cfg` is the matched automation's `trigger_config` so we
+    can include any custom signature header name in the excerpt; the
+    canonical default-header set is always included regardless."""
+    src = ""
+    if req is not None:
+        # Honor X-Forwarded-For when set (the request likely came in
+        # through a proxy), fall back to the direct peer otherwise.
+        src = (req.headers.get("X-Forwarded-For") or req.remote_addr or "").strip()
+        # X-Forwarded-For can be a chain "client, proxy1, proxy2" — keep
+        # only the first (originating) entry, and bound the length so a
+        # crafted header can't bloat the column.
+        if "," in src:
+            src = src.split(",", 1)[0].strip()
+        src = src[:64]
+    extra = []
+    if isinstance(trigger_cfg, dict):
+        custom = (trigger_cfg.get("signature_header") or "").strip()
+        if custom:
+            extra.append(custom)
+    excerpt = _build_header_excerpt(req, extra_keys=extra)
+    execute_db(
+        "INSERT INTO automation_webhook_rejections "
+        "(automation_id, reason, source_ip, header_excerpt) "
+        "VALUES (%s, %s, %s, %s)",
+        (automation_id, (reason or "")[:500], src, excerpt),
+    )
+
+
+def _row_webhook_rejection(r):
+    if not r:
+        return None
+    return {
+        "id": r["id"],
+        "automation_id": r.get("automation_id"),
+        "reason": r.get("reason") or "",
+        "source_ip": r.get("source_ip") or "",
+        "header_excerpt": r.get("header_excerpt") or "",
+        "created_at": r.get("created_at").isoformat() if r.get("created_at") else None,
+    }
+
+
+@app.route("/admin/api/automations/<int:aid>/webhook-rejections", methods=["GET"])
+@admin_required
+def admin_automations_webhook_rejections(aid):
+    """Return the most recent ~20 webhook signature rejections for this
+    automation, newest first. Backed by the composite index on
+    (automation_id, created_at DESC) so the lookup stays cheap even when
+    the table is large."""
+    rows = query_db(
+        "SELECT id, automation_id, reason, source_ip, header_excerpt, created_at "
+        "FROM automation_webhook_rejections "
+        "WHERE automation_id = %s "
+        "ORDER BY created_at DESC, id DESC LIMIT 20",
+        (aid,),
+    ) or []
+    return jsonify([_row_webhook_rejection(r) for r in rows])
+
+
 @app.route("/admin/api/automations/runs/<int:rid>/rerun", methods=["POST"])
 @admin_required
 def admin_automations_rerun(rid):
@@ -12096,6 +12235,15 @@ def public_automation_webhook(token):
                 cfg, raw_body, dict(request.headers),
             )
             if not ok:
+                # Log the rejection so the admin can see misconfigured
+                # senders / expired keys / abuse attempts in the editor
+                # without having to grep server logs. We swallow any DB
+                # error here on purpose — failing to log a rejection
+                # must never turn a 401 into a 500.
+                try:
+                    _log_webhook_rejection(row["id"], reason, request, trigger_cfg=cfg)
+                except Exception as log_err:
+                    print(f"[automations] could not log webhook rejection: {log_err}")
                 return jsonify({
                     "error": "Signature verification failed.",
                     "detail": reason,

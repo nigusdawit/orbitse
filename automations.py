@@ -1593,6 +1593,32 @@ def _cleanup_runs_tick() -> None:
                 f"[automations] retention cleanup deleted {n} old run(s) "
                 f"(keep_recent={keep}, retention_days={days})"
             )
+        # Prune the rejected-webhook breadcrumb log on the same horizon
+        # as runs. We DON'T apply a per-automation keep-recent floor here
+        # because rejections are diagnostic noise, not history — once a
+        # row is older than the retention horizon it has no practical
+        # value and would just bloat the table on a noisy endpoint that
+        # gets sprayed with bad signatures. The list is also bounded at
+        # the read side (ORDER BY created_at DESC LIMIT 20), so the UI
+        # is fine even if a chunk of the table is briefly above the
+        # threshold between ticks.
+        try:
+            rejections_deleted = _execute_db(
+                "DELETE FROM automation_webhook_rejections "
+                "WHERE created_at < NOW() - (INTERVAL '1 day' * %s)",
+                (days,),
+            )
+            rn = int(rejections_deleted) if isinstance(rejections_deleted, int) else 0
+            if rn:
+                print(
+                    f"[automations] retention cleanup deleted {rn} old "
+                    f"webhook rejection(s) (retention_days={days})"
+                )
+        except Exception as rej_err:
+            # Don't roll back the runs cleanup on a rejection-prune
+            # failure — runs cleanup already succeeded above and is the
+            # bigger of the two tables.
+            print(f"[automations] webhook-rejection prune error: {rej_err}")
     except Exception as e:
         # Roll back the cooldown so the next tick will retry instead of
         # silently waiting another full day on transient DB errors.
