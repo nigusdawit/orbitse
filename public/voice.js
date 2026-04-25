@@ -75,7 +75,11 @@
     catch (e) { return false; }
   }
 
-  /** Persist the visitor's mute preference and update every toggle button. */
+  /** Persist the visitor's mute preference and update every toggle button.
+   *  Also broadcasts a `voice:mutechange` CustomEvent so other modules
+   *  (e.g. the presentation player) can react — same-tab localStorage
+   *  writes do NOT trigger the standard `storage` event, so a custom
+   *  one is necessary. */
   function setVoiceMuted(muted) {
     try { localStorage.setItem(VOICE_MUTED_KEY, muted ? "1" : "0"); }
     catch (e) {}
@@ -83,6 +87,11 @@
     if (muted) stopCurrentAudio();
     // Refresh every toggle button to reflect the new state
     document.querySelectorAll(".voice-reply-toggle").forEach(updateVoiceToggleButton);
+    try {
+      window.dispatchEvent(new CustomEvent("voice:mutechange", {
+        detail: { muted: !!muted },
+      }));
+    } catch (e) {}
   }
 
   // ---------------------------------------------------------------------------

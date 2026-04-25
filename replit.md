@@ -115,6 +115,11 @@ The entire template is industry-agnostic — naming, comments, and instructions 
   - `generated_pages` — AI-generated HTML pages saved from chatbot interactions. Has title, html (full content), prompt (user's original question), slug (unique URL), status (draft/published), created_at, updated_at.
   - `sphere_settings` — 3D sphere view configuration. Singleton row (id=1). Has enabled, heading_text, view_mode (sphere/sections), particle_count, rotation_speed, sphere_radius, image_size, image_source (gallery/custom), position_randomness, particle_opacity, zoom_min, zoom_max, card_scale, card_gap.
   - `sphere_images` — Custom images for the sphere view (when image_source='custom'). Has image_url, caption, sort_order.
+  - `presentations` — **Phase A: Agentic Skills.** Slide decks the AI launches on the visitor's screen with voice narration. Has slug (unique), title, description (one short sentence the AI uses to decide when to offer the deck), cover_image_url, source ('admin' for admin-typed decks; reserved for future PDF/PPTX import), auto_play (boolean — when true the AI launches without asking first), enabled, created_at, updated_at.
+  - `presentation_slides` — Ordered slides belonging to a presentation. Linked via presentation_id (CASCADE delete). Has order_index, title, body (text shown on screen), image_url (optional), narration_text (what the voice agent reads aloud — falls back to body if blank).
+  - `agent_skills` — Registry of every skill (tool) the chat AI can call. Auto-synced on startup from `SKILL_METADATA` in app.py. Has name (unique), display_name, description, category (lookup, presentation, ...), enabled (admin toggle that drives `get_active_chat_tools`), builtin (true for code-defined skills), config_json (per-skill overrides), created_at, updated_at.
+  - `skill_usage_log` — Observability table written by `_log_skill_usage` every time the AI calls a skill. Has skill_name, args_json, row_count, duration_ms, error, conversation_id, session_id, created_at. Powers the "Recent Skill Calls" panel in the AI Skills admin tab.
+  - `agent_provider_settings` — Singleton row (id=1) holding the active LLM provider. Has provider ('openai' or 'claude'), openai_model, claude_model, updated_at. The chat dispatcher reads this on every visitor message via `get_active_llm_provider`.
 
 ### API Endpoints
 

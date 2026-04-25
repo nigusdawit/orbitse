@@ -5996,3 +5996,83 @@ body.side-panel-active .cart-fab {
   }
   #service-booking-modal fieldset { padding: 0.6rem !important; }
 }
+
+/* ==========================================================================
+   PRESENTATION OVERLAY — full-screen slide player driven by AI command
+   ========================================================================== */
+.presentation-overlay {
+  position: fixed; inset: 0;
+  background: rgba(10, 10, 14, 0.92);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 9500;
+  padding: 24px;
+  animation: presentation-fade-in 200ms ease-out;
+}
+.presentation-overlay.hidden { display: none; }
+@keyframes presentation-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.presentation-stage {
+  background: #ffffff;
+  color: #1a1a1a;
+  width: min(900px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  border-radius: 16px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+  padding: 32px 40px 28px;
+  position: relative;
+}
+.presentation-close {
+  position: absolute; top: 12px; right: 14px;
+  background: transparent; border: none;
+  font-size: 28px; line-height: 1; cursor: pointer;
+  color: #555;
+}
+.presentation-close:hover { color: #000; }
+.presentation-progress {
+  font-size: 13px; color: #888;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+}
+.presentation-image {
+  width: 100%; aspect-ratio: 16 / 9;
+  background-size: cover; background-position: center;
+  border-radius: 10px;
+  margin-bottom: 18px;
+  display: none;
+}
+.presentation-image.has-image { display: block; }
+.presentation-title {
+  font-size: 28px; font-weight: 600;
+  margin: 0 0 14px; line-height: 1.25;
+}
+.presentation-body {
+  font-size: 17px; line-height: 1.55; color: #2c2c2c;
+  white-space: pre-wrap;
+  margin-bottom: 28px;
+}
+.presentation-controls {
+  display: flex; gap: 10px; justify-content: flex-end;
+  border-top: 1px solid #eee; padding-top: 16px;
+}
+.presentation-controls button {
+  padding: 8px 18px; border-radius: 8px;
+  border: 1px solid #ddd; background: #fafafa;
+  cursor: pointer; font-size: 14px;
+  transition: background 120ms;
+}
+.presentation-controls button:hover:not(:disabled) { background: #efefef; }
+.presentation-controls button:disabled { opacity: 0.4; cursor: default; }
+.presentation-controls .presentation-toggle {
+  background: #1a1a1a; color: #fff; border-color: #1a1a1a;
+}
+.presentation-controls .presentation-toggle:hover { background: #333; }
+
+@media (max-width: 600px) {
+  .presentation-stage { padding: 22px 18px 18px; }
+  .presentation-title { font-size: 22px; }
+  .presentation-body { font-size: 15px; }
+}

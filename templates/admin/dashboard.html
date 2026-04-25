@@ -1684,6 +1684,18 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
       Insights
     </button>
+    <button class="tab-btn" onclick="switchTab('presentations', this); loadPresentations();" data-testid="tab-presentations">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      Presentations
+    </button>
+    <button class="tab-btn" onclick="switchTab('skills', this); loadSkills();" data-testid="tab-skills">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.5 5 5.5.8-4 3.9.9 5.5L12 14.7 7.1 17.2 8 11.7 4 7.8l5.5-.8L12 2z"/></svg>
+      AI Skills
+    </button>
+    <button class="tab-btn" onclick="switchTab('llm-provider', this); loadLlmProvider();" data-testid="tab-llm-provider">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      AI Provider
+    </button>
   </nav>
 
   <main class="admin-main">
@@ -3545,6 +3557,70 @@ TO CUSTOMIZE THIS DASHBOARD:
     </div>
   </div>
 
+
+  <!-- ========================================================================
+       TAB: PRESENTATIONS  (Phase A — Agentic Skills)
+       ========================================================================
+       List/create/edit decks. Each deck has slides with title, body, optional
+       image, and narration_text the voice agent reads aloud. -->
+  <div id="tab-presentations" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Presentation Decks</h2>
+        <p>Slide decks the AI can launch on a visitor's screen with voice narration. Visitors can pause, ask questions, and resume.</p>
+      </div>
+      <button class="btn btn-primary" onclick="openPresentationEditor(null)" data-testid="button-new-presentation">+ New Deck</button>
+    </div>
+    <div id="presentations-list" data-testid="list-presentations" style="display:grid;gap:14px;"></div>
+  </div>
+
+  <!-- ========================================================================
+       TAB: AI SKILLS
+       ========================================================================
+       Toggle which skills the chat AI is allowed to use, view recent usage. -->
+  <div id="tab-skills" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>AI Skills Registry</h2>
+        <p>Each skill is a tool the AI can call mid-conversation. Disable a skill to remove it from the AI's toolbox.</p>
+      </div>
+    </div>
+    <div id="skills-list" data-testid="list-skills" style="display:grid;gap:8px;margin-bottom:24px;"></div>
+    <div class="section-header-admin"><div><h3>Recent Skill Calls</h3><p>The last 100 times the AI used a skill.</p></div></div>
+    <div id="skills-usage" data-testid="list-skills-usage" style="font-family:monospace;font-size:12px;max-height:340px;overflow:auto;border:1px solid #e5e5e5;border-radius:8px;padding:10px;background:#fafafa;"></div>
+  </div>
+
+  <!-- ========================================================================
+       TAB: AI PROVIDER  (OpenAI vs Claude)
+       ========================================================================
+       Pick which LLM powers the agent + which model from each provider. -->
+  <div id="tab-llm-provider" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>AI Provider</h2>
+        <p>Pick which large-language-model service powers the chat agent. Switching is instant and applies to the next visitor message.</p>
+      </div>
+    </div>
+    <div class="form-panel" id="llm-provider-form" style="max-width:640px;">
+      <div class="form-row" style="margin-bottom:18px;">
+        <label style="font-weight:600;">Active Provider</label>
+        <div style="display:flex;gap:18px;margin-top:8px;">
+          <label style="display:flex;align-items:center;gap:6px;"><input type="radio" name="llm-provider" value="openai" data-testid="radio-provider-openai"> OpenAI</label>
+          <label style="display:flex;align-items:center;gap:6px;"><input type="radio" name="llm-provider" value="claude" data-testid="radio-provider-claude"> Claude (Anthropic)</label>
+        </div>
+        <div id="llm-provider-warning" style="color:#b94a48;font-size:13px;margin-top:6px;"></div>
+      </div>
+      <div class="form-row" style="margin-bottom:14px;">
+        <label for="openai-model" style="font-weight:600;">OpenAI Model</label>
+        <input id="openai-model" type="text" placeholder="gpt-4o-mini" data-testid="input-openai-model" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;">
+      </div>
+      <div class="form-row" style="margin-bottom:18px;">
+        <label for="claude-model" style="font-weight:600;">Claude Model</label>
+        <input id="claude-model" type="text" placeholder="claude-sonnet-4-5" data-testid="input-claude-model" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;">
+      </div>
+      <button class="btn btn-primary" onclick="saveLlmProvider()" data-testid="button-save-llm-provider">Save</button>
+    </div>
+  </div>
 
   <!-- Forms Tab -->
   <div id="tab-forms" class="tab-content">
@@ -16322,5 +16398,274 @@ TO CUSTOMIZE THIS DASHBOARD:
       </div>
     </div>
   </div>
+
+  <!-- ========================================================================
+       Modal: Presentation editor (deck metadata + ordered slides)
+       ======================================================================== -->
+  <div id="presentation-modal" style="display:none; position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.7); align-items:center; justify-content:center; padding:1rem;">
+    <div style="background:#0f1320; border:1px solid var(--admin-border); border-radius:12px; max-width:980px; width:100%; max-height:90vh; display:flex; flex-direction:column; overflow:hidden;">
+      <div style="padding:1rem 1.25rem; border-bottom:1px solid var(--admin-border); display:flex; align-items:center; justify-content:space-between;">
+        <h3 id="presentation-modal-title" style="margin:0; color:var(--admin-text);">Edit Presentation</h3>
+        <button class="btn btn-secondary" onclick="closePresentationEditor()" data-testid="button-presentation-modal-close">✕ Close</button>
+      </div>
+      <div style="overflow-y:auto; padding:1rem 1.25rem;">
+        <input type="hidden" id="presentation-id">
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; margin-bottom:0.75rem;">
+          <label style="color:var(--admin-text);">Title<input id="presentation-title-input" type="text" data-testid="input-presentation-title" style="width:100%;padding:8px;margin-top:4px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;"></label>
+          <label style="color:var(--admin-text);">Slug (optional)<input id="presentation-slug-input" type="text" data-testid="input-presentation-slug" placeholder="auto-from-title" style="width:100%;padding:8px;margin-top:4px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;"></label>
+        </div>
+        <label style="color:var(--admin-text);display:block;margin-bottom:0.75rem;">Description (one short sentence the AI uses to decide when to offer this deck)<textarea id="presentation-description-input" rows="2" data-testid="input-presentation-description" style="width:100%;padding:8px;margin-top:4px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;"></textarea></label>
+        <div style="display:flex; gap:1.5rem; margin-bottom:1rem; color:var(--admin-text);">
+          <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="presentation-enabled-input" data-testid="checkbox-presentation-enabled"> Enabled</label>
+          <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="presentation-autoplay-input" data-testid="checkbox-presentation-autoplay"> Auto-play (don't ask first)</label>
+        </div>
+        <hr style="border-color:var(--admin-border);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin:0.75rem 0;">
+          <h4 style="margin:0;color:var(--admin-text);">Slides</h4>
+          <button class="btn btn-secondary" onclick="addPresentationSlide()" data-testid="button-add-slide">+ Add slide</button>
+        </div>
+        <div id="presentation-slides-list" data-testid="list-presentation-slides" style="display:flex;flex-direction:column;gap:0.75rem;"></div>
+      </div>
+      <div style="padding:0.75rem 1.25rem; border-top:1px solid var(--admin-border); display:flex; gap:0.5rem; justify-content:flex-end;">
+        <button class="btn btn-danger" id="presentation-delete-btn" onclick="deletePresentationCurrent()" data-testid="button-presentation-delete" style="margin-right:auto;display:none;">Delete deck</button>
+        <button class="btn btn-secondary" onclick="closePresentationEditor()">Cancel</button>
+        <button class="btn btn-primary" onclick="savePresentation()" data-testid="button-presentation-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  /* ==========================================================================
+     ADMIN UI — Presentations / Skills / AI Provider tabs
+     ==========================================================================
+     Loaders + CRUD for the three new Phase A tabs. Talks to:
+       /admin/api/presentations  /admin/api/skills  /admin/api/llm-provider
+     Uses fetch() with credentials:'same-origin' (admin session cookie). All
+     CRUD is JSON. Slide rows are local state until the user hits "Save",
+     then we diff against the server (delete missing, PUT existing, POST new).
+     ========================================================================== */
+  (function(){
+    const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+    // --- PRESENTATIONS -------------------------------------------------------
+    let presentationDraft = null;  // { id?, title, slug, description, enabled, auto_play, slides:[{id?, ...}] }
+
+    window.loadPresentations = async function() {
+      const wrap = document.getElementById('presentations-list');
+      if (!wrap) return;
+      wrap.innerHTML = '<p style="color:var(--admin-text-muted);">Loading…</p>';
+      try {
+        const r = await fetch('/admin/api/presentations', { credentials:'same-origin' });
+        const rows = await r.json();
+        if (!Array.isArray(rows) || !rows.length) {
+          wrap.innerHTML = '<p style="color:var(--admin-text-muted);">No decks yet. Click "+ New Deck" to add one.</p>';
+          return;
+        }
+        wrap.innerHTML = rows.map(p => `
+          <div class="card" data-testid="card-presentation-${p.id}" style="padding:1rem;border:1px solid var(--admin-border);border-radius:10px;background:var(--admin-bg);display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+            <div style="flex:1;">
+              <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.25rem;">
+                <strong style="color:var(--admin-text);">${esc(p.title)}</strong>
+                <code style="font-size:11px;color:var(--admin-text-muted);background:rgba(255,255,255,0.05);padding:1px 6px;border-radius:4px;">${esc(p.slug)}</code>
+                ${p.enabled ? '<span style="font-size:11px;color:#4ade80;">● enabled</span>' : '<span style="font-size:11px;color:#f87171;">● disabled</span>'}
+                ${p.auto_play ? '<span style="font-size:11px;color:var(--admin-text-muted);">auto-play</span>' : ''}
+              </div>
+              <div style="color:var(--admin-text-muted);font-size:13px;">${esc(p.description || '')}</div>
+              <div style="color:var(--admin-text-muted);font-size:12px;margin-top:0.25rem;">${p.slide_count || 0} slide${(p.slide_count||0)===1?'':'s'}</div>
+            </div>
+            <button class="btn btn-secondary" onclick="openPresentationEditor(${p.id})" data-testid="button-edit-presentation-${p.id}">Edit</button>
+          </div>
+        `).join('');
+      } catch (e) {
+        wrap.innerHTML = '<p style="color:#f87171;">Failed to load: ' + esc(e.message) + '</p>';
+      }
+    };
+
+    window.openPresentationEditor = async function(id) {
+      const modal = document.getElementById('presentation-modal');
+      document.getElementById('presentation-modal-title').textContent = id ? 'Edit Presentation' : 'New Presentation';
+      document.getElementById('presentation-delete-btn').style.display = id ? '' : 'none';
+      if (id) {
+        try {
+          const r = await fetch('/admin/api/presentations/' + id, { credentials:'same-origin' });
+          presentationDraft = await r.json();
+          presentationDraft.slides = presentationDraft.slides || [];
+        } catch (e) { alert('Failed to load deck'); return; }
+      } else {
+        presentationDraft = { title:'', slug:'', description:'', enabled:true, auto_play:false, slides:[] };
+      }
+      document.getElementById('presentation-id').value = presentationDraft.id || '';
+      document.getElementById('presentation-title-input').value = presentationDraft.title || '';
+      document.getElementById('presentation-slug-input').value = presentationDraft.slug || '';
+      document.getElementById('presentation-description-input').value = presentationDraft.description || '';
+      document.getElementById('presentation-enabled-input').checked = !!presentationDraft.enabled;
+      document.getElementById('presentation-autoplay-input').checked = !!presentationDraft.auto_play;
+      renderSlideRows();
+      modal.style.display = 'flex';
+    };
+
+    window.closePresentationEditor = function() {
+      document.getElementById('presentation-modal').style.display = 'none';
+      presentationDraft = null;
+    };
+
+    function renderSlideRows() {
+      const list = document.getElementById('presentation-slides-list');
+      if (!presentationDraft.slides.length) {
+        list.innerHTML = '<p style="color:var(--admin-text-muted);font-size:13px;">No slides yet. Click "+ Add slide" to begin.</p>';
+        return;
+      }
+      list.innerHTML = presentationDraft.slides.map((s, i) => `
+        <div class="slide-row" data-idx="${i}" data-testid="row-slide-${i}" style="border:1px solid var(--admin-border);border-radius:8px;padding:0.75rem;background:var(--admin-bg);">
+          <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;">
+            <strong style="color:var(--admin-text);">Slide ${i+1}</strong>
+            <button class="btn btn-secondary" style="padding:2px 8px;font-size:12px;" onclick="moveSlide(${i},-1)" ${i===0?'disabled':''} data-testid="button-slide-up-${i}">↑</button>
+            <button class="btn btn-secondary" style="padding:2px 8px;font-size:12px;" onclick="moveSlide(${i},1)" ${i===presentationDraft.slides.length-1?'disabled':''} data-testid="button-slide-down-${i}">↓</button>
+            <button class="btn btn-danger" style="padding:2px 8px;font-size:12px;margin-left:auto;" onclick="removeSlide(${i})" data-testid="button-slide-remove-${i}">Remove</button>
+          </div>
+          <input type="text" placeholder="Slide title" value="${esc(s.title||'')}" oninput="updateSlide(${i},'title',this.value)" data-testid="input-slide-title-${i}" style="width:100%;padding:6px;margin-bottom:6px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;">
+          <textarea rows="2" placeholder="Slide body shown on screen" oninput="updateSlide(${i},'body',this.value)" data-testid="input-slide-body-${i}" style="width:100%;padding:6px;margin-bottom:6px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;">${esc(s.body||'')}</textarea>
+          <input type="text" placeholder="Image URL (optional)" value="${esc(s.image_url||'')}" oninput="updateSlide(${i},'image_url',this.value)" data-testid="input-slide-image-${i}" style="width:100%;padding:6px;margin-bottom:6px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;">
+          <textarea rows="2" placeholder="Voice narration (what the AI reads aloud — leave blank to use the body)" oninput="updateSlide(${i},'narration_text',this.value)" data-testid="input-slide-narration-${i}" style="width:100%;padding:6px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;">${esc(s.narration_text||'')}</textarea>
+        </div>
+      `).join('');
+    }
+
+    window.addPresentationSlide = function() {
+      presentationDraft.slides.push({ title:'', body:'', image_url:'', narration_text:'' });
+      renderSlideRows();
+    };
+    window.updateSlide = function(i, field, val) { presentationDraft.slides[i][field] = val; };
+    window.removeSlide = function(i) { presentationDraft.slides.splice(i, 1); renderSlideRows(); };
+    window.moveSlide = function(i, dir) {
+      const j = i + dir;
+      if (j < 0 || j >= presentationDraft.slides.length) return;
+      const tmp = presentationDraft.slides[i];
+      presentationDraft.slides[i] = presentationDraft.slides[j];
+      presentationDraft.slides[j] = tmp;
+      renderSlideRows();
+    };
+
+    window.savePresentation = async function() {
+      const meta = {
+        title: document.getElementById('presentation-title-input').value.trim(),
+        slug:  document.getElementById('presentation-slug-input').value.trim(),
+        description: document.getElementById('presentation-description-input').value,
+        enabled: document.getElementById('presentation-enabled-input').checked,
+        auto_play: document.getElementById('presentation-autoplay-input').checked,
+      };
+      if (!meta.title) { alert('Title is required'); return; }
+      try {
+        let deckId = presentationDraft.id;
+        if (deckId) {
+          await fetch('/admin/api/presentations/' + deckId, { method:'PUT', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(meta) });
+        } else {
+          const r = await fetch('/admin/api/presentations', { method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(meta) });
+          const created = await r.json();
+          deckId = created.id;
+          presentationDraft.id = deckId;
+        }
+        // Sync slides: figure out which existing IDs survived, delete the rest, PUT survivors, POST new ones.
+        const existing = (await (await fetch('/admin/api/presentations/' + deckId, { credentials:'same-origin' })).json()).slides || [];
+        const draftIds = new Set(presentationDraft.slides.filter(s => s.id).map(s => s.id));
+        for (const e of existing) {
+          if (!draftIds.has(e.id)) {
+            await fetch('/admin/api/slides/' + e.id, { method:'DELETE', credentials:'same-origin' });
+          }
+        }
+        for (let i = 0; i < presentationDraft.slides.length; i++) {
+          const s = { ...presentationDraft.slides[i], order_index: i };
+          if (s.id) {
+            await fetch('/admin/api/slides/' + s.id, { method:'PUT', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(s) });
+          } else {
+            await fetch('/admin/api/presentations/' + deckId + '/slides', { method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(s) });
+          }
+        }
+        closePresentationEditor();
+        loadPresentations();
+      } catch (e) { alert('Save failed: ' + e.message); }
+    };
+
+    window.deletePresentationCurrent = async function() {
+      if (!presentationDraft || !presentationDraft.id) return;
+      if (!confirm('Delete this entire deck and all its slides? This cannot be undone.')) return;
+      await fetch('/admin/api/presentations/' + presentationDraft.id, { method:'DELETE', credentials:'same-origin' });
+      closePresentationEditor();
+      loadPresentations();
+    };
+
+    // --- SKILLS --------------------------------------------------------------
+    window.loadSkills = async function() {
+      const list = document.getElementById('skills-list');
+      const usage = document.getElementById('skills-usage');
+      if (!list) return;
+      list.innerHTML = '<p style="color:var(--admin-text-muted);">Loading…</p>';
+      try {
+        const [skills, recent] = await Promise.all([
+          fetch('/admin/api/skills', { credentials:'same-origin' }).then(r => r.json()),
+          fetch('/admin/api/skills/usage', { credentials:'same-origin' }).then(r => r.json()),
+        ]);
+        const byCat = {};
+        for (const s of skills) (byCat[s.category] = byCat[s.category] || []).push(s);
+        list.innerHTML = Object.keys(byCat).sort().map(cat => `
+          <div style="margin-bottom:0.5rem;">
+            <div style="color:var(--admin-text-muted);font-size:12px;text-transform:uppercase;letter-spacing:0.05em;margin:0.5rem 0 0.25rem;">${esc(cat)}</div>
+            ${byCat[cat].map(s => `
+              <label data-testid="row-skill-${s.id}" style="display:flex;align-items:center;gap:0.75rem;padding:0.5rem 0.75rem;border:1px solid var(--admin-border);border-radius:8px;background:var(--admin-bg);">
+                <input type="checkbox" ${s.enabled?'checked':''} onchange="toggleSkill(${s.id}, this.checked)" data-testid="checkbox-skill-${s.id}">
+                <div style="flex:1;">
+                  <div style="color:var(--admin-text);font-weight:600;">${esc(s.name)}</div>
+                  <div style="color:var(--admin-text-muted);font-size:12px;">${esc(s.description||'')}</div>
+                </div>
+                <span style="color:var(--admin-text-muted);font-size:12px;">${s.recent_calls || 0} call${s.recent_calls===1?'':'s'} / 7d</span>
+              </label>
+            `).join('')}
+          </div>
+        `).join('');
+        usage.innerHTML = (recent && recent.length)
+          ? recent.map(u => {
+              const dur = u.duration_ms != null ? `${u.duration_ms}ms` : '-';
+              const rows = u.row_count != null ? `${u.row_count} rows` : '';
+              const err = u.error ? ` <span style="color:#f87171;">err: ${esc(u.error)}</span>` : '';
+              return `<div>${esc(u.created_at)} <strong>${esc(u.skill_name)}</strong> ${dur} ${rows}${err}</div>`;
+            }).join('')
+          : '<div style="color:var(--admin-text-muted);">No calls yet.</div>';
+      } catch (e) {
+        list.innerHTML = '<p style="color:#f87171;">Failed: ' + esc(e.message) + '</p>';
+      }
+    };
+    window.toggleSkill = async function(id, enabled) {
+      await fetch('/admin/api/skills/' + id, { method:'PUT', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ enabled }) });
+    };
+
+    // --- LLM PROVIDER --------------------------------------------------------
+    window.loadLlmProvider = async function() {
+      try {
+        const r = await fetch('/admin/api/llm-provider', { credentials:'same-origin' });
+        const cfg = await r.json();
+        document.querySelectorAll('input[name="llm-provider"]').forEach(el => { el.checked = (el.value === cfg.provider); });
+        document.getElementById('openai-model').value = cfg.openai_model || '';
+        document.getElementById('claude-model').value = cfg.claude_model || '';
+        const warn = document.getElementById('llm-provider-warning');
+        warn.textContent = cfg.claude_available ? '' : 'Claude is not configured: set ANTHROPIC_API_KEY and restart the server before selecting Claude.';
+      } catch (e) {
+        document.getElementById('llm-provider-warning').textContent = 'Failed to load provider: ' + e.message;
+      }
+    };
+    window.saveLlmProvider = async function() {
+      const provider = (document.querySelector('input[name="llm-provider"]:checked') || {}).value || 'openai';
+      const body = {
+        provider,
+        openai_model: document.getElementById('openai-model').value.trim(),
+        claude_model: document.getElementById('claude-model').value.trim(),
+      };
+      const r = await fetch('/admin/api/llm-provider', { method:'PUT', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+      const data = await r.json();
+      const warn = document.getElementById('llm-provider-warning');
+      if (data.error) { warn.textContent = data.error; warn.style.color = '#b94a48'; }
+      else { warn.textContent = 'Saved.'; warn.style.color = '#4ade80'; setTimeout(() => { warn.textContent=''; }, 2000); }
+    };
+  })();
+  </script>
 </body>
 </html>

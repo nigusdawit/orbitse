@@ -5512,6 +5512,25 @@ function executeCommand(cmd) {
     }
 
     /* ─────────────────────────────────────────────────────────────────
+       START PRESENTATION — Launch a stored slide deck with narration
+       ─────────────────────────────────────────────────────────────────
+       The AI emits  { action: 'start_presentation', slug: '<deck-slug>' }
+       after the visitor has agreed to be walked through one of the
+       admin-curated decks. We fetch the deck from /api/presentations/
+       <slug>, render a full-screen overlay, and use the existing TTS
+       pipeline (window.VoiceAgent) to narrate each slide. When a
+       slide's narration audio finishes we auto-advance. The visitor
+       can pause, resume, skip, or close at any time, and asking a
+       question in chat pauses narration so the AI can answer.
+    */
+    case 'start_presentation': {
+      const slug = cmd.slug || cmd.target;
+      if (!slug) { console.warn('start_presentation: missing slug'); break; }
+      startPresentation(slug);
+      break;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────
        GENERATE HTML — Render AI-created content on a blank canvas
        ─────────────────────────────────────────────────────────────────
        This is the most powerful command. The AI can generate ANY HTML
@@ -5818,6 +5837,272 @@ function executeCommand(cmd) {
       break;
   }
 }
+
+/* ============================================================================
+   PRESENTATION PLAYER — Phase A Agentic Skill: Presentations
+   ============================================================================
+   Lazy-creates a single full-screen overlay element that plays back a deck of
+   admin-curated slides one at a time, driving voice narration via the
+   existing TTS pipeline (window.VoiceAgent). One global state object holds
+   the current deck, the current slide index, the active <audio> element,
+   and a paused flag. We expose window.PresentationPlayer so other modules
+   (chat input handler, voice toggle, etc.) can pause/resume/close the deck.
+   ============================================================================ */
+
+const PRESENTATION = {
+  deck: null,         // { slug, title, slides: [...] }
+  index: 0,           // current slide (0-based)
+  audio: null,        // current HTMLAudioElement, or null
+  paused: false,      // true while paused for Q&A
+  overlay: null,      // root DOM node, lazy-created
+  startSeq: 0,        // monotonic counter — see startPresentation race guard
+};
+
+function ensurePresentationOverlay() {
+  if (PRESENTATION.overlay) return PRESENTATION.overlay;
+  const root = document.createElement('div');
+  root.id = 'presentation-overlay';
+  root.className = 'presentation-overlay hidden';
+  root.setAttribute('data-testid', 'overlay-presentation');
+  root.innerHTML = `
+    <div class="presentation-stage">
+      <button class="presentation-close" data-testid="button-presentation-close" aria-label="Close presentation">×</button>
+      <div class="presentation-progress" data-testid="text-presentation-progress"></div>
+      <div class="presentation-image" data-testid="img-presentation-slide"></div>
+      <h2 class="presentation-title" data-testid="text-presentation-title"></h2>
+      <div class="presentation-body" data-testid="text-presentation-body"></div>
+      <div class="presentation-controls">
+        <button class="presentation-prev" data-testid="button-presentation-prev" aria-label="Previous slide">‹ Back</button>
+        <button class="presentation-toggle" data-testid="button-presentation-toggle" aria-label="Pause">Pause</button>
+        <button class="presentation-next" data-testid="button-presentation-next" aria-label="Next slide">Next ›</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(root);
+  root.querySelector('.presentation-close').addEventListener('click', closePresentation);
+  root.querySelector('.presentation-prev').addEventListener('click', () => goToPresentationSlide(PRESENTATION.index - 1));
+  root.querySelector('.presentation-next').addEventListener('click', () => goToPresentationSlide(PRESENTATION.index + 1));
+  root.querySelector('.presentation-toggle').addEventListener('click', togglePresentation);
+  PRESENTATION.overlay = root;
+  return root;
+}
+
+async function startPresentation(slug) {
+  // Race guard: two `start_presentation` commands fired close together
+  // can interleave their fetches. Without a token, an earlier slow fetch
+  // resolving second would overwrite the newer deck the visitor is
+  // already watching. Stamp this attempt with a monotonic id and only
+  // commit the deck if our id is still the latest when the fetch returns.
+  const mySeq = ++PRESENTATION.startSeq;
+  let deck;
+  try {
+    const res = await fetch('/api/presentations/' + encodeURIComponent(slug));
+    if (mySeq !== PRESENTATION.startSeq) return; // superseded
+    if (!res.ok) {
+      console.warn('startPresentation: deck not found:', slug);
+      return;
+    }
+    deck = await res.json();
+  } catch (e) {
+    console.warn('startPresentation: fetch failed', e);
+    return;
+  }
+  if (mySeq !== PRESENTATION.startSeq) return;   // superseded during await
+  if (!deck || !Array.isArray(deck.slides) || !deck.slides.length) return;
+
+  closePresentation();
+  PRESENTATION.deck = deck;
+  PRESENTATION.index = 0;
+  PRESENTATION.paused = false;
+  ensurePresentationOverlay().classList.remove('hidden');
+  goToPresentationSlide(0);
+}
+
+function renderCurrentSlide() {
+  const deck = PRESENTATION.deck;
+  if (!deck) return;
+  const slide = deck.slides[PRESENTATION.index];
+  if (!slide) return;
+  const root = PRESENTATION.overlay;
+  const img = root.querySelector('.presentation-image');
+  if (slide.image_url) {
+    img.style.backgroundImage = `url(${JSON.stringify(slide.image_url)})`;
+    img.classList.add('has-image');
+  } else {
+    img.style.backgroundImage = '';
+    img.classList.remove('has-image');
+  }
+  root.querySelector('.presentation-title').textContent = slide.title || '';
+  root.querySelector('.presentation-body').textContent = slide.body || '';
+  root.querySelector('.presentation-progress').textContent =
+    `${deck.title} — ${PRESENTATION.index + 1} of ${deck.slides.length}`;
+  const prev = root.querySelector('.presentation-prev');
+  const next = root.querySelector('.presentation-next');
+  prev.disabled = (PRESENTATION.index === 0);
+  next.disabled = false;  // last slide's "Next" closes the deck
+  next.textContent = (PRESENTATION.index === deck.slides.length - 1) ? 'Finish' : 'Next ›';
+}
+
+function stopPresentationAudio() {
+  if (PRESENTATION.audio) {
+    try { PRESENTATION.audio.pause(); } catch (e) {}
+    PRESENTATION.audio.onended = null;
+    PRESENTATION.audio.onerror = null;
+    PRESENTATION.audio = null;
+  }
+  // Also stop any in-flight TTS started by VoiceAgent (e.g. an old chat reply)
+  if (window.VoiceAgent && typeof window.VoiceAgent.stop === 'function') {
+    try { window.VoiceAgent.stop(); } catch (e) {}
+  }
+}
+
+/** True if the visitor has muted AI voice replies. Mirrors voice.js's
+ *  isVoiceMuted by reading the same localStorage key — same source of
+ *  truth, no cross-module coupling. */
+function isPresentationVoiceMuted() {
+  try { return localStorage.getItem("voiceRepliesMuted") === "1"; }
+  catch (e) { return false; }
+}
+
+async function narrateCurrentSlide() {
+  if (!PRESENTATION.deck || PRESENTATION.paused) return;
+  // If the visitor has muted AI voice, do not auto-narrate the deck —
+  // muting AI replies should mute deck narration too, otherwise the UX
+  // is inconsistent. They can still advance manually with Next.
+  if (isPresentationVoiceMuted()) return;
+  const slide = PRESENTATION.deck.slides[PRESENTATION.index];
+  if (!slide) return;
+  const text = (slide.narration_text || slide.body || slide.title || '').trim();
+  if (!text) return;
+
+  let prepared;
+  try {
+    const res = await fetch('/api/voice/tts/stream/prepare', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text,
+        voice: (window.VoiceAgent && window.VoiceAgent.state &&
+                window.VoiceAgent.state.settings &&
+                window.VoiceAgent.state.settings.default_voice) || 'alloy',
+        session_id: (typeof getSessionId === 'function') ? getSessionId() : null,
+      }),
+    });
+    if (!res.ok) return;
+    prepared = await res.json();
+  } catch (e) { return; }
+
+  // Bail if the deck moved on or got closed while prepare was in flight.
+  if (!PRESENTATION.deck || PRESENTATION.paused) return;
+  const url = prepared && (prepared.audio_url || prepared.stream_url);
+  if (!url) return;
+
+  const slideAtFire = PRESENTATION.index;
+  const audio = new Audio(url);
+  PRESENTATION.audio = audio;
+  audio.onended = () => {
+    if (PRESENTATION.audio !== audio) return;       // superseded
+    if (PRESENTATION.index !== slideAtFire) return; // user advanced
+    PRESENTATION.audio = null;
+    // Auto-advance, or finish the deck if this was the last slide.
+    if (PRESENTATION.index < PRESENTATION.deck.slides.length - 1) {
+      goToPresentationSlide(PRESENTATION.index + 1);
+    } else {
+      closePresentation();
+    }
+  };
+  audio.onerror = () => { PRESENTATION.audio = null; };
+  audio.play().catch(() => { /* autoplay blocked — visitor can hit Next */ });
+}
+
+function goToPresentationSlide(i) {
+  if (!PRESENTATION.deck) return;
+  if (i < 0 || i >= PRESENTATION.deck.slides.length) {
+    closePresentation();
+    return;
+  }
+  stopPresentationAudio();
+  PRESENTATION.index = i;
+  renderCurrentSlide();
+  narrateCurrentSlide();
+}
+
+function pausePresentation() {
+  if (!PRESENTATION.deck) return;
+  PRESENTATION.paused = true;
+  stopPresentationAudio();
+  if (PRESENTATION.overlay) {
+    const t = PRESENTATION.overlay.querySelector('.presentation-toggle');
+    if (t) t.textContent = 'Resume';
+  }
+}
+
+function resumePresentation() {
+  if (!PRESENTATION.deck) return;
+  PRESENTATION.paused = false;
+  if (PRESENTATION.overlay) {
+    const t = PRESENTATION.overlay.querySelector('.presentation-toggle');
+    if (t) t.textContent = 'Pause';
+  }
+  narrateCurrentSlide();
+}
+
+function togglePresentation() {
+  if (PRESENTATION.paused) resumePresentation();
+  else pausePresentation();
+}
+
+function closePresentation() {
+  stopPresentationAudio();
+  PRESENTATION.deck = null;
+  PRESENTATION.index = 0;
+  PRESENTATION.paused = false;
+  // NOTE: do NOT touch PRESENTATION.startSeq here. Only startPresentation()
+  // bumps it. If close also bumped, then a stale deck auto-closing on its
+  // last slide while a new start_presentation fetch is in flight would
+  // incorrectly invalidate the legitimate new start (its mySeq would no
+  // longer equal startSeq). With only startPresentation mutating startSeq,
+  // each in-flight start is correctly compared against the *latest start*,
+  // not against unrelated close events.
+  if (PRESENTATION.overlay) {
+    PRESENTATION.overlay.classList.add('hidden');
+  }
+}
+
+// Auto-pause whenever the visitor interacts with the chat input — they're
+// asking a question, and we don't want narration talking over the AI's reply.
+document.addEventListener('DOMContentLoaded', () => {
+  const inputs = document.querySelectorAll('.chat-input, #side-chat-input, #landing-chat-input, textarea[data-chat-input]');
+  inputs.forEach((el) => {
+    el.addEventListener('focus', () => {
+      if (PRESENTATION.deck && !PRESENTATION.paused) pausePresentation();
+    });
+  });
+});
+
+// React to the visitor toggling the AI-voice mute switch (broadcast by
+// voice.js setVoiceMuted). On mute: stop any current narration so the
+// deck goes silent immediately. On unmute: if a deck is open and not
+// paused, resume narration of the current slide.
+window.addEventListener('voice:mutechange', (e) => {
+  if (!PRESENTATION.deck) return;
+  const muted = !!(e && e.detail && e.detail.muted);
+  if (muted) {
+    stopPresentationAudio();
+  } else if (!PRESENTATION.paused) {
+    narrateCurrentSlide();
+  }
+});
+
+window.PresentationPlayer = {
+  start: startPresentation,
+  pause: pausePresentation,
+  resume: resumePresentation,
+  toggle: togglePresentation,
+  close: closePresentation,
+  goTo: goToPresentationSlide,
+  state: PRESENTATION,
+};
 
 let heroTypeTimer = null;
 

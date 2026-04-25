@@ -76,6 +76,10 @@ from flask import (
     make_response
 )
 from openai import OpenAI
+try:
+    from anthropic import Anthropic
+except Exception:
+    Anthropic = None
 
 # =============================================================================
 # ERROR TRACKING — Sentry (optional)
@@ -168,6 +172,17 @@ if _DIRECT_OPENAI_KEY:
         openai_direct_client = OpenAI(api_key=_DIRECT_OPENAI_KEY)
     except Exception as _e:
         print(f"[OpenAI direct client init error] {_e}")
+
+# Anthropic (Claude) client — alternative LLM provider, selected per-agent
+# via the agent_provider_settings table. Optional; if no key is set or the
+# SDK is missing, generate() will silently fall back to OpenAI.
+_ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+anthropic_client = None
+if _ANTHROPIC_KEY and Anthropic is not None:
+    try:
+        anthropic_client = Anthropic(api_key=_ANTHROPIC_KEY)
+    except Exception as _e:
+        print(f"[Anthropic client init error] {_e}")
 
 # ElevenLabs — premium TTS provider. We talk to its REST API directly via
 # the `requests` library (already a dependency). Key is optional; ElevenLabs
@@ -943,6 +958,91 @@ def init_db():
                 );
                 CREATE INDEX IF NOT EXISTS idx_voice_usage_created ON voice_usage_log (created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_voice_usage_feature ON voice_usage_log (feature_type);
+
+                -- =============================================================
+                -- AGENTIC SKILLS + PRESENTATIONS (Phase A)
+                -- =============================================================
+                -- Presentations: an admin-managed (or AI-generated) deck of
+                -- ordered slides. Each slide carries its own title/body/image
+                -- and an optional narration_text the voice agent reads aloud
+                -- before auto-advancing. Auto_play=false means the AI offers
+                -- the deck first ("want me to walk you through it?") before
+                -- launching the overlay; auto_play=true means the AI launches
+                -- it immediately when relevant.
+                CREATE TABLE IF NOT EXISTS presentations (
+                    id              SERIAL PRIMARY KEY,
+                    slug            VARCHAR(120) UNIQUE NOT NULL,
+                    title           TEXT NOT NULL DEFAULT '',
+                    description     TEXT NOT NULL DEFAULT '',
+                    cover_image_url TEXT NOT NULL DEFAULT '',
+                    source          VARCHAR(20) NOT NULL DEFAULT 'admin',
+                    auto_play       BOOLEAN NOT NULL DEFAULT false,
+                    enabled         BOOLEAN NOT NULL DEFAULT true,
+                    created_at      TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_presentations_slug ON presentations (slug);
+
+                CREATE TABLE IF NOT EXISTS presentation_slides (
+                    id              SERIAL PRIMARY KEY,
+                    presentation_id INTEGER NOT NULL REFERENCES presentations(id) ON DELETE CASCADE,
+                    order_index     INTEGER NOT NULL DEFAULT 0,
+                    title           TEXT NOT NULL DEFAULT '',
+                    body            TEXT NOT NULL DEFAULT '',
+                    image_url       TEXT NOT NULL DEFAULT '',
+                    narration_text  TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_presentation_slides_presentation ON presentation_slides (presentation_id, order_index);
+
+                -- Skills registry: every tool the AI can call lives here as a
+                -- row. Built-in skills (the lookup_* family + presentation
+                -- skills) are auto-synced on startup. The `enabled` flag is
+                -- the on/off switch the admin flips in the Skills tab — when
+                -- false, the skill is filtered out of the tool schema sent to
+                -- the model, so the AI literally cannot call it that turn.
+                -- config_json holds per-skill JSON config (e.g. default
+                -- from-email, max scrape depth) — populated as needed by
+                -- future action skills.
+                CREATE TABLE IF NOT EXISTS agent_skills (
+                    id              SERIAL PRIMARY KEY,
+                    name            VARCHAR(100) UNIQUE NOT NULL,
+                    display_name    TEXT NOT NULL DEFAULT '',
+                    description     TEXT NOT NULL DEFAULT '',
+                    category        VARCHAR(40) NOT NULL DEFAULT 'lookup',
+                    builtin         BOOLEAN NOT NULL DEFAULT true,
+                    enabled         BOOLEAN NOT NULL DEFAULT true,
+                    config_json     JSONB DEFAULT '{}'::jsonb,
+                    created_at      TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_agent_skills_enabled ON agent_skills (enabled);
+                CREATE INDEX IF NOT EXISTS idx_agent_skills_category ON agent_skills (category);
+
+                -- Per-invocation log row for every skill call (in addition to
+                -- the per-turn tool_calls_json on chat_messages). Powers the
+                -- Skills tab "recent usage" view and lets us spot skills
+                -- erroring out or being heavily used.
+                CREATE TABLE IF NOT EXISTS skill_usage_log (
+                    id           SERIAL PRIMARY KEY,
+                    session_id   VARCHAR(100) DEFAULT '',
+                    skill_name   VARCHAR(100) NOT NULL DEFAULT '',
+                    args_json    JSONB,
+                    row_count    INTEGER NOT NULL DEFAULT 0,
+                    duration_ms  INTEGER NOT NULL DEFAULT 0,
+                    error        TEXT NOT NULL DEFAULT '',
+                    created_at   TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_skill_usage_skill ON skill_usage_log (skill_name, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_skill_usage_created ON skill_usage_log (created_at DESC);
+
+                -- Singleton (id=1 only) holding the active LLM provider +
+                -- model choices. Admin can flip provider OpenAI <-> Claude
+                -- and pick the model per provider. Read on every chat turn.
+                CREATE TABLE IF NOT EXISTS agent_provider_settings (
+                    id            INTEGER PRIMARY KEY DEFAULT 1,
+                    provider      VARCHAR(20) NOT NULL DEFAULT 'openai',
+                    openai_model  TEXT NOT NULL DEFAULT 'gpt-4o-mini',
+                    claude_model  TEXT NOT NULL DEFAULT 'claude-sonnet-4-5',
+                    updated_at    TIMESTAMP DEFAULT NOW()
+                );
             """)
 
             # Seed the voice_settings singleton row (idempotent)
@@ -959,6 +1059,13 @@ def init_db():
                     'Welcome! I''m your AI assistant. How can I help you today?',
                     '["Browse our gallery", "Tell me more", "What do you offer?", "Show me pricing"]'::jsonb,
                     '/api/chat', '')
+                ON CONFLICT (id) DO NOTHING
+            """)
+
+            # Seed agent_provider_settings singleton (default OpenAI)
+            cur.execute("""
+                INSERT INTO agent_provider_settings (id, provider, openai_model, claude_model)
+                VALUES (1, 'openai', 'gpt-4o-mini', 'claude-sonnet-4-5')
                 ON CONFLICT (id) DO NOTHING
             """)
 
@@ -4275,6 +4382,59 @@ def lookup_generated_page(slug):
     return page or {}
 
 
+def lookup_presentation(slug=None, query=None, limit=10):
+    """Look up an enabled presentation deck. If `slug` is given, returns one
+    full deck with all slides (so the AI can decide whether to launch it).
+    Otherwise returns a short list of available decks (slug + title +
+    description + slide count) for browsing."""
+    if slug:
+        p = query_db(
+            "SELECT id, slug, title, description, cover_image_url, "
+            "auto_play, source FROM presentations "
+            "WHERE slug = %s AND enabled = TRUE",
+            (slug,),
+            fetchone=True,
+        )
+        if not p:
+            return {}
+        slides = query_db(
+            "SELECT order_index, title, body, image_url, narration_text "
+            "FROM presentation_slides WHERE presentation_id = %s "
+            "ORDER BY order_index ASC, id ASC",
+            (p["id"],),
+        ) or []
+        return {
+            "slug": p["slug"],
+            "title": p["title"],
+            "description": p["description"],
+            "auto_play": bool(p["auto_play"]),
+            "slide_count": len(slides),
+            "slides": [
+                {
+                    "order_index": s["order_index"],
+                    "title": s["title"],
+                    "body": s["body"],
+                }
+                for s in slides
+            ],
+        }
+    rows = query_db(
+        "SELECT slug, title, description, "
+        "(SELECT COUNT(*) FROM presentation_slides "
+        " WHERE presentation_id = presentations.id) AS slide_count "
+        "FROM presentations WHERE enabled = TRUE "
+        + ("AND (LOWER(title) LIKE LOWER(%s) OR LOWER(description) LIKE LOWER(%s)) " if query else "")
+        + "ORDER BY id ASC LIMIT %s",
+        ((f"%{query}%", f"%{query}%", limit) if query else (limit,)),
+    ) or []
+    return [{
+        "slug": r["slug"],
+        "title": r["title"],
+        "description": r["description"],
+        "slide_count": int(r.get("slide_count") or 0),
+    } for r in rows]
+
+
 # ---- Compact SITE INDEX: names + slugs only, no descriptions ---------------
 
 def build_site_index():
@@ -4422,6 +4582,28 @@ def build_site_index():
         "address, and weekly hours."
     )
 
+    decks = query_db(
+        "SELECT slug, title, description FROM presentations "
+        "WHERE enabled = TRUE ORDER BY id ASC LIMIT 50"
+    ) or []
+    if decks:
+        lines = []
+        for d in decks:
+            line = f'  - "{d["slug"]}" — "{d["title"]}"'
+            if d.get("description"):
+                desc = d["description"].strip().replace("\n", " ")
+                if len(desc) > 80:
+                    desc = desc[:77] + "..."
+                line += f' — {desc}'
+            lines.append(line)
+        parts.append(
+            f"PRESENTATION DECKS ({len(decks)} available) — call "
+            f"lookup_presentation with a slug for slide titles, then emit "
+            f"a ```command``` block with action 'start_presentation' and "
+            f"the slug to actually launch the deck on the visitor's "
+            f"screen with voice narration:\n" + "\n".join(lines)
+        )
+
     return "\n\n".join(parts) if parts else ""
 
 
@@ -4558,6 +4740,23 @@ CHAT_TOOLS = [
             "slug": {"type": "string"},
         }, "required": ["slug"]},
     }},
+    {"type": "function", "function": {
+        "name": "lookup_presentation",
+        "description": (
+            "Look up an admin-published presentation deck. Pass `slug` to "
+            "get the full deck (title, description, slide count, slide "
+            "titles + body) so you can decide whether to offer it. Pass "
+            "no args (or a `query` keyword) to browse the library of "
+            "available decks. To actually launch a deck for the visitor, "
+            "emit a ```command``` block with action 'start_presentation' "
+            "and the slug — do NOT try to read the slides aloud yourself."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "slug":  {"type": "string", "description": "Exact deck slug."},
+            "query": {"type": "string", "description": "Optional keyword filter when browsing."},
+            "limit": {"type": "integer", "default": 10},
+        }},
+    }},
 ]
 
 
@@ -4575,16 +4774,127 @@ CHAT_LOOKUP_FUNCTIONS = {
     "lookup_business_info": lookup_business_info,
     "lookup_custom_section_items": lookup_custom_section_items,
     "lookup_generated_page": lookup_generated_page,
+    "lookup_presentation": lookup_presentation,
 }
 
 
-def execute_chat_tool(name, args_json):
+# =============================================================================
+# SKILLS REGISTRY — DB-driven enable/disable on top of CHAT_TOOLS
+# =============================================================================
+# Every entry in CHAT_TOOLS is a "skill" the AI can call. The agent_skills
+# table is the source of truth for whether each one is currently enabled.
+# On startup we sync each known skill into the table (insert if missing,
+# preserving any admin-toggled `enabled` value on existing rows). At chat
+# time, get_active_chat_tools() filters CHAT_TOOLS down to only the ones
+# the admin has left turned on.
+
+# Friendly metadata for each builtin skill — keyed by the function name
+# inside CHAT_TOOLS. category drives the badge in the admin Skills tab.
+SKILL_METADATA = {
+    "lookup_gallery_cards":        {"display": "Look up gallery cards",      "category": "lookup"},
+    "lookup_services":             {"display": "Look up services",            "category": "lookup"},
+    "lookup_experiences":          {"display": "Look up experiences",         "category": "lookup"},
+    "lookup_pricing":              {"display": "Look up pricing",             "category": "lookup"},
+    "lookup_products":             {"display": "Look up products",            "category": "lookup"},
+    "lookup_events":               {"display": "Look up events",              "category": "lookup"},
+    "lookup_blog":                 {"display": "Look up blog posts",          "category": "lookup"},
+    "lookup_team":                 {"display": "Look up team members",        "category": "lookup"},
+    "lookup_faq":                  {"display": "Look up FAQs",                "category": "lookup"},
+    "lookup_testimonials":         {"display": "Look up testimonials",        "category": "lookup"},
+    "lookup_business_info":        {"display": "Look up business info",       "category": "lookup"},
+    "lookup_custom_section_items": {"display": "Look up custom-section items","category": "lookup"},
+    "lookup_generated_page":       {"display": "Look up a saved AI page",     "category": "lookup"},
+    "lookup_presentation":         {"display": "Look up a presentation deck", "category": "presentation"},
+    "play_presentation":           {"display": "Play a presentation for the visitor", "category": "presentation"},
+}
+
+
+def sync_skills_to_db():
+    """Idempotently insert every skill known to the codebase into agent_skills.
+    Preserves admin-toggled `enabled` and `config_json` on rows that already
+    exist. Run once at startup, after init_db()."""
+    try:
+        for tool in CHAT_TOOLS:
+            fn_meta = tool.get("function") or {}
+            name = fn_meta.get("name", "")
+            if not name:
+                continue
+            meta = SKILL_METADATA.get(name, {})
+            display = meta.get("display") or name.replace("_", " ").title()
+            category = meta.get("category", "lookup")
+            description = fn_meta.get("description", "")
+            execute_db(
+                """
+                INSERT INTO agent_skills (name, display_name, description, category, builtin, enabled)
+                VALUES (%s, %s, %s, %s, true, true)
+                ON CONFLICT (name) DO UPDATE
+                  SET display_name = EXCLUDED.display_name,
+                      description  = EXCLUDED.description,
+                      category     = EXCLUDED.category,
+                      builtin      = true
+                """,
+                (name, display, description, category),
+            )
+    except Exception as e:
+        print(f"[skills] sync_skills_to_db failed: {e}")
+
+
+def get_active_chat_tools():
+    """Return CHAT_TOOLS filtered to only the skills the admin has enabled.
+
+    On a *DB error* we fall back to all tools so chat keeps working — that's
+    a safety net for an outage, not an admin choice. But if the query
+    succeeds and simply returns zero enabled rows, we MUST honor that
+    (return []) — otherwise the admin can never disable a skill, which
+    defeats the whole skills-governance promise.
+    """
+    try:
+        rows = query_db("SELECT name FROM agent_skills WHERE enabled = true")
+    except Exception as e:
+        print(f"[skills] get_active_chat_tools DB error, falling back to all tools: {e}")
+        return CHAT_TOOLS
+    active = {r["name"] for r in (rows or [])}
+    return [t for t in CHAT_TOOLS if (t.get("function") or {}).get("name") in active]
+
+
+def _log_skill_usage(session_id, log_entry):
+    """Persist one skill-call row to skill_usage_log. Best-effort — never
+    raises (so logging never breaks the chat path)."""
+    try:
+        execute_db(
+            """
+            INSERT INTO skill_usage_log
+                (session_id, skill_name, args_json, row_count, duration_ms, error)
+            VALUES (%s, %s, %s::jsonb, %s, %s, %s)
+            """,
+            (
+                (session_id or "")[:100],
+                log_entry.get("name", "")[:100],
+                json.dumps(log_entry.get("args") or {}),
+                int(log_entry.get("rows", 0) or 0),
+                int(log_entry.get("ms", 0) or 0),
+                str(log_entry.get("error", "") or "")[:500],
+            ),
+        )
+    except Exception as e:
+        print(f"[skills] _log_skill_usage failed: {e}")
+
+
+def execute_chat_tool(name, args_json, session_id=""):
     """Execute one tool call by name. Returns (result_json_str, log_entry).
 
     log_entry is a small dict for admin observability (which lookup ran,
     what filters, how many rows, how long). It does NOT travel back to the
-    model — it's persisted alongside the assistant's chat_message row.
+    model — it's persisted alongside the assistant's chat_message row AND
+    written as its own row to skill_usage_log so the admin Skills tab can
+    show per-skill recent activity.
     """
+    result_str, log_entry = _execute_chat_tool_inner(name, args_json)
+    _log_skill_usage(session_id, log_entry)
+    return result_str, log_entry
+
+
+def _execute_chat_tool_inner(name, args_json):
     import time as _time
     started = _time.time()
     try:
@@ -4637,6 +4947,242 @@ def execute_chat_tool(name, args_json):
         json.dumps(result, default=str),
         {"name": name, "args": args, "rows": rows, "ms": ms},
     )
+
+
+# =============================================================================
+# LLM PROVIDER ABSTRACTION
+# =============================================================================
+# The site supports two interchangeable chat-completion providers: OpenAI
+# (default) and Anthropic Claude. The admin picks one in the Skills tab and
+# the choice is stored in agent_provider_settings (singleton id=1). The
+# generate() loop in api_chat then dispatches each streaming round to the
+# right provider via _stream_round_openai / _stream_round_claude. Both
+# emit a uniform event protocol so the outer loop is provider-agnostic:
+#
+#     ("token", "<text delta>")           — visible reply token, forward to SSE
+#     ("tool_call", {"id","name","args"}) — completed tool call to execute
+#     ("finish",  "stop"|"tool_calls"|"length"|"other")
+#
+# Tool *schemas* and *messages* are stored internally in OpenAI shape (the
+# original codebase format). When the active provider is Claude we convert
+# at the boundary via _tools_for_claude / _messages_for_claude.
+
+class LLMProviderUnavailable(Exception):
+    """Raised when the admin-configured LLM provider isn't actually usable
+    (e.g. Claude selected but ANTHROPIC_API_KEY missing). The chat path
+    surfaces this to the visitor as an explicit error rather than silently
+    falling back to a different provider behind the admin's back."""
+    pass
+
+
+def get_active_llm_provider():
+    """Return (provider, model) from agent_provider_settings.
+
+    On a *DB error* we fall back to ('openai','gpt-4o-mini') so chat keeps
+    working — that's a safety net for an outage, not an admin choice. But
+    if the admin has explicitly configured Claude and the Claude client
+    is unavailable, we RAISE rather than silently route to OpenAI:
+    silent provider swaps are a debugging nightmare and violate the
+    explicit-failure principle for this codebase.
+    """
+    try:
+        row = query_db(
+            "SELECT provider, openai_model, claude_model FROM agent_provider_settings WHERE id = 1",
+            fetchone=True,
+        )
+    except Exception as e:
+        print(f"[llm] get_active_llm_provider DB error, falling back to openai: {e}")
+        return ("openai", "gpt-4o-mini")
+    if not row:
+        return ("openai", "gpt-4o-mini")
+    provider = (row.get("provider") or "openai").strip().lower()
+    if provider == "claude":
+        if anthropic_client is None:
+            raise LLMProviderUnavailable(
+                "Claude is the configured provider but the Anthropic client "
+                "is not initialized. Set ANTHROPIC_API_KEY and restart, or "
+                "switch the AI Provider tab back to OpenAI."
+            )
+        return ("claude", row.get("claude_model") or "claude-sonnet-4-5")
+    return ("openai", row.get("openai_model") or "gpt-4o-mini")
+
+
+def _tools_for_claude(openai_tools):
+    """Convert OpenAI-shaped tool schemas to Claude's input_schema shape."""
+    out = []
+    for t in (openai_tools or []):
+        fn = t.get("function") or {}
+        out.append({
+            "name": fn.get("name", ""),
+            "description": fn.get("description", "") or "",
+            "input_schema": fn.get("parameters") or {"type": "object", "properties": {}},
+        })
+    return out
+
+
+def _messages_for_claude(openai_messages):
+    """Convert an OpenAI-shaped messages array into (system_str, claude_messages).
+
+    Claude requires the system prompt as a top-level argument (not a message
+    role) and represents tool calls / results as content blocks rather than
+    separate roles."""
+    system_parts = []
+    out = []
+    for m in (openai_messages or []):
+        role = m.get("role")
+        content = m.get("content")
+        if role == "system":
+            if content:
+                system_parts.append(content)
+        elif role == "user":
+            out.append({"role": "user", "content": content or ""})
+        elif role == "assistant":
+            blocks = []
+            if content:
+                blocks.append({"type": "text", "text": content})
+            for tc in (m.get("tool_calls") or []):
+                fn = tc.get("function") or {}
+                try:
+                    inp = json.loads(fn.get("arguments") or "{}")
+                    if not isinstance(inp, dict):
+                        inp = {}
+                except Exception:
+                    inp = {}
+                blocks.append({
+                    "type": "tool_use",
+                    "id": tc.get("id") or "",
+                    "name": fn.get("name") or "",
+                    "input": inp,
+                })
+            if not blocks:
+                # Claude requires at least one block.
+                blocks = [{"type": "text", "text": ""}]
+            out.append({"role": "assistant", "content": blocks})
+        elif role == "tool":
+            out.append({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": m.get("tool_call_id") or "",
+                    "content": content or "",
+                }],
+            })
+    return ("\n\n".join(system_parts), out)
+
+
+def _stream_round_openai(model, messages, tools, max_tokens=4096, temperature=0.7):
+    """One OpenAI streaming round. Yields uniform provider events."""
+    stream = openai_client.chat.completions.create(
+        model=model,
+        messages=messages,
+        tools=tools,
+        tool_choice="auto",
+        max_tokens=max_tokens,
+        temperature=temperature,
+        stream=True,
+    )
+    tool_calls_acc = {}
+    finish_reason = None
+    for chunk in stream:
+        if not chunk.choices:
+            continue
+        choice = chunk.choices[0]
+        delta = choice.delta
+        if delta and getattr(delta, "content", None):
+            yield ("token", delta.content)
+        if delta and getattr(delta, "tool_calls", None):
+            for tc in delta.tool_calls:
+                idx = tc.index
+                slot = tool_calls_acc.setdefault(idx, {"id": "", "name": "", "args": ""})
+                if tc.id:
+                    slot["id"] = tc.id
+                fn = getattr(tc, "function", None)
+                if fn is not None:
+                    if getattr(fn, "name", None):
+                        slot["name"] = fn.name
+                    if getattr(fn, "arguments", None):
+                        slot["args"] += fn.arguments
+        if choice.finish_reason:
+            finish_reason = choice.finish_reason
+    # Emit completed tool calls in index order.
+    for idx in sorted(tool_calls_acc.keys()):
+        slot = tool_calls_acc[idx]
+        if not slot["name"]:
+            continue
+        yield ("tool_call", {
+            "id": slot["id"] or f"call_{idx}",
+            "name": slot["name"],
+            "args": slot["args"] or "{}",
+        })
+    yield ("finish", finish_reason or "stop")
+
+
+def _stream_round_claude(model, system, claude_messages, claude_tools, max_tokens=4096, temperature=0.7):
+    """One Claude streaming round. Yields the same uniform event protocol
+    as _stream_round_openai. Uses anthropic's messages.stream context."""
+    kwargs = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "messages": claude_messages,
+    }
+    if system:
+        kwargs["system"] = system
+    if claude_tools:
+        kwargs["tools"] = claude_tools
+
+    # tool_use blocks arrive as separate content_blocks with input streamed
+    # as JSON deltas. We accumulate by block index.
+    tool_blocks = {}   # idx -> {"id","name","args_str"}
+    finish_reason = "stop"
+
+    with anthropic_client.messages.stream(**kwargs) as stream:
+        for event in stream:
+            etype = getattr(event, "type", "")
+            if etype == "content_block_start":
+                block = getattr(event, "content_block", None)
+                if block is not None and getattr(block, "type", "") == "tool_use":
+                    tool_blocks[event.index] = {
+                        "id": getattr(block, "id", "") or "",
+                        "name": getattr(block, "name", "") or "",
+                        "args_str": "",
+                    }
+            elif etype == "content_block_delta":
+                delta = getattr(event, "delta", None)
+                if delta is None:
+                    continue
+                dtype = getattr(delta, "type", "")
+                if dtype == "text_delta":
+                    text = getattr(delta, "text", "") or ""
+                    if text:
+                        yield ("token", text)
+                elif dtype == "input_json_delta":
+                    partial = getattr(delta, "partial_json", "") or ""
+                    if event.index in tool_blocks and partial:
+                        tool_blocks[event.index]["args_str"] += partial
+            elif etype == "message_delta":
+                delta = getattr(event, "delta", None)
+                if delta is not None:
+                    sr = getattr(delta, "stop_reason", None)
+                    if sr:
+                        # Claude stop reasons: "end_turn","tool_use","max_tokens","stop_sequence"
+                        if sr == "tool_use":
+                            finish_reason = "tool_calls"
+                        elif sr == "max_tokens":
+                            finish_reason = "length"
+                        else:
+                            finish_reason = "stop"
+
+    for idx in sorted(tool_blocks.keys()):
+        slot = tool_blocks[idx]
+        if not slot["name"]:
+            continue
+        yield ("tool_call", {
+            "id": slot["id"] or f"call_{idx}",
+            "name": slot["name"],
+            "args": slot["args_str"] or "{}",
+        })
+    yield ("finish", finish_reason)
 
 
 @app.route("/api/chat", methods=["POST"])
@@ -4984,7 +5530,20 @@ def api_chat():
         "  - After you have what you need from the tool(s), reply to the "
         "visitor in plain language and include the appropriate ```command``` "
         "block if any action is needed (navigate, scrollToSection, "
-        "submitForm, generatePage, showSavedPage, etc.)."
+        "submitForm, generatePage, showSavedPage, start_presentation, etc.).\n"
+        "\n"
+        "PRESENTATION DECKS:\n"
+        "  - When the SITE INDEX lists a presentation deck that matches what "
+        "the visitor is asking about (e.g. they ask for an overview, a tour, "
+        "a comparison the deck covers), and you decide it is the best "
+        "response, OFFER it first in plain language ('Want me to walk you "
+        "through our 5-slide overview?') unless the deck has auto_play=true.\n"
+        "  - When the visitor agrees (or auto_play=true), emit:\n"
+        "    ```command\\n{\"action\": \"start_presentation\", \"slug\": \"<deck-slug>\"}\\n```\n"
+        "  - Do NOT type the slide bodies into chat — the overlay will show "
+        "them and the voice will narrate. After launching, stay quiet "
+        "unless the visitor asks a question, then answer briefly so the "
+        "deck can resume."
     )
 
     messages = [{"role": "system", "content": active_prompt}]
@@ -5032,86 +5591,80 @@ def api_chat():
             tool_logs = []        # observability — what lookups ran
             max_rounds = 4
 
-            for _round_idx in range(max_rounds):
-                stream = openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=messages,
-                    tools=CHAT_TOOLS,
-                    tool_choice="auto",
-                    max_tokens=4096,
-                    temperature=0.7,
-                    stream=True,
-                )
+            # Pick the active LLM provider (OpenAI or Claude). Both go
+            # through _stream_round_* generators that emit the same uniform
+            # event protocol — see LLM PROVIDER ABSTRACTION section above.
+            #
+            # If the admin selected Claude but the Anthropic client isn't
+            # initialized, get_active_llm_provider() raises on purpose
+            # (no silent fallback). Surface that to the visitor as plain
+            # text + close the stream so they aren't left waiting.
+            try:
+                provider, model = get_active_llm_provider()
+            except LLMProviderUnavailable as e:
+                msg = ("Sorry, the chat agent is temporarily unavailable: "
+                       + str(e))
+                yield f"data: {json.dumps({'type': 'token', 'content': msg})}\n\n"
+                yield f"data: {json.dumps({'type': 'text', 'content': msg})}\n\n"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                return
+            active_tools = get_active_chat_tools()
 
+            for _round_idx in range(max_rounds):
                 round_text = ""
-                # Tool-call deltas arrive piecewise across many chunks,
-                # keyed by index. We assemble them into complete tool calls
-                # before executing.
-                tool_calls_acc = {}
+                tcs = []   # completed tool calls this round
                 finish_reason = None
 
-                for chunk in stream:
-                    if not chunk.choices:
-                        continue
-                    choice = chunk.choices[0]
-                    delta = choice.delta
+                if provider == "claude":
+                    sys_str, claude_msgs = _messages_for_claude(messages)
+                    claude_tools = _tools_for_claude(active_tools)
+                    round_iter = _stream_round_claude(
+                        model, sys_str, claude_msgs, claude_tools
+                    )
+                else:
+                    round_iter = _stream_round_openai(
+                        model, messages, active_tools
+                    )
 
-                    if delta and getattr(delta, "content", None):
-                        round_text += delta.content
-                        yield f"data: {json.dumps({'type': 'token', 'content': delta.content})}\n\n"
-
-                    if delta and getattr(delta, "tool_calls", None):
-                        for tc in delta.tool_calls:
-                            idx = tc.index
-                            slot = tool_calls_acc.setdefault(
-                                idx, {"id": "", "name": "", "args": ""}
-                            )
-                            if tc.id:
-                                slot["id"] = tc.id
-                            fn = getattr(tc, "function", None)
-                            if fn is not None:
-                                if getattr(fn, "name", None):
-                                    slot["name"] = fn.name
-                                if getattr(fn, "arguments", None):
-                                    slot["args"] += fn.arguments
-
-                    if choice.finish_reason:
-                        finish_reason = choice.finish_reason
+                for event in round_iter:
+                    kind = event[0]
+                    if kind == "token":
+                        round_text += event[1]
+                        yield f"data: {json.dumps({'type': 'token', 'content': event[1]})}\n\n"
+                    elif kind == "tool_call":
+                        tcs.append(event[1])
+                    elif kind == "finish":
+                        finish_reason = event[1]
 
                 full_text += round_text
 
                 # If the model wants to call tools, execute them and loop.
                 # Otherwise the response is final — break out and parse it.
-                if finish_reason == "tool_calls" and tool_calls_acc:
-                    tcs = []
-                    for idx in sorted(tool_calls_acc.keys()):
-                        slot = tool_calls_acc[idx]
-                        if not slot["name"]:
-                            continue
-                        tcs.append({
-                            "id": slot["id"] or f"call_{idx}",
-                            "type": "function",
-                            "function": {
-                                "name": slot["name"],
-                                "arguments": slot["args"] or "{}",
-                            },
-                        })
-                    if not tcs:
-                        # Defensive: nothing actionable, treat as finished.
-                        break
-
-                    # Append the assistant turn (with its tool_calls) so the
-                    # API can match each tool result back to its call.
+                if finish_reason == "tool_calls" and tcs:
+                    # Append the assistant turn (with its tool_calls) in
+                    # canonical OpenAI shape — _messages_for_claude knows
+                    # how to translate this on the next round if needed.
                     messages.append({
                         "role": "assistant",
                         "content": round_text or None,
-                        "tool_calls": tcs,
+                        "tool_calls": [
+                            {
+                                "id": tc["id"],
+                                "type": "function",
+                                "function": {
+                                    "name": tc["name"],
+                                    "arguments": tc["args"],
+                                },
+                            }
+                            for tc in tcs
+                        ],
                     })
                     # Execute each tool and append its result message.
                     for tc in tcs:
                         result_str, log_entry = execute_chat_tool(
-                            tc["function"]["name"],
-                            tc["function"]["arguments"],
+                            tc["name"],
+                            tc["args"],
+                            session_id=session_id,
                         )
                         tool_logs.append(log_entry)
                         messages.append({
@@ -5391,6 +5944,338 @@ def admin_delete_pricing(price_id):
     if count == 0:
         return jsonify({"error": "Pricing not found"}), 404
     return jsonify({"success": True})
+
+
+# =============================================================
+# ADMIN CRUD — PRESENTATIONS (Phase A: Agentic Skills)
+# =============================================================
+# A presentation is an ordered deck of slides the AI can launch on
+# behalf of a visitor. Each slide carries a title, body, optional
+# image, and optional narration_text the voice agent reads aloud.
+# The public site fetches one deck at a time via GET /api/presentations/
+# <slug>; the admin UI uses these CRUD endpoints to build them.
+
+import re as _re
+
+def _slugify(value):
+    s = (value or "").strip().lower()
+    s = _re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    return s[:120] or "deck"
+
+
+@app.route("/admin/api/presentations", methods=["GET"])
+@admin_required
+def admin_list_presentations():
+    """GET all presentations with their slide counts."""
+    rows = query_db(
+        "SELECT p.*, "
+        "  (SELECT COUNT(*) FROM presentation_slides WHERE presentation_id = p.id) "
+        "  AS slide_count "
+        "FROM presentations p ORDER BY p.id DESC"
+    ) or []
+    return jsonify(rows)
+
+
+@app.route("/admin/api/presentations/<int:pid>", methods=["GET"])
+@admin_required
+def admin_get_presentation(pid):
+    """GET one presentation with its full slide list."""
+    p = query_db("SELECT * FROM presentations WHERE id = %s", (pid,), fetchone=True)
+    if not p:
+        return jsonify({"error": "Presentation not found"}), 404
+    slides = query_db(
+        "SELECT * FROM presentation_slides WHERE presentation_id = %s "
+        "ORDER BY order_index ASC, id ASC",
+        (pid,),
+    ) or []
+    p["slides"] = slides
+    return jsonify(p)
+
+
+@app.route("/admin/api/presentations", methods=["POST"])
+@admin_required
+def admin_create_presentation():
+    """POST — Create a new presentation deck (slides added separately)."""
+    data = request.get_json() or {}
+    title = (data.get("title") or "").strip()
+    if not title:
+        return jsonify({"error": "Title is required"}), 400
+    slug = (data.get("slug") or "").strip() or _slugify(title)
+    # Ensure slug is unique by suffixing -2, -3 ... if needed.
+    base = slug
+    n = 2
+    while query_db(
+        "SELECT 1 FROM presentations WHERE slug = %s",
+        (slug,),
+        fetchone=True,
+    ):
+        slug = f"{base}-{n}"
+        n += 1
+    p = execute_db(
+        """INSERT INTO presentations
+             (slug, title, description, cover_image_url, source, auto_play, enabled)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)
+           RETURNING *""",
+        (
+            slug,
+            title,
+            data.get("description") or "",
+            data.get("cover_image_url") or "",
+            data.get("source") or "admin",
+            bool(data.get("auto_play")),
+            bool(data.get("enabled", True)),
+        ),
+    )
+    return jsonify(p), 201
+
+
+@app.route("/admin/api/presentations/<int:pid>", methods=["PUT"])
+@admin_required
+def admin_update_presentation(pid):
+    """PUT — Update a presentation's metadata (not slides)."""
+    data = request.get_json() or {}
+    p = execute_db(
+        """UPDATE presentations SET
+             title = %s,
+             description = %s,
+             cover_image_url = %s,
+             auto_play = %s,
+             enabled = %s
+           WHERE id = %s RETURNING *""",
+        (
+            data.get("title") or "",
+            data.get("description") or "",
+            data.get("cover_image_url") or "",
+            bool(data.get("auto_play")),
+            bool(data.get("enabled", True)),
+            pid,
+        ),
+    )
+    if not p:
+        return jsonify({"error": "Presentation not found"}), 404
+    return jsonify(p)
+
+
+@app.route("/admin/api/presentations/<int:pid>", methods=["DELETE"])
+@admin_required
+def admin_delete_presentation(pid):
+    """DELETE — Remove a deck (cascades to its slides)."""
+    count = execute_db("DELETE FROM presentations WHERE id = %s", (pid,))
+    if count == 0:
+        return jsonify({"error": "Presentation not found"}), 404
+    return jsonify({"success": True})
+
+
+@app.route("/admin/api/presentations/<int:pid>/slides", methods=["POST"])
+@admin_required
+def admin_add_slide(pid):
+    """POST — Add a slide to a deck. order_index defaults to (max+1)."""
+    parent = query_db(
+        "SELECT id FROM presentations WHERE id = %s",
+        (pid,),
+        fetchone=True,
+    )
+    if not parent:
+        return jsonify({"error": "Presentation not found"}), 404
+    data = request.get_json() or {}
+    if data.get("order_index") is None:
+        nxt = query_db(
+            "SELECT COALESCE(MAX(order_index), -1) + 1 AS n "
+            "FROM presentation_slides WHERE presentation_id = %s",
+            (pid,),
+            fetchone=True,
+        )
+        order_index = int((nxt or {}).get("n", 0))
+    else:
+        order_index = int(data.get("order_index"))
+    s = execute_db(
+        """INSERT INTO presentation_slides
+             (presentation_id, order_index, title, body, image_url, narration_text)
+           VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
+        (
+            pid,
+            order_index,
+            data.get("title") or "",
+            data.get("body") or "",
+            data.get("image_url") or "",
+            data.get("narration_text") or "",
+        ),
+    )
+    return jsonify(s), 201
+
+
+@app.route("/admin/api/slides/<int:sid>", methods=["PUT"])
+@admin_required
+def admin_update_slide(sid):
+    """PUT — Update one slide."""
+    data = request.get_json() or {}
+    s = execute_db(
+        """UPDATE presentation_slides SET
+             order_index = %s, title = %s, body = %s,
+             image_url = %s, narration_text = %s
+           WHERE id = %s RETURNING *""",
+        (
+            int(data.get("order_index", 0)),
+            data.get("title") or "",
+            data.get("body") or "",
+            data.get("image_url") or "",
+            data.get("narration_text") or "",
+            sid,
+        ),
+    )
+    if not s:
+        return jsonify({"error": "Slide not found"}), 404
+    return jsonify(s)
+
+
+@app.route("/admin/api/slides/<int:sid>", methods=["DELETE"])
+@admin_required
+def admin_delete_slide(sid):
+    """DELETE one slide."""
+    count = execute_db("DELETE FROM presentation_slides WHERE id = %s", (sid,))
+    if count == 0:
+        return jsonify({"error": "Slide not found"}), 404
+    return jsonify({"success": True})
+
+
+# ---- Public — visitor-facing presentation fetch -----------------------------
+
+@app.route("/api/presentations/<slug>", methods=["GET"])
+def public_get_presentation(slug):
+    """GET /api/presentations/<slug> — fetch one enabled deck for the
+    visitor-side overlay player. Returns deck metadata + ordered slides
+    including narration_text (the voice agent will speak it)."""
+    p = query_db(
+        "SELECT id, slug, title, description, cover_image_url, auto_play "
+        "FROM presentations WHERE slug = %s AND enabled = TRUE",
+        (slug,),
+        fetchone=True,
+    )
+    if not p:
+        return jsonify({"error": "Presentation not found"}), 404
+    slides = query_db(
+        "SELECT id, order_index, title, body, image_url, narration_text "
+        "FROM presentation_slides WHERE presentation_id = %s "
+        "ORDER BY order_index ASC, id ASC",
+        (p["id"],),
+    ) or []
+    return jsonify({
+        "slug": p["slug"],
+        "title": p["title"],
+        "description": p["description"],
+        "cover_image_url": p["cover_image_url"],
+        "auto_play": bool(p["auto_play"]),
+        "slides": slides,
+    })
+
+
+# =============================================================
+# ADMIN — AGENT SKILLS REGISTRY + LLM PROVIDER SETTINGS
+# =============================================================
+# The Skills tab in admin uses these endpoints to (a) toggle each
+# skill on/off (powering get_active_chat_tools), (b) view recent
+# skill_usage_log activity, and (c) pick the active LLM provider.
+
+@app.route("/admin/api/skills", methods=["GET"])
+@admin_required
+def admin_list_skills():
+    """GET all registered skills + the recent usage count per skill."""
+    skills = query_db(
+        "SELECT s.*, "
+        "  COALESCE(u.recent_calls, 0) AS recent_calls "
+        "FROM agent_skills s "
+        "LEFT JOIN ("
+        "  SELECT skill_name, COUNT(*) AS recent_calls "
+        "  FROM skill_usage_log "
+        "  WHERE created_at > NOW() - INTERVAL '7 days' "
+        "  GROUP BY skill_name"
+        ") u ON u.skill_name = s.name "
+        "ORDER BY s.category ASC, s.name ASC"
+    ) or []
+    return jsonify(skills)
+
+
+@app.route("/admin/api/skills/<int:sid>", methods=["PUT"])
+@admin_required
+def admin_update_skill(sid):
+    """PUT — Toggle a skill on/off (and optionally update config_json)."""
+    data = request.get_json() or {}
+    config_json = data.get("config_json")
+    if config_json is None:
+        s = execute_db(
+            "UPDATE agent_skills SET enabled = %s WHERE id = %s RETURNING *",
+            (bool(data.get("enabled", True)), sid),
+        )
+    else:
+        s = execute_db(
+            "UPDATE agent_skills SET enabled = %s, config_json = %s::jsonb "
+            "WHERE id = %s RETURNING *",
+            (bool(data.get("enabled", True)), json.dumps(config_json), sid),
+        )
+    if not s:
+        return jsonify({"error": "Skill not found"}), 404
+    return jsonify(s)
+
+
+@app.route("/admin/api/skills/usage", methods=["GET"])
+@admin_required
+def admin_skills_usage():
+    """GET the most recent skill calls for the admin observability panel."""
+    rows = query_db(
+        "SELECT skill_name, args_json, row_count, duration_ms, error, created_at "
+        "FROM skill_usage_log ORDER BY id DESC LIMIT 100"
+    ) or []
+    return jsonify(rows)
+
+
+@app.route("/admin/api/llm-provider", methods=["GET"])
+@admin_required
+def admin_get_llm_provider():
+    """GET the active provider + per-provider model selection."""
+    row = query_db(
+        "SELECT * FROM agent_provider_settings WHERE id = 1",
+        fetchone=True,
+    )
+    if not row:
+        # Defensive: re-seed singleton if it somehow disappeared.
+        execute_db(
+            "INSERT INTO agent_provider_settings (id, provider, openai_model, claude_model) "
+            "VALUES (1, 'openai', 'gpt-4o-mini', 'claude-sonnet-4-5') "
+            "ON CONFLICT (id) DO NOTHING"
+        )
+        row = query_db(
+            "SELECT * FROM agent_provider_settings WHERE id = 1",
+            fetchone=True,
+        )
+    return jsonify({
+        **(row or {}),
+        "claude_available": anthropic_client is not None,
+    })
+
+
+@app.route("/admin/api/llm-provider", methods=["PUT"])
+@admin_required
+def admin_update_llm_provider():
+    """PUT — Update the active provider and model names."""
+    data = request.get_json() or {}
+    provider = (data.get("provider") or "openai").strip().lower()
+    if provider not in ("openai", "claude"):
+        return jsonify({"error": "provider must be 'openai' or 'claude'"}), 400
+    if provider == "claude" and anthropic_client is None:
+        return jsonify({
+            "error": "Claude is not configured. Set ANTHROPIC_API_KEY and restart."
+        }), 400
+    row = execute_db(
+        "UPDATE agent_provider_settings SET "
+        "  provider = %s, openai_model = %s, claude_model = %s, updated_at = NOW() "
+        "WHERE id = 1 RETURNING *",
+        (
+            provider,
+            (data.get("openai_model") or "gpt-4o-mini").strip(),
+            (data.get("claude_model") or "claude-sonnet-4-5").strip(),
+        ),
+    )
+    return jsonify(row or {})
 
 
 # =============================================================
@@ -16945,4 +17830,5 @@ def _ensure_messaging_scheduler():
 
 if __name__ == "__main__":
     init_db()
+    sync_skills_to_db()
     app.run(host="0.0.0.0", port=5000, debug=True)
