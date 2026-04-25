@@ -1630,6 +1630,18 @@ TO CUSTOMIZE THIS DASHBOARD:
     <button class="tab-btn" onclick="switchTab('automations', this); loadAutomations();" data-testid="tab-automations">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>
       Automations
+    <div class="sidebar-group-label">Reviews</div>
+    <button class="tab-btn" onclick="switchTab('reviews-destinations', this); loadReviewDestinations();" data-testid="tab-reviews-destinations">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+      Destinations
+    </button>
+    <button class="tab-btn" onclick="switchTab('reviews-requests', this); loadReviewRequests();" data-testid="tab-reviews-requests">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      Requests
+    </button>
+    <button class="tab-btn" onclick="switchTab('reviews-insights', this); loadReviewInsights();" data-testid="tab-reviews-insights">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+      Insights
     </button>
   </nav>
 
@@ -5329,6 +5341,249 @@ TO CUSTOMIZE THIS DASHBOARD:
       </div>
     </div>
 
+  TAB: REVIEWS — DESTINATIONS
+  ========================================================================
+  Where each ask should send the visitor (Google place, Yelp page,
+  TripAdvisor page, or an internal review form). Each row carries
+  optional auto-send settings so a destination can fire N days after a
+  booking is paid. The cached aggregate snapshot is shown inline.
+  -->
+  <div id="tab-reviews-destinations" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Review destinations</h2>
+        <p>Where reviewers should land — Google, Yelp, TripAdvisor, or your own form.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn btn-secondary btn-sm" onclick="loadReviewDestinations()" data-testid="button-review-destinations-refresh">Refresh</button>
+        <button class="btn btn-primary btn-sm" onclick="openReviewDestinationForm()" data-testid="button-review-destination-add">+ New destination</button>
+      </div>
+    </div>
+
+    <div class="form-panel" id="review-destination-form-panel" style="display:none;">
+      <h3 id="review-destination-form-title">New destination</h3>
+      <input type="hidden" id="review-destination-id">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Name</label>
+          <input type="text" id="review-destination-name" placeholder="Our Google Listing" data-testid="input-review-destination-name">
+        </div>
+        <div class="form-group">
+          <label>Kind</label>
+          <select id="review-destination-kind" onchange="onReviewDestinationKindChange()" data-testid="select-review-destination-kind">
+            <option value="google">Google</option>
+            <option value="yelp">Yelp</option>
+            <option value="tripadvisor">TripAdvisor</option>
+            <option value="internal">Internal form</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Public URL</label>
+          <input type="text" id="review-destination-url" placeholder="https://g.page/your-business/review" data-testid="input-review-destination-url">
+        </div>
+        <div class="form-group">
+          <label id="review-destination-extid-label">Place ID / Business ID</label>
+          <input type="text" id="review-destination-extid" placeholder="ChIJ…" data-testid="input-review-destination-extid">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label><input type="checkbox" id="review-destination-auto-send" data-testid="checkbox-review-destination-auto"> Auto-send after booking is paid</label>
+        </div>
+        <div class="form-group">
+          <label>Days after paid</label>
+          <input type="number" id="review-destination-auto-days" min="0" max="365" value="3" data-testid="input-review-destination-auto-days">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label><input type="checkbox" id="review-destination-default" data-testid="checkbox-review-destination-default"> Use as default for manual asks</label>
+        </div>
+        <div class="form-group">
+          <label><input type="checkbox" id="review-destination-public" data-testid="checkbox-review-destination-public"> Show snapshot publicly on site</label>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="closeReviewDestinationForm()" data-testid="button-review-destination-cancel">Cancel</button>
+        <button class="btn btn-primary" onclick="saveReviewDestination()" data-testid="button-review-destination-save">Save destination</button>
+      </div>
+    </div>
+
+    <div class="form-panel" style="margin-top:1rem;">
+      <h3>Settings</h3>
+      <p style="color:var(--admin-text-muted); font-size:0.85rem; margin-top:-0.25rem;">Wrap every ask in a messaging template so tone and branding stay consistent.</p>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Email template wrapper</label>
+          <select id="review-settings-email-tpl" data-testid="select-review-settings-email-tpl"><option value="">— None (use built-in default) —</option></select>
+        </div>
+        <div class="form-group">
+          <label>SMS template wrapper</label>
+          <select id="review-settings-sms-tpl" data-testid="select-review-settings-sms-tpl"><option value="">— None (use built-in default) —</option></select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Default auto-send delay (days)</label>
+          <input type="number" id="review-settings-auto-days" min="0" max="365" value="3" data-testid="input-review-settings-auto-days">
+        </div>
+        <div class="form-group">
+          <label><input type="checkbox" id="review-settings-public-show" data-testid="checkbox-review-settings-public-show"> Show review snapshots on the public site</label>
+          <div style="font-size:0.8rem; color:var(--admin-text-muted);" id="review-settings-snapshot-meta"></div>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="saveReviewSettings()" data-testid="button-review-settings-save">Save settings</button>
+      </div>
+    </div>
+
+    <div style="overflow-x:auto; margin-top:1rem;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Name</th><th>Kind</th><th>URL</th><th>Auto-send</th>
+            <th>Aggregate</th><th>Public</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="review-destinations-tbody">
+          <tr><td colspan="7" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: REVIEWS — REQUESTS
+  ========================================================================
+  One row per personalized ask. Lets the admin filter by status, send a
+  brand-new ask manually, cancel queued asks, and inspect the rendered
+  body that actually went out.
+  -->
+  <div id="tab-reviews-requests" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Review requests</h2>
+        <p>Each row is one AI-personalized ask. Click a row to see the rendered message.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <select id="review-requests-status-filter" onchange="loadReviewRequests()" data-testid="select-review-requests-status">
+          <option value="">All statuses</option>
+          <option value="queued">Queued</option>
+          <option value="sent">Sent</option>
+          <option value="failed">Failed</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="loadReviewRequests()" data-testid="button-review-requests-refresh">Refresh</button>
+        <button class="btn btn-primary btn-sm" onclick="openReviewRequestForm()" data-testid="button-review-request-add">+ Send ask</button>
+      </div>
+    </div>
+
+    <div class="form-panel" id="review-request-form-panel" style="display:none;">
+      <h3>Send a review ask</h3>
+      <p style="color:var(--admin-text-muted); font-size:0.85rem; margin-top:-0.25rem;">The AI will draft a short personalized message. The wrapper template (set in Destinations) handles branding.</p>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Destination</label>
+          <select id="review-request-destination" data-testid="select-review-request-destination"></select>
+        </div>
+        <div class="form-group">
+          <label>Channel</label>
+          <select id="review-request-channel" data-testid="select-review-request-channel">
+            <option value="email">Email</option>
+            <option value="sms">SMS</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Recipient name</label>
+          <input type="text" id="review-request-name" placeholder="Jane Doe" data-testid="input-review-request-name">
+        </div>
+        <div class="form-group">
+          <label>Recipient email</label>
+          <input type="email" id="review-request-email" placeholder="jane@example.com" data-testid="input-review-request-email">
+        </div>
+        <div class="form-group">
+          <label>Recipient phone (E.164)</label>
+          <input type="text" id="review-request-phone" placeholder="+15551234567" data-testid="input-review-request-phone">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="flex:1;">
+          <label>What they bought / booked (used by the AI for personalization)</label>
+          <input type="text" id="review-request-item" placeholder="Sunset Sailing Tour — June 14" data-testid="input-review-request-item">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="closeReviewRequestForm()" data-testid="button-review-request-cancel">Cancel</button>
+        <button class="btn btn-primary" onclick="saveReviewRequest()" data-testid="button-review-request-save">Queue & send</button>
+      </div>
+    </div>
+
+    <div style="overflow-x:auto;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Recipient</th><th>Channel</th><th>Destination</th><th>Source</th>
+            <th>Status</th><th>Sent</th><th>Clicked</th><th>Converted</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="review-requests-tbody">
+          <tr><td colspan="9" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div id="review-request-detail-panel" style="margin-top:1.5rem;"></div>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: REVIEWS — INSIGHTS
+  ========================================================================
+  Funnel rates (sent → clicked → converted) overall, per channel, and
+  per destination. Also shows the cached aggregate snapshots so the
+  admin can see at-a-glance how well each platform is performing.
+  -->
+  <div id="tab-reviews-insights" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Review insights</h2>
+        <p>How asks are performing across channels and destinations.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn btn-secondary btn-sm" onclick="loadReviewInsights()" data-testid="button-review-insights-refresh">Refresh</button>
+      </div>
+    </div>
+
+    <div id="review-insights-overall" class="kpi-grid" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:1rem; margin-bottom:1.5rem;"></div>
+
+    <h3 style="margin-top:1rem;">By channel</h3>
+    <div style="overflow-x:auto;">
+      <table class="data-table">
+        <thead>
+          <tr><th>Channel</th><th>Sent</th><th>Clicked</th><th>Converted</th><th>Click rate</th><th>Conversion rate</th></tr>
+        </thead>
+        <tbody id="review-insights-channel-tbody">
+          <tr><td colspan="6" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 style="margin-top:1.5rem;">By destination</h3>
+    <div style="overflow-x:auto;">
+      <table class="data-table">
+        <thead>
+          <tr><th>Name</th><th>Kind</th><th>Sent</th><th>Clicked</th><th>Converted</th><th>Click rate</th></tr>
+        </thead>
+        <tbody id="review-insights-dest-tbody">
+          <tr><td colspan="6" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 
   <!-- Preview modal for saved pages -->
@@ -6561,7 +6816,10 @@ TO CUSTOMIZE THIS DASHBOARD:
         });
         html += '</div></div>';
 
-        document.getElementById('submission-detail-content').innerHTML = html;
+        const askBtnHtml = `<div style="margin-top:1rem; padding-top:0.75rem; border-top:1px solid var(--admin-border);">
+          <button class="btn btn-secondary btn-sm" onclick="askForReviewFromSubmission(${sub.id})" data-testid="button-review-ask-submission-${sub.id}">Ask this contact for a review</button>
+        </div>`;
+        document.getElementById('submission-detail-content').innerHTML = html + askBtnHtml;
         document.getElementById('submission-detail').style.display = 'block';
       } catch (err) {
         showToast('Failed to load submission details', 'error');
@@ -7401,6 +7659,9 @@ TO CUSTOMIZE THIS DASHBOARD:
         const refundBtn = o.status === 'paid'
           ? `<button class="btn btn-danger" onclick="refundOrder(${o.id})" data-testid="button-refund-${o.id}">Refund</button>`
           : '';
+        const reviewAskBtn = (o.status === 'paid' && o.customer_email)
+          ? `<button class="btn btn-secondary" onclick="askForReviewFromOrder(${o.id})" data-testid="button-review-ask-order-${o.id}">Ask for a review</button>`
+          : '';
         panel.innerHTML = `
           <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.75rem;">
             <h3 style="margin:0;" data-testid="text-order-detail-${o.id}">${escapeHtmlAdmin(o.order_number)}</h3>
@@ -7417,7 +7678,7 @@ TO CUSTOMIZE THIS DASHBOARD:
             <span>Total</span><span>${fmtMoneyAdmin(o.total_cents, o.currency)}</span>
           </div>
           ${o.stripe_payment_intent_id ? `<p style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.5rem; word-break:break-all;">PaymentIntent: ${escapeHtmlAdmin(o.stripe_payment_intent_id)}</p>` : ''}
-          <div style="margin-top:0.75rem;">${refundBtn}</div>`;
+          <div style="margin-top:0.75rem; display:flex; gap:0.5rem;">${refundBtn} ${reviewAskBtn}</div>`;
       } catch (err) {
         panel.innerHTML = '<p style="color:#ef4444;">Failed to load order.</p>';
       }
@@ -12409,6 +12670,421 @@ TO CUSTOMIZE THIS DASHBOARD:
         return String(s).replace(/[&<>"']/g, ch =>
           ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
       };
+
+    /*
+    ========================================================================
+    REVIEWS — DESTINATIONS, REQUESTS, INSIGHTS
+    ========================================================================
+    Each loader fetches its slice of /admin/api/reviews/* and renders the
+    table. The Destinations loader also primes the Settings panel so the
+    template-wrapper selects always show the latest messaging templates
+    without forcing the admin to switch tabs first.
+    */
+
+    let _reviewDestinationsCache = [];
+
+    async function loadReviewDestinations() {
+      const tbody = document.getElementById('review-destinations-tbody');
+      if (!tbody) return;
+      tbody.innerHTML = '<tr><td colspan="7" class="empty-state">Loading…</td></tr>';
+      try {
+        const [destsRes, settingsRes, tplsRes] = await Promise.all([
+          fetch('/admin/api/reviews/destinations'),
+          fetch('/admin/api/reviews/settings'),
+          fetch('/admin/api/messaging/templates'),
+        ]);
+        const dests = await destsRes.json();
+        const settings = await settingsRes.json();
+        const tpls = await tplsRes.json();
+        _reviewDestinationsCache = dests || [];
+
+        if (!dests.length) {
+          tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No destinations yet. Add Google, Yelp, TripAdvisor, or your own form.</td></tr>';
+        } else {
+          tbody.innerHTML = dests.map(d => {
+            const snap = d.snapshot || {};
+            const aggText = snap.error_text
+              ? `<span style="color:#ef4444; font-size:0.8rem;" title="${escapeHTML(snap.error_text)}">⚠ Error</span>`
+              : (snap.snapshot_at
+                  ? `<strong>${snap.avg_rating.toFixed(1)}★</strong> · ${snap.total_count} reviews<br><span style="color:var(--admin-text-muted);font-size:0.75rem;">${new Date(snap.snapshot_at).toLocaleDateString()}</span>`
+                  : '<span style="color:var(--admin-text-muted); font-size:0.8rem;">Not snapshotted yet</span>');
+            const refreshBtn = (d.kind === 'internal')
+              ? ''
+              : `<button class="btn btn-secondary btn-sm" onclick="refreshReviewDestination(${d.id})" data-testid="button-review-dest-refresh-${d.id}">Refresh</button>`;
+            return `<tr>
+              <td><strong>${escapeHTML(d.name)}</strong>${d.is_default ? ' <span style="font-size:0.7rem; padding:0.1rem 0.35rem; background:rgba(201,169,110,0.15); border-radius:4px;">DEFAULT</span>' : ''}</td>
+              <td>${escapeHTML(d.kind)}</td>
+              <td style="max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"><a href="${escapeHTML(d.url)}" target="_blank" rel="noopener" data-testid="link-review-dest-${d.id}">${escapeHTML(d.url || '—')}</a></td>
+              <td>${d.auto_send ? `Yes · ${d.auto_send_days}d` : 'Off'}</td>
+              <td>${aggText}</td>
+              <td>${d.public_visible ? 'Yes' : 'No'}</td>
+              <td style="white-space:nowrap;">
+                <button class="btn btn-secondary btn-sm" onclick="editReviewDestination(${d.id})" data-testid="button-review-dest-edit-${d.id}">Edit</button>
+                ${refreshBtn}
+                <button class="btn btn-danger btn-sm" onclick="deleteReviewDestination(${d.id})" data-testid="button-review-dest-delete-${d.id}">Delete</button>
+              </td>
+            </tr>`;
+          }).join('');
+        }
+
+        /* Populate the settings panel + template selects */
+        const buildOpts = (channel) => '<option value="">— None —</option>' +
+          (tpls || []).filter(t => t.channel === channel)
+            .map(t => `<option value="${t.id}">${escapeHTML(t.name)}</option>`).join('');
+        const eSel = document.getElementById('review-settings-email-tpl');
+        const sSel = document.getElementById('review-settings-sms-tpl');
+        if (eSel) eSel.innerHTML = buildOpts('email');
+        if (sSel) sSel.innerHTML = buildOpts('sms');
+        if (eSel && settings.email_template_id) eSel.value = String(settings.email_template_id);
+        if (sSel && settings.sms_template_id) sSel.value = String(settings.sms_template_id);
+        const daysInput = document.getElementById('review-settings-auto-days');
+        if (daysInput) daysInput.value = settings.auto_send_days || 3;
+        const pubChk = document.getElementById('review-settings-public-show');
+        if (pubChk) pubChk.checked = !!settings.public_show;
+        const meta = document.getElementById('review-settings-snapshot-meta');
+        if (meta) {
+          meta.textContent = settings.last_snapshot_at
+            ? 'Last snapshot refresh: ' + new Date(settings.last_snapshot_at).toLocaleString()
+            : 'Snapshot refresh has not run yet.';
+        }
+      } catch (err) {
+        tbody.innerHTML = '<tr><td colspan="7" style="color:#ef4444;padding:1rem;">Failed to load destinations.</td></tr>';
+      }
+    }
+
+    function onReviewDestinationKindChange() {
+      const kind = document.getElementById('review-destination-kind').value;
+      const lbl = document.getElementById('review-destination-extid-label');
+      const ext = document.getElementById('review-destination-extid');
+      const url = document.getElementById('review-destination-url');
+      if (kind === 'google') {
+        lbl.textContent = 'Google Place ID';
+        ext.placeholder = 'ChIJN1t_tDeuEmsRUsoyG83frY4';
+        url.placeholder = 'https://g.page/your-business/review';
+      } else if (kind === 'yelp') {
+        lbl.textContent = 'Yelp business ID / alias';
+        ext.placeholder = 'your-business-name';
+        url.placeholder = 'https://www.yelp.com/writeareview/biz/your-business-name';
+      } else if (kind === 'tripadvisor') {
+        lbl.textContent = 'TripAdvisor location ID';
+        ext.placeholder = '1234567';
+        url.placeholder = 'https://www.tripadvisor.com/UserReviewEdit-...';
+      } else {
+        lbl.textContent = 'Internal form slug (optional)';
+        ext.placeholder = 'leave-a-review';
+        url.placeholder = '/forms/leave-a-review';
+      }
+    }
+
+    function openReviewDestinationForm() {
+      document.getElementById('review-destination-form-title').textContent = 'New destination';
+      document.getElementById('review-destination-id').value = '';
+      ['name','url','extid'].forEach(k => document.getElementById('review-destination-' + k).value = '');
+      document.getElementById('review-destination-kind').value = 'google';
+      document.getElementById('review-destination-auto-send').checked = false;
+      document.getElementById('review-destination-auto-days').value = 3;
+      document.getElementById('review-destination-default').checked = false;
+      document.getElementById('review-destination-public').checked = false;
+      onReviewDestinationKindChange();
+      document.getElementById('review-destination-form-panel').style.display = 'block';
+    }
+
+    function closeReviewDestinationForm() {
+      document.getElementById('review-destination-form-panel').style.display = 'none';
+    }
+
+    function editReviewDestination(id) {
+      const d = _reviewDestinationsCache.find(x => x.id === id);
+      if (!d) return;
+      document.getElementById('review-destination-form-title').textContent = 'Edit destination';
+      document.getElementById('review-destination-id').value = d.id;
+      document.getElementById('review-destination-name').value = d.name || '';
+      document.getElementById('review-destination-kind').value = d.kind || 'google';
+      document.getElementById('review-destination-url').value = d.url || '';
+      document.getElementById('review-destination-extid').value = d.external_id || '';
+      document.getElementById('review-destination-auto-send').checked = !!d.auto_send;
+      document.getElementById('review-destination-auto-days').value = d.auto_send_days || 3;
+      document.getElementById('review-destination-default').checked = !!d.is_default;
+      document.getElementById('review-destination-public').checked = !!d.public_visible;
+      onReviewDestinationKindChange();
+      document.getElementById('review-destination-form-panel').style.display = 'block';
+      window.scrollTo({ top: document.getElementById('review-destination-form-panel').offsetTop - 80, behavior: 'smooth' });
+    }
+
+    async function saveReviewDestination() {
+      const id = document.getElementById('review-destination-id').value;
+      const payload = {
+        name: document.getElementById('review-destination-name').value.trim(),
+        kind: document.getElementById('review-destination-kind').value,
+        url: document.getElementById('review-destination-url').value.trim(),
+        external_id: document.getElementById('review-destination-extid').value.trim(),
+        auto_send: document.getElementById('review-destination-auto-send').checked,
+        auto_send_days: parseInt(document.getElementById('review-destination-auto-days').value || '3', 10),
+        is_default: document.getElementById('review-destination-default').checked,
+        public_visible: document.getElementById('review-destination-public').checked,
+      };
+      if (!payload.name) { showToast('Name is required', 'error'); return; }
+      try {
+        const url = id ? `/admin/api/reviews/destinations/${id}` : '/admin/api/reviews/destinations';
+        const res = await fetch(url, {
+          method: id ? 'PUT' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Failed');
+        showToast('Destination saved');
+        closeReviewDestinationForm();
+        loadReviewDestinations();
+      } catch (err) { showToast(err.message || 'Save failed', 'error'); }
+    }
+
+    async function deleteReviewDestination(id) {
+      if (!confirm('Delete this destination? Existing requests will lose their link to it.')) return;
+      try {
+        const res = await fetch(`/admin/api/reviews/destinations/${id}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Delete failed');
+        showToast('Destination deleted');
+        loadReviewDestinations();
+      } catch (err) { showToast('Delete failed', 'error'); }
+    }
+
+    async function refreshReviewDestination(id) {
+      try {
+        const res = await fetch(`/admin/api/reviews/destinations/${id}/refresh`, { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) {
+          showToast(data.error || 'Snapshot refresh failed', 'error');
+        } else if (data.skipped) {
+          showToast('Internal destinations have no aggregate snapshot', 'info');
+        } else {
+          showToast(`Snapshot updated: ${data.avg_rating ? data.avg_rating.toFixed(1) + '★' : ''} ${data.total_count || 0} reviews`);
+        }
+        loadReviewDestinations();
+      } catch (err) { showToast('Snapshot refresh failed', 'error'); }
+    }
+
+    async function saveReviewSettings() {
+      const payload = {
+        email_template_id: document.getElementById('review-settings-email-tpl').value || null,
+        sms_template_id: document.getElementById('review-settings-sms-tpl').value || null,
+        auto_send_days: parseInt(document.getElementById('review-settings-auto-days').value || '3', 10),
+        public_show: document.getElementById('review-settings-public-show').checked,
+      };
+      try {
+        const res = await fetch('/admin/api/reviews/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Save failed');
+        showToast('Settings saved');
+        loadReviewDestinations();
+      } catch (err) { showToast(err.message || 'Save failed', 'error'); }
+    }
+
+    /* --- Requests --- */
+
+    async function loadReviewRequests() {
+      const tbody = document.getElementById('review-requests-tbody');
+      if (!tbody) return;
+      tbody.innerHTML = '<tr><td colspan="9" class="empty-state">Loading…</td></tr>';
+      const status = (document.getElementById('review-requests-status-filter') || {}).value || '';
+      try {
+        const [reqRes, destRes] = await Promise.all([
+          fetch('/admin/api/reviews/requests' + (status ? '?status=' + encodeURIComponent(status) : '')),
+          fetch('/admin/api/reviews/destinations'),
+        ]);
+        const reqs = await reqRes.json();
+        const dests = await destRes.json();
+        const destMap = Object.fromEntries((dests || []).map(d => [d.id, d.name]));
+
+        /* Populate the manual form's destination dropdown too */
+        const selDest = document.getElementById('review-request-destination');
+        if (selDest) {
+          selDest.innerHTML = (dests || []).map(d => `<option value="${d.id}">${escapeHTML(d.name)} (${escapeHTML(d.kind)})</option>`).join('');
+        }
+
+        if (!reqs.length) {
+          tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No review requests yet.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = reqs.map(r => {
+          const recipient = r.channel === 'email' ? r.recipient_email : r.recipient_phone;
+          const cancelBtn = (r.status === 'queued')
+            ? `<button class="btn btn-secondary btn-sm" onclick="cancelReviewRequest(${r.id})" data-testid="button-review-req-cancel-${r.id}">Cancel</button>`
+            : '';
+          return `<tr style="cursor:pointer;" onclick="viewReviewRequest(${r.id})" data-testid="row-review-req-${r.id}">
+            <td><strong>${escapeHTML(r.recipient_name || '—')}</strong><br><span style="font-size:0.8rem; color:var(--admin-text-muted);">${escapeHTML(recipient || '')}</span></td>
+            <td>${escapeHTML(r.channel)}</td>
+            <td>${escapeHTML(destMap[r.destination_id] || '—')}</td>
+            <td><span style="font-size:0.8rem;">${escapeHTML(r.source_kind)}${r.source_id ? '#' + r.source_id : ''}</span></td>
+            <td><span style="font-weight:600; text-transform:uppercase; font-size:0.75rem;">${escapeHTML(r.status)}</span>${r.error_text ? `<br><span style="color:#ef4444; font-size:0.7rem;" title="${escapeHTML(r.error_text)}">⚠ ${escapeHTML(r.error_text.substring(0, 50))}</span>` : ''}</td>
+            <td>${r.sent_at ? new Date(r.sent_at).toLocaleString() : '—'}</td>
+            <td>${r.clicked_at ? new Date(r.clicked_at).toLocaleString() + (r.click_count > 1 ? ` (×${r.click_count})` : '') : '—'}</td>
+            <td>${r.converted_at ? new Date(r.converted_at).toLocaleString() : '—'}</td>
+            <td onclick="event.stopPropagation();" style="white-space:nowrap;">${cancelBtn}</td>
+          </tr>`;
+        }).join('');
+      } catch (err) {
+        tbody.innerHTML = '<tr><td colspan="9" style="color:#ef4444;padding:1rem;">Failed to load requests.</td></tr>';
+      }
+    }
+
+    async function viewReviewRequest(id) {
+      try {
+        const res = await fetch(`/admin/api/reviews/requests/${id}`);
+        if (!res.ok) { showToast('Request not found', 'error'); return; }
+        const r = await res.json();
+        if (!r) return;
+        const link = `${location.origin}/r/${r.short_token}`;
+        const panel = document.getElementById('review-request-detail-panel');
+
+        /* Render the message body inside a sandboxed iframe via srcdoc so
+           any HTML in the body (which is partially derived from recipient
+           names and AI output that flowed through templates) cannot execute
+           scripts in the admin page context. The empty `sandbox` attribute
+           denies all capabilities — no scripts, no forms, no top navigation
+           — so even attacker-controlled markup is rendered as inert HTML.
+           For SMS we always render as escaped plain text. */
+        const isEmail = r.channel === 'email';
+        const bodyText = r.body_snapshot || '';
+        const iframeSrcdoc = (isEmail && bodyText)
+          ? bodyText.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+          : '';
+
+        panel.innerHTML = `
+          <div class="form-panel">
+            <h3 style="margin-top:0;">Review request #${r.id}</h3>
+            <p style="margin:0.25rem 0;"><strong>Recipient:</strong> ${escapeHTML(r.recipient_name || '—')} &lt;${escapeHTML(r.recipient_email || r.recipient_phone || '')}&gt;</p>
+            <p style="margin:0.25rem 0;"><strong>What they got:</strong> ${escapeHTML(r.purchased_item || '—')}</p>
+            <p style="margin:0.25rem 0;"><strong>Short link:</strong> <code data-testid="text-review-short-link-${r.id}">${escapeHTML(link)}</code></p>
+            <p style="margin:0.25rem 0; font-size:0.85rem; color:var(--admin-text-muted);">Status: ${escapeHTML(r.status)} · Clicks: ${r.click_count} · ${r.converted_at ? 'Converted ✓' : 'Not converted'}</p>
+            ${r.subject_snapshot ? `<p style="margin:0.5rem 0;"><strong>Subject:</strong> ${escapeHTML(r.subject_snapshot)}</p>` : ''}
+            <div style="margin-top:0.5rem;"><strong>Body sent (preview):</strong></div>
+            ${bodyText
+              ? (isEmail
+                  ? `<iframe sandbox srcdoc="${iframeSrcdoc}" data-testid="iframe-review-body-${r.id}" style="width:100%; height:300px; border:1px solid var(--admin-border); border-radius:6px; margin-top:0.25rem; background:#fff;"></iframe>`
+                  : `<pre data-testid="pre-review-body-${r.id}" style="border:1px solid var(--admin-border); border-radius:6px; padding:0.75rem; margin-top:0.25rem; max-height:300px; overflow:auto; background:var(--admin-bg); white-space:pre-wrap; word-break:break-word;">${escapeHTML(bodyText)}</pre>`)
+              : '<div style="border:1px solid var(--admin-border); border-radius:6px; padding:0.75rem; margin-top:0.25rem;"><em style="color:var(--admin-text-muted);">No body recorded.</em></div>'}
+            ${r.error_text ? `<p style="color:#ef4444; margin-top:0.5rem;"><strong>Error:</strong> ${escapeHTML(r.error_text)}</p>` : ''}
+          </div>`;
+        panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      } catch (err) { showToast('Failed to load request', 'error'); }
+    }
+
+    function openReviewRequestForm() {
+      document.getElementById('review-request-form-panel').style.display = 'block';
+      ['name','email','phone','item'].forEach(k => document.getElementById('review-request-' + k).value = '');
+    }
+    function closeReviewRequestForm() {
+      document.getElementById('review-request-form-panel').style.display = 'none';
+    }
+
+    async function saveReviewRequest() {
+      const payload = {
+        destination_id: parseInt(document.getElementById('review-request-destination').value || '0', 10),
+        channel: document.getElementById('review-request-channel').value,
+        recipient_name: document.getElementById('review-request-name').value.trim(),
+        recipient_email: document.getElementById('review-request-email').value.trim(),
+        recipient_phone: document.getElementById('review-request-phone').value.trim(),
+        purchased_item: document.getElementById('review-request-item').value.trim(),
+        send_now: true,
+      };
+      if (!payload.destination_id) { showToast('Pick a destination first', 'error'); return; }
+      if (payload.channel === 'email' && !payload.recipient_email) { showToast('Email is required', 'error'); return; }
+      if (payload.channel === 'sms' && !payload.recipient_phone) { showToast('Phone is required', 'error'); return; }
+      try {
+        const res = await fetch('/admin/api/reviews/requests', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Failed');
+        showToast('Review ask queued and sending in the background');
+        closeReviewRequestForm();
+        setTimeout(loadReviewRequests, 1500);
+      } catch (err) { showToast(err.message || 'Failed', 'error'); }
+    }
+
+    async function cancelReviewRequest(id) {
+      if (!confirm('Cancel this queued review request?')) return;
+      try {
+        const res = await fetch(`/admin/api/reviews/requests/${id}/cancel`, { method: 'POST' });
+        if (!res.ok) throw new Error('Cancel failed');
+        showToast('Cancelled');
+        loadReviewRequests();
+      } catch (err) { showToast('Cancel failed', 'error'); }
+    }
+
+    /* Manual triggers from order detail / form submission detail */
+    async function askForReviewFromOrder(orderId) {
+      try {
+        const res = await fetch(`/admin/api/reviews/trigger/order/${orderId}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Failed');
+        showToast('Review ask queued for this customer');
+      } catch (err) { showToast(err.message || 'Failed to send review ask', 'error'); }
+    }
+
+    async function askForReviewFromSubmission(subId) {
+      try {
+        const res = await fetch(`/admin/api/reviews/trigger/submission/${subId}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Failed');
+        showToast('Review ask queued for this contact');
+      } catch (err) { showToast(err.message || 'Failed to send review ask', 'error'); }
+    }
+
+    /* --- Insights --- */
+
+    async function loadReviewInsights() {
+      const overall = document.getElementById('review-insights-overall');
+      const chTbody = document.getElementById('review-insights-channel-tbody');
+      const dTbody = document.getElementById('review-insights-dest-tbody');
+      if (!overall) return;
+      overall.innerHTML = '<div class="empty-state">Loading…</div>';
+      try {
+        const res = await fetch('/admin/api/reviews/insights');
+        const data = await res.json();
+        const o = data.overall || {};
+        const pct = (a, b) => (b > 0 ? ((a / b) * 100).toFixed(1) + '%' : '—');
+        overall.innerHTML = [
+          ['Sent', o.sent || 0],
+          ['Clicked', o.clicked || 0],
+          ['Converted', o.converted || 0],
+          ['Failed', o.failed || 0],
+          ['Click rate', pct(o.clicked, o.sent)],
+          ['Conversion rate', pct(o.converted, o.clicked)],
+        ].map(([l, v]) => `<div style="background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:8px; padding:0.75rem;">
+          <div style="font-size:0.7rem; text-transform:uppercase; color:var(--admin-text-muted);">${l}</div>
+          <div style="font-size:1.5rem; font-weight:700;" data-testid="kpi-review-${l.toLowerCase().replace(/ /g, '-')}">${v}</div>
+        </div>`).join('');
+
+        chTbody.innerHTML = (data.by_channel || []).length
+          ? data.by_channel.map(r => `<tr>
+              <td>${escapeHTML(r.channel)}</td>
+              <td>${r.sent}</td><td>${r.clicked}</td><td>${r.converted}</td>
+              <td>${pct(r.clicked, r.sent)}</td><td>${pct(r.converted, r.clicked)}</td>
+            </tr>`).join('')
+          : '<tr><td colspan="6" class="empty-state">No data yet.</td></tr>';
+
+        dTbody.innerHTML = (data.by_destination || []).length
+          ? data.by_destination.map(r => `<tr>
+              <td>${escapeHTML(r.name)}</td><td>${escapeHTML(r.kind)}</td>
+              <td>${r.sent}</td><td>${r.clicked}</td><td>${r.converted}</td>
+              <td>${pct(r.clicked, r.sent)}</td>
+            </tr>`).join('')
+          : '<tr><td colspan="6" class="empty-state">No destinations yet.</td></tr>';
+      } catch (err) {
+        overall.innerHTML = '<div style="color:#ef4444;">Failed to load insights.</div>';
+      }
     }
 
   </script>

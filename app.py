@@ -233,7 +233,12 @@ def execute_db(sql, params=None):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(sql, params)
             if cur.description:
-                return dict(cur.fetchone())
+                # RETURNING with zero affected rows yields no row — return None
+                # so callers can use a simple `if not result:` guard instead of
+                # crashing with TypeError on dict(None). Existing callers
+                # already treat the value as truthy/falsy.
+                row = cur.fetchone()
+                return dict(row) if row is not None else None
             return cur.rowcount
     finally:
         conn.close()
@@ -1184,6 +1189,114 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_msg_log_campaign ON messaging_log (campaign_id);
                 CREATE INDEX IF NOT EXISTS idx_msg_log_provider ON messaging_log (provider_message_id);
                 CREATE INDEX IF NOT EXISTS idx_msg_log_to       ON messaging_log (to_address);
+
+                -- =============================================================
+                -- AI REVIEW COLLECTOR
+                -- =============================================================
+                -- Three tables drive the post-purchase review-ask flow.
+                --
+                --   review_destinations  Where each ask should send the visitor
+                --                        (Google place, Yelp page, TripAdvisor
+                --                        page, or an internal review form).
+                --                        Each row carries optional auto-send
+                --                        settings so a destination can fire N
+                --                        days after a booking is paid.
+                --
+                --   review_requests      One row per personalized ask. The
+                --                        short_token powers /r/<token>. We
+                --                        record sent / clicked / converted
+                --                        timestamps so the Insights tab can
+                --                        compute funnel rates.
+                --
+                --   external_reviews     Cached aggregate snapshot (count and
+                --                        average rating) per destination, kept
+                --                        fresh by a once-per-day scheduler tick
+                --                        for destinations whose provider
+                --                        exposes a public API.
+                --
+                --   review_settings      Singleton (id=1) holding the email
+                --                        and SMS templates that wrap each ask
+                --                        plus default auto-send days.
+                CREATE TABLE IF NOT EXISTS review_destinations (
+                    id              SERIAL PRIMARY KEY,
+                    name            TEXT NOT NULL DEFAULT '',
+                    -- 'google' | 'yelp' | 'tripadvisor' | 'internal'
+                    kind            VARCHAR(20) NOT NULL DEFAULT 'google',
+                    url             TEXT NOT NULL DEFAULT '',
+                    -- Provider id used to fetch the aggregate snapshot:
+                    --   google      → Place ID (e.g. ChIJN1t_tDeuEmsRUsoyG83frY4)
+                    --   yelp        → Yelp business id / alias
+                    --   tripadvisor → TripAdvisor location id
+                    --   internal    → optional internal form slug
+                    external_id     TEXT NOT NULL DEFAULT '',
+                    auto_send       BOOLEAN NOT NULL DEFAULT FALSE,
+                    auto_send_days  INTEGER NOT NULL DEFAULT 3,
+                    is_default      BOOLEAN NOT NULL DEFAULT FALSE,
+                    public_visible  BOOLEAN NOT NULL DEFAULT FALSE,
+                    sort_order      INTEGER NOT NULL DEFAULT 0,
+                    created_at      TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_review_dest_sort ON review_destinations (sort_order);
+
+                CREATE TABLE IF NOT EXISTS review_requests (
+                    id                SERIAL PRIMARY KEY,
+                    destination_id    INTEGER REFERENCES review_destinations(id) ON DELETE SET NULL,
+                    -- 'email' | 'sms'
+                    channel           VARCHAR(10) NOT NULL DEFAULT 'email',
+                    recipient_name    TEXT NOT NULL DEFAULT '',
+                    recipient_email   TEXT NOT NULL DEFAULT '',
+                    recipient_phone   TEXT NOT NULL DEFAULT '',
+                    -- Free-text describing the thing the customer bought or
+                    -- booked, used by the AI prompt for personalization.
+                    purchased_item    TEXT NOT NULL DEFAULT '',
+                    -- 'order' | 'form_submission' | 'rsvp' | 'manual'
+                    source_kind       VARCHAR(20) NOT NULL DEFAULT 'manual',
+                    source_id         INTEGER,
+                    -- 'queued' | 'sending' | 'sent' | 'failed' | 'cancelled'
+                    --   sending: claimed by the dispatcher, in flight
+                    --   sent:    successfully handed off to email/SMS provider
+                    status            VARCHAR(20) NOT NULL DEFAULT 'queued',
+                    short_token       VARCHAR(40) UNIQUE NOT NULL,
+                    subject_snapshot  TEXT NOT NULL DEFAULT '',
+                    body_snapshot     TEXT NOT NULL DEFAULT '',
+                    error_text        TEXT NOT NULL DEFAULT '',
+                    send_at           TIMESTAMP DEFAULT NOW(),
+                    sent_at           TIMESTAMP,
+                    clicked_at        TIMESTAMP,
+                    converted_at      TIMESTAMP,
+                    click_count       INTEGER NOT NULL DEFAULT 0,
+                    created_at        TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_review_req_status  ON review_requests (status);
+                CREATE INDEX IF NOT EXISTS idx_review_req_send_at ON review_requests (send_at);
+                CREATE INDEX IF NOT EXISTS idx_review_req_dest    ON review_requests (destination_id);
+                CREATE INDEX IF NOT EXISTS idx_review_req_source  ON review_requests (source_kind, source_id);
+
+                CREATE TABLE IF NOT EXISTS external_reviews (
+                    id              SERIAL PRIMARY KEY,
+                    destination_id  INTEGER UNIQUE REFERENCES review_destinations(id) ON DELETE CASCADE,
+                    total_count     INTEGER NOT NULL DEFAULT 0,
+                    avg_rating      REAL NOT NULL DEFAULT 0,
+                    snapshot_at     TIMESTAMP DEFAULT NOW(),
+                    raw_json        JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    error_text      TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE TABLE IF NOT EXISTS review_settings (
+                    id                  INTEGER PRIMARY KEY DEFAULT 1,
+                    email_template_id   INTEGER REFERENCES messaging_templates(id) ON DELETE SET NULL,
+                    sms_template_id     INTEGER REFERENCES messaging_templates(id) ON DELETE SET NULL,
+                    -- Default lead-time used when a destination row does not
+                    -- override auto_send_days. 0 means "send immediately when
+                    -- the booking is marked complete".
+                    auto_send_days      INTEGER NOT NULL DEFAULT 3,
+                    -- Master switch for the public-facing snapshot widget.
+                    -- Per-destination opt-in still controls which cards show.
+                    public_show         BOOLEAN NOT NULL DEFAULT FALSE,
+                    last_snapshot_at    TIMESTAMP,
+                    updated_at          TIMESTAMP DEFAULT NOW()
+                );
+                INSERT INTO review_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
             """)
 
             # =============================================================
@@ -6280,6 +6393,50 @@ def api_submit_form(slug):
             })
         except Exception:
             pass
+    # Conversion hook: if this submission came from a review-ask short link
+    # (the AI Review Collector appends ?r=<token> when redirecting to internal
+    # forms), credit the corresponding review_request as "converted". We try
+    # three sources in order so the conversion is captured even when the
+    # public form's JS doesn't explicitly carry the token forward:
+    #   1. ?r=<token> on the request to /api/forms/<slug>/submit (set when
+    #      the JS forwards it explicitly)
+    #   2. review_token field in the JSON body (explicit opt-in)
+    #   3. ?r=<token> embedded in the `page_url` field that the form
+    #      already submits — this is the most reliable fallback because
+    #      every public form posts page_url with the visitor's current URL.
+    review_token = (request.args.get("r") or data.get("review_token") or "").strip()
+    if not review_token:
+        page_url = (data.get("page_url") or "").strip()
+        if page_url:
+            try:
+                qs = urllib.parse.urlparse(page_url).query
+                review_token = (urllib.parse.parse_qs(qs).get("r") or [""])[0].strip()
+            except Exception:
+                review_token = ""
+    if review_token and re.match(r"^[A-Za-z0-9]+$", review_token):
+        try:
+            # Only credit the conversion when the token belongs to an
+            # internal-kind destination — that's the only path where landing
+            # on this form is the actual goal of the review-ask. Tokens
+            # whose destination is Google/Yelp/TripAdvisor wouldn't end up
+            # here through the normal flow, but constraining the update by
+            # destination kind keeps the metric clean against accidental
+            # token reuse and makes the intent explicit.
+            execute_db(
+                """
+                UPDATE review_requests AS rr
+                   SET converted_at = COALESCE(rr.converted_at, NOW()),
+                       clicked_at   = COALESCE(rr.clicked_at,   NOW())
+                  FROM review_destinations AS d
+                 WHERE rr.short_token = %s
+                   AND rr.destination_id = d.id
+                   AND d.kind = 'internal'
+                """,
+                (review_token,),
+            )
+        except Exception as e:
+            print(f"[reviews] conversion update failed for token {review_token}: {e}")
+
     return jsonify({
         "success": True,
         "id": submission_id,
@@ -10389,6 +10546,1252 @@ def public_automation_webhook(token):
     if rid is None:
         return jsonify({"error": "Rate limit reached for this automation."}), 429
     return jsonify({"ok": True, "run_id": rid}), 202
+# AI REVIEW COLLECTOR
+# =============================================================================
+# After a customer completes a purchase, booking, or stay, this module sends
+# an AI-personalized email or SMS asking for a review on Google, Yelp,
+# TripAdvisor, or an internal form. Each ask carries a unique short link so we
+# can record clicks (and conversions for internal forms) and report a funnel
+# in the admin Insights tab. A nightly scheduler tick refreshes cached
+# aggregate snapshots (count + average rating) for each destination whose
+# provider exposes a public API, so the public site can show social proof
+# without scraping HTML.
+
+# Token alphabet: URL-safe, no look-alikes (avoids 0/O/1/l confusion).
+_REVIEW_TOKEN_ALPHABET = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def _new_review_token() -> str:
+    """Generate a short, unique token for /r/<token>. We pick 14 chars from
+    the safe alphabet which gives ~83 bits of entropy — far more than enough
+    for the lifetime of these links."""
+    return "".join(secrets.choice(_REVIEW_TOKEN_ALPHABET) for _ in range(14))
+
+
+def _review_short_link(token: str) -> str:
+    """Build the absolute public short link for a review token."""
+    base = _public_base_url() or ""
+    return f"{base}/r/{token}"
+
+
+def _row_review_destination(row):
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "kind": row["kind"],
+        "url": row["url"],
+        "external_id": row.get("external_id", ""),
+        "auto_send": row.get("auto_send", False),
+        "auto_send_days": row.get("auto_send_days", 3),
+        "is_default": row.get("is_default", False),
+        "public_visible": row.get("public_visible", False),
+        "sort_order": row.get("sort_order", 0),
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+    }
+
+
+def _row_review_request(row):
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "destination_id": row.get("destination_id"),
+        "channel": row["channel"],
+        "recipient_name": row.get("recipient_name", ""),
+        "recipient_email": row.get("recipient_email", ""),
+        "recipient_phone": row.get("recipient_phone", ""),
+        "purchased_item": row.get("purchased_item", ""),
+        "source_kind": row.get("source_kind", "manual"),
+        "source_id": row.get("source_id"),
+        "status": row["status"],
+        "short_token": row["short_token"],
+        "subject_snapshot": row.get("subject_snapshot", ""),
+        "body_snapshot": row.get("body_snapshot", ""),
+        "error_text": row.get("error_text", ""),
+        "send_at": row["send_at"].isoformat() if row.get("send_at") else None,
+        "sent_at": row["sent_at"].isoformat() if row.get("sent_at") else None,
+        "clicked_at": row["clicked_at"].isoformat() if row.get("clicked_at") else None,
+        "converted_at": row["converted_at"].isoformat() if row.get("converted_at") else None,
+        "click_count": row.get("click_count", 0),
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+    }
+
+
+def _row_external_review(row):
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "destination_id": row.get("destination_id"),
+        "total_count": row.get("total_count", 0),
+        "avg_rating": float(row.get("avg_rating", 0) or 0),
+        "snapshot_at": row["snapshot_at"].isoformat() if row.get("snapshot_at") else None,
+        "error_text": row.get("error_text", ""),
+    }
+
+
+def _review_settings_row():
+    """Return the singleton review_settings row, ensuring it exists."""
+    row = query_db("SELECT * FROM review_settings WHERE id = 1", fetchone=True)
+    if not row:
+        execute_db("INSERT INTO review_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+        row = query_db("SELECT * FROM review_settings WHERE id = 1", fetchone=True)
+    return row or {}
+
+
+# --- AI personalization -----------------------------------------------------
+
+
+def _ai_draft_review_message(channel: str, recipient_name: str, item: str,
+                             destination: dict) -> dict:
+    """Ask the model for a short, friendly review-ask. Returns
+    {"subject": "...", "body": "..."}. Failures fall back to a sensible
+    template so the request still goes out — never block a send on AI."""
+    name = (recipient_name or "there").split(" ", 1)[0] or "there"
+    item_text = (item or "your recent visit").strip() or "your recent visit"
+    dest_name = (destination.get("name") or "us").strip() or "us"
+    dest_kind = destination.get("kind") or "google"
+
+    system = (
+        "You write very short, warm, sincere review-request messages from "
+        "a small business to a recent customer. You never sound pushy. "
+        "Respond with ONLY a JSON object (no markdown fences) with these "
+        "fields:\n"
+        '  "subject": short subject line (max 70 chars, email only — leave '
+        '"" for SMS),\n'
+        '  "body": message body. The body MUST end with the literal token '
+        "{{review_link}} on its own line so a CTA button can be inserted. "
+        "Do not invent a URL. Use {{first_name}} for the greeting. Keep "
+        "the body under 90 words. Plain prose; no headings, no emoji."
+    )
+    user = (
+        f"Channel: {channel}\n"
+        f"First name: {name}\n"
+        f"What they bought or booked: {item_text}\n"
+        f"Where to leave the review: {dest_name} ({dest_kind})"
+    )
+
+    fallback = {
+        "subject": f"Quick favor — would you share a review of {dest_name}?",
+        "body": (
+            f"Hi {{{{first_name}}}}, thank you for choosing {dest_name} for "
+            f"{item_text}. If you have a moment, a short review would mean "
+            "a lot to our small team and helps other guests find us.\n\n"
+            "{{review_link}}"
+        ),
+    }
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            max_tokens=400,
+            temperature=0.7,
+        )
+        text = (response.choices[0].message.content or "").strip()
+    except Exception as e:
+        print(f"[reviews] AI draft failed, using fallback: {e}")
+        return fallback
+
+    cleaned = re.sub(r"^```(?:json)?\s*", "", text)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        # Treat the entire response as the body so the admin still sees the
+        # AI's prose; subject becomes empty and we'll fill from fallback.
+        data = {"subject": "", "body": text}
+
+    body = (data.get("body") or "").strip()
+    # Make sure the link placeholder survived the model's response.
+    if "{{review_link}}" not in body:
+        body = (body + "\n\n{{review_link}}").strip()
+    subject = (data.get("subject") or "").strip()[:200]
+    if channel == "email" and not subject:
+        subject = fallback["subject"]
+    return {"subject": subject, "body": body}
+
+
+def _wrap_review_in_template(channel: str, ai_subject: str, ai_body: str,
+                             destination: dict, short_link: str,
+                             recipient_name: str) -> dict:
+    """Wrap the AI-drafted message in the admin's chosen messaging template
+    so the outer brand/tone rules apply. The template body should reference
+    {{review_message}} (the AI prose) and {{review_link}} (the CTA URL).
+    If no template is configured we render a sane default wrapper."""
+    settings = _review_settings_row()
+    tpl_id = settings.get("email_template_id") if channel == "email" else settings.get("sms_template_id")
+    tpl = None
+    if tpl_id:
+        tpl = query_db(
+            "SELECT * FROM messaging_templates WHERE id = %s", (int(tpl_id),),
+            fetchone=True,
+        )
+
+    first_name = (recipient_name or "").split(" ", 1)[0] or ""
+    # The AI body uses {{first_name}} and {{review_link}} — render those now
+    # so the wrapper template only sees the final prose under {{review_message}}.
+    review_message = messaging.render_merge_tags(ai_body, {
+        "first_name": first_name,
+        "review_link": short_link,
+    })
+
+    cta_html = (
+        f'<p style="text-align:center;margin:1.25rem 0;">'
+        f'<a href="{html_module.escape(short_link, quote=True)}" '
+        f'style="display:inline-block;padding:0.75rem 1.5rem;background:#111;'
+        f'color:#fff;border-radius:6px;text-decoration:none;font-weight:600;">'
+        f'Leave a review</a></p>'
+    )
+
+    if tpl:
+        ctx = {
+            "first_name": first_name,
+            "full_name": recipient_name or "",
+            "review_link": short_link,
+            "review_message": review_message,
+            "destination_name": destination.get("name") or "",
+        }
+        subject = messaging.render_merge_tags(tpl.get("subject") or ai_subject, ctx)
+        body = messaging.render_merge_tags(tpl.get("body") or "", ctx)
+        # Backwards-friendly: if the template forgot to include the merge
+        # tags, splice the AI prose + CTA at the end so the ask still works.
+        if "{{review_message}}" not in (tpl.get("body") or "") and "review_message" not in (tpl.get("body") or ""):
+            if channel == "email":
+                body = (body + "\n\n" + review_message + "\n\n" + cta_html).strip()
+            else:
+                body = (body + "\n\n" + review_message + "\n" + short_link).strip()
+    else:
+        subject = ai_subject or f"A quick review for {destination.get('name') or 'us'}?"
+        if channel == "email":
+            # Convert the AI body's plain link placeholder to the rendered URL
+            # and tack on a styled CTA button as a redundant clickable element.
+            html_body = re.sub(
+                r"\n*\{\{review_link\}\}\n*",
+                "\n",
+                ai_body,
+            ).strip()
+            html_body = messaging.render_merge_tags(html_body, {"first_name": first_name})
+            html_body_html = "<p>" + html_body.replace("\n\n", "</p><p>").replace("\n", "<br>") + "</p>"
+            body = html_body_html + cta_html
+        else:
+            body = review_message
+    return {"subject": subject, "body": body}
+
+
+# --- send / queue review request --------------------------------------------
+
+
+def _create_review_request(*, destination_id: int, channel: str,
+                           recipient_name: str, recipient_email: str,
+                           recipient_phone: str, purchased_item: str,
+                           source_kind: str, source_id, send_at=None) -> dict:
+    """Insert a queued review_request row. send_at=None means 'now'."""
+    if channel not in ("email", "sms"):
+        raise ValueError(f"channel must be email or sms, got {channel!r}")
+    dest = query_db(
+        "SELECT * FROM review_destinations WHERE id = %s",
+        (int(destination_id),), fetchone=True,
+    )
+    if not dest:
+        raise ValueError("Destination not found")
+    addr = (recipient_email if channel == "email" else recipient_phone) or ""
+    if not addr.strip():
+        raise ValueError(f"Missing recipient {'email' if channel == 'email' else 'phone'}")
+
+    # Make sure the token is unique. The collision odds at 14 chars are
+    # vanishingly small but the loop costs nothing.
+    for _ in range(5):
+        token = _new_review_token()
+        existing = query_db(
+            "SELECT id FROM review_requests WHERE short_token = %s",
+            (token,), fetchone=True,
+        )
+        if not existing:
+            break
+    else:
+        raise RuntimeError("Could not generate a unique review token")
+
+    row = execute_db(
+        """
+        INSERT INTO review_requests
+            (destination_id, channel, recipient_name, recipient_email,
+             recipient_phone, purchased_item, source_kind, source_id,
+             status, short_token, send_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'queued', %s, COALESCE(%s, NOW()))
+        RETURNING *
+        """,
+        (
+            dest["id"], channel, recipient_name or "", recipient_email or "",
+            recipient_phone or "", purchased_item or "", source_kind,
+            int(source_id) if source_id is not None else None, token, send_at,
+        ),
+    )
+    return row
+
+
+def _send_review_request(req: dict) -> dict:
+    """Render and send a queued review_request immediately. Updates the row
+    to 'sent' (with sent_at) on success or 'failed' (with error_text) on
+    failure. Returns the updated row dict."""
+    dest = query_db(
+        "SELECT * FROM review_destinations WHERE id = %s",
+        (req.get("destination_id"),), fetchone=True,
+    ) or {}
+
+    channel = req["channel"]
+    short_link = _review_short_link(req["short_token"])
+
+    # Draft + wrap. If anything throws we still log a 'failed' row.
+    try:
+        draft = _ai_draft_review_message(
+            channel, req.get("recipient_name", ""),
+            req.get("purchased_item", ""), dest,
+        )
+        rendered = _wrap_review_in_template(
+            channel, draft["subject"], draft["body"], dest, short_link,
+            req.get("recipient_name", ""),
+        )
+    except Exception as e:
+        execute_db(
+            "UPDATE review_requests SET status='failed', error_text=%s WHERE id=%s",
+            (f"Render failed: {e}"[:500], req["id"]),
+        )
+        return {"ok": False, "error": str(e)}
+
+    subject = rendered["subject"]
+    body = rendered["body"]
+
+    try:
+        if channel == "email":
+            messaging.send_email(req["recipient_email"], subject, body)
+        else:
+            messaging.send_sms(req["recipient_phone"], body)
+    except messaging.MessagingError as e:
+        execute_db(
+            """
+            UPDATE review_requests
+               SET status='failed',
+                   subject_snapshot=%s,
+                   body_snapshot=%s,
+                   error_text=%s
+             WHERE id=%s
+            """,
+            (subject[:1000], body[:5000], str(e)[:500], req["id"]),
+        )
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        execute_db(
+            "UPDATE review_requests SET status='failed', error_text=%s WHERE id=%s",
+            (f"Send error: {e}"[:500], req["id"]),
+        )
+        return {"ok": False, "error": str(e)}
+
+    execute_db(
+        """
+        UPDATE review_requests
+           SET status='sent',
+               subject_snapshot=%s,
+               body_snapshot=%s,
+               sent_at=NOW(),
+               error_text=''
+         WHERE id=%s
+        """,
+        (subject[:1000], body[:5000], req["id"]),
+    )
+    return {"ok": True, "id": req["id"]}
+
+
+# --- background scheduler tick: due requests + auto-trigger sweep ----------
+
+# Track the last-run timestamp for the slower sweeps so they don't run on
+# every 30s tick. Kept in-memory; restart restarts the cadence which is fine.
+_REVIEW_TICK_STATE = {"last_auto_sweep": 0.0, "last_snapshot": 0.0}
+_AUTO_SWEEP_EVERY = 300         # check for newly-due completed orders every 5 min
+_SNAPSHOT_EVERY = 24 * 3600     # refresh external aggregates once per 24h
+
+
+def _dispatch_due_review_requests():
+    """Send any review_request rows whose send_at has arrived. Atomically
+    claim each row by transitioning queued → sending so two scheduler copies
+    never double-send."""
+    rows = query_db(
+        """
+        SELECT id FROM review_requests
+         WHERE status = 'queued' AND (send_at IS NULL OR send_at <= NOW())
+         ORDER BY id
+         LIMIT 25
+        """,
+    ) or []
+    for r in rows:
+        # Atomic claim: mark 'sending' so a parallel tick skips this row.
+        claimed = execute_db(
+            """
+            UPDATE review_requests
+               SET status='sending'
+             WHERE id=%s AND status='queued'
+            RETURNING *
+            """,
+            (r["id"],),
+        )
+        if not claimed:
+            continue
+        try:
+            _send_review_request(claimed)
+        except Exception as e:
+            execute_db(
+                "UPDATE review_requests SET status='failed', error_text=%s WHERE id=%s",
+                (str(e)[:500], r["id"]),
+            )
+
+
+def _auto_trigger_completed_orders():
+    """Find paid orders that became paid >= N days ago and don't yet have a
+    review_request, then queue one for each enabled auto-send destination.
+    Idempotent: the (source_kind, source_id, destination_id) check prevents
+    re-queueing on subsequent ticks."""
+    dests = query_db(
+        "SELECT * FROM review_destinations WHERE auto_send = TRUE ORDER BY id"
+    ) or []
+    if not dests:
+        return
+
+    settings = _review_settings_row()
+    default_days = int(settings.get("auto_send_days") or 3)
+
+    for dest in dests:
+        days = int(dest.get("auto_send_days") or default_days)
+        # --- Orders ----------------------------------------------------------
+        orders = query_db(
+            """
+            SELECT o.id, o.customer_email, o.customer_name, o.paid_at,
+                   COALESCE(STRING_AGG(oi.product_name, ', '), 'your order') AS items_text
+              FROM orders o
+              LEFT JOIN order_items oi ON oi.order_id = o.id
+             WHERE o.status = 'paid'
+               AND o.paid_at IS NOT NULL
+               AND o.paid_at <= NOW() - (%s * INTERVAL '1 day')
+               AND o.customer_email <> ''
+               AND NOT EXISTS (
+                 SELECT 1 FROM review_requests r
+                  WHERE r.source_kind = 'order'
+                    AND r.source_id = o.id
+                    AND r.destination_id = %s
+               )
+             GROUP BY o.id
+             ORDER BY o.paid_at
+             LIMIT 50
+            """,
+            (days, dest["id"]),
+        ) or []
+        for o in orders:
+            try:
+                req = _create_review_request(
+                    destination_id=dest["id"],
+                    channel="email",
+                    recipient_name=o.get("customer_name") or "",
+                    recipient_email=o.get("customer_email") or "",
+                    recipient_phone="",
+                    purchased_item=o.get("items_text") or "your order",
+                    source_kind="order",
+                    source_id=o["id"],
+                )
+                print(f"[reviews] auto-queued order#{o['id']} → dest#{dest['id']} req#{req['id']}")
+            except Exception as e:
+                print(f"[reviews] auto-trigger failed for order#{o['id']}: {e}")
+
+        # --- Paid event RSVPs (treat as "booking complete") ------------------
+        rsvps = query_db(
+            """
+            SELECT r.id, r.name, r.email, r.phone, r.created_at, e.title AS event_title
+              FROM event_rsvps r
+              JOIN events e ON e.id = r.event_id
+             WHERE r.payment_status = 'paid'
+               AND r.created_at <= NOW() - (%s * INTERVAL '1 day')
+               AND r.email <> ''
+               AND NOT EXISTS (
+                 SELECT 1 FROM review_requests rr
+                  WHERE rr.source_kind = 'rsvp'
+                    AND rr.source_id = r.id
+                    AND rr.destination_id = %s
+               )
+             ORDER BY r.created_at
+             LIMIT 50
+            """,
+            (days, dest["id"]),
+        ) or []
+        for rs in rsvps:
+            try:
+                req = _create_review_request(
+                    destination_id=dest["id"],
+                    channel="email",
+                    recipient_name=rs.get("name") or "",
+                    recipient_email=rs.get("email") or "",
+                    recipient_phone=rs.get("phone") or "",
+                    purchased_item=rs.get("event_title") or "your booking",
+                    source_kind="rsvp",
+                    source_id=rs["id"],
+                )
+                print(f"[reviews] auto-queued rsvp#{rs['id']} → dest#{dest['id']} req#{req['id']}")
+            except Exception as e:
+                print(f"[reviews] auto-trigger failed for rsvp#{rs['id']}: {e}")
+
+
+# --- external review snapshots ---------------------------------------------
+
+
+def _fetch_google_aggregate(place_id: str) -> dict:
+    """Fetch (count, rating) for a Google Places ID using the Places Details
+    endpoint. Returns {"total_count": int, "avg_rating": float, "raw": dict}
+    or raises on hard failure."""
+    key = (os.environ.get("GOOGLE_PLACES_API_KEY") or "").strip()
+    if not key:
+        raise RuntimeError("GOOGLE_PLACES_API_KEY not set")
+    url = "https://maps.googleapis.com/maps/api/place/details/json"
+    params = {"place_id": place_id, "fields": "user_ratings_total,rating", "key": key}
+    with httpx.Client(timeout=15) as client:
+        resp = client.get(url, params=params)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Google HTTP {resp.status_code}: {resp.text[:200]}")
+    data = resp.json()
+    if data.get("status") not in ("OK", "ZERO_RESULTS"):
+        raise RuntimeError(f"Google status {data.get('status')}: {data.get('error_message') or ''}")
+    result = data.get("result") or {}
+    return {
+        "total_count": int(result.get("user_ratings_total") or 0),
+        "avg_rating": float(result.get("rating") or 0),
+        "raw": data,
+    }
+
+
+def _fetch_yelp_aggregate(business_id: str) -> dict:
+    """Fetch (count, rating) for a Yelp business id/alias via Yelp Fusion."""
+    key = (os.environ.get("YELP_API_KEY") or "").strip()
+    if not key:
+        raise RuntimeError("YELP_API_KEY not set")
+    url = f"https://api.yelp.com/v3/businesses/{urllib.parse.quote(business_id)}"
+    with httpx.Client(timeout=15) as client:
+        resp = client.get(url, headers={"Authorization": f"Bearer {key}"})
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Yelp HTTP {resp.status_code}: {resp.text[:200]}")
+    data = resp.json()
+    return {
+        "total_count": int(data.get("review_count") or 0),
+        "avg_rating": float(data.get("rating") or 0),
+        "raw": data,
+    }
+
+
+def _fetch_tripadvisor_aggregate(location_id: str) -> dict:
+    """Fetch (count, rating) for a TripAdvisor location via the Content API."""
+    key = (os.environ.get("TRIPADVISOR_API_KEY") or "").strip()
+    if not key:
+        raise RuntimeError("TRIPADVISOR_API_KEY not set")
+    url = f"https://api.content.tripadvisor.com/api/v1/location/{urllib.parse.quote(location_id)}/details"
+    with httpx.Client(timeout=15) as client:
+        resp = client.get(url, params={"key": key, "language": "en"},
+                          headers={"Referer": _public_base_url() or "https://localhost"})
+    if resp.status_code >= 400:
+        raise RuntimeError(f"TripAdvisor HTTP {resp.status_code}: {resp.text[:200]}")
+    data = resp.json()
+    return {
+        "total_count": int(data.get("num_reviews") or 0),
+        "avg_rating": float(data.get("rating") or 0),
+        "raw": data,
+    }
+
+
+# Need the urllib for quoting — already imported elsewhere as urllib.request,
+# but the .parse submodule isn't auto-loaded.
+import urllib.parse  # noqa: E402
+
+
+def _refresh_one_external_review(dest: dict) -> dict:
+    """Refresh the cached snapshot for one destination. Writes either the
+    new aggregate or an error message into external_reviews. Internal
+    destinations are skipped (no public aggregate API)."""
+    kind = dest.get("kind")
+    ext_id = (dest.get("external_id") or "").strip()
+    if kind == "internal":
+        return {"skipped": True, "reason": "internal"}
+    if not ext_id:
+        execute_db(
+            """
+            INSERT INTO external_reviews (destination_id, error_text, snapshot_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (destination_id) DO UPDATE
+               SET error_text = EXCLUDED.error_text,
+                   snapshot_at = NOW()
+            """,
+            (dest["id"], f"Missing {kind} external_id"),
+        )
+        return {"ok": False, "error": "missing external_id"}
+    try:
+        if kind == "google":
+            agg = _fetch_google_aggregate(ext_id)
+        elif kind == "yelp":
+            agg = _fetch_yelp_aggregate(ext_id)
+        elif kind == "tripadvisor":
+            agg = _fetch_tripadvisor_aggregate(ext_id)
+        else:
+            return {"skipped": True, "reason": f"unknown kind {kind}"}
+    except Exception as e:
+        execute_db(
+            """
+            INSERT INTO external_reviews (destination_id, error_text, snapshot_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (destination_id) DO UPDATE
+               SET error_text = EXCLUDED.error_text,
+                   snapshot_at = NOW()
+            """,
+            (dest["id"], str(e)[:500]),
+        )
+        return {"ok": False, "error": str(e)}
+
+    execute_db(
+        """
+        INSERT INTO external_reviews
+            (destination_id, total_count, avg_rating, raw_json, error_text, snapshot_at)
+        VALUES (%s, %s, %s, %s::jsonb, '', NOW())
+        ON CONFLICT (destination_id) DO UPDATE
+           SET total_count = EXCLUDED.total_count,
+               avg_rating = EXCLUDED.avg_rating,
+               raw_json = EXCLUDED.raw_json,
+               error_text = '',
+               snapshot_at = NOW()
+        """,
+        (dest["id"], agg["total_count"], agg["avg_rating"], json.dumps(agg["raw"])),
+    )
+    return {"ok": True, **agg}
+
+
+def _refresh_all_external_reviews():
+    dests = query_db("SELECT * FROM review_destinations") or []
+    for d in dests:
+        try:
+            _refresh_one_external_review(d)
+        except Exception as e:
+            print(f"[reviews] snapshot tick failed for dest#{d['id']}: {e}")
+    execute_db(
+        "UPDATE review_settings SET last_snapshot_at = NOW() WHERE id = 1"
+    )
+
+
+def _review_collector_tick():
+    """Scheduler entry point. Splits work into three cadences:
+      * Always: dispatch any review_request whose send_at has arrived.
+      * Every 5 min: scan completed orders/RSVPs for auto-triggers.
+      * Every 24h: refresh cached external review aggregates."""
+    now = _time.time()
+    try:
+        _dispatch_due_review_requests()
+    except Exception as e:
+        print(f"[reviews] dispatcher error: {e}")
+    if now - _REVIEW_TICK_STATE["last_auto_sweep"] >= _AUTO_SWEEP_EVERY:
+        _REVIEW_TICK_STATE["last_auto_sweep"] = now
+        try:
+            _auto_trigger_completed_orders()
+        except Exception as e:
+            print(f"[reviews] auto-sweep error: {e}")
+    if now - _REVIEW_TICK_STATE["last_snapshot"] >= _SNAPSHOT_EVERY:
+        _REVIEW_TICK_STATE["last_snapshot"] = now
+        try:
+            _refresh_all_external_reviews()
+        except Exception as e:
+            print(f"[reviews] snapshot error: {e}")
+
+
+messaging.register_tick(_review_collector_tick)
+
+
+# --- ADMIN: review destinations CRUD ---------------------------------------
+
+
+@app.route("/admin/api/reviews/destinations", methods=["GET"])
+@admin_required
+def admin_review_destinations_list():
+    rows = query_db(
+        """
+        SELECT d.*, r.total_count, r.avg_rating, r.snapshot_at, r.error_text AS snapshot_error
+          FROM review_destinations d
+          LEFT JOIN external_reviews r ON r.destination_id = d.id
+         ORDER BY d.sort_order, d.id
+        """,
+    ) or []
+    out = []
+    for r in rows:
+        d = _row_review_destination(r)
+        d["snapshot"] = {
+            "total_count": int(r.get("total_count") or 0),
+            "avg_rating": float(r.get("avg_rating") or 0),
+            "snapshot_at": r["snapshot_at"].isoformat() if r.get("snapshot_at") else None,
+            "error_text": r.get("snapshot_error") or "",
+        }
+        out.append(d)
+    return jsonify(out)
+
+
+def _coerce_auto_send_days(raw, default=3):
+    """Bound auto_send_days into [0, 365]. Negative or non-numeric values
+    fall back to the default; the upper bound prevents an operator typo
+    from queuing review asks years into the future."""
+    try:
+        v = int(raw) if raw not in (None, "") else default
+    except (TypeError, ValueError):
+        v = default
+    return max(0, min(365, v))
+
+
+def _validate_review_destination_url(url: str) -> tuple[bool, str]:
+    """Allow http(s)://… for external review sites and root-relative paths
+    (/r/…, /forms/…) for internal flows. Rejects javascript:, data:, file:,
+    and other schemes that would make /r/<token> emit an unsafe redirect.
+    Empty string is allowed because some destinations (e.g. an aggregate-
+    only Google snapshot row) have no click-through URL."""
+    u = (url or "").strip()
+    if not u:
+        return True, ""
+    if u.startswith("/") and not u.startswith("//"):
+        return True, u
+    try:
+        parsed = urllib.parse.urlparse(u)
+    except Exception:
+        return False, "URL is not parseable"
+    if parsed.scheme.lower() in ("http", "https") and parsed.netloc:
+        return True, u
+    return False, "URL must use http(s):// or be a root-relative path"
+
+
+@app.route("/admin/api/reviews/destinations", methods=["POST"])
+@admin_required
+def admin_review_destinations_create():
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    kind = (body.get("kind") or "google").strip().lower()
+    if kind not in ("google", "yelp", "tripadvisor", "internal"):
+        return jsonify({"error": "kind must be google, yelp, tripadvisor, or internal"}), 400
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+    ok, url_or_err = _validate_review_destination_url(body.get("url") or "")
+    if not ok:
+        return jsonify({"error": url_or_err}), 400
+    safe_url = url_or_err
+    auto_send_days = _coerce_auto_send_days(body.get("auto_send_days"), default=3)
+    is_default = bool(body.get("is_default", False))
+    # Enforce single-default semantics: clearing prior defaults before
+    # inserting the new row guarantees at most one is_default=true.
+    if is_default:
+        execute_db("UPDATE review_destinations SET is_default=FALSE WHERE is_default=TRUE")
+    row = execute_db(
+        """
+        INSERT INTO review_destinations
+            (name, kind, url, external_id, auto_send, auto_send_days,
+             is_default, public_visible, sort_order)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
+                COALESCE((SELECT MAX(sort_order)+1 FROM review_destinations), 0))
+        RETURNING *
+        """,
+        (
+            name, kind,
+            safe_url,
+            (body.get("external_id") or "").strip(),
+            bool(body.get("auto_send", False)),
+            auto_send_days,
+            is_default,
+            bool(body.get("public_visible", False)),
+        ),
+    )
+    return jsonify(_row_review_destination(row))
+
+
+@app.route("/admin/api/reviews/destinations/<int:dest_id>", methods=["PUT"])
+@admin_required
+def admin_review_destinations_update(dest_id):
+    body = request.get_json(silent=True) or {}
+    existing = query_db("SELECT * FROM review_destinations WHERE id=%s", (dest_id,), fetchone=True)
+    if not existing:
+        return jsonify({"error": "Not found"}), 404
+    fields = {
+        "name": (body.get("name") if "name" in body else existing["name"]),
+        "kind": (body.get("kind") if "kind" in body else existing["kind"]),
+        "url": existing["url"],  # set below after validation
+        "external_id": (body.get("external_id") if "external_id" in body else existing["external_id"]),
+        "auto_send": bool(body.get("auto_send")) if "auto_send" in body else existing["auto_send"],
+        "auto_send_days": _coerce_auto_send_days(body.get("auto_send_days"), default=existing["auto_send_days"]) if "auto_send_days" in body else existing["auto_send_days"],
+        "is_default": bool(body.get("is_default")) if "is_default" in body else existing["is_default"],
+        "public_visible": bool(body.get("public_visible")) if "public_visible" in body else existing["public_visible"],
+        "sort_order": (lambda v: int(v) if str(v).lstrip("-").isdigit() else existing["sort_order"])(body.get("sort_order")) if "sort_order" in body else existing["sort_order"],
+    }
+    if fields["kind"] not in ("google", "yelp", "tripadvisor", "internal"):
+        return jsonify({"error": "kind must be google, yelp, tripadvisor, or internal"}), 400
+    if "url" in body:
+        ok, url_or_err = _validate_review_destination_url(body.get("url") or "")
+        if not ok:
+            return jsonify({"error": url_or_err}), 400
+        fields["url"] = url_or_err
+    # Single-default semantics on update too: if this row is being marked
+    # default, demote every other row in the same transaction (well, two
+    # statements — the small race window here is acceptable for an admin UI).
+    if fields["is_default"] and not existing["is_default"]:
+        execute_db("UPDATE review_destinations SET is_default=FALSE WHERE is_default=TRUE AND id<>%s", (dest_id,))
+    row = execute_db(
+        """
+        UPDATE review_destinations
+           SET name=%s, kind=%s, url=%s, external_id=%s,
+               auto_send=%s, auto_send_days=%s,
+               is_default=%s, public_visible=%s, sort_order=%s
+         WHERE id=%s
+        RETURNING *
+        """,
+        (
+            fields["name"], fields["kind"], fields["url"], fields["external_id"],
+            fields["auto_send"], fields["auto_send_days"],
+            fields["is_default"], fields["public_visible"], fields["sort_order"],
+            dest_id,
+        ),
+    )
+    return jsonify(_row_review_destination(row))
+
+
+@app.route("/admin/api/reviews/destinations/<int:dest_id>", methods=["DELETE"])
+@admin_required
+def admin_review_destinations_delete(dest_id):
+    n = execute_db("DELETE FROM review_destinations WHERE id=%s", (dest_id,))
+    return jsonify({"ok": True, "deleted": n})
+
+
+@app.route("/admin/api/reviews/destinations/<int:dest_id>/refresh", methods=["POST"])
+@admin_required
+def admin_review_destinations_refresh(dest_id):
+    """Force a snapshot refresh now (instead of waiting for the daily tick)."""
+    dest = query_db("SELECT * FROM review_destinations WHERE id=%s", (dest_id,), fetchone=True)
+    if not dest:
+        return jsonify({"error": "Not found"}), 404
+    result = _refresh_one_external_review(dest)
+    return jsonify(result)
+
+
+# --- ADMIN: settings --------------------------------------------------------
+
+
+@app.route("/admin/api/reviews/settings", methods=["GET"])
+@admin_required
+def admin_review_settings_get():
+    row = _review_settings_row()
+    return jsonify({
+        "email_template_id": row.get("email_template_id"),
+        "sms_template_id": row.get("sms_template_id"),
+        "auto_send_days": row.get("auto_send_days", 3),
+        "public_show": row.get("public_show", False),
+        "last_snapshot_at": row["last_snapshot_at"].isoformat() if row.get("last_snapshot_at") else None,
+    })
+
+
+@app.route("/admin/api/reviews/settings", methods=["PUT"])
+@admin_required
+def admin_review_settings_update():
+    body = request.get_json(silent=True) or {}
+    # Validate integer fields up front so malformed admin input returns a
+    # clean 400 rather than a 500 from a raw int() ValueError.
+    raw_days = body.get("auto_send_days", 3)
+    try:
+        days = int(raw_days) if raw_days not in (None, "") else 3
+    except (TypeError, ValueError):
+        return jsonify({"error": "auto_send_days must be an integer"}), 400
+    if days < 0 or days > 365:
+        return jsonify({"error": "auto_send_days must be between 0 and 365"}), 400
+
+    def _opt_int(key):
+        v = body.get(key)
+        if v in (None, "", 0, "0"):
+            return None
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return False  # sentinel: bad input
+
+    email_tpl = _opt_int("email_template_id")
+    sms_tpl = _opt_int("sms_template_id")
+    if email_tpl is False or sms_tpl is False:
+        return jsonify({"error": "template_id must be an integer"}), 400
+
+    execute_db(
+        """
+        UPDATE review_settings
+           SET email_template_id = %s,
+               sms_template_id = %s,
+               auto_send_days = %s,
+               public_show = %s,
+               updated_at = NOW()
+         WHERE id = 1
+        """,
+        (email_tpl, sms_tpl, days, bool(body.get("public_show", False))),
+    )
+    return admin_review_settings_get()
+
+
+# --- ADMIN: requests --------------------------------------------------------
+
+
+@app.route("/admin/api/reviews/requests", methods=["GET"])
+@admin_required
+def admin_review_requests_list():
+    where = ["1=1"]
+    params: list = []
+    status = (request.args.get("status") or "").strip()
+    if status:
+        where.append("status = %s")
+        params.append(status)
+    dest = (request.args.get("destination_id") or "").strip()
+    if dest:
+        # Reject malformed query input with 400 instead of letting int()
+        # raise a ValueError that surfaces to the admin as a 500.
+        if not dest.lstrip("-").isdigit():
+            return jsonify({"error": "destination_id must be an integer"}), 400
+        where.append("destination_id = %s")
+        params.append(int(dest))
+    sql = (
+        f"SELECT * FROM review_requests WHERE {' AND '.join(where)} "
+        "ORDER BY id DESC LIMIT 500"
+    )
+    rows = query_db(sql, tuple(params)) or []
+    return jsonify([_row_review_request(r) for r in rows])
+
+
+@app.route("/admin/api/reviews/requests", methods=["POST"])
+@admin_required
+def admin_review_requests_create():
+    """Create a queued request manually. Body fields:
+       destination_id, channel, recipient_name, recipient_email,
+       recipient_phone, purchased_item, source_kind, source_id, send_now."""
+    body = request.get_json(silent=True) or {}
+    try:
+        req = _create_review_request(
+            destination_id=int(body.get("destination_id") or 0),
+            channel=(body.get("channel") or "email").strip().lower(),
+            recipient_name=(body.get("recipient_name") or "").strip(),
+            recipient_email=(body.get("recipient_email") or "").strip(),
+            recipient_phone=(body.get("recipient_phone") or "").strip(),
+            purchased_item=(body.get("purchased_item") or "").strip(),
+            source_kind=(body.get("source_kind") or "manual").strip(),
+            source_id=body.get("source_id"),
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Failed to create request: {e}"}), 500
+    if body.get("send_now", True):
+        # Kick the dispatcher in a background thread so the admin doesn't
+        # wait on Resend/Twilio; response returns the queued row immediately.
+        threading.Thread(target=_dispatch_due_review_requests, daemon=True).start()
+    return jsonify(_row_review_request(req))
+
+
+@app.route("/admin/api/reviews/requests/<int:req_id>", methods=["GET"])
+@admin_required
+def admin_review_requests_get(req_id):
+    """Single-row fetch so the admin detail panel doesn't have to refetch
+    the entire request list (which can grow to 500 rows) just to render
+    one row. Returns 404 when the row doesn't exist."""
+    row = query_db("SELECT * FROM review_requests WHERE id=%s", (req_id,), fetchone=True)
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(_row_review_request(row))
+
+
+@app.route("/admin/api/reviews/requests/<int:req_id>/cancel", methods=["POST"])
+@admin_required
+def admin_review_requests_cancel(req_id):
+    row = execute_db(
+        "UPDATE review_requests SET status='cancelled' "
+        "WHERE id=%s AND status IN ('queued','sending') RETURNING *",
+        (req_id,),
+    )
+    if not row:
+        return jsonify({"error": "Request not in a cancellable state"}), 400
+    return jsonify(_row_review_request(row))
+
+
+@app.route("/admin/api/reviews/requests/<int:req_id>", methods=["DELETE"])
+@admin_required
+def admin_review_requests_delete(req_id):
+    n = execute_db("DELETE FROM review_requests WHERE id=%s", (req_id,))
+    return jsonify({"ok": True, "deleted": n})
+
+
+# --- ADMIN: insights -------------------------------------------------------
+
+
+@app.route("/admin/api/reviews/insights", methods=["GET"])
+@admin_required
+def admin_review_insights():
+    """Aggregate sent / clicked / converted counts overall, per-channel, and
+    per-destination so the Insights tab can render a funnel."""
+    # NOTE: 'sent' is the count of asks that actually went out (status='sent').
+    # We deliberately do NOT include 'queued' or 'sending' — those are still
+    # in-flight, and counting them as "sent" would inflate the denominator on
+    # the click/conversion rate KPIs. The same definition is used for the
+    # by_channel and by_destination breakdowns below so every metric on the
+    # Insights tab agrees.
+    overall = query_db(
+        """
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'sent')                           AS sent,
+          COUNT(*) FILTER (WHERE clicked_at IS NOT NULL)                    AS clicked,
+          COUNT(*) FILTER (WHERE converted_at IS NOT NULL)                  AS converted,
+          COUNT(*) FILTER (WHERE status = 'failed')                         AS failed,
+          COUNT(*)                                                          AS total
+          FROM review_requests
+        """,
+        fetchone=True,
+    ) or {}
+    by_channel = query_db(
+        """
+        SELECT channel,
+               COUNT(*) FILTER (WHERE status='sent')              AS sent,
+               COUNT(*) FILTER (WHERE clicked_at IS NOT NULL)     AS clicked,
+               COUNT(*) FILTER (WHERE converted_at IS NOT NULL)   AS converted,
+               COUNT(*)                                           AS total
+          FROM review_requests
+         GROUP BY channel
+         ORDER BY channel
+        """,
+    ) or []
+    by_dest = query_db(
+        """
+        SELECT d.id, d.name, d.kind,
+               COUNT(r.id) FILTER (WHERE r.status='sent')            AS sent,
+               COUNT(r.id) FILTER (WHERE r.clicked_at IS NOT NULL)   AS clicked,
+               COUNT(r.id) FILTER (WHERE r.converted_at IS NOT NULL) AS converted,
+               COUNT(r.id)                                            AS total
+          FROM review_destinations d
+          LEFT JOIN review_requests r ON r.destination_id = d.id
+         GROUP BY d.id, d.name, d.kind
+         ORDER BY d.sort_order, d.id
+        """,
+    ) or []
+    return jsonify({
+        "overall": {
+            "sent": int(overall.get("sent") or 0),
+            "clicked": int(overall.get("clicked") or 0),
+            "converted": int(overall.get("converted") or 0),
+            "failed": int(overall.get("failed") or 0),
+            "total": int(overall.get("total") or 0),
+        },
+        "by_channel": [
+            {
+                "channel": r["channel"],
+                "sent": int(r.get("sent") or 0),
+                "clicked": int(r.get("clicked") or 0),
+                "converted": int(r.get("converted") or 0),
+                "total": int(r.get("total") or 0),
+            } for r in by_channel
+        ],
+        "by_destination": [
+            {
+                "id": r["id"], "name": r["name"], "kind": r["kind"],
+                "sent": int(r.get("sent") or 0),
+                "clicked": int(r.get("clicked") or 0),
+                "converted": int(r.get("converted") or 0),
+                "total": int(r.get("total") or 0),
+            } for r in by_dest
+        ],
+    })
+
+
+# --- ADMIN: trigger from order / form_submission ---------------------------
+
+
+@app.route("/admin/api/reviews/trigger/order/<int:order_id>", methods=["POST"])
+@admin_required
+def admin_review_trigger_order(order_id):
+    """Queue a review request for a specific paid order. Body may include
+    `destination_id` (defaults to the destination flagged is_default, or the
+    first one if none is default)."""
+    order = query_db("SELECT * FROM orders WHERE id=%s", (order_id,), fetchone=True)
+    if not order:
+        return jsonify({"error": "Order not found"}), 404
+    if not (order.get("customer_email") or "").strip():
+        return jsonify({"error": "Order has no customer email"}), 400
+    body = request.get_json(silent=True) or {}
+    dest = _pick_default_destination(body.get("destination_id"))
+    if not dest:
+        return jsonify({"error": "No review destination is configured"}), 400
+    items = query_db(
+        "SELECT product_name, quantity FROM order_items WHERE order_id=%s",
+        (order_id,),
+    ) or []
+    item_text = ", ".join(it["product_name"] for it in items if it.get("product_name")) or "your order"
+    req = _create_review_request(
+        destination_id=dest["id"],
+        channel=(body.get("channel") or "email").strip().lower(),
+        recipient_name=order.get("customer_name") or "",
+        recipient_email=order.get("customer_email") or "",
+        recipient_phone="",
+        purchased_item=item_text,
+        source_kind="order",
+        source_id=order_id,
+    )
+    threading.Thread(target=_dispatch_due_review_requests, daemon=True).start()
+    return jsonify(_row_review_request(req))
+
+
+@app.route("/admin/api/reviews/trigger/submission/<int:sub_id>", methods=["POST"])
+@admin_required
+def admin_review_trigger_submission(sub_id):
+    """Queue a review request for a form submission. We try to extract the
+    name, email, and phone from common field names so any contact-style
+    form just works."""
+    sub = query_db("SELECT * FROM form_submissions WHERE id=%s", (sub_id,), fetchone=True)
+    if not sub:
+        return jsonify({"error": "Submission not found"}), 404
+    body = request.get_json(silent=True) or {}
+    dest = _pick_default_destination(body.get("destination_id"))
+    if not dest:
+        return jsonify({"error": "No review destination is configured"}), 400
+    data = sub.get("submission_data") or {}
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError:
+            data = {}
+    name = _pick_field(data, "full_name", "name", "first_name", "your_name")
+    email = _pick_field(data, "email", "email_address", "contact_email")
+    phone = _pick_field(data, "phone", "phone_number", "mobile", "tel")
+    if not email and not phone:
+        return jsonify({"error": "Submission has no email or phone field"}), 400
+    channel = (body.get("channel") or ("email" if email else "sms")).strip().lower()
+    # Best-effort label for what they engaged with: form name (resolved by id).
+    form = query_db("SELECT name FROM custom_forms WHERE id=%s", (sub["form_id"],), fetchone=True)
+    item_text = (form or {}).get("name") or "your recent inquiry"
+    req = _create_review_request(
+        destination_id=dest["id"],
+        channel=channel,
+        recipient_name=name,
+        recipient_email=email,
+        recipient_phone=phone,
+        purchased_item=item_text,
+        source_kind="form_submission",
+        source_id=sub_id,
+    )
+    threading.Thread(target=_dispatch_due_review_requests, daemon=True).start()
+    return jsonify(_row_review_request(req))
+
+
+def _pick_default_destination(dest_id_hint=None):
+    if dest_id_hint:
+        try:
+            d = query_db(
+                "SELECT * FROM review_destinations WHERE id=%s",
+                (int(dest_id_hint),), fetchone=True,
+            )
+            if d:
+                return d
+        except (TypeError, ValueError):
+            pass
+    d = query_db(
+        "SELECT * FROM review_destinations WHERE is_default = TRUE "
+        "ORDER BY sort_order, id LIMIT 1",
+        fetchone=True,
+    )
+    if d:
+        return d
+    return query_db(
+        "SELECT * FROM review_destinations ORDER BY sort_order, id LIMIT 1",
+        fetchone=True,
+    )
+
+
+def _pick_field(data, *candidates):
+    """Case-insensitive lookup across common field-name spellings."""
+    if not isinstance(data, dict):
+        return ""
+    lowered = {(k or "").lower(): v for k, v in data.items()}
+    for c in candidates:
+        v = lowered.get(c.lower())
+        if v:
+            return str(v).strip()
+    return ""
+
+
+# --- PUBLIC: short-link tracker --------------------------------------------
+
+
+@app.route("/r/<token>", methods=["GET"])
+def public_review_short_link(token):
+    """Record the click, then 302 to the destination URL. Unknown tokens
+    redirect to the homepage so a stale email link never lands the user on
+    a 404 page."""
+    if not token or not re.match(r"^[A-Za-z0-9]+$", token):
+        return redirect("/", code=302)
+    req = query_db(
+        "SELECT * FROM review_requests WHERE short_token=%s",
+        (token,), fetchone=True,
+    )
+    if not req:
+        return redirect("/", code=302)
+    execute_db(
+        """
+        UPDATE review_requests
+           SET clicked_at = COALESCE(clicked_at, NOW()),
+               click_count = click_count + 1
+         WHERE id = %s
+        """,
+        (req["id"],),
+    )
+    dest = query_db(
+        "SELECT * FROM review_destinations WHERE id=%s",
+        (req.get("destination_id"),), fetchone=True,
+    )
+    target = (dest or {}).get("url") or "/"
+    # Append the token to the URL when the destination is an internal form
+    # so the conversion handler can correlate the submission back to the ask.
+    if (dest or {}).get("kind") == "internal":
+        sep = "&" if "?" in target else "?"
+        target = f"{target}{sep}r={token}"
+    return redirect(target, code=302)
+
+
+# --- PUBLIC: snapshot endpoint (social proof) -------------------------------
+
+
+@app.route("/api/review-snapshots", methods=["GET"])
+def public_review_snapshots():
+    """Return cached aggregate review snapshots for destinations the admin
+    has flagged public_visible. Always returns 200 (with an empty list) so
+    the public site can fetch unconditionally."""
+    settings = _review_settings_row()
+    if not settings.get("public_show"):
+        return jsonify({"enabled": False, "destinations": []})
+    rows = query_db(
+        """
+        SELECT d.id, d.name, d.kind, d.url,
+               r.total_count, r.avg_rating, r.snapshot_at
+          FROM review_destinations d
+          LEFT JOIN external_reviews r ON r.destination_id = d.id
+         WHERE d.public_visible = TRUE
+         ORDER BY d.sort_order, d.id
+        """,
+    ) or []
+    return jsonify({
+        "enabled": True,
+        "destinations": [
+            {
+                "id": r["id"],
+                "name": r["name"],
+                "kind": r["kind"],
+                "url": r["url"],
+                "total_count": int(r.get("total_count") or 0),
+                "avg_rating": float(r.get("avg_rating") or 0),
+                "snapshot_at": r["snapshot_at"].isoformat() if r.get("snapshot_at") else None,
+            }
+            for r in rows
+        ],
+    })
 
 
 # --- ADMIN: status / settings ------------------------------------------------
