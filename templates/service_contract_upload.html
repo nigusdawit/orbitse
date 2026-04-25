@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Upload Signed Contract — {{ booking.service_name or 'Booking' }}</title>
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    body {
+      background: {{ theme.bg }};
+      color: {{ theme.text }};
+      font-family: '{{ theme.font_sans }}', system-ui, sans-serif;
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    .card {
+      background: {{ theme.glass_bg }};
+      border: 1px solid {{ theme.glass_border }};
+      border-radius: 16px;
+      padding: 2.5rem;
+      max-width: 32rem;
+      width: 100%;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.35);
+    }
+    h1 { font-family: '{{ theme.font_serif }}', serif; margin: 0 0 0.5rem; color: {{ theme.accent }}; }
+    p  { line-height: 1.55; opacity: 0.85; }
+    .meta { font-size: 0.9rem; opacity: 0.7; margin-bottom: 1.5rem; }
+    a.tpl {
+      display: inline-block; padding: 0.65rem 1rem; border-radius: 8px;
+      background: rgba(255,255,255,0.06); color: {{ theme.text }};
+      text-decoration: none; margin-bottom: 1.25rem;
+      border: 1px solid {{ theme.glass_border }};
+    }
+    a.tpl:hover { background: rgba(255,255,255,0.1); }
+    input[type=file] {
+      display: block; width: 100%; margin: 1rem 0;
+      padding: 0.75rem; border-radius: 8px;
+      background: rgba(255,255,255,0.04);
+      color: {{ theme.text }};
+      border: 1px dashed {{ theme.glass_border }};
+    }
+    button {
+      background: {{ theme.accent }};
+      color: #0b0b0b;
+      border: none;
+      padding: 0.85rem 1.5rem;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      font-size: 1rem;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .ok    { color: #4ade80; margin-top: 1rem; }
+    .err   { color: #f87171; margin-top: 1rem; }
+    .done  { text-align: center; }
+    .done svg { width: 4rem; height: 4rem; color: #4ade80; margin: 1rem auto; display: block; }
+  </style>
+</head>
+<body>
+  <div class="card" data-testid="card-contract-upload">
+    {% if booking.signed_contract_url %}
+      <div class="done">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+        <h1>Contract Received</h1>
+        <p>Thank you, {{ booking.client_name }}. Your signed contract for <strong>{{ booking.service_name }}</strong> has been uploaded successfully. We'll be in touch shortly.</p>
+      </div>
+    {% else %}
+      <h1>Upload Your Signed Contract</h1>
+      <p class="meta">Booking for <strong>{{ booking.client_name }}</strong> &middot; {{ booking.service_name }}</p>
+
+      {% if booking.template_url %}
+        <p>Step 1: Download the contract template, sign it, and save it as a PDF or Word document.</p>
+        <a class="tpl" href="{{ booking.template_url }}" download data-testid="link-contract-template">
+          Download {{ booking.template_name or 'contract template' }}
+        </a>
+      {% else %}
+        <p>The organizer has not uploaded a contract template yet. Please wait for them to contact you, or upload your signed copy below if you already have one.</p>
+      {% endif %}
+
+      <p>Step 2: Upload your signed contract. Accepted formats: PDF, DOC, DOCX.</p>
+      <form id="contract-form" data-testid="form-contract-upload">
+        <input type="file" name="file" accept=".pdf,.doc,.docx" required data-testid="input-contract-file">
+        <button type="submit" data-testid="button-upload-contract">Upload signed contract</button>
+        <div id="contract-msg"></div>
+      </form>
+
+      <script>
+        const form = document.getElementById('contract-form');
+        const msg  = document.getElementById('contract-msg');
+        form.addEventListener('submit', async (ev) => {
+          ev.preventDefault();
+          const fd = new FormData(form);
+          const btn = form.querySelector('button');
+          btn.disabled = true; btn.textContent = 'Uploading...';
+          msg.textContent = '';
+          try {
+            const res = await fetch('/api/service-bookings/{{ booking.booking_token }}/contract', {
+              method: 'POST', body: fd,
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Upload failed');
+            msg.className = 'ok';
+            msg.textContent = 'Uploaded! Reloading...';
+            setTimeout(() => window.location.reload(), 1200);
+          } catch (e) {
+            msg.className = 'err';
+            msg.textContent = e.message;
+            btn.disabled = false; btn.textContent = 'Upload signed contract';
+          }
+        });
+      </script>
+    {% endif %}
+  </div>
+</body>
+</html>

@@ -1660,6 +1660,122 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_scrape_jobs_schedule "
                 "ON scrape_jobs (schedule_id, requested_at DESC)"
             )
+
+            # =================================================================
+            # SERVICE BOOKINGS — services + addons + availability + bookings
+            # =================================================================
+            # A service is anything a client can book on the public site.
+            # Each service picks ONE pricing model:
+            #   * rsvp      — free reservation, no payment
+            #   * deposit   — Stripe Checkout for a partial up-front amount
+            #   * full      — Stripe Checkout for the full price
+            #   * contract  — admin uploads a contract template, client
+            #                 downloads, signs offline, uploads signed copy
+            #
+            # Calendar-backed services (requires_calendar = TRUE) use
+            # recurring weekly rules + per-date overrides. A confirmed
+            # deposit/full booking instantly removes its slot from the
+            # public availability response (subject to capacity_per_slot).
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS services (
+                    id                     SERIAL PRIMARY KEY,
+                    slug                   VARCHAR(100) UNIQUE NOT NULL,
+                    name                   VARCHAR(200) NOT NULL,
+                    short_description      VARCHAR(500) NOT NULL DEFAULT '',
+                    long_description       TEXT NOT NULL DEFAULT '',
+                    image_url              TEXT NOT NULL DEFAULT '',
+                    duration_minutes       INTEGER NOT NULL DEFAULT 60,
+                    pricing_model          VARCHAR(20) NOT NULL DEFAULT 'rsvp',
+                    base_price_cents       INTEGER NOT NULL DEFAULT 0,
+                    deposit_cents          INTEGER NOT NULL DEFAULT 0,
+                    currency               VARCHAR(8) NOT NULL DEFAULT 'usd',
+                    contract_template_url  TEXT NOT NULL DEFAULT '',
+                    contract_template_name VARCHAR(200) NOT NULL DEFAULT '',
+                    requires_calendar      BOOLEAN NOT NULL DEFAULT TRUE,
+                    capacity_per_slot      INTEGER NOT NULL DEFAULT 1,
+                    sort_order             INTEGER NOT NULL DEFAULT 0,
+                    is_active              BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at             TIMESTAMP DEFAULT NOW(),
+                    updated_at             TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_services_active_sort
+                    ON services (is_active, sort_order);
+
+                CREATE TABLE IF NOT EXISTS service_addons (
+                    id           SERIAL PRIMARY KEY,
+                    service_id   INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+                    name         VARCHAR(200) NOT NULL,
+                    description  TEXT NOT NULL DEFAULT '',
+                    price_cents  INTEGER NOT NULL DEFAULT 0,
+                    sort_order   INTEGER NOT NULL DEFAULT 0,
+                    is_active    BOOLEAN NOT NULL DEFAULT TRUE
+                );
+                CREATE INDEX IF NOT EXISTS idx_service_addons_svc
+                    ON service_addons (service_id, sort_order);
+
+                -- Recurring weekly availability templates.
+                CREATE TABLE IF NOT EXISTS service_availability_rules (
+                    id            SERIAL PRIMARY KEY,
+                    service_id    INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+                    day_of_week   INTEGER NOT NULL,        -- 0=Sun .. 6=Sat
+                    start_time    TIME NOT NULL,
+                    end_time      TIME NOT NULL,
+                    slot_minutes  INTEGER NOT NULL DEFAULT 60,
+                    is_active     BOOLEAN NOT NULL DEFAULT TRUE
+                );
+                CREATE INDEX IF NOT EXISTS idx_avail_rules_svc
+                    ON service_availability_rules (service_id, day_of_week);
+
+                -- Per-date overrides — block out a holiday, or open a
+                -- one-off date that the recurring rules wouldn't cover.
+                CREATE TABLE IF NOT EXISTS service_availability_overrides (
+                    id             SERIAL PRIMARY KEY,
+                    service_id     INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+                    override_date  DATE NOT NULL,
+                    start_time     TIME,                   -- NULL = whole day
+                    end_time       TIME,
+                    override_kind  VARCHAR(10) NOT NULL,   -- 'block' or 'open'
+                    slot_minutes   INTEGER NOT NULL DEFAULT 60,
+                    note           TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_avail_ovr_svc
+                    ON service_availability_overrides (service_id, override_date);
+
+                CREATE TABLE IF NOT EXISTS service_bookings (
+                    id                    SERIAL PRIMARY KEY,
+                    service_id            INTEGER REFERENCES services(id) ON DELETE SET NULL,
+                    booking_token         VARCHAR(64) NOT NULL UNIQUE,
+                    client_name           VARCHAR(200) NOT NULL,
+                    client_email          VARCHAR(200) NOT NULL,
+                    client_phone          VARCHAR(50) NOT NULL DEFAULT '',
+                    notes                 TEXT NOT NULL DEFAULT '',
+                    scheduled_date        DATE,
+                    scheduled_start       TIME,
+                    scheduled_end         TIME,
+                    selected_addon_ids    INTEGER[] NOT NULL DEFAULT '{}',
+                    addon_snapshot        JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    pricing_model         VARCHAR(20) NOT NULL DEFAULT 'rsvp',
+                    base_price_cents      INTEGER NOT NULL DEFAULT 0,
+                    addons_total_cents    INTEGER NOT NULL DEFAULT 0,
+                    total_cents           INTEGER NOT NULL DEFAULT 0,
+                    amount_paid_cents     INTEGER NOT NULL DEFAULT 0,
+                    currency              VARCHAR(8) NOT NULL DEFAULT 'usd',
+                    payment_status        VARCHAR(20) NOT NULL DEFAULT 'none',
+                    stripe_session_id     VARCHAR(200) NOT NULL DEFAULT '',
+                    signed_contract_url   TEXT NOT NULL DEFAULT '',
+                    status                VARCHAR(20) NOT NULL DEFAULT 'pending',
+                    utm_source            VARCHAR(200) NOT NULL DEFAULT '',
+                    utm_medium            VARCHAR(200) NOT NULL DEFAULT '',
+                    utm_campaign          VARCHAR(200) NOT NULL DEFAULT '',
+                    created_at            TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_bookings_slot
+                    ON service_bookings (service_id, scheduled_date, scheduled_start)
+                    WHERE status IN ('pending', 'confirmed')
+                      AND payment_status NOT IN ('expired', 'refunded');
+                CREATE INDEX IF NOT EXISTS idx_bookings_recent
+                    ON service_bookings (created_at DESC);
+            """)
     finally:
         conn.close()
 
@@ -8392,6 +8508,1070 @@ def api_order_detail(order_number):
     return jsonify(out)
 
 
+# =============================================================================
+# SERVICE BOOKINGS — backend
+# =============================================================================
+# This block owns every server-side concern for the bookable Services
+# feature: schema-aware helpers, admin CRUD, public list/detail/availability,
+# the booking dispatcher (RSVP / Stripe deposit / Stripe full / contract),
+# the contract upload endpoints, and the Stripe webhook handlers (wired in
+# below into the existing /api/stripe/webhook dispatcher).
+#
+# Pricing models recognized everywhere:
+#   * "rsvp"     — free reservation; no payment, immediately confirmed.
+#   * "deposit"  — Stripe Checkout for `deposit_cents`; balance owed offline.
+#   * "full"     — Stripe Checkout for `base_price_cents` + addon totals.
+#   * "contract" — admin uploads a template (PDF/DOC/DOCX); client downloads,
+#                  signs offline, uploads the signed copy back via the
+#                  per-booking token URL.
+#
+# Slot accounting: a slot is taken by any booking whose
+#   status IN ('pending','confirmed') AND payment_status NOT IN ('expired','refunded').
+# When the booking row is at capacity_per_slot, the slot disappears from
+# the public availability response.
+# =============================================================================
+
+ALLOWED_CONTRACT_EXTENSIONS = {"pdf", "doc", "docx"}
+SERVICE_PRICING_MODELS = {"rsvp", "deposit", "full", "contract"}
+SERVICE_BOOKING_ACTIVE_STATUSES = ("pending", "confirmed")
+CONTRACT_UPLOAD_FOLDER = os.path.join(UPLOAD_FOLDER, "contracts")
+os.makedirs(CONTRACT_UPLOAD_FOLDER, exist_ok=True)
+
+
+def _slugify_service(text: str) -> str:
+    """Lowercase ASCII slug used for public service URLs."""
+    text = (text or "").lower().strip()
+    out = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+    return out[:100] or "service"
+
+
+def _unique_service_slug(name: str, exclude_id: int | None = None) -> str:
+    """Pick a slug that doesn't collide with any other service row."""
+    base = _slugify_service(name)
+    candidate = base
+    n = 1
+    while True:
+        existing = query_db(
+            "SELECT id FROM services WHERE slug = %s AND (%s::int IS NULL OR id != %s)",
+            (candidate, exclude_id, exclude_id),
+            fetchone=True,
+        )
+        if not existing:
+            return candidate
+        n += 1
+        candidate = f"{base}-{n}"
+
+
+def _service_to_dict(row):
+    """Coerce DB row to a JSON-friendly dict (keeps int cents, ISO times)."""
+    if not row:
+        return None
+    d = dict(row)
+    for k, v in list(d.items()):
+        if hasattr(v, "isoformat"):
+            d[k] = v.isoformat()
+    return d
+
+
+def _addon_rows(service_id: int):
+    return query_db(
+        "SELECT * FROM service_addons WHERE service_id = %s "
+        "AND is_active = TRUE ORDER BY sort_order ASC, id ASC",
+        (service_id,),
+    ) or []
+
+
+def _hydrate_service(svc_row):
+    """Attach the active addon list to a single service dict."""
+    if not svc_row:
+        return None
+    d = _service_to_dict(svc_row)
+    d["addons"] = [_service_to_dict(a) for a in _addon_rows(d["id"])]
+    return d
+
+
+def _compute_availability(service_id: int, start_date, end_date):
+    """Build the day-by-day availability list between two ISO date strings.
+
+    Strategy:
+      1. Walk every date in [start_date, end_date] inclusive.
+      2. For each date, look up the recurring rules for that day-of-week
+         AND any "open" overrides on that exact date.
+      3. Subtract any "block" overrides covering that day (whole-day or
+         time-range).
+      4. Subdivide each remaining window into slot-sized chunks.
+      5. Subtract slots whose booking count has reached capacity.
+
+    Returns a list of {date, slots: [{start, end, remaining}]}.
+    """
+    svc = query_db("SELECT * FROM services WHERE id = %s",
+                   (service_id,), fetchone=True)
+    if not svc or not svc["requires_calendar"]:
+        return []
+
+    capacity = max(1, int(svc["capacity_per_slot"] or 1))
+    rules = query_db(
+        "SELECT * FROM service_availability_rules "
+        "WHERE service_id = %s AND is_active = TRUE",
+        (service_id,),
+    ) or []
+    overrides = query_db(
+        "SELECT * FROM service_availability_overrides "
+        "WHERE service_id = %s AND override_date BETWEEN %s AND %s",
+        (service_id, start_date, end_date),
+    ) or []
+    bookings = query_db(
+        "SELECT scheduled_date, scheduled_start, scheduled_end, COUNT(*) AS n "
+        "FROM service_bookings "
+        "WHERE service_id = %s "
+        "AND scheduled_date BETWEEN %s AND %s "
+        "AND status IN ('pending','confirmed') "
+        "AND payment_status NOT IN ('expired','refunded') "
+        "GROUP BY scheduled_date, scheduled_start, scheduled_end",
+        (service_id, start_date, end_date),
+    ) or []
+    booked_counts = {}
+    for b in bookings:
+        if b["scheduled_date"] and b["scheduled_start"]:
+            key = (
+                b["scheduled_date"].isoformat(),
+                b["scheduled_start"].strftime("%H:%M"),
+            )
+            booked_counts[key] = int(b["n"])
+
+    from datetime import date, datetime, time, timedelta
+    if isinstance(start_date, str):
+        start_date = date.fromisoformat(start_date)
+    if isinstance(end_date, str):
+        end_date = date.fromisoformat(end_date)
+
+    by_dow = {}
+    for r in rules:
+        by_dow.setdefault(int(r["day_of_week"]), []).append(r)
+    overrides_by_date = {}
+    for o in overrides:
+        overrides_by_date.setdefault(o["override_date"], []).append(o)
+
+    def _slots_in_window(window_start: time, window_end: time, slot_minutes: int):
+        out = []
+        s = datetime.combine(date.today(), window_start)
+        e = datetime.combine(date.today(), window_end)
+        cur = s
+        step = timedelta(minutes=max(5, int(slot_minutes or 60)))
+        while cur + step <= e:
+            out.append((cur.time(), (cur + step).time()))
+            cur += step
+        return out
+
+    days = []
+    cursor = start_date
+    while cursor <= end_date:
+        # Python weekday(): Monday=0..Sunday=6 — convert to Sunday=0..Saturday=6
+        py_dow = cursor.weekday()
+        dow = (py_dow + 1) % 7
+        windows = []  # list of (start_time, end_time, slot_minutes)
+        for r in by_dow.get(dow, []):
+            windows.append((r["start_time"], r["end_time"], int(r["slot_minutes"] or 60)))
+        for o in overrides_by_date.get(cursor, []):
+            if o["override_kind"] == "open" and o["start_time"] and o["end_time"]:
+                windows.append((o["start_time"], o["end_time"], int(o["slot_minutes"] or 60)))
+
+        # Apply blocks
+        blocks = [
+            o for o in overrides_by_date.get(cursor, [])
+            if o["override_kind"] == "block"
+        ]
+        whole_day_block = any(b["start_time"] is None for b in blocks)
+        timed_blocks = [
+            (b["start_time"], b["end_time"]) for b in blocks
+            if b["start_time"] and b["end_time"]
+        ]
+
+        slots = []
+        if not whole_day_block:
+            for w_start, w_end, slot_minutes in windows:
+                for s_t, e_t in _slots_in_window(w_start, w_end, slot_minutes):
+                    blocked = False
+                    for b_s, b_e in timed_blocks:
+                        if s_t < b_e and e_t > b_s:
+                            blocked = True
+                            break
+                    if blocked:
+                        continue
+                    key = (cursor.isoformat(), s_t.strftime("%H:%M"))
+                    taken = booked_counts.get(key, 0)
+                    remaining = capacity - taken
+                    if remaining <= 0:
+                        continue
+                    slots.append({
+                        "start": s_t.strftime("%H:%M"),
+                        "end": e_t.strftime("%H:%M"),
+                        "remaining": remaining,
+                    })
+
+        # De-dupe + sort (rules + open overrides may overlap)
+        seen = set()
+        unique_slots = []
+        for s in sorted(slots, key=lambda x: x["start"]):
+            if s["start"] in seen:
+                continue
+            seen.add(s["start"])
+            unique_slots.append(s)
+        days.append({"date": cursor.isoformat(), "slots": unique_slots})
+        cursor += timedelta(days=1)
+    return days
+
+
+# --------------- Admin: services CRUD ---------------
+
+@app.route("/admin/api/services", methods=["GET"])
+@admin_required
+def admin_list_services():
+    rows = query_db(
+        "SELECT * FROM services ORDER BY sort_order ASC, id ASC"
+    ) or []
+    out = []
+    for r in rows:
+        d = _service_to_dict(r)
+        d["addons"] = [_service_to_dict(a) for a in query_db(
+            "SELECT * FROM service_addons WHERE service_id = %s "
+            "ORDER BY sort_order ASC, id ASC", (d["id"],)
+        ) or []]
+        d["pending_bookings_count"] = (query_db(
+            "SELECT COUNT(*) AS n FROM service_bookings "
+            "WHERE service_id = %s AND status = 'pending'",
+            (d["id"],), fetchone=True
+        ) or {"n": 0})["n"]
+        out.append(d)
+    return jsonify(out)
+
+
+@app.route("/admin/api/services", methods=["POST"])
+@admin_required
+def admin_create_service():
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Name is required"}), 400
+    pricing_model = (data.get("pricing_model") or "rsvp").strip()
+    if pricing_model not in SERVICE_PRICING_MODELS:
+        return jsonify({"error": "Invalid pricing model"}), 400
+    slug = _unique_service_slug(data.get("slug") or name)
+
+    row = execute_db(
+        """INSERT INTO services
+           (slug, name, short_description, long_description, image_url,
+            duration_minutes, pricing_model, base_price_cents, deposit_cents,
+            currency, requires_calendar, capacity_per_slot, sort_order, is_active)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+           RETURNING *""",
+        (
+            slug, name,
+            data.get("short_description", ""),
+            data.get("long_description", ""),
+            data.get("image_url", ""),
+            int(data.get("duration_minutes") or 60),
+            pricing_model,
+            int(data.get("base_price_cents") or 0),
+            int(data.get("deposit_cents") or 0),
+            (data.get("currency") or "usd").lower(),
+            bool(data.get("requires_calendar", True)),
+            max(1, int(data.get("capacity_per_slot") or 1)),
+            int(data.get("sort_order") or 0),
+            bool(data.get("is_active", True)),
+        ),
+    )
+    return jsonify(_hydrate_service(row)), 201
+
+
+@app.route("/admin/api/services/<int:svc_id>", methods=["PUT"])
+@admin_required
+def admin_update_service(svc_id):
+    data = request.get_json() or {}
+    existing = query_db("SELECT * FROM services WHERE id = %s",
+                        (svc_id,), fetchone=True)
+    if not existing:
+        return jsonify({"error": "Service not found"}), 404
+    name = (data.get("name") or existing["name"]).strip()
+    pricing_model = (data.get("pricing_model") or existing["pricing_model"]).strip()
+    if pricing_model not in SERVICE_PRICING_MODELS:
+        return jsonify({"error": "Invalid pricing model"}), 400
+    new_slug = data.get("slug")
+    if new_slug:
+        slug = _unique_service_slug(new_slug, exclude_id=svc_id)
+    else:
+        slug = existing["slug"]
+
+    row = execute_db(
+        """UPDATE services SET
+             slug = %s, name = %s, short_description = %s,
+             long_description = %s, image_url = %s,
+             duration_minutes = %s, pricing_model = %s,
+             base_price_cents = %s, deposit_cents = %s,
+             currency = %s, requires_calendar = %s,
+             capacity_per_slot = %s, sort_order = %s,
+             is_active = %s, updated_at = NOW()
+           WHERE id = %s RETURNING *""",
+        (
+            slug, name,
+            data.get("short_description", existing["short_description"]),
+            data.get("long_description", existing["long_description"]),
+            data.get("image_url", existing["image_url"]),
+            int(data.get("duration_minutes", existing["duration_minutes"])),
+            pricing_model,
+            int(data.get("base_price_cents", existing["base_price_cents"])),
+            int(data.get("deposit_cents", existing["deposit_cents"])),
+            (data.get("currency", existing["currency"]) or "usd").lower(),
+            bool(data.get("requires_calendar", existing["requires_calendar"])),
+            max(1, int(data.get("capacity_per_slot", existing["capacity_per_slot"]))),
+            int(data.get("sort_order", existing["sort_order"])),
+            bool(data.get("is_active", existing["is_active"])),
+            svc_id,
+        ),
+    )
+    return jsonify(_hydrate_service(row))
+
+
+@app.route("/admin/api/services/<int:svc_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_service(svc_id):
+    n = execute_db("DELETE FROM services WHERE id = %s", (svc_id,))
+    if n == 0:
+        return jsonify({"error": "Service not found"}), 404
+    return jsonify({"success": True})
+
+
+# --------------- Admin: addons CRUD ---------------
+
+@app.route("/admin/api/services/<int:svc_id>/addons", methods=["GET"])
+@admin_required
+def admin_list_addons(svc_id):
+    rows = query_db(
+        "SELECT * FROM service_addons WHERE service_id = %s "
+        "ORDER BY sort_order ASC, id ASC", (svc_id,)
+    ) or []
+    return jsonify([_service_to_dict(r) for r in rows])
+
+
+@app.route("/admin/api/services/<int:svc_id>/addons", methods=["POST"])
+@admin_required
+def admin_create_addon(svc_id):
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Name required"}), 400
+    row = execute_db(
+        "INSERT INTO service_addons "
+        "(service_id, name, description, price_cents, sort_order, is_active) "
+        "VALUES (%s,%s,%s,%s,%s,%s) RETURNING *",
+        (
+            svc_id, name,
+            data.get("description", ""),
+            int(data.get("price_cents") or 0),
+            int(data.get("sort_order") or 0),
+            bool(data.get("is_active", True)),
+        ),
+    )
+    return jsonify(_service_to_dict(row)), 201
+
+
+@app.route("/admin/api/addons/<int:addon_id>", methods=["PUT"])
+@admin_required
+def admin_update_addon(addon_id):
+    data = request.get_json() or {}
+    row = execute_db(
+        "UPDATE service_addons SET "
+        "name = %s, description = %s, price_cents = %s, "
+        "sort_order = %s, is_active = %s "
+        "WHERE id = %s RETURNING *",
+        (
+            data.get("name", ""),
+            data.get("description", ""),
+            int(data.get("price_cents") or 0),
+            int(data.get("sort_order") or 0),
+            bool(data.get("is_active", True)),
+            addon_id,
+        ),
+    )
+    if not row:
+        return jsonify({"error": "Addon not found"}), 404
+    return jsonify(_service_to_dict(row))
+
+
+@app.route("/admin/api/addons/<int:addon_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_addon(addon_id):
+    n = execute_db("DELETE FROM service_addons WHERE id = %s", (addon_id,))
+    if n == 0:
+        return jsonify({"error": "Addon not found"}), 404
+    return jsonify({"success": True})
+
+
+# --------------- Admin: availability rules + overrides ---------------
+
+@app.route("/admin/api/services/<int:svc_id>/availability", methods=["GET"])
+@admin_required
+def admin_list_availability(svc_id):
+    rules = query_db(
+        "SELECT * FROM service_availability_rules WHERE service_id = %s "
+        "ORDER BY day_of_week, start_time", (svc_id,)
+    ) or []
+    overrides = query_db(
+        "SELECT * FROM service_availability_overrides WHERE service_id = %s "
+        "ORDER BY override_date, COALESCE(start_time, '00:00')", (svc_id,)
+    ) or []
+    return jsonify({
+        "rules": [_service_to_dict(r) for r in rules],
+        "overrides": [_service_to_dict(o) for o in overrides],
+    })
+
+
+@app.route("/admin/api/services/<int:svc_id>/rules", methods=["POST"])
+@admin_required
+def admin_create_rule(svc_id):
+    data = request.get_json() or {}
+    row = execute_db(
+        "INSERT INTO service_availability_rules "
+        "(service_id, day_of_week, start_time, end_time, slot_minutes, is_active) "
+        "VALUES (%s,%s,%s,%s,%s,%s) RETURNING *",
+        (
+            svc_id,
+            int(data.get("day_of_week") or 0),
+            data.get("start_time", "09:00"),
+            data.get("end_time", "17:00"),
+            int(data.get("slot_minutes") or 60),
+            bool(data.get("is_active", True)),
+        ),
+    )
+    return jsonify(_service_to_dict(row)), 201
+
+
+@app.route("/admin/api/rules/<int:rule_id>", methods=["PUT"])
+@admin_required
+def admin_update_rule(rule_id):
+    data = request.get_json() or {}
+    row = execute_db(
+        "UPDATE service_availability_rules SET "
+        "day_of_week = %s, start_time = %s, end_time = %s, "
+        "slot_minutes = %s, is_active = %s "
+        "WHERE id = %s RETURNING *",
+        (
+            int(data.get("day_of_week") or 0),
+            data.get("start_time", "09:00"),
+            data.get("end_time", "17:00"),
+            int(data.get("slot_minutes") or 60),
+            bool(data.get("is_active", True)),
+            rule_id,
+        ),
+    )
+    if not row:
+        return jsonify({"error": "Rule not found"}), 404
+    return jsonify(_service_to_dict(row))
+
+
+@app.route("/admin/api/rules/<int:rule_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_rule(rule_id):
+    n = execute_db("DELETE FROM service_availability_rules WHERE id = %s", (rule_id,))
+    if n == 0:
+        return jsonify({"error": "Rule not found"}), 404
+    return jsonify({"success": True})
+
+
+@app.route("/admin/api/services/<int:svc_id>/overrides", methods=["POST"])
+@admin_required
+def admin_create_override(svc_id):
+    data = request.get_json() or {}
+    kind = (data.get("override_kind") or "block").strip()
+    if kind not in ("block", "open"):
+        return jsonify({"error": "override_kind must be 'block' or 'open'"}), 400
+    row = execute_db(
+        "INSERT INTO service_availability_overrides "
+        "(service_id, override_date, start_time, end_time, override_kind, "
+        " slot_minutes, note) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+        (
+            svc_id,
+            data.get("override_date"),
+            data.get("start_time") or None,
+            data.get("end_time") or None,
+            kind,
+            int(data.get("slot_minutes") or 60),
+            data.get("note", ""),
+        ),
+    )
+    return jsonify(_service_to_dict(row)), 201
+
+
+@app.route("/admin/api/overrides/<int:ovr_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_override(ovr_id):
+    n = execute_db(
+        "DELETE FROM service_availability_overrides WHERE id = %s", (ovr_id,)
+    )
+    if n == 0:
+        return jsonify({"error": "Override not found"}), 404
+    return jsonify({"success": True})
+
+
+# --------------- Admin: contract template upload ---------------
+
+@app.route("/admin/api/services/<int:svc_id>/contract-template", methods=["POST"])
+@admin_required
+def admin_upload_contract_template(svc_id):
+    """Admin uploads a blank contract template for clients to download."""
+    svc = query_db("SELECT id FROM services WHERE id = %s",
+                   (svc_id,), fetchone=True)
+    if not svc:
+        return jsonify({"error": "Service not found"}), 404
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"error": "No file selected"}), 400
+    ext = f.filename.rsplit(".", 1)[-1].lower() if "." in f.filename else ""
+    if ext not in ALLOWED_CONTRACT_EXTENSIONS:
+        return jsonify({
+            "error": f"File type .{ext} not allowed. Use pdf, doc, or docx."
+        }), 400
+    unique_name = f"template_{svc_id}_{secrets.token_hex(6)}.{ext}"
+    f.save(os.path.join(CONTRACT_UPLOAD_FOLDER, unique_name))
+    url = f"/uploads/contracts/{unique_name}"
+    row = execute_db(
+        "UPDATE services SET contract_template_url = %s, "
+        "contract_template_name = %s, updated_at = NOW() "
+        "WHERE id = %s RETURNING contract_template_url, contract_template_name",
+        (url, f.filename, svc_id),
+    )
+    return jsonify(_service_to_dict(row))
+
+
+@app.route("/uploads/contracts/<path:filename>")
+def serve_contract(filename):
+    """Serve uploaded contract templates and signed copies."""
+    return send_from_directory(CONTRACT_UPLOAD_FOLDER, filename)
+
+
+# --------------- Admin: bookings list + status updates ---------------
+
+@app.route("/admin/api/bookings", methods=["GET"])
+@admin_required
+def admin_list_bookings():
+    status = (request.args.get("status") or "").strip()
+    sql = (
+        "SELECT b.*, s.name AS service_name, s.slug AS service_slug "
+        "FROM service_bookings b "
+        "LEFT JOIN services s ON s.id = b.service_id "
+    )
+    params = ()
+    if status:
+        sql += "WHERE b.status = %s "
+        params = (status,)
+    sql += "ORDER BY b.created_at DESC LIMIT 500"
+    rows = query_db(sql, params) or []
+    return jsonify([_service_to_dict(r) for r in rows])
+
+
+@app.route("/admin/api/bookings/<int:bk_id>", methods=["PATCH"])
+@admin_required
+def admin_update_booking(bk_id):
+    data = request.get_json() or {}
+    fields, params = [], []
+    if "status" in data:
+        if data["status"] not in ("pending", "confirmed", "cancelled", "completed"):
+            return jsonify({"error": "Invalid status"}), 400
+        fields.append("status = %s")
+        params.append(data["status"])
+    if "payment_status" in data:
+        fields.append("payment_status = %s")
+        params.append(data["payment_status"])
+    if "notes" in data:
+        fields.append("notes = %s")
+        params.append(data["notes"])
+    if not fields:
+        return jsonify({"error": "Nothing to update"}), 400
+    params.append(bk_id)
+    row = execute_db(
+        f"UPDATE service_bookings SET {', '.join(fields)} "
+        f"WHERE id = %s RETURNING *",
+        tuple(params),
+    )
+    if not row:
+        return jsonify({"error": "Booking not found"}), 404
+    return jsonify(_service_to_dict(row))
+
+
+# --------------- Public: list / detail / availability ---------------
+
+@app.route("/api/services", methods=["GET"])
+def api_list_services():
+    rows = query_db(
+        "SELECT * FROM services WHERE is_active = TRUE "
+        "ORDER BY sort_order ASC, id ASC"
+    ) or []
+    return jsonify([_hydrate_service(r) for r in rows])
+
+
+@app.route("/api/services/<string:slug>", methods=["GET"])
+def api_get_service(slug):
+    row = query_db(
+        "SELECT * FROM services WHERE slug = %s AND is_active = TRUE",
+        (slug,), fetchone=True,
+    )
+    if not row:
+        return jsonify({"error": "Service not found"}), 404
+    return jsonify(_hydrate_service(row))
+
+
+@app.route("/api/services/<string:slug>/availability", methods=["GET"])
+def api_service_availability(slug):
+    """?start=YYYY-MM-DD&end=YYYY-MM-DD — returns day buckets with open slots."""
+    svc = query_db(
+        "SELECT * FROM services WHERE slug = %s AND is_active = TRUE",
+        (slug,), fetchone=True,
+    )
+    if not svc:
+        return jsonify({"error": "Service not found"}), 404
+    if not svc["requires_calendar"]:
+        return jsonify({"requires_calendar": False, "days": []})
+    from datetime import date, timedelta
+    today = date.today()
+    start = request.args.get("start") or today.isoformat()
+    end = request.args.get("end") or (today + timedelta(days=30)).isoformat()
+    days = _compute_availability(svc["id"], start, end)
+    return jsonify({"requires_calendar": True, "days": days})
+
+
+# --------------- Public: booking dispatcher ---------------
+
+def _send_booking_confirmation(booking, service):
+    """Best-effort: email the client after successful booking creation/confirmation.
+
+    Quietly no-ops if Resend isn't configured. The messaging module already
+    handles its own failures and logging, so we only catch unexpected
+    exceptions here so a confirmation hiccup never breaks the booking flow.
+    """
+    if not booking or not service:
+        return
+    try:
+        to = booking.get("client_email")
+        if not to:
+            return
+        money = lambda c: f"${(int(c) / 100):.2f} {service['currency'].upper()}"
+        lines = [
+            f"Hi {booking.get('client_name', '')},",
+            "",
+            f"Your booking for {service['name']} has been received.",
+        ]
+        if booking.get("scheduled_date"):
+            lines.append(
+                f"When: {booking['scheduled_date']} "
+                f"{booking.get('scheduled_start') or ''}".strip()
+            )
+        if booking.get("addon_snapshot"):
+            try:
+                addons = booking["addon_snapshot"]
+                if isinstance(addons, str):
+                    addons = json.loads(addons)
+                if addons:
+                    lines.append("Add-ons:")
+                    for a in addons:
+                        lines.append(f"  - {a['name']} ({money(a['price_cents'])})")
+            except (ValueError, KeyError, TypeError):
+                pass
+        if booking.get("total_cents"):
+            lines.append(f"Total: {money(booking['total_cents'])}")
+        if booking.get("amount_paid_cents"):
+            lines.append(f"Paid: {money(booking['amount_paid_cents'])}")
+        if service["pricing_model"] == "contract" and service.get("contract_template_url"):
+            lines.append("")
+            lines.append(
+                f"Please download, sign, and return your contract: "
+                f"{request.host_url.rstrip('/')}{service['contract_template_url']}"
+            )
+            lines.append(
+                f"Upload your signed contract here: "
+                f"{request.host_url.rstrip('/')}/booking/{booking['booking_token']}/contract"
+            )
+        lines += ["", "Thank you!"]
+        messaging.send_email(
+            to,
+            subject=f"Booking confirmation — {service['name']}",
+            text=("\n".join(lines)),
+            html=None,
+        )
+    except Exception as e:
+        app.logger.warning("Booking confirmation email failed: %s", e)
+
+
+@app.route("/api/services/<string:slug>/book", methods=["POST"])
+def api_book_service(slug):
+    """Create a booking. Dispatches per pricing model and returns either:
+       * {status: 'confirmed', booking_token, ...}                — RSVP / contract
+       * {status: 'awaiting_payment', checkout_url, booking_token} — Stripe
+    """
+    svc = query_db(
+        "SELECT * FROM services WHERE slug = %s AND is_active = TRUE",
+        (slug,), fetchone=True,
+    )
+    if not svc:
+        return jsonify({"error": "Service not found"}), 404
+
+    data = request.get_json() or {}
+    name = (data.get("client_name") or "").strip()
+    email = (data.get("client_email") or "").strip()
+    if not name or not email:
+        return jsonify({"error": "Name and email are required"}), 400
+
+    addon_ids = [int(x) for x in (data.get("addon_ids") or []) if str(x).isdigit()]
+    addons = []
+    if addon_ids:
+        addons = query_db(
+            "SELECT id, name, price_cents FROM service_addons "
+            "WHERE service_id = %s AND id = ANY(%s) AND is_active = TRUE",
+            (svc["id"], addon_ids),
+        ) or []
+    addons_total = sum(int(a["price_cents"]) for a in addons)
+
+    base_cents = int(svc["base_price_cents"] or 0)
+    if svc["pricing_model"] == "deposit":
+        charge_cents = int(svc["deposit_cents"] or 0) + addons_total
+    elif svc["pricing_model"] == "full":
+        charge_cents = base_cents + addons_total
+    else:
+        charge_cents = 0
+    total_cents = base_cents + addons_total
+
+    scheduled_date = data.get("scheduled_date") or None
+    scheduled_start = data.get("scheduled_start") or None
+    scheduled_end = data.get("scheduled_end") or None
+
+    if svc["requires_calendar"] and (not scheduled_date or not scheduled_start):
+        return jsonify({"error": "Please pick a date and time"}), 400
+
+    booking_token = secrets.token_urlsafe(24)
+    addon_snapshot = json.dumps([
+        {"id": a["id"], "name": a["name"], "price_cents": int(a["price_cents"])}
+        for a in addons
+    ])
+
+    pricing_model = svc["pricing_model"]
+    if pricing_model == "rsvp":
+        initial_status = "confirmed"
+        payment_status = "none"
+    elif pricing_model == "contract":
+        initial_status = "pending"
+        payment_status = "none"
+    else:
+        initial_status = "pending"
+        payment_status = "pending"
+
+    # Run the lookup, capacity check, and INSERT inside a single transaction
+    # with SELECT ... FOR UPDATE on the parent service row, so two concurrent
+    # bookings cannot both pass the capacity check and oversell the same slot.
+    # Mirrors the pattern used in the events RSVP flow above.
+    conn = get_db()
+    conn.autocommit = False
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Lock the parent service row for the duration of this transaction.
+            cur.execute(
+                "SELECT id, capacity_per_slot, requires_calendar FROM services "
+                "WHERE id = %s FOR UPDATE",
+                (svc["id"],)
+            )
+            locked = cur.fetchone()
+            if not locked:
+                conn.rollback()
+                return jsonify({"error": "Service not found"}), 404
+
+            if locked["requires_calendar"]:
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM service_bookings "
+                    "WHERE service_id = %s AND scheduled_date = %s "
+                    "AND scheduled_start = %s "
+                    "AND status IN ('pending','confirmed') "
+                    "AND payment_status NOT IN ('expired','refunded')",
+                    (svc["id"], scheduled_date, scheduled_start),
+                )
+                taken = (cur.fetchone() or {}).get("n", 0)
+                cap = max(1, int(locked["capacity_per_slot"] or 1))
+                if int(taken) >= cap:
+                    conn.rollback()
+                    return jsonify({"error": "Sorry, that slot just filled up. Please pick another."}), 409
+
+            cur.execute(
+                """INSERT INTO service_bookings
+                   (service_id, booking_token, client_name, client_email, client_phone,
+                    notes, scheduled_date, scheduled_start, scheduled_end,
+                    selected_addon_ids, addon_snapshot, pricing_model,
+                    base_price_cents, addons_total_cents, total_cents,
+                    currency, payment_status, status,
+                    utm_source, utm_medium, utm_campaign)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   RETURNING *""",
+                (
+                    svc["id"], booking_token, name, email,
+                    data.get("client_phone", ""),
+                    data.get("notes", ""),
+                    scheduled_date, scheduled_start, scheduled_end,
+                    [a["id"] for a in addons],
+                    addon_snapshot,
+                    pricing_model,
+                    base_cents, addons_total, total_cents,
+                    (svc["currency"] or "usd").lower(),
+                    payment_status, initial_status,
+                    data.get("utm_source", ""),
+                    data.get("utm_medium", ""),
+                    data.get("utm_campaign", ""),
+                ),
+            )
+            booking = cur.fetchone()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.autocommit = True
+    booking_dict = _service_to_dict(booking)
+
+    if pricing_model in ("deposit", "full"):
+        if not stripe_client.is_configured():
+            execute_db(
+                "UPDATE service_bookings SET status = 'cancelled', "
+                "payment_status = 'expired' WHERE id = %s",
+                (booking["id"],),
+            )
+            return jsonify({
+                "error": "Payments are not configured. Please contact us to book."
+            }), 503
+        try:
+            stripe = stripe_client.get_stripe()
+            label = svc["name"]
+            if pricing_model == "deposit":
+                label = f"Deposit — {svc['name']}"
+            session = stripe.checkout.Session.create(
+                mode="payment",
+                payment_method_types=["card"],
+                line_items=[{
+                    "price_data": {
+                        "currency": (svc["currency"] or "usd").lower(),
+                        "unit_amount": charge_cents,
+                        "product_data": {"name": label},
+                    },
+                    "quantity": 1,
+                }],
+                customer_email=email,
+                success_url=request.host_url.rstrip("/")
+                            + f"/booking/{booking_token}/success"
+                            + "?session_id={CHECKOUT_SESSION_ID}",
+                cancel_url=request.host_url.rstrip("/")
+                           + f"/booking/{booking_token}/cancel",
+                metadata={
+                    "kind": "service_booking",
+                    "booking_id": str(booking["id"]),
+                    "booking_token": booking_token,
+                    "service_id": str(svc["id"]),
+                    "service_slug": svc["slug"],
+                },
+            )
+            execute_db(
+                "UPDATE service_bookings SET stripe_session_id = %s WHERE id = %s",
+                (session.id, booking["id"]),
+            )
+            return jsonify({
+                "status": "awaiting_payment",
+                "booking_token": booking_token,
+                "checkout_url": session.url,
+            }), 201
+        except Exception as e:
+            execute_db(
+                "UPDATE service_bookings SET status = 'cancelled', "
+                "payment_status = 'expired' WHERE id = %s",
+                (booking["id"],),
+            )
+            return jsonify({"error": f"Stripe error: {e}"}), 502
+
+    # RSVP and contract: no payment, send confirmation now.
+    _send_booking_confirmation(booking_dict, _service_to_dict(svc))
+    payload = {
+        "status": "confirmed" if pricing_model == "rsvp" else "pending_contract",
+        "booking_token": booking_token,
+        "booking_id": booking["id"],
+    }
+    if pricing_model == "contract":
+        payload["contract_template_url"] = svc.get("contract_template_url") or ""
+        payload["upload_url"] = f"/api/service-bookings/{booking_token}/contract"
+    return jsonify(payload), 201
+
+
+# --------------- Public: client uploads signed contract ---------------
+
+@app.route("/api/service-bookings/<string:token>/contract", methods=["POST"])
+def api_upload_signed_contract(token):
+    booking = query_db(
+        "SELECT * FROM service_bookings WHERE booking_token = %s",
+        (token,), fetchone=True,
+    )
+    if not booking:
+        return jsonify({"error": "Booking not found"}), 404
+    # Only contract-pricing bookings accept signed-contract uploads, and only
+    # while still pending — otherwise an old token could overwrite a stored
+    # file or re-trigger confirmation emails after the booking is settled.
+    if booking.get("pricing_model") != "contract":
+        return jsonify({"error": "This booking does not use a contract"}), 400
+    if booking.get("status") not in ("pending",):
+        return jsonify({
+            "error": "This booking is no longer accepting contract uploads. "
+                     "Contact us if you need to make a change."
+        }), 409
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"error": "No file selected"}), 400
+    ext = f.filename.rsplit(".", 1)[-1].lower() if "." in f.filename else ""
+    if ext not in ALLOWED_CONTRACT_EXTENSIONS:
+        return jsonify({
+            "error": f"File type .{ext} not allowed. Use pdf, doc, or docx."
+        }), 400
+    unique_name = f"signed_{booking['id']}_{secrets.token_hex(6)}.{ext}"
+    f.save(os.path.join(CONTRACT_UPLOAD_FOLDER, unique_name))
+    url = f"/uploads/contracts/{unique_name}"
+    row = execute_db(
+        "UPDATE service_bookings SET signed_contract_url = %s, "
+        "status = 'confirmed' WHERE id = %s RETURNING *",
+        (url, booking["id"]),
+    )
+    svc = query_db("SELECT * FROM services WHERE id = %s",
+                   (booking["service_id"],), fetchone=True)
+    _send_booking_confirmation(_service_to_dict(row), _service_to_dict(svc))
+    return jsonify({"success": True, "signed_contract_url": url})
+
+
+# --------------- Stripe webhook handlers (wired in below) ---------------
+
+def _handle_service_booking_checkout_completed(session_obj):
+    metadata = session_obj.get("metadata") or {}
+    if metadata.get("kind") != "service_booking":
+        return
+    booking_id = metadata.get("booking_id")
+    session_id = session_obj.get("id")
+    amount_total = session_obj.get("amount_total")
+    if not booking_id:
+        return
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, payment_status FROM service_bookings "
+                "WHERE id = %s FOR UPDATE",
+                (booking_id,),
+            )
+            row = cur.fetchone()
+            if not row or row["payment_status"] == "paid":
+                conn.commit()
+                return
+            cur.execute(
+                """UPDATE service_bookings
+                   SET payment_status = 'paid',
+                       status = 'confirmed',
+                       amount_paid_cents = COALESCE(%s, amount_paid_cents),
+                       stripe_session_id = COALESCE(stripe_session_id, %s)
+                   WHERE id = %s
+                   RETURNING *""",
+                (amount_total, session_id, booking_id),
+            )
+            booking = cur.fetchone()
+            cur.execute(
+                "SELECT * FROM services WHERE id = %s",
+                (booking["service_id"],),
+            )
+            svc = cur.fetchone()
+            conn.commit()
+    finally:
+        conn.close()
+    _send_booking_confirmation(_service_to_dict(booking), _service_to_dict(svc))
+
+
+def _handle_service_booking_checkout_expired(session_obj):
+    metadata = session_obj.get("metadata") or {}
+    if metadata.get("kind") != "service_booking":
+        return
+    booking_id = metadata.get("booking_id")
+    if not booking_id:
+        return
+    execute_db(
+        "UPDATE service_bookings "
+        "SET payment_status = 'expired', status = 'cancelled' "
+        "WHERE id = %s AND payment_status = 'pending'",
+        (booking_id,),
+    )
+
+
+# --------------- Booking client-facing redirect pages ---------------
+
+@app.route("/booking/<string:token>/success")
+def booking_success(token):
+    booking = query_db(
+        "SELECT * FROM service_bookings WHERE booking_token = %s",
+        (token,), fetchone=True,
+    )
+    svc = query_db(
+        "SELECT * FROM services WHERE id = %s",
+        (booking["service_id"],), fetchone=True,
+    ) if booking else None
+    settings, theme = _event_status_theme()
+    return render_template(
+        "event_rsvp_status.html",
+        event={"title": svc["name"] if svc else "Service Booking", "slug": ""},
+        success=True, settings=settings, theme=theme,
+    )
+
+
+@app.route("/booking/<string:token>/cancel")
+def booking_cancel(token):
+    booking = query_db(
+        "SELECT * FROM service_bookings WHERE booking_token = %s",
+        (token,), fetchone=True,
+    )
+    svc = query_db(
+        "SELECT * FROM services WHERE id = %s",
+        (booking["service_id"],), fetchone=True,
+    ) if booking else None
+    settings, theme = _event_status_theme()
+    return render_template(
+        "event_rsvp_status.html",
+        event={"title": svc["name"] if svc else "Service Booking", "slug": ""},
+        success=False, settings=settings, theme=theme,
+    )
+
+
+@app.route("/booking/<string:token>/contract", methods=["GET"])
+def booking_contract_upload_page(token):
+    """Lightweight standalone page for the client to upload a signed contract."""
+    booking = query_db(
+        "SELECT b.*, s.name AS service_name, s.contract_template_url AS template_url, "
+        "       s.contract_template_name AS template_name "
+        "FROM service_bookings b LEFT JOIN services s ON s.id = b.service_id "
+        "WHERE b.booking_token = %s",
+        (token,), fetchone=True,
+    )
+    if not booking:
+        return "Booking not found", 404
+    settings, theme = _event_status_theme()
+    return render_template(
+        "service_contract_upload.html",
+        booking=_service_to_dict(booking),
+        settings=settings, theme=theme,
+    )
+
+
+# =============================================================================
+# END SERVICE BOOKINGS
+# =============================================================================
+
+
 @app.route("/api/stripe/webhook", methods=["POST"])
 def api_stripe_webhook():
     """Stripe sends events here. Always returns 200 once we've processed."""
@@ -8434,8 +9614,10 @@ def api_stripe_webhook():
         _handle_charge_refunded(obj)
     elif event_type == "checkout.session.completed":
         _handle_event_checkout_completed(obj)
+        _handle_service_booking_checkout_completed(obj)
     elif event_type == "checkout.session.expired":
         _handle_event_checkout_expired(obj)
+        _handle_service_booking_checkout_expired(obj)
 
     return jsonify({"received": True})
 

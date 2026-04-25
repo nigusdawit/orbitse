@@ -63,6 +63,7 @@ let galleryCards = [];
 let experiences = [];
 let pricingSeasons = [];
 let testimonials = [];
+let services = [];
 let teamMembers = [];
 let faqItems = [];
 let blogPosts = [];
@@ -104,7 +105,7 @@ let touchStartY = null;
 async function loadAllData() {
   try {
     /* Fetch all data sources in parallel for speed */
-    const [settingsRes, cardsRes, expRes, pricingRes, testimonialsRes, teamRes, faqRes, blogRes, bizRes, sectionsRes, sphereRes, videoGalleryRes, podcastRes, productsRes, storeConfigRes, eventsRes] = await Promise.all([
+    const [settingsRes, cardsRes, expRes, pricingRes, testimonialsRes, teamRes, faqRes, blogRes, bizRes, sectionsRes, sphereRes, videoGalleryRes, podcastRes, productsRes, storeConfigRes, eventsRes, servicesRes] = await Promise.all([
       fetch('/api/site-settings'),
       fetch('/api/gallery-cards'),
       fetch('/api/experiences'),
@@ -120,7 +121,8 @@ async function loadAllData() {
       fetch('/api/podcast'),
       fetch('/api/products'),
       fetch('/api/storefront-config'),
-      fetch('/api/events')
+      fetch('/api/events'),
+      fetch('/api/services')
     ]);
 
     siteSettings = await settingsRes.json();
@@ -139,6 +141,7 @@ async function loadAllData() {
     storeProducts = await productsRes.json();
     storefrontConfig = await storeConfigRes.json();
     upcomingEvents = await eventsRes.json();
+    try { services = await servicesRes.json(); } catch(_) { services = []; }
     loadCartFromStorage();
 
     renderHero();
@@ -150,6 +153,7 @@ async function loadAllData() {
     renderFAQ();
     renderBlogSection();
     renderEventsSection();
+    renderServices();
     renderVideoGallery();
     renderPodcast();
     renderStore();
@@ -6779,4 +6783,243 @@ function syncSplitToChat() {
       }).catch(function() {});
     }
   });
+})();
+
+
+/* =============================================================================
+   SERVICE BOOKINGS — public-facing list + booking modal
+   ============================================================================= */
+(function(){
+  'use strict';
+
+  function escHtml(s){return (s==null?'':String(s)).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+  function moneyFmt(cents, cur){
+    const c = parseInt(cents||0, 10);
+    return '$' + (c/100).toFixed(2);
+  }
+
+  let modalState = null;
+
+  window.renderServices = function(){
+    const grid = document.getElementById('services-grid');
+    const section = document.getElementById('section-services');
+    if(!grid || !section) return;
+    const active = (services||[]).filter(s=>s.is_active);
+    if(!active.length){ section.style.display = 'none'; return; }
+    section.style.display = '';
+    grid.innerHTML = active.map(s=>{
+      const priceLine =
+        s.pricing_model==='rsvp'    ? 'Free RSVP' :
+        s.pricing_model==='deposit' ? ('Deposit ' + moneyFmt(s.deposit_cents) + ' (Total ' + moneyFmt(s.base_price_cents) + ')') :
+        s.pricing_model==='full'    ? moneyFmt(s.base_price_cents) :
+        s.pricing_model==='contract'? 'Contract — see details' : '';
+      const img = s.image_url ? `<img src="${escHtml(s.image_url)}" alt="${escHtml(s.name)}" style="width:100%;height:180px;object-fit:cover;border-radius:8px 8px 0 0;" loading="lazy">` : '';
+      return `
+        <article class="experience-card" data-testid="card-service-${s.id}" style="overflow:hidden;">
+          ${img}
+          <div style="padding:1rem;">
+            <h3 style="margin:0 0 0.25rem;">${escHtml(s.name)}</h3>
+            <p style="opacity:0.8;margin:0 0 0.75rem;font-size:0.9rem;">${escHtml(s.short_description||'')}</p>
+            <p style="margin:0 0 1rem;font-weight:600;">${escHtml(priceLine)}${s.duration_minutes?` &middot; ${s.duration_minutes} min`:''}</p>
+            <button class="btn-primary" onclick="openServiceModal('${escHtml(s.slug)}')" data-testid="button-book-${s.id}">Book</button>
+          </div>
+        </article>`;
+    }).join('');
+  };
+
+  window.closeServiceModal = function(){
+    const m = document.getElementById('service-booking-modal');
+    if(m) m.style.display = 'none';
+    modalState = null;
+  };
+
+  window.openServiceModal = async function(slug){
+    const m = document.getElementById('service-booking-modal');
+    const body = document.getElementById('service-modal-body');
+    if(!m || !body) return;
+    m.style.display = 'flex';
+    body.innerHTML = '<p style="text-align:center;padding:2rem;">Loading…</p>';
+    try {
+      const r = await fetch('/api/services/'+encodeURIComponent(slug));
+      if(!r.ok) throw new Error('Service not found');
+      const svc = await r.json();
+      modalState = {svc, addons:{}, date:'', start:''};
+      renderModalForm();
+    } catch(e){
+      body.innerHTML = '<p style="color:#f87171;text-align:center;padding:2rem;">'+escHtml(e.message)+'</p>';
+    }
+  };
+
+  function renderModalForm(){
+    const {svc} = modalState;
+    const body = document.getElementById('service-modal-body');
+    const addons = (svc.addons||[]).filter(a=>a.is_active);
+    const dateField = svc.requires_calendar ? `
+      <label style="display:block;margin-bottom:0.5rem;">Pick a date
+        <input type="date" id="svc-date" min="${todayStr()}" onchange="window._svcLoadSlots()" data-testid="input-booking-date" style="width:100%;padding:0.5rem;margin-top:0.25rem;">
+      </label>
+      <div id="svc-slots" style="margin-bottom:1rem;"></div>
+    ` : '';
+    const addonsField = addons.length ? `
+      <fieldset style="border:1px solid rgba(255,255,255,0.15);padding:0.75rem;border-radius:6px;margin-bottom:1rem;">
+        <legend>Add-ons</legend>
+        ${addons.map(a=>`
+          <label style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.4rem;">
+            <input type="checkbox" data-addon-id="${a.id}" data-addon-price="${a.price_cents||0}" onchange="window._svcRecomputeTotal()" data-testid="check-addon-${a.id}">
+            <span style="flex:1;">${escHtml(a.name)}${a.description?` — ${escHtml(a.description)}`:''}</span>
+            <span>${moneyFmt(a.price_cents)}</span>
+          </label>`).join('')}
+      </fieldset>` : '';
+
+    body.innerHTML = `
+      <h2 id="service-modal-title" style="margin:0 0 0.25rem;">${escHtml(svc.name)}</h2>
+      <p style="opacity:0.85;margin:0 0 1rem;">${escHtml(svc.short_description||'')}</p>
+      ${svc.long_description ? `<p style="opacity:0.7;font-size:0.9rem;white-space:pre-line;margin-bottom:1rem;">${escHtml(svc.long_description)}</p>` : ''}
+      <form id="svc-book-form" data-testid="form-service-booking">
+        ${dateField}
+        ${addonsField}
+        <label style="display:block;margin-bottom:0.5rem;">Your name
+          <input name="client_name" required data-testid="input-client-name" style="width:100%;padding:0.5rem;margin-top:0.25rem;">
+        </label>
+        <label style="display:block;margin-bottom:0.5rem;">Email
+          <input name="client_email" type="email" required data-testid="input-client-email" style="width:100%;padding:0.5rem;margin-top:0.25rem;">
+        </label>
+        <label style="display:block;margin-bottom:0.5rem;">Phone (optional)
+          <input name="client_phone" type="tel" data-testid="input-client-phone" style="width:100%;padding:0.5rem;margin-top:0.25rem;">
+        </label>
+        <label style="display:block;margin-bottom:1rem;">Notes (optional)
+          <textarea name="notes" rows="3" data-testid="input-client-notes" style="width:100%;padding:0.5rem;margin-top:0.25rem;"></textarea>
+        </label>
+        <p style="font-size:1.1rem;margin:0 0 1rem;">Total: <strong id="svc-total" data-testid="text-booking-total">${moneyFmt(initialTotal(svc))}</strong></p>
+        <button type="submit" class="btn-primary" data-testid="button-submit-booking" style="width:100%;">${ctaLabel(svc)}</button>
+        <p id="svc-form-msg" style="margin-top:0.75rem;color:#f87171;text-align:center;"></p>
+      </form>`;
+    document.getElementById('svc-book-form').addEventListener('submit', submitBooking);
+  }
+
+  function todayStr(){
+    const d = new Date();
+    return d.toISOString().substring(0,10);
+  }
+
+  function initialTotal(svc){
+    if(svc.pricing_model==='rsvp') return 0;
+    if(svc.pricing_model==='deposit') return svc.deposit_cents||0;
+    if(svc.pricing_model==='full') return svc.base_price_cents||0;
+    return svc.base_price_cents||0;
+  }
+
+  function ctaLabel(svc){
+    if(svc.pricing_model==='rsvp') return 'Reserve';
+    if(svc.pricing_model==='contract') return 'Continue to contract';
+    if(svc.pricing_model==='deposit') return 'Pay deposit';
+    return 'Pay & book';
+  }
+
+  window._svcRecomputeTotal = function(){
+    if(!modalState) return;
+    const {svc} = modalState;
+    let extras = 0;
+    document.querySelectorAll('#svc-book-form input[data-addon-id]:checked').forEach(el=>{
+      extras += parseInt(el.dataset.addonPrice||0, 10);
+    });
+    const base = initialTotal(svc);
+    const el = document.getElementById('svc-total');
+    if(el) el.textContent = moneyFmt(base + extras);
+  };
+
+  window._svcLoadSlots = async function(){
+    if(!modalState) return;
+    const dateInput = document.getElementById('svc-date');
+    const slotsWrap = document.getElementById('svc-slots');
+    if(!dateInput || !slotsWrap) return;
+    const d = dateInput.value;
+    if(!d){ slotsWrap.innerHTML = ''; return; }
+    modalState.date = d;
+    modalState.start = '';
+    slotsWrap.innerHTML = '<p style="opacity:0.7;">Checking times…</p>';
+    try {
+      const r = await fetch('/api/services/'+encodeURIComponent(modalState.svc.slug)+'/availability?start='+d+'&end='+d);
+      if(!r.ok) throw new Error('Failed to load times');
+      const data = await r.json();
+      const day = (data.days||[]).find(x=>x.date===d);
+      const slots = day ? day.slots : [];
+      if(!slots.length){
+        slotsWrap.innerHTML = '<p style="opacity:0.7;">No times available on that date.</p>';
+        return;
+      }
+      slotsWrap.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:0.5rem;">'
+        + slots.map(s=>`<button type="button" onclick="window._svcPickSlot('${s.start}', this)" data-testid="button-slot-${s.start}" style="padding:0.4rem 0.75rem;border:1px solid rgba(255,255,255,0.3);background:transparent;color:inherit;border-radius:6px;cursor:pointer;">${s.start.substring(0,5)}</button>`).join('')
+        + '</div>';
+    } catch(e){
+      slotsWrap.innerHTML = '<p style="color:#f87171;">'+escHtml(e.message)+'</p>';
+    }
+  };
+
+  window._svcPickSlot = function(start, btn){
+    if(!modalState) return;
+    modalState.start = start;
+    document.querySelectorAll('#svc-slots button').forEach(b=>{ b.style.background='transparent'; b.style.color='inherit'; });
+    if(btn){ btn.style.background='var(--accent,#c9a96e)'; btn.style.color='#0b0b0b'; }
+  };
+
+  async function submitBooking(ev){
+    ev.preventDefault();
+    if(!modalState) return;
+    const {svc} = modalState;
+    const form = ev.target;
+    const msg = document.getElementById('svc-form-msg');
+    msg.textContent = '';
+
+    const addonIds = [];
+    form.querySelectorAll('input[data-addon-id]:checked').forEach(el=>addonIds.push(parseInt(el.dataset.addonId,10)));
+
+    if(svc.requires_calendar && (!modalState.date || !modalState.start)){
+      msg.textContent = 'Please pick a date and time.';
+      return;
+    }
+
+    const body = {
+      client_name:  form.client_name.value.trim(),
+      client_email: form.client_email.value.trim(),
+      client_phone: form.client_phone.value.trim(),
+      notes:        form.notes.value.trim(),
+      addon_ids:    addonIds,
+      scheduled_date:  modalState.date  || null,
+      scheduled_start: modalState.start || null,
+    };
+
+    const submitBtn = form.querySelector('button[type=submit]');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Working…';
+
+    try {
+      const r = await fetch('/api/services/'+encodeURIComponent(svc.slug)+'/book', {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+      });
+      const data = await r.json();
+      if(!r.ok) throw new Error(data.error || 'Booking failed');
+
+      if(data.action === 'redirect' && data.checkout_url){
+        window.location.href = data.checkout_url;
+        return;
+      }
+      if(data.action === 'contract_upload' && data.upload_url){
+        window.location.href = data.upload_url;
+        return;
+      }
+      // RSVP success
+      const body = document.getElementById('service-modal-body');
+      body.innerHTML = `
+        <h2 style="margin:0 0 0.5rem;">You're booked.</h2>
+        <p>Thanks, ${escHtml(form.client_name.value)} — we sent a confirmation to <strong>${escHtml(form.client_email.value)}</strong>.</p>
+        ${data.scheduled_date ? `<p>When: <strong>${escHtml(data.scheduled_date)} ${escHtml((data.scheduled_start||'').substring(0,5))}</strong></p>` : ''}
+        <button class="btn-primary" onclick="closeServiceModal()" data-testid="button-close-confirm" style="width:100%;margin-top:1rem;">Close</button>
+      `;
+    } catch(e){
+      msg.textContent = e.message;
+      submitBtn.disabled = false;
+      submitBtn.textContent = ctaLabel(svc);
+    }
+  }
 })();
