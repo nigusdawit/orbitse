@@ -12746,8 +12746,15 @@ TO CUSTOMIZE THIS DASHBOARD:
       let control = '';
       if (field.kind === 'textarea') {
         control = `<textarea id="${idAttr}" rows="4" ${field.placeholder ? 'placeholder="' + escapeHtml(field.placeholder) + '"' : ''} data-cfg-key="${escapeHtml(field.name)}">${escapeHtml(String(v))}</textarea>`;
+      } else if (field.kind === 'password') {
+        control = `<input type="password" id="${idAttr}" value="${escapeHtml(String(v))}" autocomplete="new-password" ${field.placeholder ? 'placeholder="' + escapeHtml(field.placeholder) + '"' : ''} data-cfg-key="${escapeHtml(field.name)}">`;
+      } else if (field.kind === 'checkbox') {
+        const checked = (v === true || v === 'true' || v === 1 || v === '1' || v === 'on') ? 'checked' : '';
+        control = `<label style="display:flex;align-items:center;gap:0.5rem;font-weight:normal;cursor:pointer;"><input type="checkbox" id="${idAttr}" ${checked} data-cfg-key="${escapeHtml(field.name)}"> <span style="font-size:0.85rem;color:var(--admin-text-muted);">${escapeHtml(field.label)}</span></label>`;
+        // The checkbox has its own inline label; suppress the outer one to avoid duplication.
+        return `<div class="form-group">${control}</div>`;
       } else if (field.kind === 'number') {
-        control = `<input type="number" id="${idAttr}" value="${escapeHtml(String(v))}" ${field.min !== undefined ? 'min="' + field.min + '"' : ''} ${field.max !== undefined ? 'max="' + field.max + '"' : ''} data-cfg-key="${escapeHtml(field.name)}">`;
+        control = `<input type="number" id="${idAttr}" value="${escapeHtml(String(v))}" ${field.min !== undefined ? 'min="' + field.min + '"' : ''} ${field.max !== undefined ? 'max="' + field.max + '"' : ''} ${field.placeholder ? 'placeholder="' + escapeHtml(field.placeholder) + '"' : ''} data-cfg-key="${escapeHtml(field.name)}">`;
       } else if (field.kind === 'select') {
         const opts = (field.options || []).map(o =>
           `<option value="${escapeHtml(o.value)}" ${String(v) === String(o.value) ? 'selected' : ''}>${escapeHtml(o.label)}</option>`

@@ -34,6 +34,8 @@ Design notes
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -201,7 +203,44 @@ TRIGGER_TYPES = [
     {
         "kind": "webhook",
         "label": "When an external service POSTs to our webhook URL",
-        "config_fields": [],
+        "config_fields": [
+            {
+                "name": "signature_scheme",
+                "label": "Signature verification (optional — confirms the request really came from the source service)",
+                "kind": "select",
+                "options": [
+                    {"value": "", "label": "None — accept any request that has the token"},
+                    {"value": "hmac_sha256", "label": "HMAC-SHA256 (generic)"},
+                    {"value": "stripe", "label": "Stripe-style (Stripe-Signature header)"},
+                    {"value": "github", "label": "GitHub-style (X-Hub-Signature-256 header)"},
+                ],
+            },
+            {
+                "name": "signature_secret",
+                "label": "Shared secret (paste from the source service — leave blank if verification is None)",
+                "kind": "password",
+                "placeholder": "whsec_…",
+            },
+            {
+                "name": "signature_header",
+                "label": "Header name to read (defaults: X-Signature for HMAC, Stripe-Signature for Stripe, X-Hub-Signature-256 for GitHub)",
+                "kind": "text",
+                "placeholder": "X-Signature",
+            },
+            {
+                "name": "replay_protection_enabled",
+                "label": "Reject replays older than the window below (Stripe scheme only — uses its built-in t= timestamp)",
+                "kind": "checkbox",
+            },
+            {
+                "name": "replay_max_age_seconds",
+                "label": "Replay window in seconds (Stripe scheme)",
+                "kind": "number",
+                "min": 1,
+                "max": 86400,
+                "placeholder": "300",
+            },
+        ],
     },
     {
         "kind": "manual",
@@ -375,6 +414,139 @@ def render_deep(value: Any, ctx: Dict[str, Any]) -> Any:
 def generate_webhook_token() -> str:
     """URL-safe random slug for /automations/hook/<token>."""
     return secrets.token_urlsafe(24)
+
+
+# =============================================================================
+# WEBHOOK SIGNATURE VERIFICATION
+# =============================================================================
+# Token-only auth means a leaked URL gives an attacker full impersonation.
+# When admins connect a third party that signs its outbound webhooks
+# (Stripe, GitHub, Typeform, generic HMAC) we re-compute the expected
+# signature over the raw body and reject mismatches before queueing a run.
+# Empty / unset scheme keeps the legacy "token is enough" behaviour so
+# casual integrations don't break.
+
+_SUPPORTED_SIGNATURE_SCHEMES = {"", "hmac_sha256", "stripe", "github"}
+
+
+def _ci_header(headers: Dict[str, str], name: str) -> str:
+    """Case-insensitive header lookup. `headers` is expected to already
+    be lowercased by the caller, but we tolerate either."""
+    if not name:
+        return ""
+    if name in headers:
+        return headers[name] or ""
+    return headers.get(name.lower(), "") or ""
+
+
+def verify_webhook_signature(
+    cfg: Dict[str, Any],
+    raw_body: bytes,
+    headers: Dict[str, str],
+    *,
+    now_ts: Optional[int] = None,
+) -> Tuple[bool, str]:
+    """Validate an incoming webhook against the per-automation signature
+    config. Returns ``(ok, reason)``.
+
+    ``ok=True`` is returned when the scheme is empty / "none" — that's the
+    "no verification, token is enough" path. When a scheme is set but the
+    secret is missing we fail closed: the admin clearly intended to
+    require verification, so accepting unsigned requests would be worse
+    than a 401.
+
+    ``raw_body`` MUST be the exact bytes that came over the wire — the
+    signature is computed over those bytes, so any JSON re-encoding would
+    break the comparison.
+    """
+    scheme = (cfg.get("signature_scheme") or "").strip().lower()
+    if scheme in ("", "none"):
+        return True, ""
+    if scheme not in _SUPPORTED_SIGNATURE_SCHEMES:
+        return False, f"Unknown signature scheme {scheme!r}."
+    secret = (cfg.get("signature_secret") or "").strip()
+    if not secret:
+        return False, "Signature scheme is set but no shared secret is configured."
+
+    # Normalise to a lowercased dict once so the helper lookups are cheap.
+    norm_headers = {k.lower(): v for k, v in (headers or {}).items()}
+
+    if scheme == "hmac_sha256":
+        header_name = (cfg.get("signature_header") or "X-Signature").strip() or "X-Signature"
+        sent = _ci_header(norm_headers, header_name).strip()
+        if not sent:
+            return False, f"Missing signature header {header_name!r}."
+        # Tolerate the common "sha256=<hex>" prefix some senders use.
+        if sent.lower().startswith("sha256="):
+            sent = sent.split("=", 1)[1]
+        expected = hmac.new(
+            secret.encode("utf-8"), raw_body, hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(sent.lower(), expected.lower()):
+            return False, "Signature does not match expected HMAC-SHA256."
+        return True, ""
+
+    if scheme == "github":
+        header_name = (cfg.get("signature_header") or "X-Hub-Signature-256").strip() or "X-Hub-Signature-256"
+        sent = _ci_header(norm_headers, header_name).strip()
+        if not sent:
+            return False, f"Missing signature header {header_name!r}."
+        if not sent.lower().startswith("sha256="):
+            return False, "GitHub signature header must start with 'sha256='."
+        sent_hex = sent.split("=", 1)[1]
+        expected = hmac.new(
+            secret.encode("utf-8"), raw_body, hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(sent_hex.lower(), expected.lower()):
+            return False, "Signature does not match expected GitHub HMAC."
+        return True, ""
+
+    if scheme == "stripe":
+        header_name = (cfg.get("signature_header") or "Stripe-Signature").strip() or "Stripe-Signature"
+        sent = _ci_header(norm_headers, header_name).strip()
+        if not sent:
+            return False, f"Missing signature header {header_name!r}."
+        # Stripe format: "t=1492774577,v1=abc...,v1=def..." — multiple v1
+        # entries can appear during secret rotation, so collect all of them.
+        parts: Dict[str, List[str]] = {}
+        for piece in sent.split(","):
+            piece = piece.strip()
+            if "=" not in piece:
+                continue
+            k, v = piece.split("=", 1)
+            parts.setdefault(k.strip(), []).append(v.strip())
+        ts_values = parts.get("t") or []
+        v1_values = parts.get("v1") or []
+        if not ts_values or not v1_values:
+            return False, "Stripe signature header missing 't=' timestamp or 'v1=' entry."
+        ts = ts_values[0]
+        try:
+            ts_int = int(ts)
+        except ValueError:
+            return False, "Stripe signature timestamp is not an integer."
+        signed_payload = ts.encode("ascii") + b"." + raw_body
+        expected = hmac.new(
+            secret.encode("utf-8"), signed_payload, hashlib.sha256
+        ).hexdigest()
+        match = any(
+            hmac.compare_digest(v.lower(), expected.lower()) for v in v1_values
+        )
+        if not match:
+            return False, "Signature does not match expected Stripe v1 HMAC."
+        # Optional replay protection — only meaningful for schemes that
+        # carry a timestamp, so we gate it here.
+        if cfg.get("replay_protection_enabled"):
+            try:
+                max_age = int(cfg.get("replay_max_age_seconds") or 300)
+            except (TypeError, ValueError):
+                max_age = 300
+            max_age = max(1, max_age)
+            current = int(now_ts) if now_ts is not None else int(time.time())
+            if current - ts_int > max_age:
+                return False, "Webhook timestamp is older than the allowed replay window."
+        return True, ""
+
+    return False, f"Unknown signature scheme {scheme!r}."
 
 
 # =============================================================================

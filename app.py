@@ -10592,14 +10592,20 @@ def public_automation_webhook(token):
     """Public webhook endpoint. Anyone with the token can fire the
     matching automation — that's the model. The token is 24 random URL
     bytes so guessing it is not feasible. Disable + regenerate flips it
-    instantly. We accept JSON body, form body, or query string."""
+    instantly. We accept JSON body, form body, or query string.
+
+    When the admin has configured a signature scheme on this automation
+    (HMAC-SHA256, Stripe, GitHub) we re-compute the expected signature
+    over the *raw* body bytes and reject mismatches with 401 before
+    queueing a run — so a leaked token alone is no longer enough to
+    impersonate the source service."""
     if not token or len(token) < 16:
         return jsonify({"error": "Invalid token."}), 404
     # Defense-in-depth: require trigger_type='webhook' on top of token match,
     # so a stale token left over from a switched-trigger row can never fire.
     row = query_db(
         """
-        SELECT id, enabled FROM automations
+        SELECT id, enabled, trigger_config FROM automations
          WHERE webhook_token = %s AND trigger_type = 'webhook'
         """,
         (token,), fetchone=True,
@@ -10609,6 +10615,25 @@ def public_automation_webhook(token):
     if not row["enabled"]:
         return jsonify({"error": "This automation is disabled."}), 403
 
+    # Read the raw body once, BEFORE anything parses or re-encodes it —
+    # the signature is computed over the exact bytes the sender wrote, so
+    # any JSON re-serialisation between us and the verifier would change
+    # whitespace / key order and break the comparison. cache=True lets
+    # request.get_json() below reuse this same buffer.
+    raw_body = request.get_data(cache=True) or b""
+
+    if request.method == "POST":
+        cfg = row.get("trigger_config") or {}
+        if isinstance(cfg, dict) and (cfg.get("signature_scheme") or "").strip():
+            ok, reason = automations.verify_webhook_signature(
+                cfg, raw_body, dict(request.headers),
+            )
+            if not ok:
+                return jsonify({
+                    "error": "Signature verification failed.",
+                    "detail": reason,
+                }), 401
+
     payload = {}
     if request.method == "POST":
         json_body = request.get_json(silent=True)
@@ -10617,7 +10642,7 @@ def public_automation_webhook(token):
         elif request.form:
             payload = {k: v for k, v in request.form.items()}
         else:
-            payload = {"raw_body": (request.get_data(as_text=True) or "")[:5000]}
+            payload = {"raw_body": raw_body.decode("utf-8", errors="replace")[:5000]}
     payload.setdefault("query", {k: v for k, v in request.args.items()})
 
     rid = automations.queue_run(row["id"], payload, triggered_by="webhook")
