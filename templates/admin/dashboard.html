@@ -4859,6 +4859,23 @@ TO CUSTOMIZE THIS DASHBOARD:
             </label>
           </div>
         </div>
+
+        <div class="form-row">
+          <div class="form-group" style="grid-column: 1 / -1;">
+            <label for="scraper-schedule-failure-threshold">
+              Auto-pause after this many failures in a row
+            </label>
+            <input type="number" id="scraper-schedule-failure-threshold"
+                   value="5" min="0" max="100"
+                   data-testid="input-scraper-schedule-failure-threshold">
+            <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin: 0.4rem 0 0 0;">
+              When the schedule fails this many times in a row (e.g. the
+              site is down or the AI key is missing), we pause it
+              automatically so it stops burning API budget. Set to <strong>0</strong>
+              to disable the guardrail.
+            </p>
+          </div>
+        </div>
       </div>
 
       <div class="form-actions">
@@ -12719,6 +12736,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('scraper-schedule-notify-email').value = '';
       document.getElementById('scraper-schedule-notify-phone').value = '';
       document.getElementById('scraper-schedule-only-on-change').checked = true;
+      document.getElementById('scraper-schedule-failure-threshold').value = '5';
       updateScraperFormVisibility();
     }
 
@@ -12805,6 +12823,9 @@ TO CUSTOMIZE THIS DASHBOARD:
         body.notify_email = document.getElementById('scraper-schedule-notify-email').value.trim();
         body.notify_phone = document.getElementById('scraper-schedule-notify-phone').value.trim();
         body.notify_only_on_change = document.getElementById('scraper-schedule-only-on-change').checked;
+        const ftRaw = document.getElementById('scraper-schedule-failure-threshold').value;
+        const ftParsed = parseInt(ftRaw, 10);
+        body.failure_threshold = isNaN(ftParsed) ? 5 : ftParsed;
         body.enabled = true;
 
         const isUpdate = !!Scraper.editingScheduleId;
@@ -12882,7 +12903,34 @@ TO CUSTOMIZE THIS DASHBOARD:
           : `<a href="${escapeHtml(s.url || '')}" target="_blank" rel="noopener">${escapeHtml((s.url || '').slice(0, 60))}</a>`;
         const next = s.next_run_at ? new Date(s.next_run_at).toLocaleString() : '—';
         const last = s.last_run_at ? new Date(s.last_run_at).toLocaleString() : '—';
-        const enabled = s.enabled ? '<span style="color:#28a745;">on</span>' : '<span style="color:#888;">off</span>';
+        // Three statuses: auto-paused (most urgent), manually paused, on.
+        // Auto-pause shows the failure count + the most recent error so the
+        // admin can fix the underlying issue before resuming.
+        let statusCell;
+        if (s.auto_paused) {
+          const failCount = s.consecutive_failures || 0;
+          const lastErr = (s.last_failure_error || '').trim();
+          statusCell =
+            `<div style="color:#dc3545; font-weight:600;" data-testid="status-auto-paused-${s.id}">paused</div>`
+            + `<div style="font-size:0.75rem; color:#dc3545; margin-top:2px;">repeated failures (${failCount})</div>`
+            + (lastErr ? `<div style="font-size:0.7rem; color: var(--admin-text-muted); margin-top:2px; max-width:220px; word-break:break-word;" title="${escapeHtml(lastErr)}" data-testid="text-last-failure-error-${s.id}"><em>Last error:</em> ${escapeHtml(lastErr.slice(0, 120))}${lastErr.length > 120 ? '…' : ''}</div>` : '');
+        } else if (s.enabled) {
+          const fc = s.consecutive_failures || 0;
+          statusCell = '<span style="color:#28a745;">on</span>'
+            + (fc > 0 ? `<div style="font-size:0.7rem; color:#b35900; margin-top:2px;" data-testid="text-failure-count-${s.id}">${fc} failure${fc === 1 ? '' : 's'} in a row</div>` : '');
+        } else {
+          statusCell = '<span style="color:#888;">off</span>';
+        }
+        // Action buttons: when auto-paused, the prominent CTA is a green
+        // Resume that calls the dedicated endpoint (clears failure trail).
+        // When manually paused, fall back to the regular toggle (which
+        // doesn't pretend to clear an auto-pause that wasn't there).
+        let toggleBtn;
+        if (s.auto_paused) {
+          toggleBtn = `<button class="btn btn-primary btn-xs" onclick="resumeScrapeSchedule(${s.id})" data-testid="button-resume-schedule-${s.id}">Resume</button>`;
+        } else {
+          toggleBtn = `<button class="btn btn-secondary btn-xs" onclick="toggleScrapeSchedule(${s.id}, ${!s.enabled})" data-testid="button-toggle-schedule-${s.id}">${s.enabled ? 'Pause' : 'Resume'}</button>`;
+        }
         return `
           <tr data-testid="row-scrape-schedule-${s.id}">
             <td><strong>${escapeHtml(name)}</strong></td>
@@ -12890,16 +12938,32 @@ TO CUSTOMIZE THIS DASHBOARD:
             <td>${src}</td>
             <td style="font-size:0.8125rem; color: var(--admin-text-muted);">${escapeHtml(next)}</td>
             <td style="font-size:0.8125rem; color: var(--admin-text-muted);">${escapeHtml(last)}${s.last_job_id ? ` <a href="#" onclick="viewScrapeJob(${s.last_job_id}); return false;" data-testid="link-schedule-last-${s.id}">(view)</a>` : ''}</td>
-            <td>${enabled}</td>
+            <td>${statusCell}</td>
             <td>
               <button class="btn btn-secondary btn-xs" onclick="runScrapeScheduleNow(${s.id})" data-testid="button-run-now-schedule-${s.id}">Run now</button>
-              <button class="btn btn-secondary btn-xs" onclick="toggleScrapeSchedule(${s.id}, ${!s.enabled})" data-testid="button-toggle-schedule-${s.id}">${s.enabled ? 'Pause' : 'Resume'}</button>
+              ${toggleBtn}
               <button class="btn btn-secondary btn-xs" onclick="editScrapeSchedule(${s.id})" data-testid="button-edit-schedule-${s.id}">Edit</button>
               <button class="btn btn-danger btn-xs" onclick="deleteScrapeSchedule(${s.id})" data-testid="button-delete-schedule-${s.id}">Delete</button>
             </td>
           </tr>
         `;
       }).join('');
+    }
+
+    async function resumeScrapeSchedule(scheduleId) {
+      // Hits the dedicated /resume endpoint so the server can both flip
+      // enabled back on AND wipe the failure trail in a single transaction
+      // — that's what the admin really means by "I fixed it, try again".
+      try {
+        const r = await fetch(`/admin/api/scrape-schedules/${scheduleId}/resume`, {
+          method: 'POST', credentials: 'same-origin',
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Resume failed');
+        loadScrapeSchedules();
+      } catch (e) {
+        alert(e.message);
+      }
     }
 
     async function runScrapeScheduleNow(scheduleId) {
@@ -12957,6 +13021,9 @@ TO CUSTOMIZE THIS DASHBOARD:
         document.getElementById('scraper-schedule-notify-email').value = s.notify_email || '';
         document.getElementById('scraper-schedule-notify-phone').value = s.notify_phone || '';
         document.getElementById('scraper-schedule-only-on-change').checked = !!s.notify_only_on_change;
+        document.getElementById('scraper-schedule-failure-threshold').value =
+          (s.failure_threshold === 0 || s.failure_threshold)
+            ? String(s.failure_threshold) : '5';
         Scraper.editingScheduleId = scheduleId;
         updateScraperFormVisibility();
         document.getElementById('scraper-form-message').innerHTML =

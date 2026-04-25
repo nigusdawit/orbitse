@@ -1716,6 +1716,31 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_scrape_jobs_schedule "
                 "ON scrape_jobs (schedule_id, requested_at DESC)"
             )
+            # Auto-pause guardrail: when a schedule fails N times in a row
+            # (e.g. dead site, missing API key, page shape changed) we stop
+            # firing it instead of burning API budget and spamming alerts.
+            # The admin can resume it from the dashboard once the underlying
+            # issue is fixed.
+            cur.execute(
+                "ALTER TABLE scrape_schedules ADD COLUMN IF NOT EXISTS "
+                "consecutive_failures INTEGER NOT NULL DEFAULT 0"
+            )
+            cur.execute(
+                "ALTER TABLE scrape_schedules ADD COLUMN IF NOT EXISTS "
+                "failure_threshold INTEGER NOT NULL DEFAULT 5"
+            )
+            cur.execute(
+                "ALTER TABLE scrape_schedules ADD COLUMN IF NOT EXISTS "
+                "auto_paused BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            cur.execute(
+                "ALTER TABLE scrape_schedules ADD COLUMN IF NOT EXISTS "
+                "auto_paused_at TIMESTAMP"
+            )
+            cur.execute(
+                "ALTER TABLE scrape_schedules ADD COLUMN IF NOT EXISTS "
+                "last_failure_error TEXT NOT NULL DEFAULT ''"
+            )
 
             # =================================================================
             # SERVICE BOOKINGS — services + addons + availability + bookings
@@ -12767,7 +12792,7 @@ def _scrape_serialize_schedule(row: dict) -> dict:
     if not row:
         return {}
     out = dict(row)
-    for k in ("created_at", "last_run_at", "next_run_at"):
+    for k in ("created_at", "last_run_at", "next_run_at", "auto_paused_at"):
         v = out.get(k)
         if isinstance(v, datetime):
             out[k] = v.isoformat()
@@ -12979,7 +13004,7 @@ def _scrape_finish_job(job_id: int, result=None, error: str = "") -> None:
         )
         # On schedule failures we still update last_run_* so the UI shows
         # the most recent attempt even though it produced no data.
-        _scrape_after_schedule_run(job_id, success=False)
+        _scrape_after_schedule_run(job_id, success=False, error=error)
         return
 
     record = (result or {}).get("record") if isinstance(result, dict) else None
@@ -13029,12 +13054,18 @@ def _scrape_finish_job(job_id: int, result=None, error: str = "") -> None:
 
 
 def _scrape_after_schedule_run(job_id: int, *, success: bool,
-                               changed: bool = False) -> None:
+                               changed: bool = False,
+                               error: str = "") -> None:
     """Advance the schedule cursor and fire any due notifications.
 
     Splitting this off keeps `_scrape_finish_job` readable: failures still
     need to update last_run_* (so the next-run cursor doesn't stall), but
     we never notify on errors — those are surfaced in the admin UI instead.
+
+    Also tracks consecutive failures: once we hit `failure_threshold`
+    in a row we auto-pause the schedule so a dead site / missing API key
+    / changed page shape can't burn the API budget on doomed retries.
+    Successes always reset the counter.
     """
     job = query_db(
         "SELECT * FROM scrape_jobs WHERE id = %s", (job_id,), fetchone=True,
@@ -13049,13 +13080,91 @@ def _scrape_after_schedule_run(job_id: int, *, success: bool,
         return
     now = datetime.utcnow()
     next_at = _scrape_next_run(schedule, last_known=now, now=now)
-    execute_db(
-        """UPDATE scrape_schedules
-           SET last_run_at = %s, last_job_id = %s, next_run_at = %s
-           WHERE id = %s""",
-        (now, job_id, next_at, schedule["id"]),
-    )
-    if not success:
+
+    if success:
+        # A clean run wipes the failure trail entirely so a previously
+        # rocky schedule isn't one bad day away from auto-pausing again.
+        # Special case: if the schedule was auto-paused and the admin
+        # used "Run now" (which works on disabled schedules) and it
+        # succeeded, treat that as an implicit Resume — flip enabled
+        # back on too, otherwise the UI would show a confusing
+        # "manually off" state for a schedule that's clearly healthy.
+        was_auto_paused = bool(schedule.get("auto_paused"))
+        if was_auto_paused:
+            execute_db(
+                """UPDATE scrape_schedules
+                   SET last_run_at = %s, last_job_id = %s, next_run_at = %s,
+                       consecutive_failures = 0, last_failure_error = '',
+                       auto_paused = FALSE, auto_paused_at = NULL,
+                       enabled = TRUE
+                   WHERE id = %s""",
+                (now, job_id, next_at, schedule["id"]),
+            )
+        else:
+            execute_db(
+                """UPDATE scrape_schedules
+                   SET last_run_at = %s, last_job_id = %s, next_run_at = %s,
+                       consecutive_failures = 0, last_failure_error = '',
+                       auto_paused = FALSE, auto_paused_at = NULL
+                   WHERE id = %s""",
+                (now, job_id, next_at, schedule["id"]),
+            )
+    else:
+        # threshold <= 0 means "never auto-pause" (escape hatch). Otherwise
+        # increment the streak; if it crosses the line, flip enabled OFF and
+        # NULL out next_run_at so the tick stops considering this row.
+        threshold = int(schedule.get("failure_threshold") or 0)
+        new_count = int(schedule.get("consecutive_failures") or 0) + 1
+        already_paused = bool(schedule.get("auto_paused"))
+        # Only flip into auto-pause once. If we're already paused (e.g. the
+        # admin clicked "Run now" while the schedule is parked) we just
+        # refresh the counter and the last error — no second notification.
+        cross_threshold = (threshold > 0 and new_count >= threshold
+                           and not already_paused)
+        if cross_threshold:
+            execute_db(
+                """UPDATE scrape_schedules
+                   SET last_run_at = %s, last_job_id = %s,
+                       next_run_at = NULL,
+                       consecutive_failures = %s,
+                       last_failure_error = %s,
+                       enabled = FALSE,
+                       auto_paused = TRUE,
+                       auto_paused_at = %s
+                   WHERE id = %s""",
+                (now, job_id, new_count, (error or "")[:1000], now, schedule["id"]),
+            )
+            # Best-effort heads-up to whoever subscribed to this schedule —
+            # even with notify_only_on_change set, an auto-pause is the kind
+            # of thing the admin definitely wants to hear about once.
+            try:
+                _scrape_send_auto_pause_notification(
+                    schedule, new_count, error or ""
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"[scraper] auto-pause notify error for schedule "
+                      f"{schedule['id']}: {e}")
+        elif already_paused:
+            # Update bookkeeping without disturbing the existing pause state.
+            execute_db(
+                """UPDATE scrape_schedules
+                   SET last_run_at = %s, last_job_id = %s,
+                       consecutive_failures = %s,
+                       last_failure_error = %s
+                   WHERE id = %s""",
+                (now, job_id, new_count,
+                 (error or "")[:1000], schedule["id"]),
+            )
+        else:
+            execute_db(
+                """UPDATE scrape_schedules
+                   SET last_run_at = %s, last_job_id = %s, next_run_at = %s,
+                       consecutive_failures = %s,
+                       last_failure_error = %s
+                   WHERE id = %s""",
+                (now, job_id, next_at, new_count,
+                 (error or "")[:1000], schedule["id"]),
+            )
         return
     if not (schedule.get("notify_email") or schedule.get("notify_phone")):
         return
@@ -13111,6 +13220,58 @@ def _scrape_send_change_notification(schedule: dict, job: dict,
             messaging.send_sms(notify_phone, text_body[:1500])
         except messaging.MessagingError as e:
             print(f"[scraper] sms notify failed for schedule {schedule['id']}: {e}")
+
+
+def _scrape_send_auto_pause_notification(schedule: dict, failure_count: int,
+                                         last_error: str) -> None:
+    """One-shot heads-up when a schedule auto-pauses.
+
+    Unlike change notifications this fires regardless of
+    `notify_only_on_change` — silently pausing would leave the admin
+    wondering why their data stopped flowing.
+    """
+    if not (schedule.get("notify_email") or schedule.get("notify_phone")):
+        return
+    label = (schedule.get("name") or "").strip() or f"Schedule #{schedule['id']}"
+    err = (last_error or "(no error message captured)").strip()[:500]
+    text_body = (
+        f"Scheduled scrape \"{label}\" was auto-paused after "
+        f"{failure_count} consecutive failures.\n"
+        f"Last error: {err}\n"
+        "Open the Web Scraper tab in the admin dashboard to fix the "
+        "underlying issue and resume."
+    )
+    # Escape both label and error for the HTML body — error text comes from
+    # upstream sources (HTTP error bodies, AI provider messages) we don't
+    # control, and the schedule name is admin input. Belt-and-braces.
+    label_html = html_module.escape(label)
+    err_html = html_module.escape(err)
+    html_body = (
+        f"<p><strong>Auto-paused:</strong> scheduled scrape "
+        f"<em>{label_html}</em> failed {failure_count} times in a row.</p>"
+        f"<p><strong>Last error:</strong> {err_html}</p>"
+        "<p>Open the Web Scraper tab in the admin dashboard to fix the "
+        "underlying issue and resume.</p>"
+    )
+    notify_email = (schedule.get("notify_email") or "").strip()
+    if notify_email:
+        try:
+            messaging.send_email(
+                notify_email,
+                f"[Scraper] Auto-paused: {label}",
+                html_body,
+                text_body=text_body,
+            )
+        except messaging.MessagingError as e:
+            print(f"[scraper] auto-pause email failed for schedule "
+                  f"{schedule['id']}: {e}")
+    notify_phone = (schedule.get("notify_phone") or "").strip()
+    if notify_phone:
+        try:
+            messaging.send_sms(notify_phone, text_body[:1500])
+        except messaging.MessagingError as e:
+            print(f"[scraper] auto-pause sms failed for schedule "
+                  f"{schedule['id']}: {e}")
 
 
 def _scrape_kick_off(job_id: int) -> None:
@@ -13590,6 +13751,15 @@ def _scrape_validate_schedule_payload(data: dict) -> "tuple[dict, str]":
     notify_only_on_change = bool(data.get("notify_only_on_change", True))
     enabled = bool(data.get("enabled", True))
 
+    # 0 disables the auto-pause guardrail; we cap it at 100 so a typo
+    # can't turn the limit into "effectively never".
+    try:
+        failure_threshold = int(data.get("failure_threshold", 5))
+    except (TypeError, ValueError):
+        return {}, "failure_threshold must be an integer."
+    if failure_threshold < 0 or failure_threshold > 100:
+        return {}, "failure_threshold must be between 0 and 100."
+
     return {
         "name": name,
         "input_mode": input_mode,
@@ -13605,6 +13775,7 @@ def _scrape_validate_schedule_payload(data: dict) -> "tuple[dict, str]":
         "notify_email": notify_email,
         "notify_phone": notify_phone,
         "notify_only_on_change": notify_only_on_change,
+        "failure_threshold": failure_threshold,
     }, ""
 
 
@@ -13637,11 +13808,11 @@ def admin_create_scrape_schedule():
              (name, input_mode, url, objective, target_shape, custom_schema,
               schedule_mode, interval_minutes, daily_time, weekly_dow,
               enabled, notify_email, notify_phone, notify_only_on_change,
-              next_run_at)
+              failure_threshold, next_run_at)
            VALUES (%s, %s, %s, %s, %s, %s::jsonb,
                    %s, %s, %s, %s,
                    %s, %s, %s, %s,
-                   %s)
+                   %s, %s)
            RETURNING *""",
         (
             clean["name"], clean["input_mode"], clean["url"],
@@ -13651,7 +13822,7 @@ def admin_create_scrape_schedule():
             clean["daily_time"], clean["weekly_dow"],
             clean["enabled"], clean["notify_email"],
             clean["notify_phone"], clean["notify_only_on_change"],
-            next_at,
+            clean["failure_threshold"], next_at,
         ),
     )
     if not row:
@@ -13689,6 +13860,19 @@ def admin_update_scrape_schedule(schedule_id):
         return jsonify({"error": err}), 400
     now = datetime.utcnow()
     next_at = _scrape_next_run(clean, last_known=now, now=now)
+
+    # Re-enabling an auto-paused schedule clears the failure trail so the
+    # admin doesn't immediately re-trip the threshold from a stale count.
+    was_auto_paused = bool(existing.get("auto_paused"))
+    clear_pause = was_auto_paused and clean["enabled"]
+    consecutive_failures = 0 if clear_pause else int(
+        existing.get("consecutive_failures") or 0
+    )
+    last_failure_error = "" if clear_pause else (
+        existing.get("last_failure_error") or ""
+    )
+    auto_paused_flag = False if clear_pause else was_auto_paused
+
     row = execute_db(
         """UPDATE scrape_schedules
              SET name = %s, input_mode = %s, url = %s, objective = %s,
@@ -13697,6 +13881,11 @@ def admin_update_scrape_schedule(schedule_id):
                  daily_time = %s, weekly_dow = %s,
                  enabled = %s, notify_email = %s,
                  notify_phone = %s, notify_only_on_change = %s,
+                 failure_threshold = %s,
+                 consecutive_failures = %s,
+                 last_failure_error = %s,
+                 auto_paused = %s,
+                 auto_paused_at = CASE WHEN %s THEN NULL ELSE auto_paused_at END,
                  next_run_at = %s
              WHERE id = %s
              RETURNING *""",
@@ -13708,7 +13897,9 @@ def admin_update_scrape_schedule(schedule_id):
             clean["daily_time"], clean["weekly_dow"],
             clean["enabled"], clean["notify_email"],
             clean["notify_phone"], clean["notify_only_on_change"],
-            next_at, schedule_id,
+            clean["failure_threshold"],
+            consecutive_failures, last_failure_error, auto_paused_flag,
+            clear_pause, next_at, schedule_id,
         ),
     )
     return jsonify(_scrape_serialize_schedule(row))
@@ -13746,6 +13937,41 @@ def admin_run_scrape_schedule_now(schedule_id):
     if not new_job_id:
         return jsonify({"error": "Failed to enqueue job."}), 500
     return jsonify({"success": True, "job_id": new_job_id})
+
+
+@app.route("/admin/api/scrape-schedules/<int:schedule_id>/resume", methods=["POST"])
+@admin_required
+def admin_resume_scrape_schedule(schedule_id):
+    """POST .../<id>/resume — clear an auto-pause and re-arm the cursor.
+
+    Calling this also wipes the consecutive-failure counter and the last
+    error message: from the admin's point of view they've just acknowledged
+    the issue and want a clean slate. We re-arm `next_run_at` from the
+    cadence so the schedule fires on its normal beat instead of waiting
+    for the next tick to anchor it."""
+    sched = query_db(
+        "SELECT * FROM scrape_schedules WHERE id = %s",
+        (schedule_id,), fetchone=True,
+    )
+    if not sched:
+        return jsonify({"error": "Schedule not found."}), 404
+    now = datetime.utcnow()
+    next_at = _scrape_next_run(sched, last_known=now, now=now)
+    row = execute_db(
+        """UPDATE scrape_schedules
+             SET enabled = TRUE,
+                 auto_paused = FALSE,
+                 auto_paused_at = NULL,
+                 consecutive_failures = 0,
+                 last_failure_error = '',
+                 next_run_at = %s
+             WHERE id = %s
+             RETURNING *""",
+        (next_at, schedule_id),
+    )
+    if not row:
+        return jsonify({"error": "Resume failed."}), 500
+    return jsonify(_scrape_serialize_schedule(row))
 
 
 @app.route("/admin/api/scrape-jobs/<int:job_id>/diff", methods=["GET"])
