@@ -4604,6 +4604,29 @@ TO CUSTOMIZE THIS DASHBOARD:
       <div id="scraper-current-actions" style="margin-top: 1rem; display:flex; gap:0.5rem; flex-wrap:wrap;"></div>
     </div>
 
+    <!-- Side-by-side editor for "Push to..." actions.
+         Pre-fills with the AI's extracted record so the admin can review
+         and tweak every field before it lands in the real table as a
+         draft. The shape's field catalog (name + hint + required flag)
+         drives the form layout dynamically — no per-shape templates here. -->
+    <div id="scrape-push-modal" class="db-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="scrape-push-modal-title">
+      <div class="db-modal-card db-modal-card-wide">
+        <div class="db-modal-head">
+          <h3 id="scrape-push-modal-title">Review before pushing</h3>
+          <button class="db-modal-close" onclick="closeScrapePushModal()" aria-label="Close" data-testid="button-push-modal-close">&times;</button>
+        </div>
+        <div class="db-modal-body">
+          <p id="scrape-push-modal-intro" style="margin: 0 0 1rem 0; color: var(--admin-text-muted, rgba(255,255,255,0.65)); font-size: 0.85rem;"></p>
+          <div id="scrape-push-modal-fields"></div>
+          <div id="scrape-push-modal-message" style="margin-top: 0.75rem; min-height: 1.2em;"></div>
+        </div>
+        <div class="db-modal-foot">
+          <button class="btn btn-secondary btn-sm" onclick="closeScrapePushModal()" data-testid="button-push-cancel">Cancel</button>
+          <button class="btn btn-primary btn-sm" onclick="confirmScrapePush()" data-testid="button-push-confirm">Confirm and push</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Settings: disallowed domains + rendered fetch -->
     <div class="form-panel">
       <h3>Scraper settings</h3>
@@ -12254,10 +12277,12 @@ TO CUSTOMIZE THIS DASHBOARD:
     // Loaded on demand. Polls running jobs every 2s for live status
     // transitions queued -> running -> done|failed.
     const Scraper = {
-      shapes: null,            // [{key,label,description,push_target}]
+      shapes: null,            // [{key,label,description,push_target,fields}]
       currentJobId: null,      // job currently being viewed in the result panel
+      currentJob: null,        // full job snapshot from the latest poll, used by the push editor
       pollTimer: null,
       editingScheduleId: null, // when set, submitScrapeJob() PATCHes instead of POSTs
+      pushEditor: null,        // active "Push to..." modal state, see pushScrapeJob()
     };
 
     async function loadScraperTab() {
@@ -12607,8 +12632,12 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     function closeScraperCurrent() {
       Scraper.currentJobId = null;
+      Scraper.currentJob = null;
       if (Scraper.pollTimer) { clearTimeout(Scraper.pollTimer); Scraper.pollTimer = null; }
       document.getElementById('scraper-current-panel').style.display = 'none';
+      // If the push modal is still open over a stale job, close it too so
+      // the admin doesn't accidentally confirm against a job they closed.
+      if (Scraper.pushEditor) closeScrapePushModal();
     }
 
     async function viewScrapeJob(jobId) {
@@ -12645,6 +12674,9 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     function renderScrapeJobDetail(job) {
+      // Cache the latest job snapshot so the side-by-side push editor can
+      // read the AI's extracted record without re-fetching.
+      Scraper.currentJob = job;
       const meta = [];
       meta.push(`Mode: <strong>${escapeHtml(job.input_mode || 'url')}</strong>`);
       meta.push(`Target: <strong>${escapeHtml(shapeLabel(job.target_shape))}</strong>`);
@@ -12799,18 +12831,221 @@ TO CUSTOMIZE THIS DASHBOARD:
       }
     }
 
-    async function pushScrapeJob(jobId) {
+    // ----- "Push to..." side-by-side editor -----
+    // Instead of pushing the AI-extracted record straight into the target
+    // table (where the admin then has to switch tabs to clean it up), we
+    // open a modal pre-filled with every field from the shape catalog so
+    // the admin can review/correct hallucinations and odd phrasing inline.
+    // "Confirm" sends the edited record back; "Cancel" leaves the source
+    // job untouched.
+    function pushScrapeJob(jobId) {
+      const job = Scraper.currentJob;
+      if (!job || job.id !== jobId) {
+        alert('Open the job first, then click Push.');
+        return;
+      }
+      const shape = (Scraper.shapes || []).find(s => s.key === job.target_shape);
+      if (!shape) {
+        alert('Unknown target shape; cannot edit before pushing.');
+        return;
+      }
+      if (!shape.push_target) {
+        alert('This shape has no push target.');
+        return;
+      }
+      const record = (job.result_json && job.result_json.record) || {};
+
+      Scraper.pushEditor = {
+        jobId,
+        shape,
+        // Track which field names render as list-style inputs so we can
+        // split them back into arrays on submit.
+        listFieldNames: new Set((shape.fields || []).filter(f => f.is_list).map(f => f.name)),
+      };
+
+      document.getElementById('scrape-push-modal-title').textContent =
+        `Review before pushing to ${shape.push_target.replace(/_/g, ' ')}`;
+      document.getElementById('scrape-push-modal-intro').textContent =
+        `These are the fields the AI extracted for "${shape.label}". Edit anything that looks off — your changes are saved into the new draft.`;
+      document.getElementById('scrape-push-modal-message').innerHTML = '';
+
+      const fieldsHost = document.getElementById('scrape-push-modal-fields');
+      fieldsHost.innerHTML = (shape.fields || []).map((field, idx) => {
+        const value = record[field.name];
+        return renderPushField(field, value, idx);
+      }).join('');
+
+      // Wire up live image previews for any *_url / *_image fields so the
+      // admin can spot a broken hallucinated URL before pushing.
+      (shape.fields || []).forEach((field, idx) => {
+        if (isImageFieldName(field.name)) {
+          const input = document.getElementById(`push-field-${idx}`);
+          const preview = document.getElementById(`push-field-${idx}-preview`);
+          if (input && preview) {
+            const update = () => updatePushImagePreview(input.value, preview);
+            input.addEventListener('input', update);
+            update();
+          }
+        }
+      });
+
+      document.getElementById('scrape-push-modal').style.display = 'flex';
+    }
+
+    function isImageFieldName(name) {
+      // Treat anything that ends in _url / _image / image_url as an image
+      // field so the modal renders a thumbnail preview. Conservative on
+      // purpose — we don't want to preview e.g. a generic "website" URL.
+      const n = (name || '').toLowerCase();
+      return n === 'image_url' || n === 'cover_image' || n.endsWith('_image') || n.endsWith('_image_url');
+    }
+
+    function renderPushField(field, value, idx) {
+      // Pick the right editor type per field:
+      //  - list fields render as a textarea, one item per line
+      //  - long text fields (description / content / excerpt / notes /
+      //    summary / bio / answer) render as a multi-line textarea
+      //  - everything else is a single-line input
+      // Image fields also get a thumbnail preview slot below the input.
+      const id = `push-field-${idx}`;
+      const safeName = escapeHtml(field.name);
+      const safeHint = escapeHtml(field.hint || '');
+      const requiredBadge = field.required
+        ? ' <span style="color:#f5a623; font-weight:600;">*</span>'
+        : '';
+      const isList = !!field.is_list;
+      const longTextNames = new Set([
+        'description', 'content', 'excerpt', 'notes', 'summary', 'bio', 'answer',
+      ]);
+      let inputHtml;
+      if (isList) {
+        // Lists may arrive as arrays, JSON-encoded strings, or plain
+        // strings. Normalise to one-per-line so the admin can edit free
+        // text without thinking about JSON syntax.
+        let lines = '';
+        if (Array.isArray(value)) {
+          lines = value.map(v => (v == null ? '' : String(v))).join('\n');
+        } else if (value != null) {
+          lines = String(value);
+        }
+        inputHtml = `<textarea id="${id}" rows="4" data-testid="input-push-${safeName}" placeholder="One item per line">${escapeHtml(lines)}</textarea>`;
+      } else if (typeof value === 'object' && value !== null) {
+        // Object-typed fields (e.g. the contact-shape "social" map) get
+        // a JSON textarea so the admin can edit keys/values in place.
+        inputHtml = `<textarea id="${id}" rows="4" data-push-json="1" data-testid="input-push-${safeName}">${escapeHtml(JSON.stringify(value, null, 2))}</textarea>`;
+      } else if (longTextNames.has(field.name)) {
+        const text = value == null ? '' : String(value);
+        inputHtml = `<textarea id="${id}" rows="6" data-testid="input-push-${safeName}">${escapeHtml(text)}</textarea>`;
+      } else {
+        const text = value == null ? '' : String(value);
+        inputHtml = `<input type="text" id="${id}" value="${escapeHtml(text)}" data-testid="input-push-${safeName}">`;
+      }
+      const previewSlot = isImageFieldName(field.name)
+        ? `<div id="${id}-preview" style="margin-top: 0.5rem;" data-testid="preview-push-${safeName}"></div>`
+        : '';
+      return `
+        <label>
+          <span style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem;">
+            <span><strong>${safeName}</strong>${requiredBadge}</span>
+            ${field.required ? '<span style="font-size:0.72rem; color: var(--admin-text-muted, rgba(255,255,255,0.5));">required</span>' : ''}
+          </span>
+          ${inputHtml}
+          ${safeHint ? `<span style="display:block; margin-top:0.3rem; font-size:0.75rem; color: var(--admin-text-muted, rgba(255,255,255,0.55)); font-weight:400;">${safeHint}</span>` : ''}
+          ${previewSlot}
+        </label>
+      `;
+    }
+
+    function updatePushImagePreview(url, host) {
+      // Show a small thumbnail when the URL looks like a usable absolute
+      // http(s) URL or a /uploads/ path. Bad URLs collapse to a muted
+      // "no preview" line so the admin still gets feedback.
+      const trimmed = (url || '').trim();
+      if (!trimmed) {
+        host.innerHTML = '<span style="font-size:0.75rem; color: var(--admin-text-muted, rgba(255,255,255,0.5));">No image URL.</span>';
+        return;
+      }
+      const looksValid = /^https?:\/\//i.test(trimmed) || trimmed.startsWith('/');
+      if (!looksValid) {
+        host.innerHTML = '<span style="font-size:0.75rem; color:#c33;">URL must start with http(s):// or /.</span>';
+        return;
+      }
+      host.innerHTML = `
+        <img src="${escapeHtml(trimmed)}" alt="preview"
+             style="max-width: 220px; max-height: 140px; border-radius: 6px; border: 1px solid var(--admin-border, rgba(255,255,255,0.1)); background:#0a0f18; object-fit: cover;"
+             onerror="this.outerHTML='&lt;span style=&quot;font-size:0.75rem; color:#c33;&quot;&gt;Image failed to load.&lt;/span&gt;'">
+      `;
+    }
+
+    function closeScrapePushModal() {
+      document.getElementById('scrape-push-modal').style.display = 'none';
+      Scraper.pushEditor = null;
+    }
+
+    async function confirmScrapePush() {
+      const editor = Scraper.pushEditor;
+      if (!editor) return;
+      const msgEl = document.getElementById('scrape-push-modal-message');
+      msgEl.innerHTML = '';
+
+      // Pull every field's current input value back out, converting list
+      // textareas into arrays and JSON textareas into objects. Validation
+      // errors short-circuit before we touch the network.
+      const record = {};
+      const fields = (editor.shape && editor.shape.fields) || [];
+      for (let idx = 0; idx < fields.length; idx++) {
+        const field = fields[idx];
+        const el = document.getElementById(`push-field-${idx}`);
+        if (!el) continue;
+        const raw = el.value == null ? '' : String(el.value);
+        if (editor.listFieldNames.has(field.name)) {
+          // Split on newlines, trim, drop blanks. The admin can leave the
+          // textarea empty to push an empty list.
+          record[field.name] = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+        } else if (el.dataset && el.dataset.pushJson === '1') {
+          const trimmed = raw.trim();
+          if (!trimmed) {
+            record[field.name] = {};
+          } else {
+            try {
+              const parsed = JSON.parse(trimmed);
+              record[field.name] = parsed;
+            } catch (_e) {
+              msgEl.innerHTML = `<span style="color:#c33;">Field "${escapeHtml(field.name)}" is not valid JSON.</span>`;
+              return;
+            }
+          }
+        } else {
+          record[field.name] = raw;
+        }
+        if (field.required) {
+          const v = record[field.name];
+          const empty = (v == null) ||
+            (typeof v === 'string' && v.trim() === '') ||
+            (Array.isArray(v) && v.length === 0);
+          if (empty) {
+            msgEl.innerHTML = `<span style="color:#c33;">Field "${escapeHtml(field.name)}" is required.</span>`;
+            return;
+          }
+        }
+      }
+
+      const btn = document.querySelector('[data-testid="button-push-confirm"]');
+      if (btn) { btn.disabled = true; btn.textContent = 'Pushing…'; }
       try {
-        const r = await fetch(`/admin/api/scrape-jobs/${jobId}/push`, {
+        const r = await fetch(`/admin/api/scrape-jobs/${editor.jobId}/push`, {
           method: 'POST', credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
+          body: JSON.stringify({ record }),
         });
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || 'Push failed');
-        alert(`Pushed to ${data.target}. Open the matching tab to edit and publish.`);
+        closeScrapePushModal();
+        alert(`Pushed to ${data.target}. Open the matching tab to publish.`);
       } catch (e) {
-        alert(e.message);
+        msgEl.innerHTML = `<span style="color:#c33;">${escapeHtml(e.message)}</span>`;
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Confirm and push'; }
       }
     }
 

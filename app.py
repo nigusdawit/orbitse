@@ -11385,6 +11385,22 @@ def admin_push_scrape_job(job_id):
 
     result = row.get("result_json") or {}
     record = result.get("record") or {}
+
+    # The admin can pass an edited record in the request body — that's what
+    # the side-by-side "Push to..." modal sends after the user reviews and
+    # tweaks the AI's extraction. We merge the override on top of whatever
+    # the AI produced (rather than fully replacing) so any keys the admin
+    # didn't touch still come through. Falsy/empty values from the admin
+    # are intentionally honored — clearing a field is a valid edit.
+    body = request.get_json(silent=True) or {}
+    override = body.get("record")
+    if override is not None:
+        if not isinstance(override, dict):
+            return jsonify({"error": "record must be a JSON object."}), 400
+        merged = dict(record)
+        merged.update(override)
+        record = merged
+
     if not record:
         return jsonify({"error": "No extracted record on this job."}), 400
 
@@ -11486,11 +11502,27 @@ def admin_get_scraper_settings():
     render_enabled = bool((row or {}).get("scraper_render_enabled")) if row else False
     shapes = []
     for key, meta in scraper.TARGET_SHAPES.items():
+        # Expose the field catalog so the admin "Push to..." editor can
+        # render an inline form per shape without hard-coding the schema
+        # in the frontend. Each entry is (name, hint, required) — we
+        # convert to a dict, and surface which fields are list-typed so
+        # the UI can render them as comma- or newline-separated inputs.
+        list_fields = meta.get("list_fields") or set()
+        fields = []
+        for entry in meta.get("fields") or []:
+            name, hint, required = entry
+            fields.append({
+                "name": name,
+                "hint": hint,
+                "required": bool(required),
+                "is_list": name in list_fields,
+            })
         shapes.append({
             "key": key,
             "label": meta["label"],
             "description": meta["description"],
             "push_target": meta.get("push_target"),
+            "fields": fields,
         })
     return jsonify({
         "disallowed_domains": raw or "",
