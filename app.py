@@ -67,6 +67,7 @@ import sentry_sdk
 from cryptography.fernet import Fernet, InvalidToken
 
 import stripe_client
+import messaging
 from flask import (
     Flask, request, jsonify, send_from_directory,
     render_template, session, redirect, url_for, Response, stream_with_context
@@ -1067,6 +1068,120 @@ def init_db():
                 );
                 CREATE INDEX IF NOT EXISTS idx_widgets_dashboard
                     ON dashboard_widgets (dashboard_id);
+            """)
+
+            # =============================================================
+            # MESSAGING — subscribers, templates, campaigns, log
+            # =============================================================
+            # Foundation for the email + SMS layer (Resend / Twilio).
+            #
+            #   subscribers            People we may message. opt_in defaults
+            #                          to TRUE; the unsubscribe flow flips it
+            #                          to FALSE and the dispatcher honors it.
+            #
+            #   messaging_templates    Reusable bodies — channel is 'email'
+            #                          or 'sms'. Email rows carry a subject;
+            #                          SMS rows ignore it. Body supports
+            #                          {{merge_tag}} placeholders.
+            #
+            #   messaging_campaigns    A scheduled or immediate send. status
+            #                          flows draft → queued → sending → sent
+            #                          (or failed). recipient_filter is JSON
+            #                          describing who the campaign targets.
+            #
+            #   messaging_log          One row per (campaign, subscriber).
+            #                          status flows queued → sent → delivered
+            #                          (or failed/bounced). opens/clicks
+            #                          updated by Resend webhook.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS subscribers (
+                    id              SERIAL PRIMARY KEY,
+                    email           TEXT NOT NULL DEFAULT '',
+                    phone           TEXT NOT NULL DEFAULT '',
+                    full_name       TEXT NOT NULL DEFAULT '',
+                    list_name       TEXT NOT NULL DEFAULT 'default',
+                    source          TEXT NOT NULL DEFAULT 'manual',
+                    opt_in          BOOLEAN NOT NULL DEFAULT TRUE,
+                    opt_in_email    BOOLEAN NOT NULL DEFAULT TRUE,
+                    opt_in_sms      BOOLEAN NOT NULL DEFAULT TRUE,
+                    custom_fields   JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    unsubscribed_at TIMESTAMP,
+                    created_at      TIMESTAMP DEFAULT NOW(),
+                    updated_at      TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_subscribers_email ON subscribers (email);
+                CREATE INDEX IF NOT EXISTS idx_subscribers_phone ON subscribers (phone);
+                CREATE INDEX IF NOT EXISTS idx_subscribers_list  ON subscribers (list_name);
+
+                CREATE TABLE IF NOT EXISTS messaging_templates (
+                    id           SERIAL PRIMARY KEY,
+                    name         TEXT NOT NULL DEFAULT 'Untitled template',
+                    channel      VARCHAR(10) NOT NULL DEFAULT 'email',
+                    subject      TEXT NOT NULL DEFAULT '',
+                    body         TEXT NOT NULL DEFAULT '',
+                    from_name    TEXT NOT NULL DEFAULT '',
+                    reply_to     TEXT NOT NULL DEFAULT '',
+                    notes        TEXT NOT NULL DEFAULT '',
+                    created_at   TIMESTAMP DEFAULT NOW(),
+                    updated_at   TIMESTAMP DEFAULT NOW()
+                );
+
+                CREATE TABLE IF NOT EXISTS messaging_campaigns (
+                    id                 SERIAL PRIMARY KEY,
+                    name               TEXT NOT NULL DEFAULT '',
+                    template_id        INTEGER REFERENCES messaging_templates(id) ON DELETE SET NULL,
+                    channel            VARCHAR(10) NOT NULL DEFAULT 'email',
+                    -- Snapshot of the rendered template at send time. We
+                    -- snapshot rather than re-read the template so editing
+                    -- a template later cannot retroactively change a sent
+                    -- campaign's body.
+                    subject_snapshot   TEXT NOT NULL DEFAULT '',
+                    body_snapshot      TEXT NOT NULL DEFAULT '',
+                    -- 'all' | 'list' | 'ids' (recipient_filter has the params)
+                    recipient_kind     VARCHAR(20) NOT NULL DEFAULT 'all',
+                    recipient_filter   JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    -- 'draft' | 'queued' | 'sending' | 'sent' | 'failed' | 'cancelled'
+                    status             VARCHAR(20) NOT NULL DEFAULT 'draft',
+                    send_at            TIMESTAMP,
+                    started_at         TIMESTAMP,
+                    finished_at        TIMESTAMP,
+                    total_recipients   INTEGER NOT NULL DEFAULT 0,
+                    sent_count         INTEGER NOT NULL DEFAULT 0,
+                    failed_count       INTEGER NOT NULL DEFAULT 0,
+                    error_text         TEXT NOT NULL DEFAULT '',
+                    created_at         TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_campaigns_status   ON messaging_campaigns (status);
+                CREATE INDEX IF NOT EXISTS idx_campaigns_send_at  ON messaging_campaigns (send_at);
+
+                CREATE TABLE IF NOT EXISTS messaging_log (
+                    id                 SERIAL PRIMARY KEY,
+                    campaign_id        INTEGER REFERENCES messaging_campaigns(id) ON DELETE SET NULL,
+                    subscriber_id      INTEGER REFERENCES subscribers(id) ON DELETE SET NULL,
+                    channel            VARCHAR(10) NOT NULL DEFAULT 'email',
+                    -- Recipient address resolved at send time (kept even if
+                    -- the subscriber row is later deleted).
+                    to_address         TEXT NOT NULL DEFAULT '',
+                    subject_snapshot   TEXT NOT NULL DEFAULT '',
+                    body_snapshot      TEXT NOT NULL DEFAULT '',
+                    -- 'queued' | 'sent' | 'delivered' | 'opened' | 'clicked'
+                    -- | 'bounced' | 'complained' | 'failed' | 'unsubscribed'
+                    status             VARCHAR(20) NOT NULL DEFAULT 'queued',
+                    provider           VARCHAR(20) NOT NULL DEFAULT '',
+                    provider_message_id TEXT NOT NULL DEFAULT '',
+                    error_text         TEXT NOT NULL DEFAULT '',
+                    sent_at            TIMESTAMP,
+                    delivered_at       TIMESTAMP,
+                    opened_at          TIMESTAMP,
+                    clicked_at         TIMESTAMP,
+                    open_count         INTEGER NOT NULL DEFAULT 0,
+                    click_count        INTEGER NOT NULL DEFAULT 0,
+                    is_test            BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at         TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_msg_log_campaign ON messaging_log (campaign_id);
+                CREATE INDEX IF NOT EXISTS idx_msg_log_provider ON messaging_log (provider_message_id);
+                CREATE INDEX IF NOT EXISTS idx_msg_log_to       ON messaging_log (to_address);
             """)
 
             # Seed a default "Contact / Inquiry" form if no forms exist yet
@@ -9234,6 +9349,1170 @@ def _shape_external_data_for_widget(raw, widget_type, cfg):
         return {"labels": labels, "values": values}
     # table
     return {"columns": cols, "rows": rows}
+
+
+# =============================================================================
+# MESSAGING — admin API + webhooks + unsubscribe + scheduler
+# =============================================================================
+# Email + SMS messaging layer. Admin UI lives under "Messaging" in the
+# sidebar. Public webhooks (no auth) come from Resend / Twilio. Public
+# unsubscribe link is signed so subscribers cannot opt each other out.
+
+def _email_re_check(addr: str) -> bool:
+    if not addr:
+        return False
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", addr.strip()))
+
+
+def _public_base_url() -> str:
+    """Best-effort canonical URL for unsubscribe / webhook links."""
+    settings = query_db("SELECT seo_canonical_url FROM site_settings WHERE id = 1", fetchone=True)
+    if settings and (settings.get("seo_canonical_url") or "").strip():
+        return settings["seo_canonical_url"].rstrip("/")
+    domains = (os.environ.get("REPLIT_DOMAINS") or "").strip()
+    if domains:
+        first = domains.split(",")[0].strip()
+        if first:
+            return f"https://{first}"
+    return request.host_url.rstrip("/") if request else ""
+
+
+def _unsub_url(subscriber_id: int) -> str:
+    base = _public_base_url() or ""
+    token = messaging.make_unsubscribe_token(subscriber_id)
+    return f"{base}/unsubscribe?token={token}"
+
+
+def _wrap_email_html(html_body: str, subscriber_id: int) -> str:
+    """Inject a footer with the unsubscribe link if the body does not
+    already include one. Keeps templates simple — admins don't have to
+    remember to paste an unsubscribe footer into every template."""
+    body = html_body or ""
+    if "{{unsubscribe_url}}" in body:
+        # Body already has its own unsubscribe placeholder — caller will
+        # have rendered the merge tag with the real URL.
+        return body
+    if 'href="' in body and ("unsubscribe" in body.lower() or "/unsubscribe?" in body):
+        return body
+    unsub = _unsub_url(subscriber_id)
+    footer = (
+        '<hr style="border:none;border-top:1px solid #e5e7eb;margin:2rem 0 1rem 0">'
+        '<p style="font-size:12px;color:#6b7280;text-align:center;font-family:Arial,sans-serif">'
+        f'You\'re receiving this because you subscribed. '
+        f'<a href="{html_module.escape(unsub, quote=True)}" '
+        'style="color:#6b7280;text-decoration:underline">Unsubscribe</a>.'
+        "</p>"
+    )
+    return body + footer
+
+
+def _row_subscriber(row):
+    if not row:
+        return None
+    cf = row.get("custom_fields") or {}
+    return {
+        "id": row["id"],
+        "email": row["email"],
+        "phone": row["phone"],
+        "full_name": row["full_name"],
+        "list_name": row["list_name"],
+        "source": row["source"],
+        "opt_in": row["opt_in"],
+        "opt_in_email": row.get("opt_in_email", True),
+        "opt_in_sms": row.get("opt_in_sms", True),
+        "custom_fields": cf if isinstance(cf, dict) else {},
+        "unsubscribed_at": row["unsubscribed_at"].isoformat() if row.get("unsubscribed_at") else None,
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+    }
+
+
+# --- subscriber resolution for campaigns -------------------------------------
+
+def _resolve_recipients(channel: str, recipient_kind: str, recipient_filter: dict):
+    """Return a list of subscriber rows that match the campaign's targeting.
+    Respects opt_in / opt_in_email / opt_in_sms and skips rows missing the
+    required address column for the channel."""
+    where = ["opt_in = TRUE"]
+    params = []
+    if channel == "email":
+        where.append("email <> ''")
+        where.append("opt_in_email = TRUE")
+    elif channel == "sms":
+        where.append("phone <> ''")
+        where.append("opt_in_sms = TRUE")
+    if recipient_kind == "list":
+        list_name = (recipient_filter or {}).get("list_name") or "default"
+        where.append("list_name = %s")
+        params.append(list_name)
+    elif recipient_kind == "ids":
+        ids = (recipient_filter or {}).get("ids") or []
+        ids = [int(i) for i in ids if str(i).strip().lstrip("-").isdigit()]
+        if not ids:
+            return []
+        placeholders = ",".join(["%s"] * len(ids))
+        where.append(f"id IN ({placeholders})")
+        params.extend(ids)
+    sql = f"SELECT * FROM subscribers WHERE {' AND '.join(where)} ORDER BY id"
+    rows = query_db(sql, tuple(params))
+    return rows or []
+
+
+# --- send-one helper used by both test send and campaign dispatcher ---------
+
+def _send_one(template_or_snapshot: dict, subscriber: dict, *, campaign_id=None,
+              is_test=False) -> dict:
+    """Render a template against one subscriber and send it. Writes a
+    messaging_log row in any outcome (success or failure) and returns it.
+    `template_or_snapshot` accepts either a real template row or a dict
+    with channel/subject/body/from_name/reply_to so campaigns can pass
+    their snapshot."""
+    channel = template_or_snapshot.get("channel") or "email"
+    subject_tpl = template_or_snapshot.get("subject") or ""
+    body_tpl = template_or_snapshot.get("body") or ""
+    reply_to = (template_or_snapshot.get("reply_to") or "").strip() or None
+    from_name = (template_or_snapshot.get("from_name") or "").strip()
+
+    sub_id = subscriber.get("id") or 0
+    ctx = messaging.subscriber_context(subscriber, extra={
+        "unsubscribe_url": _unsub_url(sub_id) if sub_id else "",
+    })
+
+    rendered_subject = messaging.render_merge_tags(subject_tpl, ctx)
+    rendered_body = messaging.render_merge_tags(body_tpl, ctx)
+
+    to_address = subscriber.get("email", "") if channel == "email" else subscriber.get("phone", "")
+    log_row = execute_db(
+        """
+        INSERT INTO messaging_log
+            (campaign_id, subscriber_id, channel, to_address,
+             subject_snapshot, body_snapshot, status, provider, is_test)
+        VALUES (%s, %s, %s, %s, %s, %s, 'queued', %s, %s)
+        RETURNING *
+        """,
+        (
+            campaign_id,
+            sub_id or None,
+            channel,
+            to_address,
+            rendered_subject,
+            rendered_body,
+            "resend" if channel == "email" else "twilio",
+            bool(is_test),
+        ),
+    )
+    log_id = log_row["id"]
+
+    try:
+        if channel == "email":
+            sender_override = None
+            if from_name:
+                # Resend accepts "Name <addr@example.com>" syntax.
+                _, default_from = messaging._resolve_resend()
+                if default_from and "<" not in default_from:
+                    sender_override = f"{from_name} <{default_from}>"
+            html_body = _wrap_email_html(rendered_body, sub_id)
+            resp = messaging.send_email(
+                to_address,
+                rendered_subject,
+                html_body,
+                from_override=sender_override,
+                reply_to=reply_to,
+                tags=[("campaign_id", str(campaign_id or 0)), ("log_id", str(log_id))],
+                headers={
+                    "List-Unsubscribe": f"<{_unsub_url(sub_id)}>" if sub_id else "",
+                    "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+                } if sub_id else None,
+            )
+            provider_id = resp.get("id") or ""
+        else:
+            # Ask Twilio to POST status updates to our webhook so the per-
+            # recipient log gets delivered/failed updates without the admin
+            # needing to wire StatusCallback in the Twilio console.
+            try:
+                status_cb = url_for("webhook_twilio_status", _external=True)
+            except Exception:
+                status_cb = None
+            resp = messaging.send_sms(
+                to_address, rendered_body, status_callback_url=status_cb,
+            )
+            provider_id = resp.get("sid") or ""
+        execute_db(
+            """
+            UPDATE messaging_log
+               SET status = 'sent',
+                   provider_message_id = %s,
+                   sent_at = NOW()
+             WHERE id = %s
+            """,
+            (provider_id, log_id),
+        )
+        return {"ok": True, "log_id": log_id, "provider_message_id": provider_id}
+    except messaging.MessagingError as e:
+        execute_db(
+            "UPDATE messaging_log SET status='failed', error_text=%s WHERE id=%s",
+            (str(e)[:500], log_id),
+        )
+        return {"ok": False, "log_id": log_id, "error": str(e)}
+    except Exception as e:
+        execute_db(
+            "UPDATE messaging_log SET status='failed', error_text=%s WHERE id=%s",
+            (f"unexpected: {e}"[:500], log_id),
+        )
+        return {"ok": False, "log_id": log_id, "error": str(e)}
+
+
+# --- background dispatcher ---------------------------------------------------
+
+def _dispatch_due_campaigns():
+    """Pick up any campaigns whose send_at has passed and dispatch them.
+    Atomically claims each campaign by transitioning queued → sending so
+    overlapping ticks (or two scheduler copies in dev) cannot double-send."""
+    rows = query_db(
+        """
+        SELECT id FROM messaging_campaigns
+         WHERE status = 'queued' AND (send_at IS NULL OR send_at <= NOW())
+         ORDER BY id
+         LIMIT 25
+        """
+    ) or []
+    for row in rows:
+        cid = row["id"]
+        # Atomic claim: only one tick will succeed for a given campaign.
+        claimed = execute_db(
+            """
+            UPDATE messaging_campaigns
+               SET status='sending', started_at=NOW()
+             WHERE id=%s AND status='queued'
+            RETURNING *
+            """,
+            (cid,),
+        )
+        if not claimed:
+            continue
+        try:
+            _send_campaign(claimed)
+        except Exception as e:  # never let one campaign kill the loop
+            execute_db(
+                """
+                UPDATE messaging_campaigns
+                   SET status='failed',
+                       finished_at=NOW(),
+                       error_text=%s
+                 WHERE id=%s
+                """,
+                (str(e)[:500], cid),
+            )
+
+
+def _send_campaign(campaign: dict):
+    snapshot = {
+        "channel": campaign["channel"],
+        "subject": campaign["subject_snapshot"],
+        "body": campaign["body_snapshot"],
+    }
+    recipients = _resolve_recipients(
+        campaign["channel"],
+        campaign["recipient_kind"],
+        campaign.get("recipient_filter") or {},
+    )
+    sent = 0
+    failed = 0
+    for sub in recipients:
+        outcome = _send_one(snapshot, sub, campaign_id=campaign["id"])
+        if outcome.get("ok"):
+            sent += 1
+        else:
+            failed += 1
+    execute_db(
+        """
+        UPDATE messaging_campaigns
+           SET status = CASE
+                          WHEN %s > 0 AND %s = 0 THEN 'failed'
+                          ELSE 'sent'
+                        END,
+               finished_at = NOW(),
+               total_recipients = %s,
+               sent_count = %s,
+               failed_count = %s
+         WHERE id = %s
+        """,
+        (failed, sent, len(recipients), sent, failed, campaign["id"]),
+    )
+
+
+messaging.register_tick(_dispatch_due_campaigns)
+
+
+# --- ADMIN: status / settings ------------------------------------------------
+
+@app.route("/admin/api/messaging/status")
+@admin_required
+def admin_messaging_status():
+    return jsonify({
+        "resend": messaging.resend_status(),
+        "twilio": messaging.twilio_status(),
+        "admin": messaging.admin_contact(),
+        "scheduler_started": messaging._SCHEDULER_STARTED,
+    })
+
+
+# --- ADMIN: subscribers CRUD ------------------------------------------------
+
+@app.route("/admin/api/messaging/subscribers")
+@admin_required
+def admin_subscribers_list():
+    rows = query_db(
+        "SELECT * FROM subscribers ORDER BY created_at DESC, id DESC LIMIT 1000"
+    ) or []
+    return jsonify([_row_subscriber(r) for r in rows])
+
+
+@app.route("/admin/api/messaging/subscribers", methods=["POST"])
+@admin_required
+def admin_subscribers_create():
+    body = request.get_json(silent=True) or {}
+    email = (body.get("email") or "").strip().lower()
+    phone = (body.get("phone") or "").strip()
+    name = (body.get("full_name") or "").strip()
+    list_name = (body.get("list_name") or "default").strip() or "default"
+    source = (body.get("source") or "manual").strip() or "manual"
+    custom = body.get("custom_fields") or {}
+    if not (email or phone):
+        return jsonify({"error": "Either email or phone is required."}), 400
+    if email and not _email_re_check(email):
+        return jsonify({"error": "Invalid email address."}), 400
+    # Honor any opt-in flags the admin sent; default to True (opted-in) so
+    # the simple "add a subscriber" path keeps working.
+    opt_in = bool(body.get("opt_in", True))
+    opt_in_email = bool(body.get("opt_in_email", True))
+    opt_in_sms = bool(body.get("opt_in_sms", True))
+    row = execute_db(
+        """
+        INSERT INTO subscribers
+            (email, phone, full_name, list_name, source, custom_fields,
+             opt_in, opt_in_email, opt_in_sms)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (email, phone, name, list_name, source, json.dumps(custom),
+         opt_in, opt_in_email, opt_in_sms),
+    )
+    return jsonify(_row_subscriber(row))
+
+
+@app.route("/admin/api/messaging/subscribers/<int:sid>", methods=["PUT"])
+@admin_required
+def admin_subscribers_update(sid):
+    body = request.get_json(silent=True) or {}
+    fields = []
+    params = []
+    for k in ("email", "phone", "full_name", "list_name"):
+        if k in body:
+            v = body.get(k) or ""
+            if k == "email":
+                v = v.strip().lower()
+                if v and not _email_re_check(v):
+                    return jsonify({"error": "Invalid email address."}), 400
+            fields.append(f"{k} = %s")
+            params.append(v.strip() if isinstance(v, str) else v)
+    if "custom_fields" in body:
+        fields.append("custom_fields = %s")
+        params.append(json.dumps(body.get("custom_fields") or {}))
+    for k in ("opt_in", "opt_in_email", "opt_in_sms"):
+        if k in body:
+            fields.append(f"{k} = %s")
+            params.append(bool(body.get(k)))
+    if not fields:
+        return jsonify({"error": "No fields to update."}), 400
+    params.append(sid)
+    fields.append("updated_at = NOW()")
+    row = execute_db(
+        f"UPDATE subscribers SET {', '.join(fields)} WHERE id=%s RETURNING *",
+        tuple(params),
+    )
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(_row_subscriber(row))
+
+
+@app.route("/admin/api/messaging/subscribers/<int:sid>", methods=["DELETE"])
+@admin_required
+def admin_subscribers_delete(sid):
+    n = execute_db("DELETE FROM subscribers WHERE id=%s", (sid,))
+    return jsonify({"ok": True, "deleted": n})
+
+
+@app.route("/admin/api/messaging/subscribers/import-csv", methods=["POST"])
+@admin_required
+def admin_subscribers_import_csv():
+    """Accept either a JSON {csv_text, list_name} or a multipart file upload."""
+    list_name = "default"
+    csv_text = ""
+    if request.files and "file" in request.files:
+        f = request.files["file"]
+        try:
+            csv_text = f.read().decode("utf-8", errors="replace")
+        except Exception:
+            return jsonify({"error": "Could not read uploaded CSV."}), 400
+        list_name = (request.form.get("list_name") or "default").strip() or "default"
+    else:
+        body = request.get_json(silent=True) or {}
+        csv_text = body.get("csv_text") or ""
+        list_name = (body.get("list_name") or "default").strip() or "default"
+
+    parsed = messaging.parse_subscriber_csv(csv_text)
+    inserted = 0
+    skipped = 0
+    for r in parsed:
+        email = (r.get("email") or "").strip().lower()
+        phone = (r.get("phone") or "").strip()
+        if email and not _email_re_check(email):
+            skipped += 1
+            continue
+        # Soft de-dupe: skip if a row with the same email or phone already exists.
+        if email:
+            dup = query_db("SELECT id FROM subscribers WHERE LOWER(email)=%s LIMIT 1", (email,), fetchone=True)
+            if dup:
+                skipped += 1
+                continue
+        elif phone:
+            dup = query_db("SELECT id FROM subscribers WHERE phone=%s LIMIT 1", (phone,), fetchone=True)
+            if dup:
+                skipped += 1
+                continue
+        execute_db(
+            """
+            INSERT INTO subscribers (email, phone, full_name, list_name, source, custom_fields)
+            VALUES (%s, %s, %s, %s, 'csv', %s)
+            """,
+            (email, phone, r.get("full_name") or "", list_name, json.dumps(r.get("custom_fields") or {})),
+        )
+        inserted += 1
+    return jsonify({"ok": True, "inserted": inserted, "skipped": skipped, "parsed": len(parsed)})
+
+
+@app.route("/admin/api/messaging/subscribers/import-form-submissions", methods=["POST"])
+@admin_required
+def admin_subscribers_import_form_submissions():
+    """Walk every row in form_submissions, look at the JSONB submission_data
+    for an email or phone field, and import any new contacts into the
+    subscribers table. Skips ones we already have."""
+    body = request.get_json(silent=True) or {}
+    list_name = (body.get("list_name") or "form-submissions").strip() or "form-submissions"
+    form_id = body.get("form_id")
+    sql = "SELECT id, form_id, submission_data FROM form_submissions"
+    params: tuple = ()
+    if form_id:
+        sql += " WHERE form_id = %s"
+        params = (int(form_id),)
+    sql += " ORDER BY id"
+    rows = query_db(sql, params) or []
+    inserted = 0
+    skipped = 0
+    for r in rows:
+        data = r.get("submission_data") or {}
+        if not isinstance(data, dict):
+            continue
+        email = ""
+        phone = ""
+        name = ""
+        for k, v in data.items():
+            if not isinstance(v, str):
+                continue
+            kl = k.lower()
+            if not email and ("email" in kl or "e-mail" in kl) and "@" in v:
+                email = v.strip().lower()
+            elif not phone and ("phone" in kl or "mobile" in kl or "cell" in kl):
+                phone = v.strip()
+            elif not name and ("name" in kl or "full" in kl):
+                name = v.strip()
+        if not (email or phone):
+            continue
+        if email and not _email_re_check(email):
+            skipped += 1
+            continue
+        if email:
+            dup = query_db("SELECT id FROM subscribers WHERE LOWER(email)=%s LIMIT 1", (email,), fetchone=True)
+            if dup:
+                skipped += 1
+                continue
+        elif phone:
+            dup = query_db("SELECT id FROM subscribers WHERE phone=%s LIMIT 1", (phone,), fetchone=True)
+            if dup:
+                skipped += 1
+                continue
+        execute_db(
+            """
+            INSERT INTO subscribers (email, phone, full_name, list_name, source, custom_fields)
+            VALUES (%s, %s, %s, %s, 'form_submission', %s)
+            """,
+            (email, phone, name, list_name, json.dumps({"form_submission_id": r["id"], "form_id": r["form_id"]})),
+        )
+        inserted += 1
+    return jsonify({"ok": True, "inserted": inserted, "skipped": skipped, "scanned": len(rows)})
+
+
+# --- ADMIN: templates -------------------------------------------------------
+
+def _row_template(row):
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "channel": row["channel"],
+        "subject": row["subject"],
+        "body": row["body"],
+        "from_name": row.get("from_name", ""),
+        "reply_to": row.get("reply_to", ""),
+        "notes": row.get("notes", ""),
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+    }
+
+
+@app.route("/admin/api/messaging/templates")
+@admin_required
+def admin_templates_list():
+    rows = query_db("SELECT * FROM messaging_templates ORDER BY id DESC") or []
+    return jsonify([_row_template(r) for r in rows])
+
+
+@app.route("/admin/api/messaging/templates", methods=["POST"])
+@admin_required
+def admin_templates_create():
+    body = request.get_json(silent=True) or {}
+    channel = (body.get("channel") or "email").strip().lower()
+    if channel not in ("email", "sms"):
+        return jsonify({"error": "channel must be 'email' or 'sms'"}), 400
+    row = execute_db(
+        """
+        INSERT INTO messaging_templates
+            (name, channel, subject, body, from_name, reply_to, notes)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (
+            (body.get("name") or "Untitled template").strip(),
+            channel,
+            (body.get("subject") or "").strip(),
+            body.get("body") or "",
+            (body.get("from_name") or "").strip(),
+            (body.get("reply_to") or "").strip(),
+            (body.get("notes") or "").strip(),
+        ),
+    )
+    return jsonify(_row_template(row))
+
+
+@app.route("/admin/api/messaging/templates/<int:tid>", methods=["PUT"])
+@admin_required
+def admin_templates_update(tid):
+    body = request.get_json(silent=True) or {}
+    fields = []
+    params = []
+    for k in ("name", "channel", "subject", "body", "from_name", "reply_to", "notes"):
+        if k in body:
+            v = body.get(k) or ""
+            if k == "channel" and v not in ("email", "sms"):
+                return jsonify({"error": "channel must be 'email' or 'sms'"}), 400
+            fields.append(f"{k} = %s")
+            params.append(v if k == "body" else (v.strip() if isinstance(v, str) else v))
+    if not fields:
+        return jsonify({"error": "No fields to update."}), 400
+    fields.append("updated_at = NOW()")
+    params.append(tid)
+    row = execute_db(
+        f"UPDATE messaging_templates SET {', '.join(fields)} WHERE id=%s RETURNING *",
+        tuple(params),
+    )
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(_row_template(row))
+
+
+@app.route("/admin/api/messaging/templates/<int:tid>", methods=["DELETE"])
+@admin_required
+def admin_templates_delete(tid):
+    n = execute_db("DELETE FROM messaging_templates WHERE id=%s", (tid,))
+    return jsonify({"ok": True, "deleted": n})
+
+
+@app.route("/admin/api/messaging/templates/<int:tid>/preview")
+@admin_required
+def admin_templates_preview(tid):
+    """Render a template against either a real subscriber id (?subscriber_id=)
+    or a sample built from query params, returning the rendered subject + body
+    so the admin can eyeball the merge tags before sending."""
+    tpl = query_db("SELECT * FROM messaging_templates WHERE id=%s", (tid,), fetchone=True)
+    if not tpl:
+        return jsonify({"error": "Not found"}), 404
+    sub_id = request.args.get("subscriber_id")
+    if sub_id:
+        sub = query_db("SELECT * FROM subscribers WHERE id=%s", (int(sub_id),), fetchone=True) or {}
+    else:
+        sub = {
+            "id": 0,
+            "email": request.args.get("email") or "sample@example.com",
+            "phone": request.args.get("phone") or "+15555555555",
+            "full_name": request.args.get("full_name") or "Alex Sample",
+            "custom_fields": {},
+        }
+    ctx = messaging.subscriber_context(sub, extra={
+        "unsubscribe_url": _unsub_url(sub.get("id") or 0),
+    })
+    return jsonify({
+        "channel": tpl["channel"],
+        "subject": messaging.render_merge_tags(tpl["subject"], ctx),
+        "body": messaging.render_merge_tags(tpl["body"], ctx),
+        "context": ctx,
+    })
+
+
+@app.route("/admin/api/messaging/templates/<int:tid>/test-send", methods=["POST"])
+@admin_required
+def admin_templates_test_send(tid):
+    """Send a single message to the admin's own email or phone (configured
+    via ADMIN_EMAIL / ADMIN_PHONE) so the admin can sanity-check a template."""
+    tpl = query_db("SELECT * FROM messaging_templates WHERE id=%s", (tid,), fetchone=True)
+    if not tpl:
+        return jsonify({"error": "Template not found"}), 404
+    body = request.get_json(silent=True) or {}
+    override_to = (body.get("to") or "").strip()
+    contact = messaging.admin_contact()
+    if tpl["channel"] == "email":
+        to_addr = override_to or contact["email"]
+        if not to_addr:
+            return jsonify({"error": "Set ADMIN_EMAIL secret or pass `to`."}), 400
+        sub = {"id": 0, "email": to_addr, "phone": "", "full_name": "Admin Tester", "custom_fields": {}}
+    else:
+        to_addr = override_to or contact["phone"]
+        if not to_addr:
+            return jsonify({"error": "Set ADMIN_PHONE secret or pass `to`."}), 400
+        sub = {"id": 0, "email": "", "phone": to_addr, "full_name": "Admin Tester", "custom_fields": {}}
+    outcome = _send_one(tpl, sub, is_test=True)
+    return jsonify(outcome), (200 if outcome.get("ok") else 502)
+
+
+# --- ADMIN: AI drafting -----------------------------------------------------
+
+@app.route("/admin/api/messaging/ai-draft", methods=["POST"])
+@admin_required
+def admin_messaging_ai_draft():
+    """Draft a template body (and subject for email) from a short admin
+    prompt. mode='prompt' uses the prompt verbatim; mode='chat-themes'
+    aggregates the last N days of chat_messages and asks the model to
+    propose a campaign body about the recurring themes."""
+    body = request.get_json(silent=True) or {}
+    mode = (body.get("mode") or "prompt").strip().lower()
+    channel = (body.get("channel") or "email").strip().lower()
+    if channel not in ("email", "sms"):
+        return jsonify({"error": "channel must be 'email' or 'sms'"}), 400
+    tone = (body.get("tone") or "friendly").strip()
+    prompt_text = (body.get("prompt") or "").strip()
+    days = max(1, min(int(body.get("days") or 14), 90))
+
+    if mode == "chat-themes":
+        # psycopg2 quotes integers, so we cannot inline the days as a
+        # parameter inside the INTERVAL literal. Pass it as a separate
+        # parameter and multiply by '1 day' to keep the query injection-safe.
+        msgs = query_db(
+            """
+            SELECT role, content
+              FROM chat_messages
+             WHERE created_at >= NOW() - (%s * INTERVAL '1 day')
+             ORDER BY id DESC
+             LIMIT 400
+            """,
+            (days,),
+        ) or []
+        sample_lines = []
+        for m in msgs:
+            text = (m.get("content") or "").strip().replace("\n", " ")
+            if not text:
+                continue
+            sample_lines.append(f"{m['role']}: {text[:280]}")
+        sample = "\n".join(sample_lines[:200]) or "(no recent chat messages)"
+        user_prompt = (
+            f"The admin wants to send a {channel} message to all subscribers "
+            f"about recurring themes from the last {days} days of chat history. "
+            f"Identify 1-3 recurring themes and write a single message about them. "
+            f"Tone: {tone}.\n\nRecent chat lines:\n{sample}"
+        )
+    else:
+        if not prompt_text:
+            return jsonify({"error": "Prompt is required."}), 400
+        user_prompt = (
+            f"Write a {channel} message. Tone: {tone}. Keep it concise.\n\n"
+            f"Admin's intent: {prompt_text}"
+        )
+
+    if channel == "email":
+        system = (
+            "You are a marketing copywriter. Respond with ONLY a JSON object "
+            "(no markdown fences) with these fields:\n"
+            '  "subject": short, compelling subject line (max 80 chars),\n'
+            '  "body": HTML body (use <p>, <h2>, <a> only; no <html>/<head>; '
+            'use {{first_name}} and other merge tags where natural).\n'
+            "Keep the body under 250 words."
+        )
+    else:
+        system = (
+            "You are an SMS copywriter. Respond with ONLY a JSON object "
+            "(no markdown fences) with this field:\n"
+            '  "body": SMS message body, plain text, max 320 characters, '
+            "may use {{first_name}} merge tag. No emoji unless requested."
+        )
+
+    text = ""
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=900,
+            temperature=0.7,
+        )
+        text = (response.choices[0].message.content or "").strip()
+    except Exception as e:
+        return jsonify({"error": f"AI drafting failed: {e}"}), 502
+    cleaned = re.sub(r"^```(?:json)?\s*", "", text)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        # Fall back to treating the whole response as the body so the admin
+        # at least sees something they can edit.
+        data = {"body": text, "subject": ""}
+
+    out = {"channel": channel}
+    if channel == "email":
+        out["subject"] = (data.get("subject") or "").strip()[:200]
+        out["body"] = data.get("body") or ""
+    else:
+        out["body"] = (data.get("body") or "")[:1000]
+    return jsonify(out)
+
+
+# --- ADMIN: campaigns -------------------------------------------------------
+
+def _row_campaign(row):
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "template_id": row["template_id"],
+        "channel": row["channel"],
+        "subject_snapshot": row["subject_snapshot"],
+        "body_snapshot": row["body_snapshot"],
+        "recipient_kind": row["recipient_kind"],
+        "recipient_filter": row.get("recipient_filter") or {},
+        "status": row["status"],
+        "send_at": row["send_at"].isoformat() if row.get("send_at") else None,
+        "started_at": row["started_at"].isoformat() if row.get("started_at") else None,
+        "finished_at": row["finished_at"].isoformat() if row.get("finished_at") else None,
+        "total_recipients": row["total_recipients"],
+        "sent_count": row["sent_count"],
+        "failed_count": row["failed_count"],
+        "error_text": row.get("error_text", ""),
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+    }
+
+
+@app.route("/admin/api/messaging/campaigns")
+@admin_required
+def admin_campaigns_list():
+    rows = query_db("SELECT * FROM messaging_campaigns ORDER BY id DESC LIMIT 200") or []
+    return jsonify([_row_campaign(r) for r in rows])
+
+
+@app.route("/admin/api/messaging/campaigns", methods=["POST"])
+@admin_required
+def admin_campaigns_create():
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip() or "Untitled campaign"
+    template_id = body.get("template_id")
+    if not template_id:
+        return jsonify({"error": "template_id is required."}), 400
+    tpl = query_db("SELECT * FROM messaging_templates WHERE id=%s", (int(template_id),), fetchone=True)
+    if not tpl:
+        return jsonify({"error": "Template not found."}), 404
+    recipient_kind = (body.get("recipient_kind") or "all").strip()
+    if recipient_kind not in ("all", "list", "ids"):
+        return jsonify({"error": "recipient_kind must be all, list, or ids."}), 400
+    recipient_filter = body.get("recipient_filter") or {}
+    send_when = (body.get("send_when") or "now").strip()  # 'now' | 'schedule' | 'draft'
+    send_at_str = body.get("send_at") or ""
+    send_at = None
+    status = "draft"
+    if send_when == "now":
+        status = "queued"
+    elif send_when == "schedule":
+        try:
+            # Accept ISO 8601 (with or without timezone). Naive = UTC.
+            cleaned = send_at_str.replace("Z", "+00:00")
+            send_at_dt = datetime.fromisoformat(cleaned)
+            send_at = send_at_dt
+            status = "queued"
+        except Exception:
+            return jsonify({"error": "send_at must be a valid ISO timestamp."}), 400
+    elif send_when == "draft":
+        status = "draft"
+
+    row = execute_db(
+        """
+        INSERT INTO messaging_campaigns
+            (name, template_id, channel, subject_snapshot, body_snapshot,
+             recipient_kind, recipient_filter, status, send_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (
+            name,
+            tpl["id"],
+            tpl["channel"],
+            tpl["subject"],
+            tpl["body"],
+            recipient_kind,
+            json.dumps(recipient_filter),
+            status,
+            send_at,
+        ),
+    )
+    return jsonify(_row_campaign(row))
+
+
+@app.route("/admin/api/messaging/campaigns/<int:cid>")
+@admin_required
+def admin_campaigns_get(cid):
+    row = query_db("SELECT * FROM messaging_campaigns WHERE id=%s", (cid,), fetchone=True)
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    logs = query_db(
+        "SELECT * FROM messaging_log WHERE campaign_id=%s ORDER BY id DESC LIMIT 500",
+        (cid,),
+    ) or []
+    return jsonify({
+        "campaign": _row_campaign(row),
+        "log": [_row_log(l) for l in logs],
+    })
+
+
+@app.route("/admin/api/messaging/campaigns/<int:cid>/cancel", methods=["POST"])
+@admin_required
+def admin_campaigns_cancel(cid):
+    row = execute_db(
+        """
+        UPDATE messaging_campaigns
+           SET status='cancelled', finished_at=NOW()
+         WHERE id=%s AND status IN ('queued','draft')
+        RETURNING *
+        """,
+        (cid,),
+    )
+    if not row:
+        return jsonify({"error": "Campaign not in a cancellable state."}), 400
+    return jsonify(_row_campaign(row))
+
+
+@app.route("/admin/api/messaging/campaigns/<int:cid>/send-now", methods=["POST"])
+@admin_required
+def admin_campaigns_send_now(cid):
+    row = execute_db(
+        """
+        UPDATE messaging_campaigns
+           SET status='queued', send_at=NOW()
+         WHERE id=%s AND status IN ('draft','queued')
+        RETURNING *
+        """,
+        (cid,),
+    )
+    if not row:
+        return jsonify({"error": "Campaign cannot be sent in its current state."}), 400
+    # Kick the dispatcher immediately so the admin doesn't wait a tick.
+    threading.Thread(target=_dispatch_due_campaigns, daemon=True).start()
+    return jsonify(_row_campaign(row))
+
+
+@app.route("/admin/api/messaging/campaigns/<int:cid>", methods=["DELETE"])
+@admin_required
+def admin_campaigns_delete(cid):
+    n = execute_db("DELETE FROM messaging_campaigns WHERE id=%s", (cid,))
+    return jsonify({"ok": True, "deleted": n})
+
+
+# --- ADMIN: log -------------------------------------------------------------
+
+def _row_log(row):
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "campaign_id": row.get("campaign_id"),
+        "subscriber_id": row.get("subscriber_id"),
+        "channel": row["channel"],
+        "to_address": row["to_address"],
+        "subject_snapshot": row["subject_snapshot"],
+        "body_snapshot": row["body_snapshot"],
+        "status": row["status"],
+        "provider": row["provider"],
+        "provider_message_id": row["provider_message_id"],
+        "error_text": row.get("error_text", ""),
+        "sent_at": row["sent_at"].isoformat() if row.get("sent_at") else None,
+        "delivered_at": row["delivered_at"].isoformat() if row.get("delivered_at") else None,
+        "opened_at": row["opened_at"].isoformat() if row.get("opened_at") else None,
+        "clicked_at": row["clicked_at"].isoformat() if row.get("clicked_at") else None,
+        "open_count": row.get("open_count", 0),
+        "click_count": row.get("click_count", 0),
+        "is_test": row.get("is_test", False),
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+    }
+
+
+@app.route("/admin/api/messaging/log")
+@admin_required
+def admin_messaging_log():
+    """Recent log rows across all campaigns. Filterable by ?status= or ?channel=."""
+    where = ["1=1"]
+    params: list = []
+    status = request.args.get("status")
+    if status:
+        where.append("status = %s")
+        params.append(status)
+    channel = request.args.get("channel")
+    if channel:
+        where.append("channel = %s")
+        params.append(channel)
+    sql = f"SELECT * FROM messaging_log WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT 500"
+    rows = query_db(sql, tuple(params)) or []
+    return jsonify([_row_log(r) for r in rows])
+
+
+# --- PUBLIC: webhooks --------------------------------------------------------
+
+@app.route("/webhooks/resend", methods=["POST"])
+def webhook_resend():
+    """Handle Resend's webhook events. Resend signs with Svix; if no signing
+    secret is configured we accept anyway and just log a warning so admins
+    can wire up the endpoint before pasting the secret."""
+    raw = request.get_data() or b""
+    if not messaging.verify_resend_signature(dict(request.headers), raw):
+        return jsonify({"error": "invalid signature"}), 401
+    try:
+        payload = json.loads(raw.decode("utf-8") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return jsonify({"error": "invalid payload"}), 400
+
+    event_type = (payload.get("type") or "").strip().lower()
+    data = payload.get("data") or {}
+    email_id = (data.get("email_id") or data.get("id") or "").strip()
+    if not email_id:
+        return jsonify({"ok": True, "note": "no email id in payload"})
+
+    log = query_db(
+        "SELECT id FROM messaging_log WHERE provider_message_id=%s LIMIT 1",
+        (email_id,),
+        fetchone=True,
+    )
+    if not log:
+        return jsonify({"ok": True, "note": "log row not found"})
+
+    if event_type.endswith("delivered"):
+        execute_db(
+            "UPDATE messaging_log SET status='delivered', delivered_at=COALESCE(delivered_at, NOW()) WHERE id=%s",
+            (log["id"],),
+        )
+    elif event_type.endswith("opened"):
+        execute_db(
+            """
+            UPDATE messaging_log
+               SET status = CASE WHEN status IN ('queued','sent','delivered') THEN 'opened' ELSE status END,
+                   opened_at = COALESCE(opened_at, NOW()),
+                   open_count = open_count + 1
+             WHERE id=%s
+            """,
+            (log["id"],),
+        )
+    elif event_type.endswith("clicked"):
+        execute_db(
+            """
+            UPDATE messaging_log
+               SET status='clicked',
+                   clicked_at = COALESCE(clicked_at, NOW()),
+                   click_count = click_count + 1
+             WHERE id=%s
+            """,
+            (log["id"],),
+        )
+    elif event_type.endswith("bounced"):
+        reason = (data.get("bounce") or {}).get("message") or "bounced"
+        execute_db(
+            "UPDATE messaging_log SET status='bounced', error_text=%s WHERE id=%s",
+            (str(reason)[:500], log["id"]),
+        )
+    elif event_type.endswith("complained"):
+        execute_db(
+            "UPDATE messaging_log SET status='complained' WHERE id=%s",
+            (log["id"],),
+        )
+        # Honor the complaint by opting them out of email.
+        execute_db(
+            """
+            UPDATE subscribers
+               SET opt_in_email=FALSE
+             WHERE id IN (SELECT subscriber_id FROM messaging_log WHERE id=%s)
+            """,
+            (log["id"],),
+        )
+    return jsonify({"ok": True})
+
+
+@app.route("/webhooks/twilio/sms-status", methods=["POST"])
+def webhook_twilio_status():
+    """Twilio posts delivery status updates to this URL. Updates the
+    matching messaging_log row by SID (which is the provider_message_id
+    we stored at send time)."""
+    form = request.form.to_dict(flat=True)
+    sig = request.headers.get("X-Twilio-Signature", "")
+    full_url = request.url  # Twilio signs the full URL we registered
+    if not messaging.verify_twilio_signature(full_url, form, sig):
+        return jsonify({"error": "invalid signature"}), 401
+    sid = form.get("MessageSid", "")
+    status = (form.get("MessageStatus") or "").lower()
+    if not sid:
+        return jsonify({"ok": True})
+    mapping = {
+        "queued": "sent",
+        "sent": "sent",
+        "delivered": "delivered",
+        "failed": "failed",
+        "undelivered": "failed",
+    }
+    new_status = mapping.get(status)
+    if not new_status:
+        return jsonify({"ok": True})
+    if new_status == "delivered":
+        execute_db(
+            """
+            UPDATE messaging_log
+               SET status='delivered', delivered_at=COALESCE(delivered_at, NOW())
+             WHERE provider_message_id=%s
+            """,
+            (sid,),
+        )
+    elif new_status == "failed":
+        err = form.get("ErrorMessage") or form.get("ErrorCode") or "failed"
+        execute_db(
+            "UPDATE messaging_log SET status='failed', error_text=%s WHERE provider_message_id=%s",
+            (str(err)[:500], sid),
+        )
+    else:
+        execute_db(
+            "UPDATE messaging_log SET status=%s WHERE provider_message_id=%s",
+            (new_status, sid),
+        )
+    return jsonify({"ok": True})
+
+
+@app.route("/webhooks/twilio/inbound-sms", methods=["POST"])
+def webhook_twilio_inbound():
+    """Public endpoint for Twilio's inbound-SMS webhook. We don't run a
+    two-way inbox in v1, but we DO honor STOP/UNSUBSCRIBE keywords by
+    flipping the matching subscriber's opt_in_sms flag so future SMS
+    campaigns skip them. Twilio also enforces STOP at the carrier level,
+    so this is a mirror, not the source of truth."""
+    form = request.form.to_dict(flat=True)
+    sig = request.headers.get("X-Twilio-Signature", "")
+    if not messaging.verify_twilio_signature(request.url, form, sig):
+        return Response("<Response/>", status=401, mimetype="application/xml")
+    from_num = (form.get("From") or "").strip()
+    body_text = (form.get("Body") or "").strip().lower()
+    keywords = {"stop", "stopall", "unsubscribe", "cancel", "end", "quit"}
+    if from_num and body_text in keywords:
+        execute_db(
+            """
+            UPDATE subscribers
+               SET opt_in_sms = FALSE,
+                   unsubscribed_at = COALESCE(unsubscribed_at, NOW())
+             WHERE phone = %s
+            """,
+            (from_num,),
+        )
+    # Twilio expects TwiML in the response. Empty <Response/> = no auto-reply.
+    return Response("<Response/>", mimetype="application/xml")
+
+
+# --- PUBLIC: unsubscribe ----------------------------------------------------
+
+@app.route("/unsubscribe")
+def public_unsubscribe():
+    """One-click unsubscribe page. Honors GET (link click) and POST
+    (RFC 8058 List-Unsubscribe-Post). Token is HMAC-signed so subscribers
+    cannot opt each other out by guessing IDs."""
+    token = request.args.get("token") or ""
+    sub_id = messaging.parse_unsubscribe_token(token)
+    if not sub_id:
+        return Response(
+            _unsubscribe_page("Invalid or expired unsubscribe link."),
+            status=400, mimetype="text/html",
+        )
+    row = execute_db(
+        """
+        UPDATE subscribers
+           SET opt_in = FALSE,
+               opt_in_email = FALSE,
+               unsubscribed_at = COALESCE(unsubscribed_at, NOW())
+         WHERE id = %s
+        RETURNING email, full_name
+        """,
+        (sub_id,),
+    )
+    name = row.get("email") or row.get("full_name") if row else "you"
+    return Response(
+        _unsubscribe_page(
+            f"You've been unsubscribed. We won't send any more email to {html_module.escape(name or '')}."
+        ),
+        mimetype="text/html",
+    )
+
+
+@app.route("/unsubscribe", methods=["POST"])
+def public_unsubscribe_post():
+    return public_unsubscribe()
+
+
+def _unsubscribe_page(message: str) -> str:
+    return (
+        '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+        '<title>Unsubscribed</title>'
+        '<style>'
+        'body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#0f172a;color:#e4e4e7;'
+        'min-height:100vh;display:flex;align-items:center;justify-content:center;margin:0;padding:1.5rem}'
+        '.card{max-width:480px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);'
+        'padding:2rem;border-radius:0.75rem;text-align:center}'
+        'h1{font-size:1.25rem;margin:0 0 0.75rem 0}p{color:rgba(255,255,255,0.7);margin:0}'
+        '</style></head><body>'
+        f'<div class="card"><h1>Unsubscribe</h1><p>{message}</p></div>'
+        '</body></html>'
+    )
+
+
+# --- Scheduler boot ----------------------------------------------------------
+# We defer scheduler startup to the first incoming request rather than running
+# it at import time. Flask's debug reloader runs the module in TWO processes
+# (the watcher parent + the spawned child); only the child actually serves
+# requests, so wiring this to the request lifecycle guarantees we start the
+# loop exactly once in dev. Under gunicorn, the first request after each
+# worker boot triggers it. messaging.start_scheduler() is idempotent so the
+# overhead per-request is just a flag check.
+@app.before_request
+def _ensure_messaging_scheduler():
+    if not messaging._SCHEDULER_STARTED:
+        messaging.start_scheduler()
 
 
 # =============================================================================

@@ -1611,6 +1611,20 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
       Analytics
     </button>
+
+    <div class="sidebar-group-label">Messaging</div>
+    <button class="tab-btn" onclick="switchTab('messaging-subscribers', this); loadMessagingSubscribers();" data-testid="tab-messaging-subscribers">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      Subscribers
+    </button>
+    <button class="tab-btn" onclick="switchTab('messaging-templates', this); loadMessagingTemplates();" data-testid="tab-messaging-templates">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+      Templates
+    </button>
+    <button class="tab-btn" onclick="switchTab('messaging-campaigns', this); loadMessagingCampaigns();" data-testid="tab-messaging-campaigns">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+      Campaigns
+    </button>
   </nav>
 
   <main class="admin-main">
@@ -4851,6 +4865,309 @@ TO CUSTOMIZE THIS DASHBOARD:
       </table>
     </div>
 
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: MESSAGING — SUBSCRIBERS
+  ========================================================================
+  People we may message via email or SMS. Add manually, import from form
+  submissions, or paste a CSV. Each row tracks opt-in flags so the
+  dispatcher and unsubscribe flow can honor them.
+  -->
+  <div id="tab-messaging-subscribers" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Subscribers</h2>
+        <p>People who can receive your email and SMS campaigns.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn btn-secondary btn-sm" onclick="loadMessagingSubscribers()" data-testid="button-subscribers-refresh">Refresh</button>
+        <button class="btn btn-primary btn-sm" onclick="openSubscriberForm()" data-testid="button-subscriber-add">+ Add subscriber</button>
+      </div>
+    </div>
+
+    <div id="messaging-status-banner" style="margin-bottom:1rem;"></div>
+
+    <div class="form-panel" id="subscriber-form-panel" style="display:none;">
+      <h3 id="subscriber-form-title">New subscriber</h3>
+      <input type="hidden" id="subscriber-id">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Email</label>
+          <input type="email" id="subscriber-email" placeholder="alex@example.com" data-testid="input-subscriber-email">
+        </div>
+        <div class="form-group">
+          <label>Phone (E.164, e.g. +15551234567)</label>
+          <input type="text" id="subscriber-phone" placeholder="+15551234567" data-testid="input-subscriber-phone">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Full name</label>
+          <input type="text" id="subscriber-name" placeholder="Alex Sample" data-testid="input-subscriber-name">
+        </div>
+        <div class="form-group">
+          <label>List</label>
+          <input type="text" id="subscriber-list" placeholder="default" value="default" data-testid="input-subscriber-list">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="display:flex;flex-direction:row;align-items:center;gap:0.5rem;">
+          <input type="checkbox" id="subscriber-opt-in" checked style="width:auto;">
+          <label for="subscriber-opt-in" style="margin:0;">Opted in</label>
+        </div>
+        <div class="form-group" style="display:flex;flex-direction:row;align-items:center;gap:0.5rem;">
+          <input type="checkbox" id="subscriber-opt-in-email" checked style="width:auto;">
+          <label for="subscriber-opt-in-email" style="margin:0;">Allow email</label>
+        </div>
+        <div class="form-group" style="display:flex;flex-direction:row;align-items:center;gap:0.5rem;">
+          <input type="checkbox" id="subscriber-opt-in-sms" checked style="width:auto;">
+          <label for="subscriber-opt-in-sms" style="margin:0;">Allow SMS</label>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="closeSubscriberForm()" data-testid="button-subscriber-cancel">Cancel</button>
+        <button class="btn btn-primary" onclick="saveSubscriber()" data-testid="button-subscriber-save">Save subscriber</button>
+      </div>
+    </div>
+
+    <div class="form-panel">
+      <h3>Import</h3>
+      <p style="color:var(--admin-text-muted); font-size:0.85rem; margin-bottom:0.75rem;">
+        Pull existing contacts in from your form submissions, or upload a CSV with <code>email</code>, <code>phone</code>, and <code>name</code> columns (extra columns become merge tags).
+      </p>
+      <div style="display:flex; gap:0.75rem; flex-wrap:wrap;">
+        <button class="btn btn-secondary btn-sm" onclick="importFromFormSubmissions()" data-testid="button-import-form-submissions">Import from form submissions</button>
+        <label class="btn btn-secondary btn-sm" style="cursor:pointer;">
+          Upload CSV
+          <input type="file" accept=".csv,text/csv" style="display:none;" onchange="importSubscriberCsv(this.files[0]); this.value='';" data-testid="input-csv-upload">
+        </label>
+      </div>
+    </div>
+
+    <div style="overflow-x:auto;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Name</th><th>Email</th><th>Phone</th><th>List</th><th>Opt-in</th><th>Source</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="subscribers-tbody">
+          <tr><td colspan="7" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: MESSAGING — TEMPLATES
+  ========================================================================
+  Reusable message bodies (email or SMS) with merge-tag support. AI can
+  draft a body from a short prompt or summarize recent chat themes.
+  -->
+  <div id="tab-messaging-templates" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Templates</h2>
+        <p>Reusable email and SMS bodies. Use {{first_name}}, {{email}}, {{unsubscribe_url}} merge tags.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn btn-secondary btn-sm" onclick="loadMessagingTemplates()" data-testid="button-templates-refresh">Refresh</button>
+        <button class="btn btn-primary btn-sm" onclick="openTemplateForm()" data-testid="button-template-add">+ New template</button>
+      </div>
+    </div>
+
+    <div class="form-panel" id="template-form-panel" style="display:none;">
+      <h3 id="template-form-title">New template</h3>
+      <input type="hidden" id="template-id">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Name</label>
+          <input type="text" id="template-name" placeholder="Welcome email" data-testid="input-template-name">
+        </div>
+        <div class="form-group">
+          <label>Channel</label>
+          <select id="template-channel" onchange="onTemplateChannelChange()" data-testid="select-template-channel">
+            <option value="email">Email</option>
+            <option value="sms">SMS</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row" id="template-email-fields-row">
+        <div class="form-group">
+          <label>Subject (email only)</label>
+          <input type="text" id="template-subject" placeholder="Welcome, {{first_name}}!" data-testid="input-template-subject">
+        </div>
+        <div class="form-group">
+          <label>From name (optional)</label>
+          <input type="text" id="template-from-name" placeholder="The Team" data-testid="input-template-from-name">
+        </div>
+        <div class="form-group">
+          <label>Reply-to (optional)</label>
+          <input type="text" id="template-reply-to" placeholder="hello@example.com" data-testid="input-template-reply-to">
+        </div>
+      </div>
+      <div class="form-group" style="margin-bottom:1rem;">
+        <label>Body</label>
+        <textarea id="template-body" rows="10" placeholder="Hi {{first_name}}, …" data-testid="textarea-template-body"></textarea>
+        <div style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.25rem;">
+          Email body accepts simple HTML (&lt;p&gt;, &lt;a&gt;, &lt;h2&gt;). The unsubscribe footer is appended automatically unless you include {{unsubscribe_url}} yourself.
+        </div>
+      </div>
+
+      <div class="form-panel" style="background:rgba(255,255,255,0.02);">
+        <h3 style="font-size:0.95rem;">Draft with AI</h3>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Mode</label>
+            <select id="ai-draft-mode" data-testid="select-ai-draft-mode">
+              <option value="prompt">Short prompt</option>
+              <option value="chat-themes">Summarize recent chats</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Tone</label>
+            <select id="ai-draft-tone" data-testid="select-ai-draft-tone">
+              <option value="friendly">Friendly</option>
+              <option value="professional">Professional</option>
+              <option value="warm">Warm</option>
+              <option value="urgent">Urgent</option>
+              <option value="playful">Playful</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Days of chat history (chat-themes mode)</label>
+            <input type="number" id="ai-draft-days" value="14" min="1" max="90" data-testid="input-ai-draft-days">
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:0.75rem;">
+          <label>Prompt</label>
+          <input type="text" id="ai-draft-prompt" placeholder="A reminder about our spring sale ending Sunday." data-testid="input-ai-draft-prompt">
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="aiDraftTemplate()" data-testid="button-ai-draft">Draft body</button>
+      </div>
+
+      <div class="form-panel" style="background:rgba(255,255,255,0.02);">
+        <h3 style="font-size:0.95rem;">Preview &amp; test send</h3>
+        <p style="color:var(--admin-text-muted); font-size:0.8rem; margin-bottom:0.5rem;">
+          Preview renders merge tags using a sample subscriber. Test send fires a single message to the address below (defaults to your <code>ADMIN_EMAIL</code> / <code>ADMIN_PHONE</code> secret).
+        </p>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Test recipient (override)</label>
+            <input type="text" id="template-test-to" placeholder="leave blank to use ADMIN_EMAIL / ADMIN_PHONE" data-testid="input-template-test-to">
+          </div>
+        </div>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="previewTemplate()" data-testid="button-template-preview">Preview</button>
+          <button class="btn btn-primary btn-sm" onclick="testSendTemplate()" data-testid="button-template-test-send">Test send to me</button>
+        </div>
+        <div id="template-preview-area" style="margin-top:0.75rem;"></div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="closeTemplateForm()" data-testid="button-template-cancel">Cancel</button>
+        <button class="btn btn-primary" onclick="saveTemplate()" data-testid="button-template-save">Save template</button>
+      </div>
+    </div>
+
+    <div style="overflow-x:auto;">
+      <table class="data-table">
+        <thead>
+          <tr><th>Name</th><th>Channel</th><th>Subject</th><th>Updated</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="templates-tbody">
+          <tr><td colspan="5" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: MESSAGING — CAMPAIGNS
+  ========================================================================
+  Compose a campaign by picking a template + recipient set + schedule.
+  The dispatcher picks up queued campaigns whose send_at has arrived
+  on the next scheduler tick (every 30s).
+  -->
+  <div id="tab-messaging-campaigns" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Campaigns</h2>
+        <p>Send a template to a list right now or schedule it for later.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn btn-secondary btn-sm" onclick="loadMessagingCampaigns()" data-testid="button-campaigns-refresh">Refresh</button>
+        <button class="btn btn-primary btn-sm" onclick="openCampaignForm()" data-testid="button-campaign-add">+ New campaign</button>
+      </div>
+    </div>
+
+    <div class="form-panel" id="campaign-form-panel" style="display:none;">
+      <h3>New campaign</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Name</label>
+          <input type="text" id="campaign-name" placeholder="Spring sale email" data-testid="input-campaign-name">
+        </div>
+        <div class="form-group">
+          <label>Template</label>
+          <select id="campaign-template" data-testid="select-campaign-template"></select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Recipients</label>
+          <select id="campaign-recipient-kind" onchange="onCampaignRecipientKindChange()" data-testid="select-campaign-recipient-kind">
+            <option value="all">All eligible subscribers</option>
+            <option value="list">Subscribers on a specific list</option>
+            <option value="ids">Specific subscriber IDs</option>
+          </select>
+        </div>
+        <div class="form-group" id="campaign-list-group" style="display:none;">
+          <label>List name</label>
+          <input type="text" id="campaign-list-name" placeholder="default" data-testid="input-campaign-list-name">
+        </div>
+        <div class="form-group" id="campaign-ids-group" style="display:none;">
+          <label>Subscriber IDs (comma-separated)</label>
+          <input type="text" id="campaign-ids" placeholder="1,4,7" data-testid="input-campaign-ids">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>When to send</label>
+          <select id="campaign-when" onchange="onCampaignWhenChange()" data-testid="select-campaign-when">
+            <option value="now">Send immediately</option>
+            <option value="schedule">Schedule for later</option>
+            <option value="draft">Save as draft</option>
+          </select>
+        </div>
+        <div class="form-group" id="campaign-schedule-group" style="display:none;">
+          <label>Send at (your local time)</label>
+          <input type="datetime-local" id="campaign-send-at" data-testid="input-campaign-send-at">
+        </div>
+      </div>
+      <div id="campaign-recipient-count" style="font-size:0.85rem;color:var(--admin-text-muted); margin-bottom:0.75rem;"></div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="closeCampaignForm()" data-testid="button-campaign-cancel">Cancel</button>
+        <button class="btn btn-primary" onclick="saveCampaign()" data-testid="button-campaign-save">Create campaign</button>
+      </div>
+    </div>
+
+    <div style="overflow-x:auto;">
+      <table class="data-table">
+        <thead>
+          <tr><th>Name</th><th>Channel</th><th>Status</th><th>Send at</th><th>Sent / Failed</th><th>Created</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="campaigns-tbody">
+          <tr><td colspan="7" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div id="campaign-detail-panel" style="margin-top:1.5rem;"></div>
   </div>
 
   <!-- Preview modal for saved pages -->
@@ -10661,6 +10978,578 @@ TO CUSTOMIZE THIS DASHBOARD:
         }
       });
     });
+
+    /*
+    ========================================================================
+    MESSAGING — Subscribers / Templates / Campaigns
+    ========================================================================
+    All three tabs share the /admin/api/messaging/* endpoints. The page-level
+    list-loaders also refresh the provider status banner so admins know
+    immediately if Resend or Twilio still need credentials.
+    */
+    let __msgTemplates = [];
+
+    function escapeHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    async function loadMessagingStatus() {
+      const banner = document.getElementById('messaging-status-banner');
+      if (!banner) return;
+      try {
+        const r = await fetch('/admin/api/messaging/status', { credentials: 'same-origin' });
+        const s = await r.json();
+        const resend = s.resend || {};
+        const twilio = s.twilio || {};
+        const admin = s.admin || {};
+        const pill = (label, ok, hint) => {
+          const color = ok ? '#16a34a' : '#b45309';
+          const bg = ok ? 'rgba(22,163,74,0.12)' : 'rgba(180,83,9,0.12)';
+          return `<span title="${escapeHtml(hint || '')}" style="display:inline-flex;align-items:center;gap:0.35rem;padding:0.25rem 0.6rem;border-radius:999px;background:${bg};color:${color};font-size:0.78rem;font-weight:600;">
+                    <span style="width:8px;height:8px;border-radius:50%;background:${color};"></span>${escapeHtml(label)}
+                  </span>`;
+        };
+        const parts = [
+          pill(
+            'Email · Resend' + (resend.from_email ? ' (' + resend.from_email + ')' : ''),
+            !!resend.configured,
+            resend.configured ? 'Resend ready' : 'Add RESEND_API_KEY and RESEND_FROM_EMAIL secrets',
+          ),
+          pill(
+            'SMS · Twilio' + (twilio.from_number ? ' (' + twilio.from_number + ')' : ''),
+            !!twilio.configured,
+            twilio.configured ? 'Twilio ready' : 'Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER secrets',
+          ),
+          pill('Admin email: ' + (admin.email || 'unset'), !!admin.email),
+          pill('Admin phone: ' + (admin.phone || 'unset'), !!admin.phone),
+        ];
+        banner.innerHTML = `<div style="display:flex;gap:0.5rem;flex-wrap:wrap;">${parts.join('')}</div>`;
+      } catch (e) {
+        banner.innerHTML = '';
+      }
+    }
+
+    /* ---------- SUBSCRIBERS ---------- */
+
+    async function loadMessagingSubscribers() {
+      loadMessagingStatus();
+      const tbody = document.getElementById('subscribers-tbody');
+      if (!tbody) return;
+      tbody.innerHTML = '<tr><td colspan="7" class="empty-state">Loading…</td></tr>';
+      try {
+        const r = await fetch('/admin/api/messaging/subscribers', { credentials: 'same-origin' });
+        const rows = await r.json();
+        if (!Array.isArray(rows) || !rows.length) {
+          tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No subscribers yet. Add one or import from form submissions.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = rows.map(s => {
+          const optBits = [];
+          if (s.opt_in) optBits.push('opted-in'); else optBits.push('opted-out');
+          if (!s.opt_in_email) optBits.push('no-email');
+          if (!s.opt_in_sms) optBits.push('no-sms');
+          return `<tr data-testid="row-subscriber-${s.id}">
+            <td>${escapeHtml(s.full_name || '')}</td>
+            <td>${escapeHtml(s.email || '')}</td>
+            <td>${escapeHtml(s.phone || '')}</td>
+            <td>${escapeHtml(s.list_name || '')}</td>
+            <td><span style="font-size:0.78rem;color:var(--admin-text-muted);">${escapeHtml(optBits.join(', '))}</span></td>
+            <td><span style="font-size:0.78rem;color:var(--admin-text-muted);">${escapeHtml(s.source || 'manual')}</span></td>
+            <td>
+              <button class="btn btn-secondary btn-sm" onclick='editSubscriber(${JSON.stringify(s)})' data-testid="button-subscriber-edit-${s.id}">Edit</button>
+              <button class="btn btn-secondary btn-sm" onclick="deleteSubscriber(${s.id})" data-testid="button-subscriber-delete-${s.id}">Delete</button>
+            </td>
+          </tr>`;
+        }).join('');
+      } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="7" class="empty-state">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+      }
+    }
+
+    function openSubscriberForm() {
+      document.getElementById('subscriber-form-panel').style.display = '';
+      document.getElementById('subscriber-form-title').textContent = 'New subscriber';
+      document.getElementById('subscriber-id').value = '';
+      document.getElementById('subscriber-email').value = '';
+      document.getElementById('subscriber-phone').value = '';
+      document.getElementById('subscriber-name').value = '';
+      document.getElementById('subscriber-list').value = 'default';
+      document.getElementById('subscriber-opt-in').checked = true;
+      document.getElementById('subscriber-opt-in-email').checked = true;
+      document.getElementById('subscriber-opt-in-sms').checked = true;
+    }
+    function closeSubscriberForm() { document.getElementById('subscriber-form-panel').style.display = 'none'; }
+    function editSubscriber(s) {
+      openSubscriberForm();
+      document.getElementById('subscriber-form-title').textContent = 'Edit subscriber #' + s.id;
+      document.getElementById('subscriber-id').value = s.id;
+      document.getElementById('subscriber-email').value = s.email || '';
+      document.getElementById('subscriber-phone').value = s.phone || '';
+      document.getElementById('subscriber-name').value = s.full_name || '';
+      document.getElementById('subscriber-list').value = s.list_name || 'default';
+      document.getElementById('subscriber-opt-in').checked = !!s.opt_in;
+      document.getElementById('subscriber-opt-in-email').checked = !!s.opt_in_email;
+      document.getElementById('subscriber-opt-in-sms').checked = !!s.opt_in_sms;
+    }
+
+    async function saveSubscriber() {
+      const id = document.getElementById('subscriber-id').value;
+      const payload = {
+        email: document.getElementById('subscriber-email').value.trim(),
+        phone: document.getElementById('subscriber-phone').value.trim(),
+        full_name: document.getElementById('subscriber-name').value.trim(),
+        list_name: document.getElementById('subscriber-list').value.trim() || 'default',
+        opt_in: document.getElementById('subscriber-opt-in').checked,
+        opt_in_email: document.getElementById('subscriber-opt-in-email').checked,
+        opt_in_sms: document.getElementById('subscriber-opt-in-sms').checked,
+      };
+      if (!payload.email && !payload.phone) {
+        showToast && showToast('Email or phone required', 'error');
+        return;
+      }
+      const url = id ? '/admin/api/messaging/subscribers/' + id : '/admin/api/messaging/subscribers';
+      const method = id ? 'PUT' : 'POST';
+      try {
+        const r = await fetch(url, {
+          method, credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Save failed');
+        closeSubscriberForm();
+        loadMessagingSubscribers();
+        showToast && showToast('Subscriber saved', 'success');
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+      }
+    }
+
+    async function deleteSubscriber(id) {
+      if (!confirm('Delete this subscriber? They will stop receiving messages.')) return;
+      try {
+        const r = await fetch('/admin/api/messaging/subscribers/' + id, {
+          method: 'DELETE', credentials: 'same-origin',
+        });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(d.error || 'Delete failed');
+        }
+        loadMessagingSubscribers();
+        showToast && showToast('Deleted', 'success');
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+      }
+    }
+
+    async function importFromFormSubmissions() {
+      if (!confirm('Import every form submission with an email or phone as a subscriber? Existing subscribers are skipped, not duplicated.')) return;
+      try {
+        const r = await fetch('/admin/api/messaging/subscribers/import-form-submissions', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Import failed');
+        showToast && showToast(`Imported ${data.inserted || 0} new from ${data.scanned || 0} submissions (${data.skipped || 0} skipped/dup).`, 'success');
+        loadMessagingSubscribers();
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+      }
+    }
+
+    async function importSubscriberCsv(file) {
+      if (!file) return;
+      const text = await file.text();
+      try {
+        const r = await fetch('/admin/api/messaging/subscribers/import-csv', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ csv_text: text }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'CSV import failed');
+        showToast && showToast(`CSV: ${data.inserted || 0} new, ${data.skipped || 0} skipped/dup.`, 'success');
+        loadMessagingSubscribers();
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+      }
+    }
+
+    /* ---------- TEMPLATES ---------- */
+
+    async function loadMessagingTemplates() {
+      loadMessagingStatus();
+      const tbody = document.getElementById('templates-tbody');
+      if (!tbody) return;
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-state">Loading…</td></tr>';
+      try {
+        const r = await fetch('/admin/api/messaging/templates', { credentials: 'same-origin' });
+        const data = await r.json();
+        __msgTemplates = Array.isArray(data) ? data : (data.templates || []);
+        if (!__msgTemplates.length) {
+          tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No templates yet.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = __msgTemplates.map(t => `
+          <tr data-testid="row-template-${t.id}">
+            <td>${escapeHtml(t.name)}</td>
+            <td><span style="text-transform:uppercase;font-size:0.72rem;letter-spacing:0.05em;color:var(--admin-text-muted);">${escapeHtml(t.channel)}</span></td>
+            <td>${escapeHtml(t.subject || '')}</td>
+            <td><span style="font-size:0.78rem;color:var(--admin-text-muted);">${escapeHtml(t.updated_at || '')}</span></td>
+            <td>
+              <button class="btn btn-secondary btn-sm" onclick="editTemplate(${t.id})" data-testid="button-template-edit-${t.id}">Edit</button>
+              <button class="btn btn-secondary btn-sm" onclick="deleteTemplate(${t.id})" data-testid="button-template-delete-${t.id}">Delete</button>
+            </td>
+          </tr>`).join('');
+      } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="5" class="empty-state">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+      }
+    }
+
+    function onTemplateChannelChange() {
+      const isEmail = document.getElementById('template-channel').value === 'email';
+      document.getElementById('template-email-fields-row').style.display = isEmail ? '' : 'none';
+    }
+
+    function openTemplateForm() {
+      document.getElementById('template-form-panel').style.display = '';
+      document.getElementById('template-form-title').textContent = 'New template';
+      document.getElementById('template-id').value = '';
+      document.getElementById('template-name').value = '';
+      document.getElementById('template-channel').value = 'email';
+      document.getElementById('template-subject').value = '';
+      document.getElementById('template-from-name').value = '';
+      document.getElementById('template-reply-to').value = '';
+      document.getElementById('template-body').value = '';
+      document.getElementById('ai-draft-prompt').value = '';
+      document.getElementById('template-test-to').value = '';
+      document.getElementById('template-preview-area').innerHTML = '';
+      onTemplateChannelChange();
+    }
+    function closeTemplateForm() { document.getElementById('template-form-panel').style.display = 'none'; }
+    function editTemplate(id) {
+      const t = __msgTemplates.find(x => x.id === id);
+      if (!t) return;
+      openTemplateForm();
+      document.getElementById('template-form-title').textContent = 'Edit template #' + t.id;
+      document.getElementById('template-id').value = t.id;
+      document.getElementById('template-name').value = t.name || '';
+      document.getElementById('template-channel').value = t.channel || 'email';
+      document.getElementById('template-subject').value = t.subject || '';
+      document.getElementById('template-from-name').value = t.from_name || '';
+      document.getElementById('template-reply-to').value = t.reply_to || '';
+      document.getElementById('template-body').value = t.body || '';
+      onTemplateChannelChange();
+    }
+
+    async function saveTemplate() {
+      const id = document.getElementById('template-id').value;
+      const payload = {
+        name: document.getElementById('template-name').value.trim(),
+        channel: document.getElementById('template-channel').value,
+        subject: document.getElementById('template-subject').value.trim(),
+        from_name: document.getElementById('template-from-name').value.trim(),
+        reply_to: document.getElementById('template-reply-to').value.trim(),
+        body: document.getElementById('template-body').value,
+      };
+      if (!payload.name || !payload.body) {
+        showToast && showToast('Name and body are required', 'error'); return;
+      }
+      const url = id ? '/admin/api/messaging/templates/' + id : '/admin/api/messaging/templates';
+      const method = id ? 'PUT' : 'POST';
+      try {
+        const r = await fetch(url, {
+          method, credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Save failed');
+        if (data && data.id) {
+          document.getElementById('template-id').value = data.id;
+          document.getElementById('template-form-title').textContent = 'Edit template #' + data.id;
+        }
+        loadMessagingTemplates();
+        showToast && showToast('Template saved', 'success');
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+      }
+    }
+
+    async function deleteTemplate(id) {
+      if (!confirm('Delete this template? Existing campaigns keep their snapshot, but new ones cannot use it.')) return;
+      try {
+        const r = await fetch('/admin/api/messaging/templates/' + id, {
+          method: 'DELETE', credentials: 'same-origin',
+        });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(d.error || 'Delete failed');
+        }
+        loadMessagingTemplates();
+        showToast && showToast('Deleted', 'success');
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+      }
+    }
+
+    async function aiDraftTemplate() {
+      const channel = document.getElementById('template-channel').value;
+      const mode = document.getElementById('ai-draft-mode').value;
+      const tone = document.getElementById('ai-draft-tone').value;
+      const days = parseInt(document.getElementById('ai-draft-days').value || '14', 10);
+      const prompt = document.getElementById('ai-draft-prompt').value.trim();
+      if (mode === 'prompt' && !prompt) {
+        showToast && showToast('Add a prompt for the AI', 'error'); return;
+      }
+      showToast && showToast('Drafting…', 'info');
+      try {
+        const r = await fetch('/admin/api/messaging/ai-draft', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ channel, mode, tone, days, prompt }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'AI draft failed');
+        if (channel === 'email' && data.subject) {
+          document.getElementById('template-subject').value = data.subject;
+        }
+        if (data.body) document.getElementById('template-body').value = data.body;
+        showToast && showToast('Draft inserted — review before saving', 'success');
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+      }
+    }
+
+    async function previewTemplate() {
+      const id = document.getElementById('template-id').value;
+      if (!id) {
+        showToast && showToast('Save the template first, then preview.', 'error'); return;
+      }
+      try {
+        const r = await fetch('/admin/api/messaging/templates/' + id + '/preview', {
+          credentials: 'same-origin',
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Preview failed');
+        const channel = data.channel || 'email';
+        const area = document.getElementById('template-preview-area');
+        if (channel === 'email') {
+          area.innerHTML = `
+            <div style="border:1px solid var(--admin-border); border-radius:8px; overflow:hidden;">
+              <div style="background:var(--admin-bg); padding:0.5rem 0.75rem; font-size:0.85rem; color:var(--admin-text-muted);">
+                <strong>Subject:</strong> ${escapeHtml(data.subject || '')}
+              </div>
+              <iframe srcdoc="${escapeHtml(data.body || '')}" style="width:100%; height:380px; border:none; background:#fff;"></iframe>
+            </div>`;
+        } else {
+          area.innerHTML = `
+            <div style="border:1px solid var(--admin-border); border-radius:8px; padding:0.75rem; background:var(--admin-bg); white-space:pre-wrap;">
+              ${escapeHtml(data.body || '')}
+            </div>
+            <div style="margin-top:0.25rem; font-size:0.75rem; color:var(--admin-text-muted);">${(data.body || '').length} chars</div>`;
+        }
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+      }
+    }
+
+    async function testSendTemplate() {
+      const id = document.getElementById('template-id').value;
+      if (!id) { showToast && showToast('Save the template first, then test send.', 'error'); return; }
+      const to = document.getElementById('template-test-to').value.trim();
+      try {
+        const r = await fetch('/admin/api/messaging/templates/' + id + '/test-send', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Test send failed');
+        showToast && showToast('Sent — check ' + (data.sent_to || 'inbox'), 'success');
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+      }
+    }
+
+    /* ---------- CAMPAIGNS ---------- */
+
+    async function loadMessagingCampaigns() {
+      loadMessagingStatus();
+      const tbody = document.getElementById('campaigns-tbody');
+      if (!tbody) return;
+      tbody.innerHTML = '<tr><td colspan="7" class="empty-state">Loading…</td></tr>';
+      try {
+        const [campaignsR, templatesR] = await Promise.all([
+          fetch('/admin/api/messaging/campaigns', { credentials: 'same-origin' }),
+          fetch('/admin/api/messaging/templates', { credentials: 'same-origin' }),
+        ]);
+        const cdata = await campaignsR.json();
+        const tdata = await templatesR.json();
+        const campaigns = Array.isArray(cdata) ? cdata : (cdata.campaigns || []);
+        __msgTemplates = Array.isArray(tdata) ? tdata : (tdata.templates || []);
+        const sel = document.getElementById('campaign-template');
+        sel.innerHTML = __msgTemplates.length
+          ? __msgTemplates.map(t => `<option value="${t.id}">${escapeHtml(t.name)} · ${escapeHtml(t.channel)}</option>`).join('')
+          : '<option value="">— create a template first —</option>';
+        if (!campaigns.length) {
+          tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No campaigns yet.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = campaigns.map(c => `
+          <tr data-testid="row-campaign-${c.id}">
+            <td>${escapeHtml(c.name)}</td>
+            <td><span style="text-transform:uppercase;font-size:0.72rem;color:var(--admin-text-muted);">${escapeHtml(c.channel)}</span></td>
+            <td><span class="status-pill status-${escapeHtml(c.status)}">${escapeHtml(c.status)}</span></td>
+            <td><span style="font-size:0.78rem;color:var(--admin-text-muted);">${escapeHtml(c.send_at || '—')}</span></td>
+            <td>${c.sent_count || 0} / ${c.failed_count || 0}</td>
+            <td><span style="font-size:0.78rem;color:var(--admin-text-muted);">${escapeHtml(c.created_at || '')}</span></td>
+            <td>
+              <button class="btn btn-secondary btn-sm" onclick="viewCampaign(${c.id})" data-testid="button-campaign-view-${c.id}">View</button>
+              ${(c.status === 'queued' || c.status === 'scheduled' || c.status === 'draft')
+                ? `<button class="btn btn-primary btn-sm" onclick="sendCampaignNow(${c.id})" data-testid="button-campaign-send-${c.id}">Send now</button>` : ''}
+              ${(c.status === 'queued' || c.status === 'scheduled' || c.status === 'draft')
+                ? `<button class="btn btn-secondary btn-sm" onclick="cancelCampaign(${c.id})" data-testid="button-campaign-cancel-${c.id}">Cancel</button>` : ''}
+            </td>
+          </tr>`).join('');
+      } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="7" class="empty-state">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+      }
+    }
+
+    function openCampaignForm() {
+      if (!__msgTemplates.length) {
+        showToast && showToast('Create a template first', 'error'); return;
+      }
+      document.getElementById('campaign-form-panel').style.display = '';
+      document.getElementById('campaign-name').value = '';
+      document.getElementById('campaign-recipient-kind').value = 'all';
+      document.getElementById('campaign-list-name').value = 'default';
+      document.getElementById('campaign-ids').value = '';
+      document.getElementById('campaign-when').value = 'now';
+      document.getElementById('campaign-send-at').value = '';
+      onCampaignRecipientKindChange();
+      onCampaignWhenChange();
+    }
+    function closeCampaignForm() { document.getElementById('campaign-form-panel').style.display = 'none'; }
+    function onCampaignRecipientKindChange() {
+      const k = document.getElementById('campaign-recipient-kind').value;
+      document.getElementById('campaign-list-group').style.display = (k === 'list') ? '' : 'none';
+      document.getElementById('campaign-ids-group').style.display = (k === 'ids') ? '' : 'none';
+    }
+    function onCampaignWhenChange() {
+      const w = document.getElementById('campaign-when').value;
+      document.getElementById('campaign-schedule-group').style.display = (w === 'schedule') ? '' : 'none';
+    }
+
+    async function saveCampaign() {
+      const tplId = parseInt(document.getElementById('campaign-template').value, 10);
+      const name = document.getElementById('campaign-name').value.trim();
+      const kind = document.getElementById('campaign-recipient-kind').value;
+      const when = document.getElementById('campaign-when').value;
+      if (!tplId) { showToast && showToast('Pick a template', 'error'); return; }
+      if (!name) { showToast && showToast('Name the campaign', 'error'); return; }
+      const recipient_filter = {};
+      if (kind === 'list') {
+        recipient_filter.list_name = document.getElementById('campaign-list-name').value.trim() || 'default';
+      } else if (kind === 'ids') {
+        recipient_filter.ids = document.getElementById('campaign-ids').value
+          .split(',').map(s => parseInt(s.trim(), 10)).filter(Boolean);
+      }
+      const payload = {
+        name, template_id: tplId,
+        recipient_kind: kind,
+        recipient_filter,
+        send_when: when,
+      };
+      if (when === 'schedule') {
+        const local = document.getElementById('campaign-send-at').value;
+        if (!local) { showToast && showToast('Pick a send time', 'error'); return; }
+        payload.send_at = new Date(local).toISOString();
+      }
+      try {
+        const r = await fetch('/admin/api/messaging/campaigns', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Save failed');
+        closeCampaignForm();
+        loadMessagingCampaigns();
+        showToast && showToast(when === 'now' ? 'Sending…' : 'Campaign saved', 'success');
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+      }
+    }
+
+    async function sendCampaignNow(id) {
+      if (!confirm('Send this campaign right now?')) return;
+      try {
+        const r = await fetch('/admin/api/messaging/campaigns/' + id + '/send-now', {
+          method: 'POST', credentials: 'same-origin',
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Send failed');
+        showToast && showToast('Queued — refresh to see status', 'success');
+        loadMessagingCampaigns();
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+      }
+    }
+
+    async function cancelCampaign(id) {
+      if (!confirm('Cancel this campaign? Already-sent messages will not be recalled.')) return;
+      try {
+        const r = await fetch('/admin/api/messaging/campaigns/' + id + '/cancel', {
+          method: 'POST', credentials: 'same-origin',
+        });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(d.error || 'Cancel failed');
+        }
+        loadMessagingCampaigns();
+        showToast && showToast('Cancelled', 'success');
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+      }
+    }
+
+    async function viewCampaign(id) {
+      const panel = document.getElementById('campaign-detail-panel');
+      panel.innerHTML = '<div class="form-panel">Loading…</div>';
+      try {
+        const r = await fetch('/admin/api/messaging/campaigns/' + id, { credentials: 'same-origin' });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Load failed');
+        const c = data.campaign || {};
+        const rows = (data.log || []).map(L => `
+          <tr>
+            <td>${L.id}</td>
+            <td>${escapeHtml(L.to_address || '')}</td>
+            <td>${escapeHtml(L.status || '')}</td>
+            <td><span style="font-size:0.78rem; color:var(--admin-text-muted);">${escapeHtml(L.created_at || '')}</span></td>
+            <td><span style="font-size:0.78rem; color:var(--admin-text-muted);">${escapeHtml(L.error_text || L.error_message || '')}</span></td>
+          </tr>`).join('');
+        panel.innerHTML = `
+          <div class="form-panel">
+            <h3>Campaign #${id} — ${escapeHtml(c.name || '')}</h3>
+            <p style="color:var(--admin-text-muted); font-size:0.85rem;">
+              Status: <strong>${escapeHtml(c.status || '')}</strong> · Channel: ${escapeHtml(c.channel || '')} ·
+              Sent ${c.sent_count || 0} / Failed ${c.failed_count || 0}
+            </p>
+            <table class="data-table">
+              <thead><tr><th>ID</th><th>Recipient</th><th>Status</th><th>When</th><th>Error</th></tr></thead>
+              <tbody>${rows || '<tr><td colspan="5" class="empty-state">No log entries yet.</td></tr>'}</tbody>
+            </table>
+          </div>`;
+      } catch (e) {
+        panel.innerHTML = `<div class="form-panel">Failed: ${escapeHtml(e.message)}</div>`;
+      }
+    }
 
     /* Auto-load the Overview tab on page load — it's the default tab.
        Defensive: only fires if the overview grid actually exists in the DOM,

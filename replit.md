@@ -356,6 +356,18 @@ The AI uses `generateVisual` for simple data displays and `generateHTML` for ric
 - Selected Google Fonts are dynamically loaded via `<link>` tag injection
 - "Reset to Default" button clears all theme overrides
 
+### Messaging (Email & SMS Campaigns)
+- Admin sidebar group "Messaging" with three tabs: **Subscribers**, **Templates**, **Campaigns**
+- **Subscribers**: manual add/edit, CSV import (`email`, `phone`, `name` columns; extras become merge tags), import-from-form-submissions, per-channel opt-in flags, signed unsubscribe URLs
+- **Templates**: email or SMS bodies with `{{first_name}}`, `{{full_name}}`, `{{email}}`, `{{phone}}`, `{{unsubscribe_url}}` merge tags; AI drafting from a short prompt or by summarizing recent chatbot themes; per-template preview and "test send to me"
+- **Campaigns**: pick a template, target all/list/specific IDs, send immediately or schedule for a future time; per-recipient log with delivery / failure status
+- **Providers**: Email via Resend (Replit Connector preferred, falls back to `RESEND_API_KEY` + `RESEND_FROM_EMAIL` env vars). SMS via Twilio (env-only — `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` — no Replit connector available)
+- **Scheduler**: in-process background thread (`messaging.start_scheduler`) ticks every 30 s, picking up `messaging_campaigns` rows whose `send_at <= NOW()` and dispatching them; immediate sends skip the wait by kicking the dispatcher thread directly
+- **Webhooks**: `/webhooks/resend` (Svix-signed when `RESEND_WEBHOOK_SECRET` is set, fail-open otherwise); `/webhooks/twilio/sms-status` and `/webhooks/twilio/inbound-sms` (HMAC verified against `TWILIO_AUTH_TOKEN`; STOP/UNSTOP keywords mirror opt-out)
+- **Unsubscribe**: `/unsubscribe?token=…` flips `opt_in=false` on the subscriber; tokens are HMAC-signed with `FLASK_SECRET_KEY`
+- **Database tables**: `subscribers`, `messaging_templates`, `messaging_campaigns`, `messaging_log`
+- **Module**: provider clients, scheduler, signing, and CSV parsing live in `messaging.py`; admin routes and AI drafting live in `app.py`
+
 ## How to Edit Content
 
 1. Go to `/admin` in your browser (password: set via ADMIN_PASSWORD env var, default "admin")
@@ -390,13 +402,17 @@ Add new sections inside the `.landing-container` div with classes `snap-section 
 ### Required Environment Variables
 - `DATABASE_URL` — PostgreSQL connection string (provisioned by Replit)
 - `ADMIN_PASSWORD` — Admin dashboard login password (default: "admin")
-- `FLASK_SECRET_KEY` — Session encryption key (auto-generated if not set)
+- `FLASK_SECRET_KEY` — Session encryption key (auto-generated if not set; also signs unsubscribe tokens)
 - `AI_INTEGRATIONS_OPENAI_API_KEY` — OpenAI API key (set by Replit AI Integrations)
 - `AI_INTEGRATIONS_OPENAI_BASE_URL` — OpenAI base URL (set by Replit AI Integrations)
 - `SENTRY_DSN` — (Optional) Sentry error tracking DSN
 - `SENTRY_ENV` — (Optional) Sentry environment tag (default: "production")
 - `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` — (Optional fallback) Used if the Replit Stripe connection is not configured
 - `STRIPE_WEBHOOK_SECRET` — (Optional) Validates incoming Stripe webhooks; if unset, signatures are not enforced (dev only)
+- `RESEND_API_KEY` / `RESEND_FROM_EMAIL` — (Optional fallback) Used by the Messaging system if the Replit Resend connection is not configured
+- `RESEND_WEBHOOK_SECRET` — (Optional) Svix secret used to verify `/webhooks/resend`; if unset, the endpoint is fail-open (dev only)
+- `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER` — Required to send SMS via the Messaging system; Twilio is **env-only** (no Replit connector)
+- `ADMIN_EMAIL` / `ADMIN_PHONE` — Default destinations for "test send" in the Messaging admin
 
 ### Python Packages
 - `flask` — Web framework
