@@ -377,8 +377,10 @@ The AI uses `generateVisual` for simple data displays and `generateHTML` for ric
 - **Run log**: every dispatch creates an `automation_runs` row with `status` (queued/running/succeeded/failed/timeout), `step_results` JSONB (one entry per step with config-rendered, output, ok flag, elapsed_ms), `is_dry_run` flag, and `triggered_by` source. Visible in the editor with re-run button
 - **Test runs**: editor has a "Run now" panel that fires the automation with admin-supplied JSON sample data and polls the run row until it finishes; "dry-run" checkbox flags the row in the log (actions still execute for real)
 - **Webhook security**: tokens are 32-char URL-safe random; a partial unique index covers only non-null tokens; `/automations/hook/<token>` only fires when `enabled=TRUE` and `trigger_type='webhook'`
-- **Database tables**: `automations`, `automation_runs`
-- **Module**: engine, registry, dispatch, rate-limit, and scheduler tick live in `automations.py`; admin routes and the public webhook live in `app.py`
+- **Versioning**: every meaningful save (create / update / restore) appends a snapshot to `automation_versions` (`name`, `description`, `trigger_type`, `trigger_config`, `action_steps`); identical-content saves are de-duped so the history stays useful. The editor has a "Version history" button that opens a modal listing every saved version with a one-click "Restore" — the restored copy keeps the live on/off setting and is itself written as a new version, so no history is ever lost. Schema-drift safety: a restored snapshot is re-validated against the current trigger and action catalogues, so versions referencing a removed action kind fail cleanly with 422.
+- **Import / export (cross-site sharing)**: per-row "Export" button downloads a self-contained JSON file (`schema: "automation/v1"`); list-view "Import" button uploads any such file (256 KB cap) and creates a new automation. Imports are forced to `enabled=FALSE` so the admin can review credentials, table refs, and webhook URLs before turning it on; webhook tokens are always re-minted on import; name collisions get an `(imported N)` suffix
+- **Database tables**: `automations`, `automation_runs`, `automation_versions`
+- **Module**: engine, registry, dispatch, rate-limit, and scheduler tick live in `automations.py`; admin routes (CRUD + versions + import/export) and the public webhook live in `app.py`
 
 ## How to Edit Content
 

@@ -5198,6 +5198,8 @@ TO CUSTOMIZE THIS DASHBOARD:
         </div>
         <div style="display:flex; gap:0.5rem;">
           <button class="btn btn-secondary btn-sm" onclick="loadAutomations()" data-testid="button-automations-refresh">Refresh</button>
+          <button class="btn btn-secondary btn-sm" onclick="document.getElementById('automation-import-file').click()" data-testid="button-automation-import">Import</button>
+          <input type="file" id="automation-import-file" accept=".json,application/json" style="display:none;" onchange="importAutomationFromFile(event)">
           <button class="btn btn-primary btn-sm" onclick="openAutomationEditor(null)" data-testid="button-automation-new">+ New automation</button>
         </div>
       </div>
@@ -5223,6 +5225,8 @@ TO CUSTOMIZE THIS DASHBOARD:
         </div>
         <div style="display:flex; gap:0.5rem;">
           <button class="btn btn-secondary btn-sm" onclick="closeAutomationEditor()" data-testid="button-automation-back">← Back</button>
+          <button class="btn btn-secondary btn-sm" id="button-automation-versions" onclick="openVersionHistory()" style="display:none;" data-testid="button-automation-versions">Version history</button>
+          <button class="btn btn-secondary btn-sm" id="button-automation-export" onclick="exportCurrentAutomation()" style="display:none;" data-testid="button-automation-export">Export</button>
           <button class="btn btn-primary btn-sm" onclick="saveAutomation()" data-testid="button-automation-save">Save</button>
         </div>
       </div>
@@ -5262,7 +5266,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         </div>
         <p style="color:var(--admin-text-muted); font-size:0.85rem; margin-top:0.5rem;">
           Steps run in order. Use merge tags like
-          <code>{{trigger.fields.email}}</code> or <code>{{step1.text}}</code>
+          <code>{% raw %}{{trigger.fields.email}}{% endraw %}</code> or <code>{% raw %}{{step1.text}}{% endraw %}</code>
           to reference earlier data inside any field.
         </p>
         <div id="automation-steps-list" style="margin-top:1rem;"></div>
@@ -5306,6 +5310,22 @@ TO CUSTOMIZE THIS DASHBOARD:
           <button onclick="closeRunModal()" class="btn btn-secondary btn-sm" data-testid="button-close-run-modal">✕ Close</button>
         </div>
         <div id="run-modal-body"></div>
+      </div>
+    </div>
+
+    <!-- VERSION HISTORY MODAL -->
+    <div id="automation-versions-modal" style="display:none; position:fixed; inset:0; z-index:10000; background:rgba(0,0,0,0.85); padding:2rem; overflow-y:auto;">
+      <div style="max-width:780px; margin:0 auto; background:var(--admin-bg, #060b14); border-radius:12px; padding:2rem; color:var(--admin-text, #e7eaf0);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+          <h2 style="margin:0;">Version history</h2>
+          <button onclick="closeVersionHistory()" class="btn btn-secondary btn-sm" data-testid="button-close-versions-modal">✕ Close</button>
+        </div>
+        <p style="color:var(--admin-text-muted); font-size:0.85rem; margin-top:0;">
+          Every save adds a snapshot here. Click Restore to roll back; the rolled-back copy will keep the on/off setting it has now.
+        </p>
+        <div id="automation-versions-body" style="font-size:0.9rem;">
+          <div class="empty-state">Loading…</div>
+        </div>
       </div>
     </div>
 
@@ -11776,6 +11796,7 @@ TO CUSTOMIZE THIS DASHBOARD:
             <td><span style="color:${statusColor};font-weight:600;">${escapeHtml(status)}</span></td>
             <td>
               <button class="btn btn-secondary btn-sm" onclick="openAutomationEditor(${a.id})" data-testid="button-edit-automation-${a.id}">Edit</button>
+              <button class="btn btn-secondary btn-sm" onclick="exportAutomation(${a.id})" data-testid="button-export-automation-${a.id}">Export</button>
               <button class="btn btn-secondary btn-sm" onclick="deleteAutomation(${a.id})" data-testid="button-delete-automation-${a.id}">Delete</button>
             </td>
           </tr>`;
@@ -11818,6 +11839,109 @@ TO CUSTOMIZE THIS DASHBOARD:
       }
     }
 
+    // --- IMPORT / EXPORT --------------------------------------------------
+    // Trigger a real download by hitting the export endpoint and forcing
+    // the browser to save the JSON. We use a hidden iframe approach via a
+    // temporary <a download> so the user gets a file dialog.
+    function exportAutomation(id) {
+      const url = '/admin/api/automations/' + id + '/export';
+      const a = document.createElement('a');
+      a.href = url;
+      a.rel = 'noopener';
+      // Browser will honor Content-Disposition: attachment from the server.
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    function exportCurrentAutomation() {
+      const id = document.getElementById('automation-id').value;
+      if (!id) { showToast && showToast('Save the automation first to export it.', 'error'); return; }
+      exportAutomation(id);
+    }
+
+    async function importAutomationFromFile(event) {
+      const input = event.target;
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const fd = new FormData();
+      fd.append('file', file);
+      try {
+        const r = await fetch('/admin/api/automations/import', {
+          method: 'POST', credentials: 'same-origin', body: fd,
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || 'Import failed');
+        showToast && showToast('Imported as "' + (d.name || 'automation') + '" (kept disabled — review then enable).', 'success');
+        loadAutomations();
+        // Reset so picking the same file again still triggers onchange
+        input.value = '';
+        // Drop the user straight into the editor of the new copy
+        if (d.id) openAutomationEditor(d.id);
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+        input.value = '';
+      }
+    }
+
+    // --- VERSION HISTORY --------------------------------------------------
+    async function openVersionHistory() {
+      const id = document.getElementById('automation-id').value;
+      if (!id) { showToast && showToast('Save the automation first to see its history.', 'error'); return; }
+      const modal = document.getElementById('automation-versions-modal');
+      const body = document.getElementById('automation-versions-body');
+      body.innerHTML = '<div class="empty-state">Loading…</div>';
+      modal.style.display = '';
+      try {
+        const r = await fetch('/admin/api/automations/' + id + '/versions', { credentials: 'same-origin' });
+        const versions = await r.json();
+        if (!r.ok) throw new Error((versions && versions.error) || 'Load failed');
+        if (!versions.length) {
+          body.innerHTML = '<div class="empty-state">No saved versions yet.</div>';
+          return;
+        }
+        body.innerHTML = `
+          <table class="data-table" style="width:100%;">
+            <thead><tr><th>Version</th><th>Saved</th><th>Note</th><th>Steps</th><th></th></tr></thead>
+            <tbody>
+              ${versions.map(v => `
+                <tr data-testid="row-version-${v.version_no}">
+                  <td><strong>v${v.version_no}</strong></td>
+                  <td style="font-size:0.85rem;">${v.created_at ? new Date(v.created_at).toLocaleString() : '—'}</td>
+                  <td style="font-size:0.85rem;">${escapeHtml(v.note || '')}</td>
+                  <td style="font-size:0.85rem;">${v.step_count}</td>
+                  <td><button class="btn btn-secondary btn-sm" onclick="restoreVersion(${v.id}, ${v.version_no})" data-testid="button-restore-version-${v.version_no}">Restore</button></td>
+                </tr>`).join('')}
+            </tbody>
+          </table>`;
+      } catch (e) {
+        body.innerHTML = '<div class="empty-state">Could not load history: ' + escapeHtml(e.message) + '</div>';
+      }
+    }
+
+    function closeVersionHistory() {
+      document.getElementById('automation-versions-modal').style.display = 'none';
+    }
+
+    async function restoreVersion(vid, vno) {
+      if (!confirm('Restore version ' + vno + '? Your current saved settings will become the new latest version, and v' + vno + " will be applied on top. You can roll back again at any time.")) return;
+      const id = document.getElementById('automation-id').value;
+      if (!id) return;
+      try {
+        const r = await fetch('/admin/api/automations/' + id + '/versions/' + vid + '/restore', {
+          method: 'POST', credentials: 'same-origin',
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || 'Restore failed');
+        showToast && showToast('Restored version ' + vno + '.', 'success');
+        closeVersionHistory();
+        // Re-open the editor on the same row to pick up the restored content.
+        openAutomationEditor(parseInt(id, 10));
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+      }
+    }
+
     async function openAutomationEditor(id) {
       try {
         await ensureAutomationsMetadata();
@@ -11840,6 +11964,9 @@ TO CUSTOMIZE THIS DASHBOARD:
         document.getElementById('automations-editor-view').style.display = '';
         document.getElementById('automation-editor-title').textContent = id ? 'Edit automation' : 'New automation';
         document.getElementById('automation-id').value = id || '';
+        // Version history + Export buttons only make sense once the row exists
+        document.getElementById('button-automation-versions').style.display = id ? '' : 'none';
+        document.getElementById('button-automation-export').style.display = id ? '' : 'none';
         document.getElementById('automation-name').value = row.name || '';
         document.getElementById('automation-description').value = row.description || '';
         document.getElementById('automation-enabled').checked = !!row.enabled;

@@ -71,7 +71,8 @@ import messaging
 import automations
 from flask import (
     Flask, request, jsonify, send_from_directory,
-    render_template, session, redirect, url_for, Response, stream_with_context
+    render_template, session, redirect, url_for, Response, stream_with_context,
+    make_response
 )
 from openai import OpenAI
 
@@ -1237,6 +1238,23 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_runs_automation ON automation_runs (automation_id);
                 CREATE INDEX IF NOT EXISTS idx_runs_status ON automation_runs (status);
                 CREATE INDEX IF NOT EXISTS idx_runs_queued ON automation_runs (status, queued_at);
+
+                -- Saved snapshots of an automation's editable content (name,
+                -- description, trigger, action steps). One row is appended on
+                -- every meaningful save so the admin can browse the history
+                -- and restore an earlier version if a change was a mistake.
+                CREATE TABLE IF NOT EXISTS automation_versions (
+                    id              SERIAL PRIMARY KEY,
+                    automation_id   INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+                    version_no      INTEGER NOT NULL,
+                    snapshot        JSONB NOT NULL,
+                    note            TEXT NOT NULL DEFAULT '',
+                    created_at      TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_versions_automation
+                    ON automation_versions (automation_id, version_no DESC);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_versions_unique
+                    ON automation_versions (automation_id, version_no);
             """)
 
             # Seed a default "Contact / Inquiry" form if no forms exist yet
@@ -9893,6 +9911,9 @@ def admin_automations_create():
             token,
         ),
     )
+    _save_automation_version(
+        row["id"], _automation_snapshot(payload), note="Created"
+    )
     return jsonify(_row_automation(row)), 201
 
 
@@ -9945,6 +9966,9 @@ def admin_automations_update(aid):
             payload["trigger_type"],
             aid,
         ),
+    )
+    _save_automation_version(
+        aid, _automation_snapshot(payload), note="Updated"
     )
     return jsonify(_row_automation(row))
 
@@ -10059,6 +10083,273 @@ def admin_automations_rerun(rid):
     if new_rid is None:
         return jsonify({"error": "Rate limit reached for this automation."}), 429
     return jsonify({"ok": True, "run_id": new_rid})
+
+
+# --- ADMIN: automation versions + import / export ---------------------------
+#
+# Every meaningful save (create, update, restore) appends a snapshot row to
+# `automation_versions`. The admin can browse the history and roll back to
+# any earlier version. Restoring is itself a save, so the version chain is
+# always linear and never loses history.
+
+# Plain dict shape that captures every editable property of an automation.
+# Used both for version snapshots (saved into JSONB) and export files
+# (sent as a download). Keeping a single shape means import/export and
+# restore share validation.
+def _automation_snapshot(row_or_payload):
+    return {
+        "name": (row_or_payload.get("name") or "").strip() or "Untitled automation",
+        "description": (row_or_payload.get("description") or ""),
+        "trigger_type": row_or_payload.get("trigger_type") or "manual",
+        "trigger_config": row_or_payload.get("trigger_config") or {},
+        "action_steps": row_or_payload.get("action_steps") or [],
+    }
+
+
+def _save_automation_version(aid, snapshot, note):
+    """Append a new version row, but only if the snapshot actually differs
+    from the latest one. Avoids cluttering history with no-op saves
+    (e.g. clicking Save without making any change). Returns the new
+    version_no, or None if nothing was written."""
+    latest = query_db(
+        "SELECT version_no, snapshot FROM automation_versions "
+        "WHERE automation_id = %s ORDER BY version_no DESC LIMIT 1",
+        (aid,), fetchone=True,
+    )
+    if latest and latest.get("snapshot") == snapshot:
+        return None
+    next_no = (latest["version_no"] + 1) if latest else 1
+    execute_db(
+        "INSERT INTO automation_versions (automation_id, version_no, snapshot, note) "
+        "VALUES (%s, %s, %s::jsonb, %s)",
+        (aid, next_no, json.dumps(snapshot), (note or "")[:200]),
+    )
+    return next_no
+
+
+def _row_version(r):
+    if not r:
+        return None
+    snap = r.get("snapshot") or {}
+    if not isinstance(snap, dict):
+        snap = {}
+    return {
+        "id": r["id"],
+        "automation_id": r.get("automation_id"),
+        "version_no": r.get("version_no"),
+        "note": r.get("note") or "",
+        "created_at": r.get("created_at").isoformat() if r.get("created_at") else None,
+        "name": snap.get("name") or "",
+        "trigger_type": snap.get("trigger_type") or "",
+        "step_count": len(snap.get("action_steps") or []),
+        "snapshot": snap,
+    }
+
+
+@app.route("/admin/api/automations/<int:aid>/versions", methods=["GET"])
+@admin_required
+def admin_automations_versions_list(aid):
+    exists = query_db("SELECT 1 FROM automations WHERE id = %s", (aid,), fetchone=True)
+    if not exists:
+        return jsonify({"error": "Not found"}), 404
+    rows = query_db(
+        "SELECT id, automation_id, version_no, note, created_at, snapshot "
+        "FROM automation_versions WHERE automation_id = %s "
+        "ORDER BY version_no DESC LIMIT 200",
+        (aid,),
+    ) or []
+    # Strip the heavy snapshot blob from the list payload — the editor
+    # only needs the headline metadata to render the timeline. Detail
+    # endpoint returns the full snapshot for previews / restore.
+    out = []
+    for r in rows:
+        v = _row_version(r)
+        v.pop("snapshot", None)
+        out.append(v)
+    return jsonify(out)
+
+
+@app.route("/admin/api/automations/<int:aid>/versions/<int:vid>", methods=["GET"])
+@admin_required
+def admin_automations_version_detail(aid, vid):
+    row = query_db(
+        "SELECT * FROM automation_versions WHERE id = %s AND automation_id = %s",
+        (vid, aid), fetchone=True,
+    )
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(_row_version(row))
+
+
+@app.route("/admin/api/automations/<int:aid>/versions/<int:vid>/restore", methods=["POST"])
+@admin_required
+def admin_automations_version_restore(aid, vid):
+    version = query_db(
+        "SELECT version_no, snapshot FROM automation_versions "
+        "WHERE id = %s AND automation_id = %s",
+        (vid, aid), fetchone=True,
+    )
+    if not version:
+        return jsonify({"error": "Version not found"}), 404
+    snap = version.get("snapshot") or {}
+    if not isinstance(snap, dict):
+        return jsonify({"error": "Snapshot is corrupt and cannot be restored."}), 422
+    # Rebuild a payload that matches the editor's POST body so the same
+    # validator catches any drift (e.g. an action kind was removed in code
+    # since the snapshot was taken).
+    try:
+        payload = _validate_automation_payload({
+            "name": snap.get("name") or "",
+            "description": snap.get("description") or "",
+            "enabled": False,  # safety: restored copy is held in disabled state
+            "trigger_type": snap.get("trigger_type") or "manual",
+            "trigger_config": snap.get("trigger_config") or {},
+            "action_steps": snap.get("action_steps") or [],
+        })
+    except ValueError as e:
+        return jsonify({"error": f"Snapshot is no longer valid: {e}"}), 422
+    existing = query_db(
+        "SELECT trigger_type, webhook_token, enabled FROM automations WHERE id = %s",
+        (aid,), fetchone=True,
+    )
+    if not existing:
+        return jsonify({"error": "Not found"}), 404
+    # Preserve the live enabled flag — restoring shouldn't accidentally
+    # turn an active automation off.
+    payload["enabled"] = bool(existing.get("enabled"))
+    token = existing["webhook_token"] or ""
+    if payload["trigger_type"] == "webhook" and not token:
+        token = automations.generate_webhook_token()
+    elif payload["trigger_type"] != "webhook":
+        token = ""
+    row = execute_db(
+        """
+        UPDATE automations
+           SET name=%s, description=%s, enabled=%s, trigger_type=%s,
+               trigger_config=%s::jsonb, action_steps=%s::jsonb,
+               webhook_token=%s, updated_at=NOW(),
+               next_scheduled_at = CASE WHEN trigger_type <> %s THEN NULL ELSE next_scheduled_at END
+         WHERE id=%s
+        RETURNING *
+        """,
+        (
+            payload["name"], payload["description"], payload["enabled"],
+            payload["trigger_type"],
+            json.dumps(payload["trigger_config"]),
+            json.dumps(payload["action_steps"]),
+            token,
+            payload["trigger_type"],
+            aid,
+        ),
+    )
+    _save_automation_version(
+        aid, _automation_snapshot(payload),
+        note=f"Restored from version {version['version_no']}",
+    )
+    return jsonify(_row_automation(row))
+
+
+# Wire export size so very large automations can't accidentally DoS the
+# import endpoint with a multi-megabyte JSON. 256 KB is plenty of room.
+_AUTOMATION_IMPORT_MAX_BYTES = 256 * 1024
+
+
+@app.route("/admin/api/automations/<int:aid>/export", methods=["GET"])
+@admin_required
+def admin_automations_export(aid):
+    row = query_db("SELECT * FROM automations WHERE id = %s", (aid,), fetchone=True)
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    snap = _automation_snapshot(_row_automation(row))
+    bundle = {
+        "schema": "automation/v1",
+        "exported_at": datetime.utcnow().isoformat() + "Z",
+        "exported_from": _public_base_url(),
+        "automation": snap,
+    }
+    body = json.dumps(bundle, indent=2)
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", snap["name"]).strip("-") or "automation"
+    filename = f"{safe_name}-v{aid}.automation.json"
+    resp = make_response(body)
+    resp.headers["Content-Type"] = "application/json; charset=utf-8"
+    resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return resp
+
+
+@app.route("/admin/api/automations/import", methods=["POST"])
+@admin_required
+def admin_automations_import():
+    # Accept either a posted file upload OR a JSON body containing the
+    # bundle directly. The dashboard uses the file path; curl users will
+    # find the JSON path more convenient.
+    bundle = None
+    if request.files.get("file"):
+        f = request.files["file"]
+        raw = f.read(_AUTOMATION_IMPORT_MAX_BYTES + 1)
+        if len(raw) > _AUTOMATION_IMPORT_MAX_BYTES:
+            return jsonify({"error": "File is too large to import."}), 413
+        try:
+            bundle = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return jsonify({"error": "File is not valid JSON."}), 400
+    else:
+        bundle = request.get_json(silent=True)
+    if not isinstance(bundle, dict):
+        return jsonify({"error": "Import body must be a JSON object."}), 400
+    if bundle.get("schema") and bundle["schema"] != "automation/v1":
+        return jsonify({"error": f"Unsupported schema: {bundle['schema']}"}), 400
+    snap = bundle.get("automation") if isinstance(bundle.get("automation"), dict) else bundle
+    try:
+        payload = _validate_automation_payload({
+            "name": snap.get("name") or "Imported automation",
+            "description": snap.get("description") or "",
+            # Force-disable on import so the admin reviews credentials,
+            # webhook URLs, table names, etc. before the new copy can fire.
+            "enabled": False,
+            "trigger_type": snap.get("trigger_type") or "manual",
+            "trigger_config": snap.get("trigger_config") or {},
+            "action_steps": snap.get("action_steps") or [],
+        })
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    # If a name collision exists, append a suffix so the imported copy
+    # doesn't masquerade as the original.
+    base_name = payload["name"]
+    final_name = base_name
+    suffix = 2
+    while query_db(
+        "SELECT 1 FROM automations WHERE name = %s LIMIT 1",
+        (final_name,), fetchone=True,
+    ):
+        final_name = f"{base_name} (imported {suffix})"
+        suffix += 1
+        if suffix > 50:
+            return jsonify({"error": "Too many name collisions. Rename and retry."}), 409
+    payload["name"] = final_name
+    # Always mint a fresh token on import — the source site's token must
+    # not transfer to a different deployment.
+    token = automations.generate_webhook_token() if payload["trigger_type"] == "webhook" else ""
+    row = execute_db(
+        """
+        INSERT INTO automations
+            (name, description, enabled, trigger_type, trigger_config,
+             action_steps, webhook_token)
+        VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
+        RETURNING *
+        """,
+        (
+            payload["name"], payload["description"], payload["enabled"],
+            payload["trigger_type"],
+            json.dumps(payload["trigger_config"]),
+            json.dumps(payload["action_steps"]),
+            token,
+        ),
+    )
+    _save_automation_version(
+        row["id"], _automation_snapshot(payload),
+        note=f"Imported from {bundle.get('exported_from') or 'uploaded file'}",
+    )
+    return jsonify(_row_automation(row)), 201
 
 
 @app.route("/automations/hook/<token>", methods=["POST", "GET"])
