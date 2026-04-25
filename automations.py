@@ -706,6 +706,15 @@ def _execute_run(run_id: int) -> None:
     if not automation:
         _finish_run(run_id, "failed", [], "Automation deleted before run started.")
         return
+    # Honor "disabled while queued" — don't run actions for an automation
+    # that the admin turned off after the run was queued. Test runs and
+    # dry-runs are explicit user actions, so they bypass this check.
+    if (not automation.get("enabled")
+            and not run.get("is_dry_run")
+            and (run.get("triggered_by") or "") not in ("admin_test", "manual")):
+        _finish_run(run_id, "failed", [],
+                    "Automation was disabled before this run started.")
+        return
 
     steps = automation.get("action_steps") or []
     if not isinstance(steps, list):
