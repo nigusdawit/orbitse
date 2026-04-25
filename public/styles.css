@@ -4193,6 +4193,16 @@ html[data-scroll-mode="smooth"] .snap-section {
   .immersive-page-frame {
     padding-right: 0;
   }
+  /* On phones the side chat panel sits along the bottom of the viewport
+     (~40% tall when open, ~4rem when minimized). Shrink the iframe's
+     visible height to match so the AI-generated page content doesn't end
+     up rendered behind the panel and look like nothing came through. */
+  body:has(.side-chat-panel.active:not(.minimized)) .immersive-page-frame {
+    height: calc(100% - 40vh);
+  }
+  body:has(.side-chat-panel.active.minimized) .immersive-page-frame {
+    height: calc(100% - 4rem - env(safe-area-inset-bottom, 0px));
+  }
 }
 
 /* =============================================================================
@@ -4208,11 +4218,23 @@ html[data-scroll-mode="smooth"] .snap-section {
   font-family: var(--font-sans, system-ui, sans-serif);
 }
 
-/* On narrow screens the chatbot bar sits centered along the bottom and can
-   visually crowd the bubble. Lift the bubble higher so they don't collide. */
-@media (max-width: 640px) {
+/* On phones / small tablets the chatbot bar sits centered along the bottom
+   and can visually crowd the bubble. Lift the bubble higher so they don't
+   collide. We extend this through the full mobile breakpoint (768px) so
+   the bubble is consistently above the chat bar on every phone size. */
+@media (max-width: 768px) {
   .page-archive-bubble {
     bottom: 5.5rem;
+  }
+  /* When the AI's side chat panel is shown (during navigate / generatePage),
+     it expands to ~40% of the viewport height across the bottom edge.
+     Push the page-archive bubble above it so the visitor can always tap it. */
+  body:has(.side-chat-panel.active:not(.minimized)) .page-archive-bubble {
+    bottom: calc(40vh + 1rem);
+  }
+  /* Minimized side panel only shows its header bar (~3rem). */
+  body:has(.side-chat-panel.active.minimized) .page-archive-bubble {
+    bottom: calc(5rem + env(safe-area-inset-bottom, 0px));
   }
 }
 
@@ -5641,6 +5663,16 @@ html[data-scroll-mode="smooth"] .snap-section {
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 .cart-fab:hover { transform: scale(1.05); box-shadow: 0 10px 24px rgba(0,0,0,0.3); }
+
+/* Hide the cart bubble while the visitor is in an overlay view (an
+   AI-generated immersive page, the fullscreen canvas, or the side chat
+   panel). The cart isn't relevant in those modes and just adds visual
+   clutter to the corner where the Back button / page-archive bubble live. */
+body:has(.immersive-page-overlay.active) .cart-fab,
+body:has(.fullscreen-canvas.active) .cart-fab,
+body:has(.side-chat-panel.active) .cart-fab {
+  display: none !important;
+}
 
 /* Inline placement in the top header next to the Get Started button.
    Same visual size / count badge as the FAB but drops the fixed
