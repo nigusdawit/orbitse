@@ -12134,6 +12134,124 @@ def admin_overview_stats():
             for r in trend_rows
         ]
 
+        # ---- Phase A metrics (skills, presentations, LLM provider) ----
+        # Each block is wrapped in try/except so a single missing/empty
+        # table never breaks the whole Overview load.
+        skill_calls_today = 0
+        skill_calls_week = 0
+        skill_errors_week = 0
+        top_skills = []
+        try:
+            r = query_db(
+                "SELECT COUNT(*) AS n FROM skill_usage_log "
+                "WHERE created_at >= NOW() - INTERVAL '1 day'",
+                fetchone=True,
+            ) or {"n": 0}
+            skill_calls_today = int(r["n"] or 0)
+            r = query_db(
+                "SELECT COUNT(*) AS n FROM skill_usage_log "
+                "WHERE created_at >= NOW() - INTERVAL '7 days'",
+                fetchone=True,
+            ) or {"n": 0}
+            skill_calls_week = int(r["n"] or 0)
+            r = query_db(
+                "SELECT COUNT(*) AS n FROM skill_usage_log "
+                "WHERE created_at >= NOW() - INTERVAL '7 days' "
+                "AND COALESCE(error, '') <> ''",
+                fetchone=True,
+            ) or {"n": 0}
+            skill_errors_week = int(r["n"] or 0)
+            top_skill_rows = query_db("""
+                SELECT skill_name,
+                       COUNT(*) AS calls,
+                       SUM(CASE WHEN COALESCE(error, '') <> '' THEN 1 ELSE 0 END) AS errors,
+                       AVG(duration_ms) AS avg_ms
+                FROM skill_usage_log
+                WHERE created_at >= NOW() - INTERVAL '7 days'
+                GROUP BY skill_name
+                ORDER BY calls DESC
+                LIMIT 5
+            """) or []
+            top_skills = [
+                {
+                    "skill_name": r.get("skill_name") or "",
+                    "calls": int(r.get("calls") or 0),
+                    "errors": int(r.get("errors") or 0),
+                    "avg_ms": int(round(float(r.get("avg_ms") or 0))),
+                }
+                for r in top_skill_rows
+            ]
+        except Exception:
+            pass
+
+        skills_active = 0
+        skills_total = 0
+        try:
+            r = query_db(
+                "SELECT COUNT(*) FILTER (WHERE enabled) AS active, COUNT(*) AS total "
+                "FROM agent_skills",
+                fetchone=True,
+            ) or {}
+            skills_active = int(r.get("active") or 0)
+            skills_total = int(r.get("total") or 0)
+        except Exception:
+            pass
+
+        presentations_active = 0
+        presentations_total = 0
+        try:
+            r = query_db(
+                "SELECT COUNT(*) FILTER (WHERE enabled) AS active, COUNT(*) AS total "
+                "FROM presentations",
+                fetchone=True,
+            ) or {}
+            presentations_active = int(r.get("active") or 0)
+            presentations_total = int(r.get("total") or 0)
+        except Exception:
+            pass
+
+        llm_provider = "openai"
+        openai_model = ""
+        claude_model = ""
+        try:
+            r = query_db(
+                "SELECT provider, openai_model, claude_model "
+                "FROM agent_provider_settings WHERE id = 1",
+                fetchone=True,
+            ) or {}
+            llm_provider = (r.get("provider") or "openai").lower()
+            openai_model = r.get("openai_model") or ""
+            claude_model = r.get("claude_model") or ""
+        except Exception:
+            pass
+
+        # Recent chat sessions (last 5) with the first user message as preview.
+        recent_chats = []
+        try:
+            recent_chat_rows = query_db("""
+                SELECT c.id, c.started_at,
+                       (SELECT COUNT(*) FROM chat_messages m WHERE m.conversation_id = c.id) AS message_count,
+                       (SELECT m2.content FROM chat_messages m2
+                          WHERE m2.conversation_id = c.id AND m2.role = 'user'
+                          ORDER BY m2.id ASC LIMIT 1) AS first_user_msg
+                FROM chat_conversations c
+                ORDER BY c.started_at DESC
+                LIMIT 5
+            """) or []
+            for row in recent_chat_rows:
+                preview = (row.get("first_user_msg") or "").strip()
+                if len(preview) > 80:
+                    preview = preview[:77] + "..."
+                recent_chats.append({
+                    "id": row["id"],
+                    "preview": preview or "Chat session",
+                    "message_count": int(row.get("message_count") or 0),
+                    "started_at": row["started_at"].isoformat()
+                        if row.get("started_at") else "",
+                })
+        except Exception:
+            pass
+
         return jsonify({
             "visitors_today": int(visitors_today["n"] or 0),
             "visitors_week":  int(visitors_week["n"]  or 0),
@@ -12146,6 +12264,19 @@ def admin_overview_stats():
             "revenue_week":  float(revenue_week["n"]  or 0),
             "recent_submissions": recent_submissions,
             "visitor_trend": trend,
+            # Phase A additions
+            "skill_calls_today": skill_calls_today,
+            "skill_calls_week":  skill_calls_week,
+            "skill_errors_week": skill_errors_week,
+            "skills_active": skills_active,
+            "skills_total":  skills_total,
+            "top_skills": top_skills,
+            "presentations_active": presentations_active,
+            "presentations_total":  presentations_total,
+            "llm_provider": llm_provider,
+            "openai_model": openai_model,
+            "claude_model": claude_model,
+            "recent_chats": recent_chats,
         })
     except Exception as e:
         app.logger.exception("overview stats failed: %s", e)

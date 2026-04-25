@@ -340,11 +340,18 @@ The AI uses `generateVisual` for simple data displays and `generateHTML` for ric
 
 ### Overview Dashboard (default landing tab)
 - Admin → Overview tab is the new default landing view (was Page Layout)
-- KPI cards show visitors today / this week, page views today, new leads, chat sessions, and revenue (auto-hidden when zero)
-- 14-day visitor trend chart powered by Chart.js
+- KPI cards (5–6) show visitors today / this week, page views today, new leads, chat sessions, **skill calls today / this week**, and revenue (auto-hidden when zero)
+- **Phase A feature row** below KPIs — three glass tiles with deep-link actions:
+  - **AI provider** (OpenAI / Claude) with current model name → "Change provider" jumps to LLM Provider tab
+  - **Active skills** (e.g. "14 / 14") with weekly error count, "Attention" pill when errors > 0 → "Manage skills" jumps to Skills tab
+  - **Presentations** (live count + total decks) → "Open presentations" jumps to Presentations tab
+- 14-day visitor trend chart powered by Chart.js (dark-themed axes/grid)
 - Recent submissions list with form name, preview, and relative time
+- **Top skills, last 7 days** panel — top 5 skills by call count, with error count and average duration (ms)
+- **Recent chat sessions** panel — last 5 conversations with first user message preview and message count
+- Dark-mode theme: all KPI/feature/panel/dashboard/widget cards use `--admin-surface` / `--admin-border` / `--admin-text` glass tokens to match the rest of the admin shell (no more white cards on dark background)
 - Manual Refresh button + "Updated HH:MM:SS" indicator
-- Backend endpoint: `GET /admin/api/overview/stats` aggregates from `page_views`, `form_submissions`, `chat_conversations`, `orders`
+- Backend endpoint: `GET /admin/api/overview/stats` aggregates from `page_views`, `form_submissions`, `chat_conversations`, `chat_messages`, `orders`, `skill_usage_log`, `agent_skills`, `presentations`, `agent_provider_settings`. Each Phase A block is wrapped in try/except so a missing table never breaks the load
 
 ### Custom Dashboards Builder
 - Admin → Custom Dashboards tab — create your own boards with cards and charts
