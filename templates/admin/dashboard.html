@@ -1625,6 +1625,12 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
       Campaigns
     </button>
+
+    <div class="sidebar-group-label">Automation</div>
+    <button class="tab-btn" onclick="switchTab('automations', this); loadAutomations();" data-testid="tab-automations">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+      Automations
+    </button>
   </nav>
 
   <main class="admin-main">
@@ -5168,6 +5174,141 @@ TO CUSTOMIZE THIS DASHBOARD:
     </div>
 
     <div id="campaign-detail-panel" style="margin-top:1.5rem;"></div>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: AUTOMATIONS — no-code "if X then Y" workflow builder
+  ========================================================================
+  Three nested views, all inside this single tab so we don't have to wire
+  up sub-routes:
+    automations-list-view    The list of all automations + "+ New" button.
+    automations-editor-view  Edit/create one automation (trigger + steps).
+    automations-runs-view    Run-log drilldown for a single automation.
+  We toggle between them by setting display:none — no fancy router needed.
+  -->
+  <div id="tab-automations" class="tab-content">
+
+    <!-- LIST VIEW -->
+    <div id="automations-list-view">
+      <div class="section-header-admin">
+        <div>
+          <h2>Automations</h2>
+          <p>Build "if this happens, then do that" workflows. No code required.</p>
+        </div>
+        <div style="display:flex; gap:0.5rem;">
+          <button class="btn btn-secondary btn-sm" onclick="loadAutomations()" data-testid="button-automations-refresh">Refresh</button>
+          <button class="btn btn-primary btn-sm" onclick="openAutomationEditor(null)" data-testid="button-automation-new">+ New automation</button>
+        </div>
+      </div>
+      <div id="automations-status-banner" style="margin-bottom:1rem;"></div>
+      <div style="overflow-x:auto;">
+        <table class="data-table">
+          <thead>
+            <tr><th>Name</th><th>Trigger</th><th>Enabled</th><th>Last run</th><th>Status</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="automations-tbody">
+            <tr><td colspan="6" class="empty-state">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- EDITOR VIEW -->
+    <div id="automations-editor-view" style="display:none;">
+      <div class="section-header-admin">
+        <div>
+          <h2 id="automation-editor-title">New automation</h2>
+          <p>One trigger, then a sequence of actions.</p>
+        </div>
+        <div style="display:flex; gap:0.5rem;">
+          <button class="btn btn-secondary btn-sm" onclick="closeAutomationEditor()" data-testid="button-automation-back">← Back</button>
+          <button class="btn btn-primary btn-sm" onclick="saveAutomation()" data-testid="button-automation-save">Save</button>
+        </div>
+      </div>
+
+      <div class="form-panel">
+        <input type="hidden" id="automation-id">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Name</label>
+            <input type="text" id="automation-name" placeholder="Notify staff when contact form is submitted" data-testid="input-automation-name">
+          </div>
+          <div class="form-group" style="display:flex;flex-direction:row;align-items:center;gap:0.5rem;">
+            <input type="checkbox" id="automation-enabled" style="width:auto;">
+            <label for="automation-enabled" style="margin:0;">Enabled (turn on once it's working)</label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Description (optional)</label>
+          <input type="text" id="automation-description" placeholder="What this automation does" data-testid="input-automation-description">
+        </div>
+      </div>
+
+      <div class="form-panel">
+        <h3 style="margin-top:0;">When this happens (trigger)</h3>
+        <div class="form-group">
+          <label>Trigger type</label>
+          <select id="automation-trigger-type" onchange="renderTriggerConfigForm()" data-testid="select-trigger-type"></select>
+        </div>
+        <div id="automation-trigger-config-form"></div>
+        <div id="automation-webhook-info" style="display:none; margin-top:0.75rem; padding:0.75rem; background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.3); border-radius:8px; font-size:0.85rem;"></div>
+      </div>
+
+      <div class="form-panel">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <h3 style="margin:0;">Then do this (actions)</h3>
+          <button class="btn btn-secondary btn-sm" onclick="addAutomationStep()" data-testid="button-add-step">+ Add step</button>
+        </div>
+        <p style="color:var(--admin-text-muted); font-size:0.85rem; margin-top:0.5rem;">
+          Steps run in order. Use merge tags like
+          <code>{{trigger.fields.email}}</code> or <code>{{step1.text}}</code>
+          to reference earlier data inside any field.
+        </p>
+        <div id="automation-steps-list" style="margin-top:1rem;"></div>
+      </div>
+
+      <div class="form-panel">
+        <h3 style="margin-top:0;">Test it</h3>
+        <p style="color:var(--admin-text-muted); font-size:0.85rem;">
+          Fire this automation right now using the sample trigger data below. The actions run for real (real emails, real saves) — toggle "dry-run" to mark this run as a test in the log.
+        </p>
+        <div class="form-group">
+          <label>Sample trigger data (JSON)</label>
+          <textarea id="automation-test-payload" rows="5" style="font-family:monospace; font-size:0.85rem;" placeholder='{"fields":{"email":"you@example.com","name":"Test"}}' data-testid="textarea-test-payload"></textarea>
+        </div>
+        <div class="form-actions" style="display:flex;align-items:center;gap:0.75rem;">
+          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.85rem;">
+            <input type="checkbox" id="automation-test-dry-run" checked style="width:auto;">
+            Mark as dry-run in the log
+          </label>
+          <button class="btn btn-secondary" onclick="testRunAutomation()" data-testid="button-test-run">Run now</button>
+        </div>
+        <div id="automation-test-result" style="margin-top:1rem;"></div>
+      </div>
+
+      <div class="form-panel">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <h3 style="margin:0;">Recent runs</h3>
+          <button class="btn btn-secondary btn-sm" onclick="loadAutomationRuns()" data-testid="button-runs-refresh">Refresh</button>
+        </div>
+        <div id="automation-runs-list" style="margin-top:1rem; font-size:0.85rem;">
+          <div class="empty-state">Save the automation first to see runs.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RUN DETAIL MODAL -->
+    <div id="automation-run-modal" style="display:none; position:fixed; inset:0; z-index:10000; background:rgba(0,0,0,0.85); padding:2rem; overflow-y:auto;">
+      <div style="max-width:900px; margin:0 auto; background:var(--admin-bg, #060b14); border-radius:12px; padding:2rem; color:var(--admin-text, #e7eaf0);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+          <h2 id="run-modal-title" style="margin:0;">Run detail</h2>
+          <button onclick="closeRunModal()" class="btn btn-secondary btn-sm" data-testid="button-close-run-modal">✕ Close</button>
+        </div>
+        <div id="run-modal-body"></div>
+      </div>
+    </div>
+
   </div>
 
   <!-- Preview modal for saved pages -->
@@ -11559,6 +11700,589 @@ TO CUSTOMIZE THIS DASHBOARD:
         loadOverview();
       }
     });
+
+    // ========================================================================
+    // AUTOMATIONS — list + editor + run-log
+    // ========================================================================
+    // We keep all automation-related state on a single module-level object so
+    // the editor can re-render on demand without re-fetching metadata.
+    const Automations = {
+      metadata: null,        // { triggers, actions, tables, forms, limits, public_base_url }
+      current: null,         // the automation row currently being edited
+      steps: [],             // mutable copy of action_steps for the editor
+      runsRefreshTimer: null,
+    };
+
+    async function ensureAutomationsMetadata() {
+      if (Automations.metadata) return Automations.metadata;
+      const r = await fetch('/admin/api/automations/metadata', { credentials: 'same-origin' });
+      if (!r.ok) throw new Error('Could not load automation metadata');
+      Automations.metadata = await r.json();
+      return Automations.metadata;
+    }
+
+    async function loadAutomations() {
+      // Always start in list view when the tab is opened.
+      document.getElementById('automations-list-view').style.display = '';
+      document.getElementById('automations-editor-view').style.display = 'none';
+      const tbody = document.getElementById('automations-tbody');
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-state">Loading…</td></tr>';
+      try {
+        await ensureAutomationsMetadata();
+        const r = await fetch('/admin/api/automations', { credentials: 'same-origin' });
+        const rows = await r.json();
+        if (!r.ok) throw new Error(rows.error || 'Load failed');
+        renderAutomationsTable(rows);
+        renderAutomationsStatusBanner();
+      } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="6" class="empty-state">${escapeHtml(e.message)}</td></tr>`;
+      }
+    }
+
+    function renderAutomationsStatusBanner() {
+      const banner = document.getElementById('automations-status-banner');
+      const lim = (Automations.metadata && Automations.metadata.limits) || {};
+      banner.innerHTML = `
+        <div style="padding:0.6rem 0.85rem; background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.3); border-radius:8px; font-size:0.82rem; color:var(--admin-text-muted);">
+          Engine: ${lim.in_flight ?? 0} of ${lim.max_concurrent_runs ?? '?'} workers busy
+          · ${lim.max_runs_per_hour ?? '?'} runs/hour per automation
+          · ${lim.max_run_seconds ?? '?'}s overall timeout
+        </div>`;
+    }
+
+    function renderAutomationsTable(rows) {
+      const tbody = document.getElementById('automations-tbody');
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No automations yet. Click "+ New automation" to get started.</td></tr>';
+        return;
+      }
+      const triggerLabels = {};
+      ((Automations.metadata && Automations.metadata.triggers) || []).forEach(t => { triggerLabels[t.kind] = t.label; });
+      tbody.innerHTML = rows.map(a => {
+        const status = a.last_run_status || '—';
+        const statusColor = status === 'succeeded' ? '#22c55e' : (status === 'failed' || status === 'timeout') ? '#ef4444' : '#94a3b8';
+        const lastRun = a.last_run_at ? new Date(a.last_run_at).toLocaleString() : '—';
+        return `
+          <tr data-testid="row-automation-${a.id}">
+            <td><strong>${escapeHtml(a.name)}</strong>${a.description ? '<br><span style="color:var(--admin-text-muted);font-size:0.8rem;">' + escapeHtml(a.description) + '</span>' : ''}</td>
+            <td>${escapeHtml(triggerLabels[a.trigger_type] || a.trigger_type)}</td>
+            <td>
+              <label style="display:inline-flex;align-items:center;gap:0.4rem;cursor:pointer;">
+                <input type="checkbox" ${a.enabled ? 'checked' : ''} onchange="toggleAutomation(${a.id}, this.checked)" data-testid="toggle-automation-${a.id}" style="width:auto;">
+                ${a.enabled ? 'On' : 'Off'}
+              </label>
+            </td>
+            <td style="font-size:0.85rem;">${lastRun}</td>
+            <td><span style="color:${statusColor};font-weight:600;">${escapeHtml(status)}</span></td>
+            <td>
+              <button class="btn btn-secondary btn-sm" onclick="openAutomationEditor(${a.id})" data-testid="button-edit-automation-${a.id}">Edit</button>
+              <button class="btn btn-secondary btn-sm" onclick="deleteAutomation(${a.id})" data-testid="button-delete-automation-${a.id}">Delete</button>
+            </td>
+          </tr>`;
+      }).join('');
+    }
+
+    async function toggleAutomation(id, enabled) {
+      try {
+        const r = await fetch('/admin/api/automations/' + id + '/toggle', {
+          method: 'POST', credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({enabled}),
+        });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(d.error || 'Toggle failed');
+        }
+        loadAutomations();
+        showToast && showToast(enabled ? 'Enabled' : 'Disabled', 'success');
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+        loadAutomations();
+      }
+    }
+
+    async function deleteAutomation(id) {
+      if (!confirm('Delete this automation? Its run history will be deleted too.')) return;
+      try {
+        const r = await fetch('/admin/api/automations/' + id, {
+          method: 'DELETE', credentials: 'same-origin',
+        });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(d.error || 'Delete failed');
+        }
+        loadAutomations();
+        showToast && showToast('Deleted', 'success');
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+      }
+    }
+
+    async function openAutomationEditor(id) {
+      try {
+        await ensureAutomationsMetadata();
+        let row = null;
+        if (id) {
+          const r = await fetch('/admin/api/automations/' + id, { credentials: 'same-origin' });
+          row = await r.json();
+          if (!r.ok) throw new Error(row.error || 'Load failed');
+        } else {
+          row = {
+            id: null, name: '', description: '', enabled: false,
+            trigger_type: 'form_submitted', trigger_config: {}, action_steps: [],
+            webhook_token: '',
+          };
+        }
+        Automations.current = row;
+        Automations.steps = JSON.parse(JSON.stringify(row.action_steps || []));
+        // Switch views.
+        document.getElementById('automations-list-view').style.display = 'none';
+        document.getElementById('automations-editor-view').style.display = '';
+        document.getElementById('automation-editor-title').textContent = id ? 'Edit automation' : 'New automation';
+        document.getElementById('automation-id').value = id || '';
+        document.getElementById('automation-name').value = row.name || '';
+        document.getElementById('automation-description').value = row.description || '';
+        document.getElementById('automation-enabled').checked = !!row.enabled;
+        // Trigger picker.
+        const sel = document.getElementById('automation-trigger-type');
+        sel.innerHTML = (Automations.metadata.triggers || []).map(t =>
+          `<option value="${t.kind}" ${row.trigger_type === t.kind ? 'selected' : ''}>${escapeHtml(t.label)}</option>`
+        ).join('');
+        renderTriggerConfigForm();
+        renderStepsList();
+        // Pre-fill the test payload with a sensible sample.
+        document.getElementById('automation-test-payload').value = sampleTriggerPayload(row.trigger_type);
+        document.getElementById('automation-test-result').innerHTML = '';
+        // Runs list.
+        if (id) {
+          loadAutomationRuns();
+        } else {
+          document.getElementById('automation-runs-list').innerHTML = '<div class="empty-state">Save the automation first to see runs.</div>';
+        }
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+      }
+    }
+
+    function closeAutomationEditor() {
+      Automations.current = null;
+      Automations.steps = [];
+      loadAutomations();
+    }
+
+    function sampleTriggerPayload(kind) {
+      if (kind === 'form_submitted') {
+        return JSON.stringify({
+          form_slug: 'contact-request', submission_id: 1,
+          fields: {name: 'Test User', email: 'test@example.com', message: 'Hi there'}
+        }, null, 2);
+      }
+      if (kind === 'new_chat') {
+        return JSON.stringify({conversation_id: 1, session_id: 'abc', first_message: 'Hello'}, null, 2);
+      }
+      if (kind === 'webhook') {
+        return JSON.stringify({example: 'payload'}, null, 2);
+      }
+      if (kind === 'schedule') {
+        return JSON.stringify({scheduled_at: new Date().toISOString()}, null, 2);
+      }
+      return '{}';
+    }
+
+    function renderTriggerConfigForm() {
+      const sel = document.getElementById('automation-trigger-type');
+      const kind = sel.value;
+      const trig = (Automations.metadata.triggers || []).find(t => t.kind === kind);
+      const formDiv = document.getElementById('automation-trigger-config-form');
+      const cfg = (Automations.current && Automations.current.trigger_type === kind)
+        ? (Automations.current.trigger_config || {}) : {};
+      if (!trig || !trig.config_fields.length) {
+        formDiv.innerHTML = '<p style="color:var(--admin-text-muted);font-size:0.85rem;margin:0;">No extra settings — this trigger fires whenever the event happens.</p>';
+      } else {
+        formDiv.innerHTML = trig.config_fields.map(f => renderConfigField(f, cfg[f.name], 'trigger-cfg-' + f.name)).join('');
+      }
+      // Sync the test payload sample if the user is creating a fresh automation.
+      if (Automations.current && !Automations.current.id) {
+        document.getElementById('automation-test-payload').value = sampleTriggerPayload(kind);
+      }
+      // Webhook info banner.
+      const webhookInfo = document.getElementById('automation-webhook-info');
+      if (kind === 'webhook') {
+        webhookInfo.style.display = '';
+        const base = (Automations.metadata.public_base_url || window.location.origin || '').replace(/\/$/, '');
+        const tok = (Automations.current && Automations.current.webhook_token) || '';
+        if (tok) {
+          const url = base + '/automations/hook/' + tok;
+          webhookInfo.innerHTML = `
+            <div><strong>Your webhook URL:</strong></div>
+            <div style="margin:0.4rem 0;font-family:monospace;word-break:break-all;background:rgba(0,0,0,0.25);padding:0.5rem;border-radius:6px;" data-testid="text-webhook-url">${escapeHtml(url)}</div>
+            <div>POST any JSON to this URL to fire the automation. The body becomes the trigger data.</div>
+            <div style="margin-top:0.5rem;">
+              <button class="btn btn-secondary btn-sm" onclick="regenerateWebhookToken()" data-testid="button-regenerate-webhook">Regenerate URL (invalidates the old one)</button>
+            </div>`;
+        } else {
+          webhookInfo.innerHTML = '<div>Save this automation once and the webhook URL will appear here.</div>';
+        }
+      } else {
+        webhookInfo.style.display = 'none';
+      }
+    }
+
+    function renderConfigField(field, value, idAttr) {
+      const v = value === undefined || value === null ? '' : value;
+      const label = `<label>${escapeHtml(field.label)}${field.required ? ' *' : ''}</label>`;
+      let control = '';
+      if (field.kind === 'textarea') {
+        control = `<textarea id="${idAttr}" rows="4" ${field.placeholder ? 'placeholder="' + escapeHtml(field.placeholder) + '"' : ''} data-cfg-key="${escapeHtml(field.name)}">${escapeHtml(String(v))}</textarea>`;
+      } else if (field.kind === 'number') {
+        control = `<input type="number" id="${idAttr}" value="${escapeHtml(String(v))}" ${field.min !== undefined ? 'min="' + field.min + '"' : ''} ${field.max !== undefined ? 'max="' + field.max + '"' : ''} data-cfg-key="${escapeHtml(field.name)}">`;
+      } else if (field.kind === 'select') {
+        const opts = (field.options || []).map(o =>
+          `<option value="${escapeHtml(o.value)}" ${String(v) === String(o.value) ? 'selected' : ''}>${escapeHtml(o.label)}</option>`
+        ).join('');
+        control = `<select id="${idAttr}" data-cfg-key="${escapeHtml(field.name)}">${opts}</select>`;
+      } else if (field.kind === 'form_picker') {
+        const forms = (Automations.metadata.forms || []);
+        const opts = ['<option value="">(any form)</option>'].concat(forms.map(f =>
+          `<option value="${escapeHtml(f.slug)}" ${String(v) === f.slug ? 'selected' : ''}>${escapeHtml(f.name)}</option>`
+        )).join('');
+        control = `<select id="${idAttr}" data-cfg-key="${escapeHtml(field.name)}">${opts}</select>`;
+      } else if (field.kind === 'table_picker') {
+        const tables = Object.keys(Automations.metadata.tables || {}).sort();
+        const opts = ['<option value="">(pick a table)</option>'].concat(tables.map(t =>
+          `<option value="${escapeHtml(t)}" ${String(v) === t ? 'selected' : ''}>${escapeHtml(t)}</option>`
+        )).join('');
+        control = `<select id="${idAttr}" data-cfg-key="${escapeHtml(field.name)}">${opts}</select>`;
+      } else {
+        control = `<input type="text" id="${idAttr}" value="${escapeHtml(String(v))}" ${field.placeholder ? 'placeholder="' + escapeHtml(field.placeholder) + '"' : ''} data-cfg-key="${escapeHtml(field.name)}">`;
+      }
+      return `<div class="form-group">${label}${control}</div>`;
+    }
+
+    function readConfigForm(scopeId) {
+      // Walk inputs/selects/textareas inside `scopeId` and assemble the
+      // {key: value} dict from data-cfg-key attributes.
+      const root = document.getElementById(scopeId);
+      const cfg = {};
+      if (!root) return cfg;
+      root.querySelectorAll('[data-cfg-key]').forEach(el => {
+        const k = el.getAttribute('data-cfg-key');
+        let v;
+        if (el.type === 'checkbox') v = el.checked;
+        else if (el.type === 'number') v = el.value === '' ? '' : Number(el.value);
+        else v = el.value;
+        cfg[k] = v;
+      });
+      return cfg;
+    }
+
+    function readTriggerConfig() {
+      return readConfigForm('automation-trigger-config-form');
+    }
+
+    function renderStepsList() {
+      const container = document.getElementById('automation-steps-list');
+      if (!Automations.steps.length) {
+        container.innerHTML = '<div class="empty-state" style="padding:1rem;border:1px dashed var(--admin-border);border-radius:8px;">No steps yet. Click "+ Add step" to add one.</div>';
+        return;
+      }
+      const actions = Automations.metadata.actions || [];
+      container.innerHTML = Automations.steps.map((s, idx) => {
+        const action = actions.find(a => a.kind === s.kind) || {label: s.kind, config_fields: []};
+        const cfgFormId = 'step-cfg-' + idx;
+        const fieldsHtml = action.config_fields.map(f => renderConfigField(f, (s.config || {})[f.name], cfgFormId + '-' + f.name)).join('');
+        const actionOpts = actions.map(a =>
+          `<option value="${escapeHtml(a.kind)}" ${a.kind === s.kind ? 'selected' : ''}>${escapeHtml(a.label)}</option>`
+        ).join('');
+        return `
+          <div class="form-panel" style="margin-bottom:1rem; border-left:3px solid #6366f1;" data-testid="step-${idx + 1}">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+              <strong>Step ${idx + 1}</strong>
+              <div style="display:flex;gap:0.4rem;">
+                <button class="btn btn-secondary btn-sm" onclick="moveStep(${idx}, -1)" ${idx === 0 ? 'disabled' : ''} data-testid="button-step-up-${idx}">↑</button>
+                <button class="btn btn-secondary btn-sm" onclick="moveStep(${idx}, 1)" ${idx === Automations.steps.length - 1 ? 'disabled' : ''} data-testid="button-step-down-${idx}">↓</button>
+                <button class="btn btn-secondary btn-sm" onclick="removeStep(${idx})" data-testid="button-step-delete-${idx}">Remove</button>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Action type</label>
+                <select onchange="changeStepKind(${idx}, this.value)" data-testid="select-step-kind-${idx}">${actionOpts}</select>
+              </div>
+              <div class="form-group">
+                <label>Step name (optional)</label>
+                <input type="text" value="${escapeHtml(s.name || '')}" oninput="updateStepName(${idx}, this.value)" placeholder="Notify staff" data-testid="input-step-name-${idx}">
+              </div>
+            </div>
+            <div id="${cfgFormId}">${fieldsHtml}</div>
+          </div>`;
+      }).join('');
+    }
+
+    function addAutomationStep() {
+      const firstKind = ((Automations.metadata.actions || [])[0] || {kind: 'send_email'}).kind;
+      Automations.steps.push({kind: firstKind, name: '', config: {}});
+      renderStepsList();
+    }
+
+    function removeStep(idx) {
+      // Capture current step configs from the form before mutating.
+      collectStepsFromForm();
+      Automations.steps.splice(idx, 1);
+      renderStepsList();
+    }
+
+    function moveStep(idx, dir) {
+      collectStepsFromForm();
+      const j = idx + dir;
+      if (j < 0 || j >= Automations.steps.length) return;
+      const tmp = Automations.steps[idx];
+      Automations.steps[idx] = Automations.steps[j];
+      Automations.steps[j] = tmp;
+      renderStepsList();
+    }
+
+    function changeStepKind(idx, kind) {
+      collectStepsFromForm();
+      Automations.steps[idx].kind = kind;
+      // Reset config when the action kind changes — fields are different.
+      Automations.steps[idx].config = {};
+      renderStepsList();
+    }
+
+    function updateStepName(idx, name) {
+      Automations.steps[idx].name = name;
+    }
+
+    function collectStepsFromForm() {
+      // Pull the latest values from each step's config form back into the
+      // in-memory steps list so they survive a re-render.
+      Automations.steps.forEach((s, idx) => {
+        const cfg = readConfigForm('step-cfg-' + idx);
+        s.config = cfg;
+      });
+    }
+
+    async function saveAutomation() {
+      collectStepsFromForm();
+      const triggerType = document.getElementById('automation-trigger-type').value;
+      const payload = {
+        name: document.getElementById('automation-name').value.trim(),
+        description: document.getElementById('automation-description').value.trim(),
+        enabled: document.getElementById('automation-enabled').checked,
+        trigger_type: triggerType,
+        trigger_config: readTriggerConfig(),
+        action_steps: Automations.steps,
+      };
+      if (!payload.name) { showToast && showToast('Name is required', 'error'); return; }
+      const id = document.getElementById('automation-id').value;
+      const url = id ? '/admin/api/automations/' + id : '/admin/api/automations';
+      const method = id ? 'PUT' : 'POST';
+      try {
+        const r = await fetch(url, {
+          method, credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Save failed');
+        Automations.current = data;
+        document.getElementById('automation-id').value = data.id;
+        // If the trigger type is webhook, the server may have just minted a
+        // token — re-render the trigger panel so the URL appears.
+        renderTriggerConfigForm();
+        showToast && showToast('Saved', 'success');
+        loadAutomationRuns();
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+      }
+    }
+
+    async function regenerateWebhookToken() {
+      const id = document.getElementById('automation-id').value;
+      if (!id) { showToast && showToast('Save the automation first', 'error'); return; }
+      if (!confirm('Generate a new webhook URL? The old one will stop working immediately.')) return;
+      try {
+        const r = await fetch('/admin/api/automations/' + id + '/regenerate-webhook', {
+          method: 'POST', credentials: 'same-origin',
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Regenerate failed');
+        Automations.current = data;
+        renderTriggerConfigForm();
+        showToast && showToast('New URL generated', 'success');
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+      }
+    }
+
+    async function testRunAutomation() {
+      collectStepsFromForm();
+      const id = document.getElementById('automation-id').value;
+      if (!id) {
+        await saveAutomation();
+        const newId = document.getElementById('automation-id').value;
+        if (!newId) return;
+      }
+      const aid = document.getElementById('automation-id').value;
+      const dryRun = document.getElementById('automation-test-dry-run').checked;
+      let trigger_data;
+      try {
+        trigger_data = JSON.parse(document.getElementById('automation-test-payload').value || '{}');
+      } catch (e) {
+        showToast && showToast('Sample payload is not valid JSON', 'error');
+        return;
+      }
+      const result = document.getElementById('automation-test-result');
+      result.innerHTML = '<div style="color:var(--admin-text-muted);">Queued. Polling for result…</div>';
+      try {
+        const r = await fetch('/admin/api/automations/' + aid + '/test-run', {
+          method: 'POST', credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({trigger_data, dry_run: dryRun}),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Test run failed');
+        // Poll the run until it finishes, then render the steps inline.
+        pollRunStatus(data.run_id, result);
+        loadAutomationRuns();
+      } catch (e) {
+        result.innerHTML = `<div style="color:#ef4444;">${escapeHtml(e.message)}</div>`;
+      }
+    }
+
+    async function pollRunStatus(rid, target, attempt) {
+      attempt = attempt || 0;
+      try {
+        const r = await fetch('/admin/api/automations/runs/' + rid, { credentials: 'same-origin' });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Poll failed');
+        if (data.status === 'queued' || data.status === 'running') {
+          // Engine timeout is 120s, so we poll for ~135s before giving up
+          // (1s per attempt) to give the timeout itself room to land.
+          if (attempt > 135) {
+            target.innerHTML = '<div style="color:var(--admin-text-muted);">Run is taking longer than expected. Refresh the runs list to see the result.</div>';
+            return;
+          }
+          target.innerHTML = `<div style="color:var(--admin-text-muted);">Status: ${escapeHtml(data.status)}…</div>`;
+          setTimeout(() => pollRunStatus(rid, target, attempt + 1), 1000);
+          return;
+        }
+        target.innerHTML = renderRunDetail(data, /*compact*/ true);
+        loadAutomationRuns();
+      } catch (e) {
+        target.innerHTML = `<div style="color:#ef4444;">${escapeHtml(e.message)}</div>`;
+      }
+    }
+
+    async function loadAutomationRuns() {
+      const id = document.getElementById('automation-id').value;
+      if (!id) return;
+      const target = document.getElementById('automation-runs-list');
+      try {
+        const r = await fetch('/admin/api/automations/' + id + '/runs', { credentials: 'same-origin' });
+        const rows = await r.json();
+        if (!r.ok) throw new Error(rows.error || 'Load failed');
+        if (!rows.length) {
+          target.innerHTML = '<div class="empty-state">No runs yet.</div>';
+          return;
+        }
+        target.innerHTML = `
+          <table class="data-table">
+            <thead><tr><th>Run</th><th>Status</th><th>Triggered by</th><th>Started</th><th>Finished</th><th></th></tr></thead>
+            <tbody>${rows.map(r => {
+              const c = r.status === 'succeeded' ? '#22c55e' : (r.status === 'failed' || r.status === 'timeout') ? '#ef4444' : '#94a3b8';
+              return `<tr>
+                <td>#${r.id}${r.is_dry_run ? ' <span style="color:#94a3b8;font-size:0.75rem;">(dry-run)</span>' : ''}</td>
+                <td><span style="color:${c};font-weight:600;">${escapeHtml(r.status)}</span></td>
+                <td>${escapeHtml(r.triggered_by)}</td>
+                <td style="font-size:0.8rem;">${r.started_at ? new Date(r.started_at).toLocaleString() : '—'}</td>
+                <td style="font-size:0.8rem;">${r.finished_at ? new Date(r.finished_at).toLocaleString() : '—'}</td>
+                <td>
+                  <button class="btn btn-secondary btn-sm" onclick="openRunModal(${r.id})" data-testid="button-view-run-${r.id}">View</button>
+                  <button class="btn btn-secondary btn-sm" onclick="rerunRun(${r.id})" data-testid="button-rerun-${r.id}">Re-run</button>
+                </td>
+              </tr>`;
+            }).join('')}</tbody>
+          </table>`;
+      } catch (e) {
+        target.innerHTML = `<div style="color:#ef4444;">${escapeHtml(e.message)}</div>`;
+      }
+    }
+
+    async function openRunModal(rid) {
+      const modal = document.getElementById('automation-run-modal');
+      const body = document.getElementById('run-modal-body');
+      body.innerHTML = 'Loading…';
+      modal.style.display = '';
+      try {
+        const r = await fetch('/admin/api/automations/runs/' + rid, { credentials: 'same-origin' });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Load failed');
+        document.getElementById('run-modal-title').textContent = 'Run #' + rid + ' (' + data.status + ')';
+        body.innerHTML = renderRunDetail(data, /*compact*/ false);
+      } catch (e) {
+        body.innerHTML = `<div style="color:#ef4444;">${escapeHtml(e.message)}</div>`;
+      }
+    }
+
+    function closeRunModal() {
+      document.getElementById('automation-run-modal').style.display = 'none';
+    }
+
+    function renderRunDetail(run, compact) {
+      const c = run.status === 'succeeded' ? '#22c55e' : (run.status === 'failed' || run.status === 'timeout') ? '#ef4444' : '#94a3b8';
+      const stepRows = (run.step_results || []).map(s => {
+        const ok = s.ok ? '#22c55e' : '#ef4444';
+        const out = s.output || {};
+        const outStr = JSON.stringify(out, null, 2);
+        const cfgStr = JSON.stringify(s.config || {}, null, 2);
+        return `
+          <div style="margin:0.75rem 0; padding:0.75rem; background:rgba(255,255,255,0.03); border-left:3px solid ${ok}; border-radius:6px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <strong>Step ${s.step}: ${escapeHtml(s.kind)}${s.name ? ' — ' + escapeHtml(s.name) : ''}</strong>
+              <span style="color:${ok};">${s.ok ? 'ok' : 'failed'} · ${s.elapsed_ms || 0}ms</span>
+            </div>
+            ${s.skipped ? `<div style="color:#94a3b8;margin-top:0.4rem;">Skipped: ${escapeHtml(s.reason || '')}</div>` : ''}
+            <details style="margin-top:0.5rem;"><summary style="cursor:pointer;color:var(--admin-text-muted);font-size:0.8rem;">Config (rendered)</summary><pre style="font-size:0.75rem;overflow:auto;max-height:200px;background:rgba(0,0,0,0.3);padding:0.5rem;border-radius:4px;">${escapeHtml(cfgStr)}</pre></details>
+            <details ${compact ? '' : 'open'} style="margin-top:0.4rem;"><summary style="cursor:pointer;color:var(--admin-text-muted);font-size:0.8rem;">Output</summary><pre style="font-size:0.75rem;overflow:auto;max-height:300px;background:rgba(0,0,0,0.3);padding:0.5rem;border-radius:4px;">${escapeHtml(outStr)}</pre></details>
+          </div>`;
+      }).join('');
+      const triggerStr = JSON.stringify(run.trigger_data || {}, null, 2);
+      return `
+        <div style="margin-bottom:1rem;">
+          <div><strong>Status:</strong> <span style="color:${c};">${escapeHtml(run.status)}</span></div>
+          <div><strong>Triggered by:</strong> ${escapeHtml(run.triggered_by)}${run.is_dry_run ? ' (dry-run)' : ''}</div>
+          ${run.error_text ? `<div style="margin-top:0.4rem;color:#ef4444;"><strong>Error:</strong> ${escapeHtml(run.error_text)}</div>` : ''}
+        </div>
+        <details style="margin-bottom:1rem;"><summary style="cursor:pointer;color:var(--admin-text-muted);">Trigger data</summary><pre style="font-size:0.75rem;overflow:auto;max-height:200px;background:rgba(0,0,0,0.3);padding:0.5rem;border-radius:4px;">${escapeHtml(triggerStr)}</pre></details>
+        ${stepRows || '<div class="empty-state">No steps ran.</div>'}`;
+    }
+
+    async function rerunRun(rid) {
+      try {
+        const r = await fetch('/admin/api/automations/runs/' + rid + '/rerun', {
+          method: 'POST', credentials: 'same-origin',
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Re-run failed');
+        showToast && showToast('Re-run queued (run #' + data.run_id + ')', 'success');
+        loadAutomationRuns();
+      } catch (e) {
+        showToast && showToast(e.message, 'error');
+      }
+    }
+
+    // Tiny escapeHtml fallback for browsers/contexts where we don't already
+    // have one (the rest of the dashboard defines its own; we just provide
+    // a safe wrapper here so this block is self-contained).
+    if (typeof escapeHtml !== 'function') {
+      window.escapeHtml = function (s) {
+        if (s === null || s === undefined) return '';
+        return String(s).replace(/[&<>"']/g, ch =>
+          ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+      };
+    }
 
   </script>
   </main>

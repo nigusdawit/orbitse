@@ -68,6 +68,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 import stripe_client
 import messaging
+import automations
 from flask import (
     Flask, request, jsonify, send_from_directory,
     render_template, session, redirect, url_for, Response, stream_with_context
@@ -1182,6 +1183,60 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_msg_log_campaign ON messaging_log (campaign_id);
                 CREATE INDEX IF NOT EXISTS idx_msg_log_provider ON messaging_log (provider_message_id);
                 CREATE INDEX IF NOT EXISTS idx_msg_log_to       ON messaging_log (to_address);
+            """)
+
+            # =============================================================
+            # AUTOMATIONS — no-code "if X then Y" workflow builder
+            # =============================================================
+            #
+            #   automations         A single workflow definition. One trigger
+            #                       (form_submitted / new_chat / schedule /
+            #                       webhook / manual) plus an ordered list of
+            #                       action steps stored as JSON. webhook_token
+            #                       is the random URL slug for incoming
+            #                       /automations/hook/<token> calls.
+            #
+            #   automation_runs     One row per execution. status flows
+            #                       queued → running → succeeded|failed|
+            #                       timeout|cancelled. step_results captures
+            #                       per-step output for the run-log drilldown.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS automations (
+                    id                  SERIAL PRIMARY KEY,
+                    name                TEXT NOT NULL DEFAULT 'Untitled automation',
+                    description         TEXT NOT NULL DEFAULT '',
+                    enabled             BOOLEAN NOT NULL DEFAULT FALSE,
+                    trigger_type        VARCHAR(30) NOT NULL DEFAULT 'manual',
+                    trigger_config      JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    action_steps        JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    webhook_token       TEXT NOT NULL DEFAULT '',
+                    last_run_at         TIMESTAMP,
+                    last_run_status     VARCHAR(20) NOT NULL DEFAULT '',
+                    next_scheduled_at   TIMESTAMP,
+                    created_at          TIMESTAMP DEFAULT NOW(),
+                    updated_at          TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_automations_enabled ON automations (enabled);
+                CREATE INDEX IF NOT EXISTS idx_automations_trigger ON automations (trigger_type);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_automations_webhook
+                    ON automations (webhook_token) WHERE webhook_token <> '';
+
+                CREATE TABLE IF NOT EXISTS automation_runs (
+                    id                  SERIAL PRIMARY KEY,
+                    automation_id       INTEGER REFERENCES automations(id) ON DELETE CASCADE,
+                    status              VARCHAR(20) NOT NULL DEFAULT 'queued',
+                    triggered_by        VARCHAR(20) NOT NULL DEFAULT 'event',
+                    trigger_data        JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    step_results        JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    error_text          TEXT NOT NULL DEFAULT '',
+                    is_dry_run          BOOLEAN NOT NULL DEFAULT FALSE,
+                    queued_at           TIMESTAMP DEFAULT NOW(),
+                    started_at          TIMESTAMP,
+                    finished_at         TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_runs_automation ON automation_runs (automation_id);
+                CREATE INDEX IF NOT EXISTS idx_runs_status ON automation_runs (status);
+                CREATE INDEX IF NOT EXISTS idx_runs_queued ON automation_runs (status, queued_at);
             """)
 
             # Seed a default "Contact / Inquiry" form if no forms exist yet
@@ -3879,6 +3934,7 @@ def api_chat():
                         "SELECT id FROM chat_conversations WHERE session_id = %s ORDER BY id DESC LIMIT 1",
                         (session_id,), fetchone=True
                     )
+                    is_new_conversation = not conv
                     if not conv:
                         # First message in this page session — create a new conversation.
                         # visitor_id is stored alongside to track returning visitors.
@@ -3887,6 +3943,21 @@ def api_chat():
                             (session_id, visitor_id, ip, device, ua[:500])
                         )
                     conv_id = conv["id"]
+                    # Fire the new_chat trigger (best-effort, never blocks the
+                    # streaming reply). Only on the FIRST message of the
+                    # conversation, so a long back-and-forth doesn't fan out
+                    # repeated runs.
+                    if is_new_conversation:
+                        try:
+                            automations.dispatch_event("new_chat", {
+                                "conversation_id": conv_id,
+                                "session_id": session_id,
+                                "visitor_id": visitor_id,
+                                "device_type": device,
+                                "first_message": message,
+                            })
+                        except Exception:
+                            pass
                     execute_db("UPDATE chat_conversations SET updated_at = NOW() WHERE id = %s RETURNING id", (conv_id,))
                     execute_db(
                         "INSERT INTO chat_messages (conversation_id, role, content) VALUES (%s, 'user', %s) RETURNING id",
@@ -6178,9 +6249,22 @@ def api_submit_form(slug):
                 session_id
             )
         )
+    submission_id = result["id"] if result else None
+    # Fire the form_submitted trigger (best-effort, never blocks the response).
+    if submission_id:
+        try:
+            automations.dispatch_event("form_submitted", {
+                "form_slug": form.get("slug") or slug,
+                "form_name": form.get("name") or "",
+                "submission_id": submission_id,
+                "confirmation_number": result["confirmation_number"] if result else conf_number,
+                "fields": form_data,
+            })
+        except Exception:
+            pass
     return jsonify({
         "success": True,
-        "id": result["id"] if result else None,
+        "id": submission_id,
         "confirmation_number": result["confirmation_number"] if result else conf_number
     }), 201
 
@@ -9641,6 +9725,379 @@ def _send_campaign(campaign: dict):
 
 
 messaging.register_tick(_dispatch_due_campaigns)
+
+
+# =============================================================================
+# AUTOMATIONS — wire the engine module to app-level helpers
+# =============================================================================
+# automations.py intentionally has no `from app import …` so we hand it the
+# few things it needs (DB helpers, OpenAI client, schema introspection,
+# messaging) at import time. We also register its scheduler tick onto
+# messaging's existing 30s loop instead of starting a second thread.
+automations.configure(
+    query_db=query_db,
+    execute_db=execute_db,
+    database_url=DATABASE_URL,
+    openai_client=openai_client,
+    public_base_url_fn=_public_base_url if "_public_base_url" in globals() else (lambda: ""),
+    schema_introspect_fn=_internal_db_schema,
+    table_blocklist=_INTERNAL_DB_TABLE_BLOCKLIST,
+    qident_fn=_qident,
+    messaging_module=messaging,
+)
+automations.register_with_scheduler(messaging)
+
+
+# =============================================================================
+# AUTOMATIONS — admin CRUD + run log + public webhook
+# =============================================================================
+# All admin endpoints live under /admin/api/automations. The public webhook
+# is /automations/hook/<token> and it only fires automations whose
+# webhook_token matches AND whose enabled flag is TRUE.
+
+def _row_automation(r):
+    """Coerce a DB row into the JSON shape the admin UI expects."""
+    if not r:
+        return None
+    return {
+        "id": r["id"],
+        "name": r.get("name") or "",
+        "description": r.get("description") or "",
+        "enabled": bool(r.get("enabled")),
+        "trigger_type": r.get("trigger_type") or "manual",
+        "trigger_config": r.get("trigger_config") or {},
+        "action_steps": r.get("action_steps") or [],
+        "webhook_token": r.get("webhook_token") or "",
+        "last_run_at": r.get("last_run_at").isoformat() if r.get("last_run_at") else None,
+        "last_run_status": r.get("last_run_status") or "",
+        "next_scheduled_at": r.get("next_scheduled_at").isoformat() if r.get("next_scheduled_at") else None,
+        "created_at": r.get("created_at").isoformat() if r.get("created_at") else None,
+        "updated_at": r.get("updated_at").isoformat() if r.get("updated_at") else None,
+    }
+
+
+def _row_run(r):
+    if not r:
+        return None
+    return {
+        "id": r["id"],
+        "automation_id": r.get("automation_id"),
+        "status": r.get("status") or "",
+        "triggered_by": r.get("triggered_by") or "",
+        "trigger_data": r.get("trigger_data") or {},
+        "step_results": r.get("step_results") or [],
+        "error_text": r.get("error_text") or "",
+        "is_dry_run": bool(r.get("is_dry_run")),
+        "queued_at": r.get("queued_at").isoformat() if r.get("queued_at") else None,
+        "started_at": r.get("started_at").isoformat() if r.get("started_at") else None,
+        "finished_at": r.get("finished_at").isoformat() if r.get("finished_at") else None,
+    }
+
+
+_AUTOMATION_TRIGGER_KINDS = {t["kind"] for t in automations.TRIGGER_TYPES}
+_AUTOMATION_ACTION_KINDS = {a["kind"] for a in automations.ACTION_TYPES}
+
+
+def _validate_automation_payload(data):
+    """Raise ValueError if the inbound payload from the editor is malformed."""
+    if not isinstance(data, dict):
+        raise ValueError("Body must be a JSON object.")
+    name = (data.get("name") or "").strip()
+    if not name:
+        raise ValueError("Name is required.")
+    trigger_type = (data.get("trigger_type") or "").strip()
+    if trigger_type not in _AUTOMATION_TRIGGER_KINDS:
+        raise ValueError(f"Unknown trigger type: {trigger_type!r}")
+    trigger_config = data.get("trigger_config") or {}
+    if not isinstance(trigger_config, dict):
+        raise ValueError("trigger_config must be an object.")
+    steps = data.get("action_steps") or []
+    if not isinstance(steps, list):
+        raise ValueError("action_steps must be a list.")
+    cleaned_steps = []
+    for i, s in enumerate(steps, start=1):
+        if not isinstance(s, dict):
+            raise ValueError(f"Step {i} must be an object.")
+        kind = (s.get("kind") or "").strip()
+        if kind not in _AUTOMATION_ACTION_KINDS:
+            raise ValueError(f"Step {i} has unknown action kind: {kind!r}")
+        cfg = s.get("config") or {}
+        if not isinstance(cfg, dict):
+            raise ValueError(f"Step {i} config must be an object.")
+        cleaned_steps.append({
+            "kind": kind,
+            "name": (s.get("name") or "").strip(),
+            "config": cfg,
+        })
+    return {
+        "name": name,
+        "description": (data.get("description") or "").strip(),
+        "enabled": bool(data.get("enabled")),
+        "trigger_type": trigger_type,
+        "trigger_config": trigger_config,
+        "action_steps": cleaned_steps,
+    }
+
+
+@app.route("/admin/api/automations/metadata")
+@admin_required
+def admin_automations_metadata():
+    """Return the trigger + action catalogues plus the available DB tables
+    and active forms — everything the editor UI needs to render its pickers."""
+    forms = query_db(
+        "SELECT id, name, slug FROM custom_forms WHERE status = 'active' ORDER BY name"
+    ) or []
+    return jsonify({
+        "triggers": automations.trigger_metadata(),
+        "actions": automations.action_metadata(),
+        "tables": _internal_db_schema(),
+        "forms": [{"id": f["id"], "name": f["name"], "slug": f["slug"]} for f in forms],
+        "limits": automations.status_summary(),
+        "public_base_url": _public_base_url(),
+    })
+
+
+@app.route("/admin/api/automations", methods=["GET"])
+@admin_required
+def admin_automations_list():
+    rows = query_db(
+        "SELECT * FROM automations ORDER BY id DESC"
+    ) or []
+    return jsonify([_row_automation(r) for r in rows])
+
+
+@app.route("/admin/api/automations", methods=["POST"])
+@admin_required
+def admin_automations_create():
+    try:
+        payload = _validate_automation_payload(request.get_json(silent=True) or {})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    # webhook_token is generated lazily — only when the automation actually
+    # uses the webhook trigger — so non-webhook rows don't pollute the
+    # unique index.
+    token = automations.generate_webhook_token() if payload["trigger_type"] == "webhook" else ""
+    row = execute_db(
+        """
+        INSERT INTO automations
+            (name, description, enabled, trigger_type, trigger_config,
+             action_steps, webhook_token)
+        VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
+        RETURNING *
+        """,
+        (
+            payload["name"], payload["description"], payload["enabled"],
+            payload["trigger_type"],
+            json.dumps(payload["trigger_config"]),
+            json.dumps(payload["action_steps"]),
+            token,
+        ),
+    )
+    return jsonify(_row_automation(row)), 201
+
+
+@app.route("/admin/api/automations/<int:aid>", methods=["GET"])
+@admin_required
+def admin_automations_get(aid):
+    row = query_db("SELECT * FROM automations WHERE id = %s", (aid,), fetchone=True)
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(_row_automation(row))
+
+
+@app.route("/admin/api/automations/<int:aid>", methods=["PUT"])
+@admin_required
+def admin_automations_update(aid):
+    try:
+        payload = _validate_automation_payload(request.get_json(silent=True) or {})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    existing = query_db(
+        "SELECT trigger_type, webhook_token FROM automations WHERE id = %s",
+        (aid,), fetchone=True,
+    )
+    if not existing:
+        return jsonify({"error": "Not found"}), 404
+    # Mint a webhook token the first time the trigger becomes 'webhook'.
+    token = existing["webhook_token"] or ""
+    if payload["trigger_type"] == "webhook" and not token:
+        token = automations.generate_webhook_token()
+    elif payload["trigger_type"] != "webhook":
+        # Clear the token if the trigger was switched away from webhook so
+        # any old URL stops working.
+        token = ""
+    row = execute_db(
+        """
+        UPDATE automations
+           SET name=%s, description=%s, enabled=%s, trigger_type=%s,
+               trigger_config=%s::jsonb, action_steps=%s::jsonb,
+               webhook_token=%s, updated_at=NOW(),
+               next_scheduled_at = CASE WHEN trigger_type <> %s THEN NULL ELSE next_scheduled_at END
+         WHERE id=%s
+        RETURNING *
+        """,
+        (
+            payload["name"], payload["description"], payload["enabled"],
+            payload["trigger_type"],
+            json.dumps(payload["trigger_config"]),
+            json.dumps(payload["action_steps"]),
+            token,
+            payload["trigger_type"],
+            aid,
+        ),
+    )
+    return jsonify(_row_automation(row))
+
+
+@app.route("/admin/api/automations/<int:aid>", methods=["DELETE"])
+@admin_required
+def admin_automations_delete(aid):
+    result = execute_db(
+        "DELETE FROM automations WHERE id = %s RETURNING id", (aid,)
+    )
+    if not result:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"ok": True, "deleted": result["id"]})
+
+
+@app.route("/admin/api/automations/<int:aid>/toggle", methods=["POST"])
+@admin_required
+def admin_automations_toggle(aid):
+    data = request.get_json(silent=True) or {}
+    enabled = bool(data.get("enabled"))
+    row = execute_db(
+        """
+        UPDATE automations
+           SET enabled=%s, updated_at=NOW(),
+               next_scheduled_at = CASE WHEN %s = FALSE THEN NULL ELSE next_scheduled_at END
+         WHERE id=%s
+        RETURNING *
+        """,
+        (enabled, enabled, aid),
+    )
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(_row_automation(row))
+
+
+@app.route("/admin/api/automations/<int:aid>/regenerate-webhook", methods=["POST"])
+@admin_required
+def admin_automations_regenerate_webhook(aid):
+    existing = query_db(
+        "SELECT trigger_type FROM automations WHERE id = %s", (aid,), fetchone=True
+    )
+    if not existing:
+        return jsonify({"error": "Not found"}), 404
+    if existing["trigger_type"] != "webhook":
+        return jsonify({"error": "This automation does not use the webhook trigger."}), 400
+    token = automations.generate_webhook_token()
+    row = execute_db(
+        "UPDATE automations SET webhook_token=%s, updated_at=NOW() WHERE id=%s RETURNING *",
+        (token, aid),
+    )
+    return jsonify(_row_automation(row))
+
+
+@app.route("/admin/api/automations/<int:aid>/test-run", methods=["POST"])
+@admin_required
+def admin_automations_test_run(aid):
+    """Fire a one-off run with sample trigger data. The `dry_run` flag in
+    the body marks the run row as a dry-run so it doesn't count toward
+    the rate-limit and is filterable in the run log. The actions
+    themselves still run for real (so admins can verify a real send)."""
+    data = request.get_json(silent=True) or {}
+    sample = data.get("trigger_data") or {}
+    dry_run = bool(data.get("dry_run", False))
+    if not isinstance(sample, dict):
+        return jsonify({"error": "trigger_data must be an object."}), 400
+    existing = query_db("SELECT id FROM automations WHERE id = %s", (aid,), fetchone=True)
+    if not existing:
+        return jsonify({"error": "Not found"}), 404
+    rid = automations.queue_run(
+        aid, sample,
+        triggered_by="manual",
+        is_dry_run=dry_run,
+        dispatch_immediately=True,
+    )
+    if rid is None:
+        return jsonify({"error": "Rate limit reached for this automation. Try again later."}), 429
+    return jsonify({"ok": True, "run_id": rid})
+
+
+@app.route("/admin/api/automations/<int:aid>/runs", methods=["GET"])
+@admin_required
+def admin_automations_runs(aid):
+    rows = query_db(
+        "SELECT * FROM automation_runs WHERE automation_id = %s ORDER BY id DESC LIMIT 100",
+        (aid,),
+    ) or []
+    return jsonify([_row_run(r) for r in rows])
+
+
+@app.route("/admin/api/automations/runs/<int:rid>", methods=["GET"])
+@admin_required
+def admin_automations_run_detail(rid):
+    row = query_db("SELECT * FROM automation_runs WHERE id = %s", (rid,), fetchone=True)
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(_row_run(row))
+
+
+@app.route("/admin/api/automations/runs/<int:rid>/rerun", methods=["POST"])
+@admin_required
+def admin_automations_rerun(rid):
+    row = query_db(
+        "SELECT automation_id, trigger_data FROM automation_runs WHERE id = %s",
+        (rid,), fetchone=True,
+    )
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    new_rid = automations.queue_run(
+        row["automation_id"], row.get("trigger_data") or {},
+        triggered_by="rerun",
+    )
+    if new_rid is None:
+        return jsonify({"error": "Rate limit reached for this automation."}), 429
+    return jsonify({"ok": True, "run_id": new_rid})
+
+
+@app.route("/automations/hook/<token>", methods=["POST", "GET"])
+def public_automation_webhook(token):
+    """Public webhook endpoint. Anyone with the token can fire the
+    matching automation — that's the model. The token is 24 random URL
+    bytes so guessing it is not feasible. Disable + regenerate flips it
+    instantly. We accept JSON body, form body, or query string."""
+    if not token or len(token) < 16:
+        return jsonify({"error": "Invalid token."}), 404
+    # Defense-in-depth: require trigger_type='webhook' on top of token match,
+    # so a stale token left over from a switched-trigger row can never fire.
+    row = query_db(
+        """
+        SELECT id, enabled FROM automations
+         WHERE webhook_token = %s AND trigger_type = 'webhook'
+        """,
+        (token,), fetchone=True,
+    )
+    if not row:
+        return jsonify({"error": "Invalid token."}), 404
+    if not row["enabled"]:
+        return jsonify({"error": "This automation is disabled."}), 403
+
+    payload = {}
+    if request.method == "POST":
+        json_body = request.get_json(silent=True)
+        if json_body is not None:
+            payload = json_body if isinstance(json_body, dict) else {"value": json_body}
+        elif request.form:
+            payload = {k: v for k, v in request.form.items()}
+        else:
+            payload = {"raw_body": (request.get_data(as_text=True) or "")[:5000]}
+    payload.setdefault("query", {k: v for k, v in request.args.items()})
+
+    rid = automations.queue_run(row["id"], payload, triggered_by="webhook")
+    if rid is None:
+        return jsonify({"error": "Rate limit reached for this automation."}), 429
+    return jsonify({"ok": True, "run_id": rid}), 202
 
 
 # --- ADMIN: status / settings ------------------------------------------------

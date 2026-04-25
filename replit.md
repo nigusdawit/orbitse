@@ -368,6 +368,18 @@ The AI uses `generateVisual` for simple data displays and `generateHTML` for ric
 - **Database tables**: `subscribers`, `messaging_templates`, `messaging_campaigns`, `messaging_log`
 - **Module**: provider clients, scheduler, signing, and CSV parsing live in `messaging.py`; admin routes and AI drafting live in `app.py`
 
+### Automations (no-code "if X then Y" workflows)
+- Admin sidebar group "Automation" with one tab: **Automations** (list + editor + run-log all in one)
+- **Triggers**: `form_submitted` (any form or specific slug), `new_chat` (first message of a conversation), `schedule` (interval minutes or daily HH:MM UTC), `webhook` (POST any JSON to `/automations/hook/<token>`), `manual` (run from the editor only)
+- **Actions** (run in order): `send_email`, `send_sms` (use messaging.py's providers and templates), `ai_draft` (OpenAI chat completion, model defaults to `gpt-4o-mini`), `http_request` (GET/POST/PUT/PATCH/DELETE with optional headers and JSON body, 15s timeout), `save_to_table` (insert into any non-blocklisted table via the existing internal-DB helpers), `delay` (1–300 seconds)
+- **Merge tags**: every config field is rendered with `{{trigger.fields.email}}`, `{{step1.text}}`, `{{step_my_step_name.status}}` style placeholders before the action runs; renderer recurses into nested dicts/lists
+- **Engine**: `automations.py` registers a tick callback with `messaging.py`'s 30s scheduler — no extra threads. Per-run worker thread, `120 s` overall timeout, max 5 concurrent runs (semaphore), 60 runs/hour/automation rate limit
+- **Run log**: every dispatch creates an `automation_runs` row with `status` (queued/running/succeeded/failed/timeout), `step_results` JSONB (one entry per step with config-rendered, output, ok flag, elapsed_ms), `is_dry_run` flag, and `triggered_by` source. Visible in the editor with re-run button
+- **Test runs**: editor has a "Run now" panel that fires the automation with admin-supplied JSON sample data and polls the run row until it finishes; "dry-run" checkbox flags the row in the log (actions still execute for real)
+- **Webhook security**: tokens are 32-char URL-safe random; a partial unique index covers only non-null tokens; `/automations/hook/<token>` only fires when `enabled=TRUE` and `trigger_type='webhook'`
+- **Database tables**: `automations`, `automation_runs`
+- **Module**: engine, registry, dispatch, rate-limit, and scheduler tick live in `automations.py`; admin routes and the public webhook live in `app.py`
+
 ## How to Edit Content
 
 1. Go to `/admin` in your browser (password: set via ADMIN_PASSWORD env var, default "admin")
