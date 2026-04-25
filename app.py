@@ -1593,6 +1593,66 @@ def init_db():
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS "
                 "scraper_disallowed_domains TEXT NOT NULL DEFAULT ''"
             )
+
+            # ---------- Recurring scrape schedules ------------------------
+            # A "schedule" is a saved scrape template (mode/url/objective/
+            # target_shape/custom_schema) plus a cadence. The scheduler tick
+            # spawns a new row in scrape_jobs every time the cadence fires;
+            # we link them via scrape_jobs.schedule_id so the result detail
+            # view can show what changed since the previous run.
+            #
+            #   schedule_mode   'hourly' | 'daily' | 'weekly' | 'interval'
+            #   interval_minutes  used when schedule_mode='interval'
+            #   daily_time      'HH:MM' (24h, UTC) for daily/weekly
+            #   weekly_dow      0=Sun..6=Sat for weekly
+            #   notify_email/phone  optional contact for change alerts
+            #   notify_only_on_change  when False, every completion notifies
+            #   last_run_at / last_job_id  most recent fire (cursor)
+            #   next_run_at     scheduler cursor — next time we should fire
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS scrape_schedules (
+                    id              SERIAL PRIMARY KEY,
+                    name            VARCHAR(200) NOT NULL DEFAULT '',
+                    input_mode      VARCHAR(20) NOT NULL DEFAULT 'url',
+                    url             TEXT NOT NULL DEFAULT '',
+                    objective       TEXT NOT NULL DEFAULT '',
+                    target_shape    VARCHAR(40) NOT NULL DEFAULT 'free_form',
+                    custom_schema   JSONB,
+                    schedule_mode   VARCHAR(20) NOT NULL DEFAULT 'daily',
+                    interval_minutes INTEGER NOT NULL DEFAULT 60,
+                    daily_time      VARCHAR(5) NOT NULL DEFAULT '09:00',
+                    weekly_dow      INTEGER NOT NULL DEFAULT 1,
+                    enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+                    notify_email    TEXT NOT NULL DEFAULT '',
+                    notify_phone    TEXT NOT NULL DEFAULT '',
+                    notify_only_on_change BOOLEAN NOT NULL DEFAULT TRUE,
+                    last_run_at     TIMESTAMP,
+                    last_job_id     INTEGER,
+                    next_run_at     TIMESTAMP,
+                    created_at      TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_scrape_schedules_enabled
+                    ON scrape_schedules (enabled, next_run_at);
+            """)
+            # Tie each spawned job back to its schedule (NULL = one-shot job)
+            # and remember a stable signature of the extracted record so we
+            # can quickly say "did the result change since last run?"
+            cur.execute(
+                "ALTER TABLE scrape_jobs ADD COLUMN IF NOT EXISTS "
+                "schedule_id INTEGER"
+            )
+            cur.execute(
+                "ALTER TABLE scrape_jobs ADD COLUMN IF NOT EXISTS "
+                "result_signature TEXT NOT NULL DEFAULT ''"
+            )
+            cur.execute(
+                "ALTER TABLE scrape_jobs ADD COLUMN IF NOT EXISTS "
+                "changed_from_previous BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_scrape_jobs_schedule "
+                "ON scrape_jobs (schedule_id, requested_at DESC)"
+            )
     finally:
         conn.close()
 
@@ -10661,6 +10721,91 @@ def public_automation_webhook(token):
 
 _SCRAPE_VALID_SHAPES = set(scraper.TARGET_SHAPES.keys())
 _SCRAPE_VALID_INPUT_MODES = ("url", "objective")
+_SCRAPE_VALID_SCHEDULE_MODES = ("hourly", "daily", "weekly", "interval")
+# Smallest cadence we accept for the 'interval' mode. Lets the admin do
+# "every 5 minutes" for active monitoring without letting them hammer a
+# remote site every second by mistake.
+_SCRAPE_MIN_INTERVAL_MINUTES = 5
+
+
+def _scrape_compute_signature(record) -> str:
+    """Stable sha1 of the extracted record so we can compare runs.
+    Sorted keys + default=str makes the digest insensitive to key
+    ordering and to non-JSON-native types like datetimes."""
+    try:
+        canonical = json.dumps(record or {}, sort_keys=True, default=str)
+    except Exception:
+        canonical = repr(record)
+    return hashlib.sha1(canonical.encode("utf-8")).hexdigest()
+
+
+def _scrape_next_run(schedule: dict, *, last_known, now) -> "datetime | None":
+    """Compute the next time a schedule should fire (>= now).
+
+    Mirrors the cadence options offered in the admin UI:
+    hourly / daily / weekly / interval. For wall-clock cadences (daily,
+    weekly) we anchor on the configured HH:MM in UTC; for interval we
+    walk forward from the previous fire so the cadence stays steady even
+    if the scheduler tick is briefly behind.
+    """
+    mode = (schedule.get("schedule_mode") or "daily").lower()
+    if mode == "interval":
+        try:
+            minutes = max(_SCRAPE_MIN_INTERVAL_MINUTES,
+                          int(schedule.get("interval_minutes") or 0))
+        except (TypeError, ValueError):
+            return None
+        anchor = last_known or now
+        nxt = anchor
+        while nxt <= now:
+            nxt = nxt + timedelta(minutes=minutes)
+        return nxt
+    if mode == "hourly":
+        anchor = last_known or now
+        nxt = anchor
+        while nxt <= now:
+            nxt = nxt + timedelta(hours=1)
+        return nxt
+    if mode in ("daily", "weekly"):
+        raw = (schedule.get("daily_time") or "09:00").strip()
+        m = re.match(r"^([0-2]?\d):([0-5]\d)$", raw)
+        if not m:
+            return None
+        hh, mm = int(m.group(1)), int(m.group(2))
+        if hh > 23:
+            return None
+        candidate = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if mode == "daily":
+            if candidate <= now:
+                candidate = candidate + timedelta(days=1)
+            return candidate
+        # Weekly: snap forward to the chosen day-of-week (Mon..Sun in the
+        # schedule is stored as 0=Sun..6=Sat to match Postgres' EXTRACT(DOW)).
+        try:
+            target_dow = int(schedule.get("weekly_dow") or 0)
+        except (TypeError, ValueError):
+            target_dow = 0
+        target_dow = max(0, min(6, target_dow))
+        # Python's weekday(): Mon=0..Sun=6 — convert to Sun=0..Sat=6.
+        py_dow = (candidate.weekday() + 1) % 7
+        delta_days = (target_dow - py_dow) % 7
+        candidate = candidate + timedelta(days=delta_days)
+        if candidate <= now:
+            candidate = candidate + timedelta(days=7)
+        return candidate
+    return None
+
+
+def _scrape_serialize_schedule(row: dict) -> dict:
+    """Convert a scrape_schedules DB row into the JSON shape the UI uses."""
+    if not row:
+        return {}
+    out = dict(row)
+    for k in ("created_at", "last_run_at", "next_run_at"):
+        v = out.get(k)
+        if isinstance(v, datetime):
+            out[k] = v.isoformat()
+    return out
 
 
 def _scrape_get_disallowed_domains() -> list[str]:
@@ -10804,7 +10949,15 @@ def _scrape_run_job(job_id: int) -> None:
 
 
 def _scrape_finish_job(job_id: int, result=None, error: str = "") -> None:
-    """Write the terminal status, result, and error message in one update."""
+    """Write the terminal status, result, and error message in one update.
+
+    For successful jobs we also compute a stable signature of the extracted
+    record and — if the job is part of a schedule — compare it to the
+    previous successful run's signature so the UI can flag what changed.
+    Notifications fire from here (synchronously, since the worker thread is
+    already off the request path) so a single transaction reflects the
+    final state by the time we return.
+    """
     if error:
         execute_db(
             """UPDATE scrape_jobs
@@ -10813,14 +10966,140 @@ def _scrape_finish_job(job_id: int, result=None, error: str = "") -> None:
                WHERE id = %s""",
             (error[:1000], job_id),
         )
-    else:
-        execute_db(
-            """UPDATE scrape_jobs
-               SET status = 'done', error = '',
-                   result_json = %s::jsonb, completed_at = NOW()
-               WHERE id = %s""",
-            (json.dumps(result or {}), job_id),
+        # On schedule failures we still update last_run_* so the UI shows
+        # the most recent attempt even though it produced no data.
+        _scrape_after_schedule_run(job_id, success=False)
+        return
+
+    record = (result or {}).get("record") if isinstance(result, dict) else None
+    signature = _scrape_compute_signature(record)
+
+    # Look up the previous *successful* run for this schedule (if any) so we
+    # can flip changed_from_previous correctly. We do this before the
+    # UPDATE because otherwise the freshly-updated row is the previous one.
+    job_meta = query_db(
+        "SELECT schedule_id FROM scrape_jobs WHERE id = %s",
+        (job_id,), fetchone=True,
+    ) or {}
+    schedule_id = job_meta.get("schedule_id")
+    changed = False
+    if schedule_id:
+        prev = query_db(
+            """SELECT result_signature FROM scrape_jobs
+                WHERE schedule_id = %s AND id <> %s
+                  AND status = 'done'
+                ORDER BY completed_at DESC NULLS LAST, id DESC
+                LIMIT 1""",
+            (schedule_id, job_id), fetchone=True,
         )
+        # `query_db(..., fetchone=True)` returns the empty list `[]` (not
+        # `None`) when there are no matching rows, because its tail
+        # expression `result[0] if fetchone and result else result` falls
+        # through to the empty `result` when `result` is falsy. Use a
+        # truthy check rather than `is None`.
+        if not prev:
+            # First successful run for this schedule — treat as a change so
+            # the admin gets the initial baseline notification.
+            changed = True
+        else:
+            changed = (prev.get("result_signature") or "") != signature
+
+    execute_db(
+        """UPDATE scrape_jobs
+           SET status = 'done', error = '',
+               result_json = %s::jsonb, completed_at = NOW(),
+               result_signature = %s, changed_from_previous = %s
+           WHERE id = %s""",
+        (json.dumps(result or {}), signature, changed, job_id),
+    )
+
+    if schedule_id:
+        _scrape_after_schedule_run(job_id, success=True, changed=changed)
+
+
+def _scrape_after_schedule_run(job_id: int, *, success: bool,
+                               changed: bool = False) -> None:
+    """Advance the schedule cursor and fire any due notifications.
+
+    Splitting this off keeps `_scrape_finish_job` readable: failures still
+    need to update last_run_* (so the next-run cursor doesn't stall), but
+    we never notify on errors — those are surfaced in the admin UI instead.
+    """
+    job = query_db(
+        "SELECT * FROM scrape_jobs WHERE id = %s", (job_id,), fetchone=True,
+    )
+    if not job or not job.get("schedule_id"):
+        return
+    schedule = query_db(
+        "SELECT * FROM scrape_schedules WHERE id = %s",
+        (job["schedule_id"],), fetchone=True,
+    )
+    if not schedule:
+        return
+    now = datetime.utcnow()
+    next_at = _scrape_next_run(schedule, last_known=now, now=now)
+    execute_db(
+        """UPDATE scrape_schedules
+           SET last_run_at = %s, last_job_id = %s, next_run_at = %s
+           WHERE id = %s""",
+        (now, job_id, next_at, schedule["id"]),
+    )
+    if not success:
+        return
+    if not (schedule.get("notify_email") or schedule.get("notify_phone")):
+        return
+    if schedule.get("notify_only_on_change") and not changed:
+        return
+    try:
+        _scrape_send_change_notification(schedule, job, changed=changed)
+    except Exception as e:  # noqa: BLE001 — never let notify failure poison the run
+        print(f"[scraper] notification error for job {job_id}: {e}")
+
+
+def _scrape_send_change_notification(schedule: dict, job: dict,
+                                     *, changed: bool) -> None:
+    """Send a short email/SMS letting the admin know the scrape ran.
+
+    Body is intentionally minimal — the deep view lives in the dashboard.
+    We include a one-line summary plus the source URL/objective so it's
+    actionable from a phone notification."""
+    label = (schedule.get("name") or "").strip() or f"Schedule #{schedule['id']}"
+    source = ""
+    if (schedule.get("input_mode") or "url") == "url":
+        source = (schedule.get("url") or "").strip()
+    else:
+        source = (schedule.get("objective") or "").strip()
+    headline = "Result changed" if changed else "Scrape ran"
+    summary_lines = [
+        f"{headline} for scheduled scrape \"{label}\".",
+        f"Source: {source[:300]}" if source else "",
+        f"Job #{job['id']} — view in the dashboard for the full diff.",
+    ]
+    text_body = "\n".join(line for line in summary_lines if line)
+    html_body = (
+        f"<p><strong>{headline}</strong> for scheduled scrape "
+        f"<em>{label}</em>.</p>"
+        + (f"<p>Source: {source[:300]}</p>" if source else "")
+        + f"<p>Job #{job['id']} — open the Web Scraper tab in the admin "
+          "dashboard to see the full diff.</p>"
+    )
+    notify_email = (schedule.get("notify_email") or "").strip()
+    if notify_email:
+        try:
+            messaging.send_email(
+                notify_email,
+                f"[Scraper] {headline}: {label}",
+                html_body,
+                text_body=text_body,
+            )
+        except messaging.MessagingError as e:
+            print(f"[scraper] email notify failed for schedule {schedule['id']}: {e}")
+    notify_phone = (schedule.get("notify_phone") or "").strip()
+    if notify_phone:
+        try:
+            messaging.send_sms(notify_phone, text_body[:1500])
+        except messaging.MessagingError as e:
+            print(f"[scraper] sms notify failed for schedule {schedule['id']}: {e}")
 
 
 def _scrape_kick_off(job_id: int) -> None:
@@ -10828,6 +11107,94 @@ def _scrape_kick_off(job_id: int) -> None:
     threading.Thread(
         target=_scrape_run_job, args=(job_id,), daemon=True,
     ).start()
+
+
+def _scrape_spawn_from_schedule(schedule: dict) -> "int | None":
+    """Insert a queued scrape_jobs row from a schedule template and kick it
+    off. Returns the new job id, or None on insert failure (defensive)."""
+    custom_schema = schedule.get("custom_schema")
+    row = execute_db(
+        """INSERT INTO scrape_jobs
+             (input_mode, url, objective, target_shape, custom_schema,
+              status, schedule_id)
+           VALUES (%s, %s, %s, %s, %s::jsonb, 'queued', %s)
+           RETURNING id""",
+        (
+            schedule.get("input_mode") or "url",
+            schedule.get("url") or "",
+            schedule.get("objective") or "",
+            schedule.get("target_shape") or "free_form",
+            json.dumps(custom_schema) if custom_schema is not None else None,
+            schedule["id"],
+        ),
+    )
+    if not row:
+        return None
+    _scrape_kick_off(row["id"])
+    return row["id"]
+
+
+def _scrape_schedule_tick() -> None:
+    """Scheduler tick: fire any enabled schedules whose next_run_at has come.
+
+    Two-step pattern (mirrors automations.py):
+      1. First time we see a schedule (next_run_at IS NULL), anchor the
+         cursor in the future so enabling a schedule doesn't fire it
+         instantly — that's almost always surprising.
+      2. Otherwise, if next_run_at <= now, spawn a job and advance the
+         cursor. The cursor is also re-advanced from `_scrape_finish_job`
+         once the run actually completes; this here is just the *next*
+         scheduled fire so a long-running scrape doesn't accidentally get
+         re-triggered before it finishes.
+    """
+    rows = query_db(
+        """SELECT * FROM scrape_schedules
+            WHERE enabled = TRUE
+            ORDER BY id ASC""",
+    ) or []
+    now = datetime.utcnow()
+    for s in rows:
+        try:
+            next_at = s.get("next_run_at")
+            target = _scrape_next_run(s, last_known=next_at, now=now)
+            if target is None:
+                continue
+            if next_at is None:
+                execute_db(
+                    "UPDATE scrape_schedules SET next_run_at = %s WHERE id = %s",
+                    (target, s["id"]),
+                )
+                continue
+            if next_at > now:
+                continue
+            # Don't pile up jobs if the previous one is still in flight.
+            in_flight = query_db(
+                """SELECT 1 FROM scrape_jobs
+                    WHERE schedule_id = %s AND status IN ('queued', 'running')
+                    LIMIT 1""",
+                (s["id"],), fetchone=True,
+            )
+            if in_flight:
+                # Push the cursor forward so we don't busy-loop on this row.
+                future = _scrape_next_run(s, last_known=now, now=now)
+                execute_db(
+                    "UPDATE scrape_schedules SET next_run_at = %s WHERE id = %s",
+                    (future, s["id"]),
+                )
+                continue
+            new_job_id = _scrape_spawn_from_schedule(s)
+            future = _scrape_next_run(s, last_known=now, now=now)
+            execute_db(
+                "UPDATE scrape_schedules SET next_run_at = %s WHERE id = %s",
+                (future, s["id"]),
+            )
+            if new_job_id:
+                print(f"[scraper] schedule {s['id']} fired job {new_job_id}")
+        except Exception as e:  # noqa: BLE001
+            print(f"[scraper] schedule tick error for {s.get('id')}: {e}")
+
+
+messaging.register_tick(_scrape_schedule_tick)
 
 
 @app.route("/admin/api/scrape-jobs", methods=["GET"])
@@ -11088,6 +11455,306 @@ def admin_update_scraper_settings():
         (raw[:8000],),
     )
     return jsonify({"success": True, "disallowed_domains": raw[:8000]})
+
+
+# -----------------------------------------------------------------------------
+# Recurring scrape schedules — admin CRUD + run-now + diff endpoint
+# -----------------------------------------------------------------------------
+
+def _scrape_validate_schedule_payload(data: dict) -> "tuple[dict, str]":
+    """Validate + normalise a schedule create/update payload. Returns
+    (clean_dict, error_message). Either error_message is non-empty (caller
+    should return 400) OR clean_dict has the values to persist."""
+    if not isinstance(data, dict):
+        return {}, "Request body must be a JSON object."
+
+    name = (data.get("name") or "").strip()[:200]
+
+    input_mode = (data.get("input_mode") or "url").strip().lower()
+    if input_mode not in _SCRAPE_VALID_INPUT_MODES:
+        return {}, "input_mode must be 'url' or 'objective'."
+    target_shape = (data.get("target_shape") or "free_form").strip()
+    if target_shape not in _SCRAPE_VALID_SHAPES:
+        return {}, f"Unknown target_shape '{target_shape}'."
+
+    url = (data.get("url") or "").strip()
+    objective = (data.get("objective") or "").strip()
+    if input_mode == "url" and not url:
+        return {}, "URL is required when input_mode is 'url'."
+    if input_mode == "objective" and not objective:
+        return {}, "Objective is required when input_mode is 'objective'."
+
+    custom_schema = data.get("custom_schema")
+    if target_shape == "custom":
+        if isinstance(custom_schema, str):
+            raw = custom_schema.strip()
+            if raw:
+                try:
+                    custom_schema = json.loads(raw)
+                except json.JSONDecodeError as e:
+                    return {}, f"custom_schema is not valid JSON: {e}"
+            else:
+                custom_schema = None
+        if custom_schema is not None and not isinstance(custom_schema, dict):
+            return {}, "custom_schema must be a JSON object."
+    else:
+        custom_schema = None
+
+    schedule_mode = (data.get("schedule_mode") or "daily").strip().lower()
+    if schedule_mode not in _SCRAPE_VALID_SCHEDULE_MODES:
+        return {}, (
+            "schedule_mode must be one of "
+            f"{', '.join(_SCRAPE_VALID_SCHEDULE_MODES)}."
+        )
+    try:
+        interval_minutes = int(data.get("interval_minutes") or 60)
+    except (TypeError, ValueError):
+        return {}, "interval_minutes must be an integer."
+    if schedule_mode == "interval" and interval_minutes < _SCRAPE_MIN_INTERVAL_MINUTES:
+        return {}, (
+            f"interval_minutes must be >= {_SCRAPE_MIN_INTERVAL_MINUTES} "
+            "to avoid hammering the source site."
+        )
+    daily_time = (data.get("daily_time") or "09:00").strip()
+    if not re.match(r"^([0-2]?\d):([0-5]\d)$", daily_time):
+        return {}, "daily_time must be HH:MM (24-hour)."
+    try:
+        weekly_dow = int(data.get("weekly_dow") or 1)
+    except (TypeError, ValueError):
+        return {}, "weekly_dow must be an integer 0-6."
+    if not 0 <= weekly_dow <= 6:
+        return {}, "weekly_dow must be between 0 (Sun) and 6 (Sat)."
+
+    notify_email = (data.get("notify_email") or "").strip()[:200]
+    notify_phone = (data.get("notify_phone") or "").strip()[:60]
+    notify_only_on_change = bool(data.get("notify_only_on_change", True))
+    enabled = bool(data.get("enabled", True))
+
+    return {
+        "name": name,
+        "input_mode": input_mode,
+        "url": url,
+        "objective": objective,
+        "target_shape": target_shape,
+        "custom_schema": custom_schema,
+        "schedule_mode": schedule_mode,
+        "interval_minutes": interval_minutes,
+        "daily_time": daily_time,
+        "weekly_dow": weekly_dow,
+        "enabled": enabled,
+        "notify_email": notify_email,
+        "notify_phone": notify_phone,
+        "notify_only_on_change": notify_only_on_change,
+    }, ""
+
+
+@app.route("/admin/api/scrape-schedules", methods=["GET"])
+@admin_required
+def admin_list_scrape_schedules():
+    """GET /admin/api/scrape-schedules — newest first."""
+    rows = query_db(
+        "SELECT * FROM scrape_schedules ORDER BY id DESC",
+    ) or []
+    return jsonify([_scrape_serialize_schedule(r) for r in rows])
+
+
+@app.route("/admin/api/scrape-schedules", methods=["POST"])
+@admin_required
+def admin_create_scrape_schedule():
+    """POST /admin/api/scrape-schedules — save a recurring scrape template.
+
+    The first fire time is computed up-front from the cadence so the
+    scheduler tick has something concrete to compare against without
+    waiting an extra cycle.
+    """
+    clean, err = _scrape_validate_schedule_payload(request.get_json(silent=True) or {})
+    if err:
+        return jsonify({"error": err}), 400
+    now = datetime.utcnow()
+    next_at = _scrape_next_run(clean, last_known=now, now=now)
+    row = execute_db(
+        """INSERT INTO scrape_schedules
+             (name, input_mode, url, objective, target_shape, custom_schema,
+              schedule_mode, interval_minutes, daily_time, weekly_dow,
+              enabled, notify_email, notify_phone, notify_only_on_change,
+              next_run_at)
+           VALUES (%s, %s, %s, %s, %s, %s::jsonb,
+                   %s, %s, %s, %s,
+                   %s, %s, %s, %s,
+                   %s)
+           RETURNING *""",
+        (
+            clean["name"], clean["input_mode"], clean["url"],
+            clean["objective"], clean["target_shape"],
+            json.dumps(clean["custom_schema"]) if clean["custom_schema"] is not None else None,
+            clean["schedule_mode"], clean["interval_minutes"],
+            clean["daily_time"], clean["weekly_dow"],
+            clean["enabled"], clean["notify_email"],
+            clean["notify_phone"], clean["notify_only_on_change"],
+            next_at,
+        ),
+    )
+    if not row:
+        return jsonify({"error": "Failed to create schedule."}), 500
+    return jsonify(_scrape_serialize_schedule(row)), 201
+
+
+@app.route("/admin/api/scrape-schedules/<int:schedule_id>", methods=["PATCH"])
+@admin_required
+def admin_update_scrape_schedule(schedule_id):
+    """PATCH .../<id> — update fields and recompute next_run_at.
+
+    We accept the same payload shape as create. Recomputing next_run_at
+    after every edit avoids the surprise of "I changed it to hourly but
+    it still won't fire for another 23h" — the cadence picks up
+    immediately.
+    """
+    existing = query_db(
+        "SELECT * FROM scrape_schedules WHERE id = %s", (schedule_id,), fetchone=True,
+    )
+    if not existing:
+        return jsonify({"error": "Schedule not found."}), 404
+    payload = request.get_json(silent=True) or {}
+    # Merge so PATCH-style partial updates work — anything missing is taken
+    # from the existing row.
+    merged = dict(existing)
+    merged.update({k: v for k, v in payload.items() if v is not None})
+    if "enabled" in payload:
+        merged["enabled"] = bool(payload["enabled"])
+    if "notify_only_on_change" in payload:
+        merged["notify_only_on_change"] = bool(payload["notify_only_on_change"])
+
+    clean, err = _scrape_validate_schedule_payload(merged)
+    if err:
+        return jsonify({"error": err}), 400
+    now = datetime.utcnow()
+    next_at = _scrape_next_run(clean, last_known=now, now=now)
+    row = execute_db(
+        """UPDATE scrape_schedules
+             SET name = %s, input_mode = %s, url = %s, objective = %s,
+                 target_shape = %s, custom_schema = %s::jsonb,
+                 schedule_mode = %s, interval_minutes = %s,
+                 daily_time = %s, weekly_dow = %s,
+                 enabled = %s, notify_email = %s,
+                 notify_phone = %s, notify_only_on_change = %s,
+                 next_run_at = %s
+             WHERE id = %s
+             RETURNING *""",
+        (
+            clean["name"], clean["input_mode"], clean["url"],
+            clean["objective"], clean["target_shape"],
+            json.dumps(clean["custom_schema"]) if clean["custom_schema"] is not None else None,
+            clean["schedule_mode"], clean["interval_minutes"],
+            clean["daily_time"], clean["weekly_dow"],
+            clean["enabled"], clean["notify_email"],
+            clean["notify_phone"], clean["notify_only_on_change"],
+            next_at, schedule_id,
+        ),
+    )
+    return jsonify(_scrape_serialize_schedule(row))
+
+
+@app.route("/admin/api/scrape-schedules/<int:schedule_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_scrape_schedule(schedule_id):
+    """DELETE .../<id> — drop the schedule. Spawned jobs are kept (and have
+    their schedule_id NULLed) so the admin keeps the historical results."""
+    execute_db(
+        "UPDATE scrape_jobs SET schedule_id = NULL WHERE schedule_id = %s",
+        (schedule_id,),
+    )
+    count = execute_db("DELETE FROM scrape_schedules WHERE id = %s", (schedule_id,))
+    if not count:
+        return jsonify({"error": "Schedule not found."}), 404
+    return jsonify({"success": True})
+
+
+@app.route("/admin/api/scrape-schedules/<int:schedule_id>/run-now", methods=["POST"])
+@admin_required
+def admin_run_scrape_schedule_now(schedule_id):
+    """POST .../<id>/run-now — fire the schedule once immediately.
+
+    Useful for "I just set this up, did I configure it right?" checks. It
+    spawns a job tagged with the schedule so change detection still works
+    on subsequent runs."""
+    sched = query_db(
+        "SELECT * FROM scrape_schedules WHERE id = %s", (schedule_id,), fetchone=True,
+    )
+    if not sched:
+        return jsonify({"error": "Schedule not found."}), 404
+    new_job_id = _scrape_spawn_from_schedule(sched)
+    if not new_job_id:
+        return jsonify({"error": "Failed to enqueue job."}), 500
+    return jsonify({"success": True, "job_id": new_job_id})
+
+
+@app.route("/admin/api/scrape-jobs/<int:job_id>/diff", methods=["GET"])
+@admin_required
+def admin_get_scrape_job_diff(job_id):
+    """GET .../<id>/diff — compare this job's record to the previous run
+    of the same schedule. Returns added/removed/changed keys.
+
+    For non-scheduled (one-shot) jobs, or schedules with no prior run, we
+    return an empty diff with a friendly note so the UI can show a sensible
+    "nothing to compare against" state without having to special-case 404."""
+    job = query_db("SELECT * FROM scrape_jobs WHERE id = %s", (job_id,), fetchone=True)
+    if not job:
+        return jsonify({"error": "Job not found."}), 404
+    if not job.get("schedule_id"):
+        return jsonify({
+            "has_previous": False,
+            "note": "This run isn't part of a recurring schedule.",
+        })
+    prev = query_db(
+        """SELECT id, result_json, completed_at FROM scrape_jobs
+            WHERE schedule_id = %s AND id <> %s
+              AND status = 'done'
+            ORDER BY completed_at DESC NULLS LAST, id DESC
+            LIMIT 1""",
+        (job["schedule_id"], job_id), fetchone=True,
+    )
+    if not prev:
+        return jsonify({
+            "has_previous": False,
+            "note": "First successful run for this schedule — nothing to compare yet.",
+        })
+    cur_record = (job.get("result_json") or {}).get("record") or {}
+    prev_record = (prev.get("result_json") or {}).get("record") or {}
+    if not isinstance(cur_record, dict):
+        cur_record = {"_value": cur_record}
+    if not isinstance(prev_record, dict):
+        prev_record = {"_value": prev_record}
+    added, removed, changed = [], [], []
+    cur_keys = set(cur_record.keys())
+    prev_keys = set(prev_record.keys())
+    for k in sorted(cur_keys - prev_keys):
+        added.append({"key": k, "value": cur_record[k]})
+    for k in sorted(prev_keys - cur_keys):
+        removed.append({"key": k, "value": prev_record[k]})
+    for k in sorted(cur_keys & prev_keys):
+        try:
+            equal = json.dumps(cur_record[k], sort_keys=True, default=str) == \
+                    json.dumps(prev_record[k], sort_keys=True, default=str)
+        except Exception:
+            equal = repr(cur_record[k]) == repr(prev_record[k])
+        if not equal:
+            changed.append({
+                "key": k,
+                "old": prev_record[k],
+                "new": cur_record[k],
+            })
+    prev_completed = prev.get("completed_at")
+    if isinstance(prev_completed, datetime):
+        prev_completed = prev_completed.isoformat()
+    return jsonify({
+        "has_previous": True,
+        "previous_job_id": prev["id"],
+        "previous_completed_at": prev_completed,
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+        "result_changed": bool(added or removed or changed),
+    })
 
 
 # =============================================================================
