@@ -11591,6 +11591,87 @@ def _row_automation(r):
     }
 
 
+# Keys inside trigger_config that are sensitive enough that the editor
+# should never see them in cleartext. The full value stays in the DB row
+# (and so verify_webhook_signature() keeps working as before) — only the
+# JSON sent back to the browser is masked. Add new keys here as more
+# trigger types start collecting credentials.
+_AUTOMATION_REDACTED_TRIGGER_KEYS = ("signature_secret",)
+
+
+def _mask_signature_secret(secret):
+    """Return a short, safe preview of a secret like ``whsec_••••abcd``.
+
+    Keeps a recognizable prefix (e.g. ``whsec_``) when the secret has
+    one in the first dozen characters, plus the last 4 characters so an
+    admin can spot which key is saved without learning anything useful
+    if the response leaks. Empty input returns empty so callers don't
+    have to special-case "no secret saved yet"."""
+    if not isinstance(secret, str):
+        return ""
+    s = secret.strip()
+    if not s:
+        return ""
+    if len(s) <= 4:
+        return "••••"
+    last4 = s[-4:]
+    underscore = s.find("_")
+    prefix = s[: underscore + 1] if 0 < underscore <= 12 else ""
+    return f"{prefix}••••{last4}"
+
+
+def _redact_automation_for_editor(automation):
+    """Return a shallow copy of an automation dict with sensitive
+    trigger_config values replaced by a masked preview.
+
+    The standard pattern (Stripe / GitHub) is to show only a short
+    fingerprint of a stored secret after save and require the admin to
+    re-paste to change it. Anything that lands in the browser response
+    is reachable via DevTools or a stolen session cookie, so the
+    cleartext secret must never leave the server here. The verifier
+    still loads the full secret from the DB row directly."""
+    if not automation:
+        return automation
+    cfg = automation.get("trigger_config") or {}
+    if not isinstance(cfg, dict):
+        return automation
+    masked_cfg = None
+    for key in _AUTOMATION_REDACTED_TRIGGER_KEYS:
+        val = cfg.get(key)
+        if isinstance(val, str) and val:
+            if masked_cfg is None:
+                masked_cfg = dict(cfg)
+            masked_cfg[key] = _mask_signature_secret(val)
+    if masked_cfg is None:
+        return automation
+    out = dict(automation)
+    out["trigger_config"] = masked_cfg
+    return out
+
+
+def _merge_preserved_trigger_secrets(new_cfg, existing_cfg):
+    """Mutate ``new_cfg`` in place so that any redacted trigger_config
+    secret the editor *didn't* actually re-enter falls back to the
+    cleartext value still on disk.
+
+    The editor renders the password input empty (with the masked
+    preview shown alongside) so a vanilla save with no edits sends back
+    an empty string — that's the "leave unchanged" signal. We also
+    treat the masked preview itself as unchanged in case a script or
+    integration round-trips the GET response straight into a PUT."""
+    if not isinstance(new_cfg, dict) or not isinstance(existing_cfg, dict):
+        return
+    for key in _AUTOMATION_REDACTED_TRIGGER_KEYS:
+        existing_val = existing_cfg.get(key)
+        if not isinstance(existing_val, str) or not existing_val:
+            continue
+        new_val = new_cfg.get(key, "")
+        if not isinstance(new_val, str):
+            new_val = ""
+        if not new_val.strip() or new_val == _mask_signature_secret(existing_val):
+            new_cfg[key] = existing_val
+
+
 def _row_run(r):
     if not r:
         return None
@@ -11901,7 +11982,7 @@ def admin_automations_list():
     rows = query_db(
         "SELECT * FROM automations ORDER BY id DESC"
     ) or []
-    return jsonify([_row_automation(r) for r in rows])
+    return jsonify([_redact_automation_for_editor(_row_automation(r)) for r in rows])
 
 
 @app.route("/admin/api/automations", methods=["POST"])
@@ -11934,7 +12015,7 @@ def admin_automations_create():
     _save_automation_version(
         row["id"], _automation_snapshot(payload), note="Created"
     )
-    return jsonify(_row_automation(row)), 201
+    return jsonify(_redact_automation_for_editor(_row_automation(row))), 201
 
 
 @app.route("/admin/api/automations/<int:aid>", methods=["GET"])
@@ -11943,7 +12024,7 @@ def admin_automations_get(aid):
     row = query_db("SELECT * FROM automations WHERE id = %s", (aid,), fetchone=True)
     if not row:
         return jsonify({"error": "Not found"}), 404
-    return jsonify(_row_automation(row))
+    return jsonify(_redact_automation_for_editor(_row_automation(row)))
 
 
 @app.route("/admin/api/automations/<int:aid>", methods=["PUT"])
@@ -11954,11 +12035,20 @@ def admin_automations_update(aid):
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     existing = query_db(
-        "SELECT trigger_type, webhook_token FROM automations WHERE id = %s",
+        "SELECT trigger_type, trigger_config, webhook_token FROM automations WHERE id = %s",
         (aid,), fetchone=True,
     )
     if not existing:
         return jsonify({"error": "Not found"}), 404
+    # Preserve any masked-out trigger secret (e.g. signature_secret) the
+    # admin didn't actively re-enter — the editor renders the input
+    # blank so a vanilla save would otherwise wipe the stored secret.
+    # Only safe to do when the trigger type didn't switch; otherwise the
+    # leftover credential belongs to a different integration.
+    if existing.get("trigger_type") == payload["trigger_type"]:
+        _merge_preserved_trigger_secrets(
+            payload["trigger_config"], existing.get("trigger_config") or {},
+        )
     # Mint a webhook token the first time the trigger becomes 'webhook'.
     token = existing["webhook_token"] or ""
     if payload["trigger_type"] == "webhook" and not token:
@@ -11990,7 +12080,7 @@ def admin_automations_update(aid):
     _save_automation_version(
         aid, _automation_snapshot(payload), note="Updated"
     )
-    return jsonify(_row_automation(row))
+    return jsonify(_redact_automation_for_editor(_row_automation(row)))
 
 
 @app.route("/admin/api/automations/<int:aid>", methods=["DELETE"])
@@ -12021,7 +12111,7 @@ def admin_automations_toggle(aid):
     )
     if not row:
         return jsonify({"error": "Not found"}), 404
-    return jsonify(_row_automation(row))
+    return jsonify(_redact_automation_for_editor(_row_automation(row)))
 
 
 @app.route("/admin/api/automations/<int:aid>/regenerate-webhook", methods=["POST"])
@@ -12039,7 +12129,7 @@ def admin_automations_regenerate_webhook(aid):
         "UPDATE automations SET webhook_token=%s, updated_at=NOW() WHERE id=%s RETURNING *",
         (token, aid),
     )
-    return jsonify(_row_automation(row))
+    return jsonify(_redact_automation_for_editor(_row_automation(row)))
 
 
 @app.route("/admin/api/automations/<int:aid>/test-run", methods=["POST"])
@@ -12277,6 +12367,24 @@ def _row_version(r):
     snap = r.get("snapshot") or {}
     if not isinstance(snap, dict):
         snap = {}
+    # Redact sensitive trigger_config keys before sending the snapshot
+    # to the editor — the version-detail panel shows the snapshot raw
+    # for diff/preview, and we don't want a saved cleartext secret to
+    # leak there either. The restore endpoint loads the snapshot from
+    # its own DB query, not from this serializer, so restoring still
+    # writes the full secret back to the live row.
+    cfg = snap.get("trigger_config") or {}
+    if isinstance(cfg, dict):
+        masked_cfg = None
+        for key in _AUTOMATION_REDACTED_TRIGGER_KEYS:
+            val = cfg.get(key)
+            if isinstance(val, str) and val:
+                if masked_cfg is None:
+                    masked_cfg = dict(cfg)
+                masked_cfg[key] = _mask_signature_secret(val)
+        if masked_cfg is not None:
+            snap = dict(snap)
+            snap["trigger_config"] = masked_cfg
     return {
         "id": r["id"],
         "automation_id": r.get("automation_id"),
@@ -12390,7 +12498,7 @@ def admin_automations_version_restore(aid, vid):
         aid, _automation_snapshot(payload),
         note=f"Restored from version {version['version_no']}",
     )
-    return jsonify(_row_automation(row))
+    return jsonify(_redact_automation_for_editor(_row_automation(row)))
 
 
 # Wire export size so very large automations can't accidentally DoS the
@@ -12493,7 +12601,7 @@ def admin_automations_import():
         row["id"], _automation_snapshot(payload),
         note=f"Imported from {bundle.get('exported_from') or 'uploaded file'}",
     )
-    return jsonify(_row_automation(row)), 201
+    return jsonify(_redact_automation_for_editor(_row_automation(row))), 201
 
 
 @app.route("/automations/hook/<token>", methods=["POST", "GET"])

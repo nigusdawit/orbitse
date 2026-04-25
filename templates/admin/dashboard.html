@@ -14173,7 +14173,21 @@ TO CUSTOMIZE THIS DASHBOARD:
       if (field.kind === 'textarea') {
         control = `<textarea id="${idAttr}" rows="4" ${field.placeholder ? 'placeholder="' + escapeHtml(field.placeholder) + '"' : ''} data-cfg-key="${escapeHtml(field.name)}">${escapeHtml(String(v))}</textarea>`;
       } else if (field.kind === 'password') {
-        control = `<input type="password" id="${idAttr}" value="${escapeHtml(String(v))}" autocomplete="new-password" ${field.placeholder ? 'placeholder="' + escapeHtml(field.placeholder) + '"' : ''} data-cfg-key="${escapeHtml(field.name)}">`;
+        // The API returns a masked preview (e.g. "whsec_••••abcd") for any
+        // saved secret rather than the cleartext, so dropping the value
+        // straight into the input would just persist the mask back to
+        // the DB on the next save. Render the input blank and surface
+        // the preview as helper text instead — that way an empty submit
+        // is the explicit "leave unchanged" signal the backend is
+        // already prepared for.
+        const savedPreview = String(v).trim();
+        const placeholderAttr = field.placeholder
+          ? ` placeholder="${escapeHtml(field.placeholder)}"`
+          : '';
+        control = `<input type="password" id="${idAttr}" value="" autocomplete="new-password"${placeholderAttr} data-cfg-key="${escapeHtml(field.name)}" data-cfg-password="1">`;
+        if (savedPreview) {
+          control += `<div style="font-size:0.8rem;color:var(--admin-text-muted);margin-top:0.25rem;">Saved: <code data-testid="text-${escapeHtml(field.name)}-preview">${escapeHtml(savedPreview)}</code> — leave blank to keep, or paste a new value to replace.</div>`;
+        }
       } else if (field.kind === 'checkbox') {
         const checked = (v === true || v === 'true' || v === 1 || v === '1' || v === 'on') ? 'checked' : '';
         control = `<label style="display:flex;align-items:center;gap:0.5rem;font-weight:normal;cursor:pointer;"><input type="checkbox" id="${idAttr}" ${checked} data-cfg-key="${escapeHtml(field.name)}"> <span style="font-size:0.85rem;color:var(--admin-text-muted);">${escapeHtml(field.label)}</span></label>`;
@@ -14220,6 +14234,14 @@ TO CUSTOMIZE THIS DASHBOARD:
         if (el.type === 'checkbox') v = el.checked;
         else if (el.type === 'number') v = el.value === '' ? '' : Number(el.value);
         else v = el.value;
+        // Password inputs (data-cfg-password) render blank when a secret
+        // is already saved — the masked preview is shown alongside as
+        // helper text. Skipping empties at transport level means the
+        // wire payload contains the secret key only when the admin
+        // actually typed something, so a stray empty string can never
+        // race the server-side merge guard. The PUT handler still
+        // tolerates either missing key or empty string defensively.
+        if (el.getAttribute('data-cfg-password') === '1' && v === '') return;
         cfg[k] = v;
       });
       return cfg;
