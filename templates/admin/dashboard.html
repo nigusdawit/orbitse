@@ -12848,7 +12848,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         <details class="form-group" style="margin:0.5rem 0 0.75rem 0; padding:0.5rem 0.75rem; background:rgba(99,102,241,0.06); border:1px dashed rgba(99,102,241,0.35); border-radius:6px;" ${(when.field || isUnary) ? 'open' : ''}>
           <summary style="cursor:pointer; font-size:0.85rem; color:var(--admin-text-muted);" data-testid="summary-step-when-${idx}">Only run when… (optional)</summary>
           <div id="${scopeId}" style="display:flex; gap:0.5rem; align-items:center; margin-top:0.5rem; flex-wrap:wrap;">
-            <input type="text" data-when-key="field" placeholder="{{trigger.fields.plan}}" value="${escapeHtml(when.field || '')}" style="flex:1 1 200px;" data-testid="input-step-when-field-${idx}">
+            <input type="text" data-when-key="field" placeholder="{% raw %}{{trigger.fields.plan}}{% endraw %}" value="${escapeHtml(when.field || '')}" style="flex:1 1 200px;" data-testid="input-step-when-field-${idx}">
             <select data-when-key="operator" onchange="onWhenOperatorChange(${idx}, this.value)" data-testid="select-step-when-op-${idx}">${opOpts}</select>
             <input type="text" data-when-key="value" placeholder="Premium" value="${escapeHtml(when.value || '')}" ${isUnary ? 'disabled style="flex:1 1 160px; opacity:0.5;"' : 'style="flex:1 1 160px;"'} data-testid="input-step-when-value-${idx}">
           </div>
