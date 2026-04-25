@@ -1352,6 +1352,12 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_runs_automation ON automation_runs (automation_id);
                 CREATE INDEX IF NOT EXISTS idx_runs_status ON automation_runs (status);
                 CREATE INDEX IF NOT EXISTS idx_runs_queued ON automation_runs (status, queued_at);
+                -- Backs both the editor's "recent runs" panel
+                -- (`ORDER BY id DESC LIMIT 100` per automation) and the
+                -- retention cleanup's window-function scan, so neither has
+                -- to seq-scan the whole table once it gets large.
+                CREATE INDEX IF NOT EXISTS idx_runs_automation_queued
+                    ON automation_runs (automation_id, queued_at DESC);
 
                 -- Saved snapshots of an automation's editable content (name,
                 -- description, trigger, action steps). One row is appended on
@@ -10275,8 +10281,13 @@ def admin_automations_test_run(aid):
 @app.route("/admin/api/automations/<int:aid>/runs", methods=["GET"])
 @admin_required
 def admin_automations_runs(aid):
+    # ORDER BY (queued_at DESC, id DESC) so the planner can use the
+    # composite index `idx_runs_automation_queued (automation_id, queued_at DESC)`
+    # — id is the secondary key just to keep ordering deterministic when
+    # two rows share a millisecond timestamp.
     rows = query_db(
-        "SELECT * FROM automation_runs WHERE automation_id = %s ORDER BY id DESC LIMIT 100",
+        "SELECT * FROM automation_runs WHERE automation_id = %s "
+        "ORDER BY queued_at DESC, id DESC LIMIT 100",
         (aid,),
     ) or []
     return jsonify([_row_run(r) for r in rows])

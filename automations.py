@@ -60,6 +60,21 @@ HTTP_STEP_TIMEOUT_SECONDS = int(os.environ.get("AUTOMATIONS_HTTP_TIMEOUT", "15")
 DELAY_STEP_MAX_SECONDS = int(os.environ.get("AUTOMATIONS_DELAY_MAX", "300"))
 AI_STEP_TIMEOUT_SECONDS = int(os.environ.get("AUTOMATIONS_AI_TIMEOUT", "30"))
 
+# Run-history retention. The cleanup tick deletes any `automation_runs` row
+# older than RETENTION_DAYS, but always keeps the most recent
+# RETENTION_KEEP_RECENT rows per automation regardless of age — so a quiet
+# automation never loses *all* its history. A busy webhook capped at
+# 60 runs/hour writes ~525k rows/year per automation; this keeps the table
+# (and the editor's "recent runs" panel) bounded.
+RETENTION_DAYS = max(1, int(os.environ.get("AUTOMATIONS_RETENTION_DAYS", "30")))
+RETENTION_KEEP_RECENT = max(
+    0, int(os.environ.get("AUTOMATIONS_RETENTION_KEEP_RECENT", "100"))
+)
+# How often the cleanup pass actually does work (cheap NO-OP otherwise).
+RETENTION_TICK_INTERVAL_SECONDS = max(
+    60, int(os.environ.get("AUTOMATIONS_RETENTION_TICK_SECONDS", "86400"))
+)
+
 
 # =============================================================================
 # CONCURRENCY GATE
@@ -1158,13 +1173,96 @@ def _next_schedule_target(cfg: Dict[str, Any], *, last_known: Optional[datetime]
     return None
 
 
+# =============================================================================
+# RUN-HISTORY RETENTION — daily cleanup tick
+# =============================================================================
+# The scheduler fires every 30 seconds, but we only want to actually run the
+# DELETE roughly once a day (it's a single statement, but it scans the whole
+# table). We keep a module-level timestamp of the last successful pass and
+# no-op early until RETENTION_TICK_INTERVAL_SECONDS has elapsed.
+
+_last_cleanup_at: float = 0.0
+_cleanup_lock = threading.Lock()
+
+
+def _cleanup_runs_tick() -> None:
+    """Delete `automation_runs` older than RETENTION_DAYS, but always keep
+    the most recent RETENTION_KEEP_RECENT rows per automation regardless of
+    age. Idempotent and safe to call frequently — internally rate-limited
+    to once per RETENTION_TICK_INTERVAL_SECONDS."""
+    global _last_cleanup_at
+    now = time.time()
+    with _cleanup_lock:
+        if now - _last_cleanup_at < RETENTION_TICK_INTERVAL_SECONDS:
+            return
+        _last_cleanup_at = now
+    try:
+        # Two safety rules baked into the SQL:
+        #
+        # 1. Only *terminal* runs are eligible for deletion or counted in the
+        #    keep-recent rank. The task spec says "keep the most recent N
+        #    successes/failures", so 'queued' / 'running' rows are completely
+        #    excluded from the cleanup — we'd never want to delete a row a
+        #    worker is mid-flight on, and short-lived non-terminal states
+        #    shouldn't push real history out of the keep-recent window.
+        #
+        # 2. We delete a row only when it's BOTH outside the per-automation
+        #    keep-recent window AND older than the retention horizon — so a
+        #    low-volume automation always retains its last N terminal runs,
+        #    and a high-volume one drops everything past 30 days.
+        #
+        # No RETURNING — `_execute_db` then returns `cur.rowcount` directly,
+        # which is what we want for the log line.
+        deleted = _execute_db(
+            """
+            WITH ranked AS (
+                SELECT id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY automation_id
+                           ORDER BY queued_at DESC, id DESC
+                       ) AS rn
+                  FROM automation_runs
+                 WHERE status IN ('succeeded', 'failed', 'timeout', 'cancelled')
+            )
+            DELETE FROM automation_runs r
+             USING ranked
+             WHERE r.id = ranked.id
+               AND ranked.rn > %s
+               AND r.queued_at < NOW() - (INTERVAL '1 day' * %s)
+            """,
+            (RETENTION_KEEP_RECENT, RETENTION_DAYS),
+        )
+        n = int(deleted) if isinstance(deleted, int) else 0
+        if n:
+            print(f"[automations] retention cleanup deleted {n} old run(s)")
+    except Exception as e:
+        # Roll back the cooldown so the next tick will retry instead of
+        # silently waiting another full day on transient DB errors.
+        with _cleanup_lock:
+            _last_cleanup_at = 0.0
+        print(f"[automations] retention cleanup error: {e}")
+
+
+def retention_settings() -> Dict[str, Any]:
+    """Exposed via status_summary for the admin "Status" view."""
+    return {
+        "retention_days": RETENTION_DAYS,
+        "keep_recent_per_automation": RETENTION_KEEP_RECENT,
+        "tick_interval_seconds": RETENTION_TICK_INTERVAL_SECONDS,
+    }
+
+
 def register_with_scheduler(messaging_module: Any) -> None:
-    """Hook our tick into messaging.py's existing scheduler so we share one
+    """Hook our ticks into messaging.py's existing scheduler so we share one
     background thread."""
     try:
         messaging_module.register_tick(_scheduler_tick)
     except Exception as e:
         print(f"[automations] could not register scheduler tick: {e}")
+    try:
+        messaging_module.register_tick(_cleanup_runs_tick)
+    except Exception as e:
+        print(f"[automations] could not register retention tick: {e}")
 
 
 # =============================================================================
@@ -1193,4 +1291,5 @@ def status_summary() -> Dict[str, Any]:
         "http_step_timeout": HTTP_STEP_TIMEOUT_SECONDS,
         "ai_step_timeout": AI_STEP_TIMEOUT_SECONDS,
         "delay_max_seconds": DELAY_STEP_MAX_SECONDS,
+        "retention": retention_settings(),
     }
