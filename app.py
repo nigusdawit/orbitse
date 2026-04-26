@@ -5006,8 +5006,15 @@ SKILL_METADATA = {
 
 def sync_skills_to_db():
     """Idempotently insert every skill known to the codebase into agent_skills.
+
     Preserves admin-toggled `enabled` and `config_json` on rows that already
-    exist. Run once at startup, after init_db()."""
+    exist. Also preserves admin edits to `display_name` and `description`:
+    once an admin types a custom label or description for a builtin skill,
+    a subsequent restart MUST NOT clobber it. We still freshen `category`
+    and `builtin` because those are pure code properties (admin can't edit
+    them on a builtin), and we still backfill display_name/description from
+    code when the admin has left them blank. Run once at startup, after
+    init_db()."""
     try:
         for tool in CHAT_TOOLS:
             fn_meta = tool.get("function") or {}
@@ -5023,10 +5030,10 @@ def sync_skills_to_db():
                 INSERT INTO agent_skills (name, display_name, description, category, builtin, enabled)
                 VALUES (%s, %s, %s, %s, true, true)
                 ON CONFLICT (name) DO UPDATE
-                  SET display_name = EXCLUDED.display_name,
-                      description  = EXCLUDED.description,
-                      category     = EXCLUDED.category,
-                      builtin      = true
+                  SET category     = EXCLUDED.category,
+                      builtin      = true,
+                      display_name = COALESCE(NULLIF(agent_skills.display_name, ''), EXCLUDED.display_name),
+                      description  = COALESCE(NULLIF(agent_skills.description, ''),  EXCLUDED.description)
                 """,
                 (name, display, description, category),
             )
@@ -5035,21 +5042,49 @@ def sync_skills_to_db():
 
 
 def get_active_chat_tools():
-    """Return CHAT_TOOLS filtered to only the skills the admin has enabled.
+    """Return the list of tools the model can call this turn.
 
-    On a *DB error* we fall back to all tools so chat keeps working — that's
-    a safety net for an outage, not an admin choice. But if the query
-    succeeds and simply returns zero enabled rows, we MUST honor that
-    (return []) — otherwise the admin can never disable a skill, which
-    defeats the whole skills-governance promise.
+    Two sources combine:
+      1. Builtin tools from CHAT_TOOLS, filtered to only those the admin
+         has left `enabled = true` in agent_skills.
+      2. Custom (admin-defined) skills with `builtin = false` AND
+         `enabled = true`. For each one we synthesize a no-argument
+         OpenAI-shaped tool schema using the row's display_name +
+         description so the model knows when to call it.
+
+    On a *DB error* we fall back to all builtin tools so chat keeps
+    working — that's a safety net for an outage, not an admin choice. But
+    if the query succeeds and simply returns zero enabled rows, we MUST
+    honor that (return []) — otherwise the admin can never disable a
+    skill, which defeats the whole skills-governance promise.
     """
     try:
-        rows = query_db("SELECT name FROM agent_skills WHERE enabled = true")
+        rows = query_db(
+            "SELECT name, description, builtin FROM agent_skills WHERE enabled = true"
+        )
     except Exception as e:
         print(f"[skills] get_active_chat_tools DB error, falling back to all tools: {e}")
         return CHAT_TOOLS
-    active = {r["name"] for r in (rows or [])}
-    return [t for t in CHAT_TOOLS if (t.get("function") or {}).get("name") in active]
+    rows = rows or []
+    active_builtin_names = {r["name"] for r in rows if r.get("builtin")}
+    out = [t for t in CHAT_TOOLS if (t.get("function") or {}).get("name") in active_builtin_names]
+    # Append synthesized schemas for every enabled custom skill. We use
+    # the row's description (admin-authored) to teach the model when to
+    # call it. Custom skills have no parameters in this initial cut —
+    # they're "canned answer" tools the admin defines via response_text.
+    for r in rows:
+        if r.get("builtin"):
+            continue
+        out.append({
+            "type": "function",
+            "function": {
+                "name": r["name"],
+                "description": (r.get("description") or "").strip()
+                                or f"Custom skill: {r['name']}",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        })
+    return out
 
 
 def _log_skill_usage(session_id, log_entry):
@@ -5101,6 +5136,32 @@ def _execute_chat_tool_inner(name, args_json):
 
     fn = CHAT_LOOKUP_FUNCTIONS.get(name)
     if fn is None:
+        # Not a builtin Python function — check whether the admin has
+        # defined a custom skill with this name. Custom skills are
+        # canned-response tools: their config_json holds {"response_text":
+        # "..."} which is what we hand back to the model verbatim.
+        try:
+            row = query_db(
+                "SELECT name, config_json FROM agent_skills "
+                "WHERE name = %s AND builtin = false AND enabled = true",
+                (name,), fetchone=True,
+            )
+        except Exception as _e:
+            row = None
+        if row:
+            cfg = row.get("config_json") or {}
+            if isinstance(cfg, str):
+                try: cfg = json.loads(cfg)
+                except Exception: cfg = {}
+            response_text = (cfg or {}).get("response_text", "").strip()
+            ms = int((_time.time() - started) * 1000)
+            payload = {"response": response_text} if response_text else {
+                "error": f"Custom skill '{name}' has no response text configured."
+            }
+            return (
+                json.dumps(payload),
+                {"name": name, "args": args, "rows": (1 if response_text else 0), "ms": ms},
+            )
         return (
             json.dumps({"error": f"Unknown tool: {name}"}),
             {"name": name, "args": args, "error": "unknown_tool", "ms": 0},
@@ -6759,26 +6820,167 @@ def admin_list_skills():
     return jsonify(skills)
 
 
+_SKILL_NAME_RE = _re.compile(r"^[a-z][a-z0-9_]{1,59}$")
+
+
+def _normalize_custom_skill_payload(data, *, partial=False):
+    """Validate + normalize an admin-supplied custom-skill payload.
+
+    Returns (cleaned_dict, error_str). On success error_str is None. When
+    `partial=True` (PUT path) only fields actually present are validated;
+    when False (POST path) every required field must be there.
+    """
+    out = {}
+    name = (data.get("name") or "").strip().lower()
+    if name or not partial:
+        if not _SKILL_NAME_RE.match(name or ""):
+            return None, ("Name must start with a lowercase letter and use only "
+                          "lowercase letters, digits, and underscores (max 60 chars).")
+        out["name"] = name
+    if "display_name" in data or not partial:
+        out["display_name"] = (data.get("display_name") or "").strip()[:200]
+    if "description" in data or not partial:
+        desc = (data.get("description") or "").strip()
+        if not desc and not partial:
+            return None, "Description is required so the AI knows when to call this skill."
+        out["description"] = desc[:2000]
+    if "category" in data or not partial:
+        out["category"] = (data.get("category") or "custom").strip().lower()[:40] or "custom"
+    if "enabled" in data:
+        # Strict truthy parsing — bool("false") is True in Python, so coerce
+        # common string forms first for non-UI API callers.
+        v = data.get("enabled")
+        if isinstance(v, str):
+            out["enabled"] = v.strip().lower() in ("true", "1", "yes", "on")
+        else:
+            out["enabled"] = bool(v)
+    if "response_text" in data or not partial:
+        rt = (data.get("response_text") or "").strip()
+        if not rt and not partial:
+            return None, "Response text is required for a custom skill."
+        out["response_text"] = rt[:8000]
+    return out, None
+
+
+@app.route("/admin/api/skills", methods=["POST"])
+@admin_required
+def admin_create_skill():
+    """POST — Create a new admin-defined custom skill (builtin = false).
+
+    Body: {name, display_name, description, category, response_text,
+    enabled?}. The skill becomes a no-arg tool the chat AI can call;
+    when invoked it returns the configured response_text verbatim.
+    """
+    data = request.get_json() or {}
+    cleaned, err = _normalize_custom_skill_payload(data, partial=False)
+    if err:
+        return jsonify({"error": err}), 400
+    # Refuse names that collide with a builtin — the dispatcher would
+    # match the builtin first, so the custom row would be unreachable.
+    if cleaned["name"] in CHAT_LOOKUP_FUNCTIONS or cleaned["name"] in {
+        (t.get("function") or {}).get("name") for t in CHAT_TOOLS
+    }:
+        return jsonify({"error": f"'{cleaned['name']}' is reserved by a builtin skill — choose a different name."}), 400
+    if query_db("SELECT 1 FROM agent_skills WHERE name = %s", (cleaned["name"],), fetchone=True):
+        return jsonify({"error": f"A skill named '{cleaned['name']}' already exists."}), 409
+    config_json = json.dumps({"response_text": cleaned["response_text"]})
+    enabled = cleaned.get("enabled", True)
+    # Guard against the check-then-insert race: two simultaneous POSTs of
+    # the same name would both pass the SELECT above and one of the
+    # INSERTs would then violate the UNIQUE(name) constraint. Catch that
+    # and turn it into the same friendly 409 the precheck returns.
+    try:
+        row = execute_db(
+            """INSERT INTO agent_skills
+                 (name, display_name, description, category, builtin, enabled, config_json)
+               VALUES (%s, %s, %s, %s, false, %s, %s::jsonb)
+               RETURNING *""",
+            (cleaned["name"], cleaned["display_name"] or cleaned["name"].replace("_", " ").title(),
+             cleaned["description"], cleaned["category"], enabled, config_json),
+        )
+    except psycopg2.IntegrityError:
+        return jsonify({"error": f"A skill named '{cleaned['name']}' already exists."}), 409
+    return jsonify(row), 201
+
+
 @app.route("/admin/api/skills/<int:sid>", methods=["PUT"])
 @admin_required
 def admin_update_skill(sid):
-    """PUT — Toggle a skill on/off (and optionally update config_json)."""
+    """PUT — Update a skill. Allowed fields differ by skill type:
+
+    - Builtin skills: enabled, display_name, description, config_json (the
+      `name` and `category` come from code and are read-only).
+    - Custom skills: enabled, display_name, description, category,
+      response_text (rewritten into config_json), config_json (raw).
+
+    Backward-compatible with the original toggle-only payload
+    {enabled: true/false}.
+    """
+    existing = query_db("SELECT * FROM agent_skills WHERE id = %s", (sid,), fetchone=True)
+    if not existing:
+        return jsonify({"error": "Skill not found"}), 404
     data = request.get_json() or {}
-    config_json = data.get("config_json")
-    if config_json is None:
-        s = execute_db(
-            "UPDATE agent_skills SET enabled = %s WHERE id = %s RETURNING *",
-            (bool(data.get("enabled", True)), sid),
-        )
-    else:
-        s = execute_db(
-            "UPDATE agent_skills SET enabled = %s, config_json = %s::jsonb "
-            "WHERE id = %s RETURNING *",
-            (bool(data.get("enabled", True)), json.dumps(config_json), sid),
-        )
+    cleaned, err = _normalize_custom_skill_payload(
+        {k: v for k, v in data.items() if k != "name"},  # name is immutable
+        partial=True,
+    )
+    if err:
+        return jsonify({"error": err}), 400
+
+    # Builtin skills cannot have category or response_text changed via this
+    # endpoint — those belong to the code-defined identity.
+    if existing["builtin"]:
+        cleaned.pop("category", None)
+        cleaned.pop("response_text", None)
+
+    sets, params = [], []
+    for col in ("display_name", "description", "category", "enabled"):
+        if col in cleaned:
+            sets.append(f"{col} = %s")
+            params.append(cleaned[col])
+
+    # Two paths for config_json: a raw payload (legacy callers) OR the
+    # response_text field (custom-skill ergonomics).
+    raw_config = data.get("config_json")
+    if "response_text" in cleaned and not existing["builtin"]:
+        existing_cfg = existing.get("config_json") or {}
+        if isinstance(existing_cfg, str):
+            try: existing_cfg = json.loads(existing_cfg)
+            except Exception: existing_cfg = {}
+        existing_cfg["response_text"] = cleaned["response_text"]
+        sets.append("config_json = %s::jsonb")
+        params.append(json.dumps(existing_cfg))
+    elif raw_config is not None:
+        sets.append("config_json = %s::jsonb")
+        params.append(json.dumps(raw_config))
+
+    if not sets:
+        return jsonify(existing)
+    params.append(sid)
+    s = execute_db(
+        f"UPDATE agent_skills SET {', '.join(sets)} WHERE id = %s RETURNING *",
+        tuple(params),
+    )
     if not s:
         return jsonify({"error": "Skill not found"}), 404
     return jsonify(s)
+
+
+@app.route("/admin/api/skills/<int:sid>", methods=["DELETE"])
+@admin_required
+def admin_delete_skill(sid):
+    """DELETE — Remove a custom skill. Builtin skills cannot be deleted
+    (they would be re-inserted on the next startup by sync_skills_to_db,
+    so deletion is a confusing no-op). Disable them instead."""
+    row = query_db("SELECT id, name, builtin FROM agent_skills WHERE id = %s", (sid,), fetchone=True)
+    if not row:
+        return jsonify({"error": "Skill not found"}), 404
+    if row.get("builtin"):
+        return jsonify({
+            "error": "Builtin skills cannot be deleted — they are defined in code and would reappear on next restart. Disable the skill instead.",
+        }), 400
+    execute_db("DELETE FROM agent_skills WHERE id = %s", (sid,))
+    return jsonify({"deleted": True, "id": sid, "name": row["name"]})
 
 
 @app.route("/admin/api/skills/usage", methods=["GET"])
