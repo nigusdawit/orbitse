@@ -13758,13 +13758,22 @@ TO CUSTOMIZE THIS DASHBOARD:
               (d.notes ? '<div style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.25rem;">' + _siteEsc(d.notes) + '</div>' : '') +
             '</div>' +
           '</div>' +
-          '<div style="margin-top:0.75rem; border:1px solid rgba(255,255,255,0.08); border-radius:6px; overflow:hidden; background:#000; height:160px;">' +
+          '<div style="margin-top:0.75rem; border:1px solid rgba(255,255,255,0.08); border-radius:6px; overflow:hidden; background:#000; height:160px; position:relative;">' +
             '<iframe src="/preview/design/' + d.id + '" loading="lazy" sandbox data-testid="iframe-site-design-thumb-' + d.id + '" ' +
             'style="width:400%; height:640px; border:0; transform:scale(0.25); transform-origin:top left; pointer-events:none;"></iframe>' +
+            (d.is_active ?
+              '<div style="position:absolute; bottom:0; left:0; right:0; background:rgba(0,0,0,0.65); color:#fff; font-size:0.65rem; padding:3px 6px; text-align:center;">Static thumbnail (no JS) — click Preview to open the live site</div>' :
+              '<div style="position:absolute; bottom:0; left:0; right:0; background:rgba(0,0,0,0.65); color:#fff; font-size:0.65rem; padding:3px 6px; text-align:center;">Static draft preview (sandboxed)</div>') +
           '</div>' +
           '<div style="display:flex; gap:0.4rem; margin-top:0.75rem; flex-wrap:wrap;">' +
             publishBtn +
-            '<button class="btn btn-secondary" onclick="window.open(\'/preview/design/' + d.id + '\', \'_blank\')" data-testid="button-site-design-preview-' + d.id + '">Preview</button>' +
+            // Active design = the live homepage. Open / so the admin sees the
+            // real (script-driven) site. Drafts open the sandboxed static
+            // preview at /preview/design/<id> — see the CSP hardening on
+            // preview_site_design().
+            '<button class="btn btn-secondary" onclick="window.open(\'' + (d.is_active ? '/' : ('/preview/design/' + d.id)) + '\', \'_blank\', \'noopener,noreferrer\')" data-testid="button-site-design-preview-' + d.id + '">' +
+              (d.is_active ? 'Open Live Site' : 'Preview') +
+            '</button>' +
             '<button class="btn btn-secondary" onclick="editSiteDesign(' + d.id + ')" data-testid="button-site-design-edit-' + d.id + '">Edit</button>' +
             deleteBtn +
           '</div>' +

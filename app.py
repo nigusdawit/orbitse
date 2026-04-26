@@ -8364,6 +8364,42 @@ def _admin_post_write_sync(table_name):
             print(f"[admin_post_write_sync] {table_name}: {e}")
 
 
+def _autosnapshot_theme_from_legacy(theme_fields, source="ai_chat"):
+    """When the legacy site_settings.theme_* columns are edited (e.g. by
+    the AI's generic admin_propose_update tool against site_settings),
+    capture the resulting palette as a NEW DRAFT row in the new
+    site_themes table. This way every chat-driven theme tweak shows up
+    in the Themes tab so the admin can name / preview / publish it
+    instead of wondering where the AI's work went.
+
+    Does NOT change site_settings.active_theme_id — the legacy columns
+    keep applying via _resolve_active_theme()'s fallback until the
+    admin explicitly publishes the snapshot from the tab.
+    """
+    palette, fonts = {}, {}
+    for k, v in theme_fields.items():
+        if v in (None, ""):
+            continue
+        if k.startswith("theme_font_"):
+            fonts[k[len("theme_font_"):]] = v
+        elif k.startswith("theme_"):
+            palette[k[len("theme_"):]] = v
+    if not palette and not fonts:
+        return None
+    import datetime as _dt
+    name = "AI draft " + _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    notes = ("Auto-saved from a chat-driven theme edit. "
+             "Click Publish to make this the active theme.")
+    row = execute_db(
+        "INSERT INTO site_themes(name, palette_json, fonts_json, "
+        "                        source, status, notes) "
+        "VALUES (%s, %s::jsonb, %s::jsonb, %s, 'draft', %s) "
+        "RETURNING id",
+        (name, json.dumps(palette), json.dumps(fonts), source, notes),
+    )
+    return (row or {}).get("id")
+
+
 def _admin_execute_pending(action_row):
     """Run the actual write for an approved pending action. Returns
     (result_dict, error_str). Caller marks the row executed/failed."""
@@ -8457,8 +8493,27 @@ def _admin_execute_pending(action_row):
                 conn.commit()
             conn.close()
             _admin_post_write_sync(table)
-            return {"rows_affected": rc, "table": table,
-                    "row_id": rid}, None
+            # If the AI just edited the legacy theme_* columns on
+            # site_settings via the generic admin_propose_update path,
+            # mirror the resulting palette into a new draft row in the
+            # site_themes table so it shows up in the Themes tab and
+            # the admin can pick a name / publish it. Best-effort —
+            # never let a snapshot failure poison the actual update.
+            snapshot_theme_id = None
+            if table == "site_settings" and rid == 1:
+                theme_fields = {k: v for k, v in fields.items()
+                                if k.startswith("theme_")}
+                if theme_fields:
+                    try:
+                        snapshot_theme_id = _autosnapshot_theme_from_legacy(
+                            theme_fields, source="ai_chat"
+                        )
+                    except Exception as _e:
+                        print(f"[autosnapshot_theme] {_e}")
+            result = {"rows_affected": rc, "table": table, "row_id": rid}
+            if snapshot_theme_id:
+                result["site_theme_draft_id"] = snapshot_theme_id
+            return result, None
         except Exception as e:
             try: conn.rollback(); conn.close()
             except Exception: pass
