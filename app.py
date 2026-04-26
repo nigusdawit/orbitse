@@ -3825,7 +3825,7 @@ WHEN TO USE bookService vs submitForm:
 
 PRE-SUBMISSION CHECKLIST — do NOT skip:
   1. client_name + client_email are ALWAYS required.
-  2. If the service has requires_calendar = true, BOTH scheduled_date (YYYY-MM-DD) and scheduled_start (HH:MM:SS, 24-hour) are required. Ask for the visitor's preferred date and time before issuing bookService — do not invent times.
+  2. If the service has requires_calendar = true, BOTH scheduled_date (YYYY-MM-DD) and scheduled_start (HH:MM:SS, 24-hour) are required. Ask the visitor for a preferred date FIRST, then call the lookup_service_availability tool for that service slug to get the LIVE list of open start times for that date (or the next two weeks). Read those exact times back to the visitor and let them pick — do NOT invent or assume start times. If the visitor's preferred date has no openings, say so and offer the closest dates that do. Only after the visitor has confirmed a start time that came back from lookup_service_availability should you issue bookService.
   3. addon_ids must be an array of integers, using the EXACT id values from the add-on list for that service. Only include add-ons the visitor has confirmed. Use [] when none.
   4. Read back a clear summary BEFORE issuing the command — service name, chosen add-ons, date + time, and total — and wait for the visitor's explicit yes.
   5. Do NOT include text like "Submitting now" — when bookService runs, the system shows its own loading indicator and confirmation, so any text in that turn is wasted. Keep the message minimal.
@@ -4136,6 +4136,107 @@ def lookup_services(slug=None, query=None, limit=5):
             ),
         })
     return out
+
+
+def lookup_service_availability(slug=None, start_date=None,
+                                end_date=None, days=14):
+    """Live open start times for a calendar-required bookable service.
+
+    The booking modal already fetches /api/services/<slug>/availability
+    so the visitor only sees real openings. This mirror gives the chat
+    agent the SAME live data so it can offer concrete times in
+    conversation instead of guessing and waiting for the bookService
+    backend to reject a slot that's already taken.
+
+    Args:
+      slug:       Exact service slug from the BOOKABLE SERVICES section.
+      start_date: Window start (YYYY-MM-DD). Defaults to today.
+      end_date:   Window end (YYYY-MM-DD). Defaults to start + `days`.
+      days:       Number of days from start_date to scan when end_date
+                  is not given (default 14, max 60).
+
+    Returns: { slug, name, requires_calendar, duration_minutes,
+               window: {start, end},
+               days: [ {date,
+                        open_starts: ["09:00:00", "10:00:00", ...],
+                        slots: [{start, end, remaining}, ...]} ] }
+      Start times are returned in HH:MM:SS form so they can be passed
+      verbatim as bookService's `scheduled_start` (which expects
+      HH:MM:SS). Days with zero remaining slots are dropped, so an
+      empty `days` list means there are no openings in that window.
+    """
+    if not slug:
+        return {"error": "slug is required"}
+    svc = query_db(
+        "SELECT id, slug, name, requires_calendar, duration_minutes "
+        "FROM services WHERE slug = %s AND is_active = TRUE",
+        (slug,), fetchone=True,
+    )
+    if not svc:
+        return {"error": f"No active service with slug '{slug}'."}
+    if not svc["requires_calendar"]:
+        return {
+            "slug": svc["slug"],
+            "name": svc["name"],
+            "requires_calendar": False,
+            "note": (
+                "This service is not calendar-required — no slot picking "
+                "needed; bookService can be issued without "
+                "scheduled_date / scheduled_start."
+            ),
+            "days": [],
+        }
+    from datetime import date, timedelta
+    today = date.today()
+    try:
+        start = date.fromisoformat(str(start_date)) if start_date else today
+    except (ValueError, TypeError):
+        start = today
+    span = max(1, min(int(days or 14), 60))
+    try:
+        end = date.fromisoformat(str(end_date)) if end_date else (
+            start + timedelta(days=span - 1)
+        )
+    except (ValueError, TypeError):
+        end = start + timedelta(days=span - 1)
+    if end < start:
+        end = start
+    if (end - start).days > 60:
+        end = start + timedelta(days=60)
+    raw_days = _compute_availability(svc["id"], start, end)
+    out_days = []
+    for d in raw_days:
+        slots = d.get("slots") or []
+        if not slots:
+            continue
+        # Normalize to HH:MM:SS so the model can pass `open_starts`
+        # verbatim into bookService's `scheduled_start` (which expects
+        # HH:MM:SS), and surface remaining capacity so it can prefer
+        # safer choices when seats are tight.
+        def _to_hms(t):
+            t = (t or "").strip()
+            return t if t.count(":") >= 2 else f"{t}:00"
+        normalized = [
+            {
+                "start": _to_hms(s.get("start")),
+                "end": _to_hms(s.get("end")),
+                "remaining": int(s.get("remaining") or 0),
+            }
+            for s in slots
+        ]
+        out_days.append({
+            "date": d["date"],
+            "open_starts": [s["start"] for s in normalized],
+            "slots": normalized,
+        })
+    return {
+        "slug": svc["slug"],
+        "name": svc["name"],
+        "requires_calendar": True,
+        "duration_minutes": svc.get("duration_minutes"),
+        "window": {"start": start.isoformat(), "end": end.isoformat()},
+        "days": out_days,
+    }
 
 
 def lookup_experiences(query=None, limit=10):
@@ -4530,7 +4631,10 @@ def build_site_index():
         lines = [f'  - "{s["slug"]}" — "{s["name"]}"' for s in services]
         parts.append(
             f"BOOKABLE SERVICES ({len(services)} total) — for full "
-            f"description, duration, price, call lookup_services:\n"
+            f"description, duration, price, call lookup_services. For "
+            f"the live list of open start times on a given date (any "
+            f"service whose requires_calendar is TRUE), call "
+            f"lookup_service_availability BEFORE proposing a time:\n"
             + "\n".join(lines)
         )
 
@@ -4699,6 +4803,35 @@ CHAT_TOOLS = [
         }},
     }},
     {"type": "function", "function": {
+        "name": "lookup_service_availability",
+        "description": (
+            "Get the LIVE list of open start times for a calendar-required "
+            "bookable service (the same data the booking modal's date "
+            "picker uses). Call this BEFORE you propose any specific "
+            "date / time to the visitor for a service whose "
+            "requires_calendar is TRUE — the result reflects current "
+            "capacity, weekly hours, and any admin-blocked dates, so "
+            "you'll never offer a slot that's already taken or outside "
+            "business hours. Pass the exact `slug`, optionally narrow the "
+            "window with `start_date` / `end_date` (YYYY-MM-DD), or pass "
+            "`days` to scan that many days from today (default 14, max "
+            "60). Returns only days that have at least one open start "
+            "time; an empty `days` list means there are no openings in "
+            "that window — tell the visitor so and offer a different "
+            "date range instead of guessing a time. Each day's "
+            "`open_starts` are HH:MM:SS strings you can pass verbatim "
+            "as bookService's `scheduled_start`, and each `slots` entry "
+            "carries a `remaining` count so you can prefer slots with "
+            "more headroom when capacity is tight."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "slug":       {"type": "string", "description": "Exact service slug from the BOOKABLE SERVICES section."},
+            "start_date": {"type": "string", "description": "Window start, YYYY-MM-DD. Defaults to today."},
+            "end_date":   {"type": "string", "description": "Window end, YYYY-MM-DD. Defaults to start_date + days."},
+            "days":       {"type": "integer", "description": "Number of days to scan from start_date (default 14, max 60)."},
+        }, "required": ["slug"]},
+    }},
+    {"type": "function", "function": {
         "name": "lookup_experiences",
         "description": "Get full descriptions of curated experiences/activities offered.",
         "parameters": {"type": "object", "properties": {
@@ -4823,6 +4956,7 @@ CHAT_TOOLS = [
 CHAT_LOOKUP_FUNCTIONS = {
     "lookup_gallery_cards": lookup_gallery_cards,
     "lookup_services": lookup_services,
+    "lookup_service_availability": lookup_service_availability,
     "lookup_experiences": lookup_experiences,
     "lookup_pricing": lookup_pricing,
     "lookup_products": lookup_products,
@@ -4853,6 +4987,7 @@ CHAT_LOOKUP_FUNCTIONS = {
 SKILL_METADATA = {
     "lookup_gallery_cards":        {"display": "Look up gallery cards",      "category": "lookup"},
     "lookup_services":             {"display": "Look up services",            "category": "lookup"},
+    "lookup_service_availability": {"display": "Look up service availability", "category": "lookup"},
     "lookup_experiences":          {"display": "Look up experiences",         "category": "lookup"},
     "lookup_pricing":              {"display": "Look up pricing",             "category": "lookup"},
     "lookup_products":             {"display": "Look up products",            "category": "lookup"},
@@ -5354,6 +5489,7 @@ def api_chat():
     # WHAT MOVED BEHIND TOOLS (call lookup_* on demand, with narrow filters):
     #   - Gallery card descriptions, details, images        → lookup_gallery_cards
     #   - Bookable service descriptions, duration, prices   → lookup_services
+    #   - Live open start times for a calendar-required svc → lookup_service_availability
     #   - Experience descriptions                           → lookup_experiences
     #   - Pricing tier date/price ranges                    → lookup_pricing
     #   - Shop product descriptions, prices, stock          → lookup_products
@@ -5526,10 +5662,14 @@ def api_chat():
                 "notes are optional.\n"
                 "  2. When requires_calendar is TRUE, you MUST collect both "
                 "scheduled_date (YYYY-MM-DD) and scheduled_start (HH:MM:SS) before "
-                "calling bookService. If you don't yet know what slots are open, "
-                "ask the visitor for their preferred date first — the booking "
-                "endpoint will tell us if the slot is taken and you can offer "
-                "another. Never invent times that weren't offered.\n"
+                "calling bookService. Ask the visitor for their preferred date "
+                "first, then call lookup_service_availability(slug=...) to get "
+                "the LIVE list of open start times for that service (capacity, "
+                "weekly hours, and admin blocks already applied). Read those "
+                "exact times back and let the visitor pick one — never invent "
+                "times or rely on the bookService backend to reject a guess. "
+                "If the requested date has no openings, say so and propose the "
+                "closest dates that do.\n"
                 "  3. Only include add-on ids the visitor has explicitly confirmed "
                 "(or none). Use the EXACT integer ids from the add-on list — never "
                 "invent ids or use names.\n"
