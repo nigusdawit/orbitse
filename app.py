@@ -10936,6 +10936,13 @@ def api_chat():
             "person presenting — reference what's on screen, connect it "
             "to what they asked, keep it 1-3 sentences so the deck can "
             "resume.\n"
+            "  - **THE DECK'S TOPIC IS THIS TURN'S TOPIC.** Even if the "
+            "deck is about a product, brand, or domain that seems "
+            "unrelated to the rest of the website (e.g., a software "
+            "product deck on a hospitality site), the deck content IS "
+            "fully on-topic for this turn. NEVER decline a deck or "
+            "slide question as 'off-topic' or 'outside our offerings'. "
+            "The visitor is watching this deck right now — answer them.\n"
             "  - When the visitor asks something general like 'what is "
             "this slide about', 'explain this', or 'tell me more', "
             "PRESENT the current slide using the on-screen content "
@@ -10964,21 +10971,60 @@ def api_chat():
     # the user's turn.  Models pay far more attention to the most recent
     # system message, so this dramatically improves command-block compliance
     # — especially with smaller models like gpt-4o-mini.
-    messages.append({"role": "system", "content": (
-        "REMEMBER: If your reply involves ANY action (navigate, showSlide, "
-        "generatePage, submitForm, scrollToSection, etc.), you MUST include "
-        "the ```command\\n{...}\\n``` JSON block. Without it the visitor sees "
-        "NO change on the site. Never narrate an action — execute it. "
-        "Keep reply text to 1 sentence when a command follows. "
-        "Run the DECISION PRIORITY checklist FIRST: navigate beats "
-        "scrollToSection beats showSavedPage beats generatePage. Only reach "
-        "for generatePage when nothing existing on the site answers the "
-        "question — it makes the visitor wait while HTML streams. When you "
-        "DO use generatePage, it auto-injects the site's hero image "
-        "(var(--hero-image)) and theme variables so the result looks like "
-        "part of this exact website. Always start with a hero section that "
-        "uses var(--hero-image) with a dark gradient overlay."
-    )})
+    #
+    # When a deck is playing, the reminder is rewritten to reinforce the
+    # presentation-mode rules (deck topic = on-topic, no commands, answer
+    # from slide context). Otherwise we use the generic command reminder.
+    if presentation_active:
+        # Build a tight per-slide echo so the model sees the deck/slide
+        # identity at the highest-attention position. Keep it short — it
+        # rides on top of the full slide_block already in active_prompt.
+        _ps = presentation_slide or {}
+        _deck = (_ps.get("deck_title") or "").strip()[:120]
+        _stitle = (_ps.get("title") or "").strip()[:120]
+        try:
+            _idx = int(_ps.get("index") or 0)
+            _tot = int(_ps.get("total") or 0)
+        except (TypeError, ValueError):
+            _idx, _tot = 0, 0
+        _loc_bits = []
+        if _deck and _tot:
+            _loc_bits.append(f"deck \"{_deck}\" — slide {_idx} of {_tot}")
+        elif _deck:
+            _loc_bits.append(f"deck \"{_deck}\"")
+        if _stitle:
+            _loc_bits.append(f"current slide: \"{_stitle}\"")
+        _loc = " · ".join(_loc_bits) if _loc_bits else "the current slide"
+        messages.append({"role": "system", "content": (
+            "REMEMBER — A DECK IS PLAYING RIGHT NOW. The visitor is "
+            f"watching {_loc}. Their next message is a question about "
+            "this deck/slide. Answer FROM the ON SCREEN RIGHT NOW "
+            "context (and prior PRESENTATION-MODE rules) above. "
+            "THE DECK'S TOPIC IS ON-TOPIC for this turn — do not refuse "
+            "or redirect to the website's other offerings even if the "
+            "deck is about a different subject. Reply in 1-3 short "
+            "sentences as the live presenter. Do NOT emit any "
+            "```command``` block this turn (no navigate, no "
+            "generatePage, no start_presentation, no scrollToSection, "
+            "no showSavedPage) — the deck resumes automatically when "
+            "you finish."
+        )})
+    else:
+        messages.append({"role": "system", "content": (
+            "REMEMBER: If your reply involves ANY action (navigate, showSlide, "
+            "generatePage, submitForm, scrollToSection, etc.), you MUST include "
+            "the ```command\\n{...}\\n``` JSON block. Without it the visitor sees "
+            "NO change on the site. Never narrate an action — execute it. "
+            "Keep reply text to 1 sentence when a command follows. "
+            "Run the DECISION PRIORITY checklist FIRST: navigate beats "
+            "scrollToSection beats showSavedPage beats generatePage. Only reach "
+            "for generatePage when nothing existing on the site answers the "
+            "question — it makes the visitor wait while HTML streams. When you "
+            "DO use generatePage, it auto-injects the site's hero image "
+            "(var(--hero-image)) and theme variables so the result looks like "
+            "part of this exact website. Always start with a hero section that "
+            "uses var(--hero-image) with a dark gradient overlay."
+        )})
 
     messages.append({"role": "user", "content": message})
 
