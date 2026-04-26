@@ -1043,6 +1043,31 @@ def init_db():
                     claude_model  TEXT NOT NULL DEFAULT 'claude-sonnet-4-5',
                     updated_at    TIMESTAMP DEFAULT NOW()
                 );
+
+                -- Persistent transcript for the new admin-side chat surface.
+                -- Two separate "modes" share the table:
+                --   mode='visitor' rows are the admin previewing the visitor
+                --   agent (so they don't pollute real visitor analytics).
+                --   mode='admin'   rows are the admin agent with elevated
+                --   tools (run SQL, manage skills, edit content, analytics).
+                -- session_id is generated client-side and persisted in
+                -- localStorage so the admin can keep one ongoing thread
+                -- per mode across reloads. tool_calls_json (assistant rows)
+                -- captures the same per-step trace used in the visitor
+                -- chat history view, including admin-tool calls.
+                CREATE TABLE IF NOT EXISTS admin_chat_messages (
+                    id              SERIAL PRIMARY KEY,
+                    session_id      VARCHAR(100) NOT NULL DEFAULT '',
+                    mode            VARCHAR(20)  NOT NULL DEFAULT 'admin',
+                    role            VARCHAR(20)  NOT NULL DEFAULT 'user',
+                    content         TEXT         NOT NULL DEFAULT '',
+                    tool_calls_json JSONB,
+                    tool_call_id    TEXT,
+                    tool_name       TEXT,
+                    created_at      TIMESTAMP    DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_admin_chat_session
+                    ON admin_chat_messages (session_id, mode, created_at);
             """)
 
             # Seed the voice_settings singleton row (idempotent)
@@ -5656,6 +5681,856 @@ def _stream_round_claude(model, system, claude_messages, claude_tools, max_token
             "args": slot["args_str"] or "{}",
         })
     yield ("finish", finish_reason)
+
+
+# =============================================================================
+# ADMIN CHAT — elevated AI agent for the dashboard
+# =============================================================================
+#
+# Two surfaces share the new "Admin Chat" tab in the dashboard:
+#
+#   1. Visitor preview — frontend points the chat box at /api/chat (the
+#      same endpoint visitors use). No backend change needed; the admin
+#      session_id is just prefixed with "admin_preview_" so those rows
+#      can be filtered out of real visitor analytics if desired.
+#
+#   2. Admin assistant — this section. A SEPARATE chat loop that uses
+#      the ADMIN_TOOLS list below: read-only SQL, skill management,
+#      narrow content edits, recent activity / overview analytics.
+#      Hard-gated behind @admin_required and persisted to the new
+#      admin_chat_messages table.
+#
+# Safety posture for the admin agent:
+#   - admin_run_sql is SELECT-only, single statement, no semicolons,
+#     forbidden-keyword regex, 100-row cap, 5s statement_timeout, run
+#     in a non-autocommit connection that is rolled back at the end so
+#     even an exotic SELECT-with-side-effects (function call) is undone.
+#   - Skill creation only ever creates non-builtin custom skills.
+#   - Content edits go through narrow per-table helpers, never raw SQL,
+#     and every write is logged to skill_usage_log under a session_id
+#     prefixed with "admin_chat_" so the admin can audit later.
+# =============================================================================
+
+import re as _re_admin
+
+_ADMIN_SQL_DANGEROUS = _re_admin.compile(
+    r"\b(?:INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|GRANT|REVOKE|"
+    r"COPY|EXECUTE|CALL|MERGE|VACUUM|REINDEX|CLUSTER|REFRESH|LISTEN|NOTIFY|"
+    r"DO|SECURITY|RESET|SET\s+ROLE|SET\s+SESSION)\b",
+    _re_admin.IGNORECASE,
+)
+
+
+def _admin_safe_sql(sql):
+    """Validate the SQL is a single, read-only SELECT/WITH statement.
+    Returns (cleaned_sql, error_str_or_None)."""
+    if not sql or not isinstance(sql, str):
+        return None, "Empty SQL"
+    s = sql.strip().rstrip(";").strip()
+    if not s:
+        return None, "Empty SQL"
+    if ";" in s:
+        return None, "Multi-statement queries are not allowed"
+    if not _re_admin.match(r"^\s*(SELECT|WITH)\b", s, _re_admin.IGNORECASE):
+        return None, "Only SELECT or WITH queries are allowed"
+    if _ADMIN_SQL_DANGEROUS.search(s):
+        return None, "Query contains a forbidden keyword (write operations are not allowed)"
+    return s, None
+
+
+def _admin_tool_list_tables():
+    rows = query_db(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_type='BASE TABLE' "
+        "ORDER BY table_name"
+    ) or []
+    return {"tables": [r["table_name"] for r in rows]}
+
+
+def _admin_tool_describe_table(table_name=None):
+    if not table_name or not isinstance(table_name, str):
+        return {"error": "table_name is required"}
+    cols = query_db(
+        "SELECT column_name, data_type, is_nullable, column_default "
+        "FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name=%s "
+        "ORDER BY ordinal_position",
+        (table_name,),
+    ) or []
+    if not cols:
+        return {"error": f"Table '{table_name}' not found"}
+    # Use psycopg2.sql.Identifier for safe, properly quoted identifier
+    # interpolation — never raw f-string concatenation, even after the
+    # information_schema existence check above. Belt + suspenders so this
+    # path stays read-only no matter what string the model passes in.
+    from psycopg2 import sql as _pgsql
+    row_count = 0
+    conn = None
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        conn.autocommit = False
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL statement_timeout = '5s'")
+            cur.execute("SET LOCAL transaction_read_only = on")
+            cur.execute(_pgsql.SQL("SELECT count(*) FROM {}.{}").format(
+                _pgsql.Identifier("public"),
+                _pgsql.Identifier(table_name),
+            ))
+            r = cur.fetchone()
+            row_count = int((r[0] if r else 0) or 0)
+    except Exception as e:
+        return {"error": f"Could not count rows: {str(e)[:200]}"}
+    finally:
+        if conn is not None:
+            try: conn.rollback()
+            except Exception: pass
+            try: conn.close()
+            except Exception: pass
+    return {
+        "table": table_name,
+        "row_count": row_count,
+        "columns": cols,
+    }
+
+
+def _admin_tool_run_sql(sql=None, **_):
+    """Run a read-only SELECT and return up to 100 rows. Uses a fresh
+    non-autocommit connection so that nothing can leak side effects;
+    the transaction is rolled back at the end regardless of outcome."""
+    safe, err = _admin_safe_sql(sql or "")
+    if err:
+        return {"error": err}
+    conn = None
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        conn.autocommit = False
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SET LOCAL statement_timeout = '5s'")
+            cur.execute("SET LOCAL transaction_read_only = on")
+            cur.execute(safe)
+            if not cur.description:
+                return {"sql": safe, "rows": [], "row_count": 0,
+                        "note": "Query returned no result set"}
+            cols = [d.name for d in cur.description]
+            raw = cur.fetchmany(100)
+            rows = []
+            for r in raw:
+                clean = {}
+                for k, v in r.items():
+                    if hasattr(v, "isoformat"):
+                        clean[k] = v.isoformat()
+                    elif isinstance(v, (bytes, bytearray, memoryview)):
+                        clean[k] = "<binary>"
+                    else:
+                        clean[k] = v
+                rows.append(clean)
+            return {"sql": safe, "columns": cols, "rows": rows,
+                    "row_count": len(rows),
+                    "truncated": len(rows) == 100}
+    except Exception as e:
+        return {"error": f"SQL error: {str(e)[:300]}"}
+    finally:
+        if conn is not None:
+            try: conn.rollback()
+            except Exception: pass
+            try: conn.close()
+            except Exception: pass
+
+
+def _admin_tool_list_skills():
+    rows = query_db(
+        "SELECT name, display_name, category, builtin, enabled, description "
+        "FROM agent_skills ORDER BY builtin DESC, name ASC"
+    ) or []
+    return {"skills": rows, "count": len(rows)}
+
+
+def _admin_tool_create_custom_skill(name=None, display_name=None,
+                                    description=None, response_text=None,
+                                    category="custom", **_):
+    if not name or not isinstance(name, str):
+        return {"error": "name is required"}
+    if not _re_admin.match(r"^[a-z][a-z0-9_]{1,59}$", name):
+        return {"error": "name must match ^[a-z][a-z0-9_]{1,59}$"}
+    existing = query_db(
+        "SELECT name, builtin FROM agent_skills WHERE name=%s",
+        (name,), fetchone=True,
+    )
+    if existing:
+        if existing.get("builtin"):
+            return {"error": f"'{name}' collides with a builtin skill"}
+        return {"error": f"Skill '{name}' already exists"}
+    cfg = {"response_text": (response_text or "").strip()}
+    execute_db(
+        "INSERT INTO agent_skills (name, display_name, description, category, "
+        "builtin, enabled, config_json) VALUES (%s, %s, %s, %s, false, true, %s::jsonb)",
+        (
+            name,
+            (display_name or name.replace("_", " ").title())[:100],
+            (description or "")[:1000],
+            (category or "custom")[:50],
+            json.dumps(cfg),
+        ),
+    )
+    return {"created": name, "enabled": True, "message":
+            f"Custom skill '{name}' created and enabled."}
+
+
+def _admin_tool_set_skill_enabled(name=None, enabled=True, **_):
+    if not name:
+        return {"error": "name is required"}
+    row = query_db("SELECT name FROM agent_skills WHERE name=%s",
+                   (name,), fetchone=True)
+    if not row:
+        return {"error": f"Skill '{name}' not found"}
+    execute_db("UPDATE agent_skills SET enabled=%s, updated_at=NOW() "
+               "WHERE name=%s", (bool(enabled), name))
+    return {"name": name, "enabled": bool(enabled),
+            "message": f"Skill '{name}' is now {'on' if enabled else 'off'}."}
+
+
+def _admin_tool_set_skill_response(name=None, response_text=None, **_):
+    if not name:
+        return {"error": "name is required"}
+    row = query_db("SELECT name, config_json FROM agent_skills WHERE name=%s",
+                   (name,), fetchone=True)
+    if not row:
+        return {"error": f"Skill '{name}' not found"}
+    cfg = row.get("config_json") or {}
+    if isinstance(cfg, str):
+        try: cfg = json.loads(cfg)
+        except Exception: cfg = {}
+    cfg["response_text"] = (response_text or "").strip()
+    execute_db("UPDATE agent_skills SET config_json=%s::jsonb, updated_at=NOW() "
+               "WHERE name=%s", (json.dumps(cfg), name))
+    return {"name": name,
+            "response_text_length": len(cfg["response_text"]),
+            "message": f"Updated canned response for '{name}'."}
+
+
+def _admin_tool_recent_visitor_chats(limit=20, **_):
+    try:
+        n = max(1, min(int(limit), 100))
+    except Exception:
+        n = 20
+    rows = query_db(
+        "SELECT c.id, c.session_id, c.visitor_id, c.created_at, "
+        "  (SELECT count(*) FROM chat_messages m WHERE m.conversation_id=c.id) AS msg_count, "
+        "  (SELECT content FROM chat_messages m WHERE m.conversation_id=c.id "
+        "     AND m.role='user' ORDER BY m.created_at ASC LIMIT 1) AS first_user_msg "
+        "FROM chat_conversations c "
+        "ORDER BY c.created_at DESC LIMIT %s",
+        (n,),
+    ) or []
+    for r in rows:
+        if hasattr(r.get("created_at"), "isoformat"):
+            r["created_at"] = r["created_at"].isoformat()
+    return {"chats": rows, "count": len(rows)}
+
+
+def _admin_tool_recent_orders(limit=20, **_):
+    try:
+        n = max(1, min(int(limit), 100))
+    except Exception:
+        n = 20
+    try:
+        rows = query_db(
+            "SELECT id, customer_email, total_cents, status, created_at "
+            "FROM orders ORDER BY created_at DESC LIMIT %s", (n,)
+        ) or []
+    except Exception as e:
+        return {"error": f"Could not read orders: {str(e)[:200]}"}
+    for r in rows:
+        if hasattr(r.get("created_at"), "isoformat"):
+            r["created_at"] = r["created_at"].isoformat()
+    return {"orders": rows, "count": len(rows)}
+
+
+def _admin_tool_recent_form_submissions(limit=20, **_):
+    try:
+        n = max(1, min(int(limit), 100))
+    except Exception:
+        n = 20
+    try:
+        rows = query_db(
+            "SELECT s.id, s.form_id, f.name AS form_name, s.created_at, "
+            "       LEFT(s.data_json::text, 300) AS preview "
+            "FROM form_submissions s LEFT JOIN custom_forms f ON f.id=s.form_id "
+            "ORDER BY s.created_at DESC LIMIT %s", (n,)
+        ) or []
+    except Exception as e:
+        return {"error": f"Could not read form submissions: {str(e)[:200]}"}
+    for r in rows:
+        if hasattr(r.get("created_at"), "isoformat"):
+            r["created_at"] = r["created_at"].isoformat()
+    return {"submissions": rows, "count": len(rows)}
+
+
+def _admin_tool_overview_stats(**_):
+    """Best-effort dashboard summary. Each block try/except so a missing
+    table doesn't take the whole tool down."""
+    out = {}
+    queries = {
+        "page_views_24h":
+            "SELECT count(*) AS n FROM page_views "
+            "WHERE created_at > NOW() - INTERVAL '24 hours'",
+        "page_views_7d":
+            "SELECT count(*) AS n FROM page_views "
+            "WHERE created_at > NOW() - INTERVAL '7 days'",
+        "form_submissions_7d":
+            "SELECT count(*) AS n FROM form_submissions "
+            "WHERE created_at > NOW() - INTERVAL '7 days'",
+        "chat_conversations_7d":
+            "SELECT count(*) AS n FROM chat_conversations "
+            "WHERE created_at > NOW() - INTERVAL '7 days'",
+        "orders_7d":
+            "SELECT count(*) AS n FROM orders "
+            "WHERE created_at > NOW() - INTERVAL '7 days'",
+        "skills_enabled":
+            "SELECT count(*) AS n FROM agent_skills WHERE enabled=true",
+        "skills_total":
+            "SELECT count(*) AS n FROM agent_skills",
+    }
+    for key, sql in queries.items():
+        try:
+            r = query_db(sql, fetchone=True)
+            out[key] = int((r or {}).get("n", 0) or 0)
+        except Exception:
+            out[key] = None
+    return {"stats": out}
+
+
+def _admin_tool_skill_usage_stats(skill_name=None, limit=50, **_):
+    try:
+        n = max(1, min(int(limit), 200))
+    except Exception:
+        n = 50
+    if skill_name:
+        rows = query_db(
+            "SELECT skill_name, args_json, row_count, duration_ms, error, created_at "
+            "FROM skill_usage_log WHERE skill_name=%s "
+            "ORDER BY created_at DESC LIMIT %s", (skill_name, n)
+        ) or []
+    else:
+        rows = query_db(
+            "SELECT skill_name, count(*) AS calls, "
+            "       AVG(duration_ms)::int AS avg_ms, "
+            "       SUM(CASE WHEN error<>'' THEN 1 ELSE 0 END) AS errors, "
+            "       MAX(created_at) AS last_called "
+            "FROM skill_usage_log "
+            "WHERE created_at > NOW() - INTERVAL '7 days' "
+            "GROUP BY skill_name ORDER BY calls DESC LIMIT %s", (n,)
+        ) or []
+    for r in rows:
+        for k in ("created_at", "last_called"):
+            if hasattr(r.get(k), "isoformat"):
+                r[k] = r[k].isoformat()
+    return {"rows": rows, "count": len(rows)}
+
+
+def _admin_tool_create_faq(question=None, answer=None, category=None, **_):
+    if not question or not answer:
+        return {"error": "question and answer are required"}
+    try:
+        new_row = execute_db(
+            "INSERT INTO faqs (question, answer, category, sort_order) "
+            "VALUES (%s, %s, %s, COALESCE("
+            "  (SELECT MAX(sort_order)+1 FROM faqs), 0)) RETURNING id",
+            (question[:500], answer[:5000], (category or "")[:100]),
+        )
+        new_id = (new_row or {}).get("id")
+        return {"created_id": new_id, "message":
+                f"FAQ #{new_id} created."}
+    except Exception as e:
+        return {"error": f"Could not create FAQ: {str(e)[:300]}"}
+
+
+def _admin_tool_update_business_info(field=None, value=None, **_):
+    allowed = {"phone", "email", "address", "hours", "tagline",
+               "business_name"}
+    if not field or field not in allowed:
+        return {"error": f"field must be one of {sorted(allowed)}"}
+    if value is None:
+        return {"error": "value is required"}
+    try:
+        execute_db(
+            f"UPDATE business_info SET {field}=%s, updated_at=NOW() WHERE id=1",
+            (str(value)[:500],),
+        )
+        return {"field": field, "value": str(value)[:500],
+                "message": f"Updated business {field}."}
+    except Exception as e:
+        return {"error": f"Could not update {field}: {str(e)[:300]}"}
+
+
+def _admin_tool_create_blog_post(title=None, body=None, slug=None,
+                                 category=None, status="draft", **_):
+    if not title or not body:
+        return {"error": "title and body are required"}
+    try:
+        if not slug:
+            slug = _re_admin.sub(r"[^a-z0-9]+", "-",
+                                 title.lower()).strip("-")[:60]
+        new_row = execute_db(
+            "INSERT INTO blog_posts (slug, title, body, category, status, "
+            "  sort_order) VALUES (%s, %s, %s, %s, %s, COALESCE("
+            "  (SELECT MAX(sort_order)+1 FROM blog_posts), 0)) RETURNING id, slug",
+            (slug, title[:300], body, (category or "")[:100],
+             "published" if status == "published" else "draft"),
+        )
+        return {"created_id": (new_row or {}).get("id"),
+                "slug": (new_row or {}).get("slug"),
+                "status": "published" if status == "published" else "draft",
+                "message": f"Blog post '{title}' created as "
+                           f"{'published' if status == 'published' else 'draft'}."}
+    except Exception as e:
+        return {"error": f"Could not create blog post: {str(e)[:300]}"}
+
+
+ADMIN_TOOL_FUNCTIONS = {
+    "admin_list_tables":            _admin_tool_list_tables,
+    "admin_describe_table":         _admin_tool_describe_table,
+    "admin_run_sql":                _admin_tool_run_sql,
+    "admin_list_skills":            _admin_tool_list_skills,
+    "admin_create_custom_skill":    _admin_tool_create_custom_skill,
+    "admin_set_skill_enabled":      _admin_tool_set_skill_enabled,
+    "admin_set_skill_response":     _admin_tool_set_skill_response,
+    "admin_recent_visitor_chats":   _admin_tool_recent_visitor_chats,
+    "admin_recent_orders":          _admin_tool_recent_orders,
+    "admin_recent_form_submissions":_admin_tool_recent_form_submissions,
+    "admin_overview_stats":         _admin_tool_overview_stats,
+    "admin_skill_usage_stats":      _admin_tool_skill_usage_stats,
+    "admin_create_faq":             _admin_tool_create_faq,
+    "admin_update_business_info":   _admin_tool_update_business_info,
+    "admin_create_blog_post":       _admin_tool_create_blog_post,
+}
+
+
+def _admin_tool_schema(name, description, params_schema=None):
+    """Helper to build one OpenAI-shaped function tool schema."""
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": params_schema or {
+                "type": "object", "properties": {}, "additionalProperties": False
+            },
+        },
+    }
+
+
+ADMIN_TOOLS = [
+    _admin_tool_schema(
+        "admin_list_tables",
+        "List every public table in the site database. Use this first to "
+        "discover what data is available before describing or querying."),
+    _admin_tool_schema(
+        "admin_describe_table",
+        "Show the columns + types + row count for one table.",
+        {"type": "object",
+         "properties": {"table_name": {"type": "string"}},
+         "required": ["table_name"]}),
+    _admin_tool_schema(
+        "admin_run_sql",
+        "Run a READ-ONLY SQL query (SELECT or WITH ... SELECT). "
+        "Multi-statements, INSERT/UPDATE/DELETE, DDL and DCL are all "
+        "rejected. Returns up to 100 rows. Always use this — never ask "
+        "the admin to run SQL themselves.",
+        {"type": "object",
+         "properties": {"sql": {"type": "string",
+                                "description": "A single SELECT statement."}},
+         "required": ["sql"]}),
+    _admin_tool_schema(
+        "admin_list_skills",
+        "List every AI skill (visitor agent tool) with its on/off state."),
+    _admin_tool_schema(
+        "admin_create_custom_skill",
+        "Create a brand-new custom skill the visitor AI can call. The "
+        "skill returns the canned `response_text` you provide — use this "
+        "to teach the visitor agent a new fact or stock answer. Skill "
+        "names must be lowercase_with_underscores.",
+        {"type": "object",
+         "properties": {
+             "name": {"type": "string"},
+             "display_name": {"type": "string"},
+             "description": {"type": "string",
+                             "description": "When the AI should call this skill."},
+             "response_text": {"type": "string",
+                               "description": "What the skill returns to the AI."},
+             "category": {"type": "string"},
+         },
+         "required": ["name", "description", "response_text"]}),
+    _admin_tool_schema(
+        "admin_set_skill_enabled",
+        "Turn an existing skill on or off.",
+        {"type": "object",
+         "properties": {"name": {"type": "string"},
+                        "enabled": {"type": "boolean"}},
+         "required": ["name", "enabled"]}),
+    _admin_tool_schema(
+        "admin_set_skill_response",
+        "Set/replace the canned response_text for a skill (works on both "
+        "builtin and custom skills — for builtins it overrides the live "
+        "lookup). Pass an empty string to clear the override.",
+        {"type": "object",
+         "properties": {"name": {"type": "string"},
+                        "response_text": {"type": "string"}},
+         "required": ["name", "response_text"]}),
+    _admin_tool_schema(
+        "admin_recent_visitor_chats",
+        "Show the most recent visitor chat conversations.",
+        {"type": "object",
+         "properties": {"limit": {"type": "integer", "default": 20}}}),
+    _admin_tool_schema(
+        "admin_recent_orders",
+        "Show the most recent shop orders.",
+        {"type": "object",
+         "properties": {"limit": {"type": "integer", "default": 20}}}),
+    _admin_tool_schema(
+        "admin_recent_form_submissions",
+        "Show the most recent form submissions across all forms.",
+        {"type": "object",
+         "properties": {"limit": {"type": "integer", "default": 20}}}),
+    _admin_tool_schema(
+        "admin_overview_stats",
+        "Get a dashboard-style summary of recent site activity (page views, "
+        "form submissions, chats, orders, skill counts)."),
+    _admin_tool_schema(
+        "admin_skill_usage_stats",
+        "Skill usage stats. Pass a skill_name to see recent calls for one "
+        "skill, or omit to get a 7-day call/error summary across all skills.",
+        {"type": "object",
+         "properties": {"skill_name": {"type": "string"},
+                        "limit": {"type": "integer", "default": 50}}}),
+    _admin_tool_schema(
+        "admin_create_faq",
+        "Add a new FAQ item to the public site.",
+        {"type": "object",
+         "properties": {"question": {"type": "string"},
+                        "answer": {"type": "string"},
+                        "category": {"type": "string"}},
+         "required": ["question", "answer"]}),
+    _admin_tool_schema(
+        "admin_update_business_info",
+        "Update one business contact field (phone, email, address, hours, "
+        "tagline, or business_name). Only those fields are accepted.",
+        {"type": "object",
+         "properties": {"field": {"type": "string",
+                                  "enum": ["phone", "email", "address",
+                                           "hours", "tagline",
+                                           "business_name"]},
+                        "value": {"type": "string"}},
+         "required": ["field", "value"]}),
+    _admin_tool_schema(
+        "admin_create_blog_post",
+        "Create a new blog post. Defaults to status='draft' so it stays "
+        "hidden until the admin publishes it. Pass status='published' to "
+        "make it visible immediately.",
+        {"type": "object",
+         "properties": {"title": {"type": "string"},
+                        "body": {"type": "string"},
+                        "slug": {"type": "string"},
+                        "category": {"type": "string"},
+                        "status": {"type": "string",
+                                   "enum": ["draft", "published"]}},
+         "required": ["title", "body"]}),
+]
+
+
+def execute_admin_tool(name, args_json, session_id=""):
+    """Run one admin-tool call. Returns (result_json_str, log_entry).
+    Mirrors execute_chat_tool's signature so the chat loop stays uniform.
+    Every call is logged into skill_usage_log under
+    'admin_chat_<session_id>' so admin-side tool runs are easy to filter
+    out of visitor analytics."""
+    import time as _time
+    started = _time.time()
+    try:
+        args = json.loads(args_json) if args_json else {}
+        if not isinstance(args, dict):
+            args = {}
+    except Exception:
+        args = {}
+    fn = ADMIN_TOOL_FUNCTIONS.get(name)
+    if fn is None:
+        log = {"name": name, "args": args, "error": "unknown_admin_tool",
+               "ms": 0}
+        _log_skill_usage(f"admin_chat_{session_id}"[:100], log)
+        return json.dumps({"error": f"Unknown admin tool: {name}"}), log
+    try:
+        result = fn(**args) if isinstance(args, dict) else fn()
+    except TypeError:
+        # Tolerate the model passing extra/unknown kwargs.
+        try:
+            result = fn(**{k: v for k, v in args.items()
+                           if k in fn.__code__.co_varnames})
+        except Exception as e:
+            result = {"error": f"Tool argument error: {str(e)[:200]}"}
+    except Exception as e:
+        result = {"error": f"Tool error: {str(e)[:300]}"}
+    ms = int((_time.time() - started) * 1000)
+    rows = result.get("count") if isinstance(result, dict) else None
+    if rows is None:
+        rows = result.get("row_count") if isinstance(result, dict) else 0
+    log = {"name": name, "args": args, "rows": int(rows or 0),
+           "ms": ms,
+           "error": (result.get("error", "") if isinstance(result, dict) else "")}
+    _log_skill_usage(f"admin_chat_{session_id}"[:100], log)
+    return json.dumps(result, default=str), log
+
+
+ADMIN_CHAT_SYSTEM_PROMPT = (
+    "You are the Admin Assistant for this website. The person you're "
+    "talking to IS the site owner / admin — speak to them plainly, like a "
+    "helpful ops teammate. They are authenticated; every tool you can "
+    "call is admin-scoped and safe to use without asking permission for "
+    "READ operations.\n\n"
+    "Your tools let you: list/describe tables, run read-only SQL, list "
+    "and toggle AI skills, create custom skills, view recent visitor "
+    "chats / orders / form submissions, pull dashboard stats, and edit "
+    "narrow content surfaces (FAQ, business info, blog drafts).\n\n"
+    "GUIDELINES:\n"
+    "  • Prefer the dedicated tools (admin_recent_*, admin_overview_stats, "
+    "admin_skill_usage_stats) over admin_run_sql for common questions — "
+    "they're faster and safer. Reach for admin_run_sql only when the "
+    "question is too custom for those.\n"
+    "  • Before running unfamiliar SQL, use admin_list_tables and "
+    "admin_describe_table so your query matches the real schema.\n"
+    "  • For analysis questions (\"how is the site doing?\", \"what's "
+    "trending?\"), call multiple read tools in parallel where possible, "
+    "then summarize plainly with bullet points and concrete numbers.\n"
+    "  • For WRITE actions (creating skills, editing business info, "
+    "creating FAQs / blog drafts, toggling skills), confirm what you're "
+    "about to do in one short sentence BEFORE the call only if the "
+    "intent is even slightly ambiguous; otherwise just do it and report "
+    "what you did and how to undo it.\n"
+    "  • Never invent column names. If you're unsure, describe the "
+    "table first.\n"
+    "  • Cite the tools you used at the bottom of complex answers as a "
+    "short \"What I checked: …\" line so the admin can verify."
+)
+
+
+def _admin_chat_persist(session_id, mode, role, content,
+                        tool_calls=None, tool_call_id=None, tool_name=None):
+    try:
+        execute_db(
+            "INSERT INTO admin_chat_messages "
+            "(session_id, mode, role, content, tool_calls_json, "
+            " tool_call_id, tool_name) "
+            "VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)",
+            (
+                (session_id or "")[:100],
+                (mode or "admin")[:20],
+                (role or "user")[:20],
+                content or "",
+                json.dumps(tool_calls) if tool_calls else None,
+                (tool_call_id or None),
+                (tool_name or None),
+            ),
+        )
+    except Exception as e:
+        print(f"[admin_chat] persist failed: {e}")
+
+
+def _admin_chat_run_loop(session_id, user_message, max_rounds=4):
+    """Run the admin agent loop. Returns (final_text, tool_trace)."""
+    # Pull the active openai model from agent_provider_settings.
+    model = "gpt-4o-mini"
+    try:
+        row = query_db(
+            "SELECT openai_model FROM agent_provider_settings WHERE id=1",
+            fetchone=True)
+        if row and row.get("openai_model"):
+            model = row["openai_model"]
+    except Exception:
+        pass
+
+    # Build the messages array from persisted history (admin mode only).
+    # Fetch the LATEST 60 turns (DESC subquery) then reverse to chronological
+    # order — using ASC LIMIT 60 would silently drop the most recent context
+    # once a thread exceeds 60 rows. We then trim any leading rows that
+    # would orphan a tool result from its parent assistant tool_calls
+    # message (OpenAI rejects a `tool` message with no preceding
+    # `assistant` that owns its tool_call_id).
+    history = query_db(
+        "SELECT role, content, tool_calls_json, tool_call_id, tool_name "
+        "FROM ( "
+        "  SELECT id, role, content, tool_calls_json, tool_call_id, tool_name, "
+        "         created_at "
+        "  FROM admin_chat_messages "
+        "  WHERE session_id=%s AND mode='admin' "
+        "  ORDER BY created_at DESC, id DESC LIMIT 60 "
+        ") s ORDER BY s.created_at ASC, s.id ASC",
+        (session_id,),
+    ) or []
+    # Drop leading orphan tool / assistant-with-tool-calls rows so the
+    # sliced window starts on a self-contained turn.
+    while history and history[0].get("role") == "tool":
+        history.pop(0)
+    if history and history[0].get("role") == "assistant" \
+            and history[0].get("tool_calls_json"):
+        # An assistant turn that opened a tool round whose results were
+        # trimmed off the back — drop it too so we don't send dangling
+        # tool_calls that have no matching tool replies.
+        history.pop(0)
+        while history and history[0].get("role") == "tool":
+            history.pop(0)
+
+    messages = [{"role": "system", "content": ADMIN_CHAT_SYSTEM_PROMPT}]
+    for h in history:
+        r = h.get("role")
+        if r == "assistant" and h.get("tool_calls_json"):
+            tc_raw = h["tool_calls_json"]
+            if isinstance(tc_raw, str):
+                try: tc_raw = json.loads(tc_raw)
+                except Exception: tc_raw = []
+            messages.append({
+                "role": "assistant",
+                "content": h.get("content") or "",
+                "tool_calls": tc_raw or [],
+            })
+        elif r == "tool":
+            messages.append({
+                "role": "tool",
+                "tool_call_id": h.get("tool_call_id") or "",
+                "content": h.get("content") or "",
+            })
+        else:
+            messages.append({"role": r or "user",
+                             "content": h.get("content") or ""})
+
+    # Append the new user message + persist it.
+    messages.append({"role": "user", "content": user_message})
+    _admin_chat_persist(session_id, "admin", "user", user_message)
+
+    final_text = ""
+    tool_trace = []
+
+    for round_no in range(max_rounds):
+        try:
+            resp = openai_client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=ADMIN_TOOLS,
+                tool_choice="auto",
+                max_tokens=2048,
+                temperature=0.3,
+            )
+        except Exception as e:
+            err = f"Admin chat error: {str(e)[:300]}"
+            _admin_chat_persist(session_id, "admin", "assistant", err)
+            return err, tool_trace
+
+        msg = resp.choices[0].message
+        if getattr(msg, "tool_calls", None):
+            tc_serialized = [
+                {"id": tc.id, "type": "function",
+                 "function": {"name": tc.function.name,
+                              "arguments": tc.function.arguments}}
+                for tc in msg.tool_calls
+            ]
+            messages.append({
+                "role": "assistant",
+                "content": msg.content or "",
+                "tool_calls": tc_serialized,
+            })
+            _admin_chat_persist(session_id, "admin", "assistant",
+                                msg.content or "", tool_calls=tc_serialized)
+            for tc in msg.tool_calls:
+                result_str, log = execute_admin_tool(
+                    tc.function.name, tc.function.arguments, session_id)
+                tool_trace.append({
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "args": tc.function.arguments,
+                    "result_preview": (result_str[:500] +
+                                       ("…" if len(result_str) > 500 else "")),
+                    "rows": log.get("rows", 0),
+                    "ms": log.get("ms", 0),
+                    "error": log.get("error", ""),
+                })
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result_str,
+                })
+                _admin_chat_persist(session_id, "admin", "tool", result_str,
+                                    tool_call_id=tc.id,
+                                    tool_name=tc.function.name)
+            continue
+
+        final_text = msg.content or ""
+        _admin_chat_persist(session_id, "admin", "assistant", final_text)
+        return final_text, tool_trace
+
+    # Hit the round cap — surface what we have.
+    final_text = (final_text or
+                  "I hit the tool-call round limit before reaching a "
+                  "final answer. Try narrowing the question.")
+    _admin_chat_persist(session_id, "admin", "assistant", final_text)
+    return final_text, tool_trace
+
+
+@app.route("/admin/api/chat/send", methods=["POST"])
+@admin_required
+def admin_agent_chat_send():
+    """POST /admin/api/chat/send  — body {session_id, message}.
+    Runs the admin agent loop and returns the final assistant text plus
+    a tool trace the UI uses to render expandable per-step cards."""
+    data = request.get_json() or {}
+    session_id = (data.get("session_id") or "")[:100]
+    message = (data.get("message") or "").strip()
+    if not session_id or not message:
+        return jsonify({"error": "session_id and message are required"}), 400
+    text, trace = _admin_chat_run_loop(session_id, message)
+    return jsonify({"reply": text, "tool_trace": trace})
+
+
+@app.route("/admin/api/chat/history", methods=["GET"])
+@admin_required
+def admin_agent_chat_history():
+    """GET /admin/api/chat/history?session_id=...&mode=admin"""
+    session_id = (request.args.get("session_id") or "")[:100]
+    mode = (request.args.get("mode") or "admin")[:20]
+    if not session_id:
+        return jsonify({"messages": []})
+    # Latest 200 turns, returned in chronological order. Using ASC LIMIT
+    # would silently hide the most recent messages once a thread grew
+    # past 200 rows, which is the opposite of what the UI wants.
+    rows = query_db(
+        "SELECT role, content, tool_calls_json, tool_call_id, tool_name, "
+        "       created_at "
+        "FROM ( "
+        "  SELECT id, role, content, tool_calls_json, tool_call_id, "
+        "         tool_name, created_at "
+        "  FROM admin_chat_messages "
+        "  WHERE session_id=%s AND mode=%s "
+        "  ORDER BY created_at DESC, id DESC LIMIT 200 "
+        ") s ORDER BY s.created_at ASC, s.id ASC",
+        (session_id, mode),
+    ) or []
+    for r in rows:
+        if hasattr(r.get("created_at"), "isoformat"):
+            r["created_at"] = r["created_at"].isoformat()
+    return jsonify({"messages": rows})
+
+
+@app.route("/admin/api/chat/clear", methods=["POST"])
+@admin_required
+def admin_agent_chat_clear():
+    """POST /admin/api/chat/clear  — body {session_id, mode}."""
+    data = request.get_json() or {}
+    session_id = (data.get("session_id") or "")[:100]
+    mode = (data.get("mode") or "admin")[:20]
+    if not session_id:
+        return jsonify({"error": "session_id required"}), 400
+    execute_db(
+        "DELETE FROM admin_chat_messages WHERE session_id=%s AND mode=%s",
+        (session_id, mode),
+    )
+    return jsonify({"ok": True})
 
 
 @app.route("/api/chat", methods=["POST"])

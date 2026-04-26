@@ -322,6 +322,21 @@ The AI uses `generateVisual` for simple data displays and `generateHTML` for ric
 
 ## Admin Features
 
+### Admin Chat (in-dashboard AI assistant)
+A dedicated **Admin Chat** tab in the dashboard sidebar (under "AI & Chat") gives the owner two ways to talk to AI directly from the admin:
+
+1. **Admin assistant mode** — talks to a separate, elevated agent backed by `POST /admin/api/chat/send`. The agent has admin-only tools:
+   - `admin_list_tables`, `admin_describe_table`, `admin_run_sql` (SELECT-only — multi-statement and write keywords are rejected, 100-row cap, 5-second statement timeout, runs in a non-autocommit connection that is rolled back at the end as belt-and-suspenders).
+   - Skill management: `admin_list_skills`, `admin_create_custom_skill`, `admin_set_skill_enabled`, `admin_set_skill_response`.
+   - Recent activity: `admin_recent_visitor_chats`, `admin_recent_orders`, `admin_recent_form_submissions`.
+   - Analytics: `admin_overview_stats`, `admin_skill_usage_stats`.
+   - Narrow content edits: `admin_create_faq`, `admin_update_business_info`, `admin_create_blog_post`.
+   Every admin-tool call is logged into `skill_usage_log` under `session_id` prefixed with `admin_chat_` so it is easy to filter out of visitor analytics.
+
+2. **Preview-as-visitor mode** — sends the message straight to the public `/api/chat` endpoint so the admin can sanity-check exactly what real visitors would see. Session id is prefixed with `admin_preview_` so these conversations are obvious in the Chat History tab.
+
+Conversations are persisted in the new `admin_chat_messages` table (one row per turn, with `mode`, `role`, `content`, `tool_calls_json`, `tool_call_id`, `tool_name`, `created_at`). Each mode keeps its own session id in the browser's localStorage so a thread survives reloads. The admin agent uses the active OpenAI model from `agent_provider_settings`, with a 4-round tool-call cap and a system prompt that tells it to prefer the dedicated tools over raw SQL and to confirm ambiguous writes before performing them.
+
 ### Image Upload
 - Upload buttons appear next to image URL fields (hero image, gallery card image)
 - Images are validated (jpg/png/gif/webp only), saved with unique filenames to `/uploads/`
