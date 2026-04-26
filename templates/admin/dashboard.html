@@ -16672,8 +16672,9 @@ TO CUSTOMIZE THIS DASHBOARD:
         </label>
         <div id="skill-custom-section">
           <label style="color:var(--admin-text);display:block;margin-bottom:0.75rem;">
-            Category (used to group skills in this list)
-            <input id="skill-category-input" type="text" data-testid="input-skill-category" placeholder="custom" style="width:100%;padding:8px;margin-top:4px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;">
+            Category (used to group skills in this list — pick an existing one or type a new name)
+            <input id="skill-category-input" type="text" list="skill-category-options" data-testid="input-skill-category" placeholder="custom" style="width:100%;padding:8px;margin-top:4px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;">
+            <datalist id="skill-category-options"></datalist>
           </label>
           <label style="color:var(--admin-text);display:block;margin-bottom:0.75rem;">
             Response text (what the skill returns to the AI when called)
@@ -17003,6 +17004,15 @@ TO CUSTOMIZE THIS DASHBOARD:
       const banner = document.getElementById('skill-builtin-banner');
       const customSec = document.getElementById('skill-custom-section');
       const delBtn = document.getElementById('skill-delete-btn');
+
+      // Populate the category dropdown from categories already in use, so
+      // the admin doesn't have to remember spelling. They can still type
+      // a brand-new category — the input is a datalist, not a select.
+      const dl = document.getElementById('skill-category-options');
+      if (dl) {
+        const cats = Array.from(new Set(_skillsCache.map(x => (x.category || '').trim()).filter(Boolean))).sort();
+        dl.innerHTML = cats.map(c => `<option value="${esc(c)}"></option>`).join('');
+      }
 
       if (!id) {
         titleEl.textContent = 'Add custom skill';
