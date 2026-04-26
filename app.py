@@ -9237,6 +9237,13 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_overview_stats":         _admin_tool_overview_stats,
     "admin_skill_usage_stats":      _admin_tool_skill_usage_stats,
     "admin_recent_snapshots":       _admin_tool_recent_snapshots,
+    # Public-web search — same backend (Brave primary, Anthropic
+    # fallback) as the visitor-facing lookup_web_search, but exposed
+    # to the admin assistant so it can verify external facts (API
+    # docs, pricing, current events) without the owner having to
+    # leave chat. The visitor-side relevance gate doesn't apply
+    # here; the admin is trusted.
+    "admin_web_search":             lookup_web_search,
     # --- Write proposals (each parks a pending action; the owner has
     # to click Approve in the chat UI before anything actually runs).
     "admin_propose_insert":         _admin_tool_propose_insert,
@@ -9351,6 +9358,25 @@ ADMIN_TOOLS = [
         {"type": "object",
          "properties": {"skill_name": {"type": "string"},
                         "limit": {"type": "integer", "default": 50}}}),
+    _admin_tool_schema(
+        "admin_web_search",
+        "Search the public web (Brave Search, with Anthropic web-search "
+        "fallback). Use this to verify external facts the admin asks "
+        "about — third-party API docs, library versions, current "
+        "events, pricing, integration how-tos — anything not stored in "
+        "this site's database. Returns up to 5 results: each has a "
+        "title, url, and snippet. After calling it, summarize the "
+        "answer in your own words and cite the source URLs you used. "
+        "Prefer this over saying 'I don't know' when the question is "
+        "about something on the public internet.",
+        {"type": "object",
+         "properties": {
+             "query": {"type": "string",
+                       "description": "The search query, written as a "
+                                      "natural-language question or a "
+                                      "concise keyword phrase."},
+         },
+         "required": ["query"]}),
 
     # ---- Write proposals (always need owner approval) ----
     _admin_tool_schema(
@@ -9769,8 +9795,9 @@ ADMIN_CHAT_SYSTEM_PROMPT = (
     "TWO KINDS OF TOOLS:\n"
     "  1. READ tools (admin_list_tables, admin_describe_table, "
     "admin_run_sql, admin_list_skills, admin_recent_*, "
-    "admin_overview_stats, admin_skill_usage_stats) — run immediately. "
-    "Use them freely without asking permission first.\n"
+    "admin_overview_stats, admin_skill_usage_stats, admin_web_search) "
+    "— run immediately. Use them freely without asking permission "
+    "first.\n"
     "  2. WRITE tools — they are NAMED admin_propose_*. Calling one of "
     "these does NOT change anything yet. It parks a pending action "
     "with a preview that the owner has to Approve in the chat UI. The "
