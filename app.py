@@ -12188,12 +12188,44 @@ def admin_generate_narration(pid):
         if not title_txt and not body_txt and narr_txt:
             lines.append(f"EXTRACTED TEXT FROM THIS SLIDE (raw, may be noisy):\n{narr_txt[:4000]}")
 
+        # Position-aware framing — the opening, middle, and closing
+        # slides each call for a different speaking posture. Without
+        # this nudge the model writes every slide identically, which
+        # is exactly what made earlier auto-narrations sound robotic.
+        if pos == 1:
+            position_hint = (
+                "POSITION ROLE: This is the OPENING slide. Hook the "
+                "audience in one sharp idea (a question, a striking "
+                "claim, a single concrete example). Do NOT greet "
+                "('Hello', 'Good morning', 'Welcome'). Do NOT pre-"
+                "announce the agenda ('today we'll cover X, Y, Z'). "
+                "Set the stakes with substance."
+            )
+        elif pos == total:
+            position_hint = (
+                "POSITION ROLE: This is the FINAL slide. Land ONE "
+                "takeaway or call to action — the single thing you "
+                "want the audience to leave with. Do NOT summarize "
+                "the whole deck. Do NOT say 'in conclusion' or "
+                "'as we wrap up'."
+            )
+        else:
+            position_hint = (
+                f"POSITION ROLE: Middle slide ({pos} of {total}). "
+                "Open straight on the substance — no transition "
+                "phrases ('next', 'now', 'moving on', 'building on "
+                "that'), no recap of earlier slides."
+            )
+        lines.append("\n" + position_hint)
+
         lines.append(
-            "\nTASK: Write 2-3 conversational sentences (35-65 words "
-            "total) you would speak aloud WHILE PRESENTING this slide. "
-            "Reference what's actually on the slide image. Connect to "
-            "the deck arc when natural. No greetings, no 'in this "
-            "slide we will…' filler, no markdown, no emoji, no labels. "
+            "\nTASK: Speak the substance of this slide in 2-3 sentences "
+            "(30-60 words). Use real specifics visible in the image — "
+            "named products, real numbers, concrete examples — never "
+            "vague abstractions like 'powerful concept' or "
+            "'transformative experience'. Vary your opener; do NOT "
+            "start with 'This slide', 'Here', 'As we', 'Let's', "
+            "'Today', 'Now', 'In this', or any meta-narrator phrase. "
             "Output ONLY the spoken sentences."
         )
 
@@ -12206,18 +12238,67 @@ def admin_generate_narration(pid):
             })
         return content
 
+    # System message — defines the speaking persona, the absolute
+    # banned-phrase list, and BAD/GOOD examples. The earlier prompt
+    # only said "no filler" which the model interpreted loosely; it
+    # kept producing meta-narrator openers ("This slide poses…", "As
+    # we explore…", "Here we see…") because those *sound* like a
+    # presenter to it. Banning them by name and showing the
+    # rewritten alternative is the only thing that reliably moves
+    # output style for gpt-4o-mini.
     sys_msg = (
-        "You are the live PRESENTER for a slide deck — not a generic "
-        "narrator and not a Q&A bot. Your audience is watching the slide "
-        "RIGHT NOW; the slide image is attached so you can see exactly "
-        "what they see. For each slide, write 2-3 conversational "
-        "sentences (35-65 words) that you would speak aloud while "
-        "presenting that specific slide. Walk the audience through what "
-        "matters on screen, surface the insight behind any bullets or "
-        "numbers, and connect to the deck's overall arc when it fits "
-        "naturally. Never read bullets verbatim. Never use filler like "
-        '"in this slide we will…" or "as you can see". No markdown, no '
-        "emoji, no labels — just the spoken sentences."
+        "You are presenting this slide LIVE to a real audience. The "
+        "slide image is attached — your audience is looking at it "
+        "right now while you speak. Your job is to SPEAK THE "
+        "SUBSTANCE of the slide, not describe the slide.\n"
+        "\n"
+        "STYLE — confident human presenter, not a narrator:\n"
+        "  - Speak ABOUT the topic, not ABOUT the slide. Never refer "
+        "to the slide as an object.\n"
+        "  - When the slide poses a question, ASK the question and "
+        "answer it. When it lists items, name the one or two that "
+        "matter most and say WHY — never read the whole list.\n"
+        "  - Use specifics from the image: real product names, real "
+        "numbers, real examples. Vague marketing words ('powerful', "
+        "'transformative', 'remarkable', 'truly', 'unlock', 'journey', "
+        "'the key is consistency') are forbidden — be concrete or "
+        "stay silent on that point.\n"
+        "  - 2-3 sentences, 30-60 words. Conversational, plain "
+        "language, contractions OK. No filler, no recap, no "
+        "transitions to other slides.\n"
+        "\n"
+        "BANNED OPENERS AND PHRASES (do not use these or close "
+        "variants — they are the giveaway that an AI wrote the "
+        "script):\n"
+        "  'This slide …', 'On this slide …', 'In this slide …', "
+        "'Here we see …', 'Here you see …', 'As we …' (any form: "
+        "explore / delve / look at / wrap up / conclude / move into), "
+        "'Let's …', 'Let me …', 'Now we …', 'Today we …' (except on "
+        "slide 1), 'Moving on', 'Next up', 'I'd like to talk about', "
+        "'I want to …', 'we will …', 'you can see', 'as shown', "
+        "'depicted here', 'illustrated here', 'pictured here'.\n"
+        "\n"
+        "BAD vs GOOD examples:\n"
+        "  BAD:  'This slide poses a powerful question about identity.'\n"
+        "  GOOD: 'What would you change about yourself if you could? "
+        "That gap between who you are and who you want to be is "
+        "exactly where the work starts.'\n"
+        "\n"
+        "  BAD:  'As we delve into the tools, the apps highlighted "
+        "here offer binaural audio and sleep tracking.'\n"
+        "  GOOD: 'Two apps stand out: Brain.fm for binaural focus "
+        "sessions, and Insight Timer for guided theta meditations. "
+        "Both run offline, which matters when you're trying to stay "
+        "off your phone.'\n"
+        "\n"
+        "  BAD:  'As we wrap up, remember theta sync is a personal "
+        "journey — find what truly resonates with you.'\n"
+        "  GOOD: 'Pick one practice this week — ten minutes of "
+        "binaural beats before bed, or a single guided session "
+        "tomorrow morning. One rep beats a perfect plan.'\n"
+        "\n"
+        "Output ONLY the spoken sentences. No markdown, no emoji, no "
+        "quote marks around the script, no labels, no preamble."
     )
 
     def _strip_image(content_list):
