@@ -3411,11 +3411,12 @@ TO CUSTOMIZE THIS DASHBOARD:
   }
   function adminChatBubble(role, contentHtml, extraHtml) {
     const isUser = role === 'user';
-    const bg = isUser ? 'var(--admin-primary, #4f46e5)' : 'var(--admin-card)';
-    const fg = isUser ? '#fff' : 'inherit';
+    const bg = isUser ? 'rgba(59,130,246,0.18)' : 'var(--admin-surface)';
+    const fg = isUser ? '#dbeafe' : 'var(--admin-text)';
+    const border = isUser ? 'rgba(59,130,246,0.35)' : 'var(--admin-border)';
     const align = isUser ? 'flex-end' : 'flex-start';
     return `<div style="display:flex; flex-direction:column; align-items:${align}; gap:.25rem;" data-testid="bubble-admin-chat-${role}">
-      <div style="max-width:80%; background:${bg}; color:${fg}; padding:.75rem 1rem; border-radius:.75rem; border:1px solid var(--admin-border); white-space:pre-wrap; word-wrap:break-word;">${contentHtml}</div>
+      <div style="max-width:80%; background:${bg}; color:${fg}; padding:.75rem 1rem; border-radius:.75rem; border:1px solid ${border}; white-space:pre-wrap; word-wrap:break-word;">${contentHtml}</div>
       ${extraHtml || ''}
     </div>`;
   }
