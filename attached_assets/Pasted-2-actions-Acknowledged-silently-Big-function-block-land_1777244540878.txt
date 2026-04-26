@@ -1,0 +1,50 @@
+2 actions
+Acknowledged silently. Big function block landed. Now batching all the smaller edits in parallel.
+
+
+12 actions
+All edits applied. Now T007: restart and smoke-test, then T008: code review.
+
+
+4 actions
+App restarted cleanly — no schema errors, all routes responding. Now T008: architect code review.
+
+
+5 actions
+Architect found one critical bug: time.time() in the draft blog tool relies on a time import that's actually aliased. Verifying and fixing.
+
+
+2 actions
+Confirmed — module imports time aliased as _time. Fixing the bug.
+
+
+2 actions
+Acknowledged silently. Restarting to verify the fix.
+
+
+3 actions
+App restarted cleanly. Phase 3A+B is complete.
+
+Here's what I added to the admin AI on this turn:
+
+Page curation (4 tools)
+
+Browse / score / publish / archive auto-generated visitor pages.
+New columns on the page table (summary, search_text, ai_score, reuse_count, last_served_at, source_visitor_id/session_id, archive_reason) plus a full-text search index so the visitor agent can find a published match before regenerating.
+Both page-serve routes now bump a reuse counter, so you can see which pages are actually earning their keep.
+Visitor "find before generate"
+
+The page-lookup tool now also accepts a topic phrase and runs a full-text search across the published library, returning up to five candidates with title + summary + score.
+The visitor system prompt was updated to try a topic search before falling back to a fresh page generation.
+Marketing insights + drafts (5 tools)
+
+Mine the last N days of visitor chat for top keywords, with stop-word filtering and per-keyword counts of which already-published pages cover them.
+Reuse / freshness report on the published page library (top-30 most reused, bottom-10 least reused).
+A combined "where are my content gaps?" report that also checks FAQ + blog coverage and recommends an action per gap.
+Two draft tools that queue an approval card with the AI's composed body for a new blog post or FAQ entry.
+New marketing_insights_log table caches each insight run.
+The AI's system prompt now explains all nine tools and when to use them.
+
+A code-review pass caught one bug — the draft-blog-post tool was reaching for a time symbol that's actually aliased — and I fixed it. Everything else passed: index expressions match query expressions for fast lookup, new SQL is parameterized, the approval flow allows writes to the three tables involved, and the reuse counter doesn't double-count.
+
+Theme generator can be the next session, as planned.
