@@ -3682,6 +3682,83 @@ html[data-scroll-mode="smooth"] .snap-section {
 }
 
 /*
+  IN-CHAT AVAILABILITY CHIPS — Tap-to-pick open start times rendered
+  inline after lookup_service_availability runs. Mirrors the booking
+  modal's date-picker chips so the visitor doesn't have to type a time
+  back into chat. Times are grouped by date (one row per day).
+*/
+.chat-msg-availability {
+  max-width: 95%;
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+}
+.chat-msg-availability .av-card {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-left: 3px solid var(--accent, #c9a96e);
+  border-radius: 0.875rem;
+  padding: 0.75rem 0.875rem 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+.av-card-hint {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.55);
+}
+.av-day {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.av-day-label {
+  font-size: 0.78125rem;
+  font-weight: 600;
+  color: #fff;
+}
+.av-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.av-chip {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.92);
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.78125rem;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease,
+              color 0.15s ease, transform 0.05s ease;
+}
+.av-chip:hover,
+.av-chip:focus-visible {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.45);
+  outline: none;
+}
+.av-chip:active {
+  transform: translateY(1px);
+}
+.av-chip:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.av-chip.av-chip-picked {
+  background: var(--accent, #c9a96e);
+  border-color: var(--accent, #c9a96e);
+  color: #0b0b0b;
+  opacity: 1;
+}
+
+/*
   TYPING INDICATOR — Three animated dots shown while waiting for a response.
   Uses a bouncing animation with staggered delays.
 */

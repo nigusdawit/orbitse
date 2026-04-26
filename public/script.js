@@ -4681,6 +4681,11 @@ async function chatSendStreaming(message, wasCollapsed) {
        chars have already been appended so we only flush the new delta. */
     let pageStreamStarted = false;
     let pageStreamWritten = 0;
+    /* Availability snapshots streamed back from lookup_service_availability
+       — captured as they arrive but rendered as tap-to-pick chip cards
+       AFTER the assistant's final reply bubble is finalized, so the chips
+       appear right under the AI's "we have 9am, 10am, 2pm…" line. */
+    let availabilityResults = [];
 
     while (true) {
       const { done, value } = await reader.read();
@@ -4776,6 +4781,12 @@ async function chatSendStreaming(message, wasCollapsed) {
             finalReply = event.content;
           } else if (event.type === 'command') {
             pendingCommand = event.command;
+          } else if (event.type === 'availability') {
+            /* Availability snapshot from lookup_service_availability —
+               buffer it; we'll render the chip card after the assistant's
+               final reply bubble is finalized so the chips appear right
+               under the AI's "we have 9am, 10am, 2pm…" sentence. */
+            if (event.data) availabilityResults.push(event.data);
           } else if (event.type === 'error') {
             showBarThinking(false);
             chatShowTyping(false);
@@ -5071,6 +5082,18 @@ async function chatSendStreaming(message, wasCollapsed) {
       }
     }
 
+    /* Render the tap-to-pick slot chips for the most recent
+       lookup_service_availability call (if any). We use just the latest
+       snapshot — if the AI happened to look up two services in one turn,
+       its visible reply almost certainly references the second result.
+       Rendered AFTER the final reply bubble is finalized so the chips
+       sit right under the AI's "we have 9am, 10am, 2pm…" sentence. */
+    if (availabilityResults.length) {
+      try {
+        chatAddAvailabilityChips(availabilityResults[availabilityResults.length - 1]);
+      } catch (e) { console.warn('Availability chip render failed:', e); }
+    }
+
     /* Safety-net teardown: every success path above explicitly calls
        streamSpeakEnd or streamSpeakCancel, but if a future branch is added
        that forgets to, this guard prevents VOICE.stream from leaking across
@@ -5285,6 +5308,154 @@ function chatAddBookingConfirmation(data) {
   } catch (_) {}
   if (typeof updateSidePanelLatest === 'function') updateSidePanelLatest(plain);
   if (typeof updateMainPanelLatest === 'function') updateMainPanelLatest(plain);
+}
+
+
+/**
+ * Render an inline tap-to-pick chip card for the open start times
+ * returned by lookup_service_availability. Mirrors the booking modal's
+ * date-picker chips so the visitor doesn't have to type a time back.
+ *
+ * Times are grouped by date (one row per day, chips in HH:MM form).
+ * Tapping a chip drops a natural-language confirmation into the chat
+ * input ("Saturday, May 4 at 10am please") and submits it, so the AI
+ * can read it back, confirm, and issue bookService — exactly the flow
+ * a typed reply would trigger.
+ *
+ * @param {Object} data - lookup_service_availability tool result.
+ */
+function chatAddAvailabilityChips(data) {
+  if (!data || !Array.isArray(data.days) || !data.days.length) return;
+
+  const esc = (s) => {
+    const d = document.createElement('div');
+    d.textContent = (s == null ? '' : String(s));
+    return d.innerHTML;
+  };
+  /* Parse YYYY-MM-DD without timezone drift (new Date('2026-05-04')
+     would interpret the string as UTC midnight and shift one day west
+     for visitors in the Americas). */
+  const fmtDateLong = (iso) => {
+    const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return iso || '';
+    const local = new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+    try {
+      return local.toLocaleDateString(undefined, {
+        weekday: 'long', month: 'long', day: 'numeric',
+      });
+    } catch (_) { return iso; }
+  };
+  /* "10:00:00" → "10am"; "14:30:00" → "2:30pm" */
+  const fmtTime12 = (hms) => {
+    const m = String(hms || '').match(/^(\d{2}):(\d{2})/);
+    if (!m) return hms || '';
+    const hh = parseInt(m[1], 10);
+    const mm = parseInt(m[2], 10);
+    const period = hh >= 12 ? 'pm' : 'am';
+    const h12 = hh % 12 === 0 ? 12 : hh % 12;
+    return mm === 0 ? `${h12}${period}` : `${h12}:${String(mm).padStart(2, '0')}${period}`;
+  };
+
+  const slug = String(data.slug || '');
+  const svcName = String(data.name || 'this service');
+
+  const dayBlocks = data.days.map((day) => {
+    const starts = Array.isArray(day.open_starts) ? day.open_starts : [];
+    if (!starts.length) return '';
+    const dateLabel = fmtDateLong(day.date);
+    const chips = starts.map((start) => {
+      const label = fmtTime12(start);
+      const longWhen = `${dateLabel} at ${label}`;
+      /* Slot details ride on data-* attrs and are picked up by the
+         delegated click handler below — keeps quoting safe vs. inline
+         onclick="..." with JSON arguments. */
+      return (
+        `<button type="button" class="av-chip" `
+        + `data-av-slug="${esc(slug)}" `
+        + `data-av-date="${esc(day.date)}" `
+        + `data-av-start="${esc(start)}" `
+        + `data-av-when="${esc(longWhen)}" `
+        + `data-testid="chip-slot-${esc(day.date)}-${esc(start)}" `
+        + `aria-label="${esc(longWhen)} — ${esc(svcName)}">`
+        + `${esc(label)}`
+        + `</button>`
+      );
+    }).join('');
+    return (
+      `<div class="av-day" data-testid="row-availability-day-${esc(day.date)}">`
+      + `<div class="av-day-label">${esc(dateLabel)}</div>`
+      + `<div class="av-chips">${chips}</div>`
+      + `</div>`
+    );
+  }).filter(Boolean).join('');
+
+  if (!dayBlocks) return;
+
+  const cardHtml = `
+    <div class="chat-msg chat-msg-agent chat-msg-availability" data-testid="card-availability-${esc(slug)}">
+      <div class="av-card">
+        <div class="av-card-hint">Tap a time to pick it</div>
+        ${dayBlocks}
+      </div>
+    </div>
+  `;
+
+  ['chatbot-messages', 'split-chat-messages', 'side-chat-messages'].forEach((id) => {
+    const container = document.getElementById(id);
+    if (!container) return;
+    container.insertAdjacentHTML('beforeend', cardHtml);
+    container.scrollTop = container.scrollHeight;
+  });
+
+  /* Bind the document-wide click delegate the first time we render
+     chips. After that it's a no-op. */
+  _chatBindAvailabilityChipDelegate();
+}
+
+/**
+ * Document-wide click delegate for availability chips. Bound once on
+ * first render so chips inserted later (or rebuilt across panels) all
+ * route through the same handler without per-chip listener bookkeeping.
+ *
+ * On click: marks every chip in the same card as "spent" so the
+ * visitor can't accidentally double-pick after committing, fills the
+ * active chat input with a natural-language confirmation, and submits
+ * through the normal chat send pipeline so the AI can confirm + issue
+ * bookService exactly as if the visitor had typed the time themselves.
+ */
+function _chatBindAvailabilityChipDelegate() {
+  if (window._chatAvailabilityChipDelegateBound) return;
+  window._chatAvailabilityChipDelegateBound = true;
+  document.addEventListener('click', (ev) => {
+    const chip = ev.target && ev.target.closest && ev.target.closest('.av-chip');
+    if (!chip || chip.disabled) return;
+    const when = chip.getAttribute('data-av-when') || '';
+    if (!when) return;
+
+    /* Disable every chip in this card so the visitor doesn't accidentally
+       fire two booking attempts for the same turn. The fallback typed
+       reply path still works regardless. */
+    const card = chip.closest('.chat-msg-availability');
+    if (card) {
+      card.querySelectorAll('.av-chip').forEach((b) => { b.disabled = true; });
+      chip.classList.add('av-chip-picked');
+    }
+
+    /* Pick the input the visitor is most likely looking at, mirroring
+       the priority chatSendMessage() uses to read the next message. */
+    const sideInput = document.getElementById('side-chat-input');
+    const splitInput = document.getElementById('split-chat-input');
+    const panelInput = document.getElementById('chatbot-panel-input');
+    const barInput = document.getElementById('chatbot-bar-input');
+    let target = null;
+    if (sidePanelActive && sideInput) target = sideInput;
+    else if (splitScreenActive && splitInput) target = splitInput;
+    else if (chatExpanded && panelInput) target = panelInput;
+    else if (barInput) target = barInput;
+    if (!target) return;
+    target.value = `${when} please`;
+    chatSendMessage();
+  });
 }
 
 

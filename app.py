@@ -6031,6 +6031,30 @@ def api_chat():
                             "tool_call_id": tc["id"],
                             "content": result_str,
                         })
+                        # Mirror service-availability lookups straight to
+                        # the chat UI so it can render tap-to-pick slot
+                        # chips inline (same shape the booking modal's
+                        # date picker uses). The AI will still read the
+                        # times back as text on the next round — the
+                        # chips are an accessibility-friendly augment,
+                        # not a replacement, so older clients that don't
+                        # know this event keep working unchanged.
+                        if tc["name"] == "lookup_service_availability":
+                            try:
+                                parsed = json.loads(result_str)
+                            except Exception:
+                                parsed = None
+                            if (isinstance(parsed, dict)
+                                    and parsed.get("requires_calendar")
+                                    and parsed.get("days")):
+                                yield (
+                                    "data: "
+                                    + json.dumps({
+                                        "type": "availability",
+                                        "data": parsed,
+                                    })
+                                    + "\n\n"
+                                )
                     # Loop into the next streaming round.
                     continue
 
