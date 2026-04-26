@@ -1798,6 +1798,10 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
       Custom Skills
     </button>
+    <button class="tab-btn" onclick="switchTab('mcp', this); loadMCPTab();" data-testid="tab-mcp">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/></svg>
+      MCP Connectors
+    </button>
     <button class="tab-btn" onclick="switchTab('changes', this); loadRecentChanges();" data-testid="tab-changes">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><polyline points="3 3 3 8 8 8"/></svg>
       Recent Changes
@@ -4229,6 +4233,38 @@ TO CUSTOMIZE THIS DASHBOARD:
           <button class="btn btn-primary" id="custom-skill-save-btn" data-testid="button-save-custom-skill">Save</button>
         </div>
         <div id="custom-skill-editor-error" style="color:#b94a48;margin-top:10px;font-size:13px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       TAB: MCP CONNECTORS — remote Model Context Protocol servers
+       ========================================================================
+       Lets the admin attach a remote MCP server (HTTP/JSON-RPC) and decide
+       which agent (admin assistant only, or also the visitor-facing Velo)
+       gets to call its tools. Velo is OFF by default for every new server
+       so a freshly-added connector never leaks tools to website visitors
+       without an explicit toggle. -->
+  <div id="tab-mcp" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>MCP Connectors</h2>
+        <p>Attach remote Model Context Protocol servers. Each server's tools become callable by the admin assistant immediately. Toggle "Visitor agent" to ALSO expose them to the consumer-facing chat. Localhost and private-network URLs are blocked.</p>
+      </div>
+      <button class="btn btn-primary" onclick="openMCPServerEditor(null)" data-testid="button-new-mcp-server">+ Add server</button>
+    </div>
+    <div id="mcp-servers-list" data-testid="list-mcp-servers" style="display:grid;gap:10px;"></div>
+
+    <!-- Add/Edit modal -->
+    <div id="mcp-server-editor" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;align-items:center;justify-content:center;">
+      <div style="background:#fff;border-radius:8px;max-width:680px;width:92%;max-height:88vh;overflow:auto;padding:22px;">
+        <h3 id="mcp-server-editor-title" style="margin-top:0;">Edit MCP server</h3>
+        <div id="mcp-server-editor-body"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px;">
+          <button class="btn btn-secondary" onclick="closeMCPServerEditor()" data-testid="button-cancel-mcp-server">Cancel</button>
+          <button class="btn btn-primary" id="mcp-server-save-btn" data-testid="button-save-mcp-server">Save</button>
+        </div>
+        <div id="mcp-server-editor-error" style="color:#b94a48;margin-top:10px;font-size:13px;"></div>
       </div>
     </div>
   </div>
@@ -17809,6 +17845,230 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     window.closeCustomSkillEditor = function() {
       document.getElementById('custom-skill-editor').style.display = 'none';
+    };
+
+    // ===== MCP CONNECTORS =====================================================
+    window.loadMCPTab = async function() {
+      await loadMCPServersList();
+    };
+
+    async function loadMCPServersList() {
+      const list = document.getElementById('mcp-servers-list');
+      if (!list) return;
+      list.innerHTML = '<div style="color:#777;">Loading…</div>';
+      try {
+        const r = await fetch('/admin/api/mcp/servers', { credentials:'same-origin' });
+        const rows = await r.json();
+        if (!Array.isArray(rows) || rows.length === 0) {
+          list.innerHTML = '<div style="color:#777;padding:14px;text-align:center;border:1px dashed #ccc;border-radius:8px;">No MCP servers yet. Click "Add server" to attach a remote Model Context Protocol endpoint.</div>';
+          return;
+        }
+        window._mcpServersCache = rows;
+        list.innerHTML = rows.map(r => {
+          const statusOk    = r.last_test_ok === true;
+          const statusBad   = r.last_test_ok === false;
+          const statusColor = statusOk ? '#16a34a' : (statusBad ? '#b94a48' : '#777');
+          const statusText  = statusOk ? 'OK' : (statusBad ? 'Error' : 'Untested');
+          const veloChecked = r.allowed_for_velo ? 'checked' : '';
+          const enabledChk  = r.enabled ? 'checked' : '';
+          const lastErr     = r.last_test_error ? `<div style="color:#b94a48;font-size:12px;margin-top:4px;">${escHtml(r.last_test_error.slice(0, 200))}</div>` : '';
+          return `
+          <div style="border:1px solid #e5e5e5;border-radius:8px;padding:12px;background:#fff;" data-testid="row-mcp-server-${r.id}">
+            <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;flex-wrap:wrap;">
+              <div style="flex:1;min-width:240px;">
+                <div style="font-weight:600;">${escHtml(r.name)}
+                  <span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;background:${statusColor}20;color:${statusColor};margin-left:6px;" data-testid="status-mcp-${r.id}">${statusText}</span>
+                  <span style="font-weight:400;color:#777;font-size:12px;margin-left:6px;">${escHtml(r.transport || 'http')} · ${escHtml(r.auth_type || 'none')}</span>
+                </div>
+                <div style="color:#555;font-size:12px;font-family:monospace;margin-top:4px;word-break:break-all;">${escHtml(r.url)}</div>
+                ${r.description ? `<div style="color:#555;font-size:13px;margin-top:4px;">${escHtml(r.description)}</div>` : ''}
+                ${lastErr}
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+                <label style="display:flex;align-items:center;gap:4px;font-size:12px;"><input type="checkbox" ${enabledChk} onchange="toggleMCPField(${r.id}, 'enabled', this.checked)" data-testid="toggle-mcp-enabled-${r.id}"> Enabled</label>
+                <label style="display:flex;align-items:center;gap:4px;font-size:12px;" title="If on, the visitor-facing chat (Velo) can also call this server's tools. Default OFF."><input type="checkbox" ${veloChecked} onchange="toggleMCPField(${r.id}, 'allowed_for_velo', this.checked)" data-testid="toggle-mcp-velo-${r.id}"> Visitor agent</label>
+                <button class="btn btn-secondary" onclick="testMCPServer(${r.id})" data-testid="button-test-mcp-${r.id}" style="padding:4px 10px;font-size:12px;">Test</button>
+                <button class="btn btn-secondary" onclick="refreshMCPTools(${r.id})" data-testid="button-refresh-mcp-${r.id}" style="padding:4px 10px;font-size:12px;">Refresh tools</button>
+                <button class="btn btn-secondary" onclick="openMCPServerEditor(${r.id})" data-testid="button-edit-mcp-${r.id}" style="padding:4px 10px;font-size:12px;">Edit</button>
+                <button class="btn btn-danger"   onclick="deleteMCPServer(${r.id})" data-testid="button-delete-mcp-${r.id}" style="padding:4px 10px;font-size:12px;">Delete</button>
+              </div>
+            </div>
+            <details style="margin-top:8px;">
+              <summary style="cursor:pointer;font-size:13px;color:#555;" data-testid="summary-mcp-tools-${r.id}">Cached tools</summary>
+              <div id="mcp-tools-${r.id}" style="margin-top:6px;font-size:12px;color:#555;">Click to load…</div>
+            </details>
+          </div>`;
+        }).join('');
+        // Lazy-load tool list when the <details> is opened.
+        rows.forEach(r => {
+          const sum = document.querySelector(`[data-testid="summary-mcp-tools-${r.id}"]`);
+          if (sum) sum.addEventListener('click', () => loadMCPTools(r.id), { once: true });
+        });
+      } catch (e) {
+        list.innerHTML = '<div style="color:#b94a48;">Failed to load: ' + escHtml(e.message) + '</div>';
+      }
+    }
+
+    async function loadMCPTools(serverId) {
+      const box = document.getElementById('mcp-tools-' + serverId);
+      if (!box) return;
+      box.textContent = 'Loading…';
+      try {
+        const r = await fetch('/admin/api/mcp/servers/' + serverId + '/tools', { credentials:'same-origin' });
+        const rows = await r.json();
+        if (!Array.isArray(rows) || rows.length === 0) {
+          box.innerHTML = '<em>No tools cached yet. Click "Refresh tools" to fetch them from the server.</em>';
+          return;
+        }
+        box.innerHTML = rows.map(t => `
+          <div style="border-top:1px dashed #e5e5e5;padding:6px 0;">
+            <code style="font-weight:600;color:#222;">${escHtml(t.tool_name)}</code>
+            ${t.description ? `<div style="color:#555;margin-top:2px;">${escHtml(t.description)}</div>` : ''}
+          </div>`).join('');
+      } catch (e) {
+        box.textContent = 'Failed to load tools: ' + e.message;
+      }
+    }
+
+    window.toggleMCPField = async function(id, field, val) {
+      const body = {}; body[field] = val;
+      const r = await fetch('/admin/api/mcp/servers/' + id, {
+        method:'PUT', credentials:'same-origin',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        alert('Update failed: ' + (data.error || r.status));
+      }
+      loadMCPServersList();
+    };
+
+    window.testMCPServer = async function(id) {
+      const r = await fetch('/admin/api/mcp/servers/' + id + '/test', {
+        method:'POST', credentials:'same-origin',
+      });
+      const data = await r.json();
+      if (data.ok) {
+        alert('Connection OK. Discovered ' + (data.tools || []).length + ' tool(s).');
+      } else {
+        alert('Test failed: ' + (data.error || 'unknown error'));
+      }
+      loadMCPServersList();
+    };
+
+    window.refreshMCPTools = async function(id) {
+      const r = await fetch('/admin/api/mcp/servers/' + id + '/refresh-tools', {
+        method:'POST', credentials:'same-origin',
+      });
+      const data = await r.json();
+      if (data.ok) {
+        alert('Cached ' + (data.saved || 0) + ' tool(s) from the server.');
+      } else {
+        alert('Refresh failed: ' + (data.error || 'unknown error'));
+      }
+      loadMCPServersList();
+    };
+
+    window.deleteMCPServer = async function(id) {
+      if (!confirm('Delete this MCP server? Its cached tools and any agent_skills rows pointing at it will be removed. A snapshot is saved so you can revert from Recent Changes.')) return;
+      await fetch('/admin/api/mcp/servers/' + id, { method:'DELETE', credentials:'same-origin' });
+      loadMCPServersList();
+    };
+
+    window.openMCPServerEditor = function(id) {
+      const isEdit = id !== null && id !== undefined;
+      const row = isEdit
+        ? ((window._mcpServersCache || []).find(r => r.id === id) || {})
+        : { name:'', description:'', transport:'http', url:'', auth_type:'none',
+            auth_header_name:'', allowed_for_admin:true, allowed_for_velo:false, enabled:true };
+      document.getElementById('mcp-server-editor-title').textContent = isEdit ? 'Edit MCP server' : 'Add MCP server';
+      document.getElementById('mcp-server-editor-error').textContent = '';
+      document.getElementById('mcp-server-editor-body').innerHTML = `
+        <div style="margin-bottom:12px;">
+          <label style="font-weight:600;">Name <span style="color:#b94a48;">*</span></label>
+          <input id="mcp-name" type="text" value="${escHtml(row.name)}" placeholder="weather" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" data-testid="input-mcp-name">
+          <div style="color:#777;font-size:12px;margin-top:2px;">Short identifier; lowercase, no spaces. Used in tool names.</div>
+        </div>
+        <div style="margin-bottom:12px;">
+          <label style="font-weight:600;">Description</label>
+          <input id="mcp-description" type="text" value="${escHtml(row.description || '')}" placeholder="What this server does" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" data-testid="input-mcp-description">
+        </div>
+        <div style="margin-bottom:12px;">
+          <label style="font-weight:600;">URL <span style="color:#b94a48;">*</span></label>
+          <input id="mcp-url" type="url" value="${escHtml(row.url)}" placeholder="https://example.com/mcp" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:monospace;" data-testid="input-mcp-url">
+          <div style="color:#777;font-size:12px;margin-top:2px;">Public HTTPS endpoint of the MCP server. Localhost and private IPs are blocked.</div>
+        </div>
+        <div style="display:flex;gap:10px;margin-bottom:12px;">
+          <div style="flex:1;">
+            <label style="font-weight:600;">Transport</label>
+            <select id="mcp-transport" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" data-testid="select-mcp-transport">
+              <option value="http"${row.transport === 'http' ? ' selected' : ''}>Streamable HTTP (recommended)</option>
+              <option value="sse"${row.transport === 'sse' ? ' selected' : ''}>SSE (legacy)</option>
+            </select>
+          </div>
+          <div style="flex:1;">
+            <label style="font-weight:600;">Auth type</label>
+            <select id="mcp-auth-type" onchange="onMCPAuthTypeChange()" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" data-testid="select-mcp-auth-type">
+              <option value="none"${row.auth_type === 'none' ? ' selected' : ''}>None</option>
+              <option value="bearer"${row.auth_type === 'bearer' ? ' selected' : ''}>Bearer token</option>
+              <option value="header"${row.auth_type === 'header' ? ' selected' : ''}>Custom header</option>
+              <option value="oauth"${row.auth_type === 'oauth' ? ' selected' : ''} disabled>OAuth (coming soon)</option>
+            </select>
+          </div>
+        </div>
+        <div id="mcp-auth-header-row" style="margin-bottom:12px;display:${row.auth_type === 'header' ? 'block' : 'none'};">
+          <label style="font-weight:600;">Header name</label>
+          <input id="mcp-auth-header-name" type="text" value="${escHtml(row.auth_header_name || '')}" placeholder="X-API-Key" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" data-testid="input-mcp-auth-header-name">
+        </div>
+        <div id="mcp-auth-credential-row" style="margin-bottom:12px;display:${(row.auth_type === 'bearer' || row.auth_type === 'header') ? 'block' : 'none'};">
+          <label style="font-weight:600;">Credential ${isEdit && row.auth_credential_set ? '(leave blank to keep current)' : ''}</label>
+          <input id="mcp-auth-credential" type="password" value="" placeholder="${isEdit && row.auth_credential_set ? '••••••••' : 'token / api key'}" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:monospace;" data-testid="input-mcp-auth-credential">
+        </div>
+        <div style="display:flex;gap:18px;flex-wrap:wrap;">
+          <label style="display:flex;align-items:center;gap:6px;"><input id="mcp-enabled" type="checkbox" ${row.enabled ? 'checked' : ''} data-testid="input-mcp-enabled"> Enabled</label>
+          <label style="display:flex;align-items:center;gap:6px;"><input id="mcp-allowed-admin" type="checkbox" ${row.allowed_for_admin !== false ? 'checked' : ''} data-testid="input-mcp-allowed-admin"> Admin assistant can use</label>
+          <label style="display:flex;align-items:center;gap:6px;" title="OFF by default. Turn on only after you have tested the server."><input id="mcp-allowed-velo" type="checkbox" ${row.allowed_for_velo ? 'checked' : ''} data-testid="input-mcp-allowed-velo"> Visitor agent (Velo) can use</label>
+        </div>`;
+      document.getElementById('mcp-server-save-btn').onclick = async () => {
+        const body = {
+          name: document.getElementById('mcp-name').value.trim(),
+          description: document.getElementById('mcp-description').value.trim(),
+          url: document.getElementById('mcp-url').value.trim(),
+          transport: document.getElementById('mcp-transport').value,
+          auth_type: document.getElementById('mcp-auth-type').value,
+          auth_header_name: document.getElementById('mcp-auth-header-name').value.trim(),
+          enabled: document.getElementById('mcp-enabled').checked,
+          allowed_for_admin: document.getElementById('mcp-allowed-admin').checked,
+          allowed_for_velo:  document.getElementById('mcp-allowed-velo').checked,
+        };
+        const cred = document.getElementById('mcp-auth-credential').value;
+        if (cred) body.auth_credential = cred;
+        const url = isEdit ? '/admin/api/mcp/servers/' + id : '/admin/api/mcp/servers';
+        const r = await fetch(url, {
+          method: isEdit ? 'PUT' : 'POST', credentials:'same-origin',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(body),
+        });
+        const data = await r.json();
+        if (!r.ok || data.error) {
+          document.getElementById('mcp-server-editor-error').textContent = data.error || ('HTTP ' + r.status);
+          return;
+        }
+        closeMCPServerEditor();
+        loadMCPServersList();
+      };
+      document.getElementById('mcp-server-editor').style.display = 'flex';
+    };
+
+    window.onMCPAuthTypeChange = function() {
+      const t = document.getElementById('mcp-auth-type').value;
+      document.getElementById('mcp-auth-header-row').style.display = (t === 'header') ? 'block' : 'none';
+      document.getElementById('mcp-auth-credential-row').style.display = (t === 'bearer' || t === 'header') ? 'block' : 'none';
+    };
+
+    window.closeMCPServerEditor = function() {
+      document.getElementById('mcp-server-editor').style.display = 'none';
     };
 
     async function loadWebhooksList() {

@@ -1160,6 +1160,62 @@ def init_db():
                     created_at          TIMESTAMP    DEFAULT NOW(),
                     updated_at          TIMESTAMP    DEFAULT NOW()
                 );
+
+                -- MCP (Model Context Protocol) connector registry. Each
+                -- row is one external MCP server the admin has wired
+                -- in. We discover the server's tools and cache them in
+                -- mcp_tools_cache. Enabled tools are then mirrored into
+                -- agent_skills so the existing dispatcher can route to
+                -- them. allowed_for_velo defaults FALSE on purpose so
+                -- a freshly added server never leaks tools to the
+                -- consumer agent without an explicit toggle.
+                --   transport: 'http' (Streamable HTTP, JSON-RPC 2.0
+                --              POST) or 'sse' (legacy SSE-only).
+                --   auth_type: 'none' | 'bearer' | 'header'. v2 will
+                --              add 'oauth' driven by MCP_CONNECTOR_BLUEPRINTS.
+                --   connector_type: 'custom' for a free-form URL the
+                --              admin pasted in. v2 OAuth blueprints
+                --              (e.g. 'linear', 'github') will stamp
+                --              their own slug here.
+                CREATE TABLE IF NOT EXISTS mcp_servers (
+                    id                  SERIAL PRIMARY KEY,
+                    name                VARCHAR(100) NOT NULL UNIQUE,
+                    description         TEXT         NOT NULL DEFAULT '',
+                    transport           VARCHAR(20)  NOT NULL DEFAULT 'http',
+                    url                 TEXT         NOT NULL DEFAULT '',
+                    auth_type           VARCHAR(20)  NOT NULL DEFAULT 'none',
+                    auth_header_name    VARCHAR(100) NOT NULL DEFAULT '',
+                    auth_credential     TEXT         NOT NULL DEFAULT '',
+                    enabled             BOOLEAN      NOT NULL DEFAULT true,
+                    allowed_for_admin   BOOLEAN      NOT NULL DEFAULT true,
+                    allowed_for_velo    BOOLEAN      NOT NULL DEFAULT false,
+                    connector_type      VARCHAR(50)  NOT NULL DEFAULT 'custom',
+                    oauth_state         JSONB        DEFAULT '{}'::jsonb,
+                    last_test_at        TIMESTAMP,
+                    last_test_ok        BOOLEAN,
+                    last_test_error     TEXT         NOT NULL DEFAULT '',
+                    created_at          TIMESTAMP    DEFAULT NOW(),
+                    updated_at          TIMESTAMP    DEFAULT NOW()
+                );
+
+                -- Per-server tool catalog. Refreshed on demand (Test /
+                -- Refresh Tools buttons) — we don't query the upstream
+                -- server on every chat turn. ON DELETE CASCADE keeps
+                -- the cache aligned when a server is removed.
+                CREATE TABLE IF NOT EXISTS mcp_tools_cache (
+                    id                  SERIAL PRIMARY KEY,
+                    server_id           INTEGER      NOT NULL
+                                        REFERENCES mcp_servers(id)
+                                        ON DELETE CASCADE,
+                    tool_name           VARCHAR(200) NOT NULL,
+                    description         TEXT         NOT NULL DEFAULT '',
+                    input_schema_json   JSONB        DEFAULT '{"type":"object","properties":{},"required":[]}'::jsonb,
+                    enabled             BOOLEAN      NOT NULL DEFAULT true,
+                    last_synced_at      TIMESTAMP    DEFAULT NOW(),
+                    UNIQUE(server_id, tool_name)
+                );
+                CREATE INDEX IF NOT EXISTS idx_mcp_tools_server
+                    ON mcp_tools_cache (server_id);
             """)
 
             # Seed the voice_settings singleton row (idempotent)
@@ -5414,10 +5470,31 @@ def _custom_skill_args_schema(name, cfg):
                     return schema
             except Exception:
                 pass
+    if skill_type == "mcp":
+        # Look up the cached input schema for this MCP tool. Without
+        # this branch the model would see an empty {properties:{}} for
+        # every mcp__* tool and would never know what arguments to pass.
+        srv_id = cfg.get("server_id")
+        tool = (cfg.get("tool") or "").strip()
+        if srv_id is not None and tool:
+            try:
+                row = query_db(
+                    "SELECT input_schema_json FROM mcp_tools_cache "
+                    "WHERE server_id = %s AND tool_name = %s",
+                    (int(srv_id), tool), fetchone=True,
+                )
+                schema = (row or {}).get("input_schema_json")
+                if isinstance(schema, str):
+                    try: schema = json.loads(schema)
+                    except Exception: schema = None
+                if isinstance(schema, dict) and schema:
+                    return schema
+            except Exception:
+                pass
     return {"type": "object", "properties": {}, "required": []}
 
 
-def get_active_chat_tools():
+def get_active_chat_tools(audience="velo"):
     """Return the list of tools the model can call this turn.
 
     Two sources combine:
@@ -5429,13 +5506,18 @@ def get_active_chat_tools():
            - knowledge -> {query, max_results}
            - webhook   -> custom_webhook_skills.args_schema_json
            - sql       -> custom_sql_skills.args_schema_json
+           - mcp       -> mcp_tools_cache.input_schema_json (filtered
+                          per-audience by mcp_servers.allowed_for_*)
            - other     -> no arguments (canned-text response_text)
 
+    `audience` controls MCP-row visibility: 'velo' (default — the
+    consumer-facing agent) requires mcp_servers.allowed_for_velo=true;
+    'admin' requires mcp_servers.allowed_for_admin=true. Velo defaults
+    to OFF on every new MCP server so a freshly-added server never
+    leaks tools to website visitors without an explicit toggle.
+
     On a *DB error* we fall back to all builtin tools so chat keeps
-    working — that's a safety net for an outage, not an admin choice. But
-    if the query succeeds and simply returns zero enabled rows, we MUST
-    honor that (return []) — otherwise the admin can never disable a
-    skill, which defeats the whole skills-governance promise.
+    working — that's a safety net for an outage, not an admin choice.
     """
     try:
         rows = query_db(
@@ -5448,10 +5530,37 @@ def get_active_chat_tools():
     rows = rows or []
     active_builtin_names = {r["name"] for r in rows if r.get("builtin")}
     out = [t for t in CHAT_TOOLS if (t.get("function") or {}).get("name") in active_builtin_names]
+
+    # Pre-load the allowed_for_admin/velo flags for every MCP server in
+    # one shot so we don't re-query per-row inside the loop.
+    mcp_visibility = {}
+    if any(_custom_skill_cfg(r).get("type") == "mcp"
+            for r in rows if not r.get("builtin")):
+        try:
+            srvs = query_db(
+                "SELECT id, allowed_for_admin, allowed_for_velo "
+                "FROM mcp_servers"
+            ) or []
+            for s in srvs:
+                mcp_visibility[int(s["id"])] = {
+                    "admin": bool(s.get("allowed_for_admin")),
+                    "velo":  bool(s.get("allowed_for_velo")),
+                }
+        except Exception as e:
+            print(f"[skills] mcp visibility load failed: {e}")
+
     for r in rows:
         if r.get("builtin"):
             continue
         cfg = _custom_skill_cfg(r)
+        if (cfg.get("type") or "").lower() == "mcp":
+            srv_id = cfg.get("server_id")
+            vis = mcp_visibility.get(int(srv_id) if srv_id is not None else -1)
+            if not vis:
+                continue  # server gone / unknown — skip silently
+            key = "admin" if audience == "admin" else "velo"
+            if not vis.get(key):
+                continue
         out.append({
             "type": "function",
             "function": {
@@ -5748,12 +5857,323 @@ def _exec_custom_sql(name, args):
     return {"rows": rows, "count": len(rows)}, len(rows)
 
 
+# =============================================================================
+# MCP (Model Context Protocol) CLIENT
+# =============================================================================
+# We speak the MCP "Streamable HTTP" transport: JSON-RPC 2.0 POST to a single
+# endpoint, with the response either application/json or a text/event-stream
+# whose first id-bearing data event carries the JSON-RPC reply.
+#
+# Every outbound call goes through _webhook_url_safe (private/loopback IPs
+# rejected) and the same urllib3 DNS-pin patch the webhook executor uses
+# (defends against DNS rebinding between validation and connect). That means
+# an admin-saved MCP url=http://169.254.169.254/  is refused at call time
+# even though it was saved earlier.
+#
+# We deliberately re-initialize on every call instead of caching session ids.
+# V1 traffic is admin-driven and low volume; the cost of one extra round-trip
+# is far less than the cost of stale-session bugs when an upstream restarts.
+#
+# V2 (OAuth-flowed connectors like Linear/GitHub) keys off auth_type='oauth'
+# and the empty MCP_CONNECTOR_BLUEPRINTS registry below — both are scaffolded
+# but explicitly closed in V1 with a clear error.
+
+_MCP_PROTOCOL_VERSION = "2025-03-26"
+_MCP_CLIENT_INFO = {"name": "site-mcp-client", "version": "1.0.0"}
+_MCP_DEFAULT_TIMEOUT = 15.0
+
+# OAuth blueprints registry (V2 scaffolding). Each key is a connector_type
+# slug; each value will hold display_name, default_url, oauth_scopes, and
+# an instantiate(server_row, code) callable. Empty in V1 on purpose — the
+# admin add-server REST endpoint refuses auth_type='oauth' until at least
+# one blueprint is registered.
+MCP_CONNECTOR_BLUEPRINTS = {}
+
+
+def _mcp_auth_headers(server_row):
+    """Build the auth header dict for an mcp_servers row."""
+    out = {}
+    a_type = (server_row.get("auth_type") or "none").strip().lower()
+    cred = (server_row.get("auth_credential") or "").strip()
+    if a_type == "bearer" and cred:
+        out["Authorization"] = f"Bearer {cred}"
+    elif a_type == "header":
+        h_name = (server_row.get("auth_header_name") or "").strip()
+        if h_name and cred:
+            out[h_name] = cred
+    return out
+
+
+def _mcp_normalize_jsonrpc_payload(payload):
+    """A JSON-RPC payload may arrive as a single dict or a batch list.
+    Return (result, error_or_none) for the first response we can read."""
+    if isinstance(payload, list):
+        payload = payload[0] if payload else {}
+    if not isinstance(payload, dict):
+        return None, {"code": -32700, "message": "Non-object JSON-RPC payload"}
+    if "error" in payload and isinstance(payload["error"], dict):
+        return None, payload["error"]
+    if "result" in payload:
+        return payload["result"], None
+    return None, {"code": -32603,
+                  "message": "JSON-RPC response missing result/error"}
+
+
+def _mcp_read_response(resp):
+    """Parse a Streamable-HTTP response (application/json OR text/event-stream).
+    Returns (result, error_or_none)."""
+    ct = (resp.headers.get("Content-Type") or "").lower().split(";")[0].strip()
+    if ct == "application/json":
+        try:
+            payload = resp.json()
+        except Exception as e:
+            return None, {"code": -32700,
+                          "message": f"Bad JSON from MCP server: {str(e)[:120]}"}
+        return _mcp_normalize_jsonrpc_payload(payload)
+    if ct == "text/event-stream":
+        for raw_line in resp.iter_lines(decode_unicode=True):
+            if not raw_line or not raw_line.startswith("data:"):
+                continue
+            data = raw_line[5:].strip()
+            if not data:
+                continue
+            try:
+                payload = json.loads(data)
+            except Exception:
+                continue
+            if isinstance(payload, list):
+                payload = payload[0] if payload else {}
+            if not isinstance(payload, dict) or "id" not in payload:
+                # Notifications & partial frames have no id — keep reading
+                # until we see the actual response.
+                continue
+            return _mcp_normalize_jsonrpc_payload(payload)
+        return None, {"code": -32603,
+                      "message": "Event stream ended without a JSON-RPC response"}
+    return None, {"code": -32603,
+                  "message": f"Unexpected Content-Type from MCP server: {ct or '(none)'}"}
+
+
+def _mcp_post(server_row, method, params=None, jsonrpc_id=1,
+              timeout=_MCP_DEFAULT_TIMEOUT, session_id=None):
+    """One JSON-RPC 2.0 POST. Returns (result, error_or_none, new_session_id).
+    Same SSRF + DNS-pin protection as _exec_custom_webhook."""
+    url = (server_row.get("url") or "").strip()
+    ok, parsed, err = _webhook_url_safe(url)
+    if not ok:
+        return None, {"code": -32000, "message": err or "URL refused"}, None
+    parsed_url, validated_ips = parsed
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+        "User-Agent": "site-mcp-client/1.0",
+    }
+    headers.update(_mcp_auth_headers(server_row))
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
+    body = {"jsonrpc": "2.0", "id": jsonrpc_id, "method": method}
+    if params is not None:
+        body["params"] = params
+
+    pin_host = (parsed_url.hostname or "").lower()
+    pin_port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
+    pin_ip = validated_ips[0]
+    prev_pins = getattr(_webhook_dns_pin_local, "pins", None)
+    new_pins = dict(prev_pins or {})
+    new_pins[(pin_host, pin_port)] = pin_ip
+    _webhook_dns_pin_local.pins = new_pins
+    try:
+        import requests as _rq
+        resp = _rq.post(url, json=body, headers=headers,
+                        timeout=max(1.0, min(float(timeout), 30.0)),
+                        allow_redirects=False, stream=True)
+    except Exception as e:
+        return None, {"code": -32000,
+                      "message": f"MCP request failed: {str(e)[:200]}"}, None
+    finally:
+        _webhook_dns_pin_local.pins = prev_pins
+
+    new_session_id = resp.headers.get("Mcp-Session-Id") or session_id
+    if resp.status_code >= 400:
+        try:
+            body_text = (resp.text or "")[:300]
+        except Exception:
+            body_text = ""
+        return None, {"code": -32000,
+                      "message": f"HTTP {resp.status_code} from MCP server: {body_text}"}, new_session_id
+
+    result, err_obj = _mcp_read_response(resp)
+    return result, err_obj, new_session_id
+
+
+def _mcp_notify(server_row, method, params=None, session_id=None):
+    """Send a JSON-RPC notification (no id, no response expected). Best
+    effort — failures here don't break the surrounding call."""
+    url = (server_row.get("url") or "").strip()
+    ok, parsed, _err = _webhook_url_safe(url)
+    if not ok:
+        return
+    parsed_url, validated_ips = parsed
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+        "User-Agent": "site-mcp-client/1.0",
+    }
+    headers.update(_mcp_auth_headers(server_row))
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
+    body = {"jsonrpc": "2.0", "method": method}
+    if params is not None:
+        body["params"] = params
+
+    pin_host = (parsed_url.hostname or "").lower()
+    pin_port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
+    pin_ip = validated_ips[0]
+    prev_pins = getattr(_webhook_dns_pin_local, "pins", None)
+    new_pins = dict(prev_pins or {})
+    new_pins[(pin_host, pin_port)] = pin_ip
+    _webhook_dns_pin_local.pins = new_pins
+    try:
+        import requests as _rq
+        _rq.post(url, json=body, headers=headers,
+                 timeout=5.0, allow_redirects=False)
+    except Exception:
+        pass
+    finally:
+        _webhook_dns_pin_local.pins = prev_pins
+
+
+def _mcp_transport_supported(server_row):
+    """V1 only supports the Streamable HTTP transport. 'sse' (legacy
+    SSE-only two-endpoint dance) and 'oauth' auth_type are scaffolded
+    in the schema but closed at the call site with a clear message."""
+    transport = (server_row.get("transport") or "http").strip().lower()
+    if transport not in ("http", "streamable-http"):
+        return False, (
+            f"Transport '{transport}' is not supported in V1 — use 'http' "
+            "(Streamable HTTP). SSE-only servers will be added later.")
+    if (server_row.get("auth_type") or "").strip().lower() == "oauth":
+        return False, (
+            "OAuth-flowed connectors are not enabled yet. Pick auth_type "
+            "'none', 'bearer', or 'header' for V1 custom MCP servers.")
+    return True, None
+
+
+def _mcp_initialize(server_row):
+    """Run initialize + the required notifications/initialized notice.
+    Returns (server_info, error_or_none, session_id)."""
+    init_params = {
+        "protocolVersion": _MCP_PROTOCOL_VERSION,
+        "capabilities": {},
+        "clientInfo": _MCP_CLIENT_INFO,
+    }
+    result, err, sid = _mcp_post(server_row, "initialize", init_params,
+                                  jsonrpc_id=1)
+    if err is not None:
+        return None, err, sid
+    try:
+        _mcp_notify(server_row, "notifications/initialized", session_id=sid)
+    except Exception:
+        pass
+    return result, None, sid
+
+
+def _mcp_list_tools(server_row):
+    """Discover tools on a server. Returns (tools_list, error_or_none).
+    Each tool dict has at least name, description, inputSchema."""
+    ok, msg = _mcp_transport_supported(server_row)
+    if not ok:
+        return None, {"code": -32000, "message": msg}
+    _info, err, sid = _mcp_initialize(server_row)
+    if err is not None:
+        return None, err
+    result, err, _sid2 = _mcp_post(server_row, "tools/list", {},
+                                    jsonrpc_id=2, session_id=sid)
+    if err is not None:
+        return None, err
+    tools = (result or {}).get("tools") or []
+    return tools, None
+
+
+def _mcp_call_tool(server_row, tool_name, arguments):
+    """Run one tool. Returns (result_dict, error_or_none). The result dict
+    is the raw MCP tools/call result envelope (has 'content' list, plus
+    optional 'isError' and 'structuredContent')."""
+    ok, msg = _mcp_transport_supported(server_row)
+    if not ok:
+        return None, {"code": -32000, "message": msg}
+    _info, err, sid = _mcp_initialize(server_row)
+    if err is not None:
+        return None, err
+    params = {"name": tool_name, "arguments": arguments or {}}
+    result, err, _sid2 = _mcp_post(server_row, "tools/call", params,
+                                    jsonrpc_id=3, session_id=sid,
+                                    timeout=30.0)
+    if err is not None:
+        return None, err
+    return result, None
+
+
 # Map skill_type -> executor. Used by _execute_chat_tool_inner.
+# "mcp" is dispatched separately (it needs the linked mcp_servers row),
+# wired in M004 by _exec_custom_mcp below.
 _CUSTOM_SKILL_EXECUTORS = {
     "knowledge": _exec_custom_knowledge,
     "webhook":   _exec_custom_webhook,
     "sql":       _exec_custom_sql,
 }
+
+
+def _exec_custom_mcp(name, args):
+    """Dispatcher for an MCP-backed agent_skills row.
+    config_json carries {"type":"mcp","server_id":N,"tool":"..."} — we
+    look up the linked mcp_servers row, refuse if disabled, then forward
+    the call. Returns ({...result...}, row_count) like the other execs."""
+    skill_row = query_db(
+        "SELECT config_json FROM agent_skills WHERE name = %s",
+        (name,), fetchone=True,
+    )
+    cfg = _custom_skill_cfg(skill_row)
+    sid = cfg.get("server_id")
+    tool = (cfg.get("tool") or "").strip()
+    if sid is None or not tool:
+        return {"error": "MCP skill not configured (missing server_id/tool)"}, 0
+    try:
+        srv = query_db(
+            "SELECT id, name, description, transport, url, auth_type, "
+            "       auth_header_name, auth_credential, enabled, "
+            "       allowed_for_admin, allowed_for_velo, connector_type "
+            "FROM mcp_servers WHERE id = %s",
+            (int(sid),), fetchone=True,
+        )
+    except Exception as e:
+        return {"error": f"Could not load MCP server: {str(e)[:200]}"}, 0
+    if not srv:
+        return {"error": "MCP server row no longer exists"}, 0
+    if not srv.get("enabled"):
+        return {"error": "MCP server is disabled"}, 0
+    result, err = _mcp_call_tool(srv, tool, args or {})
+    if err is not None:
+        return {"error": f"MCP error {err.get('code')}: {err.get('message','')[:300]}"}, 0
+    # Surface a flat shape to the model. We keep the raw envelope under
+    # "_raw" for debugging but lift content[0].text up so simple text
+    # tool responses just look like {"text": "..."}.
+    out = {"ok": True, "_raw": result}
+    if isinstance(result, dict):
+        if result.get("isError"):
+            out["ok"] = False
+        sc = result.get("structuredContent")
+        if sc is not None:
+            out["data"] = sc
+        contents = result.get("content") or []
+        if isinstance(contents, list) and contents:
+            first = contents[0] if isinstance(contents[0], dict) else {}
+            if first.get("type") == "text" and first.get("text"):
+                out["text"] = first.get("text")[:6000]
+    return out, 1
+
+
+_CUSTOM_SKILL_EXECUTORS["mcp"] = _exec_custom_mcp
 
 
 def sync_custom_skills_to_agent_skills():
@@ -5859,8 +6279,93 @@ def sync_custom_skills_to_agent_skills():
                 )
             except Exception as e:
                 print(f"[skills] sql sync row {sname} failed: {e}")
+
+        # 4) One agent_skills row per cached MCP tool whose server is
+        # enabled. The agent_skills.name is "mcp__<server>__<tool>" so a
+        # tool name from one MCP server can never collide with a
+        # builtin or with the same tool name from a different server.
+        # Velo gating happens later in get_active_chat_tools() — here we
+        # mirror everything and let the read-side filter decide per agent.
+        live_mcp_names = set()
+        try:
+            mcp_rows = query_db(
+                "SELECT t.id AS tool_id, t.tool_name, t.description, "
+                "       t.enabled AS tool_enabled, "
+                "       s.id AS server_id, s.name AS server_name, "
+                "       s.enabled AS server_enabled "
+                "FROM mcp_tools_cache t "
+                "JOIN mcp_servers s ON s.id = t.server_id"
+            ) or []
+        except Exception as e:
+            print(f"[skills] mcp sync load failed: {e}")
+            mcp_rows = []
+        for r in mcp_rows:
+            srv_slug = _mcp_slug(r.get("server_name") or "")
+            tool_slug = _mcp_slug(r.get("tool_name") or "")
+            if not srv_slug or not tool_slug:
+                continue
+            sk_name = f"mcp__{srv_slug}__{tool_slug}"[:64]
+            live_mcp_names.add(sk_name)
+            cfg = json.dumps({
+                "type": "mcp",
+                "server_id": int(r["server_id"]),
+                "tool": r.get("tool_name") or "",
+            })
+            enabled = bool(r.get("server_enabled")) and bool(r.get("tool_enabled"))
+            disp = f"MCP/{r.get('server_name')}: {r.get('tool_name')}"[:200]
+            desc = (r.get("description") or "").strip()
+            if not desc:
+                desc = (f"Tool '{r.get('tool_name')}' exposed by the MCP "
+                        f"server '{r.get('server_name')}'.")
+            try:
+                execute_db(
+                    """
+                    INSERT INTO agent_skills
+                        (name, display_name, description, category,
+                         builtin, enabled, config_json)
+                    VALUES (%s, %s, %s, 'mcp', false, %s, %s::jsonb)
+                    ON CONFLICT (name) DO UPDATE
+                      SET description = EXCLUDED.description,
+                          display_name = EXCLUDED.display_name,
+                          enabled     = EXCLUDED.enabled,
+                          config_json = EXCLUDED.config_json,
+                          builtin     = false,
+                          category    = 'mcp'
+                    """,
+                    (sk_name, disp, desc[:2000], enabled, cfg),
+                )
+            except Exception as e:
+                print(f"[skills] mcp sync row {sk_name} failed: {e}")
+
+        # Prune stale MCP rows: any agent_skills row whose category='mcp'
+        # but isn't in the current live set means the underlying server
+        # or cached tool has gone away. Drop it so the model doesn't try
+        # to call a vanished tool.
+        try:
+            stale = query_db(
+                "SELECT name FROM agent_skills WHERE category = 'mcp'"
+            ) or []
+            for r in stale:
+                if r["name"] not in live_mcp_names:
+                    execute_db("DELETE FROM agent_skills WHERE name = %s",
+                               (r["name"],))
+        except Exception as e:
+            print(f"[skills] mcp stale prune failed: {e}")
     except Exception as e:
         print(f"[skills] sync_custom_skills_to_agent_skills failed: {e}")
+
+
+def _mcp_slug(s):
+    """OpenAI tool function names allow [a-zA-Z0-9_-] only, max 64 chars.
+    Slugify aggressively to keep agent_skills.name (which we expose as
+    the tool name) within those bounds."""
+    out = []
+    for ch in (s or "").strip().lower():
+        if ch.isalnum() or ch in ("_", "-"):
+            out.append(ch)
+        else:
+            out.append("_")
+    return "".join(out).strip("_-")[:30]
 
 
 def _log_skill_usage(session_id, log_entry):
@@ -5875,9 +6380,12 @@ def _log_skill_usage(session_id, log_entry):
     to avoid colliding with any real tool argument name.
     """
     try:
-        args_for_log = dict(log_entry.get("args") or {})
+        raw_args = dict(log_entry.get("args") or {})
         if log_entry.get("override"):
-            args_for_log["_meta_override"] = True
+            raw_args["_meta_override"] = True
+        # Mask any credential-bearing fields BEFORE persisting so a
+        # plaintext bearer token / API key never lands in skill_usage_log.
+        args_for_log = _redact_sensitive_args(raw_args)
         execute_db(
             """
             INSERT INTO skill_usage_log
@@ -6307,6 +6815,75 @@ _ADMIN_SQL_DANGEROUS = _re_admin.compile(
 )
 
 
+_ADMIN_SQL_BANNED_IDENTIFIERS = (
+    "auth_credential",       # mcp_servers
+    "encrypted_config",      # external_data_connections
+    "webhook_token",         # automations
+)
+
+# Tables that hold credentials in ways the column-name redactor and
+# the recursive jsonb redactor cannot fully protect against (composite
+# row projection like `SELECT mcp_servers FROM mcp_servers` or
+# `SELECT (mcp_servers.*)::text` serializes the whole row to a text
+# cell under a benign column name and bypasses both the identifier
+# blacklist and the key-based redactor). Free-form SQL on these
+# tables is therefore denied — the model must use the dedicated
+# tools (admin_mcp_list_servers, admin_mcp_test_server, etc).
+_ADMIN_SQL_SECRET_READ_TABLES = frozenset({
+    # Direct-credential tables
+    "mcp_servers",                # auth_credential
+    "external_data_connections",  # encrypted_config
+    "automations",                # webhook_token + signature_secret in trigger_config
+    "custom_webhook_skills",      # Authorization / X-API-Key in headers_json
+    # Credential-in-transit tables: payload_json / snapshot_json store
+    # the raw credential by design (so the executor can apply the
+    # change after owner approval, and so revert can restore the row).
+    # Free-form SQL composite-row projection on these would bypass
+    # recursive jsonb redaction the same way it would for the
+    # credential tables above.
+    "admin_pending_actions",
+    "admin_setting_snapshots",
+})
+
+
+def _admin_sql_banned_identifier_check(sql_text):
+    """Block any SQL (read or write) that mentions a banned column
+    identifier. Closes alias-bypass attacks like
+    `SELECT auth_credential AS x FROM mcp_servers` or
+    `SELECT substring(auth_credential,1,99) FROM mcp_servers`, where
+    a column-name-based result redactor cannot see the original column.
+    Word-boundary match is sufficient because Postgres identifiers are
+    [A-Za-z0-9_] and we already block multi-statements + comments via
+    the dangerous-keyword and semicolon checks below."""
+    if not sql_text:
+        return None
+    low = sql_text.lower()
+    for ident in _ADMIN_SQL_BANNED_IDENTIFIERS:
+        if _re_admin.search(r"\b" + _re_admin.escape(ident) + r"\b", low):
+            return (f"SQL references the protected column '{ident}'. "
+                    "Use the dedicated mcp_* tools for credentials.")
+    return None
+
+
+def _admin_sql_secret_table_check(sql_text):
+    """Refuse free-form SQL that touches a credential-bearing table.
+    Closes the composite-row leak (SELECT <table> FROM <table>) and
+    the text-cast leak (SELECT (<table>.*)::text FROM <table>) which
+    serialize whole rows into a single string cell under a benign
+    column name, bypassing the column-name and recursive-jsonb
+    redactors. The owner has dedicated tools for these tables, so
+    refusing free-form SQL is the right trade-off."""
+    if not sql_text:
+        return None
+    low = sql_text.lower()
+    for tbl in _ADMIN_SQL_SECRET_READ_TABLES:
+        if _re_admin.search(r"\b" + _re_admin.escape(tbl) + r"\b", low):
+            return (f"Free-form SQL on '{tbl}' is not allowed because "
+                    f"the table holds credentials. Use the dedicated "
+                    f"admin tools for it (e.g. admin_mcp_list_servers).")
+    return None
+
+
 def _admin_safe_sql(sql):
     """Validate the SQL is a single, read-only SELECT/WITH statement.
     Returns (cleaned_sql, error_str_or_None)."""
@@ -6321,6 +6898,12 @@ def _admin_safe_sql(sql):
         return None, "Only SELECT or WITH queries are allowed"
     if _ADMIN_SQL_DANGEROUS.search(s):
         return None, "Query contains a forbidden keyword (write operations are not allowed)"
+    bi_err = _admin_sql_banned_identifier_check(s)
+    if bi_err:
+        return None, bi_err
+    st_err = _admin_sql_secret_table_check(s)
+    if st_err:
+        return None, st_err
     return s, None
 
 
@@ -6379,6 +6962,14 @@ def _admin_tool_describe_table(table_name=None):
     }
 
 
+def _admin_sql_clean_row(r):
+    """Top-level column-name redaction + recursive nested redaction
+    for jsonb/array columns. Delegates to the centralized
+    `_redact_recursive` so adding a new sensitive key name in one
+    place protects every read path at once."""
+    return _redact_recursive(dict(r))
+
+
 def _admin_tool_run_sql(sql=None, **_):
     """Run a read-only SELECT and return up to 100 rows. Uses a fresh
     non-autocommit connection so that nothing can leak side effects;
@@ -6399,17 +6990,7 @@ def _admin_tool_run_sql(sql=None, **_):
                         "note": "Query returned no result set"}
             cols = [d.name for d in cur.description]
             raw = cur.fetchmany(100)
-            rows = []
-            for r in raw:
-                clean = {}
-                for k, v in r.items():
-                    if hasattr(v, "isoformat"):
-                        clean[k] = v.isoformat()
-                    elif isinstance(v, (bytes, bytearray, memoryview)):
-                        clean[k] = "<binary>"
-                    else:
-                        clean[k] = v
-                rows.append(clean)
+            rows = [_admin_sql_clean_row(r) for r in raw]
             return {"sql": safe, "columns": cols, "rows": rows,
                     "row_count": len(rows),
                     "truncated": len(rows) == 100}
@@ -6445,7 +7026,25 @@ ADMIN_WRITE_BLACKLIST = {
     "automation_webhook_rejections", "scrape_jobs",
     "chat_messages", "chat_conversations", "admin_chat_messages",
     "admin_pending_actions",
+    # admin_setting_snapshots is the trust anchor for revert: forging a
+    # snapshot row would let the model insert/update mcp_servers via the
+    # revert path (which only re-validates updates, not the initial
+    # snapshot's authenticity). Only the system writes snapshots, on
+    # every successful write through the dedicated paths.
+    "admin_setting_snapshots",
 }
+
+# Tables that have their own dedicated mcp_propose_* / config_* admin
+# tools and must NOT be writable through the generic admin_propose_*
+# or admin_propose_run_sql paths. Using the dedicated tools is what
+# enforces V1-only constraints (OAuth blocked, transport allow-list,
+# SSRF refusal, Velo defaults). Letting the model freelance an
+# `admin_propose_update` on these tables would silently bypass those
+# guards. Note: this is enforced at the *propose* layer, NOT inside
+# `_admin_validate_write_table`, because the dedicated mcp tools
+# create their own pending actions on these tables and must still be
+# allowed to execute.
+ADMIN_DEDICATED_WRITE_TABLES = {"mcp_servers"}
 
 
 def _admin_table_columns(table_name):
@@ -6478,6 +7077,159 @@ def _admin_validate_write_table(table_name):
     if not cols:
         return f"Table '{table_name}' not found"
     return None  # ok
+
+
+# Sensitive key names that must never be persisted in plaintext into
+# the tool trace, admin_chat_messages, skill_usage_log, or returned by
+# the read-side admin_run_sql tool. Comparison is case-insensitive
+# (compared against k.lower()), so JSON keys like "Authorization" or
+# "API_Key" are caught regardless of casing. Exact-match (not
+# substring) so column names like csrf_token or booking_token are NOT
+# accidentally redacted.
+_REDACTED_KEY_NAMES_LOWER = frozenset({
+    "auth_credential",
+    "webhook_token",
+    "signature_secret",
+    "password",
+    "passwd",
+    "api_key",
+    "apikey",
+    "x-api-key",
+    "secret",
+    "token",
+    "authorization",
+    "bearer",
+    "encrypted_config",
+})
+# Backwards-compat alias for code that still imports the old name.
+_REDACTED_ARG_KEYS = _REDACTED_KEY_NAMES_LOWER
+_REDACTED_PLACEHOLDER = "***REDACTED***"
+
+
+def _is_sensitive_key(k):
+    return isinstance(k, str) and k.lower() in _REDACTED_KEY_NAMES_LOWER
+
+
+def _redact_recursive(v, _depth=0):
+    """Recursively walk dicts/lists and replace the value of any key
+    matching `_is_sensitive_key` with the redaction placeholder.
+    Strings that look like JSON are parsed, redacted, and re-serialized
+    so nested-stringified credentials are caught too. Non-redacted
+    primitives pass through unchanged. Depth-capped to avoid stack
+    blow-ups on hostile inputs."""
+    if _depth > 8:
+        return v
+    if isinstance(v, dict):
+        out = {}
+        for k, vv in v.items():
+            if _is_sensitive_key(k) and vv not in (None, ""):
+                out[k] = _REDACTED_PLACEHOLDER
+            else:
+                out[k] = _redact_recursive(vv, _depth + 1)
+        return out
+    if isinstance(v, list):
+        return [_redact_recursive(x, _depth + 1) for x in v]
+    if isinstance(v, tuple):
+        return [_redact_recursive(x, _depth + 1) for x in v]
+    # JSON-friendly coercion for SQL row cells.
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        return "<binary>"
+    if isinstance(v, str):
+        # Try to parse JSON-encoded payloads (common in tool_calls
+        # arguments and pending action payload_json strings) so nested
+        # credentials inside the string are also redacted.
+        s = v.strip()
+        if s and s[0] in "{[":
+            try:
+                parsed = json.loads(v)
+            except Exception:
+                return v
+            red = _redact_recursive(parsed, _depth + 1)
+            try:
+                return json.dumps(red)
+            except Exception:
+                return v
+        return v
+    return v
+
+
+def _redact_sensitive_args(args):
+    """Return a copy of `args` with any sensitive keys masked anywhere
+    in the structure. Accepts a dict, list, or JSON string; returns
+    the same shape it was given so the caller doesn't have to think
+    about it."""
+    if args is None:
+        return args
+    if isinstance(args, str):
+        try:
+            parsed = json.loads(args) if args else {}
+        except Exception:
+            return args  # not JSON — leave as-is rather than risk corruption
+        red = _redact_recursive(parsed)
+        try:
+            return json.dumps(red)
+        except Exception:
+            return args
+    return _redact_recursive(args)
+
+
+# Best-effort redaction for nested tool RESULT strings, where a sensitive
+# value might appear inside an embedded JSON-ish snippet (e.g. a future
+# tool that echoes back auth_credential, or a SQL SELECT result row).
+# We only touch obvious "auth_credential": "..." JSON fragments — this
+# never modifies non-matching content, so safe to run unconditionally.
+_RESULT_REDACT_PATTERNS = [
+    re.compile(r'("auth_credential"\s*:\s*)"(?:\\.|[^"\\])*"'),
+    re.compile(r"('auth_credential'\s*:\s*)'(?:\\.|[^'\\])*'"),
+]
+
+
+def _redact_sensitive_result(result_str):
+    if not result_str or not isinstance(result_str, str):
+        return result_str
+    out = result_str
+    for pat in _RESULT_REDACT_PATTERNS:
+        out = pat.sub(lambda m: f'{m.group(1)}"{_REDACTED_PLACEHOLDER}"',
+                      out)
+    return out
+
+
+def _admin_validate_mcp_server_fields(fields, for_update=False):
+    """Re-run MCP-specific guards at execute time, defending against the
+    bypass where the model uses the generic admin_propose_insert /
+    admin_propose_update on mcp_servers (which skip the dedicated MCP
+    propose tools and their OAuth/transport checks). Returns an error
+    string or None.
+    """
+    if not isinstance(fields, dict) or not fields:
+        return "no fields to write to mcp_servers"
+    auth_type = (fields.get("auth_type") or "").strip().lower() \
+        if "auth_type" in fields else None
+    if auth_type == "oauth":
+        return ("OAuth-flowed connectors are not enabled in V1. "
+                "Use auth_type 'none', 'bearer', or 'header'.")
+    if "transport" in fields:
+        t = (fields.get("transport") or "").strip().lower()
+        if t and t not in ("http", "streamable-http"):
+            return (f"Transport '{t}' is not supported in V1 — "
+                    "use 'http' (Streamable HTTP).")
+    if "url" in fields:
+        url = (fields.get("url") or "").strip()
+        if not for_update and not url:
+            return "url is required for a new MCP server"
+        if url:
+            ok, _parsed, err = _webhook_url_safe(url)
+            if not ok:
+                return f"MCP url refused: {err or 'unsafe URL'}"
+    if not for_update:
+        # Insert path: name + url are mandatory.
+        if not (fields.get("name") or "").strip():
+            return "name is required for a new MCP server"
+        if "url" not in fields:
+            return "url is required for a new MCP server"
+    return None
 
 
 def _admin_short(v, n=120):
@@ -6524,6 +7276,13 @@ def _admin_tool_propose_insert(table_name=None, fields=None,
                                _session_id="", **_):
     err = _admin_validate_write_table(table_name)
     if err: return {"error": err}
+    if table_name in ADMIN_DEDICATED_WRITE_TABLES:
+        return {"error": (f"Use the dedicated tool for '{table_name}' — "
+                          f"call admin_mcp_propose_add_server (or the "
+                          f"matching admin_mcp_propose_* tool) instead "
+                          f"of admin_propose_insert. The dedicated "
+                          f"tools enforce V1 OAuth/transport/URL "
+                          f"safety checks.")}
     if not isinstance(fields, dict) or not fields:
         return {"error": "fields must be a non-empty object "
                          "{column_name: value, ...}"}
@@ -6548,6 +7307,14 @@ def _admin_tool_propose_update(table_name=None, row_id=None, fields=None,
                                _session_id="", **_):
     err = _admin_validate_write_table(table_name)
     if err: return {"error": err}
+    if table_name in ADMIN_DEDICATED_WRITE_TABLES:
+        return {"error": (f"Use the dedicated tool for '{table_name}' — "
+                          f"call admin_mcp_propose_update_server / "
+                          f"admin_mcp_propose_toggle_velo / "
+                          f"admin_mcp_propose_toggle_enabled instead "
+                          f"of admin_propose_update. The dedicated "
+                          f"tools enforce V1 OAuth/transport/URL "
+                          f"safety checks.")}
     if row_id is None:
         return {"error": "row_id is required"}
     try:
@@ -6599,6 +7366,10 @@ def _admin_tool_propose_delete(table_name=None, row_id=None,
                                _session_id="", **_):
     err = _admin_validate_write_table(table_name)
     if err: return {"error": err}
+    if table_name in ADMIN_DEDICATED_WRITE_TABLES:
+        return {"error": (f"Use the dedicated tool for '{table_name}' — "
+                          f"call admin_mcp_propose_remove_server "
+                          f"instead of admin_propose_delete.")}
     if row_id is None:
         return {"error": "row_id is required"}
     try:
@@ -6717,6 +7488,13 @@ def _admin_sql_blacklist_check(sql_text):
         return (f"Refusing: SQL writes to read-only table(s): "
                 f"{', '.join(hit)}. Those tables are managed by the app "
                 f"itself or have a dedicated admin screen.")
+    dedicated_hit = sorted({t for t in targets
+                            if t in ADMIN_DEDICATED_WRITE_TABLES})
+    if dedicated_hit:
+        return (f"Refusing: SQL writes to {', '.join(dedicated_hit)} "
+                f"are not allowed via free-form SQL. Use the dedicated "
+                f"admin_mcp_propose_* tools so the V1 OAuth/transport/"
+                f"URL safety checks run.")
     return None
 
 
@@ -6738,6 +7516,15 @@ def _admin_tool_propose_run_sql(sql=None, summary=None, _session_id="", **_):
     bl_err = _admin_sql_blacklist_check(cleaned)
     if bl_err:
         return {"error": bl_err}
+    # Block alias/projection bypass for protected columns at propose
+    # time too, so the owner never sees a card containing a leaked
+    # credential and the model can't even stage such a change.
+    bi_err = _admin_sql_banned_identifier_check(cleaned)
+    if bi_err:
+        return {"error": bi_err}
+    st_err = _admin_sql_secret_table_check(cleaned)
+    if st_err:
+        return {"error": st_err}
     preview = (f"Custom SQL:\n  {_admin_short(cleaned, 400)}\n\n"
                f"What it does (assistant's explanation):\n  {summary}")
     return _admin_create_pending(
@@ -6759,6 +7546,8 @@ _ADMIN_SETTINGS_SNAPSHOT_TABLES = frozenset({
     "custom_knowledge_entries",
     "custom_webhook_skills",
     "custom_sql_skills",
+    "mcp_servers",
+    "mcp_tools_cache",
 })
 
 # Tables whose schema knowledge is also synced into agent_skills (so
@@ -6768,6 +7557,8 @@ _ADMIN_CUSTOM_SKILL_TABLES = frozenset({
     "custom_knowledge_entries",
     "custom_webhook_skills",
     "custom_sql_skills",
+    # MCP server changes also affect agent_skills (mirrored mcp tools).
+    "mcp_servers",
 })
 
 
@@ -6852,6 +7643,11 @@ def _admin_execute_pending(action_row):
         fields = payload.get("fields") or {}
         if not fields:
             return None, "no fields in payload"
+        if table == "mcp_servers":
+            mcp_err = _admin_validate_mcp_server_fields(fields,
+                                                        for_update=False)
+            if mcp_err:
+                return None, mcp_err
         cols = list(fields.keys())
         vals = [fields[c] for c in cols]
         stmt = _pgsql.SQL(
@@ -6884,6 +7680,11 @@ def _admin_execute_pending(action_row):
         fields = payload.get("fields") or {}
         if not fields or rid is None:
             return None, "missing fields or target_id"
+        if table == "mcp_servers":
+            mcp_err = _admin_validate_mcp_server_fields(fields,
+                                                        for_update=True)
+            if mcp_err:
+                return None, mcp_err
         # Snapshot first so we can revert later.
         _admin_snapshot_row(table, rid, action_id,
                             f"Before approved update (action #{action_id})")
@@ -6957,6 +7758,17 @@ def _admin_execute_pending(action_row):
         bl_err = _admin_sql_blacklist_check(sql_text)
         if bl_err:
             return None, bl_err
+        # Re-run the banned-identifier and secret-table checks at
+        # execute time too. The propose path also runs them, but
+        # defense-in-depth means a payload tampered with between
+        # propose and approve cannot leak the credential at execute
+        # time.
+        bi_err = _admin_sql_banned_identifier_check(sql_text)
+        if bi_err:
+            return None, bi_err
+        st_err = _admin_sql_secret_table_check(sql_text)
+        if st_err:
+            return None, st_err
         try:
             conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
             preview_rows = None
@@ -6970,8 +7782,22 @@ def _admin_execute_pending(action_row):
                     preview_rows = cur.fetchmany(20)
                 conn.commit()
             conn.close()
+            # Defense-in-depth: even though the banned-identifier check
+            # blocks projecting auth_credential / encrypted_config /
+            # webhook_token directly, an INSERT…RETURNING or a multi-
+            # column SELECT could surface jsonb cells (trigger_config,
+            # headers_json) containing nested credentials. We pass
+            # every preview row through the central recursive
+            # redactor so anything matching `_REDACTED_KEY_NAMES_LOWER`
+            # at any nesting depth is masked before being persisted to
+            # admin_pending_actions.result_json or echoed in the
+            # follow-up message.
+            cleaned_preview = [
+                _redact_recursive(dict(r) if isinstance(r, dict) else r)
+                for r in (preview_rows or [])
+            ]
             return {"rows_affected": rc,
-                    "preview_rows": preview_rows or []}, None
+                    "preview_rows": cleaned_preview}, None
         except Exception as e:
             try: conn.rollback(); conn.close()
             except Exception: pass
@@ -7042,6 +7868,22 @@ def _admin_execute_revert(action_id, payload):
             revert_fields[k] = v
     if not revert_fields:
         return None, "No revertable columns in snapshot"
+    # When reverting an mcp_servers snapshot, re-run the V1 MCP guards
+    # against the about-to-be-restored fields. Otherwise an old
+    # snapshot taken before V2 OAuth lands could quietly restore a row
+    # whose auth_type is now blocked, or whose URL is no longer
+    # SSRF-safe (e.g. host now resolves to a private IP).
+    if table == "mcp_servers":
+        # `revert_fields` may contain JSONB-serialized strings; pass the
+        # raw snapshot dict instead since the validator only inspects
+        # auth_type/transport/url/name (all plain strings/bools).
+        plain_for_check = {k: v for k, v in snap_data.items()
+                           if k in valid_cols and k not in skip_cols}
+        mcp_err = _admin_validate_mcp_server_fields(plain_for_check,
+                                                     for_update=True)
+        if mcp_err:
+            return None, (f"Refusing to revert mcp_servers snapshot: "
+                          f"{mcp_err}")
     snap_row_id = snap.get("row_id")
     from psycopg2 import sql as _pgsql
     # Decide UPDATE vs INSERT based on whether the row currently exists.
@@ -7307,6 +8149,228 @@ def _admin_tool_skill_usage_stats(skill_name=None, limit=50, **_):
     return {"rows": rows, "count": len(rows)}
 
 
+# ---------------------------------------------------------------------------
+# MCP CONNECTOR TOOLS
+# ---------------------------------------------------------------------------
+# Three read tools (immediate) + five propose tools (approval-gated). The
+# propose tools build the same payload shape `_admin_execute_pending`
+# already understands for action_type insert/update/delete on mcp_servers,
+# so the existing approve/reject card flow handles everything.
+
+def _admin_tool_mcp_list_servers(**_):
+    """Return every configured MCP server (no credentials)."""
+    try:
+        rows = query_db(
+            "SELECT id, name, description, transport, url, auth_type, "
+            "       enabled, allowed_for_admin, allowed_for_velo, "
+            "       last_test_at, last_test_ok, last_test_error "
+            "FROM mcp_servers ORDER BY name"
+        ) or []
+        for r in rows:
+            if hasattr(r.get("last_test_at"), "isoformat"):
+                r["last_test_at"] = r["last_test_at"].isoformat()
+        return {"servers": rows, "count": len(rows)}
+    except Exception as e:
+        return {"error": f"Could not list MCP servers: {str(e)[:200]}"}
+
+
+def _admin_tool_mcp_test_server(server_id=None, **_):
+    """Connect to an MCP server, list its tools, and stamp last_test_*.
+    No approval needed — this is a read-only network probe."""
+    if server_id is None:
+        return {"error": "server_id is required"}
+    try:
+        srv = query_db(
+            "SELECT id, name, transport, url, auth_type, auth_header_name, "
+            "       auth_credential, enabled FROM mcp_servers WHERE id = %s",
+            (int(server_id),), fetchone=True,
+        )
+    except Exception as e:
+        return {"error": f"DB error: {str(e)[:200]}"}
+    if not srv:
+        return {"error": f"No MCP server with id={server_id}"}
+    tools, err = _mcp_list_tools(srv)
+    ok = err is None
+    # _mcp_list_tools returns err as a JSON-RPC error dict
+    # ({"code": -32000, "message": "..."}), not a string. Stringify it
+    # before slicing for DB storage and before returning so the model
+    # gets a useful one-line message instead of {"code":...}.
+    err_msg = ""
+    if not ok:
+        if isinstance(err, dict):
+            err_msg = (err.get("message") or json.dumps(err, default=str))
+        else:
+            err_msg = str(err or "")
+    try:
+        execute_db(
+            "UPDATE mcp_servers SET last_test_at = NOW(), "
+            "       last_test_ok = %s, last_test_error = %s "
+            "WHERE id = %s",
+            (ok, ("" if ok else err_msg[:500]), int(server_id)),
+        )
+    except Exception:
+        pass
+    if not ok:
+        return {"ok": False, "error": err_msg}
+    return {"ok": True, "server_id": int(server_id),
+            "tools": [{"name": t.get("name"),
+                       "description": (t.get("description") or "")[:300]}
+                      for t in (tools or [])]}
+
+
+def _admin_tool_mcp_refresh_tools(server_id=None, **_):
+    """Re-sync mcp_tools_cache from the live server, then refresh the
+    materialized agent_skills rows so the new tool list is callable
+    immediately."""
+    if server_id is None:
+        return {"error": "server_id is required"}
+    try:
+        srv = query_db(
+            "SELECT id, name, transport, url, auth_type, auth_header_name, "
+            "       auth_credential, enabled FROM mcp_servers WHERE id = %s",
+            (int(server_id),), fetchone=True,
+        )
+    except Exception as e:
+        return {"error": f"DB error: {str(e)[:200]}"}
+    if not srv:
+        return {"error": f"No MCP server with id={server_id}"}
+    saved, err = _mcp_refresh_server_tools(srv)
+    if err:
+        return {"ok": False, "error": err}
+    try:
+        sync_custom_skills_to_agent_skills()
+    except Exception as e:
+        print(f"[admin_mcp_refresh_tools] sync failed: {e}")
+    return {"ok": True, "server_id": int(server_id), "saved": saved}
+
+
+def _mcp_propose_fields_from_args(args, for_update=False):
+    """Build the fields dict for an mcp_servers insert/update payload
+    from the LLM-supplied args. Defends against the model trying to
+    flip allowed_for_velo on by accident — Velo defaults to OFF for
+    new servers regardless of what the model passes."""
+    fields = {}
+    for k in ("name", "description", "url", "transport", "auth_type",
+             "auth_header_name", "auth_credential"):
+        if k in args and args[k] is not None:
+            fields[k] = args[k]
+    for k in ("enabled", "allowed_for_admin", "allowed_for_velo"):
+        if k in args and args[k] is not None:
+            fields[k] = bool(args[k])
+    if not for_update:
+        fields.setdefault("enabled", True)
+        fields.setdefault("allowed_for_admin", True)
+        fields["allowed_for_velo"] = bool(args.get("allowed_for_velo")) \
+            if "allowed_for_velo" in args else False
+        fields.setdefault("transport", "http")
+        fields.setdefault("auth_type", "none")
+    return fields
+
+
+def _admin_tool_mcp_propose_add_server(name=None, url=None, description="",
+                                        transport="http", auth_type="none",
+                                        auth_header_name="",
+                                        auth_credential=None,
+                                        allowed_for_velo=False,
+                                        _session_id="", **_):
+    if not name or not url:
+        return {"error": "name and url are required"}
+    if auth_type == "oauth":
+        return {"error": "OAuth connectors are not enabled in V1. "
+                         "Use auth_type 'none', 'bearer', or 'header'."}
+    fields = _mcp_propose_fields_from_args({
+        "name": name, "url": url, "description": description,
+        "transport": transport, "auth_type": auth_type,
+        "auth_header_name": auth_header_name,
+        "auth_credential": auth_credential,
+        "allowed_for_velo": allowed_for_velo,
+    }, for_update=False)
+    cred_note = " (with credential)" if fields.get("auth_credential") else ""
+    preview = (f"Add MCP server '{name}' at {url} "
+               f"[transport={fields['transport']}, "
+               f"auth={fields['auth_type']}{cred_note}, "
+               f"velo={'on' if fields.get('allowed_for_velo') else 'off'}]")
+    return _admin_create_pending(_session_id, "insert",
+                                  target_table="mcp_servers",
+                                  payload={"fields": fields},
+                                  preview=preview)
+
+
+def _admin_tool_mcp_propose_update_server(server_id=None, name=None,
+                                           description=None, url=None,
+                                           transport=None, auth_type=None,
+                                           auth_header_name=None,
+                                           auth_credential=None,
+                                           enabled=None,
+                                           allowed_for_admin=None,
+                                           allowed_for_velo=None,
+                                           _session_id="", **_):
+    if server_id is None:
+        return {"error": "server_id is required"}
+    if auth_type == "oauth":
+        return {"error": "OAuth connectors are not enabled in V1."}
+    args = {"name": name, "description": description, "url": url,
+            "transport": transport, "auth_type": auth_type,
+            "auth_header_name": auth_header_name,
+            "auth_credential": auth_credential, "enabled": enabled,
+            "allowed_for_admin": allowed_for_admin,
+            "allowed_for_velo": allowed_for_velo}
+    args = {k: v for k, v in args.items() if v is not None}
+    if not args:
+        return {"error": "no fields to update"}
+    fields = _mcp_propose_fields_from_args(args, for_update=True)
+    preview = (f"Update MCP server #{server_id}: "
+               + ", ".join(f"{k}={'***' if k=='auth_credential' else v}"
+                           for k, v in fields.items()))
+    return _admin_create_pending(_session_id, "update",
+                                  target_table="mcp_servers",
+                                  target_id=int(server_id),
+                                  payload={"fields": fields},
+                                  preview=preview[:500])
+
+
+def _admin_tool_mcp_propose_toggle_velo(server_id=None, allow=None,
+                                          _session_id="", **_):
+    if server_id is None or allow is None:
+        return {"error": "server_id and allow are required"}
+    fields = {"allowed_for_velo": bool(allow)}
+    preview = (f"{'Enable' if allow else 'Disable'} visitor agent "
+               f"(Velo) access to MCP server #{server_id}")
+    return _admin_create_pending(_session_id, "update",
+                                  target_table="mcp_servers",
+                                  target_id=int(server_id),
+                                  payload={"fields": fields},
+                                  preview=preview)
+
+
+def _admin_tool_mcp_propose_toggle_enabled(server_id=None, enabled=None,
+                                             _session_id="", **_):
+    if server_id is None or enabled is None:
+        return {"error": "server_id and enabled are required"}
+    fields = {"enabled": bool(enabled)}
+    preview = (f"{'Enable' if enabled else 'Disable'} MCP server "
+               f"#{server_id} entirely")
+    return _admin_create_pending(_session_id, "update",
+                                  target_table="mcp_servers",
+                                  target_id=int(server_id),
+                                  payload={"fields": fields},
+                                  preview=preview)
+
+
+def _admin_tool_mcp_propose_remove_server(server_id=None,
+                                            _session_id="", **_):
+    if server_id is None:
+        return {"error": "server_id is required"}
+    preview = (f"Delete MCP server #{server_id} and all its cached "
+               f"tools (cascade). The materialized agent_skills rows "
+               f"for those tools will also be removed.")
+    return _admin_create_pending(_session_id, "delete",
+                                  target_table="mcp_servers",
+                                  target_id=int(server_id),
+                                  payload={},
+                                  preview=preview)
+
+
 ADMIN_TOOL_FUNCTIONS = {
     # --- Read-only (run immediately, no approval) ---
     "admin_list_tables":            _admin_tool_list_tables,
@@ -7326,6 +8390,16 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_propose_delete":         _admin_tool_propose_delete,
     "admin_propose_run_sql":        _admin_tool_propose_run_sql,
     "admin_propose_revert_snapshot": _admin_tool_propose_revert_snapshot,
+    # --- MCP connector reads ---
+    "admin_mcp_list_servers":          _admin_tool_mcp_list_servers,
+    "admin_mcp_test_server":           _admin_tool_mcp_test_server,
+    "admin_mcp_refresh_tools":         _admin_tool_mcp_refresh_tools,
+    # --- MCP connector write proposals (approval-gated) ---
+    "admin_mcp_propose_add_server":     _admin_tool_mcp_propose_add_server,
+    "admin_mcp_propose_update_server":  _admin_tool_mcp_propose_update_server,
+    "admin_mcp_propose_toggle_velo":    _admin_tool_mcp_propose_toggle_velo,
+    "admin_mcp_propose_toggle_enabled": _admin_tool_mcp_propose_toggle_enabled,
+    "admin_mcp_propose_remove_server":  _admin_tool_mcp_propose_remove_server,
 }
 
 # Tools whose write-side effect runs only after explicit owner approval.
@@ -7335,6 +8409,11 @@ ADMIN_PROPOSE_TOOLS = {
     "admin_propose_insert", "admin_propose_update",
     "admin_propose_delete", "admin_propose_run_sql",
     "admin_propose_revert_snapshot",
+    "admin_mcp_propose_add_server",
+    "admin_mcp_propose_update_server",
+    "admin_mcp_propose_toggle_velo",
+    "admin_mcp_propose_toggle_enabled",
+    "admin_mcp_propose_remove_server",
 }
 
 
@@ -7512,7 +8591,132 @@ ADMIN_TOOLS = [
                                         "English, for the owner to read."},
          },
          "required": ["sql", "summary"]}),
+    # ---- MCP CONNECTOR READS ----
+    _admin_tool_schema(
+        "admin_mcp_list_servers",
+        "List every configured MCP (Model Context Protocol) connector "
+        "server with its name, URL, transport, auth_type, enabled flag, "
+        "Velo flag, and last test status. Credentials are NEVER returned. "
+        "Use this before proposing edits."),
+    _admin_tool_schema(
+        "admin_mcp_test_server",
+        "Connect to one MCP server, list its tools, and stamp the "
+        "last_test_* columns. Useful right after add_server to confirm "
+        "the URL + credentials work.",
+        {"type": "object",
+         "properties": {"server_id": {"type": "integer"}},
+         "required": ["server_id"]}),
+    _admin_tool_schema(
+        "admin_mcp_refresh_tools",
+        "Re-fetch the live tool list from one MCP server and update the "
+        "cache. Call this after the server adds or removes a tool, OR "
+        "right after add_server, so the new tools become callable.",
+        {"type": "object",
+         "properties": {"server_id": {"type": "integer"}},
+         "required": ["server_id"]}),
+    # ---- MCP CONNECTOR WRITE PROPOSALS (approval-gated) ----
+    _admin_tool_schema(
+        "admin_mcp_propose_add_server",
+        "Propose adding a new MCP server. V1 supports HTTP/SSE custom "
+        "URLs only — auth_type 'none', 'bearer', or 'header'. OAuth is "
+        "NOT supported yet. Velo (the visitor-facing chat) is OFF by "
+        "default for every new server; only flip it on after testing. "
+        "Returns awaiting_approval=true; the actual INSERT runs after "
+        "the owner clicks Approve.",
+        {"type": "object",
+         "properties": {
+             "name": {"type": "string",
+                      "description": "Short identifier, lowercase, no "
+                                     "spaces. Becomes part of the tool "
+                                     "name."},
+             "url":  {"type": "string",
+                      "description": "Public HTTPS endpoint of the MCP "
+                                     "server. Localhost / private IPs "
+                                     "are blocked."},
+             "description":      {"type": "string"},
+             "transport":        {"type": "string",
+                                  "enum": ["http", "sse"]},
+             "auth_type":        {"type": "string",
+                                  "enum": ["none", "bearer", "header"]},
+             "auth_header_name": {"type": "string",
+                                  "description": "Required when "
+                                                 "auth_type='header'."},
+             "auth_credential":  {"type": "string",
+                                  "description": "Bearer token or header "
+                                                 "value. Stored as-is."},
+             "allowed_for_velo": {"type": "boolean",
+                                  "description": "Default false. Only "
+                                                 "set true after the "
+                                                 "owner has explicitly "
+                                                 "asked."},
+         },
+         "required": ["name", "url"]}),
+    _admin_tool_schema(
+        "admin_mcp_propose_update_server",
+        "Propose editing an existing MCP server row. Pass only the "
+        "fields you want to change. To rotate a credential pass "
+        "auth_credential.",
+        {"type": "object",
+         "properties": {
+             "server_id":        {"type": "integer"},
+             "name":             {"type": "string"},
+             "description":      {"type": "string"},
+             "url":              {"type": "string"},
+             "transport":        {"type": "string"},
+             "auth_type":        {"type": "string",
+                                  "enum": ["none", "bearer", "header"]},
+             "auth_header_name": {"type": "string"},
+             "auth_credential":  {"type": "string"},
+             "enabled":          {"type": "boolean"},
+             "allowed_for_admin":{"type": "boolean"},
+             "allowed_for_velo": {"type": "boolean"},
+         },
+         "required": ["server_id"]}),
+    _admin_tool_schema(
+        "admin_mcp_propose_toggle_velo",
+        "Propose flipping the visitor-agent (Velo) access flag on or "
+        "off for one server. Velo is OFF by default; only enable it "
+        "when the owner has explicitly asked.",
+        {"type": "object",
+         "properties": {"server_id": {"type": "integer"},
+                        "allow":     {"type": "boolean"}},
+         "required": ["server_id", "allow"]}),
+    _admin_tool_schema(
+        "admin_mcp_propose_toggle_enabled",
+        "Propose enabling or disabling one MCP server entirely. A "
+        "disabled server is hidden from BOTH the admin assistant and "
+        "the visitor agent.",
+        {"type": "object",
+         "properties": {"server_id": {"type": "integer"},
+                        "enabled":   {"type": "boolean"}},
+         "required": ["server_id", "enabled"]}),
+    _admin_tool_schema(
+        "admin_mcp_propose_remove_server",
+        "Propose deleting an MCP server. Cascades to mcp_tools_cache "
+        "and the materialized agent_skills rows for those tools.",
+        {"type": "object",
+         "properties": {"server_id": {"type": "integer"}},
+         "required": ["server_id"]}),
 ]
+
+
+def _admin_chat_dynamic_mcp_tools():
+    """Build OpenAI-shaped tool schemas for every MCP tool whose server
+    is enabled AND has allowed_for_admin=true. The names are the same
+    `mcp__<server>__<tool>` slugs the dispatcher fall-through expects.
+    Called once per chat turn so newly-added MCP tools become available
+    without restart."""
+    try:
+        active = get_active_chat_tools(audience="admin")
+    except Exception as e:
+        print(f"[admin_chat] dynamic mcp tools failed: {e}")
+        return []
+    out = []
+    for t in active:
+        fn = (t.get("function") or {}).get("name") or ""
+        if fn.startswith("mcp__"):
+            out.append(t)
+    return out
 
 
 def execute_admin_tool(name, args_json, session_id=""):
@@ -7531,6 +8735,19 @@ def execute_admin_tool(name, args_json, session_id=""):
         args = {}
     fn = ADMIN_TOOL_FUNCTIONS.get(name)
     if fn is None:
+        # Fall through to the visitor-agent dispatcher for dynamic
+        # mcp__<server>__<tool> names (and any future agent_skills tool
+        # that the admin assistant is allowed to call directly).
+        if name.startswith("mcp__"):
+            try:
+                result = execute_chat_tool(name, args_json or "{}",
+                                            session_id=f"admin_chat_{session_id}"[:100])
+            except Exception as e:
+                result = (json.dumps({"error": f"MCP dispatch failed: {str(e)[:200]}"}),
+                          {"name": name, "args": args, "ms": 0,
+                           "error": str(e)[:200], "rows": 0})
+            # execute_chat_tool returns (result_str, log_dict).
+            return result
         log = {"name": name, "args": args, "error": "unknown_admin_tool",
                "ms": 0}
         _log_skill_usage(f"admin_chat_{session_id}"[:100], log)
@@ -7627,6 +8844,38 @@ ADMIN_CHAT_SYSTEM_PROMPT = (
     "After any write to those three tables the materialized "
     "agent_skills rows are refreshed automatically — no restart "
     "needed.\n\n"
+    "MCP CONNECTORS:\n"
+    "MCP (Model Context Protocol) lets the owner plug in remote tool "
+    "servers. Each row in mcp_servers becomes 0+ callable tools named "
+    "`mcp__<server>__<tool>`. The MCP toolset has its own dedicated "
+    "tools — use these instead of raw propose_* on the table:\n"
+    "  • admin_mcp_list_servers — show every configured server (no "
+    "credentials returned).\n"
+    "  • admin_mcp_test_server(server_id) — connect, list tools, "
+    "stamp last_test_*. Run this immediately after adding a server.\n"
+    "  • admin_mcp_refresh_tools(server_id) — re-sync the cached tool "
+    "list. Run after the remote server adds/removes a tool, or after "
+    "a successful add_server, so the new tools become callable.\n"
+    "  • admin_mcp_propose_add_server / propose_update_server / "
+    "propose_remove_server / propose_toggle_velo / "
+    "propose_toggle_enabled — same approval card flow as everything "
+    "else.\n"
+    "V1 LIMITS — be honest with the owner about these:\n"
+    "  • Custom HTTP/SSE MCP servers only. auth_type can be 'none', "
+    "'bearer', or 'header'. OAuth connectors (Linear, GitHub, etc.) "
+    "are NOT enabled yet — the API will reject auth_type='oauth' "
+    "with a clear error.\n"
+    "  • Velo (the visitor-facing chat) has access to a server's "
+    "tools ONLY when allowed_for_velo is true. Default is OFF for "
+    "every new server. Never propose toggling Velo on without an "
+    "explicit ask from the owner — when in doubt, ask first.\n"
+    "  • Treat MCP credentials like any other secret: when the owner "
+    "shares one, do not echo it back in plain text in your reply.\n"
+    "When the owner asks how to add a server, walk them through it: "
+    "ask for the URL, the auth method (none/bearer/header), and the "
+    "credential if any; propose the add; ask them to Approve; then "
+    "call test_server and refresh_tools to confirm and surface the "
+    "tool list.\n\n"
     "SNAPSHOT / REVERT:\n"
     "Before any approved update or delete to chatbot_settings, "
     "agent_skills, agent_provider_settings, site_settings, "
@@ -7737,11 +8986,14 @@ def _admin_chat_run_loop(session_id, user_message, max_rounds=8):
     tool_trace = []
 
     for round_no in range(max_rounds):
+        # Recompute tool list each round so newly added/removed MCP
+        # connectors become available without restart.
+        round_tools = list(ADMIN_TOOLS) + _admin_chat_dynamic_mcp_tools()
         try:
             resp = openai_client.chat.completions.create(
                 model=model,
                 messages=messages,
-                tools=ADMIN_TOOLS,
+                tools=round_tools,
                 tool_choice="auto",
                 max_tokens=2048,
                 temperature=0.3,
@@ -7753,10 +9005,21 @@ def _admin_chat_run_loop(session_id, user_message, max_rounds=8):
 
         msg = resp.choices[0].message
         if getattr(msg, "tool_calls", None):
+            # In-memory tool_calls (raw) keep the conversation valid for
+            # the next OpenAI round. The DB-persisted copy and the UI
+            # tool_trace use a redacted version so credentials never
+            # land in admin_chat_messages or the trace shown in chat.
             tc_serialized = [
                 {"id": tc.id, "type": "function",
                  "function": {"name": tc.function.name,
                               "arguments": tc.function.arguments}}
+                for tc in msg.tool_calls
+            ]
+            tc_serialized_redacted = [
+                {"id": tc.id, "type": "function",
+                 "function": {"name": tc.function.name,
+                              "arguments": _redact_sensitive_args(
+                                  tc.function.arguments)}}
                 for tc in msg.tool_calls
             ]
             messages.append({
@@ -7765,16 +9028,25 @@ def _admin_chat_run_loop(session_id, user_message, max_rounds=8):
                 "tool_calls": tc_serialized,
             })
             _admin_chat_persist(session_id, "admin", "assistant",
-                                msg.content or "", tool_calls=tc_serialized)
+                                msg.content or "",
+                                tool_calls=tc_serialized_redacted)
             for tc in msg.tool_calls:
                 result_str, log = execute_admin_tool(
                     tc.function.name, tc.function.arguments, session_id)
+                # Defensive redaction on the result string itself, in
+                # case any tool ever echoes back an auth_credential
+                # field. Today the dedicated mcp_propose_* tools don't,
+                # but this keeps future regressions from leaking secrets
+                # into admin_chat_messages or the trace shown to the
+                # owner.
+                redacted_result = _redact_sensitive_result(result_str)
+                preview = (redacted_result[:500] +
+                           ("…" if len(redacted_result) > 500 else ""))
                 tool_trace.append({
                     "id": tc.id,
                     "name": tc.function.name,
-                    "args": tc.function.arguments,
-                    "result_preview": (result_str[:500] +
-                                       ("…" if len(result_str) > 500 else "")),
+                    "args": _redact_sensitive_args(tc.function.arguments),
+                    "result_preview": preview,
                     "rows": log.get("rows", 0),
                     "ms": log.get("ms", 0),
                     "error": log.get("error", ""),
@@ -7784,7 +9056,8 @@ def _admin_chat_run_loop(session_id, user_message, max_rounds=8):
                     "tool_call_id": tc.id,
                     "content": result_str,
                 })
-                _admin_chat_persist(session_id, "admin", "tool", result_str,
+                _admin_chat_persist(session_id, "admin", "tool",
+                                    redacted_result,
                                     tool_call_id=tc.id,
                                     tool_name=tc.function.name)
             continue
@@ -7944,7 +9217,7 @@ def admin_chat_action_approve(action_id):
     )
     _admin_action_record_followup(
         sid, action_id, "approved",
-        f"Result: {json.dumps(result, default=str)[:300]}",
+        f"Result: {json.dumps(_redact_recursive(result), default=str)[:300]}",
     )
     return jsonify({"ok": True, "status": "executed",
                     "result": result})
@@ -10120,6 +11393,296 @@ def admin_custom_sql_delete(rid):
     execute_db("DELETE FROM custom_sql_skills WHERE id = %s", (rid,))
     sync_custom_skills_to_agent_skills()
     return jsonify({"deleted": True, "id": rid})
+
+
+# =====================================================================
+#  MCP (Model Context Protocol) connector REST endpoints
+#  Each row in mcp_servers is one external MCP server. The cached tool
+#  catalog lives in mcp_tools_cache. Enabled tools are mirrored into
+#  agent_skills by sync_custom_skills_to_agent_skills() so the same
+#  dispatcher path used by knowledge/webhook/sql skills picks them up.
+# =====================================================================
+
+_MCP_SERVER_NAME_RE = _re.compile(r"^[a-z][a-z0-9_-]{0,59}$")
+_MCP_VALID_TRANSPORTS = ("http", "streamable-http")
+_MCP_VALID_AUTH_TYPES = ("none", "bearer", "header", "oauth")
+
+
+def _normalize_mcp_server_payload(data, *, partial=False):
+    out = {}
+    if "name" in data or not partial:
+        nm = (data.get("name") or "").strip().lower()
+        if not _MCP_SERVER_NAME_RE.match(nm or ""):
+            return None, ("name must start with a lowercase letter and use "
+                          "only lowercase letters, digits, hyphens or "
+                          "underscores (max 60 chars).")
+        out["name"] = nm
+    if "description" in data or not partial:
+        out["description"] = (data.get("description") or "").strip()[:2000]
+    if "transport" in data or not partial:
+        t = (data.get("transport") or "http").strip().lower()
+        if t not in _MCP_VALID_TRANSPORTS and t != "sse":
+            return None, f"transport must be one of: http, streamable-http, sse"
+        out["transport"] = t
+    if "url" in data or not partial:
+        url = (data.get("url") or "").strip()
+        if not url and not partial:
+            return None, "url is required"
+        if url:
+            ok, _u, err = _webhook_url_safe(url)
+            if not ok:
+                return None, err or "url refused"
+            out["url"] = url[:1000]
+    if "auth_type" in data or not partial:
+        a = (data.get("auth_type") or "none").strip().lower()
+        if a not in _MCP_VALID_AUTH_TYPES:
+            return None, ("auth_type must be one of: "
+                          + ", ".join(_MCP_VALID_AUTH_TYPES))
+        if a == "oauth" and not MCP_CONNECTOR_BLUEPRINTS:
+            return None, ("OAuth connectors are not enabled yet (no "
+                          "connector blueprints registered). Use "
+                          "auth_type 'none', 'bearer', or 'header' for "
+                          "now.")
+        out["auth_type"] = a
+    if "auth_header_name" in data:
+        out["auth_header_name"] = (data.get("auth_header_name") or "").strip()[:100]
+    if "auth_credential" in data:
+        out["auth_credential"] = (data.get("auth_credential") or "")[:4000]
+    if "connector_type" in data:
+        ct = (data.get("connector_type") or "custom").strip().lower()[:50]
+        out["connector_type"] = ct or "custom"
+    for boolfield in ("enabled", "allowed_for_admin", "allowed_for_velo"):
+        if boolfield in data:
+            v = data.get(boolfield)
+            out[boolfield] = (v.strip().lower() in ("true", "1", "yes", "on")
+                              if isinstance(v, str) else bool(v))
+    return out, None
+
+
+def _mcp_server_public_dict(row):
+    """Strip the credential before returning over the wire — admins see
+    a "set / not set" hint, never the raw token."""
+    if not row:
+        return None
+    out = dict(row)
+    cred = out.pop("auth_credential", "")
+    out["auth_credential_set"] = bool((cred or "").strip())
+    for k in ("created_at", "updated_at", "last_test_at"):
+        if hasattr(out.get(k), "isoformat"):
+            out[k] = out[k].isoformat()
+    return out
+
+
+def _mcp_refresh_server_tools(server_row):
+    """Call tools/list on the server and overwrite mcp_tools_cache for it.
+    Returns (tools_list_or_none, error_str_or_none). Also stamps
+    last_test_*. The caller is responsible for sync_custom_skills_to_
+    agent_skills() afterwards if it wants the new tools live."""
+    tools, err = _mcp_list_tools(server_row)
+    if err is not None:
+        msg = (err.get("message") or "")[:400]
+        execute_db(
+            "UPDATE mcp_servers SET last_test_at = NOW(), "
+            "    last_test_ok = false, last_test_error = %s, updated_at = NOW() "
+            "WHERE id = %s",
+            (msg, server_row["id"]),
+        )
+        return None, msg
+    # Wipe + reinsert the cache for this server. We snapshot first so
+    # revert can restore the previous catalog.
+    _admin_snapshot_row("mcp_tools_cache", server_row["id"], None,
+                        "Before MCP tools/list refresh")
+    execute_db("DELETE FROM mcp_tools_cache WHERE server_id = %s",
+               (server_row["id"],))
+    saved = []
+    for t in tools or []:
+        if not isinstance(t, dict):
+            continue
+        nm = (t.get("name") or "").strip()
+        if not nm:
+            continue
+        try:
+            execute_db(
+                "INSERT INTO mcp_tools_cache "
+                "(server_id, tool_name, description, input_schema_json, "
+                " enabled, last_synced_at) "
+                "VALUES (%s, %s, %s, %s::jsonb, true, NOW())",
+                (
+                    server_row["id"], nm[:200],
+                    (t.get("description") or "")[:2000],
+                    json.dumps(t.get("inputSchema") or
+                               {"type": "object", "properties": {}, "required": []}),
+                ),
+            )
+            saved.append(nm)
+        except Exception as e:
+            print(f"[mcp] cache insert failed for {nm}: {e}")
+    execute_db(
+        "UPDATE mcp_servers SET last_test_at = NOW(), "
+        "    last_test_ok = true, last_test_error = '', updated_at = NOW() "
+        "WHERE id = %s",
+        (server_row["id"],),
+    )
+    return saved, None
+
+
+@app.route("/admin/api/mcp/servers", methods=["GET"])
+@admin_required
+def admin_mcp_servers_list():
+    rows = query_db(
+        "SELECT id, name, description, transport, url, auth_type, "
+        "       auth_header_name, auth_credential, enabled, "
+        "       allowed_for_admin, allowed_for_velo, connector_type, "
+        "       last_test_at, last_test_ok, last_test_error, "
+        "       created_at, updated_at "
+        "FROM mcp_servers ORDER BY id DESC"
+    ) or []
+    return jsonify([_mcp_server_public_dict(r) for r in rows])
+
+
+@app.route("/admin/api/mcp/servers", methods=["POST"])
+@admin_required
+def admin_mcp_servers_create():
+    cleaned, err = _normalize_mcp_server_payload(
+        request.get_json() or {}, partial=False)
+    if err:
+        return jsonify({"error": err}), 400
+    if query_db("SELECT 1 FROM mcp_servers WHERE name = %s",
+                (cleaned["name"],), fetchone=True):
+        return jsonify({"error": f"an MCP server named '{cleaned['name']}' already exists"}), 409
+    try:
+        row = execute_db(
+            "INSERT INTO mcp_servers "
+            "(name, description, transport, url, auth_type, "
+            " auth_header_name, auth_credential, enabled, "
+            " allowed_for_admin, allowed_for_velo, connector_type) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "RETURNING *",
+            (
+                cleaned["name"], cleaned.get("description", ""),
+                cleaned.get("transport", "http"), cleaned["url"],
+                cleaned.get("auth_type", "none"),
+                cleaned.get("auth_header_name", ""),
+                cleaned.get("auth_credential", ""),
+                cleaned.get("enabled", True),
+                cleaned.get("allowed_for_admin", True),
+                cleaned.get("allowed_for_velo", False),
+                cleaned.get("connector_type", "custom"),
+            ),
+        )
+    except psycopg2.IntegrityError:
+        return jsonify({"error": f"an MCP server named '{cleaned['name']}' already exists"}), 409
+    sync_custom_skills_to_agent_skills()
+    return jsonify(_mcp_server_public_dict(row)), 201
+
+
+@app.route("/admin/api/mcp/servers/<int:rid>", methods=["PUT"])
+@admin_required
+def admin_mcp_servers_update(rid):
+    existing = query_db("SELECT * FROM mcp_servers WHERE id = %s",
+                        (rid,), fetchone=True)
+    if not existing:
+        return jsonify({"error": "not found"}), 404
+    payload = request.get_json() or {}
+    payload.pop("name", None)  # name is immutable post-creation
+    cleaned, err = _normalize_mcp_server_payload(payload, partial=True)
+    if err:
+        return jsonify({"error": err}), 400
+    if not cleaned:
+        return jsonify(_mcp_server_public_dict(existing))
+    _admin_snapshot_row("mcp_servers", rid, None,
+                        "Edited from admin dashboard")
+    sets, params = [], []
+    for k in ("description", "transport", "url", "auth_type",
+              "auth_header_name", "auth_credential", "enabled",
+              "allowed_for_admin", "allowed_for_velo", "connector_type"):
+        if k in cleaned:
+            sets.append(f"{k} = %s"); params.append(cleaned[k])
+    sets.append("updated_at = NOW()"); params.append(rid)
+    row = execute_db(
+        f"UPDATE mcp_servers SET {', '.join(sets)} "
+        f"WHERE id = %s RETURNING *", tuple(params),
+    )
+    sync_custom_skills_to_agent_skills()
+    return jsonify(_mcp_server_public_dict(row))
+
+
+@app.route("/admin/api/mcp/servers/<int:rid>", methods=["DELETE"])
+@admin_required
+def admin_mcp_servers_delete(rid):
+    existing = query_db("SELECT id FROM mcp_servers WHERE id = %s",
+                        (rid,), fetchone=True)
+    if not existing:
+        return jsonify({"error": "not found"}), 404
+    _admin_snapshot_row("mcp_servers", rid, None,
+                        "Deleted from admin dashboard")
+    # mcp_tools_cache rows cascade-delete; agent_skills rows linked via
+    # config_json["server_id"]=rid are pruned by the post-write sync.
+    execute_db("DELETE FROM mcp_servers WHERE id = %s", (rid,))
+    sync_custom_skills_to_agent_skills()
+    return jsonify({"deleted": True, "id": rid})
+
+
+@app.route("/admin/api/mcp/servers/<int:rid>/test", methods=["POST"])
+@admin_required
+def admin_mcp_servers_test(rid):
+    """Synchronous tools/list against the server. Updates last_test_*
+    and refreshes the cached tool catalog as a side effect — this is
+    the 'Test connection' button on the dashboard."""
+    row = query_db("SELECT * FROM mcp_servers WHERE id = %s",
+                   (rid,), fetchone=True)
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    saved, err = _mcp_refresh_server_tools(row)
+    if err is not None:
+        return jsonify({"ok": False, "error": err}), 200
+    sync_custom_skills_to_agent_skills()
+    return jsonify({"ok": True, "tools": saved, "count": len(saved)})
+
+
+@app.route("/admin/api/mcp/servers/<int:rid>/refresh-tools", methods=["POST"])
+@admin_required
+def admin_mcp_servers_refresh_tools(rid):
+    """Same physical action as test — rediscover and persist tools.
+    Kept as a separate route so the dashboard can label the button
+    'Refresh tools' once a server has already passed Test."""
+    return admin_mcp_servers_test(rid)
+
+
+@app.route("/admin/api/mcp/servers/<int:rid>/tools", methods=["GET"])
+@admin_required
+def admin_mcp_servers_tools(rid):
+    """Return the cached tool catalog for one server (no network call)."""
+    if not query_db("SELECT 1 FROM mcp_servers WHERE id = %s",
+                    (rid,), fetchone=True):
+        return jsonify({"error": "not found"}), 404
+    rows = query_db(
+        "SELECT id, server_id, tool_name, description, input_schema_json, "
+        "       enabled, last_synced_at "
+        "FROM mcp_tools_cache WHERE server_id = %s "
+        "ORDER BY tool_name ASC", (rid,)
+    ) or []
+    for r in rows:
+        if hasattr(r.get("last_synced_at"), "isoformat"):
+            r["last_synced_at"] = r["last_synced_at"].isoformat()
+    return jsonify(rows)
+
+
+@app.route("/admin/api/mcp/connector-blueprints", methods=["GET"])
+@admin_required
+def admin_mcp_connector_blueprints():
+    """V2 scaffolding endpoint. Returns the list of pre-baked connector
+    blueprints (Linear/GitHub/etc.) the admin can add with one click.
+    Empty in V1 by design — populated as we ship each connector."""
+    out = []
+    for slug, b in MCP_CONNECTOR_BLUEPRINTS.items():
+        out.append({
+            "slug": slug,
+            "display_name": b.get("display_name") or slug,
+            "default_url": b.get("default_url") or "",
+            "oauth_scopes": b.get("oauth_scopes") or [],
+        })
+    return jsonify(out)
 
 
 @app.route("/admin/api/llm-provider", methods=["GET"])
