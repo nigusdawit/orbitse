@@ -10002,8 +10002,22 @@ def _admin_chat_persist(session_id, mode, role, content,
         print(f"[admin_chat] persist failed: {e}")
 
 
-def _admin_chat_run_loop(session_id, user_message, max_rounds=8):
-    """Run the admin agent loop. Returns (final_text, tool_trace)."""
+def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
+    """Streaming admin agent loop — generator yielding event dicts:
+        {"type": "token",      "content": str}        — token delta
+        {"type": "tool_start", "tool":    {id,name,args}} — about to run
+        {"type": "tool_end",   "tool":    {id,name,args,result_preview,
+                                           rows,ms,error}} — finished
+        {"type": "done",       "content": final_text}    — turn complete
+        {"type": "error",      "content": str}           — fatal error
+
+    Reuses _stream_round_openai (same OpenAI streaming primitive the
+    visitor SSE chat uses) so token + tool_call deltas accumulate
+    correctly. History load, persistence, redaction, and tool dispatch
+    match _admin_chat_run_loop exactly — that function is now a thin
+    wrapper that drains this generator into (final_text, tool_trace)
+    so /admin/api/chat/send keeps working unchanged for non-SSE callers.
+    """
     # Pull the active openai model from agent_provider_settings.
     model = "gpt-4o-mini"
     try:
@@ -10074,94 +10088,138 @@ def _admin_chat_run_loop(session_id, user_message, max_rounds=8):
     _admin_chat_persist(session_id, "admin", "user", user_message)
 
     final_text = ""
-    tool_trace = []
 
     for round_no in range(max_rounds):
         # Recompute tool list each round so newly added/removed MCP
-        # connectors become available without restart.
+        # connectors and custom skills become available without restart.
         round_tools = list(ADMIN_TOOLS) + _admin_chat_dynamic_tools()
+
+        round_text = ""
+        tcs = []
+        finish_reason = None
         try:
-            resp = openai_client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=round_tools,
-                tool_choice="auto",
-                max_tokens=2048,
-                temperature=0.3,
-            )
+            for event in _stream_round_openai(
+                    model, messages, round_tools,
+                    max_tokens=2048, temperature=0.3):
+                kind = event[0]
+                if kind == "token":
+                    round_text += event[1]
+                    yield {"type": "token", "content": event[1]}
+                elif kind == "tool_call":
+                    tcs.append(event[1])
+                elif kind == "finish":
+                    finish_reason = event[1]
         except Exception as e:
             err = f"Admin chat error: {str(e)[:300]}"
             _admin_chat_persist(session_id, "admin", "assistant", err)
-            return err, tool_trace
+            yield {"type": "error", "content": err}
+            return
 
-        msg = resp.choices[0].message
-        if getattr(msg, "tool_calls", None):
-            # In-memory tool_calls (raw) keep the conversation valid for
-            # the next OpenAI round. The DB-persisted copy and the UI
-            # tool_trace use a redacted version so credentials never
-            # land in admin_chat_messages or the trace shown in chat.
+        if finish_reason == "tool_calls" and tcs:
+            # In-memory tool_calls (raw) keep the conversation valid
+            # for the next OpenAI round. The DB-persisted copy and the
+            # UI tool events use a redacted version so credentials
+            # never land in admin_chat_messages or in the trace shown
+            # in chat.
             tc_serialized = [
-                {"id": tc.id, "type": "function",
-                 "function": {"name": tc.function.name,
-                              "arguments": tc.function.arguments}}
-                for tc in msg.tool_calls
+                {"id": tc["id"], "type": "function",
+                 "function": {"name": tc["name"],
+                              "arguments": tc["args"]}}
+                for tc in tcs
             ]
             tc_serialized_redacted = [
-                {"id": tc.id, "type": "function",
-                 "function": {"name": tc.function.name,
+                {"id": tc["id"], "type": "function",
+                 "function": {"name": tc["name"],
                               "arguments": _redact_sensitive_args(
-                                  tc.function.arguments)}}
-                for tc in msg.tool_calls
+                                  tc["args"])}}
+                for tc in tcs
             ]
             messages.append({
                 "role": "assistant",
-                "content": msg.content or "",
+                "content": round_text or "",
                 "tool_calls": tc_serialized,
             })
             _admin_chat_persist(session_id, "admin", "assistant",
-                                msg.content or "",
+                                round_text or "",
                                 tool_calls=tc_serialized_redacted)
-            for tc in msg.tool_calls:
+            for tc in tcs:
+                # Announce the tool is starting so the UI can render a
+                # "running…" placeholder card before the result lands.
+                yield {
+                    "type": "tool_start",
+                    "tool": {
+                        "id": tc["id"],
+                        "name": tc["name"],
+                        "args": _redact_sensitive_args(tc["args"]),
+                    },
+                }
                 result_str, log = execute_admin_tool(
-                    tc.function.name, tc.function.arguments, session_id)
+                    tc["name"], tc["args"], session_id)
                 # Defensive redaction on the result string itself, in
                 # case any tool ever echoes back an auth_credential
                 # field. Today the dedicated mcp_propose_* tools don't,
-                # but this keeps future regressions from leaking secrets
-                # into admin_chat_messages or the trace shown to the
-                # owner.
+                # but this keeps future regressions from leaking
+                # secrets into admin_chat_messages or the trace shown
+                # to the owner.
                 redacted_result = _redact_sensitive_result(result_str)
                 preview = (redacted_result[:500] +
                            ("…" if len(redacted_result) > 500 else ""))
-                tool_trace.append({
-                    "id": tc.id,
-                    "name": tc.function.name,
-                    "args": _redact_sensitive_args(tc.function.arguments),
-                    "result_preview": preview,
-                    "rows": log.get("rows", 0),
-                    "ms": log.get("ms", 0),
-                    "error": log.get("error", ""),
-                })
+                yield {
+                    "type": "tool_end",
+                    "tool": {
+                        "id": tc["id"],
+                        "name": tc["name"],
+                        "args": _redact_sensitive_args(tc["args"]),
+                        "result_preview": preview,
+                        "rows": log.get("rows", 0),
+                        "ms": log.get("ms", 0),
+                        "error": log.get("error", ""),
+                    },
+                }
                 messages.append({
                     "role": "tool",
-                    "tool_call_id": tc.id,
+                    "tool_call_id": tc["id"],
                     "content": result_str,
                 })
                 _admin_chat_persist(session_id, "admin", "tool",
                                     redacted_result,
-                                    tool_call_id=tc.id,
-                                    tool_name=tc.function.name)
+                                    tool_call_id=tc["id"],
+                                    tool_name=tc["name"])
             continue
 
-        final_text = msg.content or ""
+        # No more tool calls — final assistant turn.
+        final_text = round_text or ""
         _admin_chat_persist(session_id, "admin", "assistant", final_text)
-        return final_text, tool_trace
+        yield {"type": "done", "content": final_text}
+        return
 
     # Hit the round cap — surface what we have.
     final_text = (final_text or
                   "I hit the tool-call round limit before reaching a "
                   "final answer. Try narrowing the question.")
     _admin_chat_persist(session_id, "admin", "assistant", final_text)
+    yield {"type": "done", "content": final_text}
+
+
+def _admin_chat_run_loop(session_id, user_message, max_rounds=8):
+    """Non-streaming wrapper around _admin_chat_stream_loop. Drains the
+    generator and returns (final_text, tool_trace) so the legacy
+    /admin/api/chat/send JSON endpoint keeps working unchanged for
+    callers that don't speak SSE (curl tests, server-to-server, etc.)."""
+    final_text = ""
+    tool_trace = []
+    try:
+        for evt in _admin_chat_stream_loop(
+                session_id, user_message, max_rounds=max_rounds):
+            t = evt.get("type")
+            if t == "tool_end":
+                tool_trace.append(evt.get("tool") or {})
+            elif t == "done":
+                final_text = evt.get("content") or ""
+            elif t == "error":
+                final_text = evt.get("content") or "Admin chat error"
+    except Exception as e:
+        final_text = f"Admin chat error: {str(e)[:300]}"
     return final_text, tool_trace
 
 
@@ -10169,8 +10227,9 @@ def _admin_chat_run_loop(session_id, user_message, max_rounds=8):
 @admin_required
 def admin_agent_chat_send():
     """POST /admin/api/chat/send  — body {session_id, message}.
-    Runs the admin agent loop and returns the final assistant text plus
-    a tool trace the UI uses to render expandable per-step cards."""
+    Non-streaming JSON endpoint kept for backwards compatibility (curl
+    tests, server-to-server callers). For the live UI use the SSE
+    /admin/api/chat/stream endpoint below."""
     data = request.get_json() or {}
     session_id = (data.get("session_id") or "")[:100]
     message = (data.get("message") or "").strip()
@@ -10178,6 +10237,55 @@ def admin_agent_chat_send():
         return jsonify({"error": "session_id and message are required"}), 400
     text, trace = _admin_chat_run_loop(session_id, message)
     return jsonify({"reply": text, "tool_trace": trace})
+
+
+@app.route("/admin/api/chat/stream", methods=["POST"])
+@admin_required
+def admin_agent_chat_stream():
+    """POST /admin/api/chat/stream  — body {session_id, message}.
+
+    Server-Sent Events stream of the admin agent turn. Mirrors the
+    visitor /api/chat SSE shape so the dashboard can reuse the same
+    parsing pattern. Event types:
+      - {"type": "token",      "content": "..."}        — token delta
+      - {"type": "tool_start", "tool":    {id,name,args}}
+      - {"type": "tool_end",   "tool":    {...with result_preview}}
+      - {"type": "done",       "content": final_text}   — turn complete
+      - {"type": "error",      "content": "..."}        — fatal error
+
+    Persistence + redaction live inside _admin_chat_stream_loop, so
+    refreshing the page (which calls /admin/api/chat/history) replays
+    the same messages whether the user opened them streaming or not."""
+    data = request.get_json() or {}
+    session_id = (data.get("session_id") or "")[:100]
+    message = (data.get("message") or "").strip()
+    if not session_id or not message:
+        return jsonify({"error": "session_id and message are required"}), 400
+
+    def generate():
+        try:
+            for evt in _admin_chat_stream_loop(session_id, message):
+                yield f"data: {json.dumps(evt)}\n\n"
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            yield (
+                "data: "
+                + json.dumps({
+                    "type": "error",
+                    "content": "Admin chat connection issue.",
+                })
+                + "\n\n"
+            )
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        },
+    )
 
 
 @app.route("/admin/api/chat/history", methods=["GET"])

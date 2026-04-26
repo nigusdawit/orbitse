@@ -3743,28 +3743,93 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     try {
       if (mode === 'admin') {
-        const r = await fetch('/admin/api/chat/send', {
+        // Streaming SSE — same protocol as the visitor /api/chat
+        // endpoint, plus tool_start/tool_end events so we can render
+        // tool cards inline as they happen instead of waiting for the
+        // whole turn to finish. The bubble + toolBox shape mirrors the
+        // markup adminChatBubble produces, so a page reload (which
+        // calls /admin/api/chat/history) renders the same thing the
+        // user just saw stream in.
+        const r = await fetch('/admin/api/chat/stream', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({session_id: sid, message: message}),
         });
-        const data = await r.json();
         document.getElementById('admin-chat-thinking')?.remove();
-        if (data.error) {
+        if (!r.ok) {
+          let errText = '';
+          try { errText = (await r.json()).error || ''; } catch (_) {}
           box.insertAdjacentHTML('beforeend',
-            adminChatBubble('assistant', '<em>' + adminChatEscape(data.error) + '</em>'));
+            adminChatBubble('assistant',
+              '<em>' + adminChatEscape(errText || ('HTTP ' + r.status)) + '</em>'));
         } else {
-          let toolHtml = '';
-          for (const t of (data.tool_trace || [])) {
-            toolHtml += adminChatToolCard(t);
-            const proposal = adminChatPickProposal(t.result_preview);
-            if (proposal) {
-              toolHtml += adminChatActionCard(
-                proposal.action_id, proposal.preview);
+          const turnTs = Date.now();
+          const bubbleId = 'admin-chat-sbubble-' + turnTs;
+          const toolsId  = 'admin-chat-stools-'  + turnTs;
+          box.insertAdjacentHTML('beforeend',
+            `<div style="display:flex; flex-direction:column; align-items:flex-start; gap:.25rem;" data-testid="bubble-admin-chat-assistant">
+              <div id="${bubbleId}" style="max-width:80%; background:var(--admin-surface); color:var(--admin-text); padding:.75rem 1rem; border-radius:.75rem; border:1px solid var(--admin-border); white-space:pre-wrap; word-wrap:break-word;"></div>
+              <div id="${toolsId}" style="display:flex; flex-direction:column; gap:.25rem; width:100%;"></div>
+            </div>`);
+          const target  = document.getElementById(bubbleId);
+          const toolBox = document.getElementById(toolsId);
+          const reader  = r.body.getReader();
+          const decoder = new TextDecoder();
+          let acc = '';
+          let buf = '';
+          while (true) {
+            const {value, done} = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, {stream: true});
+            const lines = buf.split('\n');
+            buf = lines.pop();
+            for (const line of lines) {
+              if (!line.startsWith('data:')) continue;
+              const payload = line.slice(5).trim();
+              if (!payload) continue;
+              let evt;
+              try { evt = JSON.parse(payload); } catch (_) { continue; }
+              if (evt.type === 'token' && evt.content) {
+                acc += evt.content;
+                target.innerHTML = adminChatRenderMd(acc);
+                adminChatScrollDown();
+              } else if (evt.type === 'tool_start' && evt.tool) {
+                // Placeholder card replaced when the matching tool_end
+                // arrives. tc.id is unique per OpenAI tool call so we
+                // can address by it; falls back to a random id if the
+                // backend ever omitted it.
+                const t = evt.tool;
+                const cardId = 'admin-chat-toolrun-' + (t.id || Math.random().toString(36).slice(2));
+                toolBox.insertAdjacentHTML('beforeend',
+                  `<div id="${cardId}" data-testid="toolrun-${adminChatEscape(t.name || 'tool')}" style="max-width:80%; background:var(--admin-bg); border:1px dashed var(--admin-border); border-radius:.5rem; padding:.5rem .75rem; font-size:.85rem; color:var(--admin-text-muted);">running <code>${adminChatEscape(t.name || 'tool')}</code>…</div>`);
+                adminChatScrollDown();
+              } else if (evt.type === 'tool_end' && evt.tool) {
+                const t = evt.tool;
+                const cardId = 'admin-chat-toolrun-' + (t.id || '');
+                const placeholder = document.getElementById(cardId);
+                const html = adminChatToolCard(t);
+                if (placeholder) {
+                  placeholder.outerHTML = html;
+                } else {
+                  toolBox.insertAdjacentHTML('beforeend', html);
+                }
+                const proposal = adminChatPickProposal(t.result_preview);
+                if (proposal) {
+                  toolBox.insertAdjacentHTML('beforeend',
+                    adminChatActionCard(proposal.action_id, proposal.preview));
+                }
+                adminChatScrollDown();
+              } else if (evt.type === 'done') {
+                if (!acc && evt.content) {
+                  acc = evt.content;
+                  target.innerHTML = adminChatRenderMd(acc);
+                }
+              } else if (evt.type === 'error') {
+                acc += '\n[error] ' + (evt.content || '');
+                target.innerHTML = adminChatRenderMd(acc);
+              }
             }
           }
-          box.insertAdjacentHTML('beforeend',
-            adminChatBubble('assistant', adminChatRenderMd(data.reply || ''), toolHtml));
         }
       } else {
         // Visitor mode: hit the same SSE chat endpoint visitors use.
