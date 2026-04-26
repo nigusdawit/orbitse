@@ -108,6 +108,14 @@ app = Flask(
     template_folder="templates"   # Jinja2 templates for admin dashboard
 )
 
+# Trust the platform's reverse proxy so url_for(_external=True) builds
+# correct https URLs (the proxy terminates TLS and forwards plain HTTP
+# to this app with X-Forwarded-Proto / X-Forwarded-Host set). Without
+# this, OAuth redirect URIs come out as http://... which breaks the
+# round-trip from providers like GitHub.
+from werkzeug.middleware.proxy_fix import ProxyFix
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1, x_for=1)
+
 # Secret key for Flask sessions (used for admin login persistence).
 # Priority: FLASK_SECRET_KEY env var > persisted .flask_secret file > new random.
 # We persist a generated key to a local file so admin sessions survive workflow
