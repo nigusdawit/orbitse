@@ -12004,8 +12004,12 @@ def admin_generate_narration(pid):
     if not deck:
         return jsonify({"error": "Presentation not found"}), 404
 
+    # Pull image_url too — we feed the actual rendered slide image to the
+    # vision model so it can SEE what's on screen instead of guessing
+    # from empty title/body fields (the common case for imported PDF /
+    # PowerPoint decks where the slide IS the image).
     slides = query_db(
-        "SELECT id, order_index, title, body, narration_text "
+        "SELECT id, order_index, title, body, image_url, narration_text "
         "FROM presentation_slides WHERE presentation_id = %s "
         "ORDER BY order_index ASC, id ASC",
         (pid,),
@@ -12028,98 +12032,206 @@ def admin_generate_narration(pid):
     if not targets:
         return jsonify({"updated": 0, "skipped": len(slides), "errors": []})
 
-    # Build a single LLM call that writes narration for ALL target slides
-    # in one shot — much faster + cheaper than one call per slide, and
-    # the model can write with awareness of the deck's overall arc.
-    deck_outline = "\n".join(
-        f"  Slide {s['order_index']+1}: {(s.get('title') or '').strip()}"
-        for s in slides
-    )
-    slides_payload = []
-    for s in targets:
-        slides_payload.append({
-            "id": s["id"],
-            "position": s["order_index"] + 1,
-            "title": (s.get("title") or "").strip(),
-            "body":  (s.get("body")  or "").strip()[:1500],
-        })
+    # ----- Per-slide context-aware vision pass --------------------------------
+    # We make ONE call per target slide so the model can:
+    #   1. SEE the rendered slide via vision (huge win for image-only decks)
+    #   2. Receive the deck title/description as overall arc context
+    #   3. See the previous + next slide's content for narrative continuity
+    #   4. See any existing extracted text (PDF text or speaker notes) as
+    #      a hint of what the slide is "about" without forcing the model
+    #      to read it verbatim
+    # Calls are run in parallel with a small worker pool so a 15-slide
+    # deck completes in roughly the same wall-clock time as 2-3 slides
+    # would take serially. We bound concurrency to be polite to the API.
+    deck_title       = (deck.get("title") or "").strip()
+    deck_description = (deck.get("description") or "").strip()
+
+    # Capture URL root NOW, before threading: Flask's request context is
+    # not available inside worker threads. We won't actually use the URL
+    # (we base64-inline the image instead — see below) but we may fall
+    # back to URL passthrough for slides that reference an external image.
+    try:
+        url_root = request.url_root.rstrip("/")
+    except Exception:
+        url_root = ""
+
+    def _short_summary(s, cap=180):
+        """Compact one-liner of what's on slide `s`, used as adjacent-
+        slide context. Prefers title, then body. Deliberately does NOT
+        fall back to narration_text — on a re-run with force=true that
+        column may already contain LLM-written narration, and feeding
+        prior LLM output back into the prompt creates a feedback loop
+        where the model mimics its own previous style instead of
+        writing fresh from the slide image. For image-only PDF imports
+        we accept that the only signal for adjacency is the slide
+        position number, which is honest."""
+        title = (s.get("title") or "").strip()
+        if title:
+            return title[:cap]
+        body = (s.get("body") or "").strip()
+        if body:
+            return body[:cap]
+        return "(image-only slide — no parsed text)"
+
+    def _image_data_url_for(slide):
+        """Return a data: URL for the slide's image so the vision API
+        can see it without making an outbound HTTP fetch back to us
+        (which would fail on private/locked-down deployments).
+        Returns None when there's no usable image."""
+        img = (slide.get("image_url") or "").strip()
+        if not img:
+            return None
+        # External URLs (admin pasted a CDN link, etc.) — pass through.
+        if img.startswith(("http://", "https://")):
+            return img
+        # Local /uploads/<file> — read from disk, base64 encode.
+        if img.startswith("/uploads/"):
+            rel = img[len("/uploads/"):]
+            # Belt-and-braces: although image_url comes from our own
+            # import code (never user input), an admin could in theory
+            # paste a crafted path. Resolve and confirm the result is
+            # actually inside UPLOAD_FOLDER before opening it.
+            disk = os.path.realpath(os.path.join(UPLOAD_FOLDER, rel))
+            upload_root = os.path.realpath(UPLOAD_FOLDER)
+            if not disk.startswith(upload_root + os.sep) and disk != upload_root:
+                return None
+            if not os.path.isfile(disk):
+                return None
+            try:
+                with open(disk, "rb") as fh:
+                    raw = fh.read()
+            except Exception:
+                return None
+            ext = (rel.rsplit(".", 1)[-1] or "jpg").lower()
+            mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
+                    "png": "image/png",  "webp": "image/webp",
+                    "gif": "image/gif"}.get(ext, "image/jpeg")
+            import base64 as _b64
+            return f"data:{mime};base64,{_b64.b64encode(raw).decode('ascii')}"
+        return None
+
+    def _build_user_content(slide):
+        """Assemble the multimodal user-message content for one slide:
+        text context + the rendered slide image when available."""
+        pos   = slide["order_index"] + 1
+        total = len(slides)
+        idx   = slide["order_index"]
+        prev_s = slides[idx - 1] if idx - 1 >= 0 else None
+        next_s = slides[idx + 1] if idx + 1 < total else None
+
+        lines = [
+            f'DECK: "{deck_title}"',
+            f"DECK DESCRIPTION: {deck_description or '(none provided)'}",
+            f"SLIDE POSITION: {pos} of {total}",
+        ]
+        if prev_s:
+            lines.append(f"PREVIOUS SLIDE ({pos-1} of {total}): {_short_summary(prev_s)}")
+        if next_s:
+            lines.append(f"NEXT SLIDE ({pos+1} of {total}): {_short_summary(next_s)}")
+
+        title_txt = (slide.get("title") or "").strip()
+        body_txt  = (slide.get("body")  or "").strip()
+        narr_txt  = (slide.get("narration_text") or "").strip()
+        if title_txt:
+            lines.append(f"\nTHIS SLIDE'S TITLE: {title_txt}")
+        if body_txt:
+            lines.append(f"THIS SLIDE'S BODY:\n{body_txt[:4000]}")
+        # Show extracted/raw text only when we don't already have
+        # structured title+body — it's most useful for image-only PDF
+        # imports where it's the only textual signal we have.
+        if not title_txt and not body_txt and narr_txt:
+            lines.append(f"EXTRACTED TEXT FROM THIS SLIDE (raw, may be noisy):\n{narr_txt[:4000]}")
+
+        lines.append(
+            "\nTASK: Write 2-3 conversational sentences (35-65 words "
+            "total) you would speak aloud WHILE PRESENTING this slide. "
+            "Reference what's actually on the slide image. Connect to "
+            "the deck arc when natural. No greetings, no 'in this "
+            "slide we will…' filler, no markdown, no emoji, no labels. "
+            "Output ONLY the spoken sentences."
+        )
+
+        content = [{"type": "text", "text": "\n".join(lines)}]
+        img_url = _image_data_url_for(slide)
+        if img_url:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": img_url, "detail": "low"},
+            })
+        return content
 
     sys_msg = (
-        "You are the live PRESENTER for a slide deck. For each slide you "
-        "receive, write 2-3 conversational sentences that you would speak "
-        "aloud while PRESENTING that slide to the audience — not just "
-        "narrating, but actually walking them through what's on screen, "
-        "explaining why it matters, and connecting it to the overall "
-        "story arc of the deck.\n\n"
-        "Do NOT read the bullets verbatim. Paraphrase, surface the "
-        "insight behind them, and make every sentence sound natural "
-        "when spoken aloud. Treat the slide title and body as your cue "
-        "card — you can SEE them, your audience can SEE them, so add "
-        "value beyond what's already written. No greetings, no "
-        "'in this slide we will…' filler, no markdown, no emoji. 35-65 "
-        "words per slide. Use the deck outline below for continuity — "
-        "phrases like 'building on what we just covered' are great when "
-        "they genuinely fit, but never forced. Output STRICT JSON only:\n"
-        '{"slides":[{"id":<int>,"narration":"..."}, ...]}'
-    )
-    user_msg = (
-        f"Deck title: {deck.get('title') or ''}\n"
-        f"Deck description: {(deck.get('description') or '').strip()}\n\n"
-        f"Full deck outline (for flow awareness):\n{deck_outline}\n\n"
-        f"Write narration for these slides (return JSON exactly per the "
-        f"schema above):\n{json.dumps(slides_payload, ensure_ascii=False)}"
+        "You are the live PRESENTER for a slide deck — not a generic "
+        "narrator and not a Q&A bot. Your audience is watching the slide "
+        "RIGHT NOW; the slide image is attached so you can see exactly "
+        "what they see. For each slide, write 2-3 conversational "
+        "sentences (35-65 words) that you would speak aloud while "
+        "presenting that specific slide. Walk the audience through what "
+        "matters on screen, surface the insight behind any bullets or "
+        "numbers, and connect to the deck's overall arc when it fits "
+        "naturally. Never read bullets verbatim. Never use filler like "
+        '"in this slide we will…" or "as you can see". No markdown, no '
+        "emoji, no labels — just the spoken sentences."
     )
 
-    try:
-        resp = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": sys_msg},
-                {"role": "user",   "content": user_msg},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.7,
-        )
-        raw = resp.choices[0].message.content or "{}"
-        parsed = json.loads(raw)
-    except Exception as e:
-        return jsonify({"updated": 0, "skipped": len(slides) - len(targets),
-                        "errors": [f"LLM call failed: {e}"]}), 500
+    def _gen_one(slide):
+        try:
+            content = _build_user_content(slide)
+            resp = openai_client.chat.completions.create(
+                model="gpt-4o-mini",   # supports vision
+                messages=[
+                    {"role": "system", "content": sys_msg},
+                    {"role": "user",   "content": content},
+                ],
+                temperature=0.7,
+                max_tokens=220,
+            )
+            txt = (resp.choices[0].message.content or "").strip()
+            return slide["id"], txt, None
+        except Exception as e:
+            return slide["id"], "", str(e)[:300]
 
-    # Map back to slide IDs and save. We trust the model on the per-slide
-    # 'id' field but also fall back to position-order in case it strips ids.
-    out_map = {}
-    for row in (parsed.get("slides") or []):
-        sid = row.get("id")
-        narr = (row.get("narration") or "").strip()
-        if not narr:
-            continue
-        if sid is not None:
-            try: out_map[int(sid)] = narr
-            except Exception: pass
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    results = {}            # slide_id -> narration string
+    per_slide_errors = {}   # slide_id -> error string
+    # 5 workers keeps us comfortably under most rate limits while still
+    # making a 15-slide deck feel snappy (~3 sequential batches).
+    # Track future -> slide so a worker crash that escapes _gen_one's
+    # try/except (theoretically impossible, but belt-and-braces) still
+    # gets attributed to the right slide for the human-readable error.
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        future_to_slide = {ex.submit(_gen_one, s): s for s in targets}
+        for fut in as_completed(future_to_slide):
+            slide = future_to_slide[fut]
+            try:
+                sid, narr, err = fut.result()
+            except Exception as e:
+                per_slide_errors[slide["id"]] = f"thread crashed: {str(e)[:240]}"
+                continue
+            if err:
+                per_slide_errors[sid] = err
+            elif narr:
+                results[sid] = narr
 
-    if not out_map and parsed.get("slides"):
-        # Model returned narrations without ids — line them up by position
-        for s, row in zip(targets, parsed["slides"]):
-            narr = (row.get("narration") or "").strip()
-            if narr:
-                out_map[s["id"]] = narr
-
+    # ----- Persist + collect human-readable errors ---------------------------
     updated = 0
     errors = []
     for s in targets:
-        narr = out_map.get(s["id"])
+        sid = s["id"]
+        pos = s["order_index"] + 1
+        narr = results.get(sid)
         if not narr:
-            errors.append(f"slide {s['order_index']+1}: model returned no narration")
+            err = per_slide_errors.get(sid) or "model returned no narration"
+            errors.append(f"slide {pos}: {err}")
             continue
         try:
             execute_db(
                 "UPDATE presentation_slides SET narration_text = %s WHERE id = %s",
-                (narr, s["id"]),
+                (narr, sid),
             )
             updated += 1
         except Exception as e:
-            errors.append(f"slide {s['order_index']+1}: db save failed ({e})")
+            errors.append(f"slide {pos}: db save failed ({str(e)[:200]})")
 
     return jsonify({
         "updated": updated,
