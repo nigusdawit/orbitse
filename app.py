@@ -10963,6 +10963,179 @@ def admin_add_slide(pid):
     return jsonify(s), 201
 
 
+# ---------------------------------------------------------------------------
+# Helpers for the deck-import endpoint below.
+#
+# We accept many slide formats (PowerPoint, Keynote, OpenDocument, Word,
+# images) and want every one of them to end up as one rendered image per
+# slide so the deck looks pixel-perfect in "original" display mode. The
+# pipeline is always: (Office format) -> LibreOffice -> PDF -> PyMuPDF
+# -> per-page JPG. Direct PDF and image uploads skip the appropriate
+# steps but feed into the same final shape.
+# ---------------------------------------------------------------------------
+
+def _convert_office_to_pdf(file_bytes, ext, timeout=180):
+    """Run LibreOffice headless to convert PowerPoint / Keynote / etc. to PDF.
+
+    Returns (pdf_bytes, error_string). On success error_string is None.
+    A per-call temp UserInstallation profile prevents two simultaneous
+    imports from clobbering each other's LibreOffice state.
+    """
+    import subprocess
+    import tempfile
+    import shutil
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice:
+        return None, "Office conversion unavailable: LibreOffice is not installed on the server."
+    tmpdir = tempfile.mkdtemp(prefix="deckconv_")
+    profile = tempfile.mkdtemp(prefix="sofficeprof_")
+    src = os.path.join(tmpdir, f"input.{ext}")
+    try:
+        with open(src, "wb") as fh:
+            fh.write(file_bytes)
+        try:
+            proc = subprocess.run(
+                [
+                    soffice, "--headless", "--norestore", "--nologo",
+                    "--nofirststartwizard",
+                    f"-env:UserInstallation=file://{profile}",
+                    "--convert-to", "pdf", "--outdir", tmpdir, src,
+                ],
+                capture_output=True, timeout=timeout, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return None, (
+                f"Conversion timed out after {timeout}s. Try a smaller "
+                f"deck, or save the file as PDF first and re-upload."
+            )
+        out_pdf = os.path.join(tmpdir, "input.pdf")
+        if not os.path.exists(out_pdf) or os.path.getsize(out_pdf) == 0:
+            err = (proc.stderr or b"").decode("utf-8", "ignore").strip()[:300]
+            hint = ""
+            if ext == "key":
+                hint = " (Apple Keynote files often need to be exported from Keynote as PDF or PPTX before upload — LibreOffice can't always read .key directly.)"
+            return None, f"Could not convert this {ext.upper()} file to a deck. {err}{hint}"
+        with open(out_pdf, "rb") as fh:
+            return fh.read(), None
+    except Exception as e:
+        return None, f"Conversion failed: {str(e)[:300]}"
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        shutil.rmtree(profile, ignore_errors=True)
+
+
+MAX_IMPORT_PAGES = 200  # hard cap to keep huge decks from running away
+
+
+def _render_pdf_to_slide_rows(pdf_bytes, created_files, fitz_mod, pil_image_mod):
+    """Rasterize each PDF page to a JPG, save it to UPLOAD_FOLDER, and
+    return one slide_row dict per page.
+
+    Each row has the shape the import endpoint expects:
+        {title, body, image_url, narration_text}
+
+    Returns (slide_rows, error_string, http_status). On success
+    error_string is None and http_status is 200. http_status is 400 for
+    bad input (malformed/oversized PDF) and 500 for server-side IO
+    problems so the caller can return an honest status code instead of
+    blanket-400'ing real server failures.
+
+    Files written to disk are appended to `created_files` so the caller
+    can clean them up if a later step (DB insert) fails.
+    """
+    import io as _io
+    try:
+        doc = fitz_mod.open(stream=pdf_bytes, filetype="pdf")
+    except Exception as e:
+        return [], f"Could not read the rendered PDF: {str(e)[:300]}", 400
+    if doc.page_count > MAX_IMPORT_PAGES:
+        try: doc.close()
+        except Exception: pass
+        return [], (
+            f"This deck has {doc.page_count} pages, which exceeds the "
+            f"{MAX_IMPORT_PAGES}-page import limit. Split it into smaller "
+            f"decks and import each one separately."
+        ), 400
+    rows = []
+    try:
+        # 2x render matrix gives ~144 DPI; we then downscale wide pages
+        # to cap at 1600px so storage stays sane on big decks.
+        base_matrix = fitz_mod.Matrix(2.0, 2.0)
+        for page in doc:
+            pix = page.get_pixmap(matrix=base_matrix, alpha=False)
+            img = pil_image_mod.frombytes(
+                "RGB", [pix.width, pix.height], pix.samples
+            )
+            if img.width > 1600:
+                new_h = int(img.height * 1600 / img.width)
+                img = img.resize((1600, new_h), pil_image_mod.LANCZOS)
+            buf = _io.BytesIO()
+            img.save(buf, format="JPEG", quality=85, optimize=True)
+            unique_name = f"{secrets.token_hex(8)}.jpg"
+            disk_path = os.path.join(UPLOAD_FOLDER, unique_name)
+            try:
+                with open(disk_path, "wb") as fh:
+                    fh.write(buf.getvalue())
+                created_files.append(disk_path)
+            except Exception as _e:
+                # Disk write failure is a server-side problem, not the
+                # admin's fault — return 500 so they don't think their
+                # file is malformed.
+                return rows, f"Could not save page image: {_e}", 500
+            narration = (page.get_text("text") or "").strip()
+            rows.append({
+                "title": "",
+                "body": "",
+                "image_url": f"/uploads/{unique_name}",
+                "narration_text": narration[:5000],
+            })
+    except Exception as e:
+        # Rendering loop blew up after we'd already validated the PDF
+        # opened — that means something internal failed (PyMuPDF crash,
+        # corrupt page object, etc.), not bad user input.
+        return rows, f"Failed while rendering the deck pages: {str(e)[:300]}", 500
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
+    return rows, None, 200
+
+
+def _extract_pptx_notes(pptx_bytes):
+    """Return a list of speaker-notes strings, one per slide, in order.
+
+    Used as a bonus pass for .pptx uploads so the AI narration field is
+    pre-populated from the owner's existing speaker notes. Returns []
+    silently if python-pptx isn't installed or the file isn't readable.
+    """
+    try:
+        from pptx import Presentation as _PPTXPresentation
+    except ImportError:
+        return []
+    import io as _io
+    try:
+        prs = _PPTXPresentation(_io.BytesIO(pptx_bytes))
+    except Exception:
+        return []
+    notes = []
+    for slide in prs.slides:
+        try:
+            if (
+                slide.has_notes_slide
+                and slide.notes_slide
+                and slide.notes_slide.notes_text_frame
+            ):
+                notes.append(
+                    (slide.notes_slide.notes_text_frame.text or "").strip()
+                )
+            else:
+                notes.append("")
+        except Exception:
+            notes.append("")
+    return notes
+
+
 @app.route("/admin/api/presentations/import", methods=["POST"])
 @admin_required
 def admin_import_presentation():
@@ -10992,23 +11165,35 @@ def admin_import_presentation():
         return jsonify({"error": "No files provided"}), 400
 
     # Detect file kind by extension. We refuse mixed kinds because each
-    # kind hits a different conversion path.
+    # kind hits a different conversion path. "office" is the umbrella for
+    # any format LibreOffice can convert to PDF — PowerPoint, Keynote,
+    # OpenDocument, Word, etc. — which we then render to per-slide images
+    # via the same PDF pipeline as a direct .pdf upload.
+    OFFICE_EXTS = {"pptx", "ppt", "key", "odp", "doc", "docx", "odt", "rtf"}
+    IMAGE_EXTS = {"jpg", "jpeg", "png", "webp"}
     kinds = set()
+    upload_ext = ""  # the extension of the (single) office/pdf upload, if any
     for f in files:
         ext = f.filename.rsplit(".", 1)[-1].lower() if "." in f.filename else ""
         if ext == "pdf":
             kinds.add("pdf")
-        elif ext == "pptx":
-            kinds.add("pptx")
-        elif ext in ("jpg", "jpeg", "png", "webp"):
+            upload_ext = ext
+        elif ext in OFFICE_EXTS:
+            kinds.add("office")
+            upload_ext = ext
+        elif ext in IMAGE_EXTS:
             kinds.add("image")
         else:
-            return jsonify({"error": f"Unsupported file type: .{ext}. Use PDF, PPTX, or images."}), 400
+            return jsonify({
+                "error": f"Unsupported file type: .{ext}. Supported: PDF, "
+                f"PowerPoint (.ppt/.pptx), Keynote (.key), OpenDocument "
+                f"(.odp/.odt), Word (.doc/.docx/.rtf), or images (.jpg/.png/.webp)."
+            }), 400
     if len(kinds) > 1:
-        return jsonify({"error": "Mix of file types — upload either a single PDF, a single PPTX, or a set of images (not a combination)."}), 400
+        return jsonify({"error": "Mix of file types — upload either one document (PDF, PowerPoint, Keynote, etc.) or a set of images, not a combination."}), 400
     kind = kinds.pop()
-    if kind in ("pdf", "pptx") and len(files) != 1:
-        return jsonify({"error": f"Upload one {kind.upper()} file at a time."}), 400
+    if kind in ("pdf", "office") and len(files) != 1:
+        return jsonify({"error": "Upload one document file at a time. (Image sets can be multiple files.)"}), 400
 
     # ----- Metadata defaults --------------------------------------------------
     title = (request.form.get("title") or "").strip()
@@ -11032,125 +11217,53 @@ def admin_import_presentation():
             except Exception:
                 pass
 
-    # ----- PDF -> image per page ---------------------------------------------
-    if kind == "pdf":
+    # ----- PDF / Office -> image per page ------------------------------------
+    # Both paths funnel into the same renderer: any PDF (direct upload OR
+    # the output of the LibreOffice converter for PowerPoint/Keynote/etc.)
+    # gets rasterized to one JPG per page and saved as one image-only slide.
+    # That image is what "original display mode" shows full-bleed.
+    if kind in ("pdf", "office"):
         try:
             import fitz  # PyMuPDF
         except ImportError:
-            return jsonify({"error": "PDF import unavailable: PyMuPDF not installed."}), 500
+            return jsonify({"error": "Deck import unavailable: PyMuPDF not installed."}), 500
         try:
             from PIL import Image as _PILImage
         except ImportError:
-            return jsonify({"error": "PDF import unavailable: Pillow not installed."}), 500
-        import io as _io
-        try:
-            pdf_bytes = files[0].read()
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        except Exception as e:
-            return jsonify({"error": f"Could not read PDF: {e}"}), 400
-        try:
-            # 2x render matrix gives ~144 DPI; we then downscale wide pages
-            # to cap at 1600px so storage stays sane on big decks.
-            base_matrix = fitz.Matrix(2.0, 2.0)
-            for page in doc:
-                pix = page.get_pixmap(matrix=base_matrix, alpha=False)
-                img = _PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                if img.width > 1600:
-                    new_h = int(img.height * 1600 / img.width)
-                    img = img.resize((1600, new_h), _PILImage.LANCZOS)
-                buf = _io.BytesIO()
-                img.save(buf, format="JPEG", quality=85, optimize=True)
-                unique_name = f"{secrets.token_hex(8)}.jpg"
-                disk_path = os.path.join(UPLOAD_FOLDER, unique_name)
-                try:
-                    with open(disk_path, "wb") as fh:
-                        fh.write(buf.getvalue())
-                    created_files.append(disk_path)
-                except Exception as _e:
-                    _cleanup_created_files()
-                    try: doc.close()
-                    except Exception: pass
-                    return jsonify({"error": f"Could not save page image: {_e}"}), 500
-                narration = (page.get_text("text") or "").strip()
-                slide_rows.append({
-                    "title": "",
-                    "body": "",
-                    "image_url": f"/uploads/{unique_name}",
-                    "narration_text": narration[:5000],
-                })
-        except Exception as e:
-            _cleanup_created_files()
-            try: doc.close()
-            except Exception: pass
-            return jsonify({"error": f"Failed while rendering PDF: {str(e)[:300]}"}), 500
-        finally:
-            try:
-                doc.close()
-            except Exception:
-                pass
+            return jsonify({"error": "Deck import unavailable: Pillow not installed."}), 500
 
-    # ----- PPTX -> text + speaker notes per slide ----------------------------
-    elif kind == "pptx":
-        try:
-            from pptx import Presentation as _PPTXPresentation
-        except ImportError:
-            return jsonify({"error": "PPTX import unavailable: python-pptx not installed."}), 500
-        import io as _io
-        try:
-            prs = _PPTXPresentation(_io.BytesIO(files[0].read()))
-        except Exception as e:
-            return jsonify({"error": f"Could not read PPTX: {e}"}), 400
-        warnings.append("PowerPoint slides were imported as text plus speaker notes. To preserve the exact visual layout, save your deck as PDF and re-import.")
-        for slide in prs.slides:
-            slide_title = ""
-            body_parts = []
-            # Prefer the slide's title placeholder when PowerPoint actually
-            # marked one. This is more reliable than guessing "first text
-            # shape == title" because the title placeholder is often not the
-            # first shape in z-order, and the first text shape may be empty.
-            title_shape = None
+        src_bytes = files[0].read()
+        if kind == "office":
+            # Hand the file to LibreOffice headless; it returns a normal PDF
+            # we can rasterize with the existing PyMuPDF pipeline below.
+            pdf_bytes, conv_err = _convert_office_to_pdf(src_bytes, upload_ext)
+            if conv_err:
+                return jsonify({"error": conv_err}), 400
+            if upload_ext == "key":
+                warnings.append("Apple Keynote files are converted via LibreOffice; complex animations or custom fonts may not render perfectly. Review the imported slides and re-export from Keynote as PDF if needed.")
+        else:
+            pdf_bytes = src_bytes
+
+        slide_rows, render_err, render_status = _render_pdf_to_slide_rows(
+            pdf_bytes, created_files, fitz, _PILImage
+        )
+        if render_err:
+            _cleanup_created_files()
+            return jsonify({"error": render_err}), render_status
+
+        # PPTX bonus: also pull speaker notes (LibreOffice strips them
+        # from the rendered PDF). Notes become the AI-narration starting
+        # point so the owner doesn't have to re-type them.
+        if kind == "office" and upload_ext == "pptx":
             try:
-                if slide.shapes.title is not None and slide.shapes.title.has_text_frame:
-                    title_shape = slide.shapes.title
-                    title_text = (title_shape.text_frame.text or "").strip()
-                    if title_text:
-                        lines = title_text.splitlines()
-                        slide_title = lines[0][:200]
-                        rest = "\n".join(lines[1:]).strip()
-                        if rest:
-                            body_parts.append(rest)
+                notes_per_slide = _extract_pptx_notes(src_bytes)
+                for i, n in enumerate(notes_per_slide):
+                    if i < len(slide_rows) and n:
+                        slide_rows[i]["narration_text"] = n[:5000]
             except Exception:
-                title_shape = None
-            for shape in slide.shapes:
-                if not getattr(shape, "has_text_frame", False):
-                    continue
-                if title_shape is not None and shape is title_shape:
-                    continue  # already captured above
-                txt = (shape.text_frame.text or "").strip()
-                if not txt:
-                    continue
-                if not slide_title:
-                    # No title placeholder on this slide — promote the first
-                    # non-empty text shape to title.
-                    lines = txt.splitlines()
-                    slide_title = lines[0][:200]
-                    rest = "\n".join(lines[1:]).strip()
-                    if rest:
-                        body_parts.append(rest)
-                else:
-                    body_parts.append(txt)
-            notes = ""
-            try:
-                if slide.has_notes_slide and slide.notes_slide and slide.notes_slide.notes_text_frame:
-                    notes = (slide.notes_slide.notes_text_frame.text or "").strip()
-            except Exception:
-                notes = ""
-            slide_rows.append({
-                "title": slide_title,
-                "body": ("\n\n".join(body_parts))[:8000],
-                "image_url": "",
-                "narration_text": notes[:5000],
-            })
+                # Notes are a bonus, not a hard requirement — never fail
+                # the import just because notes extraction tripped.
+                pass
 
     # ----- Image set: one slide per image, sorted by filename ----------------
     else:  # kind == "image"
