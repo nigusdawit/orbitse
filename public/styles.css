@@ -6195,15 +6195,23 @@ body.side-panel-active .cart-fab {
 }
 
 /* ==========================================================================
-   PRESENTATION OVERLAY — full-screen slide player driven by AI command
+   PRESENTATION OVERLAY — full-screen immersive slide player.
+   Frosted-glass aesthetic that mirrors the chatbot, edge-to-edge with
+   minimal chrome so the slide IS the experience. Floating controls,
+   floating progress pill, and an inline chat pill the visitor can use
+   to ask questions without leaving the deck.
    ========================================================================== */
 .presentation-overlay {
   position: fixed; inset: 0;
-  background: rgba(10, 10, 14, 0.92);
+  background:
+    radial-gradient(ellipse at center, rgba(20, 22, 32, 0.55) 0%, rgba(6, 7, 12, 0.92) 70%),
+    rgba(6, 7, 12, 0.85);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
   display: flex; align-items: center; justify-content: center;
   z-index: 9500;
-  padding: 24px;
-  animation: presentation-fade-in 200ms ease-out;
+  padding: 0;
+  animation: presentation-fade-in 220ms ease-out;
 }
 .presentation-overlay.hidden { display: none; }
 @keyframes presentation-fade-in {
@@ -6211,75 +6219,235 @@ body.side-panel-active .cart-fab {
   to   { opacity: 1; }
 }
 .presentation-stage {
-  background: #ffffff;
-  color: #1a1a1a;
-  width: min(900px, 100%);
-  max-height: 90vh;
-  overflow-y: auto;
-  border-radius: 16px;
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
-  padding: 32px 40px 28px;
   position: relative;
+  width: 100%; height: 100%;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  padding: 0;
+  color: rgba(255, 255, 255, 0.94);
 }
-.presentation-close {
-  position: absolute; top: 12px; right: 14px;
-  background: transparent; border: none;
-  font-size: 28px; line-height: 1; cursor: pointer;
-  color: #555;
-}
-.presentation-close:hover { color: #000; }
+
+/* Top-left floating progress pill — small, glassy, unobtrusive */
 .presentation-progress {
-  font-size: 13px; color: #888;
-  letter-spacing: 0.04em;
+  position: absolute; top: 18px; left: 20px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  margin-bottom: 14px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  padding: 7px 14px;
+  border-radius: 999px;
+  z-index: 3;
+  max-width: calc(100vw - 100px);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+
+/* Top-right floating close — circular glass button */
+.presentation-close {
+  position: absolute; top: 14px; right: 16px;
+  width: 38px; height: 38px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 50%;
+  font-size: 22px; line-height: 1; cursor: pointer;
+  color: rgba(255, 255, 255, 0.85);
+  display: flex; align-items: center; justify-content: center;
+  transition: background 160ms ease, transform 160ms ease;
+  z-index: 3;
+}
+.presentation-close:hover {
+  background: rgba(255, 255, 255, 0.12);
+  transform: scale(1.05);
+}
+
+/* The slide image — biggest possible, edge-to-edge, no card chrome */
 .presentation-image {
-  width: 100%; aspect-ratio: 16 / 9;
-  background-size: cover; background-position: center;
-  border-radius: 10px;
-  margin-bottom: 18px;
+  width: 100%;
+  flex: 1 1 auto;
+  background-size: contain;
+  background-position: center;
+  background-repeat: no-repeat;
   display: none;
+  margin: 0;
 }
 .presentation-image.has-image { display: block; }
-/* Image-only slides (PDF pages, uploaded image sets): show the whole
-   slide rather than cropping it to 16:9, and let it fill the stage. */
 .presentation-image.image-fill {
   background-size: contain;
-  background-repeat: no-repeat;
-  background-color: #f4f4f4;
-  aspect-ratio: auto;
-  height: min(70vh, 75vh);
-  margin-bottom: 14px;
 }
+
+/* Slide title/body — overlaid lower-third on a soft gradient.
+   Hidden when the slide is image-only or display_mode=original. */
+.presentation-text-block {
+  position: absolute;
+  left: 50%; bottom: 140px;
+  transform: translateX(-50%);
+  width: min(820px, calc(100% - 60px));
+  text-align: center;
+  pointer-events: none;
+  z-index: 2;
+}
+.presentation-text-block.empty { display: none; }
 .presentation-title {
-  font-size: 28px; font-weight: 600;
-  margin: 0 0 14px; line-height: 1.25;
+  font-size: clamp(26px, 4vw, 42px);
+  font-weight: 600;
+  line-height: 1.18;
+  margin: 0 0 14px;
+  color: #fff;
+  text-shadow: 0 2px 24px rgba(0, 0, 0, 0.65);
+  letter-spacing: -0.01em;
 }
 .presentation-body {
-  font-size: 17px; line-height: 1.55; color: #2c2c2c;
+  font-size: clamp(15px, 1.6vw, 18px);
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.88);
   white-space: pre-wrap;
-  margin-bottom: 28px;
+  margin: 0;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.6);
+  max-height: 30vh;
+  overflow: hidden;
 }
+
+/* Floating bottom controls — glass row, centered */
 .presentation-controls {
-  display: flex; gap: 10px; justify-content: flex-end;
-  border-top: 1px solid #eee; padding-top: 16px;
+  position: absolute;
+  left: 50%; bottom: 24px;
+  transform: translateX(-50%);
+  display: flex; gap: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  padding: 6px;
+  border-radius: 999px;
+  z-index: 4;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
 }
 .presentation-controls button {
-  padding: 8px 18px; border-radius: 8px;
-  border: 1px solid #ddd; background: #fafafa;
-  cursor: pointer; font-size: 14px;
-  transition: background 120ms;
+  padding: 8px 18px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.85);
+  transition: background 140ms ease, color 140ms ease;
+  letter-spacing: 0.01em;
 }
-.presentation-controls button:hover:not(:disabled) { background: #efefef; }
-.presentation-controls button:disabled { opacity: 0.4; cursor: default; }
+.presentation-controls button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+.presentation-controls button:disabled {
+  opacity: 0.35; cursor: default;
+}
 .presentation-controls .presentation-toggle {
-  background: #1a1a1a; color: #fff; border-color: #1a1a1a;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
 }
-.presentation-controls .presentation-toggle:hover { background: #333; }
+.presentation-controls .presentation-toggle:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* Inline chat pill — sits above the controls. Visitor can ask a
+   question while the deck plays; focusing the input pauses narration
+   via the existing chat-focus pause hook (script.js). The AI reply
+   streams into .presentation-chat-bubble above the pill. */
+.presentation-chat {
+  position: absolute;
+  left: 50%; bottom: 84px;
+  transform: translateX(-50%);
+  width: min(640px, calc(100% - 32px));
+  z-index: 4;
+  display: flex; flex-direction: column;
+  align-items: center; gap: 10px;
+  pointer-events: none;
+}
+.presentation-chat-bubble {
+  max-width: 100%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  color: rgba(255, 255, 255, 0.94);
+  padding: 12px 18px;
+  border-radius: 16px;
+  font-size: 14px;
+  line-height: 1.5;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  display: none;
+  pointer-events: auto;
+  animation: presentation-bubble-in 200ms ease-out;
+  white-space: pre-wrap;
+}
+.presentation-chat-bubble.visible { display: block; }
+@keyframes presentation-bubble-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.presentation-chat-pill {
+  width: 100%;
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border-radius: 999px;
+  padding: 6px 6px 6px 20px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+.presentation-chat-pill:focus-within {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.09);
+}
+.presentation-chat-input {
+  flex: 1 1 auto;
+  background: transparent;
+  border: none; outline: none;
+  color: #fff;
+  font-size: 14px;
+  font-family: inherit;
+  padding: 10px 0;
+  min-width: 0;
+}
+.presentation-chat-input::placeholder {
+  color: rgba(255, 255, 255, 0.5);
+}
+.presentation-chat-send {
+  flex: 0 0 auto;
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  cursor: pointer;
+  font-size: 16px;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 140ms ease, transform 140ms ease;
+}
+.presentation-chat-send:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.28);
+  transform: scale(1.05);
+}
+.presentation-chat-send:disabled {
+  opacity: 0.4; cursor: default;
+}
 
 @media (max-width: 600px) {
-  .presentation-stage { padding: 22px 18px 18px; }
-  .presentation-title { font-size: 22px; }
-  .presentation-body { font-size: 15px; }
+  .presentation-progress { font-size: 10px; padding: 6px 12px; top: 14px; left: 12px; }
+  .presentation-close { width: 34px; height: 34px; top: 10px; right: 12px; }
+  .presentation-text-block { bottom: 180px; width: calc(100% - 28px); }
+  .presentation-chat { bottom: 96px; width: calc(100% - 20px); }
+  .presentation-chat-pill { padding: 5px 5px 5px 16px; }
+  .presentation-chat-input { font-size: 13px; padding: 9px 0; }
+  .presentation-controls { bottom: 18px; }
+  .presentation-controls button { padding: 7px 14px; font-size: 12px; }
 }

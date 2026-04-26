@@ -10294,6 +10294,15 @@ def api_chat():
     # answer finishes. The flag also nudges the system prompt and post-
     # filters parsed commands below.
     presentation_active = bool(data.get("presentation_active"))
+    # presentation_slide carries the parsed contents of the slide that's
+    # ON SCREEN RIGHT NOW (deck title, slide #/total, slide title, body
+    # text, narration script, has_image flag) so the AI can reference the
+    # actual visible content when the visitor asks a question — instead
+    # of guessing from the deck slug or generic context. Frontend builds
+    # this in script.js getPresentationSlideContext(). Optional, dict.
+    presentation_slide = data.get("presentation_slide") or None
+    if not isinstance(presentation_slide, dict):
+        presentation_slide = None
 
     # Use database system prompt if available, otherwise fall back to hardcoded
     active_prompt = SYSTEM_PROMPT
@@ -10863,11 +10872,76 @@ def api_chat():
     # Tools (lookup_*) are still fine — they run server-side and feed the
     # chat reply, they do not take over the screen.
     if presentation_active:
+        # Build the "what's on screen RIGHT NOW" snippet so the AI is
+        # actually a presenter walking the visitor through this slide
+        # rather than a generic Q&A bot. We only include fields that
+        # were sent — image-only slides (PDFs/imported decks) typically
+        # have no parsed title/body, so we surface that fact so the AI
+        # acknowledges it can't read those visually.
+        slide_block = ""
+        if presentation_slide:
+            ps = presentation_slide
+            try:
+                idx   = int(ps.get("index") or 0)
+                total = int(ps.get("total") or 0)
+            except (TypeError, ValueError):
+                idx, total = 0, 0
+            # Coerce-then-strip so a malformed client payload (numbers,
+            # arrays, nulls) degrades gracefully into empty strings
+            # instead of raising AttributeError on .strip(). Bound each
+            # field defensively even though the frontend already caps —
+            # the endpoint is public, anyone can POST whatever JSON.
+            def _safe_str(v, cap):
+                if v is None: return ""
+                try:
+                    s = v if isinstance(v, str) else str(v)
+                except Exception:
+                    return ""
+                return s.strip()[:cap]
+            deck_title = _safe_str(ps.get("deck_title"), 200)
+            s_title    = _safe_str(ps.get("title"),      200)
+            s_body     = _safe_str(ps.get("body"),       1500)
+            s_narr     = _safe_str(ps.get("narration"),  1000)
+            has_image  = bool(ps.get("has_image"))
+            parts = []
+            if deck_title and total:
+                parts.append(f"Deck: \"{deck_title}\" — slide {idx} of {total}")
+            elif deck_title:
+                parts.append(f"Deck: \"{deck_title}\"")
+            if s_title:
+                parts.append(f"Slide title: {s_title}")
+            if s_body:
+                # Trim aggressively — the prompt budget matters and we
+                # already capped at 1200 chars on the frontend.
+                parts.append(f"Slide content:\n{s_body[:1000]}")
+            if s_narr and s_narr != s_body:
+                parts.append(f"Intended spoken script for this slide:\n{s_narr[:600]}")
+            if has_image and not s_title and not s_body:
+                parts.append(
+                    "This slide is an image (likely an imported PDF page or "
+                    "uploaded slide image) with no parsed text. You cannot see "
+                    "it directly — answer from the deck/slide context only and "
+                    "say so honestly if the visitor asks about something visual."
+                )
+            if parts:
+                slide_block = (
+                    "\n\nON SCREEN RIGHT NOW:\n  "
+                    + "\n  ".join(p.replace("\n", "\n  ") for p in parts)
+                )
+
         active_prompt += (
             "\n\nPRESENTATION-MODE — A DECK IS CURRENTLY PLAYING:\n"
-            "  - The visitor is watching a slide deck and just asked a side "
-            "question. Answer briefly in 1-3 sentences inside the chat "
-            "bubble so they can resume watching.\n"
+            "  - You are the LIVE PRESENTER walking this visitor through "
+            "the deck. They've paused to ask a question. Answer it as the "
+            "person presenting — reference what's on screen, connect it "
+            "to what they asked, keep it 1-3 sentences so the deck can "
+            "resume.\n"
+            "  - When the visitor asks something general like 'what is "
+            "this slide about', 'explain this', or 'tell me more', "
+            "PRESENT the current slide using the on-screen content "
+            "below — describe what's on it, why it matters, how it "
+            "connects to the deck. Do not say 'I cannot see the slide' "
+            "when the slide context is provided below.\n"
             "  - You MAY call lookup_* tools to fetch facts you need.\n"
             "  - DO NOT emit any of these command actions this turn: "
             "start_presentation, generatePage, generateVisual, "
@@ -10875,9 +10949,10 @@ def api_chat():
             "openCanvas. Even if the visitor seems to ask for one of "
             "these, just describe the answer briefly in text — they can "
             "explore those views after the deck finishes.\n"
-            "  - Do not greet, do not summarize the deck so far, do not "
-            "promise to continue — the player resumes automatically when "
-            "your reply finishes."
+            "  - Do not greet, do not summarize the entire deck so far, "
+            "do not promise to continue — the player resumes "
+            "automatically when your reply finishes."
+            + slide_block
         )
 
     messages = [{"role": "system", "content": active_prompt}]
@@ -11970,15 +12045,21 @@ def admin_generate_narration(pid):
         })
 
     sys_msg = (
-        "You write short, warm, spoken-word voice scripts for slide decks. "
-        "For each slide you receive, return 2-3 conversational sentences "
-        "that a friendly human narrator would say while that slide is on "
-        "screen. Do NOT just read the bullets — paraphrase, connect ideas, "
-        "and make it sound natural when spoken aloud. No greetings, no "
+        "You are the live PRESENTER for a slide deck. For each slide you "
+        "receive, write 2-3 conversational sentences that you would speak "
+        "aloud while PRESENTING that slide to the audience — not just "
+        "narrating, but actually walking them through what's on screen, "
+        "explaining why it matters, and connecting it to the overall "
+        "story arc of the deck.\n\n"
+        "Do NOT read the bullets verbatim. Paraphrase, surface the "
+        "insight behind them, and make every sentence sound natural "
+        "when spoken aloud. Treat the slide title and body as your cue "
+        "card — you can SEE them, your audience can SEE them, so add "
+        "value beyond what's already written. No greetings, no "
         "'in this slide we will…' filler, no markdown, no emoji. 35-65 "
-        "words per slide. Reference the slide's place in the overall deck "
-        "outline only when it genuinely helps continuity (e.g. 'building "
-        "on what we just covered…'). Output STRICT JSON only:\n"
+        "words per slide. Use the deck outline below for continuity — "
+        "phrases like 'building on what we just covered' are great when "
+        "they genuinely fit, but never forced. Output STRICT JSON only:\n"
         '{"slides":[{"id":<int>,"narration":"..."}, ...]}'
     )
     user_msg = (

@@ -6457,13 +6457,43 @@ function ensurePresentationOverlay() {
   root.id = 'presentation-overlay';
   root.className = 'presentation-overlay hidden';
   root.setAttribute('data-testid', 'overlay-presentation');
+  /* Layout (frosted-glass full-bleed):
+       - top-left:  progress pill      (.presentation-progress)
+       - top-right: close button       (.presentation-close)
+       - center:    slide image fills  (.presentation-image)
+       - lower:     title/body block   (.presentation-text-block)
+       - bottom:    chat pill + reply  (.presentation-chat)
+       - very bottom: floating ctrls   (.presentation-controls)
+     The chat pill lets the visitor ask questions without leaving the
+     deck. Focusing it triggers the existing pause-on-chat-focus hook
+     (DOMContentLoaded listener below) so narration stops. The pill's
+     send handler (presentationChatSend) streams the AI reply into the
+     glass bubble above, then _scheduleAutoResumeAfterChatReply restarts
+     narration. */
   root.innerHTML = `
     <div class="presentation-stage">
-      <button class="presentation-close" data-testid="button-presentation-close" aria-label="Close presentation">×</button>
       <div class="presentation-progress" data-testid="text-presentation-progress"></div>
+      <button class="presentation-close" data-testid="button-presentation-close" aria-label="Close presentation">×</button>
       <div class="presentation-image" data-testid="img-presentation-slide"></div>
-      <h2 class="presentation-title" data-testid="text-presentation-title"></h2>
-      <div class="presentation-body" data-testid="text-presentation-body"></div>
+      <div class="presentation-text-block">
+        <h2 class="presentation-title" data-testid="text-presentation-title"></h2>
+        <div class="presentation-body" data-testid="text-presentation-body"></div>
+      </div>
+      <div class="presentation-chat">
+        <div class="presentation-chat-bubble" data-testid="text-presentation-chat-reply"></div>
+        <form class="presentation-chat-pill" data-testid="form-presentation-chat">
+          <input type="text"
+                 class="presentation-chat-input"
+                 data-chat-input
+                 data-testid="input-presentation-chat"
+                 placeholder="Ask about this slide…"
+                 autocomplete="off" />
+          <button type="submit"
+                  class="presentation-chat-send"
+                  data-testid="button-presentation-chat-send"
+                  aria-label="Ask">→</button>
+        </form>
+      </div>
       <div class="presentation-controls">
         <button class="presentation-prev" data-testid="button-presentation-prev" aria-label="Previous slide">‹ Back</button>
         <button class="presentation-toggle" data-testid="button-presentation-toggle" aria-label="Pause">Pause</button>
@@ -6476,8 +6506,279 @@ function ensurePresentationOverlay() {
   root.querySelector('.presentation-prev').addEventListener('click', () => goToPresentationSlide(PRESENTATION.index - 1));
   root.querySelector('.presentation-next').addEventListener('click', () => goToPresentationSlide(PRESENTATION.index + 1));
   root.querySelector('.presentation-toggle').addEventListener('click', togglePresentation);
+  /* Wire up the in-overlay chat pill. Submitting sends the visitor's
+     question through /api/chat with presentation_active=true plus the
+     current slide's metadata, streams the reply into the glass bubble
+     above the pill, and lets the existing pause/resume flow handle the
+     deck.
+
+     The input also pauses narration on focus directly here — we don't
+     rely on the global DOMContentLoaded auto-pause hook because the
+     overlay is created lazily AFTER that listener has already scanned
+     the document. Without an explicit local binding, the pill would
+     not pause the deck on focus and narration would talk over the
+     visitor's question. */
+  const form  = root.querySelector('.presentation-chat-pill');
+  const input = root.querySelector('.presentation-chat-input');
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const txt = (input.value || '').trim();
+    if (!txt) return;
+    input.value = '';
+    presentationChatSend(txt);
+  });
+  input.addEventListener('focus', () => {
+    if (PRESENTATION.deck && !PRESENTATION.paused) {
+      _presentationPausedForChat = true;
+      pausePresentation();
+    }
+  });
   PRESENTATION.overlay = root;
   return root;
+}
+
+/* Snapshot of what's currently on screen, sent to /api/chat so the AI
+   knows EXACTLY which slide the visitor is looking at when they ask a
+   question. Returns null if no deck is playing. The backend
+   (chat.py route) consumes this when presentation_active is true. */
+function getPresentationSlideContext() {
+  if (!PRESENTATION.deck) return null;
+  const slide = PRESENTATION.deck.slides[PRESENTATION.index];
+  if (!slide) return null;
+  return {
+    deck_slug:   PRESENTATION.deck.slug || '',
+    deck_title:  PRESENTATION.deck.title || '',
+    index:       PRESENTATION.index + 1,
+    total:       PRESENTATION.deck.slides.length,
+    title:       (slide.title || '').slice(0, 200),
+    body:        (slide.body || '').slice(0, 1200),
+    has_image:   !!slide.image_url,
+    narration:   (slide.narration_text || '').slice(0, 800),
+  };
+}
+
+/* Reveal the AI's reply text in the glass bubble above the chat pill.
+   Auto-fades after ~12s of stillness so the deck can resume cleanly. */
+let _presentationBubbleHideTimer = null;
+function presentationShowChatReply(text) {
+  if (!PRESENTATION.overlay) return;
+  const bubble = PRESENTATION.overlay.querySelector('.presentation-chat-bubble');
+  if (!bubble) return;
+  if (_presentationBubbleHideTimer) {
+    clearTimeout(_presentationBubbleHideTimer);
+    _presentationBubbleHideTimer = null;
+  }
+  bubble.textContent = text || '';
+  bubble.classList.toggle('visible', !!(text && text.trim()));
+}
+function presentationScheduleHideBubble(delayMs) {
+  if (_presentationBubbleHideTimer) clearTimeout(_presentationBubbleHideTimer);
+  _presentationBubbleHideTimer = setTimeout(() => {
+    if (!PRESENTATION.overlay) return;
+    const bubble = PRESENTATION.overlay.querySelector('.presentation-chat-bubble');
+    if (bubble) {
+      bubble.classList.remove('visible');
+      bubble.textContent = '';
+    }
+    _presentationBubbleHideTimer = null;
+  }, delayMs);
+}
+
+/* Re-entrancy guard for presentationChatSend. Without this, a second
+   submit while a stream is still arriving would create overlapping
+   /api/chat streams, overlapping VoiceAgent voices, and would mutate
+   the same shared bubble simultaneously. We drop the second submit
+   silently — the visitor can wait for the current answer to land. */
+let _presentationChatInflight = false;
+
+/* Helper: deck recovery for any abort/error/early-exit path. Schedules
+   the existing auto-resume so the deck doesn't stay paused forever and
+   re-enables the send button. Safe to call multiple times. */
+function _presentationChatTeardown(replyText, sendBtn) {
+  _presentationChatInflight = false;
+  if (sendBtn) sendBtn.disabled = false;
+  /* Cancel any TTS still streaming so we don't leak voice across turns. */
+  if (window.VoiceAgent && window.VoiceAgent.state &&
+      window.VoiceAgent.state.stream &&
+      !window.VoiceAgent.state.stream.finalized &&
+      !window.VoiceAgent.state.stream.stopped &&
+      typeof window.VoiceAgent.streamSpeakCancel === 'function') {
+    try { window.VoiceAgent.streamSpeakCancel(); } catch (e) {}
+  }
+  /* Schedule deck resume even on failure paths so a network blip
+     doesn't strand the deck in paused-for-chat purgatory. */
+  try { _scheduleAutoResumeAfterChatReply(replyText || ''); } catch (e) {}
+}
+
+/* Lightweight chat send used by the in-overlay pill. Reuses the same
+   /api/chat SSE endpoint the regular chatbot uses, but renders the
+   reply inline in the glass bubble (no full chat panel) and pipes
+   spoken audio through VoiceAgent.streamSpeak* exactly like
+   chatSendStreaming. After the reply finishes, the existing
+   _scheduleAutoResumeAfterChatReply hook brings the deck back. */
+async function presentationChatSend(message) {
+  if (!message || !PRESENTATION.deck) return;
+  /* Re-entrancy guard: drop overlapping submits silently. */
+  if (_presentationChatInflight) return;
+  _presentationChatInflight = true;
+  /* Ensure the deck is paused-for-chat so narration won't talk over
+     the AI's answer and so auto-resume kicks in when we're done. */
+  if (!PRESENTATION.paused) {
+    _presentationPausedForChat = true;
+    pausePresentation();
+  } else {
+    _presentationPausedForChat = true;
+  }
+
+  const sendBtn = PRESENTATION.overlay
+    ? PRESENTATION.overlay.querySelector('.presentation-chat-send') : null;
+  if (sendBtn) sendBtn.disabled = true;
+  presentationShowChatReply('…');
+
+  /* Build minimal history from the global chat history if present. The
+     regular chatbot keeps `chatHistory` updated; including it gives the
+     AI continuity between in-overlay and main-chat turns. */
+  const history = (typeof chatHistory !== 'undefined' && Array.isArray(chatHistory))
+    ? chatHistory.slice(-10) : [];
+
+  let sessionId = null;
+  try { sessionId = (typeof getSessionId === 'function') ? getSessionId() : (window._chatSessionId || null); }
+  catch (e) { sessionId = window._chatSessionId || null; }
+  let visitorId = null;
+  try { visitorId = localStorage.getItem('chat_visitor_id'); } catch (e) {}
+
+  let res;
+  try {
+    res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: message,
+        history: history,
+        session_id: sessionId,
+        visitor_id: visitorId,
+        presentation_active: true,
+        presentation_slide: getPresentationSlideContext(),
+      }),
+    });
+  } catch (e) {
+    presentationShowChatReply('Sorry — connection issue. Please try again.');
+    presentationScheduleHideBubble(4000);
+    /* Always teardown so the deck can resume even on network failure. */
+    _presentationChatTeardown('', sendBtn);
+    return;
+  }
+  if (!res.ok || !res.body) {
+    presentationShowChatReply('Sorry — connection issue. Please try again.');
+    presentationScheduleHideBubble(4000);
+    _presentationChatTeardown('', sendBtn);
+    return;
+  }
+
+  /* Begin sentence-streaming TTS so the answer can be SPOKEN over the
+     paused slide, matching the regular chatbot voice behavior. */
+  if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakBegin === 'function') {
+    window.VoiceAgent.streamSpeakBegin();
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let displayText = '';
+  let inCommandBlock = false;
+  let bubbleHasContent = false;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        let event;
+        try { event = JSON.parse(line.slice(6)); } catch (e) { continue; }
+        if (event.type === 'token') {
+          /* Strip command blocks from the visible reply — the backend
+             already filters intrusive presentation actions, but a
+             leftover ```command``` fence shouldn't appear in the
+             bubble. Mirrors the logic in chatSendStreaming. */
+          const tok = event.content || '';
+          if (!inCommandBlock && (/```\s*command/i.test(displayText + tok) || /\{"action"\s*:/i.test(displayText + tok))) {
+            inCommandBlock = true;
+            displayText = displayText
+              .replace(/`{1,3}\s*command\s*`{0,3}\s*$/i, '')
+              .replace(/\{"action"[\s\S]*$/i, '')
+              .replace(/`{1,3}\s*$/, '')
+              .trimEnd();
+            presentationShowChatReply(displayText);
+            if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakEnd === 'function') {
+              window.VoiceAgent.streamSpeakEnd(displayText, []);
+            }
+            continue;
+          }
+          if (inCommandBlock) continue;
+          displayText += tok;
+          bubbleHasContent = true;
+          presentationShowChatReply(displayText);
+          if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakFeed === 'function') {
+            window.VoiceAgent.streamSpeakFeed(displayText);
+          }
+        } else if (event.type === 'text') {
+          /* Final text fallback when streaming wasn't used. */
+          if (event.content && !displayText.trim()) {
+            displayText = event.content;
+            bubbleHasContent = true;
+            presentationShowChatReply(displayText);
+          }
+        } else if (event.type === 'error') {
+          /* Backend pushed a structured error event. Surface its
+             message in the bubble so the visitor knows the answer
+             failed instead of seeing an empty bubble — and bail out
+             of the stream loop so we proceed to teardown. */
+          const errMsg = (event.content && String(event.content)) ||
+                         'Sorry — something went wrong on our side.';
+          displayText = errMsg;
+          bubbleHasContent = true;
+          presentationShowChatReply(displayText);
+          buffer = '';                          // discard any residual data
+        }
+      }
+    }
+  } catch (e) {
+    if (!bubbleHasContent) {
+      presentationShowChatReply('Sorry — that reply failed mid-stream.');
+    }
+  }
+
+  /* Finalize voice. Only call streamSpeakEnd if we actually emitted
+     visible text — otherwise teardown's streamSpeakCancel handles it. */
+  if (!inCommandBlock && bubbleHasContent && displayText.trim()) {
+    if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakEnd === 'function') {
+      try { window.VoiceAgent.streamSpeakEnd(displayText, []); } catch (e) {}
+    }
+  }
+
+  /* Hide the bubble eventually so it doesn't linger over later slides. */
+  presentationScheduleHideBubble(12000);
+
+  /* Update the global chat history so subsequent turns (inside the
+     overlay or in the main chatbot) carry context. Only persist a
+     non-empty assistant turn — empty replies would pollute history
+     and confuse later turns. */
+  try {
+    if (bubbleHasContent && displayText.trim() &&
+        typeof chatHistory !== 'undefined' && Array.isArray(chatHistory)) {
+      chatHistory.push({ role: 'user',  content: message });
+      chatHistory.push({ role: 'agent', content: displayText });
+    }
+  } catch (e) {}
+
+  /* Teardown: clear inflight, re-enable button, cancel any leftover
+     TTS, and schedule the deck resume (it estimates spoken duration
+     from text length and bumps the auto-resume token). */
+  _presentationChatTeardown(displayText, sendBtn);
 }
 
 async function startPresentation(slug) {
@@ -6538,8 +6839,18 @@ function renderCurrentSlide() {
     img.classList.remove('has-image');
   }
   img.classList.toggle('image-fill', imageOnly);
-  root.querySelector('.presentation-title').textContent = useOriginal ? '' : (slide.title || '');
-  root.querySelector('.presentation-body').textContent = useOriginal ? '' : (slide.body || '');
+  const titleText = useOriginal ? '' : (slide.title || '');
+  const bodyText  = useOriginal ? '' : (slide.body  || '');
+  root.querySelector('.presentation-title').textContent = titleText;
+  root.querySelector('.presentation-body').textContent  = bodyText;
+  /* Hide the entire text-block when there's nothing to show — image-only
+     slides and display_mode=original would otherwise leave an empty
+     overlay container occupying lower-third real estate and could
+     darken the slide image with its text-shadow gradient artifacts. */
+  const textBlock = root.querySelector('.presentation-text-block');
+  if (textBlock) {
+    textBlock.classList.toggle('empty', !titleText.trim() && !bodyText.trim());
+  }
   root.querySelector('.presentation-progress').textContent =
     `${deck.title} — ${PRESENTATION.index + 1} of ${deck.slides.length}`;
   const prev = root.querySelector('.presentation-prev');
@@ -6684,6 +6995,9 @@ function closePresentation() {
 
 // Auto-pause whenever the visitor interacts with the chat input — they're
 // asking a question, and we don't want narration talking over the AI's reply.
+// The in-overlay pill binds its OWN focus handler in ensurePresentationOverlay
+// (because the overlay is created lazily after DOMContentLoaded fires), so
+// the broad selector below covers the always-present side/landing inputs.
 document.addEventListener('DOMContentLoaded', () => {
   const inputs = document.querySelectorAll('.chat-input, #side-chat-input, #landing-chat-input, textarea[data-chat-input]');
   inputs.forEach((el) => {
