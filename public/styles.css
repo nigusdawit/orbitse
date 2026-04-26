@@ -6223,7 +6223,14 @@ body.side-panel-active .cart-fab {
   width: 100%; height: 100%;
   display: flex; flex-direction: column;
   align-items: center; justify-content: center;
-  padding: 0;
+  /* Inset the slide image so it has breathing room and the floating
+     chat pill + controls live in dedicated bottom space below the
+     slide rather than overlapping its content (e.g. stat cards on the
+     bottom row of an imported deck). Top padding keeps the slide
+     clear of the floating progress pill / close button; horizontal
+     padding gives the image a card-like appearance. */
+  padding: 64px 40px 168px;
+  box-sizing: border-box;
   color: rgba(255, 255, 255, 0.94);
 }
 
@@ -6266,15 +6273,21 @@ body.side-panel-active .cart-fab {
   transform: scale(1.05);
 }
 
-/* The slide image — biggest possible, edge-to-edge, no card chrome */
+/* The slide image — fills the inset stage area (the stage's padding
+   keeps it clear of the floating chat pill + controls below and the
+   progress pill above). Subtle border + shadow gives a card feel
+   without bezel-heavy chrome. */
 .presentation-image {
   width: 100%;
   flex: 1 1 auto;
+  min-height: 0;                 /* allow flex child to shrink */
   background-size: contain;
   background-position: center;
   background-repeat: no-repeat;
   display: none;
   margin: 0;
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
 }
 .presentation-image.has-image { display: block; }
 .presentation-image.image-fill {
@@ -6285,9 +6298,13 @@ body.side-panel-active .cart-fab {
    Hidden when the slide is image-only or display_mode=original. */
 .presentation-text-block {
   position: absolute;
-  left: 50%; bottom: 140px;
+  /* Anchored inside the slide area — must sit ABOVE the inset edge of
+     the slide image (which ends at ~168px from bottom due to stage
+     padding) so the lower-third overlays the slide rather than
+     floating in empty space between slide and chat pill. */
+  left: 50%; bottom: 200px;
   transform: translateX(-50%);
-  width: min(820px, calc(100% - 60px));
+  width: min(820px, calc(100% - 100px));
   text-align: center;
   pointer-events: none;
   z-index: 2;
@@ -6441,13 +6458,40 @@ body.side-panel-active .cart-fab {
   opacity: 0.4; cursor: default;
 }
 
+/* Phone / narrow portrait — tighter horizontal insets so the slide
+   uses every pixel of width, but a slightly larger BOTTOM inset so the
+   stacked chat pill + controls can both breathe without overlapping
+   the slide. The progress pill caps width to leave room for the
+   close button on the right. */
 @media (max-width: 600px) {
-  .presentation-progress { font-size: 10px; padding: 6px 12px; top: 14px; left: 12px; }
-  .presentation-close { width: 34px; height: 34px; top: 10px; right: 12px; }
-  .presentation-text-block { bottom: 180px; width: calc(100% - 28px); }
-  .presentation-chat { bottom: 96px; width: calc(100% - 20px); }
-  .presentation-chat-pill { padding: 5px 5px 5px 16px; }
-  .presentation-chat-input { font-size: 13px; padding: 9px 0; }
-  .presentation-controls { bottom: 18px; }
-  .presentation-controls button { padding: 7px 14px; font-size: 12px; }
+  .presentation-stage { padding: 52px 12px 168px; }
+  .presentation-progress {
+    font-size: 10px; padding: 6px 12px; top: 12px; left: 12px;
+    max-width: calc(100vw - 70px);
+  }
+  .presentation-close { width: 34px; height: 34px; top: 9px; right: 12px; }
+  .presentation-image { border-radius: 12px; box-shadow: 0 14px 36px rgba(0, 0, 0, 0.55); }
+  .presentation-text-block { bottom: 200px; width: calc(100% - 28px); }
+  .presentation-title { margin-bottom: 8px; }
+  .presentation-body { max-height: 22vh; }
+  .presentation-chat { bottom: 78px; width: calc(100% - 16px); gap: 8px; }
+  .presentation-chat-bubble {
+    padding: 10px 14px; font-size: 13px; border-radius: 14px;
+    max-height: 32vh; overflow-y: auto;
+  }
+  .presentation-chat-pill { padding: 4px 4px 4px 14px; }
+  .presentation-chat-input { font-size: 14px; padding: 9px 0; }   /* iOS won't zoom on focus when >=14px */
+  .presentation-chat-send { width: 34px; height: 34px; font-size: 15px; }
+  .presentation-controls { bottom: 14px; gap: 4px; padding: 4px; }
+  .presentation-controls button { padding: 7px 12px; font-size: 12px; }
+}
+
+/* Very short viewports (landscape phone) — collapse the bottom inset
+   so the slide doesn't get crushed into a sliver. The text-block hides
+   automatically when image-only via the .empty class set by JS. */
+@media (max-height: 520px) {
+  .presentation-stage { padding: 44px 16px 128px; }
+  .presentation-text-block { bottom: 160px; }
+  .presentation-chat { bottom: 64px; }
+  .presentation-controls { bottom: 12px; }
 }
