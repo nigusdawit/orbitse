@@ -129,6 +129,20 @@ def in_flight_count() -> int:
 _DB: Dict[str, Callable[..., Any]] = {}
 _ACTION_HOOKS: Dict[str, Callable[..., Any]] = {}
 
+# Bridge to the chat-tool dispatcher in app.py. Set by `set_skill_executor`
+# so the `call_skill` action can fan out to every enabled chat skill (built-ins,
+# custom webhooks, custom SQL, knowledge, MCP tools) without `automations.py`
+# needing to import from app.py. Returns a dict shaped like:
+#     {"ok": bool, "result": Any, "error": Optional[str]}
+_SKILL_EXECUTOR: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None
+
+
+def set_skill_executor(fn: Callable[[str, Dict[str, Any]], Dict[str, Any]]) -> None:
+    """Wire in the chat-tool dispatcher used by the `call_skill` action.
+    Call once from app.py at startup, after `configure(...)`."""
+    global _SKILL_EXECUTOR
+    _SKILL_EXECUTOR = fn
+
 
 def configure(
     *,
@@ -364,6 +378,29 @@ ACTION_TYPES = [
         "config_ui": "rule_builder",
         "config_fields": [],
         "outputs": ["passed", "summary"],
+    },
+    {
+        # Generic action that calls ANY enabled chat skill — built-ins,
+        # custom webhooks, custom SQL, knowledge, AND every MCP tool —
+        # without needing a hard-coded action kind per skill. The list
+        # of available skills is exposed via the metadata endpoint so
+        # the frontend can render a category-grouped picker; new MCP
+        # tools / custom skills become selectable the moment they're
+        # enabled in `agent_skills`. The dashboard renders this action
+        # with its own picker UI when it sees `config_ui: skill_picker`.
+        "kind": "call_skill",
+        "label": "Use a skill / tool",
+        "config_ui": "skill_picker",
+        "config_fields": [
+            {"name": "skill_name", "label": "Skill", "kind": "text", "required": True,
+             "placeholder": "lookup_gallery_cards"},
+            {"name": "args_json", "label": "Arguments (JSON object, merge tags allowed)",
+             "kind": "textarea",
+             "placeholder": '{"slug":"{{trigger.fields.slug}}"}'},
+            {"name": "output_key", "label": "Save result under key", "kind": "text",
+             "placeholder": "skill_result"},
+        ],
+        "outputs": ["result", "<output_key>"],
     },
 ]
 
@@ -974,6 +1011,57 @@ def _action_delay(cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": True, "slept": seconds}
 
 
+def _action_call_skill(cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute any enabled chat skill via the registered dispatcher.
+
+    cfg keys:
+        skill_name  — the `agent_skills.name` to invoke (required).
+        args_json   — JSON object string (merge tags already rendered by
+                      the engine before this is called); optional, defaults to {}.
+        output_key  — key under which to expose the result to later steps;
+                      defaults to "skill_result".
+
+    Returns:
+        On success:  {ok: True, result: <skill payload>, <output_key>: <skill payload>}
+        On failure:  {ok: False, error: "..."}
+    """
+    if _SKILL_EXECUTOR is None:
+        return {"ok": False, "error": (
+            "Skill dispatcher is not wired up. The host app must call "
+            "automations.set_skill_executor(...) at startup."
+        )}
+    skill_name = (cfg.get("skill_name") or "").strip()
+    if not skill_name:
+        return {"ok": False, "error": "skill_name is required."}
+    raw_args = cfg.get("args_json")
+    if raw_args is None or raw_args == "":
+        args_dict: Dict[str, Any] = {}
+    elif isinstance(raw_args, dict):
+        args_dict = raw_args
+    else:
+        try:
+            parsed = json.loads(str(raw_args))
+        except (TypeError, ValueError) as e:
+            return {"ok": False, "error": f"args_json is not valid JSON: {e}"}
+        if not isinstance(parsed, dict):
+            return {"ok": False, "error": "args_json must be a JSON object."}
+        args_dict = parsed
+    try:
+        outcome = _SKILL_EXECUTOR(skill_name, args_dict)
+    except Exception as e:  # noqa: BLE001 — surface any executor crash
+        return {"ok": False, "error": f"Skill {skill_name!r} crashed: {e}"}
+    if not isinstance(outcome, dict):
+        return {"ok": False, "error": (
+            f"Skill executor returned {type(outcome).__name__}, expected dict."
+        )}
+    if not outcome.get("ok", True):
+        # Surface the dispatcher's own error string if it gave one.
+        return {"ok": False, "error": outcome.get("error") or "Skill failed."}
+    payload = outcome.get("result")
+    output_key = (cfg.get("output_key") or "skill_result").strip() or "skill_result"
+    return {"ok": True, "result": payload, output_key: payload}
+
+
 _ACTION_DISPATCH: Dict[str, Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]]] = {
     "send_email": _action_send_email,
     "send_sms": _action_send_sms,
@@ -982,6 +1070,7 @@ _ACTION_DISPATCH: Dict[str, Callable[[Dict[str, Any], Dict[str, Any]], Dict[str,
     "save_to_table": _action_save_to_table,
     "delay": _action_delay,
     "condition": _action_condition,
+    "call_skill": _action_call_skill,
 }
 
 

@@ -7376,7 +7376,11 @@ ADMIN_WRITE_BLACKLIST = {
 # `_admin_validate_write_table`, because the dedicated mcp tools
 # create their own pending actions on these tables and must still be
 # allowed to execute.
-ADMIN_DEDICATED_WRITE_TABLES = {"mcp_servers"}
+# `automations` joins this set so the AI can't bypass the validators
+# (TRIGGER_TYPES / ACTION_TYPES / call_skill skill-name lookup) by
+# proposing a raw `INSERT INTO automations …` through the generic
+# tools — same defense-in-depth idea as mcp_servers's V1 guards.
+ADMIN_DEDICATED_WRITE_TABLES = {"mcp_servers", "automations"}
 
 
 def _admin_table_columns(table_name):
@@ -7650,6 +7654,12 @@ def _admin_tool_propose_insert(table_name=None, fields=None,
     err = _admin_validate_write_table(table_name)
     if err: return {"error": err}
     if table_name in ADMIN_DEDICATED_WRITE_TABLES:
+        if table_name == "automations":
+            return {"error": ("Use admin_propose_create_automation "
+                              "instead of admin_propose_insert for "
+                              "the automations table — it validates "
+                              "trigger_type, action kinds, and "
+                              "call_skill skill_names.")}
         return {"error": (f"Use the dedicated tool for '{table_name}' — "
                           f"call admin_mcp_propose_add_server (or the "
                           f"matching admin_mcp_propose_* tool) instead "
@@ -7681,6 +7691,12 @@ def _admin_tool_propose_update(table_name=None, row_id=None, fields=None,
     err = _admin_validate_write_table(table_name)
     if err: return {"error": err}
     if table_name in ADMIN_DEDICATED_WRITE_TABLES:
+        if table_name == "automations":
+            return {"error": ("Use admin_propose_update_automation "
+                              "(or admin_propose_toggle_automation "
+                              "for an enable/disable flip) instead "
+                              "of admin_propose_update for the "
+                              "automations table.")}
         return {"error": (f"Use the dedicated tool for '{table_name}' — "
                           f"call admin_mcp_propose_update_server / "
                           f"admin_mcp_propose_toggle_velo / "
@@ -7740,6 +7756,10 @@ def _admin_tool_propose_delete(table_name=None, row_id=None,
     err = _admin_validate_write_table(table_name)
     if err: return {"error": err}
     if table_name in ADMIN_DEDICATED_WRITE_TABLES:
+        if table_name == "automations":
+            return {"error": ("Use admin_propose_delete_automation "
+                              "instead of admin_propose_delete for "
+                              "the automations table.")}
         return {"error": (f"Use the dedicated tool for '{table_name}' — "
                           f"call admin_mcp_propose_remove_server "
                           f"instead of admin_propose_delete.")}
@@ -8008,6 +8028,14 @@ def _admin_execute_pending(action_row):
         try: payload = json.loads(payload)
         except Exception: payload = {}
     from psycopg2 import sql as _pgsql
+
+    # Automations need bespoke validation + webhook-token + version
+    # snapshot logic that the generic field-map executor below cannot
+    # express. Route them through the dedicated executor BEFORE the
+    # generic branches so insert/update/delete all funnel into the
+    # same place the regular admin_automations_* endpoints use.
+    if table == "automations" and a_type in ("insert", "update", "delete"):
+        return _admin_execute_automation_pending(action_row, payload)
 
     if a_type == "insert":
         bl_err = _admin_validate_write_table(table)
@@ -8790,6 +8818,413 @@ def _admin_tool_mcp_propose_remove_server(server_id=None,
                                   preview=preview)
 
 
+# ====================================================================
+# Automations admin tools — read + propose-approve write surface so
+# the Admin Assist AI can build / edit / toggle / delete automations
+# on behalf of the owner. Mirrors the MCP pattern (dedicated tools +
+# their own executor branch + ADMIN_DEDICATED_WRITE_TABLES guard).
+# ====================================================================
+def _admin_validate_automation_call_skill_steps(steps):
+    """For every call_skill step, ensure skill_name resolves to an
+    enabled row in agent_skills — gives the AI a clean error at
+    *propose* time so a bad skill_name never reaches the approval
+    queue. Returns an error string or None."""
+    needed = set()
+    for i, s in enumerate(steps or [], start=1):
+        if not isinstance(s, dict):
+            continue
+        if (s.get("kind") or "").strip() != "call_skill":
+            continue
+        cfg = s.get("config") or {}
+        skill_name = (cfg.get("skill_name") or "").strip()
+        if not skill_name:
+            return (f"Step {i} (call_skill) requires a non-empty "
+                    f"skill_name.")
+        needed.add(skill_name)
+    if not needed:
+        return None
+    try:
+        rows = query_db(
+            "SELECT name FROM agent_skills "
+            "WHERE enabled = true AND name = ANY(%s)",
+            (list(needed),),
+        ) or []
+    except Exception as e:
+        return f"Could not validate skill_names: {str(e)[:100]}"
+    found = {r["name"] for r in rows}
+    missing = sorted(needed - found)
+    if missing:
+        return (f"call_skill steps reference unknown or disabled "
+                f"skills: {missing}. Use admin_list_skills to find a "
+                f"valid name.")
+    return None
+
+
+def _admin_propose_validate_automation_payload(data):
+    """Run the inbound payload through the canonical
+    `_validate_automation_payload` (same checks the editor uses) PLUS
+    the call_skill skill-name guard. Returns (clean_payload,
+    error_str). On error, clean_payload is None."""
+    try:
+        clean = _validate_automation_payload(data)
+    except ValueError as e:
+        return None, str(e)
+    err = _admin_validate_automation_call_skill_steps(
+        clean["action_steps"])
+    if err:
+        return None, err
+    return clean, None
+
+
+def _automation_step_summary(step, idx):
+    """Human-friendly one-line summary of an action step for the
+    pending-action preview text shown in the approval card."""
+    kind = (step.get("kind") or "").strip() or "?"
+    name_label = (step.get("name") or "").strip()
+    cfg = step.get("config") or {}
+    if kind == "call_skill":
+        sn = (cfg.get("skill_name") or "").strip() or "?"
+        ok = (cfg.get("output_key") or "").strip()
+        bits = [f"call_skill → {sn}"]
+        if ok:
+            bits.append(f"output_key={ok}")
+        return (f"  {idx}. "
+                + (name_label + " — " if name_label else "")
+                + " ".join(bits))
+    return (f"  {idx}. {kind}"
+            + (f" — {name_label}" if name_label else ""))
+
+
+def _admin_tool_list_automations(**_):
+    """Return a compact list of every automation row (most-recent
+    first, capped at 200) suitable for the AI to scan."""
+    rows = query_db(
+        "SELECT id, name, description, enabled, trigger_type, "
+        "       last_run_at, last_run_status, "
+        "       jsonb_array_length(COALESCE(action_steps, '[]'::jsonb)) "
+        "         AS step_count "
+        "FROM automations ORDER BY id DESC LIMIT 200"
+    ) or []
+    out = []
+    for r in rows:
+        out.append({
+            "id": r["id"],
+            "name": r.get("name") or "",
+            "description": r.get("description") or "",
+            "enabled": bool(r.get("enabled")),
+            "trigger_type": r.get("trigger_type") or "manual",
+            "step_count": int(r.get("step_count") or 0),
+            "last_run_at": (r.get("last_run_at").isoformat()
+                            if r.get("last_run_at") else None),
+            "last_run_status": r.get("last_run_status") or "",
+        })
+    return {"automations": out, "count": len(out)}
+
+
+def _admin_tool_get_automation(automation_id=None, **_):
+    """Return ONE automation in the same shape the editor sees, with
+    sensitive trigger_config secrets masked."""
+    if automation_id is None:
+        return {"error": "automation_id is required"}
+    try:
+        aid = int(automation_id)
+    except Exception:
+        return {"error": "automation_id must be an integer"}
+    row = query_db("SELECT * FROM automations WHERE id = %s",
+                   (aid,), fetchone=True)
+    if not row:
+        return {"error": f"No automation with id={aid}"}
+    return _redact_automation_for_editor(_row_automation(row))
+
+
+def _admin_tool_propose_create_automation(name=None, description="",
+                                           enabled=False,
+                                           trigger_type="manual",
+                                           trigger_config=None,
+                                           action_steps=None,
+                                           _session_id="", **_):
+    """Propose creating a new automation row. Validates the full
+    payload up-front so the approval card never holds a malformed
+    automation."""
+    payload, err = _admin_propose_validate_automation_payload({
+        "name": name, "description": description, "enabled": enabled,
+        "trigger_type": trigger_type,
+        "trigger_config": trigger_config or {},
+        "action_steps": action_steps or [],
+    })
+    if err:
+        return {"error": err}
+    step_lines = [_automation_step_summary(s, i)
+                  for i, s in enumerate(payload["action_steps"],
+                                        start=1)] or ["  (no steps)"]
+    preview = (f"Create automation '{payload['name']}'\n"
+               f"  trigger: {payload['trigger_type']}\n"
+               f"  enabled: {payload['enabled']}\n"
+               f"  steps:\n" + "\n".join(step_lines))
+    return _admin_create_pending(
+        _session_id, "insert",
+        target_table="automations",
+        payload={"automation_payload": payload},
+        preview=preview[:2000],
+    )
+
+
+def _admin_tool_propose_update_automation(automation_id=None, name=None,
+                                            description=None,
+                                            enabled=None,
+                                            trigger_type=None,
+                                            trigger_config=None,
+                                            action_steps=None,
+                                            _session_id="", **_):
+    """Propose editing an existing automation. Each parameter is
+    optional — anything left as None falls through to the saved
+    value, so the AI can change just one field without resubmitting
+    the whole automation."""
+    if automation_id is None:
+        return {"error": "automation_id is required"}
+    try:
+        aid = int(automation_id)
+    except Exception:
+        return {"error": "automation_id must be an integer"}
+    existing = query_db("SELECT * FROM automations WHERE id = %s",
+                        (aid,), fetchone=True)
+    if not existing:
+        return {"error": f"No automation with id={aid}"}
+    merged = {
+        "name": (name if name is not None
+                 else existing.get("name")),
+        "description": (description if description is not None
+                        else existing.get("description")),
+        "enabled": (bool(enabled) if enabled is not None
+                    else bool(existing.get("enabled"))),
+        "trigger_type": (trigger_type if trigger_type is not None
+                         else existing.get("trigger_type")),
+        "trigger_config": (trigger_config if trigger_config is not None
+                           else (existing.get("trigger_config") or {})),
+        "action_steps": (action_steps if action_steps is not None
+                         else (existing.get("action_steps") or [])),
+    }
+    payload, err = _admin_propose_validate_automation_payload(merged)
+    if err:
+        return {"error": err}
+    changes = []
+    if name is not None and name != (existing.get("name") or ""):
+        changes.append(f"name: '{existing.get('name')}' → "
+                       f"'{payload['name']}'")
+    if (description is not None
+            and description != (existing.get("description") or "")):
+        changes.append("description (rewritten)")
+    if (enabled is not None
+            and bool(enabled) != bool(existing.get("enabled"))):
+        changes.append(f"enabled: {existing.get('enabled')} → "
+                       f"{payload['enabled']}")
+    if (trigger_type is not None
+            and trigger_type != (existing.get("trigger_type") or "")):
+        changes.append(f"trigger_type: "
+                       f"{existing.get('trigger_type')} → "
+                       f"{payload['trigger_type']}")
+    if trigger_config is not None:
+        changes.append("trigger_config (rewritten)")
+    if action_steps is not None:
+        changes.append(f"action_steps → "
+                       f"{len(payload['action_steps'])} step(s)")
+    if not changes:
+        return {"error": ("No fields to update — every parameter "
+                          "matched the saved value.")}
+    preview = (f"Update automation #{aid} '{payload['name']}':\n  "
+               + "\n  ".join(changes))
+    return _admin_create_pending(
+        _session_id, "update",
+        target_table="automations", target_id=aid,
+        payload={"automation_payload": payload},
+        preview=preview[:2000],
+    )
+
+
+def _admin_tool_propose_toggle_automation(automation_id=None,
+                                            enabled=None,
+                                            _session_id="", **_):
+    """Propose flipping the enabled flag on one automation. A simpler
+    approval card than a full update."""
+    if automation_id is None or enabled is None:
+        return {"error": "automation_id and enabled are required"}
+    try:
+        aid = int(automation_id)
+    except Exception:
+        return {"error": "automation_id must be an integer"}
+    existing = query_db(
+        "SELECT name, enabled FROM automations WHERE id = %s",
+        (aid,), fetchone=True)
+    if not existing:
+        return {"error": f"No automation with id={aid}"}
+    new_state = bool(enabled)
+    if bool(existing.get("enabled")) == new_state:
+        return {"error": (f"Automation #{aid} is already "
+                          f"{'enabled' if new_state else 'disabled'}.")}
+    preview = (f"{'Enable' if new_state else 'Disable'} "
+               f"automation #{aid} '{existing.get('name') or ''}'")
+    return _admin_create_pending(
+        _session_id, "update",
+        target_table="automations", target_id=aid,
+        payload={"toggle_enabled": new_state},
+        preview=preview,
+    )
+
+
+def _admin_tool_propose_delete_automation(automation_id=None,
+                                            _session_id="", **_):
+    """Propose deleting one automation. Cascades to automation_runs
+    and automation_versions through the existing FK setup."""
+    if automation_id is None:
+        return {"error": "automation_id is required"}
+    try:
+        aid = int(automation_id)
+    except Exception:
+        return {"error": "automation_id must be an integer"}
+    existing = query_db("SELECT name FROM automations WHERE id = %s",
+                        (aid,), fetchone=True)
+    if not existing:
+        return {"error": f"No automation with id={aid}"}
+    preview = (f"Delete automation #{aid} "
+               f"'{existing.get('name') or ''}' and ALL of its run "
+               f"history + saved versions (cascade).")
+    return _admin_create_pending(
+        _session_id, "delete",
+        target_table="automations", target_id=aid,
+        payload={},
+        preview=preview,
+    )
+
+
+def _admin_execute_automation_pending(action_row, payload):
+    """Dedicated executor for approved `automations` CRUD actions —
+    handles the webhook_token rotation + version snapshot + redacted
+    secret merge that the generic field-map executor cannot. Returns
+    (result_dict, error_str)."""
+    a_type = action_row.get("action_type")
+    rid = action_row.get("target_id")
+
+    if a_type == "insert":
+        clean, err = _admin_propose_validate_automation_payload(
+            payload.get("automation_payload") or {})
+        if err:
+            return None, err
+        token = (automations.generate_webhook_token()
+                 if clean["trigger_type"] == "webhook" else "")
+        try:
+            row = execute_db(
+                "INSERT INTO automations "
+                "(name, description, enabled, trigger_type, "
+                " trigger_config, action_steps, webhook_token) "
+                "VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s) "
+                "RETURNING id",
+                (clean["name"], clean["description"], clean["enabled"],
+                 clean["trigger_type"],
+                 json.dumps(clean["trigger_config"]),
+                 json.dumps(clean["action_steps"]),
+                 token),
+            )
+            new_id = (row or {}).get("id")
+            if new_id is not None:
+                _save_automation_version(
+                    new_id, _automation_snapshot(clean),
+                    note="Created via Admin AI",
+                )
+            return ({"inserted_id": new_id, "table": "automations",
+                     "name": clean["name"]}, None)
+        except Exception as e:
+            return None, str(e)[:400]
+
+    if a_type == "update":
+        if rid is None:
+            return None, "missing target_id"
+        # Toggle path — single-field flip, no full payload involved.
+        if "toggle_enabled" in payload:
+            new_state = bool(payload.get("toggle_enabled"))
+            try:
+                row = execute_db(
+                    "UPDATE automations "
+                    "SET enabled=%s, updated_at=NOW(), "
+                    "    next_scheduled_at = CASE "
+                    "       WHEN %s = FALSE THEN NULL "
+                    "       ELSE next_scheduled_at END "
+                    "WHERE id=%s RETURNING id",
+                    (new_state, new_state, rid),
+                )
+                if not row:
+                    return None, f"No automation #{rid}"
+                return ({"rows_affected": 1, "table": "automations",
+                         "row_id": rid, "enabled": new_state}, None)
+            except Exception as e:
+                return None, str(e)[:400]
+        # Full update path.
+        clean, err = _admin_propose_validate_automation_payload(
+            payload.get("automation_payload") or {})
+        if err:
+            return None, err
+        existing = query_db(
+            "SELECT trigger_type, trigger_config, webhook_token "
+            "FROM automations WHERE id = %s",
+            (rid,), fetchone=True)
+        if not existing:
+            return None, f"No automation #{rid}"
+        # When the trigger type is unchanged, fall back to the
+        # existing trigger secret if the AI didn't actually re-paste
+        # a new one (mirrors the editor's behaviour with masked
+        # signature_secret values).
+        if existing.get("trigger_type") == clean["trigger_type"]:
+            _merge_preserved_trigger_secrets(
+                clean["trigger_config"],
+                existing.get("trigger_config") or {},
+            )
+        token = existing.get("webhook_token") or ""
+        if clean["trigger_type"] == "webhook" and not token:
+            token = automations.generate_webhook_token()
+        elif clean["trigger_type"] != "webhook":
+            token = ""
+        try:
+            execute_db(
+                "UPDATE automations SET "
+                " name=%s, description=%s, enabled=%s, "
+                " trigger_type=%s, trigger_config=%s::jsonb, "
+                " action_steps=%s::jsonb, webhook_token=%s, "
+                " updated_at=NOW(), "
+                " next_scheduled_at = CASE "
+                "    WHEN trigger_type <> %s THEN NULL "
+                "    ELSE next_scheduled_at END "
+                "WHERE id=%s",
+                (clean["name"], clean["description"], clean["enabled"],
+                 clean["trigger_type"],
+                 json.dumps(clean["trigger_config"]),
+                 json.dumps(clean["action_steps"]),
+                 token, clean["trigger_type"], rid),
+            )
+            _save_automation_version(
+                rid, _automation_snapshot(clean),
+                note="Updated via Admin AI",
+            )
+            return ({"rows_affected": 1, "table": "automations",
+                     "row_id": rid}, None)
+        except Exception as e:
+            return None, str(e)[:400]
+
+    if a_type == "delete":
+        if rid is None:
+            return None, "missing target_id"
+        try:
+            row = execute_db(
+                "DELETE FROM automations WHERE id=%s RETURNING id",
+                (rid,))
+            if not row:
+                return None, f"No automation #{rid}"
+            return ({"rows_affected": 1, "table": "automations",
+                     "row_id": rid}, None)
+        except Exception as e:
+            return None, str(e)[:400]
+
+    return None, f"Unsupported action_type for automations: {a_type}"
+
+
 ADMIN_TOOL_FUNCTIONS = {
     # --- Read-only (run immediately, no approval) ---
     "admin_list_tables":            _admin_tool_list_tables,
@@ -8819,6 +9254,15 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_mcp_propose_toggle_velo":    _admin_tool_mcp_propose_toggle_velo,
     "admin_mcp_propose_toggle_enabled": _admin_tool_mcp_propose_toggle_enabled,
     "admin_mcp_propose_remove_server":  _admin_tool_mcp_propose_remove_server,
+    # --- Automations (reads run immediately; propose_* are
+    # approval-gated and routed through the dedicated executor in
+    # _admin_execute_pending). ---
+    "admin_list_automations":           _admin_tool_list_automations,
+    "admin_get_automation":             _admin_tool_get_automation,
+    "admin_propose_create_automation":  _admin_tool_propose_create_automation,
+    "admin_propose_update_automation":  _admin_tool_propose_update_automation,
+    "admin_propose_toggle_automation":  _admin_tool_propose_toggle_automation,
+    "admin_propose_delete_automation":  _admin_tool_propose_delete_automation,
 }
 
 # Tools whose write-side effect runs only after explicit owner approval.
@@ -8833,6 +9277,10 @@ ADMIN_PROPOSE_TOOLS = {
     "admin_mcp_propose_toggle_velo",
     "admin_mcp_propose_toggle_enabled",
     "admin_mcp_propose_remove_server",
+    "admin_propose_create_automation",
+    "admin_propose_update_automation",
+    "admin_propose_toggle_automation",
+    "admin_propose_delete_automation",
 }
 
 
@@ -9156,6 +9604,80 @@ ADMIN_TOOLS = [
         {"type": "object",
          "properties": {"server_id": {"type": "integer"}},
          "required": ["server_id"]}),
+    # ---- Automations (no-code workflows) ----
+    _admin_tool_schema(
+        "admin_list_automations",
+        "List every automation row (id, name, trigger_type, enabled, "
+        "step_count, last_run_*) — most recent first, capped at 200. "
+        "Use this before proposing an update/toggle/delete so you "
+        "have the right id."),
+    _admin_tool_schema(
+        "admin_get_automation",
+        "Return one automation in full editor shape (trigger_config + "
+        "action_steps included; sensitive trigger secrets are masked). "
+        "Call this before proposing an update so the merged payload "
+        "is correct.",
+        {"type": "object",
+         "properties": {"automation_id": {"type": "integer"}},
+         "required": ["automation_id"]}),
+    _admin_tool_schema(
+        "admin_propose_create_automation",
+        "Propose creating a new automation. trigger_type is one of "
+        "manual / scheduled / webhook / form_submitted / order_placed "
+        "/ chat_keyword. Each action_steps entry is "
+        "{kind, name?, config, when?}. Common kinds: send_email, "
+        "send_sms, log, set_var, http_request, condition, call_skill. "
+        "Use call_skill to invoke ANY enabled chat tool / MCP tool / "
+        "custom skill — its config takes "
+        "{skill_name, args_json, output_key} (args_json is a JSON "
+        "object string with merge tags like {{trigger.email}}). Use "
+        "admin_list_skills to find valid skill_names first.",
+        {"type": "object",
+         "properties": {
+             "name":           {"type": "string"},
+             "description":    {"type": "string"},
+             "enabled":        {"type": "boolean"},
+             "trigger_type":   {"type": "string"},
+             "trigger_config": {"type": "object"},
+             "action_steps":   {"type": "array",
+                                "items": {"type": "object"}},
+         },
+         "required": ["name", "trigger_type", "action_steps"]}),
+    _admin_tool_schema(
+        "admin_propose_update_automation",
+        "Propose editing one automation. Pass automation_id plus only "
+        "the fields you want to change — anything omitted (None) "
+        "falls through to the saved value. To rewrite the steps, "
+        "pass the full new action_steps array.",
+        {"type": "object",
+         "properties": {
+             "automation_id":  {"type": "integer"},
+             "name":           {"type": "string"},
+             "description":    {"type": "string"},
+             "enabled":        {"type": "boolean"},
+             "trigger_type":   {"type": "string"},
+             "trigger_config": {"type": "object"},
+             "action_steps":   {"type": "array",
+                                "items": {"type": "object"}},
+         },
+         "required": ["automation_id"]}),
+    _admin_tool_schema(
+        "admin_propose_toggle_automation",
+        "Propose flipping the enabled flag on one automation — a "
+        "smaller approval card than a full update.",
+        {"type": "object",
+         "properties": {
+             "automation_id": {"type": "integer"},
+             "enabled":       {"type": "boolean"},
+         },
+         "required": ["automation_id", "enabled"]}),
+    _admin_tool_schema(
+        "admin_propose_delete_automation",
+        "Propose deleting one automation. Cascades to its run history "
+        "and saved versions.",
+        {"type": "object",
+         "properties": {"automation_id": {"type": "integer"}},
+         "required": ["automation_id"]}),
 ]
 
 
@@ -9340,6 +9862,29 @@ ADMIN_CHAT_SYSTEM_PROMPT = (
     "credential if any; propose the add; ask them to Approve; then "
     "call test_server and refresh_tools to confirm and surface the "
     "tool list.\n\n"
+    "AUTOMATIONS (no-code workflows):\n"
+    "Automations have a dedicated toolset — never use raw "
+    "propose_insert/update/delete on the automations table:\n"
+    "  • admin_list_automations / admin_get_automation — reads.\n"
+    "  • admin_propose_create_automation / "
+    "admin_propose_update_automation / "
+    "admin_propose_toggle_automation / "
+    "admin_propose_delete_automation — approval-gated writes.\n"
+    "An automation has a trigger (manual / scheduled / webhook / "
+    "form_submitted / order_placed / chat_keyword) and an ordered list "
+    "of action_steps. The most powerful step kind is `call_skill` — "
+    "its config is {skill_name, args_json, output_key} and it can "
+    "invoke ANY enabled chat tool, MCP tool, custom webhook/SQL "
+    "skill, or knowledge lookup. Always call admin_list_skills first "
+    "to find a valid skill_name before composing a call_skill step. "
+    "args_json is a JSON object string and may include merge tags "
+    "like {{trigger.email}} or {{step.cards}} that resolve at run "
+    "time. The output_key (optional) names the variable other steps "
+    "see the result under.\n"
+    "When the owner asks to build something multi-step ('when a form "
+    "is submitted, look up the customer in HubSpot and email me'), "
+    "pick the right trigger, then chain the call_skill steps that get "
+    "you to the outcome.\n\n"
     "SNAPSHOT / REVERT:\n"
     "Before any approved update or delete to chatbot_settings, "
     "agent_skills, agent_provider_settings, site_settings, "
@@ -19941,6 +20486,40 @@ automations.configure(
 automations.register_with_scheduler(messaging)
 
 
+def _automations_call_skill_hook(skill_name, args_dict):
+    """Bridge from the automations engine's `call_skill` action into the
+    chat-tool dispatcher.
+
+    Lets every enabled chat skill — built-ins, custom webhooks, custom
+    SQL, knowledge, AND every MCP tool — be used as an automation step
+    without adding a new action kind per skill. New skills become
+    selectable as soon as they appear (and are enabled) in the
+    `agent_skills` table.
+
+    Returns a dict shaped {ok, result, error} that the engine forwards
+    into the run log.
+    """
+    try:
+        result_str, _log_entry = _execute_chat_tool_inner(
+            skill_name, json.dumps(args_dict or {}, default=str)
+        )
+    except Exception as e:
+        return {"ok": False, "error": f"Dispatcher crashed: {e}"}
+    try:
+        parsed = json.loads(result_str) if result_str else None
+    except Exception:
+        # Skill returned non-JSON for some reason — still surface it as
+        # the result string so the run log is informative.
+        return {"ok": True, "result": result_str}
+    if isinstance(parsed, dict) and "error" in parsed and len(parsed) == 1:
+        # Dispatcher's well-known error envelope: {"error": "..."}.
+        return {"ok": False, "error": str(parsed.get("error") or "Skill failed.")}
+    return {"ok": True, "result": parsed}
+
+
+automations.set_skill_executor(_automations_call_skill_hook)
+
+
 # =============================================================================
 # AUTOMATIONS — admin CRUD + run log + public webhook
 # =============================================================================
@@ -20209,6 +20788,16 @@ def _validate_automation_payload(data):
             if cleaned_when is not None:
                 cleaned_step["when"] = cleaned_when
         cleaned_steps.append(cleaned_step)
+    # Every save path (direct CRUD, restore, import, test-run, AI
+    # propose/approve) flows through this validator, so the call_skill
+    # skill-name guard belongs here rather than only in the AI propose
+    # helper. Otherwise the editor or a raw API call could persist a
+    # call_skill step whose `skill_name` doesn't resolve to an enabled
+    # `agent_skills` row, and the failure would only surface at runtime
+    # when the automation actually fires.
+    skill_err = _admin_validate_automation_call_skill_steps(cleaned_steps)
+    if skill_err:
+        raise ValueError(skill_err)
     return {
         "name": name,
         "description": (data.get("description") or "").strip(),
@@ -20219,11 +20808,126 @@ def _validate_automation_payload(data):
     }
 
 
+def _automations_skill_catalogue():
+    """Build the list of every skill (chat-tool) the `call_skill` action
+    can invoke, in the shape the editor's progressive-disclosure picker
+    needs.
+
+    Each entry has:
+        name          — agent_skills.name, the value passed to call_skill
+        display_name  — friendly label (admin-edited if any, else fallback)
+        description   — short blurb shown under the name
+        category      — admin-set bucket from agent_skills.category
+        source        — origin tag for the picker grouping:
+                            'builtin' | 'mcp' | 'webhook' | 'sql' | 'knowledge' | 'custom'
+        server_name   — MCP server label, only when source == 'mcp'
+        args_schema   — JSON schema dict for the skill's arguments, so the
+                        UI can render a friendly form (or fall back to a
+                        JSON textarea).
+
+    We use audience='admin' so MCP servers gated to admin-only are
+    visible here even when they're hidden from the visitor agent. New
+    rows in agent_skills are picked up automatically — that's the whole
+    point of routing through the existing dispatcher.
+    """
+    try:
+        rows = query_db(
+            "SELECT name, display_name, description, category, builtin, "
+            "config_json FROM agent_skills WHERE enabled = true "
+            "ORDER BY display_name, name"
+        ) or []
+    except Exception as e:
+        print(f"[automations] skill catalogue load failed: {e}")
+        return []
+
+    # Pre-load MCP server visibility + display names in one query so we
+    # don't hit the DB once per row inside the loop.
+    mcp_meta = {}
+    if any((_custom_skill_cfg(r).get("type") or "").lower() == "mcp"
+           for r in rows if not r.get("builtin")):
+        try:
+            srvs = query_db(
+                "SELECT id, name, allowed_for_admin FROM mcp_servers"
+            ) or []
+            for s in srvs:
+                mcp_meta[int(s["id"])] = {
+                    "admin_allowed": bool(s.get("allowed_for_admin")),
+                    "server_name":   s.get("name") or "",
+                }
+        except Exception:
+            pass
+
+    builtin_schemas = {
+        (t.get("function") or {}).get("name"): (t.get("function") or {}).get("parameters", {})
+        for t in CHAT_TOOLS
+    }
+
+    out = []
+    for r in rows:
+        name = r["name"]
+        is_builtin = bool(r.get("builtin"))
+        cfg = _custom_skill_cfg(r)
+        skill_type = (cfg.get("type") or "").strip().lower()
+
+        if is_builtin:
+            source = "builtin"
+        elif skill_type == "mcp":
+            source = "mcp"
+        elif skill_type == "webhook":
+            source = "webhook"
+        elif skill_type == "sql":
+            source = "sql"
+        elif skill_type == "knowledge" or name == _KNOWLEDGE_LOOKUP_SKILL_NAME:
+            source = "knowledge"
+        else:
+            source = "custom"
+
+        server_name = ""
+        if source == "mcp":
+            srv_id = cfg.get("server_id")
+            try:
+                vis = mcp_meta.get(int(srv_id) if srv_id is not None else -1) or {}
+            except (TypeError, ValueError):
+                vis = {}
+            # Hide MCP tools whose server isn't allowed for admin so the
+            # picker doesn't list something the dispatcher would refuse.
+            if not vis.get("admin_allowed"):
+                continue
+            server_name = vis.get("server_name") or ""
+
+        if is_builtin:
+            args_schema = builtin_schemas.get(name) or {
+                "type": "object", "properties": {}, "required": [],
+            }
+        else:
+            try:
+                args_schema = _custom_skill_args_schema(name, cfg)
+            except Exception:
+                args_schema = {"type": "object", "properties": {}, "required": []}
+
+        display_name = (r.get("display_name") or "").strip() or name.replace("_", " ").title()
+        description = (r.get("description") or "").strip()
+        category = (r.get("category") or "lookup").strip() or "lookup"
+
+        out.append({
+            "name": name,
+            "display_name": display_name,
+            "description": description,
+            "category": category,
+            "source": source,
+            "server_name": server_name,
+            "args_schema": args_schema,
+        })
+    return out
+
+
 @app.route("/admin/api/automations/metadata")
 @admin_required
 def admin_automations_metadata():
-    """Return the trigger + action catalogues plus the available DB tables
-    and active forms — everything the editor UI needs to render its pickers."""
+    """Return the trigger + action catalogues plus the available DB tables,
+    active forms, and the live skill catalogue — everything the editor
+    UI needs to render its pickers (including the progressive-disclosure
+    "Use a skill" picker for the call_skill action)."""
     forms = query_db(
         "SELECT id, name, slug FROM custom_forms WHERE status = 'active' ORDER BY name"
     ) or []
@@ -20235,6 +20939,7 @@ def admin_automations_metadata():
         "forms": [{"id": f["id"], "name": f["name"], "slug": f["slug"]} for f in forms],
         "limits": automations.status_summary(),
         "public_base_url": _public_base_url(),
+        "skills": _automations_skill_catalogue(),
     })
 
 

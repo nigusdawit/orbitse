@@ -1517,6 +1517,110 @@ TO CUSTOMIZE THIS DASHBOARD:
       justify-content: flex-end;
       align-items: center;
     }
+    /* "+ Add step" picker (progressive-disclosure UI for the Common
+       actions / Skills & integrations modal). Tiles wrap into a grid
+       so the modal stays comfortably readable as the catalogue grows. */
+    .step-picker-tiles {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 0.5rem;
+    }
+    .step-picker-tile {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      text-align: left;
+      padding: 0.7rem 0.85rem;
+      border: 1px solid var(--admin-border-light, rgba(255,255,255,0.15));
+      border-radius: 8px;
+      background: rgba(255,255,255,0.03);
+      color: var(--admin-text, #e4e4e7);
+      cursor: pointer;
+      font-family: inherit;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .step-picker-tile:hover {
+      background: rgba(99,102,241,0.12);
+      border-color: rgba(99,102,241,0.55);
+    }
+    .step-picker-tile-title {
+      font-weight: 600;
+      font-size: 0.9rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      flex-wrap: wrap;
+    }
+    .step-picker-tile-desc {
+      font-size: 0.8rem;
+      color: var(--admin-text-muted, rgba(255,255,255,0.65));
+      line-height: 1.35;
+    }
+    .step-picker-tile-meta {
+      margin-top: 0.2rem;
+      display: flex;
+      gap: 0.3rem;
+      flex-wrap: wrap;
+    }
+    .step-picker-cat-badge,
+    .step-picker-server-badge {
+      display: inline-block;
+      font-size: 0.7rem;
+      padding: 0.1rem 0.45rem;
+      border-radius: 999px;
+      background: rgba(99,102,241,0.15);
+      color: rgba(199,210,254,0.95);
+      border: 1px solid rgba(99,102,241,0.4);
+    }
+    .step-picker-server-badge {
+      background: rgba(34,197,94,0.12);
+      color: rgba(187,247,208,0.95);
+      border-color: rgba(34,197,94,0.4);
+    }
+    .step-picker-accordion {
+      border: 1px solid var(--admin-border, rgba(255,255,255,0.08));
+      border-radius: 8px;
+      padding: 0.6rem 0.75rem;
+      background: rgba(255,255,255,0.02);
+    }
+    .step-picker-accordion-head {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      width: 100%;
+      background: transparent;
+      border: 0;
+      color: var(--admin-text, #fff);
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.95rem;
+      text-align: left;
+      padding: 0.2rem 0;
+    }
+    .step-picker-count-badge {
+      margin-left: auto;
+      font-size: 0.78rem;
+      color: var(--admin-text-muted, rgba(255,255,255,0.65));
+      font-weight: 400;
+    }
+    .step-picker-group { margin-top: 0.85rem; }
+    .step-picker-group:first-child { margin-top: 0; }
+    .step-picker-group-title {
+      margin: 0 0 0.4rem 0;
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--admin-text-muted, rgba(255,255,255,0.6));
+      font-weight: 600;
+    }
+    .step-picker-group-count {
+      font-size: 0.72rem;
+      font-weight: 400;
+      color: var(--admin-text-muted, rgba(255,255,255,0.5));
+      margin-left: 0.3rem;
+      text-transform: none;
+      letter-spacing: 0;
+    }
     .widget-source-panel {
       margin-top: 0.4rem;
       padding: 0.9rem;
@@ -6761,7 +6865,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       <div class="form-panel">
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <h3 style="margin:0;">Then do this (actions)</h3>
-          <button class="btn btn-secondary btn-sm" onclick="addAutomationStep()" data-testid="button-add-step">+ Add step</button>
+          <button class="btn btn-secondary btn-sm" onclick="openStepPicker()" data-testid="button-add-step">+ Add step</button>
         </div>
         <p style="color:var(--admin-text-muted); font-size:0.85rem; margin-top:0.5rem;">
           Steps run in order. Use merge tags like
@@ -6769,6 +6873,46 @@ TO CUSTOMIZE THIS DASHBOARD:
           to reference earlier data inside any field.
         </p>
         <div id="automation-steps-list" style="margin-top:1rem;"></div>
+      </div>
+
+      <!-- "+ Add step" picker modal: progressive-disclosure UI so the
+           growing skills/MCP catalogue stays out of the way until the
+           admin asks for it. Common kinds (send_email, send_sms,
+           condition, etc.) sit on top; Skills & integrations is one
+           click away with a search box and category groups. -->
+      <div id="step-picker-modal" class="db-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="step-picker-modal-title">
+        <div class="db-modal-card db-modal-card-wide">
+          <div class="db-modal-head">
+            <h3 id="step-picker-modal-title" style="margin:0;">Add an action</h3>
+            <button class="db-modal-close" onclick="closeStepPicker()" aria-label="Close" data-testid="button-step-picker-close">&times;</button>
+          </div>
+          <div class="db-modal-body">
+            <div style="margin-bottom:1.25rem;">
+              <h4 style="margin:0 0 0.5rem 0; font-size:0.95rem;">Common actions</h4>
+              <div id="step-picker-common" class="step-picker-tiles"></div>
+            </div>
+            <div class="step-picker-accordion">
+              <button type="button" class="step-picker-accordion-head" onclick="toggleSkillsAccordion()" data-testid="button-skills-accordion">
+                <span id="step-picker-skills-arrow" style="display:inline-block; width:1em;">▸</span>
+                <span style="font-weight:600;">Skills &amp; integrations</span>
+                <span id="step-picker-skills-count" class="step-picker-count-badge" data-testid="text-skills-count"></span>
+              </button>
+              <div id="step-picker-skills-body" style="display:none; margin-top:0.75rem;">
+                <p style="color:var(--admin-text-muted); font-size:0.85rem; margin:0 0 0.6rem 0;">
+                  Use any built-in chat tool, MCP server tool, or custom skill as a step. Selecting one creates a
+                  <code>call_skill</code> step pre-filled with the right arguments.
+                </p>
+                <input type="search" id="step-picker-search" placeholder="Search by name, description, or category…"
+                       oninput="filterStepPickerSkills()" style="width:100%; margin-bottom:0.75rem;"
+                       data-testid="input-skill-search">
+                <div id="step-picker-skills-list"></div>
+              </div>
+            </div>
+          </div>
+          <div class="db-modal-foot">
+            <button class="btn btn-secondary btn-sm" onclick="closeStepPicker()" data-testid="button-step-picker-cancel">Cancel</button>
+          </div>
+        </div>
       </div>
 
       <div class="form-panel">
@@ -15761,10 +15905,217 @@ TO CUSTOMIZE THIS DASHBOARD:
       renderStepsList();
     }
 
-    function addAutomationStep() {
-      const firstKind = ((Automations.metadata.actions || [])[0] || {kind: 'send_email'}).kind;
-      Automations.steps.push({kind: firstKind, name: '', config: {}});
+    // ---------- "+ Add step" progressive-disclosure picker ----------
+    // The action catalogue keeps growing (every enabled chat skill, every
+    // MCP tool, every custom skill is now usable as a step via call_skill),
+    // so a flat dropdown was getting unwieldy. The picker shows the 7
+    // hard-coded "Common actions" up top and tucks the (much larger)
+    // skills catalogue into a collapsed accordion with search + category
+    // groups so it stays out of the way until the admin asks for it.
+
+    function openStepPicker() {
+      // Make sure the steps array reflects what's currently in the form
+      // before adding a new one — otherwise typing in step N then opening
+      // the picker would discard the unsaved edit on render.
+      try { collectStepsFromForm(); } catch (e) { /* not yet rendered */ }
+      const modal = document.getElementById('step-picker-modal');
+      if (!modal) {
+        // Defensive fallback — preserves old behaviour if the modal HTML
+        // somehow isn't present (e.g. partial template).
+        const firstKind = ((Automations.metadata && Automations.metadata.actions || [])[0] || {kind: 'send_email'}).kind;
+        Automations.steps.push({kind: firstKind, name: '', config: {}});
+        renderStepsList();
+        return;
+      }
+      const search = document.getElementById('step-picker-search');
+      if (search) search.value = '';
+      Automations._skillsExpanded = false;
+      const body = document.getElementById('step-picker-skills-body');
+      const arrow = document.getElementById('step-picker-skills-arrow');
+      if (body) body.style.display = 'none';
+      if (arrow) arrow.textContent = '▸';
+      renderStepPicker();
+      modal.style.display = 'flex';
+    }
+
+    function closeStepPicker() {
+      const modal = document.getElementById('step-picker-modal');
+      if (modal) modal.style.display = 'none';
+    }
+
+    function renderStepPicker() {
+      const actions = (Automations.metadata && Automations.metadata.actions) || [];
+      const skills = (Automations.metadata && Automations.metadata.skills) || [];
+
+      // Common actions = everything except call_skill (which lives in the
+      // Skills & integrations section below as a per-skill picker).
+      const commonActions = actions.filter(a => a.kind !== 'call_skill');
+      const commonHtml = commonActions.map(a => `
+        <button type="button" class="step-picker-tile"
+                onclick="pickStepKind('${escapeHtml(a.kind)}')"
+                data-testid="picker-action-${escapeHtml(a.kind)}">
+          <div class="step-picker-tile-title">${escapeHtml(a.label || a.kind)}</div>
+          <div class="step-picker-tile-desc">${escapeHtml(a.description || '')}</div>
+        </button>
+      `).join('');
+      const commonEl = document.getElementById('step-picker-common');
+      if (commonEl) commonEl.innerHTML = commonHtml || '<div class="step-picker-tile-desc">No common actions registered.</div>';
+
+      // Count badge — flag MCP-sourced tools separately so the admin
+      // sees that connecting external services adds skills here.
+      const mcpCount = skills.filter(s => s.source === 'mcp').length;
+      const badgeText = `${skills.length} available` +
+        (mcpCount ? ` — including ${mcpCount} from connected services` : '');
+      const countEl = document.getElementById('step-picker-skills-count');
+      if (countEl) countEl.textContent = badgeText;
+
+      renderStepPickerSkills();
+    }
+
+    function renderStepPickerSkills() {
+      const skills = (Automations.metadata && Automations.metadata.skills) || [];
+      const searchEl = document.getElementById('step-picker-search');
+      const search = (searchEl && searchEl.value || '').trim().toLowerCase();
+      const filtered = skills.filter(s => {
+        if (!search) return true;
+        return [s.name, s.display_name, s.description, s.category, s.server_name]
+          .filter(Boolean).some(v => String(v).toLowerCase().includes(search));
+      });
+
+      // Group by source so the admin can see which catalogue a skill
+      // came from at a glance (built-in vs MCP vs custom).
+      const sourceLabels = {
+        builtin:   'Built-in',
+        mcp:       'MCP connectors',
+        webhook:   'Custom webhook skills',
+        sql:       'Custom SQL skills',
+        knowledge: 'Knowledge base',
+        custom:    'Other custom skills',
+      };
+      const sourceOrder = ['builtin', 'mcp', 'webhook', 'sql', 'knowledge', 'custom'];
+      const groups = {};
+      filtered.forEach(s => {
+        const src = s.source || 'custom';
+        (groups[src] = groups[src] || []).push(s);
+      });
+
+      const html = sourceOrder
+        .filter(src => groups[src] && groups[src].length)
+        .map(src => {
+          const group = groups[src].slice().sort((a, b) =>
+            (a.display_name || a.name).localeCompare(b.display_name || b.name));
+          const tiles = group.map(s => {
+            const title = escapeHtml(s.display_name || s.name);
+            const serverBadge = s.server_name
+              ? `<span class="step-picker-server-badge">${escapeHtml(s.server_name)}</span>`
+              : '';
+            const catBadge = s.category
+              ? `<span class="step-picker-cat-badge">${escapeHtml(s.category)}</span>`
+              : '';
+            // Single-quote in skill name would break the inline onclick;
+            // route through a data attribute + delegated handler instead.
+            return `
+              <button type="button" class="step-picker-tile"
+                      data-skill-name="${escapeHtml(s.name)}"
+                      onclick="pickCallSkillStep(this.getAttribute('data-skill-name'))"
+                      data-testid="picker-skill-${escapeHtml(s.name)}">
+                <div class="step-picker-tile-title">${title}${serverBadge}</div>
+                <div class="step-picker-tile-desc">${escapeHtml(s.description || s.name)}</div>
+                <div class="step-picker-tile-meta">${catBadge}</div>
+              </button>
+            `;
+          }).join('');
+          return `
+            <div class="step-picker-group">
+              <h5 class="step-picker-group-title">${escapeHtml(sourceLabels[src] || src)}<span class="step-picker-group-count">${group.length}</span></h5>
+              <div class="step-picker-tiles">${tiles}</div>
+            </div>
+          `;
+        }).join('');
+
+      const listEl = document.getElementById('step-picker-skills-list');
+      if (!listEl) return;
+      if (filtered.length) {
+        listEl.innerHTML = html;
+      } else if (skills.length) {
+        listEl.innerHTML = '<div style="padding:0.75rem; color:var(--admin-text-muted); font-size:0.85rem;">No skills match your search.</div>';
+      } else {
+        listEl.innerHTML = '<div style="padding:0.75rem; color:var(--admin-text-muted); font-size:0.85rem;">No skills are enabled yet. Enable some on the Skills tab to use them here.</div>';
+      }
+    }
+
+    function toggleSkillsAccordion() {
+      Automations._skillsExpanded = !Automations._skillsExpanded;
+      const body = document.getElementById('step-picker-skills-body');
+      const arrow = document.getElementById('step-picker-skills-arrow');
+      if (body) body.style.display = Automations._skillsExpanded ? 'block' : 'none';
+      if (arrow) arrow.textContent = Automations._skillsExpanded ? '▾' : '▸';
+      if (Automations._skillsExpanded) {
+        // Focus the search box on expand so admins can start typing
+        // immediately without an extra click.
+        setTimeout(() => {
+          const s = document.getElementById('step-picker-search');
+          if (s) s.focus();
+        }, 0);
+      }
+    }
+
+    function filterStepPickerSkills() {
+      // Auto-expand on first keystroke — it would be confusing to show
+      // a count drop while the results panel stays hidden.
+      if (!Automations._skillsExpanded) toggleSkillsAccordion();
+      renderStepPickerSkills();
+    }
+
+    function pickStepKind(kind) {
+      collectStepsFromForm();
+      Automations.steps.push({kind: kind, name: '', config: {}});
       renderStepsList();
+      closeStepPicker();
+    }
+
+    function pickCallSkillStep(skillName) {
+      const skills = (Automations.metadata && Automations.metadata.skills) || [];
+      const skill = skills.find(s => s.name === skillName) || {};
+      const argsTemplate = generateCallSkillArgsTemplate(skill.args_schema);
+      collectStepsFromForm();
+      Automations.steps.push({
+        kind: 'call_skill',
+        name: skill.display_name || skillName,
+        config: {
+          skill_name: skillName,
+          args_json: argsTemplate,
+          output_key: '',
+        },
+      });
+      renderStepsList();
+      closeStepPicker();
+    }
+
+    function generateCallSkillArgsTemplate(argsSchema) {
+      // Build a minimal `{}` template keyed by the skill's own argument
+      // names, with type-appropriate placeholder values so the admin only
+      // has to swap in merge tags rather than guess the shape.
+      const props = (argsSchema && argsSchema.properties) || {};
+      const out = {};
+      const names = Object.keys(props);
+      if (!names.length) return '{}';
+      names.forEach(name => {
+        const t = ((props[name] || {}).type) || 'string';
+        if (t === 'number' || t === 'integer') out[name] = 0;
+        else if (t === 'boolean')               out[name] = false;
+        else if (t === 'array')                 out[name] = [];
+        else if (t === 'object')                out[name] = {};
+        else                                    out[name] = '';
+      });
+      return JSON.stringify(out, null, 2);
+    }
+
+    // Back-compat shim: any older code path that still calls
+    // addAutomationStep() now opens the picker instead of pushing a
+    // default step.
+    function addAutomationStep() {
+      openStepPicker();
     }
 
     function removeStep(idx) {
