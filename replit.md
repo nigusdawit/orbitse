@@ -59,6 +59,18 @@ Preferred communication style: Simple, everyday language.
 Code should be fully commented and templatized for modular reuse.
 The entire template is industry-agnostic — naming, comments, and instructions avoid hotel/villa-specific language.
 
+## Credentials Status (April 2026)
+
+Secrets present in this Repl but **still holding placeholder values** — the matching features will fail or no-op until real values are pasted in:
+
+- `RESEND_WEBHOOK_SECRET` — fail-open: webhook accepts events without signature check; status updates still post but anyone can spoof them
+- `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` — SMS campaigns + STOP-keyword opt-out + inbound-SMS webhook will return errors until real Twilio creds are set
+- `GOOGLE_PLACES_API_KEY`, `YELP_API_KEY`, `TRIPADVISOR_API_KEY` — reviews aggregator (Reviews → Insights tab) returns empty / error responses for the matching providers
+
+Confirmed working with real values: `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `ADMIN_PHONE`, `FLASK_SECRET_KEY`, `ELEVENLABS_API_KEY`, `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `SENTRY_DSN`, plus the Replit-managed integrations (OpenAI, Anthropic, Stripe, database).
+
+When debugging or adding features that touch the placeholder list, assume the upstream call will fail and surface a friendly error — don't gate new functionality on those features being live.
+
 ## System Architecture
 
 ### Backend (Python Flask)
