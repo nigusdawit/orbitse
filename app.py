@@ -1090,6 +1090,76 @@ def init_db():
                     ON admin_pending_actions (session_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_admin_pending_status
                     ON admin_pending_actions (status, created_at);
+
+                -- Snapshot of any "settings" row before the admin chat
+                -- assistant overwrites or deletes it. Powers the Recent
+                -- Changes panel and the one-click Revert button. Each row
+                -- is a self-contained "undo this change" record.
+                CREATE TABLE IF NOT EXISTS admin_setting_snapshots (
+                    id              SERIAL PRIMARY KEY,
+                    table_name      VARCHAR(100) NOT NULL,
+                    row_id          INTEGER,
+                    snapshot_json   JSONB        NOT NULL,
+                    action_id       INTEGER,
+                    reason          TEXT         NOT NULL DEFAULT '',
+                    reverted_at     TIMESTAMP,
+                    created_at      TIMESTAMP    DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_admin_snap_recent
+                    ON admin_setting_snapshots (created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_admin_snap_table
+                    ON admin_setting_snapshots (table_name, row_id, created_at DESC);
+
+                -- Knowledge entries powering the lookup_knowledge skill.
+                -- Each row is a small chunk of admin-authored prose (FAQ,
+                -- policy text, product detail) that the consumer agent
+                -- can search by keyword.
+                CREATE TABLE IF NOT EXISTS custom_knowledge_entries (
+                    id          SERIAL PRIMARY KEY,
+                    topic       VARCHAR(200) NOT NULL DEFAULT '',
+                    content     TEXT         NOT NULL DEFAULT '',
+                    enabled     BOOLEAN      NOT NULL DEFAULT true,
+                    created_at  TIMESTAMP    DEFAULT NOW(),
+                    updated_at  TIMESTAMP    DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_custom_knowledge_enabled
+                    ON custom_knowledge_entries (enabled);
+
+                -- Webhook skills — each row is one tool the consumer
+                -- agent can call. Calling the tool POSTs (or GETs) to
+                -- url with the tool args as the JSON body / query
+                -- string. URL is validated at call time (no
+                -- private/loopback/link-local) to prevent SSRF.
+                CREATE TABLE IF NOT EXISTS custom_webhook_skills (
+                    id                  SERIAL PRIMARY KEY,
+                    name                VARCHAR(100) NOT NULL UNIQUE,
+                    description         TEXT         NOT NULL DEFAULT '',
+                    url                 TEXT         NOT NULL DEFAULT '',
+                    method              VARCHAR(10)  NOT NULL DEFAULT 'POST',
+                    headers_json        JSONB        DEFAULT '{}'::jsonb,
+                    args_schema_json    JSONB        DEFAULT '{"type":"object","properties":{},"required":[]}'::jsonb,
+                    timeout_seconds     INTEGER      NOT NULL DEFAULT 10,
+                    enabled             BOOLEAN      NOT NULL DEFAULT false,
+                    created_at          TIMESTAMP    DEFAULT NOW(),
+                    updated_at          TIMESTAMP    DEFAULT NOW()
+                );
+
+                -- SQL skills — each row is one read-only SELECT-style
+                -- tool the consumer agent can call. sql_template uses
+                -- psycopg2 named-parameter style (%(name)s) and is
+                -- bound at call time. Subject to SELECT-only / 100-row
+                -- / 5-second guardrails identical to the admin
+                -- read-only SQL tool.
+                CREATE TABLE IF NOT EXISTS custom_sql_skills (
+                    id                  SERIAL PRIMARY KEY,
+                    name                VARCHAR(100) NOT NULL UNIQUE,
+                    description         TEXT         NOT NULL DEFAULT '',
+                    sql_template        TEXT         NOT NULL DEFAULT '',
+                    args_schema_json    JSONB        DEFAULT '{"type":"object","properties":{},"required":[]}'::jsonb,
+                    enabled             BOOLEAN      NOT NULL DEFAULT false,
+                    created_at          TIMESTAMP    DEFAULT NOW(),
+                    updated_at          TIMESTAMP    DEFAULT NOW()
+                );
             """)
 
             # Seed the voice_settings singleton row (idempotent)
@@ -5271,6 +5341,82 @@ def sync_skills_to_db():
         print(f"[skills] sync_skills_to_db failed: {e}")
 
 
+_KNOWLEDGE_LOOKUP_SKILL_NAME = "lookup_knowledge"
+
+_KNOWLEDGE_LOOKUP_ARG_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": "Keywords to search admin-authored knowledge "
+                           "entries (FAQs, policies, product detail).",
+        },
+        "max_results": {
+            "type": "integer",
+            "description": "Maximum entries to return (default 5, max 20).",
+        },
+    },
+    "required": ["query"],
+}
+
+
+def _custom_skill_cfg(row):
+    """Parse the JSONB config_json column into a dict."""
+    raw = (row or {}).get("config_json") or {}
+    if isinstance(raw, str):
+        try: return json.loads(raw) or {}
+        except Exception: return {}
+    return raw or {}
+
+
+def _custom_skill_args_schema(name, cfg):
+    """Synthesize the OpenAI-style parameters schema for a non-builtin
+    skill row, based on its config_json["type"] and (for webhook/sql)
+    the args_schema_json on the linked configuration row.
+
+    Falls back to the original "no arguments" schema if the type is
+    unknown or the linked row has gone away.
+    """
+    skill_type = (cfg.get("type") or "").strip().lower()
+    if skill_type == "knowledge" or name == _KNOWLEDGE_LOOKUP_SKILL_NAME:
+        return _KNOWLEDGE_LOOKUP_ARG_SCHEMA
+    if skill_type == "webhook":
+        wid = cfg.get("webhook_id")
+        if wid is not None:
+            try:
+                row = query_db(
+                    "SELECT args_schema_json FROM custom_webhook_skills "
+                    "WHERE id = %s",
+                    (int(wid),), fetchone=True,
+                )
+                schema = (row or {}).get("args_schema_json")
+                if isinstance(schema, str):
+                    try: schema = json.loads(schema)
+                    except Exception: schema = None
+                if isinstance(schema, dict) and schema:
+                    return schema
+            except Exception:
+                pass
+    if skill_type == "sql":
+        sid = cfg.get("sql_skill_id")
+        if sid is not None:
+            try:
+                row = query_db(
+                    "SELECT args_schema_json FROM custom_sql_skills "
+                    "WHERE id = %s",
+                    (int(sid),), fetchone=True,
+                )
+                schema = (row or {}).get("args_schema_json")
+                if isinstance(schema, str):
+                    try: schema = json.loads(schema)
+                    except Exception: schema = None
+                if isinstance(schema, dict) and schema:
+                    return schema
+            except Exception:
+                pass
+    return {"type": "object", "properties": {}, "required": []}
+
+
 def get_active_chat_tools():
     """Return the list of tools the model can call this turn.
 
@@ -5278,9 +5424,12 @@ def get_active_chat_tools():
       1. Builtin tools from CHAT_TOOLS, filtered to only those the admin
          has left `enabled = true` in agent_skills.
       2. Custom (admin-defined) skills with `builtin = false` AND
-         `enabled = true`. For each one we synthesize a no-argument
-         OpenAI-shaped tool schema using the row's display_name +
-         description so the model knows when to call it.
+         `enabled = true`. For each one we synthesize an OpenAI-shaped
+         tool schema. The arguments come from config_json["type"]:
+           - knowledge -> {query, max_results}
+           - webhook   -> custom_webhook_skills.args_schema_json
+           - sql       -> custom_sql_skills.args_schema_json
+           - other     -> no arguments (canned-text response_text)
 
     On a *DB error* we fall back to all builtin tools so chat keeps
     working — that's a safety net for an outage, not an admin choice. But
@@ -5290,7 +5439,8 @@ def get_active_chat_tools():
     """
     try:
         rows = query_db(
-            "SELECT name, description, builtin FROM agent_skills WHERE enabled = true"
+            "SELECT name, description, builtin, config_json "
+            "FROM agent_skills WHERE enabled = true"
         )
     except Exception as e:
         print(f"[skills] get_active_chat_tools DB error, falling back to all tools: {e}")
@@ -5298,23 +5448,419 @@ def get_active_chat_tools():
     rows = rows or []
     active_builtin_names = {r["name"] for r in rows if r.get("builtin")}
     out = [t for t in CHAT_TOOLS if (t.get("function") or {}).get("name") in active_builtin_names]
-    # Append synthesized schemas for every enabled custom skill. We use
-    # the row's description (admin-authored) to teach the model when to
-    # call it. Custom skills have no parameters in this initial cut —
-    # they're "canned answer" tools the admin defines via response_text.
     for r in rows:
         if r.get("builtin"):
             continue
+        cfg = _custom_skill_cfg(r)
         out.append({
             "type": "function",
             "function": {
                 "name": r["name"],
                 "description": (r.get("description") or "").strip()
                                 or f"Custom skill: {r['name']}",
-                "parameters": {"type": "object", "properties": {}, "required": []},
+                "parameters": _custom_skill_args_schema(r["name"], cfg),
             },
         })
     return out
+
+
+# =============================================================================
+# CUSTOM SKILL EXECUTORS  (knowledge / webhook / SQL)
+# =============================================================================
+# Each non-builtin skill row in agent_skills carries a config_json with a
+# "type" field that the dispatcher uses to route the call to one of the
+# executors below. A separate config table holds the per-skill data:
+#
+#   knowledge -> custom_knowledge_entries (admin-authored prose snippets)
+#   webhook   -> custom_webhook_skills (URL + method + headers + schema)
+#   sql       -> custom_sql_skills (SELECT-only template + schema)
+#
+# Snapshot/revert-friendly: every write to these three tables goes through
+# the admin propose/approve flow so the snapshot row is captured on the
+# write path, NOT here.
+
+def _exec_custom_knowledge(name, args):
+    """Search admin-authored knowledge entries by ILIKE on topic + content."""
+    q = (args.get("query") or "").strip()
+    if not q:
+        return {"error": "query is required"}, 0
+    try:
+        max_n = int(args.get("max_results") or 5)
+    except Exception:
+        max_n = 5
+    max_n = max(1, min(max_n, 20))
+    like = f"%{q}%"
+    try:
+        rows = query_db(
+            "SELECT id, topic, content "
+            "FROM custom_knowledge_entries "
+            "WHERE enabled = true AND (topic ILIKE %s OR content ILIKE %s) "
+            "ORDER BY "
+            "  CASE WHEN topic ILIKE %s THEN 0 ELSE 1 END, "
+            "  id DESC "
+            "LIMIT %s",
+            (like, like, like, max_n),
+        ) or []
+    except Exception as e:
+        return {"error": f"Knowledge lookup failed: {str(e)[:200]}"}, 0
+    out = [
+        {"id": r["id"], "topic": r.get("topic") or "",
+         "content": r.get("content") or ""}
+        for r in rows
+    ]
+    return {"entries": out, "count": len(out)}, len(out)
+
+
+# Hostnames that resolve to any of these address blocks are refused at
+# call time. This is the SSRF guard for custom_webhook_skills — a
+# malicious or careless admin can save url=http://169.254.169.254/ in
+# the config, but the call will be rejected here.
+_WEBHOOK_FORBIDDEN_PORTS = {0, 22, 23, 25, 110, 143, 465, 587, 993, 995, 3306, 5432, 6379, 9200, 11211, 27017}
+
+def _webhook_url_safe(url):
+    """Return (ok, parsed_url, error_str_or_validated_ips).
+    On success the third tuple slot is a list of validated public IP
+    strings. We refuse non-http(s), private IPs, loopback, link-local,
+    multicast, reserved, and dangerous ports. We resolve the hostname
+    and re-validate against EVERY resolved IP — so a hostname that
+    points at 127.0.0.1 (or an admin-controlled DNS rebind that returns
+    multiple records) is also refused."""
+    import urllib.parse, socket, ipaddress
+    try:
+        u = urllib.parse.urlparse(url or "")
+    except Exception as e:
+        return False, None, f"Invalid URL: {e}"
+    if u.scheme not in ("http", "https"):
+        return False, None, "URL scheme must be http or https"
+    host = (u.hostname or "").strip()
+    if not host:
+        return False, None, "URL has no host"
+    # Reject obvious internal/loopback hostnames that some resolvers
+    # would happily resolve to a private address.
+    host_lc = host.lower().rstrip(".")
+    bad_suffixes = (".local", ".localhost", ".internal")
+    if (host_lc in ("localhost",) or
+            any(host_lc.endswith(s) for s in bad_suffixes)):
+        return False, None, (
+            f"Refusing to call private/internal address ({host}). "
+            f"Use a public hostname.")
+    port = u.port
+    if port is None:
+        port = 80 if u.scheme == "http" else 443
+    if port in _WEBHOOK_FORBIDDEN_PORTS:
+        return False, None, f"Port {port} is not allowed"
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except Exception as e:
+        return False, None, f"DNS lookup failed: {str(e)[:120]}"
+    validated_ips = []
+    seen = set()
+    for info in infos:
+        sockaddr = info[4]
+        ip_str = sockaddr[0]
+        if ip_str in seen:
+            continue
+        seen.add(ip_str)
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except Exception:
+            return False, None, f"Could not parse resolved IP: {ip_str}"
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_multicast or ip.is_reserved
+                or ip.is_unspecified):
+            return False, None, (
+                f"Refusing to call private/internal address ({ip_str}). "
+                f"Use a public hostname.")
+        validated_ips.append(ip_str)
+    if not validated_ips:
+        return False, None, "DNS lookup returned no addresses"
+    # Stash the validated IPs on the parsed URL object so the caller
+    # can pin the actual TCP connection (defends against DNS rebinding
+    # between this validation and the request).
+    u_with_ips = (u, validated_ips)
+    return True, u_with_ips, None
+
+
+# DNS-rebinding defense: we monkey-patch urllib3's create_connection to
+# look at a thread-local "pin" map. When set, it forces the actual TCP
+# connection to use one of the pre-validated IPs, preventing the OS
+# resolver from being asked again (which is what a rebinding attack
+# relies on). The patch is installed once at import time and is a
+# no-op when the thread-local is empty.
+_webhook_dns_pin_local = threading.local()
+try:
+    import urllib3.util.connection as _u3conn
+    _orig_u3_create_connection = _u3conn.create_connection
+
+    def _pinned_create_connection(address, *args, **kwargs):
+        host, port = address[0], address[1]
+        pins = getattr(_webhook_dns_pin_local, "pins", None)
+        if pins:
+            pinned = pins.get((str(host).lower(), int(port)))
+            if pinned:
+                address = (pinned, port) + tuple(address[2:])
+        return _orig_u3_create_connection(address, *args, **kwargs)
+
+    _u3conn.create_connection = _pinned_create_connection
+except Exception as _e:  # pragma: no cover
+    print(f"[webhook] could not install urllib3 DNS pin: {_e}")
+
+
+def _exec_custom_webhook(name, args):
+    """Look up custom_webhook_skills by linked id, validate URL, call."""
+    skill_row = query_db(
+        "SELECT config_json FROM agent_skills WHERE name = %s",
+        (name,), fetchone=True,
+    )
+    cfg = _custom_skill_cfg(skill_row)
+    wid = cfg.get("webhook_id")
+    if wid is None:
+        return {"error": "Webhook skill not configured (no webhook_id)"}, 0
+    try:
+        wh = query_db(
+            "SELECT id, name, url, method, headers_json, "
+            "       timeout_seconds, enabled "
+            "FROM custom_webhook_skills WHERE id = %s",
+            (int(wid),), fetchone=True,
+        )
+    except Exception as e:
+        return {"error": f"Could not load webhook config: {str(e)[:200]}"}, 0
+    if not wh:
+        return {"error": "Webhook config row no longer exists"}, 0
+    if not wh.get("enabled"):
+        return {"error": "Webhook is disabled"}, 0
+    url = (wh.get("url") or "").strip()
+    ok, parsed, err = _webhook_url_safe(url)
+    if not ok:
+        return {"error": err or "URL refused"}, 0
+    parsed_url, validated_ips = parsed
+    method = (wh.get("method") or "POST").strip().upper()
+    if method not in ("GET", "POST"):
+        method = "POST"
+    headers = wh.get("headers_json") or {}
+    if isinstance(headers, str):
+        try: headers = json.loads(headers)
+        except Exception: headers = {}
+    if not isinstance(headers, dict):
+        headers = {}
+    headers = {str(k): str(v) for k, v in headers.items()}
+    headers.setdefault("User-Agent", "site-webhook-skill/1.0")
+    try:
+        timeout = float(wh.get("timeout_seconds") or 10)
+    except Exception:
+        timeout = 10.0
+    timeout = max(1.0, min(timeout, 15.0))  # hard cap
+    # DNS-rebinding defense: pin (host, port) -> validated IP for the
+    # duration of this request only, in this thread only. The patched
+    # urllib3 create_connection consults the pin and forces the actual
+    # TCP connection to use the IP we already validated.
+    pin_host = (parsed_url.hostname or "").lower()
+    pin_port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
+    pin_ip = validated_ips[0]
+    prev_pins = getattr(_webhook_dns_pin_local, "pins", None)
+    new_pins = dict(prev_pins or {})
+    new_pins[(pin_host, pin_port)] = pin_ip
+    _webhook_dns_pin_local.pins = new_pins
+    try:
+        import requests as _rq
+        if method == "GET":
+            resp = _rq.get(url, params=args, headers=headers,
+                           timeout=timeout, allow_redirects=False)
+        else:
+            headers.setdefault("Content-Type", "application/json")
+            resp = _rq.post(url, json=args, headers=headers,
+                            timeout=timeout, allow_redirects=False)
+    except Exception as e:
+        return {"error": f"Webhook call failed: {str(e)[:200]}"}, 0
+    finally:
+        _webhook_dns_pin_local.pins = prev_pins
+    body_text = (resp.text or "")[:4000]
+    body_parsed = None
+    ct = (resp.headers.get("Content-Type") or "").lower()
+    if "application/json" in ct:
+        try:
+            body_parsed = json.loads(body_text)
+        except Exception:
+            body_parsed = None
+    out = {
+        "status": resp.status_code,
+        "ok": (200 <= resp.status_code < 300),
+    }
+    if body_parsed is not None:
+        out["json"] = body_parsed
+    else:
+        out["body"] = body_text
+    return out, 1
+
+
+# Reuses the same SELECT-only / 100-row / 5-second guardrails the admin
+# read-only SQL tool uses — see _admin_tool_run_sql for the original.
+def _exec_custom_sql(name, args):
+    skill_row = query_db(
+        "SELECT config_json FROM agent_skills WHERE name = %s",
+        (name,), fetchone=True,
+    )
+    cfg = _custom_skill_cfg(skill_row)
+    sid = cfg.get("sql_skill_id")
+    if sid is None:
+        return {"error": "SQL skill not configured (no sql_skill_id)"}, 0
+    try:
+        sk = query_db(
+            "SELECT id, name, sql_template, enabled "
+            "FROM custom_sql_skills WHERE id = %s",
+            (int(sid),), fetchone=True,
+        )
+    except Exception as e:
+        return {"error": f"Could not load SQL config: {str(e)[:200]}"}, 0
+    if not sk:
+        return {"error": "SQL config row no longer exists"}, 0
+    if not sk.get("enabled"):
+        return {"error": "SQL skill is disabled"}, 0
+    sql_text = (sk.get("sql_template") or "").strip().rstrip(";").strip()
+    if not sql_text:
+        return {"error": "SQL template is empty"}, 0
+    if ";" in sql_text:
+        return {"error": "Only one statement allowed in sql_template"}, 0
+    # SELECT-only — same gate as the admin read-only tool.
+    head = sql_text.lstrip("(").lstrip().lower()
+    if not (head.startswith("select") or head.startswith("with")):
+        return {"error": "SQL skill template must be a SELECT (or WITH ... SELECT)"}, 0
+    if _ADMIN_SQL_FORBIDDEN.search(sql_text):
+        return {"error": "SQL template contains a forbidden statement"}, 0
+    try:
+        conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
+        rows = []
+        with conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
+            cur.execute("SET LOCAL statement_timeout = '5s'")
+            cur.execute("SET LOCAL transaction_read_only = on")
+            try:
+                cur.execute(sql_text, args or {})
+            except Exception as e:
+                conn.rollback(); conn.close()
+                return {"error": f"SQL error: {str(e)[:200]}"}, 0
+            if cur.description is not None:
+                rows = cur.fetchmany(100) or []
+        conn.rollback(); conn.close()
+    except Exception as e:
+        return {"error": f"SQL skill failed: {str(e)[:200]}"}, 0
+    return {"rows": rows, "count": len(rows)}, len(rows)
+
+
+# Map skill_type -> executor. Used by _execute_chat_tool_inner.
+_CUSTOM_SKILL_EXECUTORS = {
+    "knowledge": _exec_custom_knowledge,
+    "webhook":   _exec_custom_webhook,
+    "sql":       _exec_custom_sql,
+}
+
+
+def sync_custom_skills_to_agent_skills():
+    """Idempotently materialize one agent_skills row per enabled custom-
+    skill row in custom_*_skills, plus the lookup_knowledge sentinel.
+
+    On admin enable/disable/edit of a custom skill, this function
+    refreshes the linked agent_skills row so the dispatcher and
+    get_active_chat_tools see the latest state without a server
+    restart. Builtin skills are left alone."""
+    try:
+        # 1) Knowledge sentinel — exactly one agent_skills row, name fixed.
+        execute_db(
+            """
+            INSERT INTO agent_skills
+                (name, display_name, description, category, builtin,
+                 enabled, config_json)
+            VALUES (%s, %s, %s, 'knowledge', false, false, %s::jsonb)
+            ON CONFLICT (name) DO UPDATE
+              SET builtin     = false,
+                  category    = 'knowledge',
+                  description = COALESCE(NULLIF(agent_skills.description, ''),
+                                          EXCLUDED.description),
+                  config_json = jsonb_set(
+                      COALESCE(agent_skills.config_json, '{}'::jsonb),
+                      '{type}', '"knowledge"'::jsonb)
+            """,
+            (
+                _KNOWLEDGE_LOOKUP_SKILL_NAME,
+                "Look up admin knowledge",
+                "Search admin-authored knowledge entries (FAQs, "
+                "policies, product detail) for a keyword. Use when "
+                "the visitor's question matches a topic the admin has "
+                "documented in the Custom Knowledge tab.",
+                json.dumps({"type": "knowledge"}),
+            ),
+        )
+
+        # 2) One agent_skills row per webhook skill.
+        whs = query_db(
+            "SELECT id, name, description, enabled FROM custom_webhook_skills"
+        ) or []
+        for w in whs:
+            wname = (w.get("name") or "").strip().lower()
+            if not wname:
+                continue
+            cfg = json.dumps({"type": "webhook", "webhook_id": w["id"]})
+            try:
+                execute_db(
+                    """
+                    INSERT INTO agent_skills
+                        (name, display_name, description, category,
+                         builtin, enabled, config_json)
+                    VALUES (%s, %s, %s, 'webhook', false, %s, %s::jsonb)
+                    ON CONFLICT (name) DO UPDATE
+                      SET description = EXCLUDED.description,
+                          enabled     = EXCLUDED.enabled,
+                          config_json = EXCLUDED.config_json,
+                          builtin     = false,
+                          category    = 'webhook'
+                    """,
+                    (
+                        wname,
+                        wname.replace("_", " ").title(),
+                        (w.get("description") or "")[:2000],
+                        bool(w.get("enabled")),
+                        cfg,
+                    ),
+                )
+            except Exception as e:
+                print(f"[skills] webhook sync row {wname} failed: {e}")
+
+        # 3) One agent_skills row per SQL skill.
+        sqs = query_db(
+            "SELECT id, name, description, enabled FROM custom_sql_skills"
+        ) or []
+        for s in sqs:
+            sname = (s.get("name") or "").strip().lower()
+            if not sname:
+                continue
+            cfg = json.dumps({"type": "sql", "sql_skill_id": s["id"]})
+            try:
+                execute_db(
+                    """
+                    INSERT INTO agent_skills
+                        (name, display_name, description, category,
+                         builtin, enabled, config_json)
+                    VALUES (%s, %s, %s, 'sql', false, %s, %s::jsonb)
+                    ON CONFLICT (name) DO UPDATE
+                      SET description = EXCLUDED.description,
+                          enabled     = EXCLUDED.enabled,
+                          config_json = EXCLUDED.config_json,
+                          builtin     = false,
+                          category    = 'sql'
+                    """,
+                    (
+                        sname,
+                        sname.replace("_", " ").title(),
+                        (s.get("description") or "")[:2000],
+                        bool(s.get("enabled")),
+                        cfg,
+                    ),
+                )
+            except Exception as e:
+                print(f"[skills] sql sync row {sname} failed: {e}")
+    except Exception as e:
+        print(f"[skills] sync_custom_skills_to_agent_skills failed: {e}")
 
 
 def _log_skill_usage(session_id, log_entry):
@@ -5405,9 +5951,27 @@ def _execute_chat_tool_inner(name, args_json):
 
     fn = CHAT_LOOKUP_FUNCTIONS.get(name)
 
-    # Custom (non-builtin) skill path — the response_text IS the skill.
+    # Custom (non-builtin) skill path — dispatch by config_json["type"].
+    # Three real types are supported: knowledge / webhook / sql. The
+    # legacy response_text path is preserved for older custom skills.
     if fn is None:
         if skill_row and not skill_row.get("builtin") and skill_row.get("enabled"):
+            skill_type = (cfg.get("type") or "").strip().lower()
+            executor = _CUSTOM_SKILL_EXECUTORS.get(skill_type)
+            if executor is None and name == _KNOWLEDGE_LOOKUP_SKILL_NAME:
+                executor = _exec_custom_knowledge
+            if executor is not None:
+                try:
+                    payload, rowcount = executor(name, args)
+                except Exception as e:
+                    payload, rowcount = {"error": f"Skill failed: {str(e)[:200]}"}, 0
+                ms = int((_time.time() - started) * 1000)
+                err_text = payload.get("error", "") if isinstance(payload, dict) else ""
+                return (
+                    json.dumps(payload, default=str),
+                    {"name": name, "args": args, "rows": int(rowcount or 0),
+                     "ms": ms, "error": err_text},
+                )
             ms = int((_time.time() - started) * 1000)
             payload = {"response": override_text} if override_text else {
                 "error": f"Custom skill '{name}' has no response text configured."
@@ -6182,12 +6746,99 @@ def _admin_tool_propose_run_sql(sql=None, summary=None, _session_id="", **_):
     )
 
 
+# Tables whose rows we snapshot before any approved update/delete. The
+# snapshot enables one-click revert from the dashboard's Recent Changes
+# panel. Audit/log/history tables are deliberately excluded — they
+# already capture history themselves and are blacklisted from writes.
+_ADMIN_SETTINGS_SNAPSHOT_TABLES = frozenset({
+    "chatbot_settings",
+    "agent_skills",
+    "agent_provider_settings",
+    "site_settings",
+    "voice_settings",
+    "custom_knowledge_entries",
+    "custom_webhook_skills",
+    "custom_sql_skills",
+})
+
+# Tables whose schema knowledge is also synced into agent_skills (so
+# that a write through propose_insert/update/delete can refresh the
+# materialized agent_skills row immediately).
+_ADMIN_CUSTOM_SKILL_TABLES = frozenset({
+    "custom_knowledge_entries",
+    "custom_webhook_skills",
+    "custom_sql_skills",
+})
+
+
+def _admin_settings_snapshot_table(name):
+    return name in _ADMIN_SETTINGS_SNAPSHOT_TABLES
+
+
+def _admin_snapshot_row(table_name, row_id, action_id, reason):
+    """Capture the current row state into admin_setting_snapshots BEFORE
+    an approved write mutates it. Best-effort: a snapshot failure does
+    NOT abort the write (we'd rather lose the undo than lose the
+    user-approved change).
+
+    Skips tables outside _ADMIN_SETTINGS_SNAPSHOT_TABLES, and skips rows
+    that don't exist (an update against a missing id will fail anyway,
+    a delete against a missing id is a no-op)."""
+    if not _admin_settings_snapshot_table(table_name):
+        return None
+    if row_id is None:
+        return None
+    from psycopg2 import sql as _pgsql
+    try:
+        conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
+        with conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
+            cur.execute("SET LOCAL statement_timeout = '5s'")
+            cur.execute("SET LOCAL transaction_read_only = on")
+            cur.execute(
+                _pgsql.SQL("SELECT * FROM {}.{} WHERE id = %s LIMIT 1").format(
+                    _pgsql.Identifier("public"),
+                    _pgsql.Identifier(table_name)),
+                (row_id,))
+            current = cur.fetchone()
+        conn.rollback(); conn.close()
+        if not current:
+            return None
+        execute_db(
+            "INSERT INTO admin_setting_snapshots "
+            "(table_name, row_id, snapshot_json, action_id, reason) "
+            "VALUES (%s, %s, %s::jsonb, %s, %s) RETURNING id",
+            (
+                table_name,
+                int(row_id),
+                json.dumps(current, default=str),
+                (int(action_id) if action_id is not None else None),
+                (reason or "")[:500],
+            ),
+        )
+    except Exception as e:
+        print(f"[admin_snapshot] failed for {table_name}#{row_id}: {e}")
+
+
+def _admin_post_write_sync(table_name):
+    """Refresh the materialized agent_skills rows after any write to one
+    of the custom-skill config tables. Lets the dispatcher and
+    get_active_chat_tools see the new state without a server restart."""
+    if table_name in _ADMIN_CUSTOM_SKILL_TABLES:
+        try:
+            sync_custom_skills_to_agent_skills()
+        except Exception as e:
+            print(f"[admin_post_write_sync] {table_name}: {e}")
+
+
 def _admin_execute_pending(action_row):
     """Run the actual write for an approved pending action. Returns
     (result_dict, error_str). Caller marks the row executed/failed."""
     a_type = action_row.get("action_type")
     table = action_row.get("target_table")
     rid = action_row.get("target_id")
+    action_id = action_row.get("id")
     payload = action_row.get("payload_json") or {}
     if isinstance(payload, str):
         try: payload = json.loads(payload)
@@ -6219,6 +6870,7 @@ def _admin_execute_pending(action_row):
                 new_id = (cur.fetchone() or [None])[0]
                 conn.commit()
             conn.close()
+            _admin_post_write_sync(table)
             return {"inserted_id": new_id, "table": table}, None
         except Exception as e:
             try: conn.rollback(); conn.close()
@@ -6232,6 +6884,9 @@ def _admin_execute_pending(action_row):
         fields = payload.get("fields") or {}
         if not fields or rid is None:
             return None, "missing fields or target_id"
+        # Snapshot first so we can revert later.
+        _admin_snapshot_row(table, rid, action_id,
+                            f"Before approved update (action #{action_id})")
         cols = list(fields.keys())
         vals = [fields[c] for c in cols] + [rid]
         set_clause = _pgsql.SQL(", ").join(
@@ -6251,6 +6906,7 @@ def _admin_execute_pending(action_row):
                 rc = cur.rowcount
                 conn.commit()
             conn.close()
+            _admin_post_write_sync(table)
             return {"rows_affected": rc, "table": table,
                     "row_id": rid}, None
         except Exception as e:
@@ -6264,6 +6920,9 @@ def _admin_execute_pending(action_row):
             return None, bl_err
         if rid is None:
             return None, "missing target_id"
+        # Snapshot first so we can revert later.
+        _admin_snapshot_row(table, rid, action_id,
+                            f"Before approved delete (action #{action_id})")
         stmt = _pgsql.SQL("DELETE FROM {}.{} WHERE id = %s").format(
             _pgsql.Identifier("public"),
             _pgsql.Identifier(table),
@@ -6276,12 +6935,16 @@ def _admin_execute_pending(action_row):
                 rc = cur.rowcount
                 conn.commit()
             conn.close()
+            _admin_post_write_sync(table)
             return {"rows_affected": rc, "table": table,
                     "row_id": rid}, None
         except Exception as e:
             try: conn.rollback(); conn.close()
             except Exception: pass
             return None, str(e)[:400]
+
+    if a_type == "revert":
+        return _admin_execute_revert(action_id, payload)
 
     if a_type == "sql":
         sql_text = (payload.get("sql") or "").strip().rstrip(";").strip()
@@ -6315,6 +6978,213 @@ def _admin_execute_pending(action_row):
             return None, str(e)[:400]
 
     return None, f"unknown action_type: {a_type}"
+
+
+def _admin_execute_revert(action_id, payload):
+    """Apply a snapshot — restore the original row state. payload =
+    {snapshot_id: N}. If the row currently exists we UPDATE it back to
+    the snapshot's column values (excluding id and timestamps). If the
+    row no longer exists we INSERT the entire snapshot back. Either way
+    we mark the snapshot's reverted_at so the dashboard hides the
+    Revert button on subsequent loads."""
+    snap_id = payload.get("snapshot_id")
+    if snap_id is None:
+        return None, "missing snapshot_id"
+    try:
+        snap_id = int(snap_id)
+    except Exception:
+        return None, "snapshot_id must be an integer"
+    snap = query_db(
+        "SELECT id, table_name, row_id, snapshot_json, reverted_at "
+        "FROM admin_setting_snapshots WHERE id = %s",
+        (snap_id,), fetchone=True,
+    )
+    if not snap:
+        return None, f"Snapshot #{snap_id} not found"
+    if snap.get("reverted_at"):
+        return None, f"Snapshot #{snap_id} already reverted"
+    table = snap.get("table_name")
+    if not table:
+        return None, "snapshot has no table_name"
+    if not _admin_settings_snapshot_table(table):
+        return None, f"Refusing to revert into non-snapshot table {table}"
+    if table in ADMIN_WRITE_BLACKLIST:
+        return None, f"Table {table} is read-only"
+    snap_data = snap.get("snapshot_json") or {}
+    if isinstance(snap_data, str):
+        try: snap_data = json.loads(snap_data)
+        except Exception: snap_data = {}
+    if not isinstance(snap_data, dict) or not snap_data:
+        return None, "snapshot data is empty"
+    # Match snapshot keys against the table's CURRENT columns — handles
+    # the case where columns have been added or dropped since the
+    # snapshot was taken.
+    cols_meta = _admin_table_columns(table) or []
+    if not cols_meta:
+        return None, f"Could not describe {table}"
+    valid_cols = {c["name"] for c in cols_meta}
+    col_types = {c["name"]: (c.get("type") or "").lower() for c in cols_meta}
+    # Always exclude server-managed timestamps so we don't carry stale
+    # NOW() values back into the row.
+    skip_cols = {"id", "created_at", "updated_at"}
+    # JSONB columns come back from psycopg2 as Python dicts/lists; we
+    # have to re-serialize them and cast %s::jsonb when binding.
+    # Strings and primitives go through the normal placeholder path.
+    revert_fields = {}
+    jsonb_cols = set()
+    for k, v in snap_data.items():
+        if k not in valid_cols or k in skip_cols:
+            continue
+        if col_types.get(k) in ("json", "jsonb") or isinstance(v, (dict, list)):
+            jsonb_cols.add(k)
+            revert_fields[k] = json.dumps(v) if v is not None else None
+        else:
+            revert_fields[k] = v
+    if not revert_fields:
+        return None, "No revertable columns in snapshot"
+    snap_row_id = snap.get("row_id")
+    from psycopg2 import sql as _pgsql
+    # Decide UPDATE vs INSERT based on whether the row currently exists.
+    existing = None
+    if snap_row_id is not None:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            with conn.cursor() as cur:
+                cur.execute(
+                    _pgsql.SQL(
+                        "SELECT 1 FROM {}.{} WHERE id = %s LIMIT 1"
+                    ).format(
+                        _pgsql.Identifier("public"),
+                        _pgsql.Identifier(table)),
+                    (snap_row_id,))
+                existing = cur.fetchone()
+            conn.close()
+        except Exception as e:
+            return None, f"Could not check current row: {str(e)[:200]}"
+    try:
+        conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL statement_timeout = '10s'")
+            # JSONB columns need a ::jsonb cast on their placeholder
+            # because psycopg2 sends bytea-text otherwise.
+            def _ph(col):
+                if col in jsonb_cols:
+                    return _pgsql.SQL("%s::jsonb")
+                return _pgsql.SQL("%s")
+
+            if existing and snap_row_id is not None:
+                cols = list(revert_fields.keys())
+                vals = [revert_fields[c] for c in cols] + [snap_row_id]
+                set_clause = _pgsql.SQL(", ").join(
+                    _pgsql.SQL("{} = {}").format(_pgsql.Identifier(c), _ph(c))
+                    for c in cols)
+                stmt = _pgsql.SQL("UPDATE {}.{} SET {} WHERE id = %s").format(
+                    _pgsql.Identifier("public"),
+                    _pgsql.Identifier(table),
+                    set_clause,
+                )
+                cur.execute(stmt, vals)
+                rc = cur.rowcount
+                op = "update"
+                new_id = snap_row_id
+            else:
+                # Re-insert the full row — keep the original id if the
+                # column allows it (SERIAL PK columns accept explicit
+                # values).
+                insert_fields = dict(revert_fields)
+                if snap_row_id is not None and "id" in valid_cols:
+                    insert_fields["id"] = snap_row_id
+                cols = list(insert_fields.keys())
+                vals = [insert_fields[c] for c in cols]
+                stmt = _pgsql.SQL(
+                    "INSERT INTO {}.{} ({}) VALUES ({}) RETURNING id"
+                ).format(
+                    _pgsql.Identifier("public"),
+                    _pgsql.Identifier(table),
+                    _pgsql.SQL(", ").join(_pgsql.Identifier(c) for c in cols),
+                    _pgsql.SQL(", ").join(_ph(c) for c in cols),
+                )
+                cur.execute(stmt, vals)
+                fetched = cur.fetchone()
+                new_id = (fetched or [None])[0] if fetched else None
+                rc = 1
+                op = "insert"
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        try: conn.rollback(); conn.close()
+        except Exception: pass
+        return None, f"Revert failed: {str(e)[:300]}"
+    # Mark snapshot reverted so it doesn't show a Revert button next time.
+    try:
+        execute_db(
+            "UPDATE admin_setting_snapshots SET reverted_at = NOW() "
+            "WHERE id = %s", (snap_id,),
+        )
+    except Exception as e:
+        print(f"[admin_execute_revert] mark reverted failed: {e}")
+    _admin_post_write_sync(table)
+    return {
+        "operation": op,
+        "table": table,
+        "row_id": new_id,
+        "snapshot_id": snap_id,
+        "rows_affected": rc,
+    }, None
+
+
+def _admin_tool_propose_revert_snapshot(snapshot_id=None, reason=None,
+                                        _session_id="", **_):
+    """Park a `revert` pending action for the given snapshot. The owner
+    has to click Approve before anything is restored."""
+    if snapshot_id is None:
+        return {"error": "snapshot_id is required"}
+    try:
+        sid = int(snapshot_id)
+    except Exception:
+        return {"error": "snapshot_id must be an integer"}
+    snap = query_db(
+        "SELECT id, table_name, row_id, reverted_at, reason, created_at "
+        "FROM admin_setting_snapshots WHERE id = %s",
+        (sid,), fetchone=True,
+    )
+    if not snap:
+        return {"error": f"Snapshot #{sid} not found"}
+    if snap.get("reverted_at"):
+        return {"error": f"Snapshot #{sid} has already been reverted"}
+    table = snap.get("table_name") or ""
+    if not _admin_settings_snapshot_table(table):
+        return {"error": f"Cannot revert into table {table}"}
+    preview = (
+        f"REVERT snapshot #{sid} of {table} row #{snap.get('row_id')}.\n"
+        f"  Original change: {snap.get('reason') or '(unspecified)'}\n"
+        f"  Captured at:     {snap.get('created_at')}\n"
+        f"  Why now:         {(reason or '').strip() or '(no reason given)'}"
+    )
+    return _admin_create_pending(
+        _session_id, "revert",
+        target_table=table, target_id=snap.get("row_id"),
+        payload={"snapshot_id": sid, "reason": (reason or "").strip()[:500]},
+        preview=preview,
+    )
+
+
+def _admin_tool_recent_snapshots(limit=20, **_):
+    try:
+        n = max(1, min(int(limit), 200))
+    except Exception:
+        n = 20
+    rows = query_db(
+        "SELECT id, table_name, row_id, action_id, reason, "
+        "       reverted_at, created_at "
+        "FROM admin_setting_snapshots "
+        "ORDER BY created_at DESC LIMIT %s", (n,)
+    ) or []
+    for r in rows:
+        for k in ("reverted_at", "created_at"):
+            if hasattr(r.get(k), "isoformat"):
+                r[k] = r[k].isoformat()
+    return {"snapshots": rows, "count": len(rows)}
 
 
 def _admin_tool_recent_visitor_chats(limit=20, **_):
@@ -6448,12 +7318,14 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_recent_form_submissions":_admin_tool_recent_form_submissions,
     "admin_overview_stats":         _admin_tool_overview_stats,
     "admin_skill_usage_stats":      _admin_tool_skill_usage_stats,
+    "admin_recent_snapshots":       _admin_tool_recent_snapshots,
     # --- Write proposals (each parks a pending action; the owner has
     # to click Approve in the chat UI before anything actually runs).
     "admin_propose_insert":         _admin_tool_propose_insert,
     "admin_propose_update":         _admin_tool_propose_update,
     "admin_propose_delete":         _admin_tool_propose_delete,
     "admin_propose_run_sql":        _admin_tool_propose_run_sql,
+    "admin_propose_revert_snapshot": _admin_tool_propose_revert_snapshot,
 }
 
 # Tools whose write-side effect runs only after explicit owner approval.
@@ -6462,6 +7334,7 @@ ADMIN_TOOL_FUNCTIONS = {
 ADMIN_PROPOSE_TOOLS = {
     "admin_propose_insert", "admin_propose_update",
     "admin_propose_delete", "admin_propose_run_sql",
+    "admin_propose_revert_snapshot",
 }
 
 
@@ -6600,6 +7473,30 @@ ADMIN_TOOLS = [
          },
          "required": ["table_name", "row_id"]}),
     _admin_tool_schema(
+        "admin_recent_snapshots",
+        "List recent settings-table snapshots created automatically before "
+        "approved updates/deletes. Each row tells you the table, row id, "
+        "the original change reason, and whether it has already been "
+        "reverted. Use this BEFORE proposing a revert so you cite a real "
+        "snapshot id.",
+        {"type": "object",
+         "properties": {"limit": {"type": "integer", "default": 20}}}),
+    _admin_tool_schema(
+        "admin_propose_revert_snapshot",
+        "Propose restoring a row to the values captured in an "
+        "admin_setting_snapshots row. Requires the owner's approval like "
+        "any other write. Pass `snapshot_id` (look it up first via "
+        "admin_recent_snapshots) and a short `reason` so the approval "
+        "card explains WHY you want to revert.",
+        {"type": "object",
+         "properties": {
+             "snapshot_id": {"type": "integer"},
+             "reason":      {"type": "string",
+                             "description": "Plain-English justification "
+                                            "shown in the approval card."},
+         },
+         "required": ["snapshot_id"]}),
+    _admin_tool_schema(
         "admin_propose_run_sql",
         "Last-resort: propose a single arbitrary write SQL statement when "
         "no insert/update/delete tool fits (bulk fixes, joins, "
@@ -6707,7 +7604,39 @@ ADMIN_CHAT_SYSTEM_PROMPT = (
     "  • Never claim a write happened just because you proposed it — "
     "wait for the approval result on the next turn.\n"
     "  • Cite the tools you used at the bottom of complex answers as a "
-    "short \"What I checked: …\" line so the admin can verify."
+    "short \"What I checked: …\" line so the admin can verify.\n\n"
+    "CUSTOM SKILLS THE VISITOR AGENT CAN USE:\n"
+    "Three tables let the owner extend the consumer chat agent with "
+    "their own knowledge and tools — describe and edit them through "
+    "the same propose_* flow:\n"
+    "  • custom_knowledge_entries — short topical notes (topic, "
+    "content). The visitor agent searches these via a built-in "
+    "lookup_knowledge tool. To add a fact, propose_insert into this "
+    "table.\n"
+    "  • custom_webhook_skills — name, description, url, method "
+    "(GET/POST), headers_json, args_schema_json (a JSON Schema "
+    "describing the args the agent should send), timeout_seconds, "
+    "enabled. Each enabled row becomes a callable tool for the visitor "
+    "agent. Localhost / private-network URLs are blocked by the URL "
+    "validator — only public HTTPS endpoints work.\n"
+    "  • custom_sql_skills — name, description, sql_template (a single "
+    "parameterised SELECT using %(name)s placeholders), "
+    "args_schema_json, enabled. Each enabled row becomes a callable "
+    "tool. Only SELECT statements are accepted; multi-statement, "
+    "DML, and DDL are rejected.\n"
+    "After any write to those three tables the materialized "
+    "agent_skills rows are refreshed automatically — no restart "
+    "needed.\n\n"
+    "SNAPSHOT / REVERT:\n"
+    "Before any approved update or delete to chatbot_settings, "
+    "agent_skills, agent_provider_settings, site_settings, "
+    "voice_settings, custom_knowledge_entries, custom_webhook_skills, "
+    "or custom_sql_skills, the previous row is captured in "
+    "admin_setting_snapshots. To roll a change back: call "
+    "admin_recent_snapshots first to find the snapshot id, then call "
+    "admin_propose_revert_snapshot(snapshot_id, reason) — that parks a "
+    "normal approval card. Snapshots that have already been reverted "
+    "have a non-null reverted_at and cannot be reverted again."
 )
 
 
@@ -8684,6 +9613,13 @@ def admin_update_skill(sid):
 
     if not sets:
         return jsonify(existing)
+    # Snapshot the row BEFORE we overwrite it so the Recent Changes
+    # panel can revert dashboard-driven edits, not just admin-chat ones.
+    try:
+        _admin_snapshot_row("agent_skills", sid, None,
+                            "Updated from admin dashboard")
+    except Exception as _e:
+        print(f"[snapshot] agent_skills update {sid}: {_e}")
     params.append(sid)
     s = execute_db(
         f"UPDATE agent_skills SET {', '.join(sets)} WHERE id = %s RETURNING *",
@@ -8707,6 +9643,11 @@ def admin_delete_skill(sid):
         return jsonify({
             "error": "Builtin skills cannot be deleted — they are defined in code and would reappear on next restart. Disable the skill instead.",
         }), 400
+    try:
+        _admin_snapshot_row("agent_skills", sid, None,
+                            "Deleted from admin dashboard")
+    except Exception as _e:
+        print(f"[snapshot] agent_skills delete {sid}: {_e}")
     execute_db("DELETE FROM agent_skills WHERE id = %s", (sid,))
     return jsonify({"deleted": True, "id": sid, "name": row["name"]})
 
@@ -8720,6 +9661,465 @@ def admin_skills_usage():
         "FROM skill_usage_log ORDER BY id DESC LIMIT 100"
     ) or []
     return jsonify(rows)
+
+
+# =====================================================================
+#  Settings snapshots — list + revert (used by the dashboard's
+#  "Recent Changes" panel and the admin chat assistant).
+# =====================================================================
+
+@app.route("/admin/api/snapshots/list", methods=["GET"])
+@admin_required
+def admin_snapshots_list():
+    try:
+        n = max(1, min(int(request.args.get("limit", 50)), 200))
+    except Exception:
+        n = 50
+    rows = query_db(
+        "SELECT s.id, s.table_name, s.row_id, s.action_id, s.reason, "
+        "       s.reverted_at, s.created_at, "
+        "       a.action_type AS source_action_type "
+        "FROM admin_setting_snapshots s "
+        "LEFT JOIN admin_pending_actions a ON a.id = s.action_id "
+        "ORDER BY s.created_at DESC LIMIT %s",
+        (n,),
+    ) or []
+    for r in rows:
+        for k in ("created_at", "reverted_at"):
+            if hasattr(r.get(k), "isoformat"):
+                r[k] = r[k].isoformat()
+    return jsonify({"snapshots": rows, "count": len(rows)})
+
+
+@app.route("/admin/api/snapshots/<int:sid>", methods=["GET"])
+@admin_required
+def admin_snapshot_detail(sid):
+    row = query_db(
+        "SELECT id, table_name, row_id, snapshot_json, action_id, "
+        "       reason, reverted_at, created_at "
+        "FROM admin_setting_snapshots WHERE id = %s", (sid,), fetchone=True,
+    )
+    if not row:
+        return jsonify({"error": "snapshot not found"}), 404
+    for k in ("created_at", "reverted_at"):
+        if hasattr(row.get(k), "isoformat"):
+            row[k] = row[k].isoformat()
+    return jsonify(row)
+
+
+@app.route("/admin/api/snapshots/<int:sid>/revert", methods=["POST"])
+@admin_required
+def admin_snapshot_revert(sid):
+    """Synchronously revert a snapshot from the dashboard. Unlike the
+    admin chat flow this does NOT need a separate approval step — the
+    owner is logged in and clicked the Revert button directly."""
+    snap = query_db(
+        "SELECT id, reverted_at FROM admin_setting_snapshots WHERE id = %s",
+        (sid,), fetchone=True,
+    )
+    if not snap:
+        return jsonify({"error": "snapshot not found"}), 404
+    if snap.get("reverted_at"):
+        return jsonify({"error": "snapshot already reverted"}), 400
+    payload = {"snapshot_id": sid}
+    result, err = _admin_execute_revert(action_id=None, payload=payload)
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"reverted": True, "result": result})
+
+
+# =====================================================================
+#  Custom-knowledge entries — short topical notes the visitor agent
+#  searches via the lookup_knowledge skill.
+# =====================================================================
+
+def _normalize_knowledge_payload(data, *, partial=False):
+    out = {}
+    if "topic" in data or not partial:
+        topic = (data.get("topic") or "").strip()
+        if not topic and not partial:
+            return None, "topic is required"
+        out["topic"] = topic[:200]
+    if "content" in data or not partial:
+        content = (data.get("content") or "").strip()
+        if not content and not partial:
+            return None, "content is required"
+        out["content"] = content[:8000]
+    if "enabled" in data:
+        v = data.get("enabled")
+        out["enabled"] = (v.strip().lower() in ("true", "1", "yes", "on")
+                          if isinstance(v, str) else bool(v))
+    return out, None
+
+
+@app.route("/admin/api/custom-knowledge", methods=["GET"])
+@admin_required
+def admin_custom_knowledge_list():
+    rows = query_db(
+        "SELECT id, topic, content, enabled, created_at, updated_at "
+        "FROM custom_knowledge_entries ORDER BY id DESC"
+    ) or []
+    for r in rows:
+        for k in ("created_at", "updated_at"):
+            if hasattr(r.get(k), "isoformat"):
+                r[k] = r[k].isoformat()
+    return jsonify(rows)
+
+
+@app.route("/admin/api/custom-knowledge", methods=["POST"])
+@admin_required
+def admin_custom_knowledge_create():
+    cleaned, err = _normalize_knowledge_payload(
+        request.get_json() or {}, partial=False)
+    if err:
+        return jsonify({"error": err}), 400
+    row = execute_db(
+        "INSERT INTO custom_knowledge_entries (topic, content, enabled) "
+        "VALUES (%s, %s, %s) RETURNING *",
+        (cleaned["topic"], cleaned["content"],
+         cleaned.get("enabled", True)),
+    )
+    sync_custom_skills_to_agent_skills()
+    return jsonify(row), 201
+
+
+@app.route("/admin/api/custom-knowledge/<int:rid>", methods=["PUT"])
+@admin_required
+def admin_custom_knowledge_update(rid):
+    existing = query_db("SELECT * FROM custom_knowledge_entries WHERE id = %s",
+                        (rid,), fetchone=True)
+    if not existing:
+        return jsonify({"error": "not found"}), 404
+    cleaned, err = _normalize_knowledge_payload(
+        request.get_json() or {}, partial=True)
+    if err:
+        return jsonify({"error": err}), 400
+    if not cleaned:
+        return jsonify(existing)
+    _admin_snapshot_row("custom_knowledge_entries", rid, None,
+                        "Edited from admin dashboard")
+    sets, params = [], []
+    for k in ("topic", "content", "enabled"):
+        if k in cleaned:
+            sets.append(f"{k} = %s"); params.append(cleaned[k])
+    sets.append("updated_at = NOW()"); params.append(rid)
+    row = execute_db(
+        f"UPDATE custom_knowledge_entries SET {', '.join(sets)} "
+        f"WHERE id = %s RETURNING *", tuple(params),
+    )
+    sync_custom_skills_to_agent_skills()
+    return jsonify(row)
+
+
+@app.route("/admin/api/custom-knowledge/<int:rid>", methods=["DELETE"])
+@admin_required
+def admin_custom_knowledge_delete(rid):
+    existing = query_db("SELECT id FROM custom_knowledge_entries WHERE id = %s",
+                        (rid,), fetchone=True)
+    if not existing:
+        return jsonify({"error": "not found"}), 404
+    _admin_snapshot_row("custom_knowledge_entries", rid, None,
+                        "Deleted from admin dashboard")
+    execute_db("DELETE FROM custom_knowledge_entries WHERE id = %s", (rid,))
+    sync_custom_skills_to_agent_skills()
+    return jsonify({"deleted": True, "id": rid})
+
+
+# =====================================================================
+#  Custom webhook skills — outbound HTTP calls the visitor agent can
+#  trigger. URL is validated against a private-network/SSRF blacklist
+#  inside _exec_custom_webhook at call-time too.
+# =====================================================================
+
+def _normalize_webhook_payload(data, *, partial=False):
+    out = {}
+    if "name" in data or not partial:
+        name = (data.get("name") or "").strip().lower()
+        if not _SKILL_NAME_RE.match(name or ""):
+            return None, ("name must start with a lowercase letter and use "
+                          "only lowercase letters, digits, underscores "
+                          "(max 60 chars).")
+        out["name"] = name
+    if "description" in data or not partial:
+        desc = (data.get("description") or "").strip()
+        if not desc and not partial:
+            return None, "description is required so the AI knows when to call this"
+        out["description"] = desc[:2000]
+    if "url" in data or not partial:
+        url = (data.get("url") or "").strip()
+        if not url and not partial:
+            return None, "url is required"
+        if url and not (url.startswith("http://") or url.startswith("https://")):
+            return None, "url must start with http:// or https://"
+        if url:
+            ok, _u, err = _webhook_url_safe(url)
+            if not ok:
+                return None, f"URL rejected: {err}"
+        out["url"] = url[:1000]
+    if "method" in data or not partial:
+        m = (data.get("method") or "POST").strip().upper()
+        if m not in ("GET", "POST"):
+            return None, "method must be GET or POST"
+        out["method"] = m
+    if "headers_json" in data:
+        h = data.get("headers_json") or {}
+        if isinstance(h, str):
+            try: h = json.loads(h) if h.strip() else {}
+            except Exception: return None, "headers_json must be valid JSON"
+        if not isinstance(h, dict):
+            return None, "headers_json must be a JSON object of {header: value}"
+        out["headers_json"] = h
+    if "args_schema_json" in data:
+        s = data.get("args_schema_json") or {}
+        if isinstance(s, str):
+            try: s = json.loads(s) if s.strip() else {}
+            except Exception: return None, "args_schema_json must be valid JSON"
+        if not isinstance(s, dict):
+            return None, "args_schema_json must be a JSON Schema object"
+        out["args_schema_json"] = s
+    if "timeout_seconds" in data:
+        try:
+            t = int(data.get("timeout_seconds") or 10)
+        except Exception:
+            return None, "timeout_seconds must be an integer"
+        out["timeout_seconds"] = max(1, min(t, 15))
+    if "enabled" in data:
+        v = data.get("enabled")
+        out["enabled"] = (v.strip().lower() in ("true", "1", "yes", "on")
+                          if isinstance(v, str) else bool(v))
+    return out, None
+
+
+@app.route("/admin/api/custom-webhooks", methods=["GET"])
+@admin_required
+def admin_custom_webhooks_list():
+    rows = query_db(
+        "SELECT id, name, description, url, method, headers_json, "
+        "       args_schema_json, timeout_seconds, enabled, "
+        "       created_at, updated_at "
+        "FROM custom_webhook_skills ORDER BY id DESC"
+    ) or []
+    for r in rows:
+        for k in ("created_at", "updated_at"):
+            if hasattr(r.get(k), "isoformat"):
+                r[k] = r[k].isoformat()
+    return jsonify(rows)
+
+
+@app.route("/admin/api/custom-webhooks", methods=["POST"])
+@admin_required
+def admin_custom_webhooks_create():
+    cleaned, err = _normalize_webhook_payload(
+        request.get_json() or {}, partial=False)
+    if err:
+        return jsonify({"error": err}), 400
+    if query_db("SELECT 1 FROM custom_webhook_skills WHERE name = %s",
+                (cleaned["name"],), fetchone=True):
+        return jsonify({"error": f"a webhook named '{cleaned['name']}' already exists"}), 409
+    try:
+        row = execute_db(
+            "INSERT INTO custom_webhook_skills "
+            "(name, description, url, method, headers_json, "
+            " args_schema_json, timeout_seconds, enabled) "
+            "VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s) "
+            "RETURNING *",
+            (
+                cleaned["name"], cleaned["description"], cleaned["url"],
+                cleaned["method"],
+                json.dumps(cleaned.get("headers_json") or {}),
+                json.dumps(cleaned.get("args_schema_json") or {}),
+                cleaned.get("timeout_seconds", 10),
+                cleaned.get("enabled", True),
+            ),
+        )
+    except psycopg2.IntegrityError:
+        return jsonify({"error": f"a webhook named '{cleaned['name']}' already exists"}), 409
+    sync_custom_skills_to_agent_skills()
+    return jsonify(row), 201
+
+
+@app.route("/admin/api/custom-webhooks/<int:rid>", methods=["PUT"])
+@admin_required
+def admin_custom_webhooks_update(rid):
+    existing = query_db("SELECT * FROM custom_webhook_skills WHERE id = %s",
+                        (rid,), fetchone=True)
+    if not existing:
+        return jsonify({"error": "not found"}), 404
+    payload = request.get_json() or {}
+    payload.pop("name", None)  # name is immutable post-creation
+    cleaned, err = _normalize_webhook_payload(payload, partial=True)
+    if err:
+        return jsonify({"error": err}), 400
+    if not cleaned:
+        return jsonify(existing)
+    _admin_snapshot_row("custom_webhook_skills", rid, None,
+                        "Edited from admin dashboard")
+    sets, params = [], []
+    for k in ("description", "url", "method", "timeout_seconds", "enabled"):
+        if k in cleaned:
+            sets.append(f"{k} = %s"); params.append(cleaned[k])
+    if "headers_json" in cleaned:
+        sets.append("headers_json = %s::jsonb")
+        params.append(json.dumps(cleaned["headers_json"]))
+    if "args_schema_json" in cleaned:
+        sets.append("args_schema_json = %s::jsonb")
+        params.append(json.dumps(cleaned["args_schema_json"]))
+    sets.append("updated_at = NOW()"); params.append(rid)
+    row = execute_db(
+        f"UPDATE custom_webhook_skills SET {', '.join(sets)} "
+        f"WHERE id = %s RETURNING *", tuple(params),
+    )
+    sync_custom_skills_to_agent_skills()
+    return jsonify(row)
+
+
+@app.route("/admin/api/custom-webhooks/<int:rid>", methods=["DELETE"])
+@admin_required
+def admin_custom_webhooks_delete(rid):
+    existing = query_db("SELECT id FROM custom_webhook_skills WHERE id = %s",
+                        (rid,), fetchone=True)
+    if not existing:
+        return jsonify({"error": "not found"}), 404
+    _admin_snapshot_row("custom_webhook_skills", rid, None,
+                        "Deleted from admin dashboard")
+    execute_db("DELETE FROM custom_webhook_skills WHERE id = %s", (rid,))
+    sync_custom_skills_to_agent_skills()
+    return jsonify({"deleted": True, "id": rid})
+
+
+# =====================================================================
+#  Custom SQL skills — parameterised SELECT statements the visitor
+#  agent can call. Only SELECT, single-statement, 5s budget, 100 rows.
+# =====================================================================
+
+def _normalize_sql_skill_payload(data, *, partial=False):
+    out = {}
+    if "name" in data or not partial:
+        name = (data.get("name") or "").strip().lower()
+        if not _SKILL_NAME_RE.match(name or ""):
+            return None, ("name must start with a lowercase letter and use "
+                          "only lowercase letters, digits, underscores "
+                          "(max 60 chars).")
+        out["name"] = name
+    if "description" in data or not partial:
+        desc = (data.get("description") or "").strip()
+        if not desc and not partial:
+            return None, "description is required so the AI knows when to call this"
+        out["description"] = desc[:2000]
+    if "sql_template" in data or not partial:
+        sql_t = (data.get("sql_template") or "").strip()
+        if not sql_t and not partial:
+            return None, "sql_template is required"
+        # Lightweight validation matching the runtime check in
+        # _exec_custom_sql so the admin sees errors at save time.
+        stripped = sql_t.rstrip(";").strip()
+        if ";" in stripped:
+            return None, "sql_template must be a single statement (no semicolons)"
+        if not _re.match(r"^\s*(WITH|SELECT)\b", stripped, _re.IGNORECASE):
+            return None, "sql_template must start with SELECT or WITH"
+        out["sql_template"] = sql_t[:8000]
+    if "args_schema_json" in data:
+        s = data.get("args_schema_json") or {}
+        if isinstance(s, str):
+            try: s = json.loads(s) if s.strip() else {}
+            except Exception: return None, "args_schema_json must be valid JSON"
+        if not isinstance(s, dict):
+            return None, "args_schema_json must be a JSON Schema object"
+        out["args_schema_json"] = s
+    if "enabled" in data:
+        v = data.get("enabled")
+        out["enabled"] = (v.strip().lower() in ("true", "1", "yes", "on")
+                          if isinstance(v, str) else bool(v))
+    return out, None
+
+
+@app.route("/admin/api/custom-sql", methods=["GET"])
+@admin_required
+def admin_custom_sql_list():
+    rows = query_db(
+        "SELECT id, name, description, sql_template, args_schema_json, "
+        "       enabled, created_at, updated_at "
+        "FROM custom_sql_skills ORDER BY id DESC"
+    ) or []
+    for r in rows:
+        for k in ("created_at", "updated_at"):
+            if hasattr(r.get(k), "isoformat"):
+                r[k] = r[k].isoformat()
+    return jsonify(rows)
+
+
+@app.route("/admin/api/custom-sql", methods=["POST"])
+@admin_required
+def admin_custom_sql_create():
+    cleaned, err = _normalize_sql_skill_payload(
+        request.get_json() or {}, partial=False)
+    if err:
+        return jsonify({"error": err}), 400
+    if query_db("SELECT 1 FROM custom_sql_skills WHERE name = %s",
+                (cleaned["name"],), fetchone=True):
+        return jsonify({"error": f"a SQL skill named '{cleaned['name']}' already exists"}), 409
+    try:
+        row = execute_db(
+            "INSERT INTO custom_sql_skills "
+            "(name, description, sql_template, args_schema_json, enabled) "
+            "VALUES (%s, %s, %s, %s::jsonb, %s) RETURNING *",
+            (
+                cleaned["name"], cleaned["description"],
+                cleaned["sql_template"],
+                json.dumps(cleaned.get("args_schema_json") or {}),
+                cleaned.get("enabled", True),
+            ),
+        )
+    except psycopg2.IntegrityError:
+        return jsonify({"error": f"a SQL skill named '{cleaned['name']}' already exists"}), 409
+    sync_custom_skills_to_agent_skills()
+    return jsonify(row), 201
+
+
+@app.route("/admin/api/custom-sql/<int:rid>", methods=["PUT"])
+@admin_required
+def admin_custom_sql_update(rid):
+    existing = query_db("SELECT * FROM custom_sql_skills WHERE id = %s",
+                        (rid,), fetchone=True)
+    if not existing:
+        return jsonify({"error": "not found"}), 404
+    payload = request.get_json() or {}
+    payload.pop("name", None)
+    cleaned, err = _normalize_sql_skill_payload(payload, partial=True)
+    if err:
+        return jsonify({"error": err}), 400
+    if not cleaned:
+        return jsonify(existing)
+    _admin_snapshot_row("custom_sql_skills", rid, None,
+                        "Edited from admin dashboard")
+    sets, params = [], []
+    for k in ("description", "sql_template", "enabled"):
+        if k in cleaned:
+            sets.append(f"{k} = %s"); params.append(cleaned[k])
+    if "args_schema_json" in cleaned:
+        sets.append("args_schema_json = %s::jsonb")
+        params.append(json.dumps(cleaned["args_schema_json"]))
+    sets.append("updated_at = NOW()"); params.append(rid)
+    row = execute_db(
+        f"UPDATE custom_sql_skills SET {', '.join(sets)} "
+        f"WHERE id = %s RETURNING *", tuple(params),
+    )
+    sync_custom_skills_to_agent_skills()
+    return jsonify(row)
+
+
+@app.route("/admin/api/custom-sql/<int:rid>", methods=["DELETE"])
+@admin_required
+def admin_custom_sql_delete(rid):
+    existing = query_db("SELECT id FROM custom_sql_skills WHERE id = %s",
+                        (rid,), fetchone=True)
+    if not existing:
+        return jsonify({"error": "not found"}), 404
+    _admin_snapshot_row("custom_sql_skills", rid, None,
+                        "Deleted from admin dashboard")
+    execute_db("DELETE FROM custom_sql_skills WHERE id = %s", (rid,))
+    sync_custom_skills_to_agent_skills()
+    return jsonify({"deleted": True, "id": rid})
 
 
 @app.route("/admin/api/llm-provider", methods=["GET"])
@@ -8759,6 +10159,11 @@ def admin_update_llm_provider():
         return jsonify({
             "error": "Claude is not configured. Set ANTHROPIC_API_KEY and restart."
         }), 400
+    try:
+        _admin_snapshot_row("agent_provider_settings", 1, None,
+                            "Updated from admin dashboard")
+    except Exception as _e:
+        print(f"[snapshot] agent_provider_settings: {_e}")
     row = execute_db(
         "UPDATE agent_provider_settings SET "
         "  provider = %s, openai_model = %s, claude_model = %s, updated_at = NOW() "
@@ -9779,6 +11184,11 @@ def admin_get_settings():
 def admin_update_settings():
     """PUT /admin/api/site-settings — Update site-wide settings."""
     data = request.get_json()
+    try:
+        _admin_snapshot_row("site_settings", 1, None,
+                            "Updated from admin dashboard")
+    except Exception as _e:
+        print(f"[snapshot] site_settings: {_e}")
     settings = execute_db(
         """UPDATE site_settings SET
              site_name = %s, site_subtitle = %s, hero_tagline = %s,
@@ -9812,6 +11222,11 @@ def admin_update_chatbot():
     Update the chatbot configuration including system_prompt.
     """
     data = request.get_json()
+    try:
+        _admin_snapshot_row("chatbot_settings", 1, None,
+                            "Updated from admin dashboard")
+    except Exception as _e:
+        print(f"[snapshot] chatbot_settings: {_e}")
     settings = execute_db(
         """UPDATE chatbot_settings SET
              enabled = %s, mode = %s, agent_name = %s, agent_role = %s,
@@ -12267,6 +13682,12 @@ def admin_update_voice_settings():
         return jsonify({"error": "elevenlabs_voice_id too long"}), 400
     if "elevenlabs_model" in data and len(str(data["elevenlabs_model"])) > 80:
         return jsonify({"error": "elevenlabs_model too long"}), 400
+
+    try:
+        _admin_snapshot_row("voice_settings", 1, None,
+                            "Updated from admin dashboard")
+    except Exception as _e:
+        print(f"[snapshot] voice_settings: {_e}")
 
     # Whitelist columns we allow updating (includes the v2 multi-provider fields)
     allowed = {
@@ -20481,4 +21902,5 @@ def _ensure_messaging_scheduler():
 if __name__ == "__main__":
     init_db()
     sync_skills_to_db()
+    sync_custom_skills_to_agent_skills()
     app.run(host="0.0.0.0", port=5000, debug=True)

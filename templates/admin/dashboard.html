@@ -1794,6 +1794,14 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.5 5 5.5.8-4 3.9.9 5.5L12 14.7 7.1 17.2 8 11.7 4 7.8l5.5-.8L12 2z"/></svg>
       AI Skills
     </button>
+    <button class="tab-btn" onclick="switchTab('custom-skills', this); loadCustomSkillsTab();" data-testid="tab-custom-skills">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+      Custom Skills
+    </button>
+    <button class="tab-btn" onclick="switchTab('changes', this); loadRecentChanges();" data-testid="tab-changes">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><polyline points="3 3 3 8 8 8"/></svg>
+      Recent Changes
+    </button>
     <button class="tab-btn" onclick="switchTab('llm-provider', this); loadLlmProvider();" data-testid="tab-llm-provider">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       AI Provider
@@ -4162,6 +4170,81 @@ TO CUSTOMIZE THIS DASHBOARD:
     <div id="skills-list" data-testid="list-skills" style="display:grid;gap:8px;margin-bottom:24px;"></div>
     <div class="section-header-admin"><div><h3>Recent Skill Calls</h3><p>The last 100 times the AI used a skill.</p></div></div>
     <div id="skills-usage" data-testid="list-skills-usage" style="font-family:monospace;font-size:12px;max-height:340px;overflow:auto;border:1px solid #e5e5e5;border-radius:8px;padding:10px;background:#fafafa;"></div>
+  </div>
+
+  <!-- ========================================================================
+       TAB: CUSTOM SKILLS — knowledge entries, webhooks, parameterised SQL
+       Each section is a CRUD list. Saving any row triggers a server-side
+       sync that materializes the row into agent_skills so the chat agent
+       sees the new tool on its very next turn (no restart needed).
+       ======================================================================== -->
+  <div id="tab-custom-skills" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Custom Skills</h2>
+        <p>Extend the visitor chat agent with your own knowledge, webhook calls, and parameterised database queries. Anything you save here becomes a tool the AI can call mid-conversation.</p>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-bottom:18px;border-bottom:1px solid #e5e5e5;">
+      <button class="custom-skill-subtab-btn" data-sub="knowledge" onclick="switchCustomSkillSub('knowledge')" data-testid="subtab-knowledge" style="padding:8px 16px;border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;font-weight:600;">Knowledge</button>
+      <button class="custom-skill-subtab-btn" data-sub="webhooks" onclick="switchCustomSkillSub('webhooks')" data-testid="subtab-webhooks" style="padding:8px 16px;border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;font-weight:600;">Webhooks</button>
+      <button class="custom-skill-subtab-btn" data-sub="sql" onclick="switchCustomSkillSub('sql')" data-testid="subtab-sql" style="padding:8px 16px;border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;font-weight:600;">SQL</button>
+    </div>
+
+    <!-- KNOWLEDGE -->
+    <div id="custom-sub-knowledge" class="custom-skill-sub">
+      <div class="section-header-admin">
+        <div><h3>Knowledge entries</h3><p>Short topical notes the agent searches via the lookup_knowledge skill. Keep one fact per entry.</p></div>
+        <button class="btn btn-primary" onclick="openKnowledgeEditor(null)" data-testid="button-new-knowledge">+ Add entry</button>
+      </div>
+      <div id="knowledge-list" data-testid="list-knowledge" style="display:grid;gap:8px;"></div>
+    </div>
+
+    <!-- WEBHOOKS -->
+    <div id="custom-sub-webhooks" class="custom-skill-sub" style="display:none;">
+      <div class="section-header-admin">
+        <div><h3>Webhook skills</h3><p>HTTP calls the agent can trigger. Localhost and private-network URLs are blocked; only public HTTPS endpoints work.</p></div>
+        <button class="btn btn-primary" onclick="openWebhookEditor(null)" data-testid="button-new-webhook">+ Add webhook</button>
+      </div>
+      <div id="webhooks-list" data-testid="list-webhooks" style="display:grid;gap:8px;"></div>
+    </div>
+
+    <!-- SQL -->
+    <div id="custom-sub-sql" class="custom-skill-sub" style="display:none;">
+      <div class="section-header-admin">
+        <div><h3>SQL skills</h3><p>Parameterised SELECT queries the agent can run. Use %(name)s placeholders for arguments. Only one SELECT statement per skill; 5-second budget; up to 100 rows returned.</p></div>
+        <button class="btn btn-primary" onclick="openSqlSkillEditor(null)" data-testid="button-new-sql-skill">+ Add SQL skill</button>
+      </div>
+      <div id="sql-skills-list" data-testid="list-sql-skills" style="display:grid;gap:8px;"></div>
+    </div>
+
+    <!-- Editors (modals) -->
+    <div id="custom-skill-editor" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;align-items:center;justify-content:center;">
+      <div style="background:#fff;border-radius:8px;max-width:680px;width:92%;max-height:88vh;overflow:auto;padding:22px;">
+        <h3 id="custom-skill-editor-title" style="margin-top:0;">Edit</h3>
+        <div id="custom-skill-editor-body"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px;">
+          <button class="btn btn-secondary" onclick="closeCustomSkillEditor()" data-testid="button-cancel-custom-skill">Cancel</button>
+          <button class="btn btn-primary" id="custom-skill-save-btn" data-testid="button-save-custom-skill">Save</button>
+        </div>
+        <div id="custom-skill-editor-error" style="color:#b94a48;margin-top:10px;font-size:13px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       TAB: RECENT CHANGES — settings snapshots + revert
+       ======================================================================== -->
+  <div id="tab-changes" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Recent Changes</h2>
+        <p>Every approved edit to chat settings, AI skills, providers, voice, or custom skills is captured here automatically. Click Revert to restore the previous values.</p>
+      </div>
+      <button class="btn btn-secondary" onclick="loadRecentChanges()" data-testid="button-refresh-changes">Refresh</button>
+    </div>
+    <div id="changes-list" data-testid="list-changes" style="display:grid;gap:8px;"></div>
   </div>
 
   <!-- ========================================================================
@@ -17626,6 +17709,327 @@ TO CUSTOMIZE THIS DASHBOARD:
       const warn = document.getElementById('llm-provider-warning');
       if (data.error) { warn.textContent = data.error; warn.style.color = '#b94a48'; }
       else { warn.textContent = 'Saved.'; warn.style.color = '#4ade80'; setTimeout(() => { warn.textContent=''; }, 2000); }
+    };
+
+    // --- CUSTOM SKILLS (knowledge / webhooks / sql) -------------------------
+    function escHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+
+    window.switchCustomSkillSub = function(sub) {
+      ['knowledge','webhooks','sql'].forEach(s => {
+        const pane = document.getElementById('custom-sub-' + s);
+        const btn  = document.querySelector('.custom-skill-subtab-btn[data-sub="' + s + '"]');
+        if (pane) pane.style.display = (s === sub) ? 'block' : 'none';
+        if (btn)  btn.style.borderBottomColor = (s === sub) ? '#3b82f6' : 'transparent';
+      });
+    };
+
+    window.loadCustomSkillsTab = async function() {
+      switchCustomSkillSub('knowledge');
+      await Promise.all([loadKnowledgeList(), loadWebhooksList(), loadSqlSkillsList()]);
+    };
+
+    async function loadKnowledgeList() {
+      const list = document.getElementById('knowledge-list');
+      list.innerHTML = '<div style="color:#777;">Loading…</div>';
+      try {
+        const r = await fetch('/admin/api/custom-knowledge', { credentials:'same-origin' });
+        const rows = await r.json();
+        if (!Array.isArray(rows) || rows.length === 0) {
+          list.innerHTML = '<div style="color:#777;padding:14px;text-align:center;border:1px dashed #ccc;border-radius:8px;">No knowledge entries yet. Click "Add entry" to teach the agent a new fact.</div>';
+          return;
+        }
+        list.innerHTML = rows.map(r => `
+          <div style="border:1px solid #e5e5e5;border-radius:8px;padding:12px;background:#fff;" data-testid="row-knowledge-${r.id}">
+            <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;">
+              <div style="flex:1;">
+                <div style="font-weight:600;margin-bottom:4px;">${escHtml(r.topic)}</div>
+                <div style="color:#555;font-size:13px;white-space:pre-wrap;">${escHtml((r.content || '').slice(0, 280))}${(r.content || '').length > 280 ? '…' : ''}</div>
+              </div>
+              <div style="display:flex;gap:6px;flex-shrink:0;">
+                <label style="display:flex;align-items:center;gap:4px;font-size:12px;"><input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="toggleKnowledgeEnabled(${r.id}, this.checked)" data-testid="toggle-knowledge-${r.id}"> Enabled</label>
+                <button class="btn btn-secondary" onclick="openKnowledgeEditor(${r.id})" data-testid="button-edit-knowledge-${r.id}" style="padding:4px 10px;font-size:12px;">Edit</button>
+                <button class="btn btn-danger" onclick="deleteKnowledge(${r.id})" data-testid="button-delete-knowledge-${r.id}" style="padding:4px 10px;font-size:12px;">Delete</button>
+              </div>
+            </div>
+          </div>`).join('');
+        window._knowledgeCache = rows;
+      } catch (e) {
+        list.innerHTML = '<div style="color:#b94a48;">Failed to load: ' + escHtml(e.message) + '</div>';
+      }
+    }
+
+    window.toggleKnowledgeEnabled = async function(id, enabled) {
+      await fetch('/admin/api/custom-knowledge/' + id, {
+        method:'PUT', credentials:'same-origin',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ enabled }),
+      });
+      loadKnowledgeList();
+    };
+
+    window.deleteKnowledge = async function(id) {
+      if (!confirm('Delete this knowledge entry? A snapshot is saved so you can revert from Recent Changes.')) return;
+      await fetch('/admin/api/custom-knowledge/' + id, { method:'DELETE', credentials:'same-origin' });
+      loadKnowledgeList();
+    };
+
+    window.openKnowledgeEditor = function(id) {
+      const row = (window._knowledgeCache || []).find(r => r.id === id) || { topic:'', content:'', enabled:true };
+      document.getElementById('custom-skill-editor-title').textContent = id ? 'Edit knowledge entry' : 'New knowledge entry';
+      document.getElementById('custom-skill-editor-error').textContent = '';
+      document.getElementById('custom-skill-editor-body').innerHTML = `
+        <div style="margin-bottom:12px;">
+          <label style="font-weight:600;">Topic</label>
+          <input id="ce-topic" type="text" value="${escHtml(row.topic)}" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" data-testid="input-knowledge-topic">
+        </div>
+        <div style="margin-bottom:12px;">
+          <label style="font-weight:600;">Content</label>
+          <textarea id="ce-content" rows="8" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:inherit;" data-testid="input-knowledge-content">${escHtml(row.content)}</textarea>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;"><input id="ce-enabled" type="checkbox" ${row.enabled ? 'checked' : ''} data-testid="input-knowledge-enabled"> Enabled</label>`;
+      document.getElementById('custom-skill-save-btn').onclick = async () => {
+        const body = {
+          topic:   document.getElementById('ce-topic').value.trim(),
+          content: document.getElementById('ce-content').value.trim(),
+          enabled: document.getElementById('ce-enabled').checked,
+        };
+        const url = id ? '/admin/api/custom-knowledge/' + id : '/admin/api/custom-knowledge';
+        const r = await fetch(url, { method: id ? 'PUT' : 'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        const data = await r.json();
+        if (data.error) { document.getElementById('custom-skill-editor-error').textContent = data.error; return; }
+        closeCustomSkillEditor();
+        loadKnowledgeList();
+      };
+      document.getElementById('custom-skill-editor').style.display = 'flex';
+    };
+
+    window.closeCustomSkillEditor = function() {
+      document.getElementById('custom-skill-editor').style.display = 'none';
+    };
+
+    async function loadWebhooksList() {
+      const list = document.getElementById('webhooks-list');
+      list.innerHTML = '<div style="color:#777;">Loading…</div>';
+      try {
+        const r = await fetch('/admin/api/custom-webhooks', { credentials:'same-origin' });
+        const rows = await r.json();
+        if (!Array.isArray(rows) || rows.length === 0) {
+          list.innerHTML = '<div style="color:#777;padding:14px;text-align:center;border:1px dashed #ccc;border-radius:8px;">No webhook skills yet.</div>';
+          return;
+        }
+        list.innerHTML = rows.map(r => `
+          <div style="border:1px solid #e5e5e5;border-radius:8px;padding:12px;background:#fff;" data-testid="row-webhook-${r.id}">
+            <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;">
+              <div style="flex:1;">
+                <div style="font-weight:600;">${escHtml(r.name)} <span style="font-weight:400;color:#777;font-size:12px;">${escHtml(r.method)} · ${escHtml(r.url)}</span></div>
+                <div style="color:#555;font-size:13px;margin-top:4px;">${escHtml(r.description)}</div>
+              </div>
+              <div style="display:flex;gap:6px;flex-shrink:0;">
+                <label style="display:flex;align-items:center;gap:4px;font-size:12px;"><input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="toggleWebhookEnabled(${r.id}, this.checked)" data-testid="toggle-webhook-${r.id}"> Enabled</label>
+                <button class="btn btn-secondary" onclick="openWebhookEditor(${r.id})" data-testid="button-edit-webhook-${r.id}" style="padding:4px 10px;font-size:12px;">Edit</button>
+                <button class="btn btn-danger" onclick="deleteWebhook(${r.id})" data-testid="button-delete-webhook-${r.id}" style="padding:4px 10px;font-size:12px;">Delete</button>
+              </div>
+            </div>
+          </div>`).join('');
+        window._webhooksCache = rows;
+      } catch (e) {
+        list.innerHTML = '<div style="color:#b94a48;">Failed to load: ' + escHtml(e.message) + '</div>';
+      }
+    }
+
+    window.toggleWebhookEnabled = async function(id, enabled) {
+      await fetch('/admin/api/custom-webhooks/' + id, { method:'PUT', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ enabled }) });
+      loadWebhooksList();
+    };
+
+    window.deleteWebhook = async function(id) {
+      if (!confirm('Delete this webhook skill? A snapshot is saved so you can revert from Recent Changes.')) return;
+      await fetch('/admin/api/custom-webhooks/' + id, { method:'DELETE', credentials:'same-origin' });
+      loadWebhooksList();
+    };
+
+    window.openWebhookEditor = function(id) {
+      const row = (window._webhooksCache || []).find(r => r.id === id) ||
+        { name:'', description:'', url:'https://', method:'POST', headers_json:{}, args_schema_json:{type:'object',properties:{},required:[]}, timeout_seconds:10, enabled:true };
+      document.getElementById('custom-skill-editor-title').textContent = id ? 'Edit webhook skill' : 'New webhook skill';
+      document.getElementById('custom-skill-editor-error').textContent = '';
+      document.getElementById('custom-skill-editor-body').innerHTML = `
+        <div style="margin-bottom:10px;"><label style="font-weight:600;">Name (lowercase, snake_case)</label>
+          <input id="we-name" type="text" value="${escHtml(row.name)}" ${id ? 'disabled' : ''} style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;${id ? 'background:#f3f4f6;' : ''}" data-testid="input-webhook-name"></div>
+        <div style="margin-bottom:10px;"><label style="font-weight:600;">Description (the AI reads this to decide when to call)</label>
+          <textarea id="we-description" rows="2" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:inherit;" data-testid="input-webhook-desc">${escHtml(row.description)}</textarea></div>
+        <div style="display:flex;gap:8px;margin-bottom:10px;">
+          <div style="flex:0 0 110px;"><label style="font-weight:600;">Method</label>
+            <select id="we-method" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" data-testid="input-webhook-method">
+              <option value="POST"${row.method==='POST'?' selected':''}>POST</option>
+              <option value="GET"${row.method==='GET'?' selected':''}>GET</option>
+            </select></div>
+          <div style="flex:1;"><label style="font-weight:600;">URL (https only — public endpoints)</label>
+            <input id="we-url" type="text" value="${escHtml(row.url)}" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" data-testid="input-webhook-url"></div>
+          <div style="flex:0 0 110px;"><label style="font-weight:600;">Timeout (s)</label>
+            <input id="we-timeout" type="number" min="1" max="15" value="${row.timeout_seconds || 10}" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" data-testid="input-webhook-timeout"></div>
+        </div>
+        <div style="margin-bottom:10px;"><label style="font-weight:600;">Headers (JSON object)</label>
+          <textarea id="we-headers" rows="3" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:monospace;font-size:12px;" data-testid="input-webhook-headers">${escHtml(JSON.stringify(row.headers_json || {}, null, 2))}</textarea></div>
+        <div style="margin-bottom:10px;"><label style="font-weight:600;">Args schema (JSON Schema, type=object)</label>
+          <textarea id="we-args" rows="6" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:monospace;font-size:12px;" data-testid="input-webhook-args">${escHtml(JSON.stringify(row.args_schema_json || {type:'object',properties:{},required:[]}, null, 2))}</textarea></div>
+        <label style="display:flex;align-items:center;gap:6px;"><input id="we-enabled" type="checkbox" ${row.enabled ? 'checked' : ''} data-testid="input-webhook-enabled"> Enabled</label>`;
+      document.getElementById('custom-skill-save-btn').onclick = async () => {
+        let headers, args;
+        try { headers = JSON.parse(document.getElementById('we-headers').value || '{}'); }
+        catch (e) { document.getElementById('custom-skill-editor-error').textContent = 'Headers JSON is invalid: ' + e.message; return; }
+        try { args = JSON.parse(document.getElementById('we-args').value || '{}'); }
+        catch (e) { document.getElementById('custom-skill-editor-error').textContent = 'Args schema JSON is invalid: ' + e.message; return; }
+        const body = {
+          name: document.getElementById('we-name').value.trim(),
+          description: document.getElementById('we-description').value.trim(),
+          url: document.getElementById('we-url').value.trim(),
+          method: document.getElementById('we-method').value,
+          headers_json: headers,
+          args_schema_json: args,
+          timeout_seconds: parseInt(document.getElementById('we-timeout').value, 10) || 10,
+          enabled: document.getElementById('we-enabled').checked,
+        };
+        if (id) delete body.name;
+        const url = id ? '/admin/api/custom-webhooks/' + id : '/admin/api/custom-webhooks';
+        const r = await fetch(url, { method: id ? 'PUT' : 'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        const data = await r.json();
+        if (data.error) { document.getElementById('custom-skill-editor-error').textContent = data.error; return; }
+        closeCustomSkillEditor();
+        loadWebhooksList();
+      };
+      document.getElementById('custom-skill-editor').style.display = 'flex';
+    };
+
+    async function loadSqlSkillsList() {
+      const list = document.getElementById('sql-skills-list');
+      list.innerHTML = '<div style="color:#777;">Loading…</div>';
+      try {
+        const r = await fetch('/admin/api/custom-sql', { credentials:'same-origin' });
+        const rows = await r.json();
+        if (!Array.isArray(rows) || rows.length === 0) {
+          list.innerHTML = '<div style="color:#777;padding:14px;text-align:center;border:1px dashed #ccc;border-radius:8px;">No SQL skills yet.</div>';
+          return;
+        }
+        list.innerHTML = rows.map(r => `
+          <div style="border:1px solid #e5e5e5;border-radius:8px;padding:12px;background:#fff;" data-testid="row-sql-${r.id}">
+            <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;">
+              <div style="flex:1;">
+                <div style="font-weight:600;">${escHtml(r.name)}</div>
+                <div style="color:#555;font-size:13px;margin-top:4px;">${escHtml(r.description)}</div>
+                <pre style="margin-top:6px;background:#f6f6f6;padding:6px 8px;border-radius:4px;font-size:11px;overflow:auto;max-height:120px;">${escHtml(r.sql_template)}</pre>
+              </div>
+              <div style="display:flex;gap:6px;flex-shrink:0;">
+                <label style="display:flex;align-items:center;gap:4px;font-size:12px;"><input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="toggleSqlSkillEnabled(${r.id}, this.checked)" data-testid="toggle-sql-${r.id}"> Enabled</label>
+                <button class="btn btn-secondary" onclick="openSqlSkillEditor(${r.id})" data-testid="button-edit-sql-${r.id}" style="padding:4px 10px;font-size:12px;">Edit</button>
+                <button class="btn btn-danger" onclick="deleteSqlSkill(${r.id})" data-testid="button-delete-sql-${r.id}" style="padding:4px 10px;font-size:12px;">Delete</button>
+              </div>
+            </div>
+          </div>`).join('');
+        window._sqlSkillsCache = rows;
+      } catch (e) {
+        list.innerHTML = '<div style="color:#b94a48;">Failed to load: ' + escHtml(e.message) + '</div>';
+      }
+    }
+
+    window.toggleSqlSkillEnabled = async function(id, enabled) {
+      await fetch('/admin/api/custom-sql/' + id, { method:'PUT', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ enabled }) });
+      loadSqlSkillsList();
+    };
+
+    window.deleteSqlSkill = async function(id) {
+      if (!confirm('Delete this SQL skill? A snapshot is saved so you can revert from Recent Changes.')) return;
+      await fetch('/admin/api/custom-sql/' + id, { method:'DELETE', credentials:'same-origin' });
+      loadSqlSkillsList();
+    };
+
+    window.openSqlSkillEditor = function(id) {
+      const row = (window._sqlSkillsCache || []).find(r => r.id === id) ||
+        { name:'', description:'', sql_template:'SELECT 1 AS one', args_schema_json:{type:'object',properties:{},required:[]}, enabled:true };
+      document.getElementById('custom-skill-editor-title').textContent = id ? 'Edit SQL skill' : 'New SQL skill';
+      document.getElementById('custom-skill-editor-error').textContent = '';
+      document.getElementById('custom-skill-editor-body').innerHTML = `
+        <div style="margin-bottom:10px;"><label style="font-weight:600;">Name (lowercase, snake_case)</label>
+          <input id="se-name" type="text" value="${escHtml(row.name)}" ${id ? 'disabled' : ''} style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;${id ? 'background:#f3f4f6;' : ''}" data-testid="input-sql-name"></div>
+        <div style="margin-bottom:10px;"><label style="font-weight:600;">Description</label>
+          <textarea id="se-description" rows="2" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:inherit;" data-testid="input-sql-desc">${escHtml(row.description)}</textarea></div>
+        <div style="margin-bottom:10px;"><label style="font-weight:600;">SQL template (one SELECT, %(name)s placeholders)</label>
+          <textarea id="se-sql" rows="8" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:monospace;font-size:12px;" data-testid="input-sql-template">${escHtml(row.sql_template)}</textarea></div>
+        <div style="margin-bottom:10px;"><label style="font-weight:600;">Args schema (JSON Schema)</label>
+          <textarea id="se-args" rows="6" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:monospace;font-size:12px;" data-testid="input-sql-args">${escHtml(JSON.stringify(row.args_schema_json || {type:'object',properties:{},required:[]}, null, 2))}</textarea></div>
+        <label style="display:flex;align-items:center;gap:6px;"><input id="se-enabled" type="checkbox" ${row.enabled ? 'checked' : ''} data-testid="input-sql-enabled"> Enabled</label>`;
+      document.getElementById('custom-skill-save-btn').onclick = async () => {
+        let args;
+        try { args = JSON.parse(document.getElementById('se-args').value || '{}'); }
+        catch (e) { document.getElementById('custom-skill-editor-error').textContent = 'Args schema JSON is invalid: ' + e.message; return; }
+        const body = {
+          name: document.getElementById('se-name').value.trim(),
+          description: document.getElementById('se-description').value.trim(),
+          sql_template: document.getElementById('se-sql').value,
+          args_schema_json: args,
+          enabled: document.getElementById('se-enabled').checked,
+        };
+        if (id) delete body.name;
+        const url = id ? '/admin/api/custom-sql/' + id : '/admin/api/custom-sql';
+        const r = await fetch(url, { method: id ? 'PUT' : 'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        const data = await r.json();
+        if (data.error) { document.getElementById('custom-skill-editor-error').textContent = data.error; return; }
+        closeCustomSkillEditor();
+        loadSqlSkillsList();
+      };
+      document.getElementById('custom-skill-editor').style.display = 'flex';
+    };
+
+    // --- RECENT CHANGES (settings snapshots) --------------------------------
+    window.loadRecentChanges = async function() {
+      const list = document.getElementById('changes-list');
+      list.innerHTML = '<div style="color:#777;">Loading…</div>';
+      try {
+        const r = await fetch('/admin/api/snapshots/list?limit=100', { credentials:'same-origin' });
+        const data = await r.json();
+        const rows = (data && data.snapshots) || [];
+        if (rows.length === 0) {
+          list.innerHTML = '<div style="color:#777;padding:14px;text-align:center;border:1px dashed #ccc;border-radius:8px;">No tracked settings changes yet. Edits to the AI/skills/voice tables and custom skills are recorded here automatically.</div>';
+          return;
+        }
+        list.innerHTML = rows.map(s => {
+          const reverted = !!s.reverted_at;
+          return `
+            <div style="border:1px solid #e5e5e5;border-radius:8px;padding:12px;background:${reverted ? '#f9fafb' : '#fff'};" data-testid="row-snapshot-${s.id}">
+              <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;">
+                <div style="flex:1;">
+                  <div><b>${escHtml(s.table_name)}</b> #${s.row_id} <span style="color:#888;font-size:12px;">snapshot ${s.id} · ${escHtml((s.created_at || '').replace('T',' ').slice(0,19))}</span></div>
+                  <div style="font-size:13px;color:#555;margin-top:4px;">${escHtml(s.reason || '(no reason recorded)')}</div>
+                  ${reverted ? `<div style="color:#16a34a;font-size:12px;margin-top:4px;">Reverted ${escHtml((s.reverted_at || '').replace('T',' ').slice(0,19))}</div>` : ''}
+                </div>
+                <div style="display:flex;gap:6px;flex-shrink:0;">
+                  <button class="btn btn-secondary" onclick="viewSnapshot(${s.id})" data-testid="button-view-snapshot-${s.id}" style="padding:4px 10px;font-size:12px;">View</button>
+                  ${reverted ? '' : `<button class="btn btn-primary" onclick="revertSnapshot(${s.id})" data-testid="button-revert-snapshot-${s.id}" style="padding:4px 10px;font-size:12px;">Revert</button>`}
+                </div>
+              </div>
+            </div>`;
+        }).join('');
+      } catch (e) {
+        list.innerHTML = '<div style="color:#b94a48;">Failed to load: ' + escHtml(e.message) + '</div>';
+      }
+    };
+
+    window.viewSnapshot = async function(id) {
+      const r = await fetch('/admin/api/snapshots/' + id, { credentials:'same-origin' });
+      const data = await r.json();
+      alert(JSON.stringify(data.snapshot_json || data, null, 2));
+    };
+
+    window.revertSnapshot = async function(id) {
+      if (!confirm('Restore this row to its captured values? The current state is also snapshotted, so this is reversible.')) return;
+      const r = await fetch('/admin/api/snapshots/' + id + '/revert', { method:'POST', credentials:'same-origin' });
+      const data = await r.json();
+      if (data.error) { alert('Revert failed: ' + data.error); return; }
+      loadRecentChanges();
     };
   })();
   </script>
