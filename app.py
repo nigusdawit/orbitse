@@ -9829,12 +9829,41 @@ def api_chat():
         # or custom) is described to the model in one consistent place.
         try:
             skill_rows = query_db(
-                "SELECT name, display_name, description, category, builtin "
+                "SELECT name, display_name, description, category, builtin, config_json "
                 "FROM agent_skills WHERE enabled = true "
                 "ORDER BY builtin DESC, category ASC, name ASC"
             ) or []
         except Exception:
             skill_rows = []
+
+        # Audience filter: this prose TOOLBOX is the visitor's view, so it
+        # must mirror the audience='velo' gate inside get_active_chat_tools()
+        # that builds the OpenAI function schema. Without this, the model
+        # sees ~50 ghost mcp__* tools described in the prompt that aren't
+        # actually callable (because their MCP server has allowed_for_velo
+        # = false), gets confused about which tool to pick, and the prompt
+        # silently bloats by thousands of tokens per turn.
+        if skill_rows:
+            mcp_velo_visible = set()
+            try:
+                srvs = query_db(
+                    "SELECT id FROM mcp_servers WHERE allowed_for_velo = true"
+                ) or []
+                mcp_velo_visible = {int(s["id"]) for s in srvs}
+            except Exception as _e:
+                print(f"[skills] velo MCP visibility load failed: {_e}")
+            def _visitor_visible(r):
+                nm = r.get("name") or ""
+                if not nm.startswith("mcp__"):
+                    return True
+                cfg = _custom_skill_cfg(r)
+                srv_id = cfg.get("server_id")
+                try:
+                    return srv_id is not None and int(srv_id) in mcp_velo_visible
+                except Exception:
+                    return False
+            skill_rows = [r for r in skill_rows if _visitor_visible(r)]
+
         if skill_rows:
             tool_lines = [
                 "",
