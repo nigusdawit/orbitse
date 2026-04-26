@@ -1950,6 +1950,16 @@ TO CUSTOMIZE THIS DASHBOARD:
       AI Insights & Drafts
     </button>
 
+    <div class="sidebar-group-label">Site</div>
+    <button class="tab-btn" onclick="switchTab('site-themes', this); loadSiteThemes();" data-testid="tab-site-themes">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5"/><circle cx="17.5" cy="10.5" r=".5"/><circle cx="8.5" cy="7.5" r=".5"/><circle cx="6.5" cy="12.5" r=".5"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>
+      Themes
+    </button>
+    <button class="tab-btn" onclick="switchTab('site-designs', this); loadSiteDesigns();" data-testid="tab-site-designs">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      Website
+    </button>
+
     <div class="sidebar-group-label">Messaging</div>
     <button class="tab-btn" onclick="switchTab('messaging-subscribers', this); loadMessagingSubscribers();" data-testid="tab-messaging-subscribers">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
@@ -6575,6 +6585,72 @@ TO CUSTOMIZE THIS DASHBOARD:
         </div>
       </div>
 
+    </div>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: SITE — THEMES
+  ========================================================================
+  A library of named themes (palette + fonts) the admin can switch
+  between in one click. The "Default" row is auto-seeded from
+  site_settings on first boot so admins always have a safe fallback.
+  AI-drafted themes will land here in a follow-up turn — for now,
+  admins can create themes manually with the JSON form.
+  -->
+  <div id="tab-site-themes" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Themes</h2>
+        <p>A library of color + font palettes. Publish one to make it the active theme.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn btn-secondary" onclick="alert('AI theme drafting lands in the next session.');" data-testid="button-site-themes-ai-draft">
+          Ask AI to draft one
+        </button>
+        <button class="btn btn-primary" onclick="openSiteThemeForm()" data-testid="button-site-themes-new">
+          + New theme
+        </button>
+      </div>
+    </div>
+    <div id="site-themes-grid" data-testid="grid-site-themes"
+         style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1rem; margin-top:1rem;">
+      <div style="grid-column:1/-1; padding:2rem; text-align:center; color:var(--admin-text-muted);" data-testid="text-site-themes-loading">
+        Loading themes…
+      </div>
+    </div>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: SITE — WEBSITE DESIGNS
+  ========================================================================
+  A library of full homepage HTML bundles. The active row is what
+  visitors see at /. The "Default" row is the snapshot of
+  public/index.html that shipped with the project. AI-drafted
+  designs (Claude web designer) land here in a follow-up turn; for
+  now, admins can create new designs by pasting HTML.
+  -->
+  <div id="tab-site-designs" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Website Designs</h2>
+        <p>Multiple full homepages you can preview side-by-side. Publish one to make it live at /.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn btn-secondary" onclick="alert('AI design drafting lands in the next session — you’ll be able to pick a Claude tier per call.');" data-testid="button-site-designs-ai-draft">
+          Ask AI to draft one
+        </button>
+        <button class="btn btn-primary" onclick="openSiteDesignForm()" data-testid="button-site-designs-new">
+          + New design
+        </button>
+      </div>
+    </div>
+    <div id="site-designs-grid" data-testid="grid-site-designs"
+         style="display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:1rem; margin-top:1rem;">
+      <div style="grid-column:1/-1; padding:2rem; text-align:center; color:var(--admin-text-muted);" data-testid="text-site-designs-loading">
+        Loading designs…
+      </div>
     </div>
   </div>
 
@@ -13507,6 +13583,242 @@ TO CUSTOMIZE THIS DASHBOARD:
       } catch (e) {
         banner.innerHTML = '';
       }
+    }
+
+    /* ---------- SITE THEMES + DESIGNS ---------- */
+    /* Each tab fetches its full list once on tab-switch, renders cards
+       client-side, and re-fetches after any mutating action. Preview
+       buttons either flash the active theme via a temp <style> tag (for
+       themes) or open /preview/design/<id> in a new tab (for designs).
+       AI-drafting buttons are stubbed for next session. */
+
+    function _siteEsc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    async function loadSiteThemes() {
+      const grid = document.getElementById('site-themes-grid');
+      if (!grid) return;
+      grid.innerHTML = '<div style="grid-column:1/-1; padding:2rem; text-align:center; color:var(--admin-text-muted);">Loading themes…</div>';
+      try {
+        const res = await fetch('/admin/api/site-themes');
+        const themes = await res.json();
+        if (!Array.isArray(themes) || themes.length === 0) {
+          grid.innerHTML = '<div style="grid-column:1/-1; padding:2rem; text-align:center; color:var(--admin-text-muted);">No themes yet. Click "+ New theme" to create one.</div>';
+          return;
+        }
+        grid.innerHTML = themes.map(renderSiteThemeCard).join('');
+      } catch (e) {
+        grid.innerHTML = '<div style="grid-column:1/-1; padding:2rem; text-align:center; color:#f87171;">Failed to load themes: ' + _siteEsc(e.message || e) + '</div>';
+      }
+    }
+
+    function renderSiteThemeCard(t) {
+      const palette = t.palette_json || {};
+      const fonts   = t.fonts_json   || {};
+      const swatchKeys = ['bg', 'section1', 'section2', 'accent', 'text', 'glass_border', 'glass_bg'];
+      const swatches = swatchKeys.map(k => {
+        const c = palette[k] || '';
+        return '<div title="' + _siteEsc(k + ': ' + c) + '" style="width:24px; height:24px; border-radius:4px; background:' + _siteEsc(c || '#222') + '; border:1px solid rgba(255,255,255,0.15);"></div>';
+      }).join('');
+      const sourceBadge = t.source === 'ai'
+        ? '<span style="background:#7c3aed; color:#fff; font-size:0.65rem; padding:0.15rem 0.4rem; border-radius:3px; margin-left:0.4rem;">AI</span>'
+        : '';
+      const activeBadge = t.is_active
+        ? '<span style="background:#10b981; color:#fff; font-size:0.65rem; padding:0.15rem 0.4rem; border-radius:3px; margin-left:0.4rem;">ACTIVE</span>'
+        : '<span style="background:#374151; color:#9ca3af; font-size:0.65rem; padding:0.15rem 0.4rem; border-radius:3px; margin-left:0.4rem;">' + _siteEsc((t.status || 'draft').toUpperCase()) + '</span>';
+      const fontSample = (fonts.serif || fonts.sans)
+        ? '<div style="margin-top:0.5rem; font-family:' + _siteEsc(fonts.serif || fonts.sans) + '; font-size:0.85rem; color:var(--admin-text-muted);">Sample: The quick brown fox</div>'
+        : '';
+      const publishBtn = t.is_active
+        ? '<button class="btn btn-secondary" disabled style="opacity:0.5;" data-testid="button-site-theme-published-' + t.id + '">Published</button>'
+        : '<button class="btn btn-primary" onclick="publishSiteTheme(' + t.id + ')" data-testid="button-site-theme-publish-' + t.id + '">Publish</button>';
+      const deleteBtn = t.is_active
+        ? ''
+        : '<button class="btn btn-danger" onclick="deleteSiteTheme(' + t.id + ', \'' + _siteEsc((t.name || '').replace(/'/g, "\\'")) + '\')" data-testid="button-site-theme-delete-' + t.id + '">Delete</button>';
+      return (
+        '<div class="form-panel" data-testid="card-site-theme-' + t.id + '" style="padding:1rem;">' +
+          '<div style="display:flex; justify-content:space-between; align-items:start; gap:0.5rem;">' +
+            '<div>' +
+              '<div style="font-weight:600; font-size:0.95rem;" data-testid="text-site-theme-name-' + t.id + '">' + _siteEsc(t.name) + activeBadge + sourceBadge + '</div>' +
+              (t.notes ? '<div style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.25rem;">' + _siteEsc(t.notes) + '</div>' : '') +
+            '</div>' +
+          '</div>' +
+          '<div style="display:flex; gap:0.4rem; margin-top:0.75rem;">' + swatches + '</div>' +
+          fontSample +
+          '<div style="display:flex; gap:0.4rem; margin-top:1rem; flex-wrap:wrap;">' +
+            publishBtn +
+            '<button class="btn btn-secondary" onclick="editSiteTheme(' + t.id + ')" data-testid="button-site-theme-edit-' + t.id + '">Edit</button>' +
+            deleteBtn +
+          '</div>' +
+        '</div>'
+      );
+    }
+
+    function openSiteThemeForm(existing) {
+      const isEdit = !!existing;
+      const name = prompt(isEdit ? 'Edit theme name:' : 'Theme name:', existing ? existing.name : '');
+      if (name === null || !name.trim()) return;
+      const palette = prompt('Palette JSON (keys: bg, section1, section2, accent, text, glass_border, glass_bg):',
+        JSON.stringify(existing ? (existing.palette_json || {}) : {bg:'',section1:'',section2:'',accent:'',text:'',glass_border:'',glass_bg:''}));
+      if (palette === null) return;
+      const fonts = prompt('Fonts JSON (keys: serif, sans):',
+        JSON.stringify(existing ? (existing.fonts_json || {}) : {serif:'',sans:''}));
+      if (fonts === null) return;
+      let palette_json, fonts_json;
+      try {
+        palette_json = JSON.parse(palette || '{}');
+        fonts_json = JSON.parse(fonts || '{}');
+      } catch (e) {
+        alert('Invalid JSON: ' + e.message);
+        return;
+      }
+      const url = isEdit ? '/admin/api/site-themes/' + existing.id : '/admin/api/site-themes';
+      const method = isEdit ? 'PUT' : 'POST';
+      fetch(url, {
+        method,
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name.trim(), palette_json, fonts_json, source: 'manual'})
+      }).then(r => r.json()).then(data => {
+        if (data.error) { alert('Error: ' + data.error); return; }
+        loadSiteThemes();
+      }).catch(e => alert('Failed: ' + e.message));
+    }
+
+    async function editSiteTheme(id) {
+      try {
+        const res = await fetch('/admin/api/site-themes/' + id);
+        const t = await res.json();
+        if (t.error) { alert(t.error); return; }
+        openSiteThemeForm(t);
+      } catch (e) { alert('Failed to load theme: ' + e.message); }
+    }
+
+    function publishSiteTheme(id) {
+      if (!confirm('Make this the active theme? The site palette will switch.')) return;
+      fetch('/admin/api/site-themes/' + id + '/publish', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+          if (data.error) { alert('Error: ' + data.error); return; }
+          loadSiteThemes();
+        }).catch(e => alert('Failed: ' + e.message));
+    }
+
+    function deleteSiteTheme(id, name) {
+      if (!confirm('Delete theme "' + name + '"? This cannot be undone.')) return;
+      fetch('/admin/api/site-themes/' + id, {method: 'DELETE'})
+        .then(r => r.json())
+        .then(data => {
+          if (data.error) { alert('Error: ' + data.error); return; }
+          loadSiteThemes();
+        }).catch(e => alert('Failed: ' + e.message));
+    }
+
+    /* ---------- Site designs (whole homepage HTML) ---------- */
+
+    async function loadSiteDesigns() {
+      const grid = document.getElementById('site-designs-grid');
+      if (!grid) return;
+      grid.innerHTML = '<div style="grid-column:1/-1; padding:2rem; text-align:center; color:var(--admin-text-muted);">Loading designs…</div>';
+      try {
+        const res = await fetch('/admin/api/site-designs');
+        const designs = await res.json();
+        if (!Array.isArray(designs) || designs.length === 0) {
+          grid.innerHTML = '<div style="grid-column:1/-1; padding:2rem; text-align:center; color:var(--admin-text-muted);">No designs yet. Click "+ New design" to add one.</div>';
+          return;
+        }
+        grid.innerHTML = designs.map(renderSiteDesignCard).join('');
+      } catch (e) {
+        grid.innerHTML = '<div style="grid-column:1/-1; padding:2rem; text-align:center; color:#f87171;">Failed to load designs: ' + _siteEsc(e.message || e) + '</div>';
+      }
+    }
+
+    function renderSiteDesignCard(d) {
+      const sourceBadge = d.source === 'ai'
+        ? '<span style="background:#7c3aed; color:#fff; font-size:0.65rem; padding:0.15rem 0.4rem; border-radius:3px; margin-left:0.4rem;" title="' + _siteEsc(d.model_used || '') + '">AI</span>'
+        : '';
+      const activeBadge = d.is_active
+        ? '<span style="background:#10b981; color:#fff; font-size:0.65rem; padding:0.15rem 0.4rem; border-radius:3px; margin-left:0.4rem;">ACTIVE</span>'
+        : '<span style="background:#374151; color:#9ca3af; font-size:0.65rem; padding:0.15rem 0.4rem; border-radius:3px; margin-left:0.4rem;">' + _siteEsc((d.status || 'draft').toUpperCase()) + '</span>';
+      const publishBtn = d.is_active
+        ? '<button class="btn btn-secondary" disabled style="opacity:0.5;" data-testid="button-site-design-published-' + d.id + '">Live</button>'
+        : '<button class="btn btn-primary" onclick="publishSiteDesign(' + d.id + ')" data-testid="button-site-design-publish-' + d.id + '">Publish</button>';
+      const deleteBtn = d.is_active
+        ? ''
+        : '<button class="btn btn-danger" onclick="deleteSiteDesign(' + d.id + ', \'' + _siteEsc((d.name || '').replace(/'/g, "\\'")) + '\')" data-testid="button-site-design-delete-' + d.id + '">Delete</button>';
+      const sizeKB = Math.round((d.html_length || 0) / 1024);
+      return (
+        '<div class="form-panel" data-testid="card-site-design-' + d.id + '" style="padding:1rem;">' +
+          '<div style="display:flex; justify-content:space-between; align-items:start; gap:0.5rem;">' +
+            '<div style="min-width:0;">' +
+              '<div style="font-weight:600; font-size:0.95rem;" data-testid="text-site-design-name-' + d.id + '">' + _siteEsc(d.name) + activeBadge + sourceBadge + '</div>' +
+              '<div style="font-size:0.7rem; color:var(--admin-text-muted); margin-top:0.2rem;">' + sizeKB + ' KB' + (d.model_used ? ' · ' + _siteEsc(d.model_used) : '') + '</div>' +
+              (d.notes ? '<div style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.25rem;">' + _siteEsc(d.notes) + '</div>' : '') +
+            '</div>' +
+          '</div>' +
+          '<div style="margin-top:0.75rem; border:1px solid rgba(255,255,255,0.08); border-radius:6px; overflow:hidden; background:#000; height:160px;">' +
+            '<iframe src="/preview/design/' + d.id + '" loading="lazy" sandbox data-testid="iframe-site-design-thumb-' + d.id + '" ' +
+            'style="width:400%; height:640px; border:0; transform:scale(0.25); transform-origin:top left; pointer-events:none;"></iframe>' +
+          '</div>' +
+          '<div style="display:flex; gap:0.4rem; margin-top:0.75rem; flex-wrap:wrap;">' +
+            publishBtn +
+            '<button class="btn btn-secondary" onclick="window.open(\'/preview/design/' + d.id + '\', \'_blank\')" data-testid="button-site-design-preview-' + d.id + '">Preview</button>' +
+            '<button class="btn btn-secondary" onclick="editSiteDesign(' + d.id + ')" data-testid="button-site-design-edit-' + d.id + '">Edit</button>' +
+            deleteBtn +
+          '</div>' +
+        '</div>'
+      );
+    }
+
+    function openSiteDesignForm(existing) {
+      const isEdit = !!existing;
+      const name = prompt(isEdit ? 'Edit design name:' : 'Design name:', existing ? existing.name : '');
+      if (name === null || !name.trim()) return;
+      const html = prompt('Full HTML for this design (paste a complete <html> document):',
+        existing ? (existing.html || '') : '');
+      if (html === null) return;
+      if (!html.trim()) { alert('HTML is required.'); return; }
+      const url = isEdit ? '/admin/api/site-designs/' + existing.id : '/admin/api/site-designs';
+      const method = isEdit ? 'PUT' : 'POST';
+      fetch(url, {
+        method,
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name.trim(), html, source: 'manual'})
+      }).then(r => r.json()).then(data => {
+        if (data.error) { alert('Error: ' + data.error); return; }
+        loadSiteDesigns();
+      }).catch(e => alert('Failed: ' + e.message));
+    }
+
+    async function editSiteDesign(id) {
+      try {
+        const res = await fetch('/admin/api/site-designs/' + id);
+        const d = await res.json();
+        if (d.error) { alert(d.error); return; }
+        openSiteDesignForm(d);
+      } catch (e) { alert('Failed to load design: ' + e.message); }
+    }
+
+    function publishSiteDesign(id) {
+      if (!confirm('Make this the live homepage at /? Visitors will see it immediately.')) return;
+      fetch('/admin/api/site-designs/' + id + '/publish', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+          if (data.error) { alert('Error: ' + data.error); return; }
+          loadSiteDesigns();
+        }).catch(e => alert('Failed: ' + e.message));
+    }
+
+    function deleteSiteDesign(id, name) {
+      if (!confirm('Delete design "' + name + '"? This cannot be undone.')) return;
+      fetch('/admin/api/site-designs/' + id, {method: 'DELETE'})
+        .then(r => r.json())
+        .then(data => {
+          if (data.error) { alert('Error: ' + data.error); return; }
+          loadSiteDesigns();
+        }).catch(e => alert('Failed: ' + e.message));
     }
 
     /* ---------- SUBSCRIBERS ---------- */

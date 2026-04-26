@@ -1344,6 +1344,15 @@ def init_db():
                 "ALTER TABLE generated_pages ADD COLUMN IF NOT EXISTS source_visitor_id VARCHAR(100) NOT NULL DEFAULT ''",
                 "ALTER TABLE generated_pages ADD COLUMN IF NOT EXISTS source_session_id VARCHAR(100) NOT NULL DEFAULT ''",
                 "ALTER TABLE generated_pages ADD COLUMN IF NOT EXISTS archive_reason TEXT NOT NULL DEFAULT ''",
+                # --- Multiple themes + multiple homepage designs ---
+                # Pointer columns to the currently-active row in
+                # site_themes / site_designs (created in the CREATE
+                # TABLE block below). NULL means "no override —
+                # fall back to the legacy theme_* columns or to
+                # public/index.html". Atomic theme/design switching
+                # is just an UPDATE on these two ints.
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS active_theme_id INTEGER",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS active_design_id INTEGER",
             ]:
                 cur.execute(col_sql)
 
@@ -1375,6 +1384,124 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_marketing_insights_recent
                     ON marketing_insights_log (insight_type, created_at DESC);
             """)
+
+            # =============================================================
+            # SITE THEMES + WEBSITE DESIGNS — admin (and the AI web-
+            # designer agent in a follow-up turn) can stash multiple
+            # named themes and full-page designs here, preview them in
+            # an iframe, and atomically swap which one is "active" by
+            # updating site_settings.active_theme_id / active_design_id.
+            # serve_index reads the active design's HTML on every page
+            # load (with the same SEO injection); /api/theme reads the
+            # active theme's palette + fonts JSON.
+            # =============================================================
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS site_themes (
+                    id              SERIAL PRIMARY KEY,
+                    name            TEXT NOT NULL,
+                    palette_json    JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    fonts_json      JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    source          TEXT NOT NULL DEFAULT 'manual',
+                    notes           TEXT NOT NULL DEFAULT '',
+                    status          TEXT NOT NULL DEFAULT 'draft',
+                    created_at      TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS site_designs (
+                    id              SERIAL PRIMARY KEY,
+                    name            TEXT NOT NULL,
+                    html            TEXT NOT NULL DEFAULT '',
+                    notes           TEXT NOT NULL DEFAULT '',
+                    source          TEXT NOT NULL DEFAULT 'manual',
+                    model_used      TEXT NOT NULL DEFAULT '',
+                    status          TEXT NOT NULL DEFAULT 'draft',
+                    created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+                    updated_at      TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_site_themes_status
+                    ON site_themes (status, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_site_designs_status
+                    ON site_designs (status, created_at DESC);
+            """)
+
+            # Seed the first "Default" theme from the existing 9 theme
+            # columns on site_settings — only if site_themes is empty.
+            # This way today's colors are always one click away even
+            # after admin starts trying AI-drafted themes. We use the
+            # plain (tuple-returning) cursor that init_db opened, so
+            # fetchone() returns a tuple — index by position, not key.
+            cur.execute("SELECT COUNT(*) FROM site_themes")
+            if (cur.fetchone() or [0])[0] == 0:
+                cur.execute("""
+                    INSERT INTO site_themes (
+                        name, palette_json, fonts_json,
+                        source, notes, status
+                    )
+                    SELECT 'Default',
+                           jsonb_build_object(
+                               'bg',           coalesce(theme_bg, ''),
+                               'section1',     coalesce(theme_section1, ''),
+                               'section2',     coalesce(theme_section2, ''),
+                               'accent',       coalesce(theme_accent, ''),
+                               'text',         coalesce(theme_text, ''),
+                               'glass_border', coalesce(theme_glass_border, ''),
+                               'glass_bg',     coalesce(theme_glass_bg, '')
+                           ),
+                           jsonb_build_object(
+                               'serif', coalesce(theme_font_serif, ''),
+                               'sans',  coalesce(theme_font_sans,  '')
+                           ),
+                           'manual',
+                           'Snapshot of the colors the site shipped with.',
+                           'published'
+                    FROM site_settings WHERE id = 1
+                    RETURNING id
+                """)
+                _seed_theme_row = cur.fetchone()
+                if _seed_theme_row:
+                    cur.execute(
+                        "UPDATE site_settings "
+                        "SET active_theme_id = %s "
+                        "WHERE id = 1 AND active_theme_id IS NULL",
+                        (_seed_theme_row[0],),
+                    )
+
+            # Seed the first "Default" design from public/index.html —
+            # only if site_designs is empty. This makes the active
+            # design always safely fall back to whatever shipped with
+            # the project; the / route reads from this row going
+            # forward (with the same SEO injection wrapper).
+            cur.execute("SELECT COUNT(*) FROM site_designs")
+            if (cur.fetchone() or [0])[0] == 0:
+                _idx_html = ""
+                try:
+                    _idx_path = os.path.join(
+                        app.static_folder or "public", "index.html"
+                    )
+                    with open(_idx_path, "r", encoding="utf-8") as _f:
+                        _idx_html = _f.read()
+                except Exception as _e:
+                    print(f"[site_designs seed] could not read index.html: {_e}")
+                cur.execute(
+                    "INSERT INTO site_designs ("
+                    "  name, html, notes, source, model_used, status"
+                    ") VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                    (
+                        "Default",
+                        _idx_html,
+                        "Snapshot of public/index.html — safe fallback design.",
+                        "manual",
+                        "",
+                        "published",
+                    ),
+                )
+                _seed_design_row = cur.fetchone()
+                if _seed_design_row:
+                    cur.execute(
+                        "UPDATE site_settings "
+                        "SET active_design_id = %s "
+                        "WHERE id = 1 AND active_design_id IS NULL",
+                        (_seed_design_row[0],),
+                    )
 
             # =============================================================
             # CUSTOM DASHBOARDS — admin-built KPI/chart boards
@@ -2451,16 +2578,39 @@ def _build_json_ld():
 def serve_index():
     """
     Serve the main public website with SEO meta tags injected server-side.
-    Reads public/index.html and replaces placeholder markers with actual
-    meta tags from the database, so search engine crawlers see proper SEO
-    data (title, description, OG tags, Twitter Cards, JSON-LD) without
-    needing JavaScript execution.
+
+    Source preference order:
+      1. The active design row in site_designs (if site_settings.active_design_id
+         is set and the row exists). This is what admin "publishes" from the
+         Website tab.
+      2. public/index.html on disk — the safe shipped fallback.
+
+    Either source then has SEO + JSON-LD placeholders replaced so crawlers
+    see proper meta tags without needing JavaScript execution.
     """
     try:
-        # Read the base HTML template from the public directory
-        index_path = os.path.join(app.static_folder, "index.html")
-        with open(index_path, "r", encoding="utf-8") as f:
-            html_content = f.read()
+        html_content = None
+
+        # 1) Try the admin-published active design row.
+        try:
+            active = query_db(
+                "SELECT s.active_design_id AS aid, d.html AS html "
+                "FROM site_settings s "
+                "LEFT JOIN site_designs d ON d.id = s.active_design_id "
+                "WHERE s.id = 1",
+                fetchone=True,
+            )
+            if active and active.get("aid") and (active.get("html") or "").strip():
+                html_content = active["html"]
+        except Exception as e:
+            # Brand-new install or migration in flight — fall through to disk.
+            print(f"[serve_index] active design lookup failed, using disk: {e}")
+
+        # 2) Fall back to the file on disk.
+        if html_content is None:
+            index_path = os.path.join(app.static_folder, "index.html")
+            with open(index_path, "r", encoding="utf-8") as f:
+                html_content = f.read()
 
         # Inject SEO meta tags (replaces the <!-- SEO_META_INJECT --> placeholder in <head>)
         seo_html = _build_seo_meta_html()
@@ -2472,7 +2622,7 @@ def serve_index():
 
         return Response(html_content, mimetype="text/html")
     except Exception:
-        # Fallback: serve the raw file if SEO injection fails
+        # Last-resort fallback: serve the raw file if everything else fails.
         return send_from_directory("public", "index.html")
 
 
@@ -16284,29 +16434,70 @@ def admin_chat_detail(conv_id):
 
 # --------------- Theme / Color Editor ---------------
 
-@app.route("/api/theme", methods=["GET"])
-def api_get_theme():
-    """GET /api/theme — Public endpoint returning theme customization values."""
+def _resolve_active_theme():
+    """
+    Return the theme dict the public site should render.
+
+    Resolution order:
+      1. Start with the legacy theme_* columns on site_settings (always
+         present, may be empty strings).
+      2. If site_settings.active_theme_id points at an existing site_themes
+         row, overlay its palette_json + fonts_json on top — non-empty
+         values from the active row WIN over the legacy columns.
+
+    Output keys match the legacy column names so the frontend (script.js
+    -> CSS variables) doesn't have to change.
+    """
     settings = query_db("""
         SELECT theme_bg, theme_section1, theme_section2, theme_accent,
                theme_text, theme_glass_border, theme_glass_bg,
-               theme_font_serif, theme_font_sans
+               theme_font_serif, theme_font_sans, active_theme_id
         FROM site_settings WHERE id = 1
-    """, fetchone=True)
-    return jsonify(settings or {})
+    """, fetchone=True) or {}
+    active_id = settings.pop("active_theme_id", None)
+    if active_id:
+        active = query_db(
+            "SELECT palette_json, fonts_json FROM site_themes WHERE id=%s",
+            (active_id,), fetchone=True,
+        )
+        if active:
+            palette = active.get("palette_json") or {}
+            fonts   = active.get("fonts_json")   or {}
+            # Map JSON keys -> legacy column names so the frontend keeps working.
+            overlay = {
+                "theme_bg":           palette.get("bg"),
+                "theme_section1":     palette.get("section1"),
+                "theme_section2":     palette.get("section2"),
+                "theme_accent":       palette.get("accent"),
+                "theme_text":         palette.get("text"),
+                "theme_glass_border": palette.get("glass_border"),
+                "theme_glass_bg":     palette.get("glass_bg"),
+                "theme_font_serif":   fonts.get("serif"),
+                "theme_font_sans":    fonts.get("sans"),
+            }
+            for k, v in overlay.items():
+                # Only override when the active theme actually provided a value;
+                # blank/None means "fall back to legacy column".
+                if v is not None and v != "":
+                    settings[k] = v
+    return settings
+
+
+@app.route("/api/theme", methods=["GET"])
+def api_get_theme():
+    """GET /api/theme — Public endpoint returning theme customization values.
+    Reads the active site_themes row (if any) and overlays its palette/fonts
+    on top of the legacy theme_* columns; see _resolve_active_theme()."""
+    return jsonify(_resolve_active_theme())
 
 
 @app.route("/admin/api/theme", methods=["GET"])
 @admin_required
 def admin_get_theme():
-    """GET /admin/api/theme — Admin read of theme settings."""
-    settings = query_db("""
-        SELECT theme_bg, theme_section1, theme_section2, theme_accent,
-               theme_text, theme_glass_border, theme_glass_bg,
-               theme_font_serif, theme_font_sans
-        FROM site_settings WHERE id = 1
-    """, fetchone=True)
-    return jsonify(settings or {})
+    """GET /admin/api/theme — Admin read of the *resolved* theme (same
+    logic as the public /api/theme so the admin's preview matches what
+    visitors actually see)."""
+    return jsonify(_resolve_active_theme())
 
 
 @app.route("/admin/api/theme", methods=["PUT"])
@@ -16334,6 +16525,357 @@ def admin_update_theme():
         )
     )
     return jsonify(result)
+
+
+# =============================================================================
+# SITE THEMES — multi-row palette/font library (admin can save, preview,
+# publish, archive, delete). Active row is pointed to by
+# site_settings.active_theme_id; switching is one UPDATE.
+# AI drafting tools land in a follow-up turn — these routes already accept
+# payloads with source='ai' / model_used so the AI work plugs in cleanly.
+# =============================================================================
+
+def _theme_row_to_dict(row):
+    """Normalize a site_themes row for JSON output (palette/fonts as objects)."""
+    if not row:
+        return None
+    out = dict(row)
+    # JSONB columns come back as dicts already; defend anyway.
+    for k in ("palette_json", "fonts_json"):
+        v = out.get(k)
+        if isinstance(v, str):
+            try:
+                out[k] = json.loads(v) if v else {}
+            except Exception:
+                out[k] = {}
+        elif v is None:
+            out[k] = {}
+    out["is_active"] = bool(out.pop("_is_active", False))
+    return out
+
+
+@app.route("/admin/api/site-themes", methods=["GET"])
+@admin_required
+def admin_list_site_themes():
+    """GET /admin/api/site-themes — List all stored themes (newest first)."""
+    rows = query_db(
+        "SELECT t.*, "
+        "       (t.id = s.active_theme_id) AS _is_active "
+        "FROM site_themes t "
+        "LEFT JOIN site_settings s ON s.id = 1 "
+        "ORDER BY (t.id = s.active_theme_id) DESC, t.created_at DESC"
+    ) or []
+    return jsonify([_theme_row_to_dict(r) for r in rows])
+
+
+@app.route("/admin/api/site-themes/<int:theme_id>", methods=["GET"])
+@admin_required
+def admin_get_site_theme(theme_id):
+    """GET /admin/api/site-themes/<id> — Single theme."""
+    row = query_db(
+        "SELECT t.*, (t.id = s.active_theme_id) AS _is_active "
+        "FROM site_themes t LEFT JOIN site_settings s ON s.id = 1 "
+        "WHERE t.id = %s",
+        (theme_id,), fetchone=True,
+    )
+    if not row:
+        return jsonify({"error": "Theme not found"}), 404
+    return jsonify(_theme_row_to_dict(row))
+
+
+@app.route("/admin/api/site-themes", methods=["POST"])
+@admin_required
+def admin_create_site_theme():
+    """
+    POST /admin/api/site-themes — Create a new theme row.
+    Body: {name, palette_json, fonts_json, source?, notes?, status?}
+    """
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Theme name is required"}), 400
+    palette = data.get("palette_json") or {}
+    fonts   = data.get("fonts_json")   or {}
+    source  = (data.get("source") or "manual").strip() or "manual"
+    notes   = (data.get("notes")  or "").strip()
+    status  = (data.get("status") or "draft").strip() or "draft"
+    if status not in ("draft", "published", "archived"):
+        status = "draft"
+    row = execute_db(
+        "INSERT INTO site_themes (name, palette_json, fonts_json, "
+        "                          source, notes, status) "
+        "VALUES (%s, %s::jsonb, %s::jsonb, %s, %s, %s) RETURNING *",
+        (name, json.dumps(palette), json.dumps(fonts), source, notes, status),
+    )
+    return jsonify(_theme_row_to_dict(row)), 201
+
+
+@app.route("/admin/api/site-themes/<int:theme_id>", methods=["PUT"])
+@admin_required
+def admin_update_site_theme(theme_id):
+    """PUT /admin/api/site-themes/<id> — Edit a stored theme."""
+    data = request.get_json() or {}
+    existing = query_db(
+        "SELECT * FROM site_themes WHERE id = %s", (theme_id,), fetchone=True
+    )
+    if not existing:
+        return jsonify({"error": "Theme not found"}), 404
+    name    = (data.get("name") or existing.get("name") or "").strip()
+    palette = data.get("palette_json", existing.get("palette_json") or {})
+    fonts   = data.get("fonts_json",   existing.get("fonts_json")   or {})
+    notes   = (data.get("notes") if "notes" in data else existing.get("notes") or "")
+    status  = (data.get("status") or existing.get("status") or "draft").strip()
+    if status not in ("draft", "published", "archived"):
+        status = "draft"
+    row = execute_db(
+        "UPDATE site_themes SET name=%s, palette_json=%s::jsonb, "
+        "                       fonts_json=%s::jsonb, notes=%s, status=%s "
+        "WHERE id=%s RETURNING *",
+        (name, json.dumps(palette), json.dumps(fonts), notes, status, theme_id),
+    )
+    return jsonify(_theme_row_to_dict(row))
+
+
+def _publish_atomic(table, id_col_on_settings, row_id):
+    """
+    Run "mark this row published + flip the active pointer" inside ONE
+    transaction so a mid-path failure can't leave the pointer pointing at
+    a draft (or vice-versa). Returns True on success, False if the row no
+    longer exists. Raises on infra error so the caller can 500.
+
+    `table` is one of 'site_themes' or 'site_designs' (caller-controlled,
+    never user input). `id_col_on_settings` is 'active_theme_id' or
+    'active_design_id'. The default get_db() connection is autocommit; we
+    flip it off for this operation only.
+    """
+    assert table in ("site_themes", "site_designs"), "internal: bad table"
+    assert id_col_on_settings in ("active_theme_id", "active_design_id"), "internal: bad col"
+    conn = get_db()
+    try:
+        conn.autocommit = False
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT id FROM {table} WHERE id=%s", (row_id,))
+            if not cur.fetchone():
+                conn.rollback()
+                return False
+            if table == "site_designs":
+                cur.execute(
+                    f"UPDATE {table} SET status='published', updated_at=NOW() "
+                    "WHERE id=%s", (row_id,)
+                )
+            else:
+                cur.execute(
+                    f"UPDATE {table} SET status='published' WHERE id=%s",
+                    (row_id,)
+                )
+            cur.execute(
+                f"UPDATE site_settings SET {id_col_on_settings}=%s, updated_at=NOW() "
+                "WHERE id=1", (row_id,)
+            )
+        conn.commit()
+        return True
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            conn.autocommit = True
+        except Exception:
+            pass
+        conn.close()
+
+
+@app.route("/admin/api/site-themes/<int:theme_id>/publish", methods=["POST"])
+@admin_required
+def admin_publish_site_theme(theme_id):
+    """
+    POST /admin/api/site-themes/<id>/publish — Atomically set this theme as
+    the active one (single transaction, see _publish_atomic). Other rows
+    are left alone so admin can keep multiple "approved" themes around
+    without auto-demoting them.
+    """
+    if not _publish_atomic("site_themes", "active_theme_id", theme_id):
+        return jsonify({"error": "Theme not found"}), 404
+    return jsonify({"success": True, "active_theme_id": theme_id})
+
+
+@app.route("/admin/api/site-themes/<int:theme_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_site_theme(theme_id):
+    """DELETE /admin/api/site-themes/<id> — Remove a theme. Refuses if active."""
+    settings = query_db(
+        "SELECT active_theme_id FROM site_settings WHERE id=1", fetchone=True
+    ) or {}
+    if settings.get("active_theme_id") == theme_id:
+        return jsonify({
+            "error": "This theme is currently active. Publish a different "
+                     "theme first, then delete this one."
+        }), 409
+    execute_db("DELETE FROM site_themes WHERE id=%s", (theme_id,))
+    return jsonify({"success": True})
+
+
+# =============================================================================
+# SITE DESIGNS — multi-row HTML library for the homepage. Active row is
+# served by serve_index. Switching is one UPDATE on active_design_id.
+# =============================================================================
+
+def _design_row_to_dict(row, include_html=False):
+    """Normalize a site_designs row for JSON. Skip html in list responses."""
+    if not row:
+        return None
+    out = dict(row)
+    out["is_active"] = bool(out.pop("_is_active", False))
+    out["html_length"] = len(out.get("html") or "")
+    if not include_html:
+        out.pop("html", None)
+    return out
+
+
+@app.route("/admin/api/site-designs", methods=["GET"])
+@admin_required
+def admin_list_site_designs():
+    """GET /admin/api/site-designs — List all designs (newest first), no HTML body."""
+    rows = query_db(
+        "SELECT d.*, (d.id = s.active_design_id) AS _is_active "
+        "FROM site_designs d "
+        "LEFT JOIN site_settings s ON s.id = 1 "
+        "ORDER BY (d.id = s.active_design_id) DESC, d.created_at DESC"
+    ) or []
+    return jsonify([_design_row_to_dict(r, include_html=False) for r in rows])
+
+
+@app.route("/admin/api/site-designs/<int:design_id>", methods=["GET"])
+@admin_required
+def admin_get_site_design(design_id):
+    """GET /admin/api/site-designs/<id> — Single design including HTML body."""
+    row = query_db(
+        "SELECT d.*, (d.id = s.active_design_id) AS _is_active "
+        "FROM site_designs d LEFT JOIN site_settings s ON s.id = 1 "
+        "WHERE d.id = %s",
+        (design_id,), fetchone=True,
+    )
+    if not row:
+        return jsonify({"error": "Design not found"}), 404
+    return jsonify(_design_row_to_dict(row, include_html=True))
+
+
+@app.route("/admin/api/site-designs", methods=["POST"])
+@admin_required
+def admin_create_site_design():
+    """
+    POST /admin/api/site-designs — Create a new design row.
+    Body: {name, html, notes?, source?, model_used?, status?}
+    """
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip()
+    html = data.get("html") or ""
+    if not name:
+        return jsonify({"error": "Design name is required"}), 400
+    if not html.strip():
+        return jsonify({"error": "Design HTML is required"}), 400
+    source     = (data.get("source") or "manual").strip() or "manual"
+    notes      = (data.get("notes") or "").strip()
+    model_used = (data.get("model_used") or "").strip()
+    status     = (data.get("status") or "draft").strip() or "draft"
+    if status not in ("draft", "published", "archived"):
+        status = "draft"
+    row = execute_db(
+        "INSERT INTO site_designs (name, html, notes, source, model_used, status) "
+        "VALUES (%s, %s, %s, %s, %s, %s) RETURNING *",
+        (name, html, notes, source, model_used, status),
+    )
+    return jsonify(_design_row_to_dict(row, include_html=False)), 201
+
+
+@app.route("/admin/api/site-designs/<int:design_id>", methods=["PUT"])
+@admin_required
+def admin_update_site_design(design_id):
+    """PUT /admin/api/site-designs/<id> — Edit a stored design."""
+    data = request.get_json() or {}
+    existing = query_db(
+        "SELECT * FROM site_designs WHERE id=%s", (design_id,), fetchone=True
+    )
+    if not existing:
+        return jsonify({"error": "Design not found"}), 404
+    name   = (data.get("name") or existing.get("name") or "").strip()
+    html   = data.get("html") if "html" in data else existing.get("html") or ""
+    notes  = data.get("notes") if "notes" in data else existing.get("notes") or ""
+    status = (data.get("status") or existing.get("status") or "draft").strip()
+    if status not in ("draft", "published", "archived"):
+        status = "draft"
+    row = execute_db(
+        "UPDATE site_designs SET name=%s, html=%s, notes=%s, status=%s, "
+        "                        updated_at=NOW() "
+        "WHERE id=%s RETURNING *",
+        (name, html, notes, status, design_id),
+    )
+    return jsonify(_design_row_to_dict(row, include_html=False))
+
+
+@app.route("/admin/api/site-designs/<int:design_id>/publish", methods=["POST"])
+@admin_required
+def admin_publish_site_design(design_id):
+    """
+    POST /admin/api/site-designs/<id>/publish — Atomically set this design
+    as the active homepage (single transaction, see _publish_atomic).
+    Other rows untouched.
+    """
+    if not _publish_atomic("site_designs", "active_design_id", design_id):
+        return jsonify({"error": "Design not found"}), 404
+    return jsonify({"success": True, "active_design_id": design_id})
+
+
+@app.route("/admin/api/site-designs/<int:design_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_site_design(design_id):
+    """DELETE /admin/api/site-designs/<id> — Remove a design. Refuses if active."""
+    settings = query_db(
+        "SELECT active_design_id FROM site_settings WHERE id=1", fetchone=True
+    ) or {}
+    if settings.get("active_design_id") == design_id:
+        return jsonify({
+            "error": "This design is currently active. Publish a different "
+                     "design first, then delete this one."
+        }), 409
+    execute_db("DELETE FROM site_designs WHERE id=%s", (design_id,))
+    return jsonify({"success": True})
+
+
+@app.route("/preview/design/<int:design_id>", methods=["GET"])
+@admin_required
+def preview_site_design(design_id):
+    """
+    GET /preview/design/<id> — Admin-only preview. Serves the stored HTML
+    raw (no SEO injection — admins are previewing the design itself, not
+    its production behaviour). Used as the iframe src in the Website tab
+    AND opened in a new tab from the "Preview" button.
+
+    SECURITY: Stored design HTML is treated as untrusted (admin-pasted, and
+    in the next session, AI-generated). Without isolation, a `<script>` in
+    the design would run on /admin's same origin and could call any
+    /admin/api/* endpoint with the admin's session cookie. We send a
+    `Content-Security-Policy: sandbox` header which makes the browser
+    treat the response as if it were in a sandboxed iframe — scripts,
+    forms, top-level navigation, and same-origin storage access are all
+    blocked. Combined with the iframe's own `sandbox=""` attribute (no
+    `allow-scripts`), this prevents stored-XSS-to-admin-takeover.
+    """
+    row = query_db(
+        "SELECT html FROM site_designs WHERE id=%s", (design_id,), fetchone=True
+    )
+    if not row:
+        resp = Response("<h1>Design not found</h1>", status=404, mimetype="text/html")
+    else:
+        html = row.get("html") or "<!-- empty design -->"
+        resp = Response(html, mimetype="text/html")
+    resp.headers["Content-Security-Policy"] = "sandbox; default-src 'none'; img-src * data:; style-src 'unsafe-inline' *; font-src *"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+    return resp
 
 
 # =============================================================================
