@@ -1329,8 +1329,52 @@ def init_db():
                 #                rows from title+body using gpt-4o-mini
                 "ALTER TABLE presentations ADD COLUMN IF NOT EXISTS display_mode TEXT NOT NULL DEFAULT 'rich'",
                 "ALTER TABLE presentations ADD COLUMN IF NOT EXISTS ai_narrate_mode TEXT NOT NULL DEFAULT 'manual'",
+                # --- Generated-page curation + reuse instrumentation ---
+                # Admin AI uses these to score, summarize, and publish
+                # auto-generated pages; the visitor agent uses the FTS
+                # index over title+prompt+summary+search_text to find
+                # an already-published page BEFORE falling back to a
+                # fresh (slow, costly) generatePage. archive_reason
+                # captures why the admin pulled a page from rotation.
+                "ALTER TABLE generated_pages ADD COLUMN IF NOT EXISTS summary TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE generated_pages ADD COLUMN IF NOT EXISTS search_text TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE generated_pages ADD COLUMN IF NOT EXISTS ai_score INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE generated_pages ADD COLUMN IF NOT EXISTS reuse_count INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE generated_pages ADD COLUMN IF NOT EXISTS last_served_at TIMESTAMP",
+                "ALTER TABLE generated_pages ADD COLUMN IF NOT EXISTS source_visitor_id VARCHAR(100) NOT NULL DEFAULT ''",
+                "ALTER TABLE generated_pages ADD COLUMN IF NOT EXISTS source_session_id VARCHAR(100) NOT NULL DEFAULT ''",
+                "ALTER TABLE generated_pages ADD COLUMN IF NOT EXISTS archive_reason TEXT NOT NULL DEFAULT ''",
             ]:
                 cur.execute(col_sql)
+
+            # --- Generated-page FTS + reuse indexes + insights cache ---
+            # The expression in idx_generated_pages_fts is identical to
+            # the lookup_generated_page query so PG uses this index.
+            # marketing_insights_log caches insight runs so repeat
+            # questions in the same window can be deduped.
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_generated_pages_fts
+                    ON generated_pages USING gin (
+                        to_tsvector('english',
+                            coalesce(title,'') || ' ' ||
+                            coalesce(prompt,'') || ' ' ||
+                            coalesce(summary,'') || ' ' ||
+                            coalesce(search_text,''))
+                    );
+                CREATE INDEX IF NOT EXISTS idx_generated_pages_reuse
+                    ON generated_pages (reuse_count DESC, last_served_at DESC);
+                CREATE TABLE IF NOT EXISTS marketing_insights_log (
+                    id              SERIAL PRIMARY KEY,
+                    insight_type    VARCHAR(50) NOT NULL,
+                    window_start    TIMESTAMP,
+                    window_end      TIMESTAMP,
+                    summary_json    JSONB,
+                    notes           TEXT NOT NULL DEFAULT '',
+                    created_at      TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_marketing_insights_recent
+                    ON marketing_insights_log (insight_type, created_at DESC);
+            """)
 
             # =============================================================
             # CUSTOM DASHBOARDS — admin-built KPI/chart boards
@@ -3605,8 +3649,11 @@ already been built, designed, and published by the admin. When the visitor's
 question maps to one of those pages, hand back its slug with showSavedPage.
 The site renders the saved page instantly — no model tokens spent, no waiting
 for HTML to stream. ONLY use slugs that appear verbatim in the PAGE LIBRARY
-block; never invent a slug. If nothing in the library is a real match, fall
-through to generatePage instead.
+block; never invent a slug. If nothing in the visible PAGE LIBRARY block
+matches, FIRST try lookup_generated_page with a `topic` keyword (full-text
+search over the entire published library — may surface pages the truncated
+PAGE LIBRARY block omitted). Only fall through to generatePage if both the
+library block and the topic search come up empty.
 
 4. Generate an immersive, fully-styled website page (LAST RESORT visualization — only when nothing in 1, 2, 3, or 3b matches):
 ```command
@@ -4724,15 +4771,59 @@ def lookup_custom_section_items(section_slug=None, section_id=None):
     ]
 
 
-def lookup_generated_page(slug):
-    """Look up a previously-published AI-generated page by slug."""
-    page = query_db(
-        "SELECT slug, title, prompt FROM generated_pages "
-        "WHERE slug = %s AND status = 'published'",
-        (slug,),
-        fetchone=True,
-    )
-    return page or {}
+def lookup_generated_page(slug=None, topic=None, limit=5):
+    """Look up published AI-generated pages.
+
+    Two modes:
+      • slug  — exact match on a known slug, returns one row of
+                {slug, title, summary, prompt}.
+      • topic — full-text search over title+prompt+summary+search_text,
+                returns up to `limit` candidate matches with their
+                slug + title + summary + ai_score + reuse_count.
+
+    The visitor agent uses topic-mode BEFORE falling back to
+    generatePage so a previously-published page gets reused
+    (instant, free) instead of regenerated (slow, costs tokens).
+    """
+    if slug:
+        page = query_db(
+            "SELECT slug, title, summary, prompt FROM generated_pages "
+            "WHERE slug = %s AND status = 'published'",
+            (slug,), fetchone=True,
+        )
+        return page or {}
+    q = (topic or "").strip()
+    if not q:
+        return {"matches": [], "count": 0}
+    try:
+        lim = max(1, min(int(limit or 5), 10))
+    except Exception:
+        lim = 5
+    rows = query_db(
+        "SELECT id, slug, title, summary, ai_score, reuse_count "
+        "FROM generated_pages "
+        "WHERE status = 'published' AND "
+        "      to_tsvector('english', "
+        "          coalesce(title,'') || ' ' || "
+        "          coalesce(prompt,'') || ' ' || "
+        "          coalesce(summary,'') || ' ' || "
+        "          coalesce(search_text,'')) "
+        "      @@ plainto_tsquery('english', %s) "
+        "ORDER BY ai_score DESC, reuse_count DESC, updated_at DESC "
+        "LIMIT %s",
+        (q[:200], lim),
+    ) or []
+    return {
+        "matches": [
+            {"slug": r.get("slug") or "",
+             "title": r.get("title") or "",
+             "summary": (r.get("summary") or "")[:280],
+             "ai_score": int(r.get("ai_score") or 0),
+             "reuse_count": int(r.get("reuse_count") or 0)}
+            for r in rows
+        ],
+        "count": len(rows),
+    }
 
 
 def _resolve_presentation_slug(slug):
@@ -5409,13 +5500,25 @@ CHAT_TOOLS = [
     {"type": "function", "function": {
         "name": "lookup_generated_page",
         "description": (
-            "Look up the original prompt for a previously-published AI-"
-            "generated page by slug. Rare — usually you'd just navigate the "
-            "visitor to it via showSavedPage."
+            "Find a previously-published AI-generated page in the library. "
+            "Two modes — pass `slug` to fetch one specific saved page by "
+            "its exact slug, OR pass `topic` (a short keyword phrase from "
+            "the visitor's question) to do a full-text search and get up "
+            "to 5 candidate matches with their slug + title + summary + "
+            "score. PREFER topic-search BEFORE generatePage — if any "
+            "match really fits the visitor's question, hand back its slug "
+            "via showSavedPage instead of generating a fresh page."
         ),
         "parameters": {"type": "object", "properties": {
-            "slug": {"type": "string"},
-        }, "required": ["slug"]},
+            "slug":  {"type": "string",
+                      "description": "Exact saved-page slug."},
+            "topic": {"type": "string",
+                      "description": "Keywords / short phrase from the "
+                                     "visitor's question — runs a "
+                                     "full-text search over the published "
+                                     "page library."},
+            "limit": {"type": "integer", "default": 5},
+        }},
     }},
     {"type": "function", "function": {
         "name": "lookup_presentation",
@@ -9320,6 +9423,544 @@ def _admin_execute_automation_pending(action_row, payload):
     return None, f"Unsupported action_type for automations: {a_type}"
 
 
+# =============================================================
+# GENERATED-PAGE CURATION + MARKETING INSIGHTS
+# =============================================================
+# Tools the admin AI uses to manage the AI-generated page
+# library (review / publish / archive) and to mine visitor
+# chats + page library for SEO + marketing opportunities.
+# Read-only tools return immediately; write actions
+# (publish / archive / draft_*) route through the standard
+# pending-actions approval flow with action_type='update'
+# (publish/archive) or 'insert' (drafts) so the existing
+# _admin_execute_pending dispatcher already knows how to
+# execute them after the owner clicks Approve.
+
+_PAGE_SLUG_SAFE_RE = re.compile(r"[^a-z0-9-]+")
+_HTML_SCRIPT_RE   = re.compile(r"<script[\s\S]*?</script>", re.IGNORECASE)
+_HTML_STYLE_RE    = re.compile(r"<style[\s\S]*?</style>",   re.IGNORECASE)
+_HTML_TAG_RE      = re.compile(r"<[^>]+>")
+_WS_RE            = re.compile(r"\s+")
+_DEHYPHEN_RE      = re.compile(r"-+")
+
+# Visitor-question keywords pruned out before counting topics.
+_INSIGHT_STOP = set((
+    "a an and are as at be been but by can cant could couldnt did "
+    "didn didnt do does doesnt doing dont down for from get got had "
+    "has have having he her here him his how i id im in into is isnt "
+    "it its just kind let me my no not of off on once one or our out "
+    "over please should so some still such tell than thanks the their "
+    "them then there these they this those through to too us very "
+    "want was wasnt we well were what when where which while who why "
+    "will with would wouldnt you your yours yes more know about ".split()
+))
+
+
+def _curation_strip_html(html):
+    """Crude HTML→text extractor — strips <script>/<style> blocks then
+    every tag, collapses whitespace, caps at 4000 chars so a 200KB
+    page doesn't blow up the search_text column."""
+    if not html:
+        return ""
+    text = _HTML_SCRIPT_RE.sub(" ", html)
+    text = _HTML_STYLE_RE.sub(" ", text)
+    text = _HTML_TAG_RE.sub(" ", text)
+    text = _WS_RE.sub(" ", text).strip()
+    return text[:4000]
+
+
+def _curation_safe_slug(s, max_len=180):
+    """Lowercase, hyphenate, strip unsafe chars. Used by
+    publish_generated_page when the admin AI doesn't supply a slug."""
+    if not s:
+        return ""
+    s2 = s.strip().lower().replace("&", " and ")
+    s2 = _PAGE_SLUG_SAFE_RE.sub("-", s2).strip("-")
+    s2 = _DEHYPHEN_RE.sub("-", s2)
+    return s2[:max_len]
+
+
+# ---- Page-curation reads -------------------------------------------
+
+def _admin_tool_list_generated_pages(status=None, limit=20,
+                                     since_days=None, **_):
+    """List AI-generated pages with curation metadata. Filterable by
+    status (draft/published/archived) and recency. Defaults to the
+    20 most-recent of any status — admin AI's starting point for
+    'review my page library'."""
+    try:
+        lim = max(1, min(int(limit or 20), 100))
+    except Exception:
+        lim = 20
+    where = ["1=1"]
+    args = []
+    if status and status in ("draft", "published", "archived"):
+        where.append("status = %s")
+        args.append(status)
+    if since_days:
+        try:
+            d = max(1, min(int(since_days), 365))
+            where.append("created_at >= NOW() - %s::interval")
+            args.append(f"{d} days")
+        except Exception:
+            pass
+    rows = query_db(
+        "SELECT id, slug, title, status, ai_score, reuse_count, "
+        "       last_served_at, length(html) AS html_chars, "
+        "       length(prompt) AS prompt_chars, "
+        "       length(coalesce(summary,'')) AS summary_chars, "
+        "       length(coalesce(search_text,'')) AS search_text_chars, "
+        "       source_visitor_id, source_session_id, "
+        "       created_at, updated_at "
+        "FROM generated_pages WHERE " + " AND ".join(where)
+        + " ORDER BY created_at DESC LIMIT %s",
+        tuple(args + [lim]),
+    ) or []
+    out = []
+    for r in rows:
+        out.append({
+            "id": r["id"],
+            "slug": r.get("slug") or "",
+            "title": r.get("title") or "",
+            "status": r.get("status") or "",
+            "ai_score": int(r.get("ai_score") or 0),
+            "reuse_count": int(r.get("reuse_count") or 0),
+            "last_served_at": (r["last_served_at"].isoformat()
+                                if r.get("last_served_at") else None),
+            "html_chars": int(r.get("html_chars") or 0),
+            "prompt_chars": int(r.get("prompt_chars") or 0),
+            "summary_chars": int(r.get("summary_chars") or 0),
+            "search_text_chars": int(r.get("search_text_chars") or 0),
+            "source_visitor_id": r.get("source_visitor_id") or "",
+            "source_session_id": r.get("source_session_id") or "",
+            "created_at": (r["created_at"].isoformat()
+                           if r.get("created_at") else None),
+        })
+    return {"pages": out, "count": len(out)}
+
+
+def _admin_tool_review_generated_page(page_id=None, **_):
+    """Fetch one generated page with prompt + stripped excerpt + a
+    `signals` dict (looks_thin, very_long, no_summary,
+    already_published, similar_published_count, days_old) so the
+    admin AI can reason about publish/edit/archive without fetching
+    the (potentially huge) raw HTML."""
+    if page_id is None:
+        return {"error": "page_id is required"}
+    try:
+        pid = int(page_id)
+    except Exception:
+        return {"error": "page_id must be an integer"}
+    page = query_db(
+        "SELECT id, title, slug, status, prompt, summary, search_text, "
+        "       html, ai_score, reuse_count, last_served_at, "
+        "       source_visitor_id, source_session_id, created_at, "
+        "       updated_at, "
+        "       EXTRACT(DAY FROM (NOW() - created_at))::int AS days_old "
+        "FROM generated_pages WHERE id = %s",
+        (pid,), fetchone=True,
+    )
+    if not page:
+        return {"error": f"Generated page #{pid} not found"}
+    html = page.get("html") or ""
+    text = page.get("search_text") or _curation_strip_html(html)
+    excerpt = text[:600]
+    title_seed = (page.get("title") or "").strip()[:80]
+    prompt_seed = (page.get("prompt") or "").strip()[:200]
+    seed = (title_seed + " " + prompt_seed).strip()
+    similar = []
+    if seed:
+        try:
+            similar = query_db(
+                "SELECT id, slug, title, ai_score, reuse_count "
+                "FROM generated_pages "
+                "WHERE id <> %s AND status = 'published' AND "
+                "      to_tsvector('english', "
+                "          coalesce(title,'') || ' ' || "
+                "          coalesce(prompt,'') || ' ' || "
+                "          coalesce(summary,'') || ' ' || "
+                "          coalesce(search_text,'')) "
+                "      @@ plainto_tsquery('english', %s) "
+                "ORDER BY reuse_count DESC LIMIT 5",
+                (pid, seed[:200]),
+            ) or []
+        except Exception:
+            similar = []
+    days_old = page.get("days_old")
+    signals = {
+        "looks_thin": len(html) < 500,
+        "very_long": len(html) > 60000,
+        "no_summary": not (page.get("summary") or "").strip(),
+        "already_published": page.get("status") == "published",
+        "similar_published_count": len(similar),
+        "days_old": int(days_old) if days_old is not None else None,
+    }
+    return {
+        "id": page["id"],
+        "title": page.get("title") or "",
+        "slug": page.get("slug") or "",
+        "status": page.get("status") or "",
+        "prompt": page.get("prompt") or "",
+        "summary": page.get("summary") or "",
+        "search_text_excerpt": excerpt,
+        "html_chars": len(html),
+        "ai_score": int(page.get("ai_score") or 0),
+        "reuse_count": int(page.get("reuse_count") or 0),
+        "last_served_at": (page["last_served_at"].isoformat()
+                            if page.get("last_served_at") else None),
+        "source_visitor_id": page.get("source_visitor_id") or "",
+        "source_session_id": page.get("source_session_id") or "",
+        "created_at": (page["created_at"].isoformat()
+                       if page.get("created_at") else None),
+        "signals": signals,
+        "similar_published": [
+            {"id": s["id"], "slug": s.get("slug") or "",
+             "title": s.get("title") or "",
+             "ai_score": int(s.get("ai_score") or 0),
+             "reuse_count": int(s.get("reuse_count") or 0)}
+            for s in similar
+        ],
+    }
+
+
+# ---- Page-curation writes (approval-gated) -------------------------
+
+def _admin_tool_propose_publish_generated_page(
+        page_id=None, slug=None, title=None, summary=None,
+        search_text=None, ai_score=None, _session_id="", **_):
+    """Propose publishing one generated page. Sets status='published',
+    repairs the slug, fills summary + search_text + ai_score so the
+    visitor agent's FTS lookup can find it. Routed through the
+    standard approval flow as an UPDATE on generated_pages."""
+    if page_id is None:
+        return {"error": "page_id is required"}
+    try:
+        pid = int(page_id)
+    except Exception:
+        return {"error": "page_id must be an integer"}
+    page = query_db(
+        "SELECT id, slug, title, status, html, prompt, summary, "
+        "       search_text, ai_score "
+        "FROM generated_pages WHERE id = %s",
+        (pid,), fetchone=True,
+    )
+    if not page:
+        return {"error": f"Generated page #{pid} not found"}
+    new_title = (title or page.get("title") or "").strip()[:200] or "Untitled Page"
+    base_slug = (slug or page.get("slug")
+                 or _curation_safe_slug(new_title)
+                 or f"page-{pid}")
+    base_slug = _curation_safe_slug(base_slug) or f"page-{pid}"
+    new_summary = (summary or page.get("summary") or "").strip()[:600]
+    if not new_summary:
+        # Seed summary from prompt when AI didn't provide one.
+        new_summary = (page.get("prompt") or "").strip()[:600]
+    new_search_text = (search_text
+                       or page.get("search_text")
+                       or _curation_strip_html(page.get("html") or ""))[:4000]
+    try:
+        new_score = (max(0, min(int(ai_score), 100))
+                     if ai_score is not None
+                     else int(page.get("ai_score") or 0))
+    except Exception:
+        new_score = int(page.get("ai_score") or 0)
+    fields = {
+        "status": "published",
+        "slug": base_slug,
+        "title": new_title,
+        "summary": new_summary,
+        "search_text": new_search_text,
+        "ai_score": new_score,
+    }
+    parts = [f"  {k} = {_admin_short(v, 80)}" for k, v in fields.items()]
+    preview = (f"PUBLISH generated page #{pid} "
+               f"(was status='{page.get('status') or 'draft'}'):\n"
+               + "\n".join(parts))
+    return _admin_create_pending(
+        _session_id, "update",
+        target_table="generated_pages", target_id=pid,
+        payload={"fields": fields},
+        preview=preview,
+    )
+
+
+def _admin_tool_propose_archive_generated_page(
+        page_id=None, reason="", _session_id="", **_):
+    """Propose archiving one generated page (status='archived') with
+    a one-line reason captured for future analysis. Routed as an
+    UPDATE through the standard approval flow."""
+    if page_id is None:
+        return {"error": "page_id is required"}
+    try:
+        pid = int(page_id)
+    except Exception:
+        return {"error": "page_id must be an integer"}
+    page = query_db(
+        "SELECT id, slug, title, status FROM generated_pages WHERE id = %s",
+        (pid,), fetchone=True,
+    )
+    if not page:
+        return {"error": f"Generated page #{pid} not found"}
+    fields = {
+        "status": "archived",
+        "archive_reason": (reason or "").strip()[:500] or "No reason given",
+    }
+    preview = (f"ARCHIVE generated page #{pid} "
+               f"({page.get('title') or '(untitled)'}, "
+               f"was status='{page.get('status') or 'draft'}'). "
+               f"Reason: {fields['archive_reason']}")
+    return _admin_create_pending(
+        _session_id, "update",
+        target_table="generated_pages", target_id=pid,
+        payload={"fields": fields},
+        preview=preview,
+    )
+
+
+# ---- Marketing insights (reads) ------------------------------------
+
+def _admin_tool_analyze_chat_topics(days=14, limit=15, **_):
+    """Mine the last N days of visitor chat for what people keep
+    asking about. Returns top keyword clusters with frequency, a
+    sample message, and how many already-published generated pages
+    mention that keyword (so the AI can flag content gaps)."""
+    try:
+        d = max(1, min(int(days or 14), 180))
+    except Exception:
+        d = 14
+    try:
+        lim = max(3, min(int(limit or 15), 40))
+    except Exception:
+        lim = 15
+    msgs = query_db(
+        "SELECT id, content, created_at FROM chat_messages "
+        "WHERE role = 'user' AND created_at >= NOW() - %s::interval "
+        "ORDER BY created_at DESC LIMIT 2000",
+        (f"{d} days",),
+    ) or []
+    counts = {}
+    samples = {}
+    for m in msgs:
+        words = re.findall(r"[a-zA-Z]{4,}",
+                           (m.get("content") or "").lower())
+        seen = set()
+        for w in words:
+            if w in _INSIGHT_STOP or w in seen:
+                continue
+            seen.add(w)
+            counts[w] = counts.get(w, 0) + 1
+            if w not in samples:
+                samples[w] = (m.get("content") or "")[:160]
+    top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:lim]
+    out = []
+    for kw, n in top:
+        if n < 2:
+            continue
+        try:
+            existing = query_db(
+                "SELECT COUNT(*) AS c FROM generated_pages "
+                "WHERE status = 'published' AND "
+                "      to_tsvector('english', "
+                "          coalesce(title,'') || ' ' || "
+                "          coalesce(prompt,'') || ' ' || "
+                "          coalesce(summary,'') || ' ' || "
+                "          coalesce(search_text,'')) "
+                "      @@ plainto_tsquery('english', %s)",
+                (kw,), fetchone=True,
+            ) or {}
+            ec = int(existing.get("c") or 0)
+        except Exception:
+            ec = 0
+        out.append({
+            "keyword": kw,
+            "mentions": n,
+            "sample_message": samples.get(kw, ""),
+            "published_pages_with_keyword": ec,
+            "is_content_gap": ec == 0,
+        })
+    # Cache the run so repeat questions in the same window can be deduped.
+    try:
+        execute_db(
+            "INSERT INTO marketing_insights_log "
+            "(insight_type, window_start, window_end, summary_json) "
+            "VALUES (%s, NOW() - %s::interval, NOW(), %s::jsonb)",
+            ("analyze_chat_topics", f"{d} days",
+             json.dumps({"top": out, "messages_scanned": len(msgs)})),
+        )
+    except Exception:
+        pass
+    return {
+        "window_days": d,
+        "messages_scanned": len(msgs),
+        "topics": out,
+    }
+
+
+def _admin_tool_analyze_page_library(**_):
+    """Reuse + freshness stats for published generated pages.
+    Returns per-status counts plus the top 30 most-reused and the
+    bottom 10 least-reused so the admin AI can suggest which pages
+    are earning their keep and which to prune."""
+    rows = query_db(
+        "SELECT id, slug, title, ai_score, reuse_count, last_served_at, "
+        "       created_at, length(html) AS html_chars "
+        "FROM generated_pages WHERE status = 'published' "
+        "ORDER BY reuse_count DESC, last_served_at DESC NULLS LAST "
+        "LIMIT 30"
+    ) or []
+    bottom = query_db(
+        "SELECT id, slug, title, reuse_count, last_served_at, created_at "
+        "FROM generated_pages WHERE status = 'published' "
+        "ORDER BY reuse_count ASC, created_at ASC LIMIT 10"
+    ) or []
+    counts = query_db(
+        "SELECT status, COUNT(*) AS c FROM generated_pages GROUP BY status"
+    ) or []
+
+    def _row(r, with_html=False):
+        out = {
+            "id": r["id"],
+            "slug": r.get("slug") or "",
+            "title": r.get("title") or "",
+            "reuse_count": int(r.get("reuse_count") or 0),
+            "last_served_at": (r["last_served_at"].isoformat()
+                                if r.get("last_served_at") else None),
+            "created_at": (r["created_at"].isoformat()
+                            if r.get("created_at") else None),
+        }
+        if "ai_score" in r:
+            out["ai_score"] = int(r.get("ai_score") or 0)
+        if with_html and "html_chars" in r:
+            out["html_chars"] = int(r.get("html_chars") or 0)
+        return out
+
+    return {
+        "by_status": {r["status"]: int(r["c"]) for r in counts},
+        "top_reused": [_row(r, with_html=True) for r in rows],
+        "least_reused": [_row(r) for r in bottom],
+    }
+
+
+def _admin_tool_suggest_seo_improvements(days=30, **_):
+    """Combine chat-topic mining and the page library to surface the
+    highest-value content gaps: keywords visitors ask about that have
+    NO matching published page, FAQ, or blog post. Returns a priority
+    list the admin AI can hand off to draft_blog_post / draft_faq_entry."""
+    topics = _admin_tool_analyze_chat_topics(days=days, limit=25)
+    gaps = []
+    for t in topics.get("topics", []):
+        if not t.get("is_content_gap"):
+            continue
+        kw = t["keyword"]
+        try:
+            faq_hits = query_db(
+                "SELECT COUNT(*) AS c FROM faqs "
+                "WHERE LOWER(question) LIKE %s OR LOWER(answer) LIKE %s",
+                (f"%{kw}%", f"%{kw}%"), fetchone=True,
+            ) or {}
+            fc = int(faq_hits.get("c") or 0)
+        except Exception:
+            fc = 0
+        try:
+            blog_hits = query_db(
+                "SELECT COUNT(*) AS c FROM blog_posts "
+                "WHERE status = 'published' AND "
+                "      (LOWER(title) LIKE %s OR LOWER(content) LIKE %s)",
+                (f"%{kw}%", f"%{kw}%"), fetchone=True,
+            ) or {}
+            bc = int(blog_hits.get("c") or 0)
+        except Exception:
+            bc = 0
+        if fc + bc > 0:
+            continue  # Already covered.
+        gaps.append({
+            "keyword": kw,
+            "visitor_mentions": t["mentions"],
+            "sample_question": t.get("sample_message", ""),
+            "suggestion": (
+                f"Visitors are asking about '{kw}' "
+                f"({t['mentions']} times in the last {days} days) "
+                "but no published page, FAQ, or blog post covers it. "
+                "Consider drafting one."
+            ),
+            "recommended_action": (
+                "draft_faq_entry" if t["mentions"] < 5
+                else "draft_blog_post"
+            ),
+        })
+    return {
+        "window_days": days,
+        "gap_count": len(gaps),
+        "gaps": gaps[:15],
+    }
+
+
+# ---- Marketing drafts (approval-gated) -----------------------------
+
+def _admin_tool_propose_draft_blog_post(
+        title=None, body=None, slug=None, excerpt=None,
+        category=None, tags=None, seo_title=None,
+        seo_description=None, _session_id="", **_):
+    """Queue a new draft blog_posts row for owner approval. Admin AI
+    composes `body` itself and passes it in — this tool does NOT
+    make a sub-LLM call. status defaults to 'draft' so nothing goes
+    public until the owner edits + flips it to 'published'."""
+    if not (title or "").strip():
+        return {"error": "title is required"}
+    if not (body or "").strip():
+        return {"error": "body is required (compose the post text "
+                         "yourself and pass it in)"}
+    t = title.strip()[:200]
+    s = (_curation_safe_slug(slug or t)
+         or f"post-{int(_time.time())}")
+    fields = {
+        "title": t,
+        "slug": s,
+        "content": body.strip()[:50000],
+        "excerpt": (excerpt or "").strip()[:500],
+        "category": (category or "").strip()[:80],
+        "tags": (tags or "").strip()[:200],
+        "seo_title": (seo_title or t).strip()[:200],
+        "seo_description": (seo_description or excerpt or "").strip()[:300],
+        "status": "draft",
+    }
+    parts = [f"  {k} = {_admin_short(v, 80)}" for k, v in fields.items()]
+    preview = ("INSERT INTO blog_posts a new draft post:\n"
+               + "\n".join(parts))
+    return _admin_create_pending(
+        _session_id, "insert",
+        target_table="blog_posts", payload={"fields": fields},
+        preview=preview,
+    )
+
+
+def _admin_tool_propose_draft_faq_entry(
+        question=None, answer=None, sort_order=None,
+        _session_id="", **_):
+    """Queue a new faqs row for owner approval. Admin AI composes the
+    answer text and passes it in."""
+    if not (question or "").strip():
+        return {"error": "question is required"}
+    if not (answer or "").strip():
+        return {"error": "answer is required (compose it yourself)"}
+    fields = {
+        "question": question.strip()[:500],
+        "answer": answer.strip()[:5000],
+    }
+    if sort_order is not None:
+        try:
+            fields["sort_order"] = int(sort_order)
+        except Exception:
+            pass
+    parts = [f"  {k} = {_admin_short(v, 80)}" for k, v in fields.items()]
+    preview = ("INSERT INTO faqs a new entry:\n" + "\n".join(parts))
+    return _admin_create_pending(
+        _session_id, "insert",
+        target_table="faqs", payload={"fields": fields},
+        preview=preview,
+    )
+
+
 ADMIN_TOOL_FUNCTIONS = {
     # --- Read-only (run immediately, no approval) ---
     "admin_list_tables":            _admin_tool_list_tables,
@@ -9365,6 +10006,16 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_propose_update_automation":  _admin_tool_propose_update_automation,
     "admin_propose_toggle_automation":  _admin_tool_propose_toggle_automation,
     "admin_propose_delete_automation":  _admin_tool_propose_delete_automation,
+    # --- Generated-page curation + marketing insights ---
+    "admin_list_generated_pages":           _admin_tool_list_generated_pages,
+    "admin_review_generated_page":          _admin_tool_review_generated_page,
+    "admin_propose_publish_generated_page": _admin_tool_propose_publish_generated_page,
+    "admin_propose_archive_generated_page": _admin_tool_propose_archive_generated_page,
+    "admin_analyze_chat_topics":            _admin_tool_analyze_chat_topics,
+    "admin_analyze_page_library":           _admin_tool_analyze_page_library,
+    "admin_suggest_seo_improvements":       _admin_tool_suggest_seo_improvements,
+    "admin_propose_draft_blog_post":        _admin_tool_propose_draft_blog_post,
+    "admin_propose_draft_faq_entry":        _admin_tool_propose_draft_faq_entry,
 }
 
 # Tools whose write-side effect runs only after explicit owner approval.
@@ -9383,6 +10034,10 @@ ADMIN_PROPOSE_TOOLS = {
     "admin_propose_update_automation",
     "admin_propose_toggle_automation",
     "admin_propose_delete_automation",
+    "admin_propose_publish_generated_page",
+    "admin_propose_archive_generated_page",
+    "admin_propose_draft_blog_post",
+    "admin_propose_draft_faq_entry",
 }
 
 
@@ -9799,6 +10454,147 @@ ADMIN_TOOLS = [
         {"type": "object",
          "properties": {"automation_id": {"type": "integer"}},
          "required": ["automation_id"]}),
+
+    # ---- Generated-page curation (reads run immediately;
+    #      propose_* are approval-gated) ----
+    _admin_tool_schema(
+        "admin_list_generated_pages",
+        "List AI-generated pages with curation metadata (status, "
+        "ai_score, reuse_count, last_served_at, lengths). Filter "
+        "by status ('draft' / 'published' / 'archived') and recency "
+        "(since_days). Defaults to the 20 most-recent of any status.",
+        {"type": "object",
+         "properties": {
+             "status":     {"type": "string",
+                            "enum": ["draft", "published", "archived"]},
+             "limit":      {"type": "integer", "default": 20},
+             "since_days": {"type": "integer"},
+         }}),
+    _admin_tool_schema(
+        "admin_review_generated_page",
+        "Fetch one generated page with prompt + a stripped text "
+        "excerpt + a `signals` dict (looks_thin, very_long, "
+        "no_summary, already_published, similar_published_count, "
+        "days_old) the AI uses to decide publish / edit / archive. "
+        "Does NOT return the raw HTML so this is safe to call on "
+        "huge pages.",
+        {"type": "object",
+         "properties": {"page_id": {"type": "integer"}},
+         "required": ["page_id"]}),
+    _admin_tool_schema(
+        "admin_propose_publish_generated_page",
+        "Propose publishing one generated page so the visitor agent "
+        "can serve it instantly via showSavedPage instead of "
+        "regenerating. Sets status='published', repairs the slug, "
+        "fills summary + search_text + ai_score for FTS lookup. "
+        "ALWAYS call admin_review_generated_page first to compose a "
+        "good summary and pick an ai_score (0-100). Approval card "
+        "shows the field-by-field changes.",
+        {"type": "object",
+         "properties": {
+             "page_id":     {"type": "integer"},
+             "slug":        {"type": "string",
+                             "description": "Optional override; "
+                                            "auto-derived from title "
+                                            "if omitted."},
+             "title":       {"type": "string"},
+             "summary":     {"type": "string",
+                             "description": "1-2 sentence blurb shown "
+                                            "in the page library; "
+                                            "feeds the visitor "
+                                            "agent's FTS lookup."},
+             "search_text": {"type": "string",
+                             "description": "Plain-text excerpt for "
+                                            "FTS — auto-extracted "
+                                            "from html if omitted."},
+             "ai_score":    {"type": "integer",
+                             "description": "0-100 quality score the "
+                                            "admin AI assigns based "
+                                            "on signals from "
+                                            "admin_review_generated_page."},
+         },
+         "required": ["page_id"]}),
+    _admin_tool_schema(
+        "admin_propose_archive_generated_page",
+        "Propose archiving one generated page (status='archived'). "
+        "Pass a one-line `reason` (e.g. 'duplicate of #N', 'thin "
+        "content', 'off-brand') captured for future analysis.",
+        {"type": "object",
+         "properties": {
+             "page_id": {"type": "integer"},
+             "reason":  {"type": "string"},
+         },
+         "required": ["page_id", "reason"]}),
+
+    # ---- Marketing insights (reads run immediately) ----
+    _admin_tool_schema(
+        "admin_analyze_chat_topics",
+        "Mine the last N days of visitor chat for what people keep "
+        "asking about. Returns top keywords with frequency, a sample "
+        "message, and how many already-published generated pages "
+        "mention each keyword (so the AI can flag content gaps). "
+        "Defaults to the last 14 days, top 15 keywords.",
+        {"type": "object",
+         "properties": {
+             "days":  {"type": "integer", "default": 14},
+             "limit": {"type": "integer", "default": 15},
+         }}),
+    _admin_tool_schema(
+        "admin_analyze_page_library",
+        "Reuse + freshness stats for the published generated-page "
+        "library. Returns counts by status plus the 30 most-reused "
+        "and 10 least-reused pages. Use this BEFORE recommending "
+        "which pages to keep, refresh, or archive."),
+    _admin_tool_schema(
+        "admin_suggest_seo_improvements",
+        "Combine chat-topic mining and the page library to surface "
+        "the highest-value content gaps: keywords visitors ask about "
+        "that have NO matching published page, FAQ, or blog post. "
+        "Each gap comes with a recommended_action ('draft_faq_entry' "
+        "for niche, 'draft_blog_post' for popular). Defaults to the "
+        "last 30 days.",
+        {"type": "object",
+         "properties": {"days": {"type": "integer", "default": 30}}}),
+
+    # ---- Marketing drafts (approval-gated) ----
+    _admin_tool_schema(
+        "admin_propose_draft_blog_post",
+        "Queue a new draft blog_posts row for owner approval. YOU "
+        "compose the body text and pass it in — this tool does NOT "
+        "make a sub-LLM call. status defaults to 'draft' so nothing "
+        "goes public until the owner edits + flips it to "
+        "'published'. Auto-derives slug from title if omitted; "
+        "fills seo_title + seo_description from title + excerpt if "
+        "omitted.",
+        {"type": "object",
+         "properties": {
+             "title":           {"type": "string"},
+             "body":            {"type": "string",
+                                 "description": "Full post body — "
+                                                "compose this "
+                                                "yourself before "
+                                                "calling. Markdown "
+                                                "or HTML both fine."},
+             "slug":            {"type": "string"},
+             "excerpt":         {"type": "string"},
+             "category":        {"type": "string"},
+             "tags":            {"type": "string",
+                                 "description": "Comma-separated."},
+             "seo_title":       {"type": "string"},
+             "seo_description": {"type": "string"},
+         },
+         "required": ["title", "body"]}),
+    _admin_tool_schema(
+        "admin_propose_draft_faq_entry",
+        "Queue a new faqs row for owner approval. YOU compose the "
+        "answer text and pass it in.",
+        {"type": "object",
+         "properties": {
+             "question":   {"type": "string"},
+             "answer":     {"type": "string"},
+             "sort_order": {"type": "integer"},
+         },
+         "required": ["question", "answer"]}),
 ]
 
 
@@ -10071,7 +10867,53 @@ ADMIN_CHAT_SYSTEM_PROMPT = (
     "admin_recent_snapshots first to find the snapshot id, then call "
     "admin_propose_revert_snapshot(snapshot_id, reason) — that parks a "
     "normal approval card. Snapshots that have already been reverted "
-    "have a non-null reverted_at and cannot be reverted again."
+    "have a non-null reverted_at and cannot be reverted again.\n\n"
+    "GENERATED-PAGE CURATION:\n"
+    "The visitor agent (velo) sometimes builds full-page HTML answers "
+    "on the fly via generatePage. Each one lands in the generated_pages "
+    "table as status='draft'. They're NOT served to other visitors "
+    "until you publish them. The curation toolset lets you turn that "
+    "raw output into a real page library:\n"
+    "  • admin_list_generated_pages — browse drafts/published/archived "
+    "with reuse_count + ai_score so you can spot which pages earn "
+    "their keep.\n"
+    "  • admin_review_generated_page(page_id) — fetch one page with "
+    "prompt + excerpt + a `signals` dict (looks_thin, very_long, "
+    "similar_published_count, days_old). Read this before publishing "
+    "so you can write a real summary and pick an ai_score (0-100).\n"
+    "  • admin_propose_publish_generated_page — publish a draft so "
+    "future visitors get it instantly via showSavedPage instead of "
+    "regenerating. Always supply summary + ai_score; slug is "
+    "auto-derived from the title if omitted. Approval-gated.\n"
+    "  • admin_propose_archive_generated_page — archive a thin / "
+    "duplicate / off-brand page so the visitor agent stops surfacing "
+    "it. Pass a one-line reason. Approval-gated.\n"
+    "Workflow when the owner asks 'review my page library' or "
+    "similar: call admin_list_generated_pages(status='draft') first, "
+    "then admin_review_generated_page on each candidate, then "
+    "publish/archive proposals based on the signals.\n\n"
+    "MARKETING INSIGHTS + CONTENT DRAFTING:\n"
+    "Three read tools mine the site for SEO + marketing wins, two "
+    "write tools queue draft content for approval:\n"
+    "  • admin_analyze_chat_topics(days?, limit?) — top visitor "
+    "keywords from chat, with how many published pages already cover "
+    "each (is_content_gap=true marks the unmatched ones).\n"
+    "  • admin_analyze_page_library — what's reused vs. what's "
+    "gathering dust in the published library.\n"
+    "  • admin_suggest_seo_improvements(days?) — combines the two "
+    "above plus FAQ + blog coverage to surface the highest-priority "
+    "content gaps with a recommended_action.\n"
+    "  • admin_propose_draft_blog_post(title, body, …) — YOU "
+    "compose the full body in your turn, then call this with the "
+    "text. status defaults to 'draft' — owner reviews and publishes.\n"
+    "  • admin_propose_draft_faq_entry(question, answer) — YOU "
+    "compose the answer and pass it in.\n"
+    "When the owner asks for marketing/SEO ideas, run "
+    "admin_suggest_seo_improvements first so your suggestions are "
+    "grounded in REAL visitor questions, not generic advice. When "
+    "drafting a blog post or FAQ from a gap, write the body fully in "
+    "your reply (so the owner can read it) and ALSO queue it via the "
+    "draft tool so they get a one-click approve."
 )
 
 
@@ -15633,6 +16475,18 @@ def api_generated_page_by_slug(slug):
 
     if not page:
         return jsonify({"error": "Page not found"}), 404
+    # Reuse instrumentation — bumps the counter the admin AI's
+    # analyze_page_library / suggest_seo_improvements tools read to
+    # distinguish "earning its keep" pages from "never served" ones.
+    try:
+        execute_db(
+            "UPDATE generated_pages "
+            "SET reuse_count = reuse_count + 1, last_served_at = NOW() "
+            "WHERE id = %s",
+            (page["id"],),
+        )
+    except Exception:
+        pass
     return jsonify({
         "id": page["id"],
         "title": page.get("title", ""),
@@ -15647,6 +16501,19 @@ def public_generated_page(slug):
     page = query_db("SELECT * FROM generated_pages WHERE slug = %s AND status = 'published'", (slug,), fetchone=True)
     if not page:
         return "Page not found", 404
+    # Reuse instrumentation — same counter the JSON serve increments,
+    # so direct URL visits and AI-driven showSavedPage navigations
+    # both register as "served". Wrapped in try/except so a counter
+    # failure can never block rendering the page.
+    try:
+        execute_db(
+            "UPDATE generated_pages "
+            "SET reuse_count = reuse_count + 1, last_served_at = NOW() "
+            "WHERE id = %s",
+            (page["id"],),
+        )
+    except Exception:
+        pass
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
