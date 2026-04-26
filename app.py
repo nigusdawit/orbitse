@@ -11481,13 +11481,28 @@ def api_chat():
                     and (l["args"].get("slug") or "").strip()
                     and not (l.get("error") or "").strip()
                 ]
-                # Require all deck lookups in this turn to point at the
-                # same slug — otherwise the AI was browsing several decks
-                # and we have no way to pick the right one without text.
-                asked_slugs = {
-                    (l["args"]["slug"] or "").strip().lower()
-                    for l in deck_lookups
-                }
+                # Require all deck lookups in this turn to resolve to the
+                # SAME canonical deck. Counting unique CANONICAL slugs
+                # (not asked slugs) means the model trying two typo
+                # variants of the same deck — e.g. "thetasync" and
+                # "thetasync-deck-2", both resolving to deck #7 — still
+                # counts as one deck and the fallback can fire. If the
+                # asked slug doesn't resolve at all (rows=0 case), we
+                # skip it for the uniqueness check rather than treat
+                # every miss as a separate phantom deck.
+                canon_slugs = set()
+                last_canon = None
+                for l in deck_lookups:
+                    asked = (l["args"]["slug"] or "").strip()
+                    if not asked:
+                        continue
+                    try:
+                        row = _resolve_presentation_slug(asked)
+                    except Exception:
+                        row = None
+                    if row and row.get("slug"):
+                        canon_slugs.add(row["slug"])
+                        last_canon = row["slug"]
                 msg = message.strip()
                 # Anchored / near-anchored affirmative ("yes", "yeah ok",
                 # "sure please", "go ahead", "launch it", "show me", etc.)
@@ -11512,31 +11527,32 @@ def api_chat():
                     r")\b",
                     re.IGNORECASE,
                 )
-                # Negation guard — if the visitor said "no", "don't",
-                # "not now", "later", "wait", etc. anywhere in the
-                # message, never auto-launch even if an affirmative
-                # word also appears (e.g. "no please don't").
+                # Negation / postponement guard — if the visitor said
+                # "no", "don't", "not now", "later", "wait", "first",
+                # "before", etc. anywhere in the message, never auto-
+                # launch even if an affirmative word also appears
+                # (e.g. "no please don't", "yes tell me more first",
+                # "yes but before that…").
                 negate_re = re.compile(
                     r"\b(no|nope|not?(?:\s+now)?|don'?t|do\s*not|"
                     r"stop|wait|later|cancel|nah|never\s*mind|"
-                    r"nevermind|hold\s*on|skip)\b",
+                    r"nevermind|hold\s*on|skip|first|before|"
+                    r"instead)\b",
                     re.IGNORECASE,
                 )
                 if (
-                    len(asked_slugs) == 1
+                    len(canon_slugs) == 1
+                    and last_canon
                     and affirm_re.search(msg)
                     and not negate_re.search(msg)
                 ):
-                    asked = next(iter(asked_slugs))
-                    row = _resolve_presentation_slug(asked)
-                    if row:
-                        cmd = {"action": "start_presentation",
-                               "slug": row["slug"]}
-                        print(
-                            f"[chat] auto-launch fallback: visitor "
-                            f"said {msg[:60]!r} → "
-                            f"start_presentation slug='{row['slug']}'"
-                        )
+                    cmd = {"action": "start_presentation",
+                           "slug": last_canon}
+                    print(
+                        f"[chat] auto-launch fallback: visitor "
+                        f"said {msg[:60]!r} → "
+                        f"start_presentation slug='{last_canon}'"
+                    )
             # Presentation-mode safety net: even though the system prompt
             # tells the model not to issue intrusive commands while a deck
             # is playing, the model occasionally still tries. Strip those
