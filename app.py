@@ -5836,6 +5836,15 @@ def _exec_custom_sql(name, args):
         return {"error": "SQL skill template must be a SELECT (or WITH ... SELECT)"}, 0
     if _ADMIN_SQL_FORBIDDEN.search(sql_text):
         return {"error": "SQL template contains a forbidden statement"}, 0
+    # Same secret-table / banned-identifier guards the admin read-only
+    # SQL tool uses — without these, a custom skill could SELECT raw
+    # mcp_servers.oauth_state (tokens) or other secret-bearing rows.
+    bi_err = _admin_sql_banned_identifier_check(sql_text)
+    if bi_err:
+        return {"error": bi_err}, 0
+    st_err = _admin_sql_secret_table_check(sql_text)
+    if st_err:
+        return {"error": st_err}, 0
     try:
         conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
         rows = []
@@ -5854,6 +5863,10 @@ def _exec_custom_sql(name, args):
         conn.rollback(); conn.close()
     except Exception as e:
         return {"error": f"SQL skill failed: {str(e)[:200]}"}, 0
+    # Defence-in-depth: scrub any secret-named keys from the returned rows
+    # (e.g. if a SELECT pulls a JSONB column with nested tokens).
+    rows = [_redact_recursive(dict(r) if isinstance(r, dict) else r)
+            for r in rows]
     return {"rows": rows, "count": len(rows)}, len(rows)
 
 
@@ -5891,7 +5904,12 @@ MCP_CONNECTOR_BLUEPRINTS = {}
 
 
 def _mcp_auth_headers(server_row):
-    """Build the auth header dict for an mcp_servers row."""
+    """Build the auth header dict for an mcp_servers row.
+    For auth_type='oauth' this also transparently refreshes the access
+    token if it has expired (or is within 60s of expiring) and writes
+    the new token back to oauth_state. Returns the headers dict; on
+    OAuth failure the dict is empty and the caller will get a 401 from
+    the upstream server with a useful message."""
     out = {}
     a_type = (server_row.get("auth_type") or "none").strip().lower()
     cred = (server_row.get("auth_credential") or "").strip()
@@ -5901,6 +5919,10 @@ def _mcp_auth_headers(server_row):
         h_name = (server_row.get("auth_header_name") or "").strip()
         if h_name and cred:
             out[h_name] = cred
+    elif a_type == "oauth":
+        token = _mcp_oauth_get_valid_access_token(server_row)
+        if token:
+            out["Authorization"] = f"Bearer {token}"
     return out
 
 
@@ -6044,19 +6066,276 @@ def _mcp_notify(server_row, method, params=None, session_id=None):
 
 
 def _mcp_transport_supported(server_row):
-    """V1 only supports the Streamable HTTP transport. 'sse' (legacy
-    SSE-only two-endpoint dance) and 'oauth' auth_type are scaffolded
-    in the schema but closed at the call site with a clear message."""
+    """V2 supports both Streamable HTTP (single POST endpoint that may
+    respond with application/json or text/event-stream) and 'sse' as a
+    synonym (same Accept header, parser already handles both content
+    types). OAuth is fully wired in V2 — the call site below ensures
+    the oauth_state has the minimum config before allowing the call."""
     transport = (server_row.get("transport") or "http").strip().lower()
-    if transport not in ("http", "streamable-http"):
+    if transport not in ("http", "streamable-http", "sse"):
         return False, (
-            f"Transport '{transport}' is not supported in V1 — use 'http' "
-            "(Streamable HTTP). SSE-only servers will be added later.")
+            f"Transport '{transport}' is not supported. Use 'http' "
+            "(Streamable HTTP) or 'sse'.")
     if (server_row.get("auth_type") or "").strip().lower() == "oauth":
-        return False, (
-            "OAuth-flowed connectors are not enabled yet. Pick auth_type "
-            "'none', 'bearer', or 'header' for V1 custom MCP servers.")
+        # We don't block here — _mcp_auth_headers will refresh as needed
+        # — but a missing oauth_state.access_token (and no refresh_token
+        # to acquire one with) means we have nothing to send.
+        st = server_row.get("oauth_state") or {}
+        if isinstance(st, str):
+            try:
+                st = json.loads(st)
+            except Exception:
+                st = {}
+        if not (st.get("access_token") or st.get("refresh_token")):
+            return False, (
+                "OAuth server is not connected yet. Click 'Connect via "
+                "OAuth' on the dashboard to authorize.")
     return True, None
+
+
+# ---------------------------------------------------------------------------
+# V2 OAuth helpers — Authorization Code with PKCE.
+# All token state lives in mcp_servers.oauth_state (jsonb) which the
+# secret-table guard + the recursive redactor already protect.
+# ---------------------------------------------------------------------------
+_MCP_OAUTH_REDIRECT_PATH = "/admin/oauth/mcp/callback"
+_MCP_OAUTH_TOKEN_LEEWAY_SEC = 60
+_MCP_OAUTH_PENDING_TTL_SEC  = 600
+
+
+def _mcp_oauth_state_get(server_row):
+    """Return the oauth_state JSON as a dict (empty if missing/bad)."""
+    st = server_row.get("oauth_state") if server_row else None
+    if isinstance(st, str):
+        try:
+            st = json.loads(st)
+        except Exception:
+            st = None
+    return st if isinstance(st, dict) else {}
+
+
+def _mcp_oauth_state_persist(server_id, st):
+    """Atomically replace mcp_servers.oauth_state for one row."""
+    execute_db(
+        "UPDATE mcp_servers SET oauth_state = %s::jsonb, "
+        "updated_at = NOW() WHERE id = %s",
+        (json.dumps(st or {}), int(server_id)),
+    )
+
+
+def _mcp_oauth_pkce_pair():
+    """Generate (code_verifier, code_challenge_S256) per RFC 7636."""
+    import base64, hashlib, secrets
+    verifier = base64.urlsafe_b64encode(
+        secrets.token_bytes(40)).rstrip(b"=").decode("ascii")
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode("ascii")).digest()
+    ).rstrip(b"=").decode("ascii")
+    return verifier, challenge
+
+
+def _mcp_oauth_redirect_uri():
+    """Absolute redirect URI as registered with the OAuth provider.
+    Built from the current request when available; falls back to the
+    PUBLIC_BASE_URL env var (set on prod) so this also works for the
+    one corner case where it's called without a request context."""
+    try:
+        if request:
+            return url_for("admin_oauth_mcp_callback", _external=True)
+    except Exception:
+        pass
+    base = (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+    return f"{base}{_MCP_OAUTH_REDIRECT_PATH}" if base else \
+        _MCP_OAUTH_REDIRECT_PATH
+
+
+def _mcp_oauth_safe_post(token_url, form_body):
+    """POST application/x-www-form-urlencoded to a vetted token URL with
+    the same SSRF + DNS-pin defenses as outbound MCP calls. Returns
+    (json_dict_or_none, error_string_or_none)."""
+    ok, parsed, err = _webhook_url_safe(token_url)
+    if not ok:
+        return None, err or "token_url refused"
+    parsed_url, validated_ips = parsed
+    pin_host = (parsed_url.hostname or "").lower()
+    pin_port = parsed_url.port or (
+        443 if parsed_url.scheme == "https" else 80)
+    pin_ip   = validated_ips[0]
+    prev_pins = getattr(_webhook_dns_pin_local, "pins", None)
+    new_pins = dict(prev_pins or {})
+    new_pins[(pin_host, pin_port)] = pin_ip
+    _webhook_dns_pin_local.pins = new_pins
+    try:
+        import requests as _rq
+        resp = _rq.post(
+            token_url, data=form_body,
+            headers={"Accept": "application/json",
+                     "User-Agent": "site-mcp-client/1.0"},
+            timeout=15.0, allow_redirects=False)
+    except Exception as e:
+        return None, f"token endpoint failed: {str(e)[:200]}"
+    finally:
+        _webhook_dns_pin_local.pins = prev_pins
+    if resp.status_code >= 400:
+        return None, (f"token endpoint HTTP {resp.status_code}: "
+                      f"{(resp.text or '')[:200]}")
+    try:
+        return resp.json(), None
+    except Exception:
+        return None, "token endpoint did not return JSON"
+
+
+def _mcp_oauth_start_url(server_row):
+    """Begin a fresh PKCE round-trip: generate verifier+state, persist
+    them on the row, and return the URL to redirect the admin to.
+    Returns (url, error_string_or_none)."""
+    import secrets as _sec
+    st = _mcp_oauth_state_get(server_row)
+    client_id = (st.get("client_id") or "").strip()
+    auth_url  = (st.get("auth_url") or "").strip()
+    token_url = (st.get("token_url") or "").strip()
+    if not (client_id and auth_url and token_url):
+        return None, ("OAuth not configured: client_id, auth_url, "
+                      "and token_url are all required.")
+    for u in (auth_url, token_url):
+        ok, _p, err = _webhook_url_safe(u)
+        if not ok:
+            return None, f"OAuth URL refused: {err or 'unsafe URL'}"
+    verifier, challenge = _mcp_oauth_pkce_pair()
+    state_token = _sec.token_urlsafe(24)
+    st["pending_state"]         = state_token
+    st["pending_code_verifier"] = verifier
+    st["pending_started_at"]    = int(_time.time())
+    st.pop("last_oauth_error", None)
+    _mcp_oauth_state_persist(server_row["id"], st)
+    redirect_uri = _mcp_oauth_redirect_uri()
+    from urllib.parse import urlencode
+    qs = {
+        "response_type":         "code",
+        "client_id":             client_id,
+        "redirect_uri":          redirect_uri,
+        "state":                 state_token,
+        "code_challenge":        challenge,
+        "code_challenge_method": "S256",
+    }
+    scopes = st.get("scopes") or []
+    if isinstance(scopes, list) and scopes:
+        qs["scope"] = " ".join(str(s) for s in scopes)
+    sep = "&" if "?" in auth_url else "?"
+    return f"{auth_url}{sep}{urlencode(qs)}", None
+
+
+def _mcp_oauth_exchange_code(server_row, code, returned_state):
+    """Trade an authorization_code for tokens and persist them.
+    Returns None on success, an error string on failure."""
+    st = _mcp_oauth_state_get(server_row)
+    pending_state    = st.get("pending_state") or ""
+    pending_verifier = st.get("pending_code_verifier") or ""
+    pending_started  = int(st.get("pending_started_at") or 0)
+    if not pending_state or not pending_verifier:
+        return ("No pending OAuth flow for this server. Click "
+                "'Connect via OAuth' to start over.")
+    import hmac as _hmac
+    if not _hmac.compare_digest(pending_state, returned_state or ""):
+        return "OAuth state mismatch — request rejected."
+    if pending_started and (
+        int(_time.time()) - pending_started > _MCP_OAUTH_PENDING_TTL_SEC):
+        return "OAuth flow expired. Please click Connect again."
+    body = {
+        "grant_type":    "authorization_code",
+        "code":          code,
+        "redirect_uri":  _mcp_oauth_redirect_uri(),
+        "client_id":     st.get("client_id") or "",
+        "code_verifier": pending_verifier,
+    }
+    if (st.get("client_secret") or "").strip():
+        body["client_secret"] = st["client_secret"]
+    data, err = _mcp_oauth_safe_post(st.get("token_url") or "", body)
+    if err:
+        st["last_oauth_error"] = err
+        st.pop("pending_state", None)
+        st.pop("pending_code_verifier", None)
+        st.pop("pending_started_at", None)
+        _mcp_oauth_state_persist(server_row["id"], st)
+        return err
+    return _mcp_oauth_apply_token_response(server_row["id"], st, data)
+
+
+def _mcp_oauth_apply_token_response(server_id, st, data):
+    """Common token-response handler used by both code-exchange and
+    refresh paths. Mutates `st` and persists it. Returns None on
+    success, an error string on failure."""
+    if not isinstance(data, dict):
+        return "token endpoint returned an unexpected payload"
+    access = (data.get("access_token") or "").strip()
+    if not access:
+        return "token endpoint did not return access_token"
+    st["access_token"] = access
+    if (data.get("refresh_token") or "").strip():
+        st["refresh_token"] = data["refresh_token"].strip()
+    if (data.get("token_type") or "").strip():
+        st["token_type"] = data["token_type"].strip()
+    expires_in = data.get("expires_in")
+    try:
+        expires_in = int(expires_in) if expires_in is not None else None
+    except Exception:
+        expires_in = None
+    st["expires_at"] = (int(_time.time()) + expires_in) \
+        if expires_in else None
+    st["connected_at"] = int(_time.time())
+    st.pop("pending_state", None)
+    st.pop("pending_code_verifier", None)
+    st.pop("pending_started_at", None)
+    st.pop("last_oauth_error", None)
+    _mcp_oauth_state_persist(server_id, st)
+    return None
+
+
+def _mcp_oauth_refresh(server_row):
+    """Use the refresh_token grant. Returns (new_access_token_or_None,
+    error_string_or_None)."""
+    st = _mcp_oauth_state_get(server_row)
+    refresh_token = (st.get("refresh_token") or "").strip()
+    if not refresh_token:
+        return None, "no refresh_token on file"
+    body = {
+        "grant_type":    "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id":     st.get("client_id") or "",
+    }
+    if (st.get("client_secret") or "").strip():
+        body["client_secret"] = st["client_secret"]
+    data, err = _mcp_oauth_safe_post(st.get("token_url") or "", body)
+    if err:
+        st["last_oauth_error"] = err
+        _mcp_oauth_state_persist(server_row["id"], st)
+        return None, err
+    err2 = _mcp_oauth_apply_token_response(server_row["id"], st, data)
+    if err2:
+        return None, err2
+    return st.get("access_token") or "", None
+
+
+def _mcp_oauth_get_valid_access_token(server_row):
+    """Return a non-empty access_token, refreshing first if it has
+    expired (or is within the leeway window). Returns "" on failure
+    so callers degrade to an unauthenticated request that the upstream
+    server will reject with a useful 401."""
+    st = _mcp_oauth_state_get(server_row)
+    access = (st.get("access_token") or "").strip()
+    expires_at = st.get("expires_at")
+    needs_refresh = False
+    if not access:
+        needs_refresh = True
+    elif isinstance(expires_at, (int, float)):
+        if int(expires_at) - int(_time.time()) <= _MCP_OAUTH_TOKEN_LEEWAY_SEC:
+            needs_refresh = True
+    if needs_refresh and (st.get("refresh_token") or "").strip():
+        new_access, err = _mcp_oauth_refresh(server_row)
+        if err:
+            return ""
+        return new_access or ""
+    return access
 
 
 def _mcp_initialize(server_row):
@@ -6142,7 +6421,8 @@ def _exec_custom_mcp(name, args):
         srv = query_db(
             "SELECT id, name, description, transport, url, auth_type, "
             "       auth_header_name, auth_credential, enabled, "
-            "       allowed_for_admin, allowed_for_velo, connector_type "
+            "       allowed_for_admin, allowed_for_velo, connector_type, "
+            "       oauth_state "
             "FROM mcp_servers WHERE id = %s",
             (int(sid),), fetchone=True,
         )
@@ -7100,6 +7380,17 @@ _REDACTED_KEY_NAMES_LOWER = frozenset({
     "authorization",
     "bearer",
     "encrypted_config",
+    # V2 OAuth: client_secret + the access/refresh tokens we get back from
+    # the provider all live nested in mcp_servers.oauth_state (jsonb).
+    # mcp_servers itself is in _ADMIN_SQL_SECRET_READ_TABLES so free-form
+    # SQL can't reach them, but the recursive redactor still trims them
+    # if they show up in any other surfaced result (audit logs, the
+    # dedicated mcp tool returns, snapshot previews).
+    "client_secret",
+    "access_token",
+    "refresh_token",
+    "code_verifier",
+    "pending_code_verifier",
 })
 # Backwards-compat alias for code that still imports the old name.
 _REDACTED_ARG_KEYS = _REDACTED_KEY_NAMES_LOWER
@@ -7200,31 +7491,61 @@ def _admin_validate_mcp_server_fields(fields, for_update=False):
     """Re-run MCP-specific guards at execute time, defending against the
     bypass where the model uses the generic admin_propose_insert /
     admin_propose_update on mcp_servers (which skip the dedicated MCP
-    propose tools and their OAuth/transport checks). Returns an error
-    string or None.
+    propose tools and their transport / URL safety checks). Returns an
+    error string or None.
+
+    V2: auth_type='oauth' is allowed, but the about-to-be-stored
+    oauth_state must include the minimum config the redirect flow needs
+    (client_id, auth_url, token_url) and the auth_url + token_url must
+    pass the same SSRF check as the server URL.
     """
     if not isinstance(fields, dict) or not fields:
         return "no fields to write to mcp_servers"
+    if "transport" in fields:
+        t = (fields.get("transport") or "").strip().lower()
+        if t and t not in ("http", "streamable-http", "sse"):
+            return (f"Transport '{t}' is not supported. "
+                    "Use 'http' (Streamable HTTP) or 'sse'.")
+    for url_field in ("url",):
+        if url_field in fields:
+            u = (fields.get(url_field) or "").strip()
+            if not for_update and not u:
+                return f"{url_field} is required for a new MCP server"
+            if u:
+                ok, _parsed, err = _webhook_url_safe(u)
+                if not ok:
+                    return f"MCP {url_field} refused: {err or 'unsafe URL'}"
     auth_type = (fields.get("auth_type") or "").strip().lower() \
         if "auth_type" in fields else None
     if auth_type == "oauth":
-        return ("OAuth-flowed connectors are not enabled in V1. "
-                "Use auth_type 'none', 'bearer', or 'header'.")
-    if "transport" in fields:
-        t = (fields.get("transport") or "").strip().lower()
-        if t and t not in ("http", "streamable-http"):
-            return (f"Transport '{t}' is not supported in V1 — "
-                    "use 'http' (Streamable HTTP).")
-    if "url" in fields:
-        url = (fields.get("url") or "").strip()
-        if not for_update and not url:
-            return "url is required for a new MCP server"
-        if url:
-            ok, _parsed, err = _webhook_url_safe(url)
-            if not ok:
-                return f"MCP url refused: {err or 'unsafe URL'}"
+        st = fields.get("oauth_state")
+        if isinstance(st, str):
+            try:
+                st = json.loads(st)
+            except Exception:
+                st = None
+        if for_update and st is None:
+            # Update that just flips other fields; existing oauth_state
+            # row already has its config.
+            pass
+        else:
+            if not isinstance(st, dict):
+                return ("OAuth requires oauth_state with at least "
+                        "client_id, auth_url and token_url.")
+            for k in ("client_id", "auth_url", "token_url"):
+                v = st.get(k)
+                if isinstance(v, str):
+                    v = v.strip()
+                if not v:
+                    return f"OAuth oauth_state.{k} is required."
+            for url_field in ("auth_url", "token_url"):
+                u = (st.get(url_field) or "").strip()
+                if u:
+                    ok, _parsed, err = _webhook_url_safe(u)
+                    if not ok:
+                        return (f"OAuth oauth_state.{url_field} refused: "
+                                f"{err or 'unsafe URL'}")
     if not for_update:
-        # Insert path: name + url are mandatory.
         if not (fields.get("name") or "").strip():
             return "name is required for a new MCP server"
         if "url" not in fields:
@@ -8182,7 +8503,8 @@ def _admin_tool_mcp_test_server(server_id=None, **_):
     try:
         srv = query_db(
             "SELECT id, name, transport, url, auth_type, auth_header_name, "
-            "       auth_credential, enabled FROM mcp_servers WHERE id = %s",
+            "       auth_credential, enabled, oauth_state "
+            "FROM mcp_servers WHERE id = %s",
             (int(server_id),), fetchone=True,
         )
     except Exception as e:
@@ -8227,7 +8549,8 @@ def _admin_tool_mcp_refresh_tools(server_id=None, **_):
     try:
         srv = query_db(
             "SELECT id, name, transport, url, auth_type, auth_header_name, "
-            "       auth_credential, enabled FROM mcp_servers WHERE id = %s",
+            "       auth_credential, enabled, oauth_state "
+            "FROM mcp_servers WHERE id = %s",
             (int(server_id),), fetchone=True,
         )
     except Exception as e:
@@ -8248,7 +8571,9 @@ def _mcp_propose_fields_from_args(args, for_update=False):
     """Build the fields dict for an mcp_servers insert/update payload
     from the LLM-supplied args. Defends against the model trying to
     flip allowed_for_velo on by accident — Velo defaults to OFF for
-    new servers regardless of what the model passes."""
+    new servers regardless of what the model passes.
+    V2: also accepts oauth_state (the editable subset only — tokens
+    are NEVER settable by the model)."""
     fields = {}
     for k in ("name", "description", "url", "transport", "auth_type",
              "auth_header_name", "auth_credential"):
@@ -8257,6 +8582,29 @@ def _mcp_propose_fields_from_args(args, for_update=False):
     for k in ("enabled", "allowed_for_admin", "allowed_for_velo"):
         if k in args and args[k] is not None:
             fields[k] = bool(args[k])
+    if "oauth_state" in args and args["oauth_state"] is not None:
+        st_in = args["oauth_state"]
+        if isinstance(st_in, str):
+            try:
+                st_in = json.loads(st_in)
+            except Exception:
+                st_in = {}
+        if isinstance(st_in, dict):
+            cleaned_st = {}
+            for k in ("client_id", "auth_url", "token_url",
+                      "client_secret"):
+                v = st_in.get(k)
+                if v is not None:
+                    cleaned_st[k] = str(v)
+            if "scopes" in st_in:
+                sc = st_in.get("scopes")
+                if isinstance(sc, str):
+                    sc = [s.strip() for s in
+                          sc.replace(",", " ").split() if s.strip()]
+                if not isinstance(sc, list):
+                    sc = []
+                cleaned_st["scopes"] = [str(s) for s in sc]
+            fields["oauth_state"] = cleaned_st
     if not for_update:
         fields.setdefault("enabled", True)
         fields.setdefault("allowed_for_admin", True)
@@ -8271,21 +8619,29 @@ def _admin_tool_mcp_propose_add_server(name=None, url=None, description="",
                                         transport="http", auth_type="none",
                                         auth_header_name="",
                                         auth_credential=None,
+                                        oauth_state=None,
                                         allowed_for_velo=False,
                                         _session_id="", **_):
     if not name or not url:
         return {"error": "name and url are required"}
-    if auth_type == "oauth":
-        return {"error": "OAuth connectors are not enabled in V1. "
-                         "Use auth_type 'none', 'bearer', or 'header'."}
     fields = _mcp_propose_fields_from_args({
         "name": name, "url": url, "description": description,
         "transport": transport, "auth_type": auth_type,
         "auth_header_name": auth_header_name,
         "auth_credential": auth_credential,
+        "oauth_state": oauth_state,
         "allowed_for_velo": allowed_for_velo,
     }, for_update=False)
+    # T003: re-use the same validation the execute path runs, so the
+    # model gets a precise error at propose-time (bad URL, bad
+    # transport, missing OAuth config, etc.) instead of finding out
+    # only after the owner clicks Approve.
+    err = _admin_validate_mcp_server_fields(fields, for_update=False)
+    if err:
+        return {"error": err}
     cred_note = " (with credential)" if fields.get("auth_credential") else ""
+    if fields.get("auth_type") == "oauth":
+        cred_note = " (OAuth — connect after approval)"
     preview = (f"Add MCP server '{name}' at {url} "
                f"[transport={fields['transport']}, "
                f"auth={fields['auth_type']}{cred_note}, "
@@ -8301,27 +8657,38 @@ def _admin_tool_mcp_propose_update_server(server_id=None, name=None,
                                            transport=None, auth_type=None,
                                            auth_header_name=None,
                                            auth_credential=None,
+                                           oauth_state=None,
                                            enabled=None,
                                            allowed_for_admin=None,
                                            allowed_for_velo=None,
                                            _session_id="", **_):
     if server_id is None:
         return {"error": "server_id is required"}
-    if auth_type == "oauth":
-        return {"error": "OAuth connectors are not enabled in V1."}
     args = {"name": name, "description": description, "url": url,
             "transport": transport, "auth_type": auth_type,
             "auth_header_name": auth_header_name,
-            "auth_credential": auth_credential, "enabled": enabled,
+            "auth_credential": auth_credential,
+            "oauth_state": oauth_state,
+            "enabled": enabled,
             "allowed_for_admin": allowed_for_admin,
             "allowed_for_velo": allowed_for_velo}
     args = {k: v for k, v in args.items() if v is not None}
     if not args:
         return {"error": "no fields to update"}
     fields = _mcp_propose_fields_from_args(args, for_update=True)
+    # T003: same propose-time guard as add_server.
+    err = _admin_validate_mcp_server_fields(fields, for_update=True)
+    if err:
+        return {"error": err}
+    def _redact(k, v):
+        if k == "auth_credential":
+            return "***"
+        if k == "oauth_state" and isinstance(v, dict):
+            return {kk: ("***" if kk == "client_secret" else vv)
+                    for kk, vv in v.items()}
+        return v
     preview = (f"Update MCP server #{server_id}: "
-               + ", ".join(f"{k}={'***' if k=='auth_credential' else v}"
-                           for k, v in fields.items()))
+               + ", ".join(f"{k}={_redact(k, v)}" for k, v in fields.items()))
     return _admin_create_pending(_session_id, "update",
                                   target_table="mcp_servers",
                                   target_id=int(server_id),
@@ -8617,12 +8984,16 @@ ADMIN_TOOLS = [
     # ---- MCP CONNECTOR WRITE PROPOSALS (approval-gated) ----
     _admin_tool_schema(
         "admin_mcp_propose_add_server",
-        "Propose adding a new MCP server. V1 supports HTTP/SSE custom "
-        "URLs only — auth_type 'none', 'bearer', or 'header'. OAuth is "
-        "NOT supported yet. Velo (the visitor-facing chat) is OFF by "
-        "default for every new server; only flip it on after testing. "
-        "Returns awaiting_approval=true; the actual INSERT runs after "
-        "the owner clicks Approve.",
+        "Propose adding a new MCP server. Supports custom HTTP "
+        "(Streamable) and SSE servers. auth_type can be 'none', "
+        "'bearer', 'header', or 'oauth' (PKCE Authorization Code). "
+        "For OAuth, also pass oauth_state with client_id, auth_url, "
+        "token_url, and optionally client_secret + scopes — after "
+        "approval the owner clicks 'Connect via OAuth' on the "
+        "dashboard to acquire the access token. Velo (the "
+        "visitor-facing chat) is OFF by default for every new server; "
+        "only flip it on after testing. Returns awaiting_approval=true; "
+        "the actual INSERT runs after the owner clicks Approve.",
         {"type": "object",
          "properties": {
              "name": {"type": "string",
@@ -8635,15 +9006,36 @@ ADMIN_TOOLS = [
                                      "are blocked."},
              "description":      {"type": "string"},
              "transport":        {"type": "string",
-                                  "enum": ["http", "sse"]},
+                                  "enum": ["http", "streamable-http",
+                                           "sse"]},
              "auth_type":        {"type": "string",
-                                  "enum": ["none", "bearer", "header"]},
+                                  "enum": ["none", "bearer", "header",
+                                           "oauth"]},
              "auth_header_name": {"type": "string",
                                   "description": "Required when "
                                                  "auth_type='header'."},
              "auth_credential":  {"type": "string",
                                   "description": "Bearer token or header "
-                                                 "value. Stored as-is."},
+                                                 "value. Stored as-is. "
+                                                 "Leave empty for "
+                                                 "auth_type='oauth'."},
+             "oauth_state":      {"type": "object",
+                                  "description": "Required when "
+                                                 "auth_type='oauth'. "
+                                                 "Object with client_id, "
+                                                 "auth_url, token_url, "
+                                                 "and optionally "
+                                                 "client_secret + "
+                                                 "scopes (string list).",
+                                  "properties": {
+                                      "client_id":     {"type": "string"},
+                                      "client_secret": {"type": "string"},
+                                      "auth_url":      {"type": "string"},
+                                      "token_url":     {"type": "string"},
+                                      "scopes": {"type": "array",
+                                                 "items": {"type":
+                                                           "string"}},
+                                  }},
              "allowed_for_velo": {"type": "boolean",
                                   "description": "Default false. Only "
                                                  "set true after the "
@@ -8655,18 +9047,33 @@ ADMIN_TOOLS = [
         "admin_mcp_propose_update_server",
         "Propose editing an existing MCP server row. Pass only the "
         "fields you want to change. To rotate a credential pass "
-        "auth_credential.",
+        "auth_credential. To change OAuth client config pass "
+        "oauth_state — the existing tokens are merged in and not "
+        "overwritten.",
         {"type": "object",
          "properties": {
              "server_id":        {"type": "integer"},
              "name":             {"type": "string"},
              "description":      {"type": "string"},
              "url":              {"type": "string"},
-             "transport":        {"type": "string"},
+             "transport":        {"type": "string",
+                                  "enum": ["http", "streamable-http",
+                                           "sse"]},
              "auth_type":        {"type": "string",
-                                  "enum": ["none", "bearer", "header"]},
+                                  "enum": ["none", "bearer", "header",
+                                           "oauth"]},
              "auth_header_name": {"type": "string"},
              "auth_credential":  {"type": "string"},
+             "oauth_state":      {"type": "object",
+                                  "properties": {
+                                      "client_id":     {"type": "string"},
+                                      "client_secret": {"type": "string"},
+                                      "auth_url":      {"type": "string"},
+                                      "token_url":     {"type": "string"},
+                                      "scopes": {"type": "array",
+                                                 "items": {"type":
+                                                           "string"}},
+                                  }},
              "enabled":          {"type": "boolean"},
              "allowed_for_admin":{"type": "boolean"},
              "allowed_for_velo": {"type": "boolean"},
@@ -8860,17 +9267,22 @@ ADMIN_CHAT_SYSTEM_PROMPT = (
     "propose_remove_server / propose_toggle_velo / "
     "propose_toggle_enabled — same approval card flow as everything "
     "else.\n"
-    "V1 LIMITS — be honest with the owner about these:\n"
-    "  • Custom HTTP/SSE MCP servers only. auth_type can be 'none', "
-    "'bearer', or 'header'. OAuth connectors (Linear, GitHub, etc.) "
-    "are NOT enabled yet — the API will reject auth_type='oauth' "
-    "with a clear error.\n"
+    "RULES FOR MCP CONNECTORS:\n"
+    "  • Custom HTTP (Streamable) and SSE MCP servers are both "
+    "supported. auth_type can be 'none', 'bearer', 'header', or "
+    "'oauth'. For OAuth, propose with auth_type='oauth' and an "
+    "oauth_state object containing client_id, auth_url, token_url, "
+    "and (optionally) client_secret + scopes; after the owner "
+    "approves, they click 'Connect via OAuth' on the dashboard to "
+    "complete the authorization round-trip. The access token is "
+    "refreshed automatically.\n"
     "  • Velo (the visitor-facing chat) has access to a server's "
     "tools ONLY when allowed_for_velo is true. Default is OFF for "
     "every new server. Never propose toggling Velo on without an "
     "explicit ask from the owner — when in doubt, ask first.\n"
-    "  • Treat MCP credentials like any other secret: when the owner "
-    "shares one, do not echo it back in plain text in your reply.\n"
+    "  • Treat MCP credentials and OAuth client secrets like any "
+    "other secret: when the owner shares one, do not echo it back in "
+    "plain text in your reply.\n"
     "When the owner asks how to add a server, walk them through it: "
     "ask for the URL, the auth method (none/bearer/header), and the "
     "credential if any; propose the add; ask them to Approve; then "
@@ -9168,7 +9580,10 @@ def admin_chat_action_get(action_id):
     for k in ("created_at", "decided_at"):
         if hasattr(row.get(k), "isoformat"):
             row[k] = row[k].isoformat()
-    return jsonify(row)
+    # payload_json / result_json may carry MCP OAuth tokens or other
+    # secret-named values via nested dicts — strip them defensively
+    # before handing the row to the admin browser.
+    return jsonify(_redact_recursive(dict(row)))
 
 
 @app.route("/admin/api/chat/action/<int:action_id>/approve",
@@ -10977,7 +11392,10 @@ def admin_snapshot_detail(sid):
     for k in ("created_at", "reverted_at"):
         if hasattr(row.get(k), "isoformat"):
             row[k] = row[k].isoformat()
-    return jsonify(row)
+    # snapshot_json mirrors a full pre-change row, which for mcp_servers
+    # would include the raw oauth_state JSONB (tokens). Recursively
+    # redact secret-named keys before returning.
+    return jsonify(_redact_recursive(dict(row)))
 
 
 @app.route("/admin/api/snapshots/<int:sid>/revert", methods=["POST"])
@@ -11438,11 +11856,6 @@ def _normalize_mcp_server_payload(data, *, partial=False):
         if a not in _MCP_VALID_AUTH_TYPES:
             return None, ("auth_type must be one of: "
                           + ", ".join(_MCP_VALID_AUTH_TYPES))
-        if a == "oauth" and not MCP_CONNECTOR_BLUEPRINTS:
-            return None, ("OAuth connectors are not enabled yet (no "
-                          "connector blueprints registered). Use "
-                          "auth_type 'none', 'bearer', or 'header' for "
-                          "now.")
         out["auth_type"] = a
     if "auth_header_name" in data:
         out["auth_header_name"] = (data.get("auth_header_name") or "").strip()[:100]
@@ -11451,6 +11864,44 @@ def _normalize_mcp_server_payload(data, *, partial=False):
     if "connector_type" in data:
         ct = (data.get("connector_type") or "custom").strip().lower()[:50]
         out["connector_type"] = ct or "custom"
+    # V2 OAuth: accept the editable subset of oauth_state from the
+    # client. Tokens (access_token / refresh_token / expires_at /
+    # pending_state / pending_code_verifier) are NEVER writable from
+    # this surface — they only get set by the dedicated /oauth/start
+    # and /oauth/callback routes after a real provider round-trip.
+    if "oauth_state" in data:
+        st_in = data.get("oauth_state") or {}
+        if isinstance(st_in, str):
+            try:
+                st_in = json.loads(st_in)
+            except Exception:
+                st_in = {}
+        if not isinstance(st_in, dict):
+            return None, "oauth_state must be a JSON object"
+        cleaned_st = {}
+        for k in ("client_id", "auth_url", "token_url"):
+            v = st_in.get(k)
+            if v is not None:
+                cleaned_st[k] = (str(v) or "").strip()[:1000]
+        if "client_secret" in st_in:
+            cleaned_st["client_secret"] = (st_in.get("client_secret")
+                                            or "")[:4000]
+        if "scopes" in st_in:
+            sc = st_in.get("scopes")
+            if isinstance(sc, str):
+                sc = [s.strip() for s in
+                      sc.replace(",", " ").split() if s.strip()]
+            if not isinstance(sc, list):
+                sc = []
+            cleaned_st["scopes"] = [str(s)[:200] for s in sc][:50]
+        for url_field in ("auth_url", "token_url"):
+            u = (cleaned_st.get(url_field) or "").strip()
+            if u:
+                ok, _u, err = _webhook_url_safe(u)
+                if not ok:
+                    return None, (f"oauth_state.{url_field} refused: "
+                                  f"{err or 'unsafe URL'}")
+        out["oauth_state_editable"] = cleaned_st
     for boolfield in ("enabled", "allowed_for_admin", "allowed_for_velo"):
         if boolfield in data:
             v = data.get(boolfield)
@@ -11461,12 +11912,33 @@ def _normalize_mcp_server_payload(data, *, partial=False):
 
 def _mcp_server_public_dict(row):
     """Strip the credential before returning over the wire — admins see
-    a "set / not set" hint, never the raw token."""
+    a "set / not set" hint, never the raw token. For V2 OAuth, the
+    editable config (client_id, auth_url, token_url, scopes) is
+    surfaced; client_secret + access_token + refresh_token are NOT."""
     if not row:
         return None
     out = dict(row)
     cred = out.pop("auth_credential", "")
     out["auth_credential_set"] = bool((cred or "").strip())
+    st = out.pop("oauth_state", None)
+    if isinstance(st, str):
+        try:
+            st = json.loads(st)
+        except Exception:
+            st = {}
+    if not isinstance(st, dict):
+        st = {}
+    public_st = {
+        "client_id":  st.get("client_id") or "",
+        "auth_url":   st.get("auth_url") or "",
+        "token_url":  st.get("token_url") or "",
+        "scopes":     st.get("scopes") or [],
+        "client_secret_set": bool(st.get("client_secret")),
+        "connected":  bool(st.get("access_token") or st.get("refresh_token")),
+        "expires_at": st.get("expires_at"),
+        "last_oauth_error": st.get("last_oauth_error") or "",
+    }
+    out["oauth_state"] = public_st
     for k in ("created_at", "updated_at", "last_test_at"):
         if hasattr(out.get(k), "isoformat"):
             out[k] = out[k].isoformat()
@@ -11533,7 +12005,7 @@ def admin_mcp_servers_list():
         "SELECT id, name, description, transport, url, auth_type, "
         "       auth_header_name, auth_credential, enabled, "
         "       allowed_for_admin, allowed_for_velo, connector_type, "
-        "       last_test_at, last_test_ok, last_test_error, "
+        "       oauth_state, last_test_at, last_test_ok, last_test_error, "
         "       created_at, updated_at "
         "FROM mcp_servers ORDER BY id DESC"
     ) or []
@@ -11550,13 +12022,21 @@ def admin_mcp_servers_create():
     if query_db("SELECT 1 FROM mcp_servers WHERE name = %s",
                 (cleaned["name"],), fetchone=True):
         return jsonify({"error": f"an MCP server named '{cleaned['name']}' already exists"}), 409
+    if cleaned.get("auth_type") == "oauth":
+        st = cleaned.get("oauth_state_editable") or {}
+        for k in ("client_id", "auth_url", "token_url"):
+            if not (st.get(k) or "").strip():
+                return jsonify({"error": (
+                    f"OAuth requires oauth_state.{k}.")}), 400
+    initial_state = cleaned.get("oauth_state_editable") or {}
     try:
         row = execute_db(
             "INSERT INTO mcp_servers "
             "(name, description, transport, url, auth_type, "
             " auth_header_name, auth_credential, enabled, "
-            " allowed_for_admin, allowed_for_velo, connector_type) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            " allowed_for_admin, allowed_for_velo, connector_type, "
+            " oauth_state) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb) "
             "RETURNING *",
             (
                 cleaned["name"], cleaned.get("description", ""),
@@ -11568,6 +12048,7 @@ def admin_mcp_servers_create():
                 cleaned.get("allowed_for_admin", True),
                 cleaned.get("allowed_for_velo", False),
                 cleaned.get("connector_type", "custom"),
+                json.dumps(initial_state),
             ),
         )
     except psycopg2.IntegrityError:
@@ -11598,6 +12079,23 @@ def admin_mcp_servers_update(rid):
               "allowed_for_admin", "allowed_for_velo", "connector_type"):
         if k in cleaned:
             sets.append(f"{k} = %s"); params.append(cleaned[k])
+    # OAuth state: shallow-merge the editable subset into existing
+    # oauth_state, so this PUT never wipes the access_token / refresh_
+    # token / expires_at the /oauth/callback route stored.
+    if "oauth_state_editable" in cleaned:
+        existing_st = existing.get("oauth_state") or {}
+        if isinstance(existing_st, str):
+            try:
+                existing_st = json.loads(existing_st)
+            except Exception:
+                existing_st = {}
+        if not isinstance(existing_st, dict):
+            existing_st = {}
+        merged = dict(existing_st)
+        for k, v in (cleaned["oauth_state_editable"] or {}).items():
+            merged[k] = v
+        sets.append("oauth_state = %s::jsonb")
+        params.append(json.dumps(merged))
     sets.append("updated_at = NOW()"); params.append(rid)
     row = execute_db(
         f"UPDATE mcp_servers SET {', '.join(sets)} "
@@ -11621,6 +12119,123 @@ def admin_mcp_servers_delete(rid):
     execute_db("DELETE FROM mcp_servers WHERE id = %s", (rid,))
     sync_custom_skills_to_agent_skills()
     return jsonify({"deleted": True, "id": rid})
+
+
+@app.route("/admin/api/mcp/servers/<int:rid>/oauth/start", methods=["POST"])
+@admin_required
+def admin_mcp_servers_oauth_start(rid):
+    """Begin a PKCE Authorization Code round-trip. Returns the URL the
+    browser should send the admin to (the dashboard opens this in a
+    popup). The pending state + verifier are stored in oauth_state and
+    matched in the callback below."""
+    row = query_db("SELECT * FROM mcp_servers WHERE id = %s",
+                   (rid,), fetchone=True)
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    if (row.get("auth_type") or "").strip().lower() != "oauth":
+        return jsonify({"error": "this server is not configured for OAuth"}), 400
+    url, err = _mcp_oauth_start_url(row)
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"redirect_url": url})
+
+
+@app.route("/admin/oauth/mcp/callback", methods=["GET"])
+@admin_required
+def admin_oauth_mcp_callback():
+    """Provider redirect target. Reconciles the returned `state` against
+    every mcp_servers row that has a pending OAuth flow, then exchanges
+    the code for tokens. Renders a tiny page that closes the popup so
+    the dashboard can refresh its OAuth status badge."""
+    code  = (request.args.get("code")  or "").strip()
+    state = (request.args.get("state") or "").strip()
+    err_q = (request.args.get("error") or "").strip()
+    err_d = (request.args.get("error_description") or "").strip()
+    msg = ""
+    success = False
+    if err_q:
+        msg = f"Provider returned an error: {err_q} {err_d}".strip()
+    elif not code or not state:
+        msg = "Missing code or state in OAuth callback."
+    else:
+        # Find the row whose pending_state matches. Constant-time
+        # compare on each candidate is fine — the candidate set is
+        # tiny (one in-flight OAuth at a time per server).
+        candidates = query_db(
+            "SELECT * FROM mcp_servers "
+            "WHERE auth_type = 'oauth' "
+            "  AND oauth_state ? 'pending_state'") or []
+        match = None
+        import hmac as _hmac
+        for r in candidates:
+            st = _mcp_oauth_state_get(r)
+            if _hmac.compare_digest(st.get("pending_state") or "",
+                                     state):
+                match = r
+                break
+        if not match:
+            msg = ("OAuth state did not match any pending server. The "
+                   "flow may have expired — start over from the "
+                   "dashboard.")
+        else:
+            err = _mcp_oauth_exchange_code(match, code, state)
+            if err:
+                msg = f"Token exchange failed: {err}"
+            else:
+                success = True
+                msg = (f"Connected MCP server '{match.get('name')}' "
+                       f"successfully. You may close this window.")
+    safe_msg = html_module.escape(msg)
+    badge = ("background:#16a34a;color:#fff" if success
+             else "background:#dc2626;color:#fff")
+    body = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>MCP OAuth — {'Success' if success else 'Failed'}</title>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI',
+          Roboto, sans-serif; padding: 32px; max-width: 560px;
+          margin: 0 auto; color: #111827; }}
+  .badge {{ display: inline-block; padding: 6px 12px; border-radius:
+            999px; font-size: 13px; font-weight: 600; {badge}; }}
+  p {{ line-height: 1.5; }}
+  button {{ background:#111827; color:#fff; border:0; padding:10px 18px;
+            border-radius:6px; font-size:14px; cursor:pointer; }}
+</style></head><body>
+<p><span class="badge">{'OAuth complete' if success else 'OAuth failed'}</span></p>
+<p>{safe_msg}</p>
+<button onclick="window.close()">Close window</button>
+<script>
+  try {{
+    if (window.opener && !window.opener.closed) {{
+      window.opener.postMessage({{ type: 'mcp_oauth_done',
+                                   ok: {str(success).lower()} }}, '*');
+    }}
+  }} catch (e) {{ /* ignore */ }}
+  setTimeout(function() {{ try {{ window.close(); }} catch(e) {{}} }}, 2500);
+</script>
+</body></html>"""
+    return body, (200 if success else 400), {"Content-Type": "text/html"}
+
+
+@app.route("/admin/api/mcp/servers/<int:rid>/oauth/disconnect",
+           methods=["POST"])
+@admin_required
+def admin_mcp_servers_oauth_disconnect(rid):
+    """Wipe access_token + refresh_token + expires_at, leaving the
+    client config (client_id, auth_url, token_url, scopes) intact so
+    the admin can reconnect without re-typing them."""
+    row = query_db("SELECT * FROM mcp_servers WHERE id = %s",
+                   (rid,), fetchone=True)
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    st = _mcp_oauth_state_get(row)
+    for k in ("access_token", "refresh_token", "expires_at",
+              "connected_at", "token_type",
+              "pending_state", "pending_code_verifier",
+              "pending_started_at", "last_oauth_error"):
+        st.pop(k, None)
+    _mcp_oauth_state_persist(rid, st)
+    return jsonify({"disconnected": True, "id": rid})
 
 
 @app.route("/admin/api/mcp/servers/<int:rid>/test", methods=["POST"])

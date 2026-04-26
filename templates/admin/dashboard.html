@@ -17879,6 +17879,7 @@ TO CUSTOMIZE THIS DASHBOARD:
                 <div style="font-weight:600;">${escHtml(r.name)}
                   <span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;background:${statusColor}20;color:${statusColor};margin-left:6px;" data-testid="status-mcp-${r.id}">${statusText}</span>
                   <span style="font-weight:400;color:#777;font-size:12px;margin-left:6px;">${escHtml(r.transport || 'http')} · ${escHtml(r.auth_type || 'none')}</span>
+                  ${r.auth_type === 'oauth' ? `<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;background:${(r.oauth_state && r.oauth_state.connected) ? '#16a34a' : '#9ca3af'};color:#fff;margin-left:6px;" data-testid="badge-mcp-oauth-${r.id}">OAuth: ${(r.oauth_state && r.oauth_state.connected) ? 'connected' : 'not connected'}</span>` : ''}
                 </div>
                 <div style="color:#555;font-size:12px;font-family:monospace;margin-top:4px;word-break:break-all;">${escHtml(r.url)}</div>
                 ${r.description ? `<div style="color:#555;font-size:13px;margin-top:4px;">${escHtml(r.description)}</div>` : ''}
@@ -17981,7 +17982,10 @@ TO CUSTOMIZE THIS DASHBOARD:
       const row = isEdit
         ? ((window._mcpServersCache || []).find(r => r.id === id) || {})
         : { name:'', description:'', transport:'http', url:'', auth_type:'none',
-            auth_header_name:'', allowed_for_admin:true, allowed_for_velo:false, enabled:true };
+            auth_header_name:'', allowed_for_admin:true, allowed_for_velo:false, enabled:true,
+            oauth_state:{ client_id:'', auth_url:'', token_url:'', scopes:[],
+                          client_secret_set:false, connected:false } };
+      const oa = row.oauth_state || {};
       document.getElementById('mcp-server-editor-title').textContent = isEdit ? 'Edit MCP server' : 'Add MCP server';
       document.getElementById('mcp-server-editor-error').textContent = '';
       document.getElementById('mcp-server-editor-body').innerHTML = `
@@ -18013,7 +18017,7 @@ TO CUSTOMIZE THIS DASHBOARD:
               <option value="none"${row.auth_type === 'none' ? ' selected' : ''}>None</option>
               <option value="bearer"${row.auth_type === 'bearer' ? ' selected' : ''}>Bearer token</option>
               <option value="header"${row.auth_type === 'header' ? ' selected' : ''}>Custom header</option>
-              <option value="oauth"${row.auth_type === 'oauth' ? ' selected' : ''} disabled>OAuth (coming soon)</option>
+              <option value="oauth"${row.auth_type === 'oauth' ? ' selected' : ''}>OAuth (Authorization Code + PKCE)</option>
             </select>
           </div>
         </div>
@@ -18025,18 +18029,53 @@ TO CUSTOMIZE THIS DASHBOARD:
           <label style="font-weight:600;">Credential ${isEdit && row.auth_credential_set ? '(leave blank to keep current)' : ''}</label>
           <input id="mcp-auth-credential" type="password" value="" placeholder="${isEdit && row.auth_credential_set ? '••••••••' : 'token / api key'}" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:monospace;" data-testid="input-mcp-auth-credential">
         </div>
+        <div id="mcp-oauth-row" style="margin-bottom:12px;display:${row.auth_type === 'oauth' ? 'block' : 'none'};border:1px solid #e5e5e5;border-radius:8px;padding:12px;background:#fafafa;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <div style="font-weight:600;">OAuth client config</div>
+            <span id="mcp-oauth-status" style="font-size:12px;padding:3px 9px;border-radius:999px;background:${oa.connected ? '#16a34a' : '#9ca3af'};color:#fff;" data-testid="badge-mcp-oauth-status">${oa.connected ? 'Connected' : 'Not connected'}</span>
+          </div>
+          <div style="display:flex;gap:10px;margin-bottom:10px;">
+            <div style="flex:1;">
+              <label style="font-weight:600;font-size:13px;">Client ID <span style="color:#b94a48;">*</span></label>
+              <input id="mcp-oauth-client-id" type="text" value="${escHtml(oa.client_id || '')}" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;font-family:monospace;" data-testid="input-mcp-oauth-client-id">
+            </div>
+            <div style="flex:1;">
+              <label style="font-weight:600;font-size:13px;">Client secret ${oa.client_secret_set ? '(leave blank to keep)' : '(optional, public PKCE clients can omit)'}</label>
+              <input id="mcp-oauth-client-secret" type="password" value="" placeholder="${oa.client_secret_set ? '••••••••' : ''}" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;font-family:monospace;" data-testid="input-mcp-oauth-client-secret">
+            </div>
+          </div>
+          <div style="margin-bottom:10px;">
+            <label style="font-weight:600;font-size:13px;">Authorize URL <span style="color:#b94a48;">*</span></label>
+            <input id="mcp-oauth-auth-url" type="url" value="${escHtml(oa.auth_url || '')}" placeholder="https://provider.example.com/oauth/authorize" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;font-family:monospace;" data-testid="input-mcp-oauth-auth-url">
+          </div>
+          <div style="margin-bottom:10px;">
+            <label style="font-weight:600;font-size:13px;">Token URL <span style="color:#b94a48;">*</span></label>
+            <input id="mcp-oauth-token-url" type="url" value="${escHtml(oa.token_url || '')}" placeholder="https://provider.example.com/oauth/token" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;font-family:monospace;" data-testid="input-mcp-oauth-token-url">
+          </div>
+          <div style="margin-bottom:10px;">
+            <label style="font-weight:600;font-size:13px;">Scopes (space- or comma-separated)</label>
+            <input id="mcp-oauth-scopes" type="text" value="${escHtml((oa.scopes || []).join(' '))}" placeholder="read write" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;font-family:monospace;" data-testid="input-mcp-oauth-scopes">
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-primary" ${isEdit ? '' : 'disabled title="Save the server first, then connect"'} onclick="connectMCPOAuth(${isEdit ? id : 'null'})" data-testid="button-mcp-oauth-connect" style="padding:6px 14px;font-size:13px;">${oa.connected ? 'Reconnect via OAuth' : 'Connect via OAuth'}</button>
+            ${isEdit && oa.connected ? `<button type="button" class="btn btn-secondary" onclick="disconnectMCPOAuth(${id})" data-testid="button-mcp-oauth-disconnect" style="padding:6px 14px;font-size:13px;">Disconnect</button>` : ''}
+            ${oa.last_oauth_error ? `<div style="color:#b94a48;font-size:12px;flex-basis:100%;margin-top:6px;">Last error: ${escHtml(oa.last_oauth_error)}</div>` : ''}
+          </div>
+          <div style="color:#777;font-size:12px;margin-top:8px;">Redirect URI to register with the provider: <code>${window.location.origin}/admin/oauth/mcp/callback</code></div>
+        </div>
         <div style="display:flex;gap:18px;flex-wrap:wrap;">
           <label style="display:flex;align-items:center;gap:6px;"><input id="mcp-enabled" type="checkbox" ${row.enabled ? 'checked' : ''} data-testid="input-mcp-enabled"> Enabled</label>
           <label style="display:flex;align-items:center;gap:6px;"><input id="mcp-allowed-admin" type="checkbox" ${row.allowed_for_admin !== false ? 'checked' : ''} data-testid="input-mcp-allowed-admin"> Admin assistant can use</label>
           <label style="display:flex;align-items:center;gap:6px;" title="OFF by default. Turn on only after you have tested the server."><input id="mcp-allowed-velo" type="checkbox" ${row.allowed_for_velo ? 'checked' : ''} data-testid="input-mcp-allowed-velo"> Visitor agent (Velo) can use</label>
         </div>`;
-      document.getElementById('mcp-server-save-btn').onclick = async () => {
+      const buildBody = () => {
+        const at = document.getElementById('mcp-auth-type').value;
         const body = {
           name: document.getElementById('mcp-name').value.trim(),
           description: document.getElementById('mcp-description').value.trim(),
           url: document.getElementById('mcp-url').value.trim(),
           transport: document.getElementById('mcp-transport').value,
-          auth_type: document.getElementById('mcp-auth-type').value,
+          auth_type: at,
           auth_header_name: document.getElementById('mcp-auth-header-name').value.trim(),
           enabled: document.getElementById('mcp-enabled').checked,
           allowed_for_admin: document.getElementById('mcp-allowed-admin').checked,
@@ -18044,6 +18083,23 @@ TO CUSTOMIZE THIS DASHBOARD:
         };
         const cred = document.getElementById('mcp-auth-credential').value;
         if (cred) body.auth_credential = cred;
+        if (at === 'oauth') {
+          const scopesRaw = document.getElementById('mcp-oauth-scopes').value || '';
+          const scopes = scopesRaw.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+          const oauth_state = {
+            client_id:  document.getElementById('mcp-oauth-client-id').value.trim(),
+            auth_url:   document.getElementById('mcp-oauth-auth-url').value.trim(),
+            token_url:  document.getElementById('mcp-oauth-token-url').value.trim(),
+            scopes:     scopes,
+          };
+          const sec = document.getElementById('mcp-oauth-client-secret').value;
+          if (sec) oauth_state.client_secret = sec;
+          body.oauth_state = oauth_state;
+        }
+        return body;
+      };
+      const saveServer = async () => {
+        const body = buildBody();
         const url = isEdit ? '/admin/api/mcp/servers/' + id : '/admin/api/mcp/servers';
         const r = await fetch(url, {
           method: isEdit ? 'PUT' : 'POST', credentials:'same-origin',
@@ -18053,11 +18109,17 @@ TO CUSTOMIZE THIS DASHBOARD:
         const data = await r.json();
         if (!r.ok || data.error) {
           document.getElementById('mcp-server-editor-error').textContent = data.error || ('HTTP ' + r.status);
-          return;
+          return null;
         }
+        return data;
+      };
+      document.getElementById('mcp-server-save-btn').onclick = async () => {
+        const data = await saveServer();
+        if (!data) return;
         closeMCPServerEditor();
         loadMCPServersList();
       };
+      window._mcpSaveCurrentServer = saveServer;
       document.getElementById('mcp-server-editor').style.display = 'flex';
     };
 
@@ -18065,9 +18127,59 @@ TO CUSTOMIZE THIS DASHBOARD:
       const t = document.getElementById('mcp-auth-type').value;
       document.getElementById('mcp-auth-header-row').style.display = (t === 'header') ? 'block' : 'none';
       document.getElementById('mcp-auth-credential-row').style.display = (t === 'bearer' || t === 'header') ? 'block' : 'none';
+      const oauthRow = document.getElementById('mcp-oauth-row');
+      if (oauthRow) oauthRow.style.display = (t === 'oauth') ? 'block' : 'none';
+    };
+
+    window.connectMCPOAuth = async function(serverId) {
+      const errBox = document.getElementById('mcp-server-editor-error');
+      errBox.textContent = '';
+      // Save the current form first so the latest client_id / urls /
+      // scopes / client_secret are persisted before the round-trip.
+      if (window._mcpSaveCurrentServer) {
+        const saved = await window._mcpSaveCurrentServer();
+        if (!saved) return;
+        if (!serverId && saved.id) serverId = saved.id;
+      }
+      if (!serverId) { errBox.textContent = 'Save the server first.'; return; }
+      const r = await fetch('/admin/api/mcp/servers/' + serverId + '/oauth/start',
+                            { method:'POST', credentials:'same-origin' });
+      const data = await r.json();
+      if (!r.ok || data.error) {
+        errBox.textContent = data.error || ('HTTP ' + r.status);
+        return;
+      }
+      const popup = window.open(data.redirect_url, 'mcp_oauth',
+                                'width=560,height=720,resizable=yes,scrollbars=yes');
+      if (!popup) {
+        errBox.textContent = 'Popup blocked — allow popups for this site, then click Connect again.';
+        return;
+      }
+      const onMsg = (ev) => {
+        if (ev.data && ev.data.type === 'mcp_oauth_done') {
+          window.removeEventListener('message', onMsg);
+          loadMCPServersList();
+          // Reopen the editor on the same server so the badge refreshes.
+          setTimeout(() => openMCPServerEditor(serverId), 200);
+        }
+      };
+      window.addEventListener('message', onMsg);
+    };
+
+    window.disconnectMCPOAuth = async function(serverId) {
+      if (!confirm('Disconnect this OAuth integration? The access and refresh tokens will be wiped, but the client config is kept so you can reconnect.')) return;
+      const r = await fetch('/admin/api/mcp/servers/' + serverId + '/oauth/disconnect',
+                            { method:'POST', credentials:'same-origin' });
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        alert(data.error || ('HTTP ' + r.status)); return;
+      }
+      loadMCPServersList();
+      openMCPServerEditor(serverId);
     };
 
     window.closeMCPServerEditor = function() {
+      window._mcpSaveCurrentServer = null;
       document.getElementById('mcp-server-editor').style.display = 'none';
     };
 
