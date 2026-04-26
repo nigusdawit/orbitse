@@ -12174,9 +12174,16 @@ def admin_generate_narration(pid):
         "emoji, no labels — just the spoken sentences."
     )
 
+    def _strip_image(content_list):
+        """Return a copy of multimodal content with image_url parts
+        removed — used when the LLM provider rejects vision input."""
+        return [c for c in content_list if c.get("type") != "image_url"]
+
     def _gen_one(slide):
+        content = _build_user_content(slide)
+        had_image = any(c.get("type") == "image_url" for c in content)
+        # Attempt 1: full multimodal (vision) request.
         try:
-            content = _build_user_content(slide)
             resp = openai_client.chat.completions.create(
                 model="gpt-4o-mini",   # supports vision
                 messages=[
@@ -12187,9 +12194,48 @@ def admin_generate_narration(pid):
                 max_tokens=220,
             )
             txt = (resp.choices[0].message.content or "").strip()
-            return slide["id"], txt, None
+            if txt:
+                return slide["id"], txt, None
+            # Empty response with image — try again text-only below.
+            first_err = "model returned empty narration"
         except Exception as e:
-            return slide["id"], "", str(e)[:300]
+            first_err = str(e)[:300]
+            print(
+                f"[generate-narration] slide={slide['id']} pos={slide['order_index']+1} "
+                f"vision-call failed: {first_err}"
+            )
+        # Attempt 2: text-only fallback. Some LLM proxies don't support
+        # image_url content parts; instead of giving up, drop the image
+        # and retry so the admin still gets *some* narration written
+        # from the slide's text context (deck title, position, body,
+        # extracted text, adjacent slide summaries).
+        if had_image:
+            try:
+                resp = openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": sys_msg},
+                        {"role": "user",   "content": _strip_image(content)},
+                    ],
+                    temperature=0.7,
+                    max_tokens=220,
+                )
+                txt = (resp.choices[0].message.content or "").strip()
+                if txt:
+                    return slide["id"], txt, None
+            except Exception as e2:
+                print(
+                    f"[generate-narration] slide={slide['id']} pos={slide['order_index']+1} "
+                    f"text-only fallback also failed: {str(e2)[:300]}"
+                )
+                return slide["id"], "", f"vision: {first_err}; text-only: {str(e2)[:240]}"
+        return slide["id"], "", first_err
+
+    print(
+        f"[generate-narration] deck={pid} force={force} "
+        f"slides_total={len(slides)} targets={len(targets)} "
+        f"first_target_image_url={(targets[0].get('image_url') if targets else None)!r}"
+    )
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
     results = {}            # slide_id -> narration string
