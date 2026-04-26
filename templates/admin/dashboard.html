@@ -336,13 +336,24 @@ TO CUSTOMIZE THIS DASHBOARD:
       padding: 22px;
       box-shadow: 0 20px 60px rgba(0,0,0,0.5);
     }
+    /* Dark-theme inputs applied across the whole admin dashboard
+       (modals, tabs, editors). Inline width/padding/font-family
+       overrides on individual inputs continue to work because they
+       have higher specificity than these element-level rules. */
     .admin-modal-panel input[type="text"],
     .admin-modal-panel input[type="url"],
     .admin-modal-panel input[type="password"],
     .admin-modal-panel input[type="email"],
     .admin-modal-panel input[type="number"],
     .admin-modal-panel select,
-    .admin-modal-panel textarea {
+    .admin-modal-panel textarea,
+    .tab-content input[type="text"],
+    .tab-content input[type="url"],
+    .tab-content input[type="password"],
+    .tab-content input[type="email"],
+    .tab-content input[type="number"],
+    .tab-content select,
+    .tab-content textarea {
       background: var(--admin-bg);
       color: var(--admin-text);
       border: 1px solid var(--admin-border);
@@ -356,15 +367,35 @@ TO CUSTOMIZE THIS DASHBOARD:
     .admin-modal-panel input[type="email"]:focus,
     .admin-modal-panel input[type="number"]:focus,
     .admin-modal-panel select:focus,
-    .admin-modal-panel textarea:focus {
+    .admin-modal-panel textarea:focus,
+    .tab-content input[type="text"]:focus,
+    .tab-content input[type="url"]:focus,
+    .tab-content input[type="password"]:focus,
+    .tab-content input[type="email"]:focus,
+    .tab-content input[type="number"]:focus,
+    .tab-content select:focus,
+    .tab-content textarea:focus {
       outline: none;
       border-color: rgba(255,255,255,0.3);
     }
     .admin-modal-panel input::placeholder,
-    .admin-modal-panel textarea::placeholder {
+    .admin-modal-panel textarea::placeholder,
+    .tab-content input::placeholder,
+    .tab-content textarea::placeholder {
       color: var(--admin-text-muted);
     }
-    .admin-modal-panel code {
+    .admin-modal-panel input:disabled,
+    .admin-modal-panel select:disabled,
+    .admin-modal-panel textarea:disabled,
+    .tab-content input:disabled,
+    .tab-content select:disabled,
+    .tab-content textarea:disabled {
+      background: rgba(255,255,255,0.03);
+      color: var(--admin-text-muted);
+      cursor: not-allowed;
+    }
+    .admin-modal-panel code,
+    .tab-content code {
       background: rgba(255,255,255,0.06);
       color: var(--admin-text);
       padding: 1px 5px;
@@ -4231,7 +4262,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     </div>
     <div id="skills-list" data-testid="list-skills" style="display:grid;gap:8px;margin-bottom:24px;"></div>
     <div class="section-header-admin"><div><h3>Recent Skill Calls</h3><p>The last 100 times the AI used a skill.</p></div></div>
-    <div id="skills-usage" data-testid="list-skills-usage" style="font-family:monospace;font-size:12px;max-height:340px;overflow:auto;border:1px solid #e5e5e5;border-radius:8px;padding:10px;background:#fafafa;"></div>
+    <div id="skills-usage" data-testid="list-skills-usage" style="font-family:monospace;font-size:12px;max-height:340px;overflow:auto;border:1px solid var(--admin-border);border-radius:8px;padding:10px;background:var(--admin-surface);color:var(--admin-text);"></div>
   </div>
 
   <!-- ========================================================================
@@ -4290,7 +4321,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           <button class="btn btn-secondary" onclick="closeCustomSkillEditor()" data-testid="button-cancel-custom-skill">Cancel</button>
           <button class="btn btn-primary" id="custom-skill-save-btn" data-testid="button-save-custom-skill">Save</button>
         </div>
-        <div id="custom-skill-editor-error" style="color:#b94a48;margin-top:10px;font-size:13px;"></div>
+        <div id="custom-skill-editor-error" style="color:#fca5a5;margin-top:10px;font-size:13px;"></div>
       </div>
     </div>
   </div>
@@ -4322,7 +4353,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           <button class="btn btn-secondary" onclick="closeMCPServerEditor()" data-testid="button-cancel-mcp-server">Cancel</button>
           <button class="btn btn-primary" id="mcp-server-save-btn" data-testid="button-save-mcp-server">Save</button>
         </div>
-        <div id="mcp-server-editor-error" style="color:#b94a48;margin-top:10px;font-size:13px;"></div>
+        <div id="mcp-server-editor-error" style="color:#fca5a5;margin-top:10px;font-size:13px;"></div>
       </div>
     </div>
   </div>
@@ -4359,15 +4390,15 @@ TO CUSTOMIZE THIS DASHBOARD:
           <label style="display:flex;align-items:center;gap:6px;"><input type="radio" name="llm-provider" value="openai" data-testid="radio-provider-openai"> OpenAI</label>
           <label style="display:flex;align-items:center;gap:6px;"><input type="radio" name="llm-provider" value="claude" data-testid="radio-provider-claude"> Claude (Anthropic)</label>
         </div>
-        <div id="llm-provider-warning" style="color:#b94a48;font-size:13px;margin-top:6px;"></div>
+        <div id="llm-provider-warning" style="color:#fca5a5;font-size:13px;margin-top:6px;"></div>
       </div>
       <div class="form-row" style="margin-bottom:14px;">
         <label for="openai-model" style="font-weight:600;">OpenAI Model</label>
-        <input id="openai-model" type="text" placeholder="gpt-4o-mini" data-testid="input-openai-model" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;">
+        <input id="openai-model" type="text" placeholder="gpt-4o-mini" data-testid="input-openai-model" style="width:100%;padding:8px;">
       </div>
       <div class="form-row" style="margin-bottom:18px;">
         <label for="claude-model" style="font-weight:600;">Claude Model</label>
-        <input id="claude-model" type="text" placeholder="claude-sonnet-4-5" data-testid="input-claude-model" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;">
+        <input id="claude-model" type="text" placeholder="claude-sonnet-4-5" data-testid="input-claude-model" style="width:100%;padding:8px;">
       </div>
       <button class="btn btn-primary" onclick="saveLlmProvider()" data-testid="button-save-llm-provider">Save</button>
     </div>
@@ -5546,7 +5577,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           </tr>
         </thead>
         <tbody id="pages-table-body" data-testid="table-pages-body">
-          <tr><td colspan="5" style="text-align:center; color:#888;">Loading…</td></tr>
+          <tr><td colspan="5" style="text-align:center; color:var(--admin-text-muted);">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -5734,7 +5765,7 @@ TO CUSTOMIZE THIS DASHBOARD:
             </tr>
           </thead>
           <tbody id="scrape-schedules-tbody" data-testid="table-scrape-schedules">
-            <tr><td colspan="7" class="empty-state" style="text-align:center; color:#888;">Loading…</td></tr>
+            <tr><td colspan="7" class="empty-state" style="text-align:center; color:var(--admin-text-muted);">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -5828,7 +5859,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           </tr>
         </thead>
         <tbody id="scrape-jobs-tbody" data-testid="table-scrape-jobs">
-          <tr><td colspan="5" class="empty-state" style="text-align:center; color:#888;">Loading…</td></tr>
+          <tr><td colspan="5" class="empty-state" style="text-align:center; color:var(--admin-text-muted);">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -10835,7 +10866,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         if (!tbody) return;
 
         if (!pages.length) {
-          tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:#888;">No saved pages yet. Ask the AI to generate something!</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--admin-text-muted);">No saved pages yet. Ask the AI to generate something!</td></tr>';
           return;
         }
 
@@ -11031,7 +11062,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       const tbody = document.getElementById('sphere-images-body');
       if (!tbody) return;
       if (!images.length) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:#888;">No custom images yet</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--admin-text-muted);">No custom images yet</td></tr>';
         return;
       }
       tbody.innerHTML = images.map(img => `
@@ -13712,7 +13743,7 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     async function loadScrapeJobs() {
       const tbody = document.getElementById('scrape-jobs-tbody');
-      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:#888;">Loading…</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--admin-text-muted);">Loading…</td></tr>';
       try {
         const r = await fetch('/admin/api/scrape-jobs', { credentials: 'same-origin' });
         const rows = await r.json();
@@ -13731,7 +13762,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     function renderScrapeJobsTable(rows) {
       const tbody = document.getElementById('scrape-jobs-tbody');
       if (!rows || rows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="empty-state" style="text-align:center; color:#888;">No scrape jobs yet — submit one above.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="empty-state" style="text-align:center; color:var(--admin-text-muted);">No scrape jobs yet — submit one above.</td></tr>';
         return;
       }
       tbody.innerHTML = rows.map(job => {
@@ -13840,7 +13871,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     async function loadScrapeSchedules() {
       const tbody = document.getElementById('scrape-schedules-tbody');
       if (!tbody) return;
-      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:#888;">Loading…</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:var(--admin-text-muted);">Loading…</td></tr>';
       try {
         const r = await fetch('/admin/api/scrape-schedules', { credentials: 'same-origin' });
         const rows = await r.json();
@@ -13863,7 +13894,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     function renderScrapeSchedulesTable(rows) {
       const tbody = document.getElementById('scrape-schedules-tbody');
       if (!rows || rows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="empty-state" style="text-align:center; color:#888;">No scheduled scrapes yet — turn on "Save as recurring schedule" above.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-state" style="text-align:center; color:var(--admin-text-muted);">No scheduled scrapes yet — turn on "Save as recurring schedule" above.</td></tr>';
         return;
       }
       tbody.innerHTML = rows.map(s => {
@@ -13889,7 +13920,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           statusCell = '<span style="color:#28a745;">on</span>'
             + (fc > 0 ? `<div style="font-size:0.7rem; color:#b35900; margin-top:2px;" data-testid="text-failure-count-${s.id}">${fc} failure${fc === 1 ? '' : 's'} in a row</div>` : '');
         } else {
-          statusCell = '<span style="color:#888;">off</span>';
+          statusCell = '<span style="color:var(--admin-text-muted);">off</span>';
         }
         // Action buttons: when auto-paused, the prominent CTA is a green
         // Resume that calls the dedicated endpoint (clears failure trail).
@@ -14098,7 +14129,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         const source = result.source || {};
         let sourceNote = '';
         if (source.note) {
-          sourceNote = `<div style="background:#fffbe6; border:1px solid #ffe58f; padding:0.5rem 0.75rem; border-radius:4px; margin-bottom:0.75rem; font-size:0.8125rem;">${escapeHtml(source.note)}</div>`;
+          sourceNote = `<div style="background:rgba(234,179,8,0.10); border:1px solid rgba(234,179,8,0.30); color:#fde68a; padding:0.5rem 0.75rem; border-radius:4px; margin-bottom:0.75rem; font-size:0.8125rem;">${escapeHtml(source.note)}</div>`;
         }
         let sourcesList = '';
         if (Array.isArray(source.sources) && source.sources.length) {
@@ -14180,13 +14211,13 @@ TO CUSTOMIZE THIS DASHBOARD:
         }
         const prevWhen = data.previous_completed_at ? new Date(data.previous_completed_at).toLocaleString() : '';
         target.innerHTML = `
-          <div style="border:1px solid #e1e4e8; border-radius:4px; padding:0.75rem; background:#fff;" data-testid="text-scrape-diff-${jobId}">
+          <div style="border:1px solid var(--admin-border); border-radius:4px; padding:0.75rem; background:var(--admin-surface); color:var(--admin-text);" data-testid="text-scrape-diff-${jobId}">
             <div style="font-weight:600; margin-bottom:0.5rem;">Diff vs. previous run <span style="color: var(--admin-text-muted); font-weight:400; font-size:0.8125rem;">(job #${data.previous_job_id}${prevWhen ? ', ' + escapeHtml(prevWhen) : ''})</span></div>
             ${sections.join('')}
           </div>
         `;
       } catch (e) {
-        target.innerHTML = `<div style="color:#c33; font-size:0.8125rem;">${escapeHtml(e.message)}</div>`;
+        target.innerHTML = `<div style="color:#fca5a5; font-size:0.8125rem;">${escapeHtml(e.message)}</div>`;
       }
     }
 
@@ -17852,7 +17883,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           </div>`).join('');
         window._knowledgeCache = rows;
       } catch (e) {
-        list.innerHTML = '<div style="color:#b94a48;">Failed to load: ' + escHtml(e.message) + '</div>';
+        list.innerHTML = '<div style="color:#fca5a5;">Failed to load: ' + escHtml(e.message) + '</div>';
       }
     }
 
@@ -17878,11 +17909,11 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('custom-skill-editor-body').innerHTML = `
         <div style="margin-bottom:12px;">
           <label style="font-weight:600;">Topic</label>
-          <input id="ce-topic" type="text" value="${escHtml(row.topic)}" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" data-testid="input-knowledge-topic">
+          <input id="ce-topic" type="text" value="${escHtml(row.topic)}" style="width:100%;padding:8px;" data-testid="input-knowledge-topic">
         </div>
         <div style="margin-bottom:12px;">
           <label style="font-weight:600;">Content</label>
-          <textarea id="ce-content" rows="8" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:inherit;" data-testid="input-knowledge-content">${escHtml(row.content)}</textarea>
+          <textarea id="ce-content" rows="8" style="width:100%;padding:8px;font-family:inherit;" data-testid="input-knowledge-content">${escHtml(row.content)}</textarea>
         </div>
         <label style="display:flex;align-items:center;gap:6px;"><input id="ce-enabled" type="checkbox" ${row.enabled ? 'checked' : ''} data-testid="input-knowledge-enabled"> Enabled</label>`;
       document.getElementById('custom-skill-save-btn').onclick = async () => {
@@ -17929,7 +17960,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           const statusText  = statusOk ? 'OK' : (statusBad ? 'Error' : 'Untested');
           const veloChecked = r.allowed_for_velo ? 'checked' : '';
           const enabledChk  = r.enabled ? 'checked' : '';
-          const lastErr     = r.last_test_error ? `<div style="color:#b94a48;font-size:12px;margin-top:4px;">${escHtml(r.last_test_error.slice(0, 200))}</div>` : '';
+          const lastErr     = r.last_test_error ? `<div style="color:#fca5a5;font-size:12px;margin-top:4px;">${escHtml(r.last_test_error.slice(0, 200))}</div>` : '';
           return `
           <div class="admin-row-card" data-testid="row-mcp-server-${r.id}">
             <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;flex-wrap:wrap;">
@@ -17964,7 +17995,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           if (sum) sum.addEventListener('click', () => loadMCPTools(r.id), { once: true });
         });
       } catch (e) {
-        list.innerHTML = '<div style="color:#b94a48;">Failed to load: ' + escHtml(e.message) + '</div>';
+        list.innerHTML = '<div style="color:#fca5a5;">Failed to load: ' + escHtml(e.message) + '</div>';
       }
     }
 
@@ -18267,7 +18298,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           </div>`).join('');
         window._webhooksCache = rows;
       } catch (e) {
-        list.innerHTML = '<div style="color:#b94a48;">Failed to load: ' + escHtml(e.message) + '</div>';
+        list.innerHTML = '<div style="color:#fca5a5;">Failed to load: ' + escHtml(e.message) + '</div>';
       }
     }
 
@@ -18289,24 +18320,24 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('custom-skill-editor-error').textContent = '';
       document.getElementById('custom-skill-editor-body').innerHTML = `
         <div style="margin-bottom:10px;"><label style="font-weight:600;">Name (lowercase, snake_case)</label>
-          <input id="we-name" type="text" value="${escHtml(row.name)}" ${id ? 'disabled' : ''} style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;${id ? 'background:#f3f4f6;' : ''}" data-testid="input-webhook-name"></div>
+          <input id="we-name" type="text" value="${escHtml(row.name)}" ${id ? 'disabled' : ''} style="width:100%;padding:8px;${id ? 'background:rgba(255,255,255,0.04);' : ''}" data-testid="input-webhook-name"></div>
         <div style="margin-bottom:10px;"><label style="font-weight:600;">Description (the AI reads this to decide when to call)</label>
-          <textarea id="we-description" rows="2" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:inherit;" data-testid="input-webhook-desc">${escHtml(row.description)}</textarea></div>
+          <textarea id="we-description" rows="2" style="width:100%;padding:8px;font-family:inherit;" data-testid="input-webhook-desc">${escHtml(row.description)}</textarea></div>
         <div style="display:flex;gap:8px;margin-bottom:10px;">
           <div style="flex:0 0 110px;"><label style="font-weight:600;">Method</label>
-            <select id="we-method" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" data-testid="input-webhook-method">
+            <select id="we-method" style="width:100%;padding:8px;" data-testid="input-webhook-method">
               <option value="POST"${row.method==='POST'?' selected':''}>POST</option>
               <option value="GET"${row.method==='GET'?' selected':''}>GET</option>
             </select></div>
           <div style="flex:1;"><label style="font-weight:600;">URL (https only — public endpoints)</label>
-            <input id="we-url" type="text" value="${escHtml(row.url)}" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" data-testid="input-webhook-url"></div>
+            <input id="we-url" type="text" value="${escHtml(row.url)}" style="width:100%;padding:8px;" data-testid="input-webhook-url"></div>
           <div style="flex:0 0 110px;"><label style="font-weight:600;">Timeout (s)</label>
-            <input id="we-timeout" type="number" min="1" max="15" value="${row.timeout_seconds || 10}" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" data-testid="input-webhook-timeout"></div>
+            <input id="we-timeout" type="number" min="1" max="15" value="${row.timeout_seconds || 10}" style="width:100%;padding:8px;" data-testid="input-webhook-timeout"></div>
         </div>
         <div style="margin-bottom:10px;"><label style="font-weight:600;">Headers (JSON object)</label>
-          <textarea id="we-headers" rows="3" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:monospace;font-size:12px;" data-testid="input-webhook-headers">${escHtml(JSON.stringify(row.headers_json || {}, null, 2))}</textarea></div>
+          <textarea id="we-headers" rows="3" style="width:100%;padding:8px;font-family:monospace;font-size:12px;" data-testid="input-webhook-headers">${escHtml(JSON.stringify(row.headers_json || {}, null, 2))}</textarea></div>
         <div style="margin-bottom:10px;"><label style="font-weight:600;">Args schema (JSON Schema, type=object)</label>
-          <textarea id="we-args" rows="6" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:monospace;font-size:12px;" data-testid="input-webhook-args">${escHtml(JSON.stringify(row.args_schema_json || {type:'object',properties:{},required:[]}, null, 2))}</textarea></div>
+          <textarea id="we-args" rows="6" style="width:100%;padding:8px;font-family:monospace;font-size:12px;" data-testid="input-webhook-args">${escHtml(JSON.stringify(row.args_schema_json || {type:'object',properties:{},required:[]}, null, 2))}</textarea></div>
         <label style="display:flex;align-items:center;gap:6px;"><input id="we-enabled" type="checkbox" ${row.enabled ? 'checked' : ''} data-testid="input-webhook-enabled"> Enabled</label>`;
       document.getElementById('custom-skill-save-btn').onclick = async () => {
         let headers, args;
@@ -18362,7 +18393,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           </div>`).join('');
         window._sqlSkillsCache = rows;
       } catch (e) {
-        list.innerHTML = '<div style="color:#b94a48;">Failed to load: ' + escHtml(e.message) + '</div>';
+        list.innerHTML = '<div style="color:#fca5a5;">Failed to load: ' + escHtml(e.message) + '</div>';
       }
     }
 
@@ -18384,13 +18415,13 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('custom-skill-editor-error').textContent = '';
       document.getElementById('custom-skill-editor-body').innerHTML = `
         <div style="margin-bottom:10px;"><label style="font-weight:600;">Name (lowercase, snake_case)</label>
-          <input id="se-name" type="text" value="${escHtml(row.name)}" ${id ? 'disabled' : ''} style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;${id ? 'background:#f3f4f6;' : ''}" data-testid="input-sql-name"></div>
+          <input id="se-name" type="text" value="${escHtml(row.name)}" ${id ? 'disabled' : ''} style="width:100%;padding:8px;${id ? 'background:rgba(255,255,255,0.04);' : ''}" data-testid="input-sql-name"></div>
         <div style="margin-bottom:10px;"><label style="font-weight:600;">Description</label>
-          <textarea id="se-description" rows="2" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:inherit;" data-testid="input-sql-desc">${escHtml(row.description)}</textarea></div>
+          <textarea id="se-description" rows="2" style="width:100%;padding:8px;font-family:inherit;" data-testid="input-sql-desc">${escHtml(row.description)}</textarea></div>
         <div style="margin-bottom:10px;"><label style="font-weight:600;">SQL template (one SELECT, %(name)s placeholders)</label>
-          <textarea id="se-sql" rows="8" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:monospace;font-size:12px;" data-testid="input-sql-template">${escHtml(row.sql_template)}</textarea></div>
+          <textarea id="se-sql" rows="8" style="width:100%;padding:8px;font-family:monospace;font-size:12px;" data-testid="input-sql-template">${escHtml(row.sql_template)}</textarea></div>
         <div style="margin-bottom:10px;"><label style="font-weight:600;">Args schema (JSON Schema)</label>
-          <textarea id="se-args" rows="6" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:monospace;font-size:12px;" data-testid="input-sql-args">${escHtml(JSON.stringify(row.args_schema_json || {type:'object',properties:{},required:[]}, null, 2))}</textarea></div>
+          <textarea id="se-args" rows="6" style="width:100%;padding:8px;font-family:monospace;font-size:12px;" data-testid="input-sql-args">${escHtml(JSON.stringify(row.args_schema_json || {type:'object',properties:{},required:[]}, null, 2))}</textarea></div>
         <label style="display:flex;align-items:center;gap:6px;"><input id="se-enabled" type="checkbox" ${row.enabled ? 'checked' : ''} data-testid="input-sql-enabled"> Enabled</label>`;
       document.getElementById('custom-skill-save-btn').onclick = async () => {
         let args;
@@ -18429,10 +18460,10 @@ TO CUSTOMIZE THIS DASHBOARD:
         list.innerHTML = rows.map(s => {
           const reverted = !!s.reverted_at;
           return `
-            <div style="border:1px solid #e5e5e5;border-radius:8px;padding:12px;background:${reverted ? '#f9fafb' : '#fff'};" data-testid="row-snapshot-${s.id}">
+            <div class="admin-row-card" style="opacity:${reverted ? '0.65' : '1'};" data-testid="row-snapshot-${s.id}">
               <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;">
                 <div style="flex:1;">
-                  <div><b>${escHtml(s.table_name)}</b> #${s.row_id} <span style="color:#888;font-size:12px;">snapshot ${s.id} · ${escHtml((s.created_at || '').replace('T',' ').slice(0,19))}</span></div>
+                  <div><b>${escHtml(s.table_name)}</b> #${s.row_id} <span style="color:var(--admin-text-muted);font-size:12px;">snapshot ${s.id} · ${escHtml((s.created_at || '').replace('T',' ').slice(0,19))}</span></div>
                   <div style="font-size:13px;color:rgba(255,255,255,0.7);margin-top:4px;">${escHtml(s.reason || '(no reason recorded)')}</div>
                   ${reverted ? `<div style="color:#16a34a;font-size:12px;margin-top:4px;">Reverted ${escHtml((s.reverted_at || '').replace('T',' ').slice(0,19))}</div>` : ''}
                 </div>
@@ -18444,7 +18475,7 @@ TO CUSTOMIZE THIS DASHBOARD:
             </div>`;
         }).join('');
       } catch (e) {
-        list.innerHTML = '<div style="color:#b94a48;">Failed to load: ' + escHtml(e.message) + '</div>';
+        list.innerHTML = '<div style="color:#fca5a5;">Failed to load: ' + escHtml(e.message) + '</div>';
       }
     };
 
