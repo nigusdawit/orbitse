@@ -1068,6 +1068,28 @@ def init_db():
                 );
                 CREATE INDEX IF NOT EXISTS idx_admin_chat_session
                     ON admin_chat_messages (session_id, mode, created_at);
+
+                -- Admin assistant: every WRITE the assistant wants to make
+                -- is parked here as a pending action with a preview, and
+                -- only runs after the owner clicks Approve in the chat UI.
+                CREATE TABLE IF NOT EXISTS admin_pending_actions (
+                    id              SERIAL PRIMARY KEY,
+                    session_id      VARCHAR(100) NOT NULL DEFAULT '',
+                    action_type     VARCHAR(20)  NOT NULL,
+                    target_table    VARCHAR(100),
+                    target_id       INTEGER,
+                    payload_json    JSONB,
+                    preview         TEXT         NOT NULL DEFAULT '',
+                    status          VARCHAR(20)  NOT NULL DEFAULT 'pending',
+                    result_json     JSONB,
+                    error_text      TEXT,
+                    created_at      TIMESTAMP    DEFAULT NOW(),
+                    decided_at      TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_admin_pending_session
+                    ON admin_pending_actions (session_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_admin_pending_status
+                    ON admin_pending_actions (status, created_at);
             """)
 
             # Seed the voice_settings singleton row (idempotent)
@@ -5845,67 +5867,454 @@ def _admin_tool_list_skills():
     return {"skills": rows, "count": len(rows)}
 
 
-def _admin_tool_create_custom_skill(name=None, display_name=None,
-                                    description=None, response_text=None,
-                                    category="custom", **_):
-    if not name or not isinstance(name, str):
-        return {"error": "name is required"}
-    if not _re_admin.match(r"^[a-z][a-z0-9_]{1,59}$", name):
-        return {"error": "name must match ^[a-z][a-z0-9_]{1,59}$"}
-    existing = query_db(
-        "SELECT name, builtin FROM agent_skills WHERE name=%s",
-        (name,), fetchone=True,
-    )
-    if existing:
-        if existing.get("builtin"):
-            return {"error": f"'{name}' collides with a builtin skill"}
-        return {"error": f"Skill '{name}' already exists"}
-    cfg = {"response_text": (response_text or "").strip()}
-    execute_db(
-        "INSERT INTO agent_skills (name, display_name, description, category, "
-        "builtin, enabled, config_json) VALUES (%s, %s, %s, %s, false, true, %s::jsonb)",
+# --- Approval-gated write infrastructure -------------------------------------
+# Every write the admin assistant wants to make is parked in
+# admin_pending_actions and only runs when the owner clicks Approve in the
+# chat UI. Reads stay direct.
+
+# Tables the assistant is NOT allowed to touch even with approval — audit
+# logs (integrity), conversation history (integrity), and the pending-actions
+# table itself (no recursion / no rewriting your own approvals).
+ADMIN_WRITE_BLACKLIST = {
+    "page_views", "skill_usage_log", "voice_usage_log",
+    "messaging_log", "automation_runs",
+    "automation_webhook_rejections", "scrape_jobs",
+    "chat_messages", "chat_conversations", "admin_chat_messages",
+    "admin_pending_actions",
+}
+
+
+def _admin_table_columns(table_name):
+    """Return list of {name, type, nullable, default, pk} for a real public
+    table, or None if the table doesn't exist."""
+    rows = query_db(
+        "SELECT column_name, data_type, is_nullable, column_default "
+        "FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name=%s "
+        "ORDER BY ordinal_position",
+        (table_name,),
+    ) or []
+    if not rows:
+        return None
+    return [
+        {"name": r["column_name"], "type": r["data_type"],
+         "nullable": (r["is_nullable"] == "YES"),
+         "default": r["column_default"]}
+        for r in rows
+    ]
+
+
+def _admin_validate_write_table(table_name):
+    if not table_name or not isinstance(table_name, str):
+        return "table_name is required"
+    if table_name in ADMIN_WRITE_BLACKLIST:
+        return (f"Table '{table_name}' is read-only from chat. "
+                f"Use the dedicated admin screen for it.")
+    cols = _admin_table_columns(table_name)
+    if not cols:
+        return f"Table '{table_name}' not found"
+    return None  # ok
+
+
+def _admin_short(v, n=120):
+    s = "" if v is None else str(v)
+    return s if len(s) <= n else s[: n - 1] + "..."
+
+
+def _admin_create_pending(session_id, action_type, target_table=None,
+                          target_id=None, payload=None, preview=""):
+    """Insert a row in admin_pending_actions and return the model-facing
+    dict. The model sees `awaiting_approval=True` and an action_id; the
+    front-end uses these to render the Approve / Reject card."""
+    row = execute_db(
+        "INSERT INTO admin_pending_actions "
+        "(session_id, action_type, target_table, target_id, payload_json, "
+        " preview, status) "
+        "VALUES (%s, %s, %s, %s, %s::jsonb, %s, 'pending') RETURNING id",
         (
-            name,
-            (display_name or name.replace("_", " ").title())[:100],
-            (description or "")[:1000],
-            (category or "custom")[:50],
-            json.dumps(cfg),
+            (session_id or "")[:100],
+            (action_type or "")[:20],
+            (target_table or None),
+            (int(target_id) if target_id is not None else None),
+            json.dumps(payload or {}),
+            preview or "",
         ),
     )
-    return {"created": name, "enabled": True, "message":
-            f"Custom skill '{name}' created and enabled."}
+    new_id = (row or {}).get("id")
+    return {
+        "awaiting_approval": True,
+        "action_id": new_id,
+        "action_type": action_type,
+        "target_table": target_table,
+        "target_id": target_id,
+        "preview": preview,
+        "message": (
+            "I've prepared this change. Please review the card above and "
+            "click Approve to apply it, or Reject to cancel — nothing "
+            "has been written yet."
+        ),
+    }
 
 
-def _admin_tool_set_skill_enabled(name=None, enabled=True, **_):
-    if not name:
-        return {"error": "name is required"}
-    row = query_db("SELECT name FROM agent_skills WHERE name=%s",
-                   (name,), fetchone=True)
-    if not row:
-        return {"error": f"Skill '{name}' not found"}
-    execute_db("UPDATE agent_skills SET enabled=%s, updated_at=NOW() "
-               "WHERE name=%s", (bool(enabled), name))
-    return {"name": name, "enabled": bool(enabled),
-            "message": f"Skill '{name}' is now {'on' if enabled else 'off'}."}
+def _admin_tool_propose_insert(table_name=None, fields=None,
+                               _session_id="", **_):
+    err = _admin_validate_write_table(table_name)
+    if err: return {"error": err}
+    if not isinstance(fields, dict) or not fields:
+        return {"error": "fields must be a non-empty object "
+                         "{column_name: value, ...}"}
+    cols = {c["name"]: c for c in (_admin_table_columns(table_name) or [])}
+    bad = [k for k in fields.keys() if k not in cols]
+    if bad:
+        return {"error": f"Unknown columns for {table_name}: {bad}. "
+                         f"Use admin_describe_table first."}
+    parts = []
+    for k, v in fields.items():
+        parts.append(f"  {k} = {_admin_short(v, 80)}")
+    preview = (f"INSERT INTO {table_name} a new row with:\n"
+               + "\n".join(parts))
+    return _admin_create_pending(
+        _session_id, "insert",
+        target_table=table_name, payload={"fields": fields},
+        preview=preview,
+    )
 
 
-def _admin_tool_set_skill_response(name=None, response_text=None, **_):
-    if not name:
-        return {"error": "name is required"}
-    row = query_db("SELECT name, config_json FROM agent_skills WHERE name=%s",
-                   (name,), fetchone=True)
-    if not row:
-        return {"error": f"Skill '{name}' not found"}
-    cfg = row.get("config_json") or {}
-    if isinstance(cfg, str):
-        try: cfg = json.loads(cfg)
-        except Exception: cfg = {}
-    cfg["response_text"] = (response_text or "").strip()
-    execute_db("UPDATE agent_skills SET config_json=%s::jsonb, updated_at=NOW() "
-               "WHERE name=%s", (json.dumps(cfg), name))
-    return {"name": name,
-            "response_text_length": len(cfg["response_text"]),
-            "message": f"Updated canned response for '{name}'."}
+def _admin_tool_propose_update(table_name=None, row_id=None, fields=None,
+                               _session_id="", **_):
+    err = _admin_validate_write_table(table_name)
+    if err: return {"error": err}
+    if row_id is None:
+        return {"error": "row_id is required"}
+    try:
+        rid = int(row_id)
+    except Exception:
+        return {"error": "row_id must be an integer"}
+    if not isinstance(fields, dict) or not fields:
+        return {"error": "fields must be a non-empty object "
+                         "{column_name: new_value, ...}"}
+    cols = {c["name"]: c for c in (_admin_table_columns(table_name) or [])}
+    bad = [k for k in fields.keys() if k not in cols]
+    if bad:
+        return {"error": f"Unknown columns for {table_name}: {bad}. "
+                         f"Use admin_describe_table first."}
+    # Pull current row for a before/after preview.
+    from psycopg2 import sql as _pgsql
+    current = None
+    try:
+        conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SET LOCAL statement_timeout = '5s'")
+            cur.execute("SET LOCAL transaction_read_only = on")
+            cur.execute(
+                _pgsql.SQL("SELECT * FROM {}.{} WHERE id = %s LIMIT 1").format(
+                    _pgsql.Identifier("public"),
+                    _pgsql.Identifier(table_name)),
+                (rid,))
+            current = cur.fetchone()
+        conn.rollback(); conn.close()
+    except Exception as e:
+        return {"error": f"Could not read current row: {str(e)[:200]}"}
+    if not current:
+        return {"error": f"No row with id={rid} in {table_name}"}
+    diff_lines = []
+    for k, new_v in fields.items():
+        old_v = current.get(k)
+        diff_lines.append(
+            f"  {k}: {_admin_short(old_v, 60)}  ->  {_admin_short(new_v, 60)}"
+        )
+    preview = (f"UPDATE {table_name} row #{rid}:\n" + "\n".join(diff_lines))
+    return _admin_create_pending(
+        _session_id, "update",
+        target_table=table_name, target_id=rid,
+        payload={"fields": fields}, preview=preview,
+    )
+
+
+def _admin_tool_propose_delete(table_name=None, row_id=None,
+                               _session_id="", **_):
+    err = _admin_validate_write_table(table_name)
+    if err: return {"error": err}
+    if row_id is None:
+        return {"error": "row_id is required"}
+    try:
+        rid = int(row_id)
+    except Exception:
+        return {"error": "row_id must be an integer"}
+    from psycopg2 import sql as _pgsql
+    current = None
+    try:
+        conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SET LOCAL statement_timeout = '5s'")
+            cur.execute("SET LOCAL transaction_read_only = on")
+            cur.execute(
+                _pgsql.SQL("SELECT * FROM {}.{} WHERE id = %s LIMIT 1").format(
+                    _pgsql.Identifier("public"),
+                    _pgsql.Identifier(table_name)),
+                (rid,))
+            current = cur.fetchone()
+        conn.rollback(); conn.close()
+    except Exception as e:
+        return {"error": f"Could not read current row: {str(e)[:200]}"}
+    if not current:
+        return {"error": f"No row with id={rid} in {table_name}"}
+    snapshot = []
+    for k, v in list(current.items())[:12]:
+        snapshot.append(f"  {k} = {_admin_short(v, 80)}")
+    preview = (f"DELETE row #{rid} from {table_name}. "
+               f"Current values:\n" + "\n".join(snapshot))
+    return _admin_create_pending(
+        _session_id, "delete",
+        target_table=table_name, target_id=rid,
+        payload={"snapshot": {k: _admin_short(v, 200)
+                              for k, v in current.items()}},
+        preview=preview,
+    )
+
+
+# Forbidden patterns for the propose-SQL tool — we still block obviously
+# catastrophic statements even though the owner has to approve. This is
+# a safety net against the model proposing something irreversible (DROP
+# DATABASE, TRUNCATE all tables, etc.) and the owner rubber-stamping it.
+_ADMIN_SQL_FORBIDDEN = re.compile(
+    r"\b(DROP\s+(DATABASE|SCHEMA|ROLE|USER)|TRUNCATE\s+ALL|"
+    r"GRANT|REVOKE|CREATE\s+(ROLE|USER|EXTENSION)|"
+    r"ALTER\s+(ROLE|USER|SYSTEM)|"
+    r"SECURITY\s+DEFINER|SET\s+ROLE|SET\s+SESSION\s+AUTHORIZATION|"
+    r"COPY\s+.*\bFROM\b|COPY\s+.*\bTO\b|"
+    r"pg_read_server_files|pg_write_server_files|pg_ls_dir|"
+    r"LO_IMPORT|LO_EXPORT)\b",
+    re.IGNORECASE,
+)
+
+# Match the *target* of a write statement so we can apply the same
+# table-level blacklist used by propose_insert / propose_update /
+# propose_delete to free-form SQL. We match optional ONLY, optional
+# schema-qualifier (public.foo), and either quoted or unquoted idents.
+_ADMIN_SQL_WRITE_TARGET = re.compile(
+    r"\b(?:UPDATE|INSERT\s+INTO|DELETE\s+FROM|TRUNCATE(?:\s+TABLE)?|"
+    r"MERGE\s+INTO|ALTER\s+TABLE|DROP\s+TABLE)\s+"
+    r"(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?"
+    r"(?:\"?[a-zA-Z_][\w]*\"?\s*\.\s*)?"
+    r"(?:\"([a-zA-Z_][\w]*)\"|([a-zA-Z_][\w]*))",
+    re.IGNORECASE,
+)
+
+
+# Strip SQL comments before pattern-matching so a model can't sneak a
+# write past the blacklist with `UPDATE/**/page_views`. We handle:
+#   -- ... end of line
+#   /* ... */   (non-nested; if anyone writes nested block comments the
+#               outer match still removes the whole thing or rejects)
+_ADMIN_SQL_LINE_COMMENT = re.compile(r"--[^\n]*")
+_ADMIN_SQL_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+
+def _admin_strip_sql_comments(sql_text):
+    if not sql_text:
+        return ""
+    s = _ADMIN_SQL_BLOCK_COMMENT.sub(" ", sql_text)
+    s = _ADMIN_SQL_LINE_COMMENT.sub(" ", s)
+    return s
+
+
+def _admin_sql_write_targets(sql_text):
+    """Return list of (lowercased, unqualified) table names that this SQL
+    statement writes to. Used to enforce ADMIN_WRITE_BLACKLIST on the
+    free-form SQL path."""
+    if not sql_text:
+        return []
+    cleaned = _admin_strip_sql_comments(sql_text)
+    out = []
+    for m in _ADMIN_SQL_WRITE_TARGET.finditer(cleaned):
+        name = m.group(1) or m.group(2)
+        if name:
+            out.append(name.lower())
+    return out
+
+
+def _admin_sql_blacklist_check(sql_text):
+    """Return an error string if the SQL writes to any blacklisted table,
+    else None. Comment-stripping happens inside _admin_sql_write_targets,
+    and we also reject any leftover unterminated /* block, since that
+    would let someone hide the real statement after the check."""
+    if sql_text and ("/*" in sql_text or "*/" in sql_text):
+        # Strip and see whether any comment markers remain — if so the
+        # input is malformed (unterminated or nested) and we refuse.
+        stripped = _admin_strip_sql_comments(sql_text)
+        if "/*" in stripped or "*/" in stripped:
+            return ("Refusing: SQL contains unterminated or nested "
+                    "block comments. Remove the /* */ comments and "
+                    "try again.")
+    targets = _admin_sql_write_targets(sql_text)
+    hit = sorted({t for t in targets if t in ADMIN_WRITE_BLACKLIST})
+    if hit:
+        return (f"Refusing: SQL writes to read-only table(s): "
+                f"{', '.join(hit)}. Those tables are managed by the app "
+                f"itself or have a dedicated admin screen.")
+    return None
+
+
+def _admin_tool_propose_run_sql(sql=None, summary=None, _session_id="", **_):
+    if not sql or not isinstance(sql, str):
+        return {"error": "sql is required"}
+    if not summary or not isinstance(summary, str):
+        return {"error": "summary is required — explain in plain "
+                         "English what this SQL will change."}
+    cleaned = sql.strip().rstrip(";").strip()
+    if not cleaned:
+        return {"error": "sql is empty"}
+    if ";" in cleaned:
+        return {"error": "Only one statement per proposal."}
+    if _ADMIN_SQL_FORBIDDEN.search(cleaned):
+        return {"error": "Forbidden statement — these changes are not "
+                         "reversible from chat. Use the database admin "
+                         "tools directly."}
+    bl_err = _admin_sql_blacklist_check(cleaned)
+    if bl_err:
+        return {"error": bl_err}
+    preview = (f"Custom SQL:\n  {_admin_short(cleaned, 400)}\n\n"
+               f"What it does (assistant's explanation):\n  {summary}")
+    return _admin_create_pending(
+        _session_id, "sql", payload={"sql": cleaned, "summary": summary},
+        preview=preview,
+    )
+
+
+def _admin_execute_pending(action_row):
+    """Run the actual write for an approved pending action. Returns
+    (result_dict, error_str). Caller marks the row executed/failed."""
+    a_type = action_row.get("action_type")
+    table = action_row.get("target_table")
+    rid = action_row.get("target_id")
+    payload = action_row.get("payload_json") or {}
+    if isinstance(payload, str):
+        try: payload = json.loads(payload)
+        except Exception: payload = {}
+    from psycopg2 import sql as _pgsql
+
+    if a_type == "insert":
+        bl_err = _admin_validate_write_table(table)
+        if bl_err:
+            return None, bl_err
+        fields = payload.get("fields") or {}
+        if not fields:
+            return None, "no fields in payload"
+        cols = list(fields.keys())
+        vals = [fields[c] for c in cols]
+        stmt = _pgsql.SQL(
+            "INSERT INTO {}.{} ({}) VALUES ({}) RETURNING id"
+        ).format(
+            _pgsql.Identifier("public"),
+            _pgsql.Identifier(table),
+            _pgsql.SQL(", ").join(_pgsql.Identifier(c) for c in cols),
+            _pgsql.SQL(", ").join(_pgsql.Placeholder() * len(cols)),
+        )
+        try:
+            conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = '10s'")
+                cur.execute(stmt, vals)
+                new_id = (cur.fetchone() or [None])[0]
+                conn.commit()
+            conn.close()
+            return {"inserted_id": new_id, "table": table}, None
+        except Exception as e:
+            try: conn.rollback(); conn.close()
+            except Exception: pass
+            return None, str(e)[:400]
+
+    if a_type == "update":
+        bl_err = _admin_validate_write_table(table)
+        if bl_err:
+            return None, bl_err
+        fields = payload.get("fields") or {}
+        if not fields or rid is None:
+            return None, "missing fields or target_id"
+        cols = list(fields.keys())
+        vals = [fields[c] for c in cols] + [rid]
+        set_clause = _pgsql.SQL(", ").join(
+            _pgsql.SQL("{} = {}").format(_pgsql.Identifier(c),
+                                         _pgsql.Placeholder())
+            for c in cols)
+        stmt = _pgsql.SQL("UPDATE {}.{} SET {} WHERE id = %s").format(
+            _pgsql.Identifier("public"),
+            _pgsql.Identifier(table),
+            set_clause,
+        )
+        try:
+            conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = '10s'")
+                cur.execute(stmt, vals)
+                rc = cur.rowcount
+                conn.commit()
+            conn.close()
+            return {"rows_affected": rc, "table": table,
+                    "row_id": rid}, None
+        except Exception as e:
+            try: conn.rollback(); conn.close()
+            except Exception: pass
+            return None, str(e)[:400]
+
+    if a_type == "delete":
+        bl_err = _admin_validate_write_table(table)
+        if bl_err:
+            return None, bl_err
+        if rid is None:
+            return None, "missing target_id"
+        stmt = _pgsql.SQL("DELETE FROM {}.{} WHERE id = %s").format(
+            _pgsql.Identifier("public"),
+            _pgsql.Identifier(table),
+        )
+        try:
+            conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = '10s'")
+                cur.execute(stmt, (rid,))
+                rc = cur.rowcount
+                conn.commit()
+            conn.close()
+            return {"rows_affected": rc, "table": table,
+                    "row_id": rid}, None
+        except Exception as e:
+            try: conn.rollback(); conn.close()
+            except Exception: pass
+            return None, str(e)[:400]
+
+    if a_type == "sql":
+        sql_text = (payload.get("sql") or "").strip().rstrip(";").strip()
+        if not sql_text:
+            return None, "no sql in payload"
+        if ";" in sql_text:
+            return None, "multiple statements not allowed"
+        if _ADMIN_SQL_FORBIDDEN.search(sql_text):
+            return None, "forbidden statement"
+        bl_err = _admin_sql_blacklist_check(sql_text)
+        if bl_err:
+            return None, bl_err
+        try:
+            conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
+            preview_rows = None
+            with conn.cursor(
+                cursor_factory=psycopg2.extras.RealDictCursor
+            ) as cur:
+                cur.execute("SET LOCAL statement_timeout = '10s'")
+                cur.execute(sql_text)
+                rc = cur.rowcount
+                if cur.description is not None:
+                    preview_rows = cur.fetchmany(20)
+                conn.commit()
+            conn.close()
+            return {"rows_affected": rc,
+                    "preview_rows": preview_rows or []}, None
+        except Exception as e:
+            try: conn.rollback(); conn.close()
+            except Exception: pass
+            return None, str(e)[:400]
+
+    return None, f"unknown action_type: {a_type}"
 
 
 def _admin_tool_recent_visitor_chats(limit=20, **_):
@@ -6028,81 +6437,31 @@ def _admin_tool_skill_usage_stats(skill_name=None, limit=50, **_):
     return {"rows": rows, "count": len(rows)}
 
 
-def _admin_tool_create_faq(question=None, answer=None, category=None, **_):
-    if not question or not answer:
-        return {"error": "question and answer are required"}
-    try:
-        new_row = execute_db(
-            "INSERT INTO faqs (question, answer, category, sort_order) "
-            "VALUES (%s, %s, %s, COALESCE("
-            "  (SELECT MAX(sort_order)+1 FROM faqs), 0)) RETURNING id",
-            (question[:500], answer[:5000], (category or "")[:100]),
-        )
-        new_id = (new_row or {}).get("id")
-        return {"created_id": new_id, "message":
-                f"FAQ #{new_id} created."}
-    except Exception as e:
-        return {"error": f"Could not create FAQ: {str(e)[:300]}"}
-
-
-def _admin_tool_update_business_info(field=None, value=None, **_):
-    allowed = {"phone", "email", "address", "hours", "tagline",
-               "business_name"}
-    if not field or field not in allowed:
-        return {"error": f"field must be one of {sorted(allowed)}"}
-    if value is None:
-        return {"error": "value is required"}
-    try:
-        execute_db(
-            f"UPDATE business_info SET {field}=%s, updated_at=NOW() WHERE id=1",
-            (str(value)[:500],),
-        )
-        return {"field": field, "value": str(value)[:500],
-                "message": f"Updated business {field}."}
-    except Exception as e:
-        return {"error": f"Could not update {field}: {str(e)[:300]}"}
-
-
-def _admin_tool_create_blog_post(title=None, body=None, slug=None,
-                                 category=None, status="draft", **_):
-    if not title or not body:
-        return {"error": "title and body are required"}
-    try:
-        if not slug:
-            slug = _re_admin.sub(r"[^a-z0-9]+", "-",
-                                 title.lower()).strip("-")[:60]
-        new_row = execute_db(
-            "INSERT INTO blog_posts (slug, title, body, category, status, "
-            "  sort_order) VALUES (%s, %s, %s, %s, %s, COALESCE("
-            "  (SELECT MAX(sort_order)+1 FROM blog_posts), 0)) RETURNING id, slug",
-            (slug, title[:300], body, (category or "")[:100],
-             "published" if status == "published" else "draft"),
-        )
-        return {"created_id": (new_row or {}).get("id"),
-                "slug": (new_row or {}).get("slug"),
-                "status": "published" if status == "published" else "draft",
-                "message": f"Blog post '{title}' created as "
-                           f"{'published' if status == 'published' else 'draft'}."}
-    except Exception as e:
-        return {"error": f"Could not create blog post: {str(e)[:300]}"}
-
-
 ADMIN_TOOL_FUNCTIONS = {
+    # --- Read-only (run immediately, no approval) ---
     "admin_list_tables":            _admin_tool_list_tables,
     "admin_describe_table":         _admin_tool_describe_table,
     "admin_run_sql":                _admin_tool_run_sql,
     "admin_list_skills":            _admin_tool_list_skills,
-    "admin_create_custom_skill":    _admin_tool_create_custom_skill,
-    "admin_set_skill_enabled":      _admin_tool_set_skill_enabled,
-    "admin_set_skill_response":     _admin_tool_set_skill_response,
     "admin_recent_visitor_chats":   _admin_tool_recent_visitor_chats,
     "admin_recent_orders":          _admin_tool_recent_orders,
     "admin_recent_form_submissions":_admin_tool_recent_form_submissions,
     "admin_overview_stats":         _admin_tool_overview_stats,
     "admin_skill_usage_stats":      _admin_tool_skill_usage_stats,
-    "admin_create_faq":             _admin_tool_create_faq,
-    "admin_update_business_info":   _admin_tool_update_business_info,
-    "admin_create_blog_post":       _admin_tool_create_blog_post,
+    # --- Write proposals (each parks a pending action; the owner has
+    # to click Approve in the chat UI before anything actually runs).
+    "admin_propose_insert":         _admin_tool_propose_insert,
+    "admin_propose_update":         _admin_tool_propose_update,
+    "admin_propose_delete":         _admin_tool_propose_delete,
+    "admin_propose_run_sql":        _admin_tool_propose_run_sql,
+}
+
+# Tools whose write-side effect runs only after explicit owner approval.
+# `execute_admin_tool` injects `_session_id` into these so the pending
+# action is recorded against the right conversation.
+ADMIN_PROPOSE_TOOLS = {
+    "admin_propose_insert", "admin_propose_update",
+    "admin_propose_delete", "admin_propose_run_sql",
 }
 
 
@@ -6121,13 +6480,16 @@ def _admin_tool_schema(name, description, params_schema=None):
 
 
 ADMIN_TOOLS = [
+    # ---- Read tools ----
     _admin_tool_schema(
         "admin_list_tables",
         "List every public table in the site database. Use this first to "
         "discover what data is available before describing or querying."),
     _admin_tool_schema(
         "admin_describe_table",
-        "Show the columns + types + row count for one table.",
+        "Show the columns + types + row count for one table. ALWAYS call "
+        "this before proposing an insert or update so you use real "
+        "column names.",
         {"type": "object",
          "properties": {"table_name": {"type": "string"}},
          "required": ["table_name"]}),
@@ -6135,8 +6497,8 @@ ADMIN_TOOLS = [
         "admin_run_sql",
         "Run a READ-ONLY SQL query (SELECT or WITH ... SELECT). "
         "Multi-statements, INSERT/UPDATE/DELETE, DDL and DCL are all "
-        "rejected. Returns up to 100 rows. Always use this — never ask "
-        "the admin to run SQL themselves.",
+        "rejected. Returns up to 100 rows. Use this for ad-hoc reads. "
+        "For WRITES, use admin_propose_* instead.",
         {"type": "object",
          "properties": {"sql": {"type": "string",
                                 "description": "A single SELECT statement."}},
@@ -6144,39 +6506,6 @@ ADMIN_TOOLS = [
     _admin_tool_schema(
         "admin_list_skills",
         "List every AI skill (visitor agent tool) with its on/off state."),
-    _admin_tool_schema(
-        "admin_create_custom_skill",
-        "Create a brand-new custom skill the visitor AI can call. The "
-        "skill returns the canned `response_text` you provide — use this "
-        "to teach the visitor agent a new fact or stock answer. Skill "
-        "names must be lowercase_with_underscores.",
-        {"type": "object",
-         "properties": {
-             "name": {"type": "string"},
-             "display_name": {"type": "string"},
-             "description": {"type": "string",
-                             "description": "When the AI should call this skill."},
-             "response_text": {"type": "string",
-                               "description": "What the skill returns to the AI."},
-             "category": {"type": "string"},
-         },
-         "required": ["name", "description", "response_text"]}),
-    _admin_tool_schema(
-        "admin_set_skill_enabled",
-        "Turn an existing skill on or off.",
-        {"type": "object",
-         "properties": {"name": {"type": "string"},
-                        "enabled": {"type": "boolean"}},
-         "required": ["name", "enabled"]}),
-    _admin_tool_schema(
-        "admin_set_skill_response",
-        "Set/replace the canned response_text for a skill (works on both "
-        "builtin and custom skills — for builtins it overrides the live "
-        "lookup). Pass an empty string to clear the override.",
-        {"type": "object",
-         "properties": {"name": {"type": "string"},
-                        "response_text": {"type": "string"}},
-         "required": ["name", "response_text"]}),
     _admin_tool_schema(
         "admin_recent_visitor_chats",
         "Show the most recent visitor chat conversations.",
@@ -6203,38 +6532,89 @@ ADMIN_TOOLS = [
         {"type": "object",
          "properties": {"skill_name": {"type": "string"},
                         "limit": {"type": "integer", "default": 50}}}),
+
+    # ---- Write proposals (always need owner approval) ----
     _admin_tool_schema(
-        "admin_create_faq",
-        "Add a new FAQ item to the public site.",
+        "admin_propose_insert",
+        "Propose creating a new row in any editable table. Returns "
+        "awaiting_approval=true with an action_id and a preview the "
+        "owner will see in the chat. NOTHING IS WRITTEN until the "
+        "owner clicks Approve. Use admin_describe_table first so the "
+        "column names match. EXAMPLE call: "
+        "{\"table_name\":\"faqs\", \"fields\":{\"question\":\"What "
+        "time do you open?\",\"answer\":\"9am to 5pm.\","
+        "\"sort_order\":99}}",
         {"type": "object",
-         "properties": {"question": {"type": "string"},
-                        "answer": {"type": "string"},
-                        "category": {"type": "string"}},
-         "required": ["question", "answer"]}),
+         "properties": {
+             "table_name": {
+                 "type": "string",
+                 "description": "Public table name, e.g. 'faqs', "
+                                "'gallery_cards', 'testimonials'.",
+             },
+             "fields": {
+                 "type": "object",
+                 "description": "REQUIRED. Map of {column_name: value} "
+                                "for every column you want to set. Use "
+                                "the column names from admin_describe_"
+                                "table. Required columns of the table "
+                                "must be present.",
+                 "additionalProperties": True,
+             },
+         },
+         "required": ["table_name", "fields"],
+         "additionalProperties": False}),
     _admin_tool_schema(
-        "admin_update_business_info",
-        "Update one business contact field (phone, email, address, hours, "
-        "tagline, or business_name). Only those fields are accepted.",
+        "admin_propose_update",
+        "Propose changes to one existing row, identified by its `id`. "
+        "Returns awaiting_approval=true with a before/after preview. "
+        "Use admin_run_sql first to find the row id and use "
+        "admin_describe_table to know which columns exist. EXAMPLE "
+        "call: {\"table_name\":\"faqs\",\"row_id\":3,\"fields\":"
+        "{\"answer\":\"Updated answer text.\"}}",
         {"type": "object",
-         "properties": {"field": {"type": "string",
-                                  "enum": ["phone", "email", "address",
-                                           "hours", "tagline",
-                                           "business_name"]},
-                        "value": {"type": "string"}},
-         "required": ["field", "value"]}),
+         "properties": {
+             "table_name": {"type": "string"},
+             "row_id":     {"type": "integer",
+                            "description": "Integer primary-key id."},
+             "fields": {
+                 "type": "object",
+                 "description": "REQUIRED. Map of {column_name: "
+                                "new_value} for ONLY the columns to "
+                                "change. Existing values are shown "
+                                "in the preview.",
+                 "additionalProperties": True,
+             },
+         },
+         "required": ["table_name", "row_id", "fields"],
+         "additionalProperties": False}),
     _admin_tool_schema(
-        "admin_create_blog_post",
-        "Create a new blog post. Defaults to status='draft' so it stays "
-        "hidden until the admin publishes it. Pass status='published' to "
-        "make it visible immediately.",
+        "admin_propose_delete",
+        "Propose deleting one row by its `id`. Returns awaiting_approval "
+        "with a snapshot of the row's current values so the owner sees "
+        "exactly what will be removed. Audit/log/history tables are "
+        "blocked even from chat.",
         {"type": "object",
-         "properties": {"title": {"type": "string"},
-                        "body": {"type": "string"},
-                        "slug": {"type": "string"},
-                        "category": {"type": "string"},
-                        "status": {"type": "string",
-                                   "enum": ["draft", "published"]}},
-         "required": ["title", "body"]}),
+         "properties": {
+             "table_name": {"type": "string"},
+             "row_id":     {"type": "integer"},
+         },
+         "required": ["table_name", "row_id"]}),
+    _admin_tool_schema(
+        "admin_propose_run_sql",
+        "Last-resort: propose a single arbitrary write SQL statement when "
+        "no insert/update/delete tool fits (bulk fixes, joins, "
+        "non-id-keyed updates). You MUST also pass `summary` — a plain-"
+        "English explanation the owner will see in the approval card. "
+        "Drops, role/grant changes, and other irreversible statements "
+        "are blocked.",
+        {"type": "object",
+         "properties": {
+             "sql":     {"type": "string"},
+             "summary": {"type": "string",
+                         "description": "What this SQL changes, in plain "
+                                        "English, for the owner to read."},
+         },
+         "required": ["sql", "summary"]}),
 ]
 
 
@@ -6258,12 +6638,19 @@ def execute_admin_tool(name, args_json, session_id=""):
                "ms": 0}
         _log_skill_usage(f"admin_chat_{session_id}"[:100], log)
         return json.dumps({"error": f"Unknown admin tool: {name}"}), log
+    # Propose tools need to know which chat session is asking, so the
+    # pending action gets attributed correctly. The leading underscore
+    # keeps `_session_id` out of the JSON schema we expose to the model
+    # (it has no chance of passing it itself).
+    call_args = dict(args)
+    if name in ADMIN_PROPOSE_TOOLS:
+        call_args["_session_id"] = session_id
     try:
-        result = fn(**args) if isinstance(args, dict) else fn()
+        result = fn(**call_args)
     except TypeError:
         # Tolerate the model passing extra/unknown kwargs.
         try:
-            result = fn(**{k: v for k, v in args.items()
+            result = fn(**{k: v for k, v in call_args.items()
                            if k in fn.__code__.co_varnames})
         except Exception as e:
             result = {"error": f"Tool argument error: {str(e)[:200]}"}
@@ -6282,31 +6669,43 @@ def execute_admin_tool(name, args_json, session_id=""):
 
 ADMIN_CHAT_SYSTEM_PROMPT = (
     "You are the Admin Assistant for this website. The person you're "
-    "talking to IS the site owner / admin — speak to them plainly, like a "
-    "helpful ops teammate. They are authenticated; every tool you can "
-    "call is admin-scoped and safe to use without asking permission for "
-    "READ operations.\n\n"
-    "Your tools let you: list/describe tables, run read-only SQL, list "
-    "and toggle AI skills, create custom skills, view recent visitor "
-    "chats / orders / form submissions, pull dashboard stats, and edit "
-    "narrow content surfaces (FAQ, business info, blog drafts).\n\n"
+    "talking to IS the site owner / admin — speak to them plainly, like "
+    "a helpful ops teammate.\n\n"
+    "TWO KINDS OF TOOLS:\n"
+    "  1. READ tools (admin_list_tables, admin_describe_table, "
+    "admin_run_sql, admin_list_skills, admin_recent_*, "
+    "admin_overview_stats, admin_skill_usage_stats) — run immediately. "
+    "Use them freely without asking permission first.\n"
+    "  2. WRITE tools — they are NAMED admin_propose_*. Calling one of "
+    "these does NOT change anything yet. It parks a pending action "
+    "with a preview that the owner has to Approve in the chat UI. The "
+    "tool returns awaiting_approval=true plus an action_id. After you "
+    "call a propose tool, briefly tell the owner what you proposed in "
+    "one sentence and that the approval card is above — then stop.\n\n"
+    "WRITE WORKFLOW (always):\n"
+    "  • Call admin_describe_table on the target table first so your "
+    "column names are real.\n"
+    "  • For updates/deletes, call admin_run_sql first to find the "
+    "exact `id` you want to change.\n"
+    "  • Then call admin_propose_insert / admin_propose_update / "
+    "admin_propose_delete with concrete values. Only fall back to "
+    "admin_propose_run_sql when no row-by-id tool fits, and always "
+    "include a plain-English `summary`.\n"
+    "  • You will see the result of an Approval (or Rejection) on the "
+    "next user turn as a short message like \"Owner approved action "
+    "#N — result: …\". React to it then.\n\n"
     "GUIDELINES:\n"
-    "  • Prefer the dedicated tools (admin_recent_*, admin_overview_stats, "
-    "admin_skill_usage_stats) over admin_run_sql for common questions — "
-    "they're faster and safer. Reach for admin_run_sql only when the "
-    "question is too custom for those.\n"
-    "  • Before running unfamiliar SQL, use admin_list_tables and "
-    "admin_describe_table so your query matches the real schema.\n"
-    "  • For analysis questions (\"how is the site doing?\", \"what's "
-    "trending?\"), call multiple read tools in parallel where possible, "
-    "then summarize plainly with bullet points and concrete numbers.\n"
-    "  • For WRITE actions (creating skills, editing business info, "
-    "creating FAQs / blog drafts, toggling skills), confirm what you're "
-    "about to do in one short sentence BEFORE the call only if the "
-    "intent is even slightly ambiguous; otherwise just do it and report "
-    "what you did and how to undo it.\n"
-    "  • Never invent column names. If you're unsure, describe the "
-    "table first.\n"
+    "  • Prefer the dedicated read tools over admin_run_sql for common "
+    "questions — they're faster and safer.\n"
+    "  • For analysis questions, call multiple read tools in parallel "
+    "where possible, then summarize plainly with bullet points and "
+    "concrete numbers.\n"
+    "  • Never invent column names — describe the table first.\n"
+    "  • Audit/log/history tables (page_views, *_log, chat_messages, "
+    "chat_conversations, admin_chat_messages, admin_pending_actions) "
+    "cannot be written to from chat at all.\n"
+    "  • Never claim a write happened just because you proposed it — "
+    "wait for the approval result on the next turn.\n"
     "  • Cite the tools you used at the bottom of complex answers as a "
     "short \"What I checked: …\" line so the admin can verify."
 )
@@ -6334,7 +6733,7 @@ def _admin_chat_persist(session_id, mode, role, content,
         print(f"[admin_chat] persist failed: {e}")
 
 
-def _admin_chat_run_loop(session_id, user_message, max_rounds=4):
+def _admin_chat_run_loop(session_id, user_message, max_rounds=8):
     """Run the admin agent loop. Returns (final_text, tool_trace)."""
     # Pull the active openai model from agent_provider_settings.
     model = "gpt-4o-mini"
@@ -6531,6 +6930,124 @@ def admin_agent_chat_clear():
         (session_id, mode),
     )
     return jsonify({"ok": True})
+
+
+# --- Approval flow for admin_propose_* tools --------------------------------
+# The model parks a pending action via admin_propose_*; the front-end
+# renders an Approve/Reject card; clicking either route below resolves it
+# and writes a follow-up note into admin_chat_messages so the assistant
+# sees the outcome on its next turn.
+
+def _admin_action_record_followup(session_id, action_id, status, summary):
+    try:
+        _admin_chat_persist(
+            session_id=session_id,
+            mode="admin",
+            role="user",
+            content=(f"[system] Owner {status} action #{action_id}. "
+                     f"{summary}"),
+        )
+    except Exception as e:
+        print(f"[admin_chat] follow-up persist failed: {e}")
+
+
+@app.route("/admin/api/chat/action/<int:action_id>", methods=["GET"])
+@admin_required
+def admin_chat_action_get(action_id):
+    row = query_db(
+        "SELECT id, session_id, action_type, target_table, target_id, "
+        "       payload_json, preview, status, result_json, error_text, "
+        "       created_at, decided_at "
+        "FROM admin_pending_actions WHERE id=%s",
+        (action_id,), fetchone=True,
+    )
+    if not row:
+        return jsonify({"error": "Action not found"}), 404
+    for k in ("created_at", "decided_at"):
+        if hasattr(row.get(k), "isoformat"):
+            row[k] = row[k].isoformat()
+    return jsonify(row)
+
+
+@app.route("/admin/api/chat/action/<int:action_id>/approve",
+           methods=["POST"])
+@admin_required
+def admin_chat_action_approve(action_id):
+    # Atomic claim: only ONE concurrent caller can flip pending->approved.
+    # The intermediate 'approved' status acts as a lock so a duplicate
+    # approve, or a simultaneous reject, will see "no longer pending"
+    # and 409 out below.
+    row = query_db(
+        "UPDATE admin_pending_actions "
+        "SET status='approved', decided_at=NOW() "
+        "WHERE id=%s AND status='pending' "
+        "RETURNING id, session_id, action_type, target_table, "
+        "         target_id, payload_json, preview",
+        (action_id,), fetchone=True,
+    )
+    if not row:
+        existing = query_db(
+            "SELECT status FROM admin_pending_actions WHERE id=%s",
+            (action_id,), fetchone=True,
+        )
+        if not existing:
+            return jsonify({"error": "Action not found"}), 404
+        return jsonify({"error": f"Action is already {existing['status']}",
+                        "status": existing["status"]}), 409
+    sid = row.get("session_id") or ""
+    result, err = _admin_execute_pending(row)
+    if err:
+        execute_db(
+            "UPDATE admin_pending_actions SET status='failed', "
+            "error_text=%s WHERE id=%s",
+            (str(err)[:500], action_id),
+        )
+        _admin_action_record_followup(
+            sid, action_id, "approved",
+            f"But execution FAILED: {err}",
+        )
+        return jsonify({"ok": False, "status": "failed",
+                        "error": str(err)[:500]}), 500
+    execute_db(
+        "UPDATE admin_pending_actions SET status='executed', "
+        "result_json=%s::jsonb WHERE id=%s",
+        (json.dumps(result, default=str), action_id),
+    )
+    _admin_action_record_followup(
+        sid, action_id, "approved",
+        f"Result: {json.dumps(result, default=str)[:300]}",
+    )
+    return jsonify({"ok": True, "status": "executed",
+                    "result": result})
+
+
+@app.route("/admin/api/chat/action/<int:action_id>/reject",
+           methods=["POST"])
+@admin_required
+def admin_chat_action_reject(action_id):
+    # Same atomic conditional update — if the row is no longer pending,
+    # someone else already resolved it.
+    row = query_db(
+        "UPDATE admin_pending_actions "
+        "SET status='rejected', decided_at=NOW() "
+        "WHERE id=%s AND status='pending' "
+        "RETURNING id, session_id",
+        (action_id,), fetchone=True,
+    )
+    if not row:
+        existing = query_db(
+            "SELECT status FROM admin_pending_actions WHERE id=%s",
+            (action_id,), fetchone=True,
+        )
+        if not existing:
+            return jsonify({"error": "Action not found"}), 404
+        return jsonify({"error": f"Action is already {existing['status']}",
+                        "status": existing["status"]}), 409
+    _admin_action_record_followup(
+        row.get("session_id") or "", action_id, "rejected",
+        "No changes were made.",
+    )
+    return jsonify({"ok": True, "status": "rejected"})
 
 
 @app.route("/api/chat", methods=["POST"])

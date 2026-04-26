@@ -3328,6 +3328,120 @@ TO CUSTOMIZE THIS DASHBOARD:
       <div><strong>result:</strong> <pre style="white-space:pre-wrap; margin:.25rem 0;">${preview}</pre></div>
     </details>`;
   }
+  // If a tool result is a proposal JSON, return {action_id, preview};
+  // otherwise return null. Tolerant of strings that were truncated
+  // by the server preview (so falls back to regex extraction of the
+  // action_id when JSON.parse fails).
+  function adminChatPickProposal(raw) {
+    if (raw == null) return null;
+    let obj = raw;
+    if (typeof raw === 'string') {
+      const s = raw.trim();
+      if (!s.startsWith('{') || s.indexOf('awaiting_approval') < 0) {
+        return null;
+      }
+      try {
+        obj = JSON.parse(s);
+      } catch (_) {
+        const m = s.match(/"action_id"\s*:\s*(\d+)/);
+        if (m) return {action_id: parseInt(m[1], 10), preview: ''};
+        return null;
+      }
+    }
+    if (obj && obj.awaiting_approval && obj.action_id) {
+      return {action_id: obj.action_id, preview: obj.preview || ''};
+    }
+    return null;
+  }
+  // Render an approval card for a proposed write. The buttons are wired
+  // live; the card refetches its own status on render so reloads of an
+  // already-decided action show the right badge instead of stale buttons.
+  function adminChatActionCard(actionId, fallbackPreview) {
+    const cardId = 'admin-chat-action-' + actionId;
+    setTimeout(() => adminChatRefreshActionCard(actionId), 0);
+    const safe = adminChatEscape(fallbackPreview || '');
+    return `<div id="${cardId}" data-testid="action-card-${actionId}" style="max-width:80%; background:var(--admin-card); border:2px solid #f59e0b; border-radius:.75rem; padding:.75rem 1rem; font-size:.9rem;">
+      <div style="display:flex; align-items:center; gap:.5rem; font-weight:600; color:#b45309; margin-bottom:.5rem;">
+        <span>Pending change · action #${actionId}</span>
+        <span data-status-badge style="font-size:.75rem; padding:.1rem .4rem; border-radius:.25rem; background:#fef3c7; color:#92400e;">loading…</span>
+      </div>
+      <pre data-action-preview style="white-space:pre-wrap; margin:.25rem 0 .75rem 0; background:var(--admin-bg); padding:.5rem; border-radius:.4rem;">${safe}</pre>
+      <div data-action-error style="display:none; color:#b91c1c; font-size:.85rem; margin-bottom:.5rem;"></div>
+      <div data-action-buttons style="display:none; gap:.5rem;">
+        <button class="btn btn-primary" data-testid="button-action-approve-${actionId}" onclick="adminChatDecideAction(${actionId}, 'approve')">Approve and apply</button>
+        <button class="btn btn-secondary" data-testid="button-action-reject-${actionId}" onclick="adminChatDecideAction(${actionId}, 'reject')">Reject</button>
+      </div>
+    </div>`;
+  }
+  async function adminChatRefreshActionCard(actionId) {
+    const card = document.getElementById('admin-chat-action-' + actionId);
+    if (!card) return;
+    const badge   = card.querySelector('[data-status-badge]');
+    const preview = card.querySelector('[data-action-preview]');
+    const buttons = card.querySelector('[data-action-buttons]');
+    const errBox  = card.querySelector('[data-action-error]');
+    try {
+      const r = await fetch('/admin/api/chat/action/' + actionId);
+      if (!r.ok) {
+        badge.textContent = 'unavailable';
+        return;
+      }
+      const a = await r.json();
+      if (a.preview) preview.textContent = a.preview;
+      const status = a.status || 'pending';
+      const styles = {
+        pending:  ['#fef3c7', '#92400e'],
+        executed: ['#d1fae5', '#065f46'],
+        rejected: ['#e5e7eb', '#374151'],
+        failed:   ['#fee2e2', '#991b1b'],
+      };
+      const [bg, fg] = styles[status] || styles.pending;
+      badge.style.background = bg;
+      badge.style.color = fg;
+      badge.textContent = status;
+      buttons.style.display = (status === 'pending') ? 'flex' : 'none';
+      if (status === 'failed' && a.error_text) {
+        errBox.textContent = 'Error: ' + a.error_text;
+        errBox.style.display = 'block';
+      }
+      if (status === 'executed') {
+        card.style.borderColor = '#10b981';
+      } else if (status === 'rejected') {
+        card.style.borderColor = 'var(--admin-border)';
+      } else if (status === 'failed') {
+        card.style.borderColor = '#ef4444';
+      }
+    } catch (e) {
+      badge.textContent = 'offline';
+    }
+  }
+  async function adminChatDecideAction(actionId, decision) {
+    const card = document.getElementById('admin-chat-action-' + actionId);
+    if (!card) return;
+    const buttons = card.querySelectorAll('button');
+    buttons.forEach(b => b.disabled = true);
+    try {
+      const r = await fetch('/admin/api/chat/action/' + actionId + '/' + decision,
+                            {method: 'POST'});
+      const data = await r.json().catch(() => ({}));
+      await adminChatRefreshActionCard(actionId);
+      if (!r.ok) {
+        const errBox = card.querySelector('[data-action-error]');
+        errBox.textContent = data.error || ('HTTP ' + r.status);
+        errBox.style.display = 'block';
+        buttons.forEach(b => b.disabled = false);
+        return;
+      }
+      // Reload chat so the assistant sees the synthetic follow-up note
+      // and (on next user message) reacts to the outcome.
+      await loadAdminChat();
+    } catch (e) {
+      const errBox = card.querySelector('[data-action-error]');
+      errBox.textContent = 'Network error: ' + (e.message || e);
+      errBox.style.display = 'block';
+      buttons.forEach(b => b.disabled = false);
+    }
+  }
 
   function adminChatScrollDown() {
     const box = document.getElementById('admin-chat-messages');
@@ -3371,13 +3485,19 @@ TO CUSTOMIZE THIS DASHBOARD:
             for (const tc of tcs) {
               const fn = tc.function || {};
               const matched = toolResultsById[tc.id];
-              const preview = matched ? (matched.content || '').slice(0, 500) : '';
+              const fullResult = matched ? (matched.content || '') : '';
+              const preview = fullResult.slice(0, 500);
               toolHtml += adminChatToolCard({
                 name: fn.name || 'tool',
                 args: fn.arguments || '',
                 result_preview: preview,
                 rows: 0, ms: 0,
               });
+              const proposal = adminChatPickProposal(fullResult);
+              if (proposal) {
+                toolHtml += adminChatActionCard(
+                  proposal.action_id, proposal.preview);
+              }
             }
           }
           if ((m.content || '').trim() || !toolHtml) {
@@ -3431,6 +3551,11 @@ TO CUSTOMIZE THIS DASHBOARD:
           let toolHtml = '';
           for (const t of (data.tool_trace || [])) {
             toolHtml += adminChatToolCard(t);
+            const proposal = adminChatPickProposal(t.result_preview);
+            if (proposal) {
+              toolHtml += adminChatActionCard(
+                proposal.action_id, proposal.preview);
+            }
           }
           box.insertAdjacentHTML('beforeend',
             adminChatBubble('assistant', adminChatRenderMd(data.reply || ''), toolHtml));
