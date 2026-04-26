@@ -320,6 +320,64 @@ TO CUSTOMIZE THIS DASHBOARD:
       font-size: 0.8125rem;
     }
 
+    /* ----- Dark-mode modal panel + list-row card ---------------------------
+       Replaces the old hardcoded #fff backgrounds in the editor modals
+       and list-row cards (MCP, knowledge, webhooks, SQL skills) so they
+       inherit the admin dark theme correctly. */
+    .admin-modal-panel {
+      background: var(--admin-bg);
+      color: var(--admin-text);
+      border: 1px solid var(--admin-border-light);
+      border-radius: 10px;
+      max-width: 680px;
+      width: 92%;
+      max-height: 88vh;
+      overflow: auto;
+      padding: 22px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }
+    .admin-modal-panel input[type="text"],
+    .admin-modal-panel input[type="url"],
+    .admin-modal-panel input[type="password"],
+    .admin-modal-panel input[type="email"],
+    .admin-modal-panel input[type="number"],
+    .admin-modal-panel select,
+    .admin-modal-panel textarea {
+      background: var(--admin-bg);
+      color: var(--admin-text);
+      border: 1px solid var(--admin-border);
+      border-radius: 6px;
+      padding: 8px;
+      font-family: inherit;
+    }
+    .admin-modal-panel input[type="text"]:focus,
+    .admin-modal-panel input[type="url"]:focus,
+    .admin-modal-panel input[type="password"]:focus,
+    .admin-modal-panel input[type="email"]:focus,
+    .admin-modal-panel input[type="number"]:focus,
+    .admin-modal-panel select:focus,
+    .admin-modal-panel textarea:focus {
+      outline: none;
+      border-color: rgba(255,255,255,0.3);
+    }
+    .admin-modal-panel input::placeholder,
+    .admin-modal-panel textarea::placeholder {
+      color: var(--admin-text-muted);
+    }
+    .admin-modal-panel code {
+      background: rgba(255,255,255,0.06);
+      color: var(--admin-text);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+    .admin-row-card {
+      background: var(--admin-surface);
+      color: var(--admin-text);
+      border: 1px solid var(--admin-border);
+      border-radius: 8px;
+      padding: 12px;
+    }
+
     .data-table {
       width: 100%;
       border-collapse: collapse;
@@ -4225,7 +4283,7 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     <!-- Editors (modals) -->
     <div id="custom-skill-editor" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;align-items:center;justify-content:center;">
-      <div style="background:#fff;border-radius:8px;max-width:680px;width:92%;max-height:88vh;overflow:auto;padding:22px;">
+      <div class="admin-modal-panel">
         <h3 id="custom-skill-editor-title" style="margin-top:0;">Edit</h3>
         <div id="custom-skill-editor-body"></div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px;">
@@ -4257,7 +4315,7 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     <!-- Add/Edit modal -->
     <div id="mcp-server-editor" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;align-items:center;justify-content:center;">
-      <div style="background:#fff;border-radius:8px;max-width:680px;width:92%;max-height:88vh;overflow:auto;padding:22px;">
+      <div class="admin-modal-panel">
         <h3 id="mcp-server-editor-title" style="margin-top:0;">Edit MCP server</h3>
         <div id="mcp-server-editor-body"></div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px;">
@@ -17770,20 +17828,20 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     async function loadKnowledgeList() {
       const list = document.getElementById('knowledge-list');
-      list.innerHTML = '<div style="color:#777;">Loading…</div>';
+      list.innerHTML = '<div style="color:var(--admin-text-muted);">Loading…</div>';
       try {
         const r = await fetch('/admin/api/custom-knowledge', { credentials:'same-origin' });
         const rows = await r.json();
         if (!Array.isArray(rows) || rows.length === 0) {
-          list.innerHTML = '<div style="color:#777;padding:14px;text-align:center;border:1px dashed #ccc;border-radius:8px;">No knowledge entries yet. Click "Add entry" to teach the agent a new fact.</div>';
+          list.innerHTML = '<div style="color:var(--admin-text-muted);padding:14px;text-align:center;border:1px dashed var(--admin-border-light);border-radius:8px;">No knowledge entries yet. Click "Add entry" to teach the agent a new fact.</div>';
           return;
         }
         list.innerHTML = rows.map(r => `
-          <div style="border:1px solid #e5e5e5;border-radius:8px;padding:12px;background:#fff;" data-testid="row-knowledge-${r.id}">
+          <div class="admin-row-card" data-testid="row-knowledge-${r.id}">
             <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;">
               <div style="flex:1;">
                 <div style="font-weight:600;margin-bottom:4px;">${escHtml(r.topic)}</div>
-                <div style="color:#555;font-size:13px;white-space:pre-wrap;">${escHtml((r.content || '').slice(0, 280))}${(r.content || '').length > 280 ? '…' : ''}</div>
+                <div style="color:rgba(255,255,255,0.7);font-size:13px;white-space:pre-wrap;">${escHtml((r.content || '').slice(0, 280))}${(r.content || '').length > 280 ? '…' : ''}</div>
               </div>
               <div style="display:flex;gap:6px;flex-shrink:0;">
                 <label style="display:flex;align-items:center;gap:4px;font-size:12px;"><input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="toggleKnowledgeEnabled(${r.id}, this.checked)" data-testid="toggle-knowledge-${r.id}"> Enabled</label>
@@ -17855,12 +17913,12 @@ TO CUSTOMIZE THIS DASHBOARD:
     async function loadMCPServersList() {
       const list = document.getElementById('mcp-servers-list');
       if (!list) return;
-      list.innerHTML = '<div style="color:#777;">Loading…</div>';
+      list.innerHTML = '<div style="color:var(--admin-text-muted);">Loading…</div>';
       try {
         const r = await fetch('/admin/api/mcp/servers', { credentials:'same-origin' });
         const rows = await r.json();
         if (!Array.isArray(rows) || rows.length === 0) {
-          list.innerHTML = '<div style="color:#777;padding:14px;text-align:center;border:1px dashed #ccc;border-radius:8px;">No MCP servers yet. Click "Add server" to attach a remote Model Context Protocol endpoint.</div>';
+          list.innerHTML = '<div style="color:var(--admin-text-muted);padding:14px;text-align:center;border:1px dashed var(--admin-border-light);border-radius:8px;">No MCP servers yet. Click "Add server" to attach a remote Model Context Protocol endpoint.</div>';
           return;
         }
         window._mcpServersCache = rows;
@@ -17873,16 +17931,16 @@ TO CUSTOMIZE THIS DASHBOARD:
           const enabledChk  = r.enabled ? 'checked' : '';
           const lastErr     = r.last_test_error ? `<div style="color:#b94a48;font-size:12px;margin-top:4px;">${escHtml(r.last_test_error.slice(0, 200))}</div>` : '';
           return `
-          <div style="border:1px solid #e5e5e5;border-radius:8px;padding:12px;background:#fff;" data-testid="row-mcp-server-${r.id}">
+          <div class="admin-row-card" data-testid="row-mcp-server-${r.id}">
             <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;flex-wrap:wrap;">
               <div style="flex:1;min-width:240px;">
                 <div style="font-weight:600;">${escHtml(r.name)}
                   <span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;background:${statusColor}20;color:${statusColor};margin-left:6px;" data-testid="status-mcp-${r.id}">${statusText}</span>
-                  <span style="font-weight:400;color:#777;font-size:12px;margin-left:6px;">${escHtml(r.transport || 'http')} · ${escHtml(r.auth_type || 'none')}</span>
+                  <span style="font-weight:400;color:var(--admin-text-muted);font-size:12px;margin-left:6px;">${escHtml(r.transport || 'http')} · ${escHtml(r.auth_type || 'none')}</span>
                   ${r.auth_type === 'oauth' ? `<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;background:${(r.oauth_state && r.oauth_state.connected) ? '#16a34a' : '#9ca3af'};color:#fff;margin-left:6px;" data-testid="badge-mcp-oauth-${r.id}">OAuth: ${(r.oauth_state && r.oauth_state.connected) ? 'connected' : 'not connected'}</span>` : ''}
                 </div>
-                <div style="color:#555;font-size:12px;font-family:monospace;margin-top:4px;word-break:break-all;">${escHtml(r.url)}</div>
-                ${r.description ? `<div style="color:#555;font-size:13px;margin-top:4px;">${escHtml(r.description)}</div>` : ''}
+                <div style="color:rgba(255,255,255,0.7);font-size:12px;font-family:monospace;margin-top:4px;word-break:break-all;">${escHtml(r.url)}</div>
+                ${r.description ? `<div style="color:rgba(255,255,255,0.7);font-size:13px;margin-top:4px;">${escHtml(r.description)}</div>` : ''}
                 ${lastErr}
               </div>
               <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
@@ -17895,8 +17953,8 @@ TO CUSTOMIZE THIS DASHBOARD:
               </div>
             </div>
             <details style="margin-top:8px;">
-              <summary style="cursor:pointer;font-size:13px;color:#555;" data-testid="summary-mcp-tools-${r.id}">Cached tools</summary>
-              <div id="mcp-tools-${r.id}" style="margin-top:6px;font-size:12px;color:#555;">Click to load…</div>
+              <summary style="cursor:pointer;font-size:13px;color:rgba(255,255,255,0.7);" data-testid="summary-mcp-tools-${r.id}">Cached tools</summary>
+              <div id="mcp-tools-${r.id}" style="margin-top:6px;font-size:12px;color:rgba(255,255,255,0.7);">Click to load…</div>
             </details>
           </div>`;
         }).join('');
@@ -17924,7 +17982,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         box.innerHTML = rows.map(t => `
           <div style="border-top:1px dashed #e5e5e5;padding:6px 0;">
             <code style="font-weight:600;color:#222;">${escHtml(t.tool_name)}</code>
-            ${t.description ? `<div style="color:#555;margin-top:2px;">${escHtml(t.description)}</div>` : ''}
+            ${t.description ? `<div style="color:rgba(255,255,255,0.7);margin-top:2px;">${escHtml(t.description)}</div>` : ''}
           </div>`).join('');
       } catch (e) {
         box.textContent = 'Failed to load tools: ' + e.message;
@@ -17990,30 +18048,30 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('mcp-server-editor-error').textContent = '';
       document.getElementById('mcp-server-editor-body').innerHTML = `
         <div style="margin-bottom:12px;">
-          <label style="font-weight:600;">Name <span style="color:#b94a48;">*</span></label>
-          <input id="mcp-name" type="text" value="${escHtml(row.name)}" placeholder="weather" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" data-testid="input-mcp-name">
-          <div style="color:#777;font-size:12px;margin-top:2px;">Short identifier; lowercase, no spaces. Used in tool names.</div>
+          <label style="font-weight:600;">Name <span style="color:#fca5a5;">*</span></label>
+          <input id="mcp-name" type="text" value="${escHtml(row.name)}" placeholder="weather" style="width:100%;" data-testid="input-mcp-name">
+          <div style="color:var(--admin-text-muted);font-size:12px;margin-top:2px;">Short identifier; lowercase, no spaces. Used in tool names.</div>
         </div>
         <div style="margin-bottom:12px;">
           <label style="font-weight:600;">Description</label>
-          <input id="mcp-description" type="text" value="${escHtml(row.description || '')}" placeholder="What this server does" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" data-testid="input-mcp-description">
+          <input id="mcp-description" type="text" value="${escHtml(row.description || '')}" placeholder="What this server does" style="width:100%;" data-testid="input-mcp-description">
         </div>
         <div style="margin-bottom:12px;">
-          <label style="font-weight:600;">URL <span style="color:#b94a48;">*</span></label>
-          <input id="mcp-url" type="url" value="${escHtml(row.url)}" placeholder="https://example.com/mcp" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:monospace;" data-testid="input-mcp-url">
-          <div style="color:#777;font-size:12px;margin-top:2px;">Public HTTPS endpoint of the MCP server. Localhost and private IPs are blocked.</div>
+          <label style="font-weight:600;">URL <span style="color:#fca5a5;">*</span></label>
+          <input id="mcp-url" type="url" value="${escHtml(row.url)}" placeholder="https://example.com/mcp" style="width:100%;font-family:monospace;" data-testid="input-mcp-url">
+          <div style="color:var(--admin-text-muted);font-size:12px;margin-top:2px;">Public HTTPS endpoint of the MCP server. Localhost and private IPs are blocked.</div>
         </div>
         <div style="display:flex;gap:10px;margin-bottom:12px;">
           <div style="flex:1;">
             <label style="font-weight:600;">Transport</label>
-            <select id="mcp-transport" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" data-testid="select-mcp-transport">
+            <select id="mcp-transport" style="width:100%;" data-testid="select-mcp-transport">
               <option value="http"${row.transport === 'http' ? ' selected' : ''}>Streamable HTTP (recommended)</option>
               <option value="sse"${row.transport === 'sse' ? ' selected' : ''}>SSE (legacy)</option>
             </select>
           </div>
           <div style="flex:1;">
             <label style="font-weight:600;">Auth type</label>
-            <select id="mcp-auth-type" onchange="onMCPAuthTypeChange()" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" data-testid="select-mcp-auth-type">
+            <select id="mcp-auth-type" onchange="onMCPAuthTypeChange()" style="width:100%;" data-testid="select-mcp-auth-type">
               <option value="none"${row.auth_type === 'none' ? ' selected' : ''}>None</option>
               <option value="bearer"${row.auth_type === 'bearer' ? ' selected' : ''}>Bearer token</option>
               <option value="header"${row.auth_type === 'header' ? ' selected' : ''}>Custom header</option>
@@ -18023,45 +18081,45 @@ TO CUSTOMIZE THIS DASHBOARD:
         </div>
         <div id="mcp-auth-header-row" style="margin-bottom:12px;display:${row.auth_type === 'header' ? 'block' : 'none'};">
           <label style="font-weight:600;">Header name</label>
-          <input id="mcp-auth-header-name" type="text" value="${escHtml(row.auth_header_name || '')}" placeholder="X-API-Key" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;" data-testid="input-mcp-auth-header-name">
+          <input id="mcp-auth-header-name" type="text" value="${escHtml(row.auth_header_name || '')}" placeholder="X-API-Key" style="width:100%;" data-testid="input-mcp-auth-header-name">
         </div>
         <div id="mcp-auth-credential-row" style="margin-bottom:12px;display:${(row.auth_type === 'bearer' || row.auth_type === 'header') ? 'block' : 'none'};">
           <label style="font-weight:600;">Credential ${isEdit && row.auth_credential_set ? '(leave blank to keep current)' : ''}</label>
-          <input id="mcp-auth-credential" type="password" value="" placeholder="${isEdit && row.auth_credential_set ? '••••••••' : 'token / api key'}" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-family:monospace;" data-testid="input-mcp-auth-credential">
+          <input id="mcp-auth-credential" type="password" value="" placeholder="${isEdit && row.auth_credential_set ? '••••••••' : 'token / api key'}" style="width:100%;font-family:monospace;" data-testid="input-mcp-auth-credential">
         </div>
-        <div id="mcp-oauth-row" style="margin-bottom:12px;display:${row.auth_type === 'oauth' ? 'block' : 'none'};border:1px solid #e5e5e5;border-radius:8px;padding:12px;background:#fafafa;">
+        <div id="mcp-oauth-row" style="margin-bottom:12px;display:${row.auth_type === 'oauth' ? 'block' : 'none'};border:1px solid var(--admin-border);border-radius:8px;padding:12px;background:rgba(255,255,255,0.04);">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
             <div style="font-weight:600;">OAuth client config</div>
-            <span id="mcp-oauth-status" style="font-size:12px;padding:3px 9px;border-radius:999px;background:${oa.connected ? '#16a34a' : '#9ca3af'};color:#fff;" data-testid="badge-mcp-oauth-status">${oa.connected ? 'Connected' : 'Not connected'}</span>
+            <span id="mcp-oauth-status" style="font-size:12px;padding:3px 9px;border-radius:999px;background:${oa.connected ? 'rgba(34,197,94,0.18)' : 'rgba(255,255,255,0.08)'};color:${oa.connected ? '#86efac' : 'var(--admin-text-muted)'};border:1px solid ${oa.connected ? 'rgba(34,197,94,0.35)' : 'var(--admin-border)'};" data-testid="badge-mcp-oauth-status">${oa.connected ? 'Connected' : 'Not connected'}</span>
           </div>
           <div style="display:flex;gap:10px;margin-bottom:10px;">
             <div style="flex:1;">
-              <label style="font-weight:600;font-size:13px;">Client ID <span style="color:#b94a48;">*</span></label>
-              <input id="mcp-oauth-client-id" type="text" value="${escHtml(oa.client_id || '')}" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;font-family:monospace;" data-testid="input-mcp-oauth-client-id">
+              <label style="font-weight:600;font-size:13px;">Client ID <span style="color:#fca5a5;">*</span></label>
+              <input id="mcp-oauth-client-id" type="text" value="${escHtml(oa.client_id || '')}" style="width:100%;padding:7px;font-family:monospace;" data-testid="input-mcp-oauth-client-id">
             </div>
             <div style="flex:1;">
               <label style="font-weight:600;font-size:13px;">Client secret ${oa.client_secret_set ? '(leave blank to keep)' : '(optional, public PKCE clients can omit)'}</label>
-              <input id="mcp-oauth-client-secret" type="password" value="" placeholder="${oa.client_secret_set ? '••••••••' : ''}" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;font-family:monospace;" data-testid="input-mcp-oauth-client-secret">
+              <input id="mcp-oauth-client-secret" type="password" value="" placeholder="${oa.client_secret_set ? '••••••••' : ''}" style="width:100%;padding:7px;font-family:monospace;" data-testid="input-mcp-oauth-client-secret">
             </div>
           </div>
           <div style="margin-bottom:10px;">
-            <label style="font-weight:600;font-size:13px;">Authorize URL <span style="color:#b94a48;">*</span></label>
-            <input id="mcp-oauth-auth-url" type="url" value="${escHtml(oa.auth_url || '')}" placeholder="https://provider.example.com/oauth/authorize" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;font-family:monospace;" data-testid="input-mcp-oauth-auth-url">
+            <label style="font-weight:600;font-size:13px;">Authorize URL <span style="color:#fca5a5;">*</span></label>
+            <input id="mcp-oauth-auth-url" type="url" value="${escHtml(oa.auth_url || '')}" placeholder="https://provider.example.com/oauth/authorize" style="width:100%;padding:7px;font-family:monospace;" data-testid="input-mcp-oauth-auth-url">
           </div>
           <div style="margin-bottom:10px;">
-            <label style="font-weight:600;font-size:13px;">Token URL <span style="color:#b94a48;">*</span></label>
-            <input id="mcp-oauth-token-url" type="url" value="${escHtml(oa.token_url || '')}" placeholder="https://provider.example.com/oauth/token" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;font-family:monospace;" data-testid="input-mcp-oauth-token-url">
+            <label style="font-weight:600;font-size:13px;">Token URL <span style="color:#fca5a5;">*</span></label>
+            <input id="mcp-oauth-token-url" type="url" value="${escHtml(oa.token_url || '')}" placeholder="https://provider.example.com/oauth/token" style="width:100%;padding:7px;font-family:monospace;" data-testid="input-mcp-oauth-token-url">
           </div>
           <div style="margin-bottom:10px;">
             <label style="font-weight:600;font-size:13px;">Scopes (space- or comma-separated)</label>
-            <input id="mcp-oauth-scopes" type="text" value="${escHtml((oa.scopes || []).join(' '))}" placeholder="read write" style="width:100%;padding:7px;border:1px solid #ccc;border-radius:6px;font-family:monospace;" data-testid="input-mcp-oauth-scopes">
+            <input id="mcp-oauth-scopes" type="text" value="${escHtml((oa.scopes || []).join(' '))}" placeholder="read write" style="width:100%;padding:7px;font-family:monospace;" data-testid="input-mcp-oauth-scopes">
           </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
             <button type="button" class="btn btn-primary" ${isEdit ? '' : 'disabled title="Save the server first, then connect"'} onclick="connectMCPOAuth(${isEdit ? id : 'null'})" data-testid="button-mcp-oauth-connect" style="padding:6px 14px;font-size:13px;">${oa.connected ? 'Reconnect via OAuth' : 'Connect via OAuth'}</button>
             ${isEdit && oa.connected ? `<button type="button" class="btn btn-secondary" onclick="disconnectMCPOAuth(${id})" data-testid="button-mcp-oauth-disconnect" style="padding:6px 14px;font-size:13px;">Disconnect</button>` : ''}
-            ${oa.last_oauth_error ? `<div style="color:#b94a48;font-size:12px;flex-basis:100%;margin-top:6px;">Last error: ${escHtml(oa.last_oauth_error)}</div>` : ''}
+            ${oa.last_oauth_error ? `<div style="color:#fca5a5;font-size:12px;flex-basis:100%;margin-top:6px;">Last error: ${escHtml(oa.last_oauth_error)}</div>` : ''}
           </div>
-          <div style="color:#777;font-size:12px;margin-top:8px;">Redirect URI to register with the provider: <code>${window.location.origin}/admin/oauth/mcp/callback</code></div>
+          <div style="color:var(--admin-text-muted);font-size:12px;margin-top:8px;">Redirect URI to register with the provider: <code>${window.location.origin}/admin/oauth/mcp/callback</code></div>
         </div>
         <div style="display:flex;gap:18px;flex-wrap:wrap;">
           <label style="display:flex;align-items:center;gap:6px;"><input id="mcp-enabled" type="checkbox" ${row.enabled ? 'checked' : ''} data-testid="input-mcp-enabled"> Enabled</label>
@@ -18185,20 +18243,20 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     async function loadWebhooksList() {
       const list = document.getElementById('webhooks-list');
-      list.innerHTML = '<div style="color:#777;">Loading…</div>';
+      list.innerHTML = '<div style="color:var(--admin-text-muted);">Loading…</div>';
       try {
         const r = await fetch('/admin/api/custom-webhooks', { credentials:'same-origin' });
         const rows = await r.json();
         if (!Array.isArray(rows) || rows.length === 0) {
-          list.innerHTML = '<div style="color:#777;padding:14px;text-align:center;border:1px dashed #ccc;border-radius:8px;">No webhook skills yet.</div>';
+          list.innerHTML = '<div style="color:var(--admin-text-muted);padding:14px;text-align:center;border:1px dashed var(--admin-border-light);border-radius:8px;">No webhook skills yet.</div>';
           return;
         }
         list.innerHTML = rows.map(r => `
-          <div style="border:1px solid #e5e5e5;border-radius:8px;padding:12px;background:#fff;" data-testid="row-webhook-${r.id}">
+          <div class="admin-row-card" data-testid="row-webhook-${r.id}">
             <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;">
               <div style="flex:1;">
-                <div style="font-weight:600;">${escHtml(r.name)} <span style="font-weight:400;color:#777;font-size:12px;">${escHtml(r.method)} · ${escHtml(r.url)}</span></div>
-                <div style="color:#555;font-size:13px;margin-top:4px;">${escHtml(r.description)}</div>
+                <div style="font-weight:600;">${escHtml(r.name)} <span style="font-weight:400;color:var(--admin-text-muted);font-size:12px;">${escHtml(r.method)} · ${escHtml(r.url)}</span></div>
+                <div style="color:rgba(255,255,255,0.7);font-size:13px;margin-top:4px;">${escHtml(r.description)}</div>
               </div>
               <div style="display:flex;gap:6px;flex-shrink:0;">
                 <label style="display:flex;align-items:center;gap:4px;font-size:12px;"><input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="toggleWebhookEnabled(${r.id}, this.checked)" data-testid="toggle-webhook-${r.id}"> Enabled</label>
@@ -18279,20 +18337,20 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     async function loadSqlSkillsList() {
       const list = document.getElementById('sql-skills-list');
-      list.innerHTML = '<div style="color:#777;">Loading…</div>';
+      list.innerHTML = '<div style="color:var(--admin-text-muted);">Loading…</div>';
       try {
         const r = await fetch('/admin/api/custom-sql', { credentials:'same-origin' });
         const rows = await r.json();
         if (!Array.isArray(rows) || rows.length === 0) {
-          list.innerHTML = '<div style="color:#777;padding:14px;text-align:center;border:1px dashed #ccc;border-radius:8px;">No SQL skills yet.</div>';
+          list.innerHTML = '<div style="color:var(--admin-text-muted);padding:14px;text-align:center;border:1px dashed var(--admin-border-light);border-radius:8px;">No SQL skills yet.</div>';
           return;
         }
         list.innerHTML = rows.map(r => `
-          <div style="border:1px solid #e5e5e5;border-radius:8px;padding:12px;background:#fff;" data-testid="row-sql-${r.id}">
+          <div class="admin-row-card" data-testid="row-sql-${r.id}">
             <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;">
               <div style="flex:1;">
                 <div style="font-weight:600;">${escHtml(r.name)}</div>
-                <div style="color:#555;font-size:13px;margin-top:4px;">${escHtml(r.description)}</div>
+                <div style="color:rgba(255,255,255,0.7);font-size:13px;margin-top:4px;">${escHtml(r.description)}</div>
                 <pre style="margin-top:6px;background:#f6f6f6;padding:6px 8px;border-radius:4px;font-size:11px;overflow:auto;max-height:120px;">${escHtml(r.sql_template)}</pre>
               </div>
               <div style="display:flex;gap:6px;flex-shrink:0;">
@@ -18359,13 +18417,13 @@ TO CUSTOMIZE THIS DASHBOARD:
     // --- RECENT CHANGES (settings snapshots) --------------------------------
     window.loadRecentChanges = async function() {
       const list = document.getElementById('changes-list');
-      list.innerHTML = '<div style="color:#777;">Loading…</div>';
+      list.innerHTML = '<div style="color:var(--admin-text-muted);">Loading…</div>';
       try {
         const r = await fetch('/admin/api/snapshots/list?limit=100', { credentials:'same-origin' });
         const data = await r.json();
         const rows = (data && data.snapshots) || [];
         if (rows.length === 0) {
-          list.innerHTML = '<div style="color:#777;padding:14px;text-align:center;border:1px dashed #ccc;border-radius:8px;">No tracked settings changes yet. Edits to the AI/skills/voice tables and custom skills are recorded here automatically.</div>';
+          list.innerHTML = '<div style="color:var(--admin-text-muted);padding:14px;text-align:center;border:1px dashed var(--admin-border-light);border-radius:8px;">No tracked settings changes yet. Edits to the AI/skills/voice tables and custom skills are recorded here automatically.</div>';
           return;
         }
         list.innerHTML = rows.map(s => {
@@ -18375,7 +18433,7 @@ TO CUSTOMIZE THIS DASHBOARD:
               <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;">
                 <div style="flex:1;">
                   <div><b>${escHtml(s.table_name)}</b> #${s.row_id} <span style="color:#888;font-size:12px;">snapshot ${s.id} · ${escHtml((s.created_at || '').replace('T',' ').slice(0,19))}</span></div>
-                  <div style="font-size:13px;color:#555;margin-top:4px;">${escHtml(s.reason || '(no reason recorded)')}</div>
+                  <div style="font-size:13px;color:rgba(255,255,255,0.7);margin-top:4px;">${escHtml(s.reason || '(no reason recorded)')}</div>
                   ${reverted ? `<div style="color:#16a34a;font-size:12px;margin-top:4px;">Reverted ${escHtml((s.reverted_at || '').replace('T',' ').slice(0,19))}</div>` : ''}
                 </div>
                 <div style="display:flex;gap:6px;flex-shrink:0;">
