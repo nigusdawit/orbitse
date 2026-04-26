@@ -6165,6 +6165,16 @@ body.side-panel-active .cart-fab {
   display: none;
 }
 .presentation-image.has-image { display: block; }
+/* Image-only slides (PDF pages, uploaded image sets): show the whole
+   slide rather than cropping it to 16:9, and let it fill the stage. */
+.presentation-image.image-fill {
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-color: #f4f4f4;
+  aspect-ratio: auto;
+  height: min(70vh, 75vh);
+  margin-bottom: 14px;
+}
 .presentation-title {
   font-size: 28px; font-weight: 600;
   margin: 0 0 14px; line-height: 1.25;

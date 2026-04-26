@@ -6273,6 +6273,12 @@ function renderCurrentSlide() {
   if (!slide) return;
   const root = PRESENTATION.overlay;
   const img = root.querySelector('.presentation-image');
+  // "Image-only" slides (typically PDF pages or uploaded image sets)
+  // have no title/body, just the rendered image. Show those full-bleed
+  // with `contain` sizing so portrait or 4:3 slides aren't cropped.
+  const hasTitle = !!(slide.title && slide.title.trim());
+  const hasBody = !!(slide.body && slide.body.trim());
+  const imageOnly = !hasTitle && !hasBody && !!slide.image_url;
   if (slide.image_url) {
     img.style.backgroundImage = `url(${JSON.stringify(slide.image_url)})`;
     img.classList.add('has-image');
@@ -6280,6 +6286,7 @@ function renderCurrentSlide() {
     img.style.backgroundImage = '';
     img.classList.remove('has-image');
   }
+  img.classList.toggle('image-fill', imageOnly);
   root.querySelector('.presentation-title').textContent = slide.title || '';
   root.querySelector('.presentation-body').textContent = slide.body || '';
   root.querySelector('.presentation-progress').textContent =

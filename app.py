@@ -6402,6 +6402,272 @@ def admin_add_slide(pid):
     return jsonify(s), 201
 
 
+@app.route("/admin/api/presentations/import", methods=["POST"])
+@admin_required
+def admin_import_presentation():
+    """POST — Build a deck from a pre-built file the admin uploads.
+
+    Accepts multipart with `files` (one or more) plus optional form fields
+    `title`, `description`, `enabled`, `auto_play`. Supported inputs:
+
+      - PDF (single file): each page is rendered to a JPG image (capped at
+        1600px wide) and stored as one image-only slide. Page text is
+        captured as the narration_text fallback.
+      - PPTX (single file): one slide per slide; first text shape becomes
+        the title, remaining text shapes become the body, speaker notes
+        become narration_text. PowerPoint visual layout is NOT rendered —
+        the admin is told to save as PDF first if pixel-perfect fidelity
+        matters.
+      - JPG/PNG/WEBP (one or more): each image becomes one image-only
+        slide, ordered by filename.
+
+    Returns {id, slug, title, slides_created, warnings:[...]} on success.
+    """
+    files = request.files.getlist("files") or []
+    if not files and "file" in request.files:
+        files = [request.files["file"]]
+    files = [f for f in files if f and f.filename]
+    if not files:
+        return jsonify({"error": "No files provided"}), 400
+
+    # Detect file kind by extension. We refuse mixed kinds because each
+    # kind hits a different conversion path.
+    kinds = set()
+    for f in files:
+        ext = f.filename.rsplit(".", 1)[-1].lower() if "." in f.filename else ""
+        if ext == "pdf":
+            kinds.add("pdf")
+        elif ext == "pptx":
+            kinds.add("pptx")
+        elif ext in ("jpg", "jpeg", "png", "webp"):
+            kinds.add("image")
+        else:
+            return jsonify({"error": f"Unsupported file type: .{ext}. Use PDF, PPTX, or images."}), 400
+    if len(kinds) > 1:
+        return jsonify({"error": "Mix of file types — upload either a single PDF, a single PPTX, or a set of images (not a combination)."}), 400
+    kind = kinds.pop()
+    if kind in ("pdf", "pptx") and len(files) != 1:
+        return jsonify({"error": f"Upload one {kind.upper()} file at a time."}), 400
+
+    # ----- Metadata defaults --------------------------------------------------
+    title = (request.form.get("title") or "").strip()
+    if not title:
+        base_name = files[0].filename.rsplit(".", 1)[0]
+        title = _re.sub(r"[_\-]+", " ", base_name).strip().title() or "Imported Deck"
+    description = (request.form.get("description") or "").strip()
+    enabled = (request.form.get("enabled") or "true").lower() != "false"
+    auto_play = (request.form.get("auto_play") or "false").lower() == "true"
+
+    warnings = []
+    slide_rows = []  # accumulator: dicts with title/body/image_url/narration_text
+    created_files = []  # absolute disk paths we wrote during extraction; we
+                        # delete these if anything fails before COMMIT, so a
+                        # half-finished import never leaves orphaned uploads.
+
+    def _cleanup_created_files():
+        for _p in created_files:
+            try:
+                os.unlink(_p)
+            except Exception:
+                pass
+
+    # ----- PDF -> image per page ---------------------------------------------
+    if kind == "pdf":
+        try:
+            import fitz  # PyMuPDF
+        except ImportError:
+            return jsonify({"error": "PDF import unavailable: PyMuPDF not installed."}), 500
+        try:
+            from PIL import Image as _PILImage
+        except ImportError:
+            return jsonify({"error": "PDF import unavailable: Pillow not installed."}), 500
+        import io as _io
+        try:
+            pdf_bytes = files[0].read()
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        except Exception as e:
+            return jsonify({"error": f"Could not read PDF: {e}"}), 400
+        try:
+            # 2x render matrix gives ~144 DPI; we then downscale wide pages
+            # to cap at 1600px so storage stays sane on big decks.
+            base_matrix = fitz.Matrix(2.0, 2.0)
+            for page in doc:
+                pix = page.get_pixmap(matrix=base_matrix, alpha=False)
+                img = _PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                if img.width > 1600:
+                    new_h = int(img.height * 1600 / img.width)
+                    img = img.resize((1600, new_h), _PILImage.LANCZOS)
+                buf = _io.BytesIO()
+                img.save(buf, format="JPEG", quality=85, optimize=True)
+                unique_name = f"{secrets.token_hex(8)}.jpg"
+                disk_path = os.path.join(UPLOAD_FOLDER, unique_name)
+                try:
+                    with open(disk_path, "wb") as fh:
+                        fh.write(buf.getvalue())
+                    created_files.append(disk_path)
+                except Exception as _e:
+                    _cleanup_created_files()
+                    try: doc.close()
+                    except Exception: pass
+                    return jsonify({"error": f"Could not save page image: {_e}"}), 500
+                narration = (page.get_text("text") or "").strip()
+                slide_rows.append({
+                    "title": "",
+                    "body": "",
+                    "image_url": f"/uploads/{unique_name}",
+                    "narration_text": narration[:5000],
+                })
+        except Exception as e:
+            _cleanup_created_files()
+            try: doc.close()
+            except Exception: pass
+            return jsonify({"error": f"Failed while rendering PDF: {str(e)[:300]}"}), 500
+        finally:
+            try:
+                doc.close()
+            except Exception:
+                pass
+
+    # ----- PPTX -> text + speaker notes per slide ----------------------------
+    elif kind == "pptx":
+        try:
+            from pptx import Presentation as _PPTXPresentation
+        except ImportError:
+            return jsonify({"error": "PPTX import unavailable: python-pptx not installed."}), 500
+        import io as _io
+        try:
+            prs = _PPTXPresentation(_io.BytesIO(files[0].read()))
+        except Exception as e:
+            return jsonify({"error": f"Could not read PPTX: {e}"}), 400
+        warnings.append("PowerPoint slides were imported as text plus speaker notes. To preserve the exact visual layout, save your deck as PDF and re-import.")
+        for slide in prs.slides:
+            slide_title = ""
+            body_parts = []
+            # Prefer the slide's title placeholder when PowerPoint actually
+            # marked one. This is more reliable than guessing "first text
+            # shape == title" because the title placeholder is often not the
+            # first shape in z-order, and the first text shape may be empty.
+            title_shape = None
+            try:
+                if slide.shapes.title is not None and slide.shapes.title.has_text_frame:
+                    title_shape = slide.shapes.title
+                    title_text = (title_shape.text_frame.text or "").strip()
+                    if title_text:
+                        lines = title_text.splitlines()
+                        slide_title = lines[0][:200]
+                        rest = "\n".join(lines[1:]).strip()
+                        if rest:
+                            body_parts.append(rest)
+            except Exception:
+                title_shape = None
+            for shape in slide.shapes:
+                if not getattr(shape, "has_text_frame", False):
+                    continue
+                if title_shape is not None and shape is title_shape:
+                    continue  # already captured above
+                txt = (shape.text_frame.text or "").strip()
+                if not txt:
+                    continue
+                if not slide_title:
+                    # No title placeholder on this slide — promote the first
+                    # non-empty text shape to title.
+                    lines = txt.splitlines()
+                    slide_title = lines[0][:200]
+                    rest = "\n".join(lines[1:]).strip()
+                    if rest:
+                        body_parts.append(rest)
+                else:
+                    body_parts.append(txt)
+            notes = ""
+            try:
+                if slide.has_notes_slide and slide.notes_slide and slide.notes_slide.notes_text_frame:
+                    notes = (slide.notes_slide.notes_text_frame.text or "").strip()
+            except Exception:
+                notes = ""
+            slide_rows.append({
+                "title": slide_title,
+                "body": ("\n\n".join(body_parts))[:8000],
+                "image_url": "",
+                "narration_text": notes[:5000],
+            })
+
+    # ----- Image set: one slide per image, sorted by filename ----------------
+    else:  # kind == "image"
+        sorted_files = sorted(files, key=lambda f: f.filename.lower())
+        for f in sorted_files:
+            ext = f.filename.rsplit(".", 1)[-1].lower()
+            unique_name = f"{secrets.token_hex(8)}.{ext}"
+            disk_path = os.path.join(UPLOAD_FOLDER, unique_name)
+            try:
+                f.save(disk_path)
+                created_files.append(disk_path)
+            except Exception as e:
+                _cleanup_created_files()
+                return jsonify({"error": f"Could not save uploaded image: {str(e)[:300]}"}), 500
+            slide_rows.append({
+                "title": "",
+                "body": "",
+                "image_url": f"/uploads/{unique_name}",
+                "narration_text": "",
+            })
+
+    if not slide_rows:
+        _cleanup_created_files()
+        return jsonify({"error": "No slides could be extracted from the upload."}), 400
+
+    # ----- Persist deck + slides (single transaction) ------------------------
+    # We open a manual transaction (autocommit off) so the deck row + every
+    # slide row commit together. If anything fails, we ROLLBACK and also
+    # delete every page image / source image we wrote during extraction so
+    # the upload folder doesn't accumulate orphans.
+    slug = _slugify(title)
+    base = slug
+    n = 2
+    while query_db("SELECT 1 FROM presentations WHERE slug = %s", (slug,), fetchone=True):
+        slug = f"{base}-{n}"
+        n += 1
+    cover = next((row.get("image_url") for row in slide_rows if row.get("image_url")), "")
+    conn = get_db()
+    conn.autocommit = False
+    deck_id = None
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """INSERT INTO presentations
+                     (slug, title, description, cover_image_url, source, auto_play, enabled)
+                   VALUES (%s, %s, %s, %s, 'admin', %s, %s)
+                   RETURNING id""",
+                (slug, title, description, cover, auto_play, enabled),
+            )
+            deck_id = cur.fetchone()["id"]
+            for idx, row in enumerate(slide_rows):
+                cur.execute(
+                    """INSERT INTO presentation_slides
+                         (presentation_id, order_index, title, body, image_url, narration_text)
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (deck_id, idx, row["title"], row["body"], row["image_url"], row["narration_text"]),
+                )
+        conn.commit()
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        _cleanup_created_files()
+        return jsonify({"error": f"Could not save deck to the database: {str(e)[:300]}"}), 500
+    finally:
+        try: conn.autocommit = True
+        except Exception: pass
+        try: conn.close()
+        except Exception: pass
+
+    return jsonify({
+        "id": deck_id,
+        "slug": slug,
+        "title": title,
+        "slides_created": len(slide_rows),
+        "warnings": warnings,
+    }), 201
+
+
 @app.route("/admin/api/slides/<int:sid>", methods=["PUT"])
 @admin_required
 def admin_update_slide(sid):

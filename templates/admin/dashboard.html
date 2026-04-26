@@ -3692,8 +3692,15 @@ TO CUSTOMIZE THIS DASHBOARD:
         <h2>Presentation Decks</h2>
         <p>Slide decks the AI can launch on a visitor's screen with voice narration. Visitors can pause, ask questions, and resume.</p>
       </div>
-      <button class="btn btn-primary" onclick="openPresentationEditor(null)" data-testid="button-new-presentation">+ New Deck</button>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <button class="btn btn-secondary" onclick="document.getElementById('presentation-import-file').click()" data-testid="button-import-presentation">⬆ Import deck</button>
+        <input type="file" id="presentation-import-file" accept=".pdf,.pptx,.jpg,.jpeg,.png,.webp" multiple style="display:none;" onchange="importPresentationFromFile(this)">
+        <button class="btn btn-primary" onclick="openPresentationEditor(null)" data-testid="button-new-presentation">+ New Deck</button>
+      </div>
     </div>
+    <p style="color:var(--admin-text-muted); font-size:13px; margin:-4px 0 14px;">
+      Import a PDF (one slide per page, exact visuals), a PowerPoint (.pptx — text + speaker notes only; save as PDF for pixel-perfect import), or a set of JPG/PNG images (one slide each, ordered by filename).
+    </p>
     <div id="presentations-list" data-testid="list-presentations" style="display:grid;gap:14px;"></div>
   </div>
 
@@ -16711,6 +16718,54 @@ TO CUSTOMIZE THIS DASHBOARD:
         `).join('');
       } catch (e) {
         wrap.innerHTML = '<p style="color:#f87171;">Failed to load: ' + esc(e.message) + '</p>';
+      }
+    };
+
+    /* Upload a PDF / PPTX / image set and turn it into a deck on the
+       server. On success refresh the list and pop open the editor for the
+       newly created deck so the admin can fine-tune title / description /
+       narration. */
+    window.importPresentationFromFile = async function(input) {
+      const files = Array.from(input.files || []);
+      if (!files.length) return;
+      const fd = new FormData();
+      for (const f of files) fd.append('files', f);
+
+      const totalBytes = files.reduce((n, f) => n + (f.size || 0), 0);
+      const sizeLabel = totalBytes > 1024 * 1024
+        ? (totalBytes / (1024 * 1024)).toFixed(1) + ' MB'
+        : Math.max(1, Math.round(totalBytes / 1024)) + ' KB';
+      const wrap = document.getElementById('presentations-list');
+      const banner = document.createElement('div');
+      banner.style.cssText = 'padding:10px 14px;border:1px solid var(--admin-border);border-radius:8px;background:rgba(56,139,253,0.08);color:var(--admin-text);margin-bottom:10px;';
+      banner.textContent = `Uploading ${files.length} file${files.length === 1 ? '' : 's'} (${sizeLabel}) and converting to slides — this can take a few seconds for large decks…`;
+      if (wrap) wrap.parentNode.insertBefore(banner, wrap);
+      input.value = '';  // allow re-selecting the same file later
+
+      try {
+        const r = await fetch('/admin/api/presentations/import', {
+          method: 'POST',
+          body: fd,
+          credentials: 'same-origin',
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          if (r.status === 413) {
+            alert('That file is too large. The maximum upload size is 100 MB. For very large PDFs, try splitting the file or saving at a lower resolution.');
+          } else {
+            alert(data.error || `Import failed (HTTP ${r.status}).`);
+          }
+          return;
+        }
+        if (Array.isArray(data.warnings) && data.warnings.length) {
+          alert(`Imported "${data.title}" with ${data.slides_created} slide${data.slides_created === 1 ? '' : 's'}.\n\nNote: ${data.warnings.join('\n')}`);
+        }
+        await loadPresentations();
+        if (data.id) openPresentationEditor(data.id);
+      } catch (e) {
+        alert('Upload failed: ' + (e && e.message ? e.message : e));
+      } finally {
+        try { banner.remove(); } catch (_) {}
       }
     };
 
