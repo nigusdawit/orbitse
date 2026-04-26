@@ -4832,8 +4832,16 @@ def lookup_presentation(slug=None, query=None, limit=10):
             "ORDER BY order_index ASC, id ASC",
             (p["id"],),
         ) or []
+        # _next_action is an inline nudge to the model. Without it, the
+        # visitor agent occasionally calls lookup_presentation, sees the
+        # deck data, then exits with an empty reply instead of emitting
+        # the launch command — leaving the visitor staring at nothing
+        # after they say "yes please". The instruction sits right next to
+        # the slug in context, which the model follows much more reliably
+        # than the equivalent line in the system prompt.
+        canon_slug = p["slug"]
         return {
-            "slug": p["slug"],
+            "slug": canon_slug,
             "title": p["title"],
             "description": p["description"],
             "auto_play": bool(p["auto_play"]),
@@ -4846,6 +4854,17 @@ def lookup_presentation(slug=None, query=None, limit=10):
                 }
                 for s in slides
             ],
+            "_next_action": (
+                "If the visitor has agreed to see this deck (e.g. said "
+                "'yes', 'sure', 'go ahead', or it has auto_play=true), "
+                "your VERY NEXT reply must include this exact code block "
+                "on its own line — using the slug value above:\n"
+                "```command\n"
+                f'{{"action": "start_presentation", "slug": "{canon_slug}"}}\n'
+                "```\n"
+                "Do NOT call lookup_presentation again with the same slug "
+                "— you already have the deck data."
+            ),
         }
     rows = query_db(
         "SELECT slug, title, description, "
@@ -11423,6 +11442,88 @@ def api_chat():
                 break
 
             reply, cmd = parse_command_from_text(full_text)
+            # ---- Auto-launch fallback for presentations -------------------
+            # Known failure mode: after looking up a deck, the model
+            # occasionally returns no text and no command — leaving the
+            # visitor with a blank reply right after they said "yes". When
+            # that happens AND the visitor's current message clearly reads
+            # as consent AND the AI just successfully looked up exactly
+            # ONE deck, synthesize the start_presentation command from
+            # that deck's canonical slug ourselves. The gates below are
+            # deliberately strict so this never fires while a deck is
+            # already on screen, when the visitor is asking a question
+            # about the deck instead of agreeing to it, or when the AI
+            # looked up several decks and we don't know which to launch.
+            if (
+                (not (reply or "").strip())
+                and (cmd is None)
+                and tool_logs
+                and not presentation_active
+                and (message or "").strip()
+            ):
+                deck_lookups = [
+                    l for l in tool_logs
+                    if l.get("name") == "lookup_presentation"
+                    and isinstance(l.get("args"), dict)
+                    and (l["args"].get("slug") or "").strip()
+                    and not (l.get("error") or "").strip()
+                ]
+                # Require all deck lookups in this turn to point at the
+                # same slug — otherwise the AI was browsing several decks
+                # and we have no way to pick the right one without text.
+                asked_slugs = {
+                    (l["args"]["slug"] or "").strip().lower()
+                    for l in deck_lookups
+                }
+                msg = message.strip()
+                # Anchored / near-anchored affirmative ("yes", "yeah ok",
+                # "sure please", "go ahead", "launch it", "show me", etc.)
+                # at the START of the visitor's message — much harder to
+                # accidentally match inside a longer question like
+                # "what does the deck show me about pricing?".
+                # Note: 'show me' is intentionally excluded — it usually
+                # introduces a question ('show me details first', 'show
+                # me what's inside') rather than serving as standalone
+                # launch consent. 'show me the deck/presentation/it' is
+                # accepted explicitly.
+                affirm_re = re.compile(
+                    r"^\s*(?:"
+                    r"yes|yeah|yep|yup|sure|ok|okay|of\s*course|"
+                    r"absolutely|definitely|sounds\s*good|alright|"
+                    r"go\s*ahead|do\s*it|please\s*do|launch\s*it|"
+                    r"start\s*it|play\s*it|"
+                    r"let'?s\s*(?:see|go|do\s*it)|"
+                    r"i'?d\s*love\s*to|i\s*would\s*love\s*to|"
+                    r"sure\s*thing|"
+                    r"show\s*(?:me\s*)?(?:the\s*)?(?:deck|presentation|slides|it)"
+                    r")\b",
+                    re.IGNORECASE,
+                )
+                # Negation guard — if the visitor said "no", "don't",
+                # "not now", "later", "wait", etc. anywhere in the
+                # message, never auto-launch even if an affirmative
+                # word also appears (e.g. "no please don't").
+                negate_re = re.compile(
+                    r"\b(no|nope|not?(?:\s+now)?|don'?t|do\s*not|"
+                    r"stop|wait|later|cancel|nah|never\s*mind|"
+                    r"nevermind|hold\s*on|skip)\b",
+                    re.IGNORECASE,
+                )
+                if (
+                    len(asked_slugs) == 1
+                    and affirm_re.search(msg)
+                    and not negate_re.search(msg)
+                ):
+                    asked = next(iter(asked_slugs))
+                    row = _resolve_presentation_slug(asked)
+                    if row:
+                        cmd = {"action": "start_presentation",
+                               "slug": row["slug"]}
+                        print(
+                            f"[chat] auto-launch fallback: visitor "
+                            f"said {msg[:60]!r} → "
+                            f"start_presentation slug='{row['slug']}'"
+                        )
             # Presentation-mode safety net: even though the system prompt
             # tells the model not to issue intrusive commands while a deck
             # is playing, the model occasionally still tries. Strip those
