@@ -9707,22 +9707,46 @@ ADMIN_TOOLS = [
 ]
 
 
-def _admin_chat_dynamic_mcp_tools():
-    """Build OpenAI-shaped tool schemas for every MCP tool whose server
-    is enabled AND has allowed_for_admin=true. The names are the same
-    `mcp__<server>__<tool>` slugs the dispatcher fall-through expects.
-    Called once per chat turn so newly-added MCP tools become available
-    without restart."""
+def _admin_chat_dynamic_tools():
+    """Build OpenAI-shaped tool schemas for every visitor-side skill that
+    is currently enabled AND visible to the admin audience. This includes:
+
+      • the 15 built-in `lookup_*` site-content tools (gallery, services,
+        events, blog, team, faq, testimonials, business_info, products,
+        pricing, presentation, …) — admin can already query the same
+        rows via admin_run_sql, but these wrappers are pre-baked,
+        friendlier, and faster.
+      • lookup_knowledge — searches custom_knowledge_entries.
+      • Custom webhook skills (rows of custom_webhook_skills) — each
+        enabled row is a callable third-party HTTP tool.
+      • Custom SQL skills (rows of custom_sql_skills) — each enabled
+        row is a parameterised SELECT tool.
+      • Every MCP tool whose server has allowed_for_admin=true — names
+        are `mcp__<server>__<tool>` slugs.
+
+    Called once per chat turn so newly-added/enabled skills become
+    available without restart. Skipped:
+      • `lookup_web_search` — we already expose this as admin_web_search
+        (with an admin-targeted description), so dropping the visitor
+        copy avoids two tool entries that do the same thing.
+      • Any name that collides with a static ADMIN_TOOL_FUNCTIONS key —
+        the admin-side definition wins.
+    """
     try:
         active = get_active_chat_tools(audience="admin")
     except Exception as e:
-        print(f"[admin_chat] dynamic mcp tools failed: {e}")
+        print(f"[admin_chat] dynamic tools failed: {e}")
         return []
     out = []
     for t in active:
         fn = (t.get("function") or {}).get("name") or ""
-        if fn.startswith("mcp__"):
-            out.append(t)
+        if not fn:
+            continue
+        if fn == "lookup_web_search":
+            continue  # superseded by admin_web_search
+        if fn in ADMIN_TOOL_FUNCTIONS:
+            continue  # admin-side definition wins
+        out.append(t)
     return out
 
 
@@ -9742,23 +9766,38 @@ def execute_admin_tool(name, args_json, session_id=""):
         args = {}
     fn = ADMIN_TOOL_FUNCTIONS.get(name)
     if fn is None:
-        # Fall through to the visitor-agent dispatcher for dynamic
-        # mcp__<server>__<tool> names (and any future agent_skills tool
-        # that the admin assistant is allowed to call directly).
-        if name.startswith("mcp__"):
-            try:
-                result = execute_chat_tool(name, args_json or "{}",
-                                            session_id=f"admin_chat_{session_id}"[:100])
-            except Exception as e:
-                result = (json.dumps({"error": f"MCP dispatch failed: {str(e)[:200]}"}),
-                          {"name": name, "args": args, "ms": 0,
-                           "error": str(e)[:200], "rows": 0})
-            # execute_chat_tool returns (result_str, log_dict).
-            return result
-        log = {"name": name, "args": args, "error": "unknown_admin_tool",
-               "ms": 0}
-        _log_skill_usage(f"admin_chat_{session_id}"[:100], log)
-        return json.dumps({"error": f"Unknown admin tool: {name}"}), log
+        # Fall through to the visitor-agent dispatcher for ANY name
+        # not handled here. That covers:
+        #   • mcp__<server>__<tool>  (MCP connectors)
+        #   • lookup_*               (built-in site-content lookups)
+        #   • Custom webhook/SQL skills the admin defined on the
+        #     dashboard (they appear in agent_skills.enabled = true)
+        # _admin_chat_dynamic_tools() is what advertised these names
+        # to the model — we re-check that allowlist at execution time
+        # so a hallucinated / disabled tool name can never run just
+        # because the model emitted it. Tool runs are logged under
+        # 'admin_chat_<session_id>' so they don't show up in visitor
+        # analytics.
+        allowed = {(t.get("function") or {}).get("name")
+                   for t in _admin_chat_dynamic_tools()}
+        if name not in allowed:
+            log = {"name": name, "args": args,
+                   "error": "unknown_or_disabled_tool", "ms": 0}
+            _log_skill_usage(f"admin_chat_{session_id}"[:100], log)
+            return (json.dumps({"error": f"Unknown or disabled tool: {name}. "
+                                          "It may have been turned off in "
+                                          "the Skills tab, or its MCP "
+                                          "server may not be marked "
+                                          "allowed_for_admin."}), log)
+        try:
+            result = execute_chat_tool(name, args_json or "{}",
+                                        session_id=f"admin_chat_{session_id}"[:100])
+        except Exception as e:
+            result = (json.dumps({"error": f"Tool dispatch failed: {str(e)[:200]}"}),
+                      {"name": name, "args": args, "ms": 0,
+                       "error": str(e)[:200], "rows": 0})
+        # execute_chat_tool returns (result_str, log_dict).
+        return result
     # Propose tools need to know which chat session is asking, so the
     # pending action gets attributed correctly. The leading underscore
     # keeps `_session_id` out of the JSON schema we expose to the model
@@ -9793,11 +9832,27 @@ ADMIN_CHAT_SYSTEM_PROMPT = (
     "talking to IS the site owner / admin — speak to them plainly, like "
     "a helpful ops teammate.\n\n"
     "TWO KINDS OF TOOLS:\n"
-    "  1. READ tools (admin_list_tables, admin_describe_table, "
+    "  1. READ tools — run immediately, no approval needed:\n"
+    "       • admin_* reads: admin_list_tables, admin_describe_table, "
     "admin_run_sql, admin_list_skills, admin_recent_*, "
-    "admin_overview_stats, admin_skill_usage_stats, admin_web_search) "
-    "— run immediately. Use them freely without asking permission "
-    "first.\n"
+    "admin_overview_stats, admin_skill_usage_stats, admin_web_search.\n"
+    "       • Visitor-side site-content lookups (also available to "
+    "you): lookup_gallery_cards, lookup_services, "
+    "lookup_service_availability, lookup_experiences, lookup_pricing, "
+    "lookup_products, lookup_events, lookup_blog, lookup_team, "
+    "lookup_faq, lookup_testimonials, lookup_business_info, "
+    "lookup_custom_section_items, lookup_generated_page, "
+    "lookup_presentation, lookup_knowledge. Prefer these for routine "
+    "content questions — they're pre-baked, faster, and safer than "
+    "writing raw SQL. Reach for admin_run_sql when you need "
+    "joins/aggregates the wrappers don't expose.\n"
+    "       • Custom skills the owner has enabled show up here too: "
+    "custom webhook skills (third-party HTTP endpoints) and custom "
+    "SQL skills (parameterised SELECT templates). They appear with "
+    "their owner-given names; check admin_list_skills to see what's "
+    "active.\n"
+    "       • MCP tools named mcp__<server>__<tool> (when the server "
+    "has allowed_for_admin=true).\n"
     "  2. WRITE tools — they are NAMED admin_propose_*. Calling one of "
     "these does NOT change anything yet. It parks a pending action "
     "with a preview that the owner has to Approve in the chat UI. The "
@@ -10024,7 +10079,7 @@ def _admin_chat_run_loop(session_id, user_message, max_rounds=8):
     for round_no in range(max_rounds):
         # Recompute tool list each round so newly added/removed MCP
         # connectors become available without restart.
-        round_tools = list(ADMIN_TOOLS) + _admin_chat_dynamic_mcp_tools()
+        round_tools = list(ADMIN_TOOLS) + _admin_chat_dynamic_tools()
         try:
             resp = openai_client.chat.completions.create(
                 model=model,
