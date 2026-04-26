@@ -5711,6 +5711,199 @@ function executeCommand(cmd) {
     }
 
     /* ─────────────────────────────────────────────────────────────────
+       OPEN BOOKING MODAL — Hand the visitor off to the booking modal
+       ─────────────────────────────────────────────────────────────────
+       Graceful fallback: when the visitor explicitly asks to "see the
+       booking form" or wants to fill it out themselves rather than
+       chat through it, the AI emits this command and we pop the
+       existing modal exactly like the page's Book buttons do. */
+    case 'openBookingModal':
+    case 'openServiceModal': {
+      const svcSlug = cmd.slug || cmd.target;
+      if (!svcSlug || typeof window.openServiceModal !== 'function') break;
+      window.openServiceModal(svcSlug);
+      break;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────
+       BOOK SERVICE — Submit a service booking collected entirely in chat
+       ─────────────────────────────────────────────────────────────────
+       Sister to submitForm, but for the bookable-services flow. The AI
+       gathers service slug, add-on ids, optional date + time slot, and
+       contact details through conversation, then issues this command.
+       We POST to the same /api/services/<slug>/book endpoint the modal
+       uses, so capacity checks, partial-save mirroring, Stripe Checkout,
+       and the contract-upload redirect all keep working unchanged.
+    */
+    case 'bookService': {
+      const bookSlug = cmd.slug;
+      if (!bookSlug) {
+        chatAddMessage('agent', 'I had trouble starting that booking. Could you tell me which service you\'d like?');
+        break;
+      }
+
+      const addonIds = Array.isArray(cmd.addon_ids)
+        ? cmd.addon_ids.map(x => parseInt(x, 10)).filter(n => !isNaN(n))
+        : [];
+      const sessionId = (typeof window._svcBookingSessionId === 'function')
+        ? window._svcBookingSessionId()
+        : ('svc-' + Date.now().toString(36));
+      const q = (() => { try { return Object.fromEntries(new URLSearchParams(window.location.search)); } catch(_) { return {}; } })();
+
+      const body = {
+        client_name:    (cmd.client_name  || '').trim(),
+        client_email:   (cmd.client_email || '').trim(),
+        client_phone:   (cmd.client_phone || '').trim(),
+        notes:          (cmd.notes        || '').trim(),
+        addon_ids:      addonIds,
+        scheduled_date:  cmd.scheduled_date  || null,
+        scheduled_start: cmd.scheduled_start || null,
+        session_id:     sessionId,
+        page_url:       window.location.href,
+        referrer:       document.referrer || '',
+        screen_resolution: `${window.screen.width}x${window.screen.height}`,
+        language:       navigator.language || '',
+        utm_source:     q.utm_source   || '',
+        utm_medium:     q.utm_medium   || '',
+        utm_campaign:   q.utm_campaign || '',
+        utm_term:       q.utm_term     || '',
+        utm_content:    q.utm_content  || '',
+      };
+
+      chatShowTyping(true);
+      fetch(`/api/services/${encodeURIComponent(bookSlug)}/book`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      })
+      .then(r => r.json().then(data => ({ status: r.status, ok: r.ok, data })))
+      .then(({ ok, data }) => {
+        chatShowTyping(false);
+
+        /* ----- ERROR PATH -----
+           Surface a friendly message AND push a hidden system note so
+           the AI knows on its next turn what was wrong and can ask
+           naturally for the missing piece (mirrors the submitForm
+           validation-failure pattern). */
+        if (!ok || data.error) {
+          const errMsg = (data && data.error) || 'Booking failed';
+          chatAddMessage('agent', `I ran into a small snag with that booking: ${errMsg}. Could we sort that out together?`);
+          try {
+            chatHistory.push({
+              role: 'agent',
+              hidden: true,
+              content: `[System note for assistant: bookService for slug "${bookSlug}" was rejected by the backend with: "${errMsg}". Do NOT call bookService again until you have addressed the issue. Common fixes: ask the visitor for missing required info (name, email, date, or time slot), pick a different time slot if the previous one just filled, or explain that paid bookings are unavailable if payments are not configured. Confirm the corrected detail with the visitor before retrying.]`,
+            });
+            persistChatHistory();
+          } catch (_) {}
+          return;
+        }
+
+        /* ----- REDIRECT TO STRIPE CHECKOUT -----
+           Deposit / full-pay services come back with a checkout_url
+           (and sometimes the modal-style action: 'redirect' wrapper).
+           Tell the visitor we're sending them and navigate. */
+        if (data.checkout_url || (data.action === 'redirect' && data.checkout_url)) {
+          chatAddMessage('agent', 'You\'re all set — sending you to our secure checkout to finish the booking.');
+          setTimeout(() => { window.location.href = data.checkout_url; }, 350);
+          return;
+        }
+
+        /* ----- REDIRECT TO CONTRACT UPLOAD -----
+           Contract-pricing services return upload_url so the visitor
+           can submit their signed contract. */
+        if (data.upload_url || (data.action === 'contract_upload' && data.upload_url)) {
+          chatAddMessage('agent', 'Great — sending you to upload your signed contract so we can finalize everything.');
+          setTimeout(() => { window.location.href = data.upload_url; }, 350);
+          return;
+        }
+
+        /* ----- RSVP / NO-PAYMENT SUCCESS -----
+           Show a confirmation message including the booking reference
+           and (when present) the date/time the visitor picked. */
+        const ref = data.booking_token ? data.booking_token.substring(0, 12) : '';
+        const when = (body.scheduled_date && body.scheduled_start)
+          ? ` for **${body.scheduled_date} at ${String(body.scheduled_start).substring(0,5)}**`
+          : '';
+        const refLine = ref ? ` Your reference is **${ref}**.` : '';
+        chatAddMessage(
+          'agent',
+          `You're booked${when}!${refLine} A confirmation is on its way to ${body.client_email || 'your email'}.`
+        );
+      })
+      .catch(err => {
+        chatShowTyping(false);
+        console.error('Service booking error:', err);
+        chatAddMessage('agent', 'I had trouble submitting that booking. Could we try again in a moment?');
+      });
+      break;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────
+       BOOKING PARTIAL SAVE — Mirror in-chat bookings into the Forms tab
+       ─────────────────────────────────────────────────────────────────
+       Sister to partialFormSave but for the service-booking flow.
+       Sent by the AI as it collects each piece, so abandoned in-chat
+       bookings show up in the admin Forms tab the same way modal
+       abandoned carts do today. We share the per-tab session id with
+       the modal so a partial that started in the modal and finished
+       in chat (or vice versa) collapses into a single submission row.
+    */
+    case 'bookingPartialSave': {
+      const partialBookSlug = cmd.slug;
+      const partialBookFields = cmd.fields || {};
+      if (!partialBookSlug) break;
+      /* Mirror the modal's gate: only fire once we have at least an
+         email — keeps anonymous noise out of the Forms tab. */
+      const partialEmail = (partialBookFields.client_email || '').toString().trim();
+      if (!partialEmail) break;
+
+      /* Debounce on the client so a chatty agent that emits the
+         command on consecutive turns (or two near-identical fields
+         in a row) collapses into a single backend write — matches
+         the modal's 800ms partial-save debounce. */
+      const debounceKey = `${partialBookSlug}::${partialEmail}`;
+      window._svcChatPartialPending = window._svcChatPartialPending || {};
+      const pending = window._svcChatPartialPending;
+      if (pending[debounceKey] && pending[debounceKey].timer) {
+        clearTimeout(pending[debounceKey].timer);
+      }
+
+      const sessionId = (typeof window._svcBookingSessionId === 'function')
+        ? window._svcBookingSessionId()
+        : ('svc-' + Date.now().toString(36));
+      const q = (() => { try { return Object.fromEntries(new URLSearchParams(window.location.search)); } catch(_) { return {}; } })();
+      const payload = {
+        fields: partialBookFields,
+        session_id: sessionId,
+        page_url: window.location.href,
+        referrer: document.referrer || '',
+        screen_resolution: `${window.screen.width}x${window.screen.height}`,
+        language: navigator.language || '',
+        utm_source:   q.utm_source   || '',
+        utm_medium:   q.utm_medium   || '',
+        utm_campaign: q.utm_campaign || '',
+        utm_term:     q.utm_term     || '',
+        utm_content:  q.utm_content  || '',
+      };
+
+      pending[debounceKey] = {
+        timer: setTimeout(() => {
+          pending[debounceKey] = null;
+          fetch(`/api/services/${encodeURIComponent(partialBookSlug)}/booking-partial`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          })
+          .then(r => r.json())
+          .then(data => { if (data && data.success) console.log('Partial booking saved:', data.action, partialBookSlug); })
+          .catch(err => console.warn('Partial booking save failed:', err));
+        }, 800),
+      };
+      break;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────
        SUBMIT FORM — Submit a form with data collected by the AI in chat
        ─────────────────────────────────────────────────────────────────
     */
@@ -7423,7 +7616,10 @@ function syncSplitToChat() {
   }
 
   /* Stable per-tab id so partial saves and the final booking row map
-     to the same submission. Mirrors the regular Forms partial flow. */
+     to the same submission. Mirrors the regular Forms partial flow.
+     Exposed as window._svcBookingSessionId so the in-chat bookService
+     command can share the same id with the modal — partials that
+     started in one and finished in the other collapse into one row. */
   function _bookingSessionId(){
     try {
       let sid = sessionStorage.getItem('svc_booking_session_id');
@@ -7436,6 +7632,7 @@ function syncSplitToChat() {
       return 'svc-' + Date.now().toString(36);
     }
   }
+  window._svcBookingSessionId = _bookingSessionId;
 
   function _bookingTrackingMeta(){
     let q = {};

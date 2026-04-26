@@ -3074,6 +3074,29 @@ def api_chatbot_settings():
 #      { "action": "partialFormSave", "slug": "form-slug", "fields": {"name": "value"} }
 #      Sent after each field is collected for abandon/lead recovery.
 #
+#   6. bookService — Book one of the BOOKABLE SERVICES entirely in chat
+#      { "action": "bookService", "slug": "service-slug",
+#        "client_name": "...", "client_email": "...",
+#        "client_phone": "", "notes": "",
+#        "addon_ids": [12, 17],
+#        "scheduled_date": "YYYY-MM-DD",
+#        "scheduled_start": "HH:MM:SS" }
+#      Sister to submitForm but for the bookable-services flow. The
+#      backend handles capacity, calendar slot validation, Stripe
+#      Checkout (deposit/full), and the contract upload redirect.
+#
+#   7. bookingPartialSave — Auto-save partial booking data
+#      { "action": "bookingPartialSave", "slug": "service-slug",
+#        "fields": {"client_email": "...", "client_name": "...", ...} }
+#      Sister to partialFormSave for the bookable-services flow.
+#      Mirrors abandoned in-chat bookings into the admin Forms tab.
+#
+#   8. openBookingModal — Hand off to the booking modal as a fallback
+#      { "action": "openBookingModal", "slug": "service-slug" }
+#      Use only when the visitor explicitly asks to "see the form" or
+#      "fill it out themselves" — the default is to handle bookings
+#      conversationally with bookService.
+#
 # HOW TO ADD MORE COMMANDS:
 #   1. Define the command format in this comment block
 #   2. Add handling logic in script.js (see the executeCommand function)
@@ -3789,6 +3812,42 @@ SUBMISSION BEHAVIOR — CRITICAL:
 ```
 Send this after EVERY message where the visitor provides form field data. Include ALL fields collected so far (not just the new one). This enables abandon capture — if the visitor leaves before completing the form, we still have their partial data for follow-up.
 
+7a. Book a service in chat (sister to submitForm — use this for the BOOKABLE SERVICES catalog, NOT submitForm):
+```command
+{"action": "bookService", "slug": "EXACT_SERVICE_SLUG", "client_name": "...", "client_email": "...", "client_phone": "", "notes": "", "addon_ids": [12, 17], "scheduled_date": "YYYY-MM-DD", "scheduled_start": "HH:MM:SS"}
+```
+CRITICAL — SLUG MUST MATCH EXACTLY: copy the slug verbatim from the BOOKABLE SERVICES section. Do NOT shorten, paraphrase, or invent slugs. If the visitor asks to book a service that does NOT appear in the BOOKABLE SERVICES list, tell them it isn't available right now — do not make up a slug.
+
+WHEN TO USE bookService vs submitForm:
+- bookService → for any service in the BOOKABLE SERVICES section (sunset tour, photo session, room reservation, etc.). The backend handles capacity, calendar, Stripe checkout, and contract upload for you.
+- submitForm → for entries in the AVAILABLE FORMS section (custom forms like contact, lead capture, generic inquiry).
+- Never call submitForm with a service-booking slug; never call bookService with a custom-form slug.
+
+PRE-SUBMISSION CHECKLIST — do NOT skip:
+  1. client_name + client_email are ALWAYS required.
+  2. If the service has requires_calendar = true, BOTH scheduled_date (YYYY-MM-DD) and scheduled_start (HH:MM:SS, 24-hour) are required. Ask for the visitor's preferred date and time before issuing bookService — do not invent times.
+  3. addon_ids must be an array of integers, using the EXACT id values from the add-on list for that service. Only include add-ons the visitor has confirmed. Use [] when none.
+  4. Read back a clear summary BEFORE issuing the command — service name, chosen add-ons, date + time, and total — and wait for the visitor's explicit yes.
+  5. Do NOT include text like "Submitting now" — when bookService runs, the system shows its own loading indicator and confirmation, so any text in that turn is wasted. Keep the message minimal.
+
+RESPONSE BEHAVIOR — what happens after bookService runs:
+- RSVP service → the visitor gets an immediate "you're booked" confirmation with a booking reference. The system handles this; do NOT make up a reference number yourself.
+- Deposit / full-pay service → the visitor is redirected to a Stripe checkout page to complete payment. Do NOT promise the booking is final until they return from payment.
+- Contract service → the visitor is redirected to upload their signed contract.
+- Backend error (slot just filled, missing field, payments not configured, unknown service, etc.) → the visitor sees a friendly "small snag" message AND a hidden system note is added to your history telling you what went wrong. Read that note on your next turn and ask the visitor for the missing piece (or offer a different time). Do NOT retry bookService until the issue is resolved.
+
+7b. Save partial booking data (sister to partialFormSave — for the BOOKABLE SERVICES catalog):
+```command
+{"action": "bookingPartialSave", "slug": "EXACT_SERVICE_SLUG", "fields": {"client_name": "...", "client_email": "...", "client_phone": "", "notes": "", "scheduled_date": "YYYY-MM-DD", "scheduled_start": "HH:MM:SS"}}
+```
+Send this after EACH visitor reply that adds a piece of booking info, INCLUDING every field collected so far (not just the new one). The system requires at least client_email before it stores anything, so the very first save in the flow should be the turn the visitor gives you their email. This mirrors abandoned in-chat bookings into the admin Forms tab the same way modal abandoned carts already are.
+
+7c. Open the booking modal as a graceful fallback:
+```command
+{"action": "openBookingModal", "slug": "EXACT_SERVICE_SLUG"}
+```
+The DEFAULT for service bookings is to handle them conversationally with bookService. ONLY use openBookingModal when the visitor explicitly asks to "see the booking form", "open the form", or "fill it out myself". Otherwise stay in chat.
+
 8. Scroll to a specific page section on the landing page:
 ```command
 {"action": "scrollToSection", "target": "SECTION_ID"}
@@ -3875,6 +3934,7 @@ response — the visitor sees nothing happen on the site. The pattern is always:
   Long text narrating what you'll do without a command block = broken
 ═══════════════════════════════════════════════════════════════════════
 - REMINDER: When you tell the visitor you are submitting their form, you MUST include the submitForm command block with ALL collected field values in that same message. Without the command block, nothing actually gets submitted.
+- REMINDER: When you tell the visitor you are booking their service, you MUST include the bookService command block in that same message. The default for service bookings is in-chat (bookService) — only fall back to openBookingModal when the visitor explicitly asks to see/fill out the form themselves.
 """
 
 
@@ -5390,6 +5450,104 @@ def api_chat():
                 "submitForm. The submission will be rejected otherwise and the visitor "
                 "will see a confusing error.\n\n"
                 + "\n\n".join(form_lines)
+            )
+
+        # ----- 3b. BOOKABLE SERVICES (chat-bookable detail) -----
+        # Detailed catalog of every active service with the fields the AI
+        # actually needs to converse intelligently and issue bookService:
+        # name, slug, pricing model, base price, currency, deposit (when
+        # applicable), requires_calendar, duration, and the active add-ons
+        # (id, name, price). The compact name+slug list in the SITE INDEX
+        # is for spontaneous suggestions; this block is what the agent
+        # reads from when actually walking a visitor through a booking.
+        bookable_services = query_db(
+            "SELECT id, slug, name, pricing_model, base_price_cents, "
+            "deposit_cents, currency, duration_minutes, requires_calendar, "
+            "short_description "
+            "FROM services WHERE is_active = TRUE "
+            "ORDER BY sort_order ASC LIMIT 100"
+        )
+        if bookable_services:
+            def _money(cents, cur):
+                try:
+                    c = int(cents or 0)
+                except (TypeError, ValueError):
+                    c = 0
+                return f"${c / 100:.2f} {(cur or 'usd').upper()}"
+            svc_blocks = []
+            for s in bookable_services:
+                addons = query_db(
+                    "SELECT id, name, price_cents FROM service_addons "
+                    "WHERE service_id = %s AND is_active = TRUE "
+                    "ORDER BY sort_order ASC, id ASC",
+                    (s["id"],)
+                ) or []
+                pricing = s.get("pricing_model") or ""
+                lines = [
+                    f'  Service: "{s["name"]}" (slug: "{s["slug"]}")',
+                    f'    pricing_model: {pricing}',
+                ]
+                if s.get("short_description"):
+                    lines.append(f'    summary: {s["short_description"]}')
+                if pricing == "rsvp":
+                    lines.append('    price: free RSVP (no payment)')
+                elif pricing == "deposit":
+                    lines.append(
+                        f'    base_price: {_money(s.get("base_price_cents"), s.get("currency"))} '
+                        f'(deposit due now: {_money(s.get("deposit_cents"), s.get("currency"))})'
+                    )
+                elif pricing == "full":
+                    lines.append(
+                        f'    price: {_money(s.get("base_price_cents"), s.get("currency"))} '
+                        f'(paid in full at booking)'
+                    )
+                elif pricing == "contract":
+                    lines.append('    price: contract / quote — visitor signs and uploads contract after booking')
+                if s.get("duration_minutes"):
+                    lines.append(f'    duration_minutes: {s["duration_minutes"]}')
+                lines.append(f'    requires_calendar: {bool(s.get("requires_calendar"))}')
+                if addons:
+                    lines.append('    add-ons (use these EXACT ids in addon_ids):')
+                    for a in addons:
+                        lines.append(
+                            f'      - id={a["id"]}, name="{a["name"]}", '
+                            f'price={_money(a.get("price_cents"), s.get("currency"))}'
+                        )
+                else:
+                    lines.append('    add-ons: (none)')
+                svc_blocks.append("\n".join(lines))
+
+            active_prompt += (
+                "\n\nBOOKABLE SERVICES (you can take the visitor through the entire "
+                "booking in chat using the bookService command — see the COMMANDS "
+                "section for schema and usage).\n"
+                "PRE-BOOKING CHECKLIST — do NOT skip:\n"
+                "  1. ALWAYS collect: client_name + client_email. client_phone and "
+                "notes are optional.\n"
+                "  2. When requires_calendar is TRUE, you MUST collect both "
+                "scheduled_date (YYYY-MM-DD) and scheduled_start (HH:MM:SS) before "
+                "calling bookService. If you don't yet know what slots are open, "
+                "ask the visitor for their preferred date first — the booking "
+                "endpoint will tell us if the slot is taken and you can offer "
+                "another. Never invent times that weren't offered.\n"
+                "  3. Only include add-on ids the visitor has explicitly confirmed "
+                "(or none). Use the EXACT integer ids from the add-on list — never "
+                "invent ids or use names.\n"
+                "  4. Before issuing bookService, READ BACK a clear summary: "
+                "service name, chosen add-ons, date + time, total. Wait for the "
+                "visitor's explicit yes.\n"
+                "  5. For deposit / full pricing models, the booking response sends "
+                "the visitor to a Stripe checkout page — do NOT invent a "
+                "confirmation number or claim the booking is final until the "
+                "visitor returns from payment. For RSVP the booking is final "
+                "immediately. For contract, the visitor will be sent to upload "
+                "their signed contract.\n"
+                "  6. After EACH visitor reply that adds a piece of booking info, "
+                "send a bookingPartialSave so abandoned in-chat bookings still "
+                "show up in the admin Forms tab. Include every field collected "
+                "so far (the system requires at least client_email before it "
+                "stores anything).\n\n"
+                + "\n\n".join(svc_blocks)
             )
 
         # ----- 4. PAGE LIBRARY (published AI-generated pages) -----
