@@ -5163,6 +5163,132 @@ function chatAddMessage(role, text) {
 
 
 /**
+ * Inject a polished "you're booked" confirmation card into every active
+ * chat panel — mirrors the rich confirmation panel the booking modal
+ * shows, but lives inside the conversation so the visitor never has to
+ * leave chat to see service / date / time / add-ons / next steps.
+ *
+ * Also pushes a plain-text summary onto chatHistory so reopening the
+ * panel rebuilds something readable from sessionStorage.
+ *
+ * @param {Object} data - The /book API response payload.
+ */
+function chatAddBookingConfirmation(data) {
+  const esc = (s) => {
+    const d = document.createElement('div');
+    d.textContent = (s == null ? '' : String(s));
+    return d.innerHTML;
+  };
+  const fmtMoney = (cents, currency) => {
+    const n = parseInt(cents || 0, 10);
+    const cur = (currency || 'usd').toUpperCase();
+    try {
+      return new Intl.NumberFormat(undefined, {
+        style: 'currency', currency: cur,
+      }).format(n / 100);
+    } catch (_) {
+      return '$' + (n / 100).toFixed(2);
+    }
+  };
+  const fmtDate = (iso) => {
+    if (!iso) return '';
+    /* ISO yyyy-mm-dd → human "Sat, May 4, 2026". Avoid timezone drift by
+       parsing the parts manually instead of `new Date(iso)`, which would
+       otherwise interpret the string as UTC midnight. */
+    const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return iso;
+    const local = new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+    try {
+      return local.toLocaleDateString(undefined, {
+        weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+      });
+    } catch (_) { return iso; }
+  };
+
+  const serviceName = data.service_name || 'your booking';
+  const isContract = data.pricing_model === 'contract';
+  const dateStr = fmtDate(data.scheduled_date);
+  const timeStr = (data.scheduled_start || '').toString().substring(0, 5);
+  const ref = (data.booking_token || '').substring(0, 12);
+  const addons = Array.isArray(data.addons) ? data.addons : [];
+  const totalCents = parseInt(data.total_cents || 0, 10);
+
+  const whenLine = (dateStr || timeStr)
+    ? `<div class="bk-card-row"><span class="bk-card-label">When</span><span class="bk-card-value">${esc(dateStr)}${dateStr && timeStr ? ' · ' : ''}${esc(timeStr)}</span></div>`
+    : '';
+  const addonsLine = addons.length
+    ? `<div class="bk-card-row"><span class="bk-card-label">Add-ons</span><span class="bk-card-value">${addons.map(a => esc(a.name)).join(', ')}</span></div>`
+    : '';
+  const totalLine = totalCents > 0
+    ? `<div class="bk-card-row"><span class="bk-card-label">Total</span><span class="bk-card-value">${esc(fmtMoney(totalCents, data.currency))}</span></div>`
+    : '';
+  const refLine = ref
+    ? `<div class="bk-card-row"><span class="bk-card-label">Reference</span><span class="bk-card-value bk-card-ref">${esc(ref)}</span></div>`
+    : '';
+  const emailLine = data.client_email
+    ? `<p class="bk-card-note">A confirmation is on its way to <strong>${esc(data.client_email)}</strong>.</p>`
+    : '';
+
+  const nextStep = isContract
+    ? `<div class="bk-card-next">
+         <p class="bk-card-note bk-card-next-text">Last step: upload your signed contract so we can finalise everything.</p>
+         <a class="bk-card-cta" href="${esc(data.contract_upload_page_url || ('/booking/' + (data.booking_token || '') + '/contract'))}" data-testid="link-upload-contract">Upload signed contract</a>
+       </div>`
+    : '';
+
+  const headline = isContract ? 'Booking received.' : 'You\u2019re booked.';
+  const intro = isContract
+    ? `We\u2019ve held your spot for <strong>${esc(serviceName)}</strong>.`
+    : `Thanks${data.client_name ? ', ' + esc(data.client_name) : ''} — your spot for <strong>${esc(serviceName)}</strong> is confirmed.`;
+
+  const cardHtml = `
+    <div class="chat-msg chat-msg-agent chat-msg-booking" data-testid="card-booking-confirmation">
+      <div class="bk-card">
+        <div class="bk-card-header">
+          <div class="bk-card-check" aria-hidden="true">\u2713</div>
+          <h3 class="bk-card-title">${esc(headline)}</h3>
+        </div>
+        <p class="bk-card-intro">${intro}</p>
+        <div class="bk-card-details">
+          ${whenLine}
+          ${addonsLine}
+          ${totalLine}
+          ${refLine}
+        </div>
+        ${emailLine}
+        ${nextStep}
+      </div>
+    </div>
+  `;
+
+  ['chatbot-messages', 'split-chat-messages', 'side-chat-messages'].forEach((id) => {
+    const container = document.getElementById(id);
+    if (!container) return;
+    container.insertAdjacentHTML('beforeend', cardHtml);
+    container.scrollTop = container.scrollHeight;
+  });
+
+  /* Plain-text fallback so reopening the panel later still shows something
+     readable in the rebuilt-from-history list. We push it as a normal
+     agent message so chatHistory + the side/main "latest" displays update
+     as if the agent had just said it. */
+  const parts = [headline];
+  if (dateStr || timeStr) parts.push((dateStr ? dateStr : '') + (dateStr && timeStr ? ' at ' : (timeStr ? '' : '')) + (timeStr || ''));
+  if (addons.length) parts.push('Add-ons: ' + addons.map(a => a.name).join(', '));
+  if (totalCents > 0) parts.push('Total: ' + fmtMoney(totalCents, data.currency));
+  if (ref) parts.push('Reference: ' + ref);
+  if (isContract) parts.push('Next step: upload your signed contract at ' + (data.contract_upload_page_url || ('/booking/' + (data.booking_token || '') + '/contract')));
+  const plain = parts.filter(Boolean).join(' \u2014 ');
+  try {
+    chatHistory.push({ role: 'agent', content: plain });
+    persistChatHistory();
+  } catch (_) {}
+  if (typeof updateSidePanelLatest === 'function') updateSidePanelLatest(plain);
+  if (typeof updateMainPanelLatest === 'function') updateMainPanelLatest(plain);
+}
+
+
+/**
  * Show or hide a sleek inline thinking indicator above the chat bar.
  * Used when the panel is collapsed so we don't pop open the full panel.
  *
@@ -5809,27 +5935,39 @@ function executeCommand(cmd) {
           return;
         }
 
-        /* ----- REDIRECT TO CONTRACT UPLOAD -----
-           Contract-pricing services return upload_url so the visitor
-           can submit their signed contract. */
-        if (data.upload_url || (data.action === 'contract_upload' && data.upload_url)) {
-          chatAddMessage('agent', 'Great — sending you to upload your signed contract so we can finalize everything.');
-          setTimeout(() => { window.location.href = data.upload_url; }, 350);
-          return;
+        /* ----- RSVP OR CONTRACT SUCCESS -----
+           Render the polished in-chat confirmation card (mirrors the
+           rich "you're booked" panel the modal flow shows). For
+           contract-pricing bookings the card includes a clear CTA to
+           the signed-contract upload page so we keep the visitor in
+           chat instead of bouncing them away with a hard redirect. */
+        const cardData = Object.assign({
+          /* Defaults from the request body so the card still has
+             something to show even if older builds of the API don't
+             return the richer fields yet. */
+          client_name:  body.client_name,
+          client_email: body.client_email,
+          scheduled_date:  body.scheduled_date,
+          scheduled_start: body.scheduled_start,
+          service_slug: bookSlug,
+        }, data || {});
+        try {
+          chatAddBookingConfirmation(cardData);
+        } catch (renderErr) {
+          /* Belt-and-braces fallback: if anything goes wrong building
+             the card, drop back to the original one-line confirmation
+             so the visitor still sees a clear success message. */
+          console.warn('Booking card render failed, using plain text:', renderErr);
+          const ref = data.booking_token ? data.booking_token.substring(0, 12) : '';
+          const when = (body.scheduled_date && body.scheduled_start)
+            ? ` for **${body.scheduled_date} at ${String(body.scheduled_start).substring(0,5)}**`
+            : '';
+          const refLine = ref ? ` Your reference is **${ref}**.` : '';
+          chatAddMessage(
+            'agent',
+            `You're booked${when}!${refLine} A confirmation is on its way to ${body.client_email || 'your email'}.`
+          );
         }
-
-        /* ----- RSVP / NO-PAYMENT SUCCESS -----
-           Show a confirmation message including the booking reference
-           and (when present) the date/time the visitor picked. */
-        const ref = data.booking_token ? data.booking_token.substring(0, 12) : '';
-        const when = (body.scheduled_date && body.scheduled_start)
-          ? ` for **${body.scheduled_date} at ${String(body.scheduled_start).substring(0,5)}**`
-          : '';
-        const refLine = ref ? ` Your reference is **${ref}**.` : '';
-        chatAddMessage(
-          'agent',
-          `You're booked${when}!${refLine} A confirmation is on its way to ${body.client_email || 'your email'}.`
-        );
       })
       .catch(err => {
         chatShowTyping(false);

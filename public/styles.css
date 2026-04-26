@@ -3562,6 +3562,126 @@ html[data-scroll-mode="smooth"] .snap-section {
 }
 
 /*
+  IN-CHAT BOOKING CONFIRMATION CARD — A richer "you're booked" panel
+  rendered inline in the conversation after a successful in-chat RSVP
+  or contract booking. Mirrors the modal flow's confirmation panel so
+  the visitor sees service / when / add-ons / total / next steps
+  without leaving chat.
+*/
+.chat-msg-booking {
+  max-width: 95%;
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+}
+.chat-msg-booking .bk-card {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-left: 3px solid var(--accent, #c9a96e);
+  border-radius: 0.875rem;
+  padding: 0.875rem 1rem 0.9rem;
+}
+.bk-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+.bk-card-check {
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  background: var(--accent, #c9a96e);
+  color: #0b0b0b;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+.bk-card-title {
+  font-family: var(--font-serif);
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.2;
+  color: #fff;
+}
+.bk-card-intro {
+  margin: 0 0 0.6rem;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.9);
+}
+.bk-card-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.bk-card-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  font-size: 0.78125rem;
+  line-height: 1.45;
+}
+.bk-card-label {
+  flex: 0 0 5rem;
+  color: rgba(255, 255, 255, 0.55);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.6875rem;
+}
+.bk-card-value {
+  flex: 1 1 auto;
+  color: #fff;
+  font-weight: 500;
+  word-break: break-word;
+}
+.bk-card-ref {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.85);
+  font-weight: 400;
+}
+.bk-card-note {
+  margin: 0.4rem 0 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.75);
+}
+.bk-card-next {
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.bk-card-next-text {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+  color: rgba(255, 255, 255, 0.85);
+}
+.bk-card-cta {
+  display: inline-block;
+  background: var(--accent, #c9a96e);
+  color: #0b0b0b !important;
+  text-decoration: none;
+  padding: 0.5rem 0.875rem;
+  border-radius: 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  transition: filter 0.15s ease;
+}
+.bk-card-cta:hover,
+.bk-card-cta:focus {
+  filter: brightness(1.08);
+  text-decoration: none;
+}
+
+/*
   TYPING INDICATOR — Three animated dots shown while waiting for a response.
   Uses a bouncing animation with staggered delays.
 */

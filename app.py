@@ -11718,14 +11718,39 @@ def api_book_service(slug):
 
     # RSVP and contract: no payment, send confirmation now.
     _send_booking_confirmation(booking_dict, _service_to_dict(svc))
+    # Include enough detail in the response that callers (the booking modal
+    # AND the in-chat booking flow) can render a polished "you're booked"
+    # summary panel — service name, scheduled date/time, add-ons, totals,
+    # and the appropriate next-step link — without any extra round-trips.
     payload = {
         "status": "confirmed" if pricing_model == "rsvp" else "pending_contract",
         "booking_token": booking_token,
         "booking_id": booking["id"],
+        "service_name": svc["name"],
+        "service_slug": svc["slug"],
+        "pricing_model": pricing_model,
+        "client_name": name,
+        "client_email": email,
+        "scheduled_date": scheduled_date,
+        "scheduled_start": scheduled_start,
+        "scheduled_end": scheduled_end,
+        "addons": [
+            {"name": a["name"], "price_cents": int(a["price_cents"])}
+            for a in addons
+        ],
+        "base_price_cents": base_cents,
+        "addons_total_cents": addons_total,
+        "total_cents": total_cents,
+        "currency": (svc["currency"] or "usd").lower(),
+        "success_url": f"/booking/{booking_token}/success",
     }
     if pricing_model == "contract":
         payload["contract_template_url"] = svc.get("contract_template_url") or ""
+        # API endpoint clients POST the signed file to.
         payload["upload_url"] = f"/api/service-bookings/{booking_token}/contract"
+        # User-facing page where the visitor actually picks the file —
+        # safe to link to from a chat card or anchor tag.
+        payload["contract_upload_page_url"] = f"/booking/{booking_token}/contract"
     return jsonify(payload), 201
 
 
