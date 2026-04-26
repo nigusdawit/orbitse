@@ -4735,19 +4735,95 @@ def lookup_generated_page(slug):
     return page or {}
 
 
+def _resolve_presentation_slug(slug):
+    """Resolve a slug string to one enabled presentation row, with a
+    graceful fuzzy fallback. The visitor agent occasionally emits an
+    abbreviated slug — e.g. it sees a deck titled 'Thetasync Deck'
+    (slug 'thetasync-deck') and emits start_presentation with slug
+    'thetasync'. Without this helper that 404s and the deck silently
+    fails to open. Lookup order:
+      1. Exact slug match.
+      2. Prefix: slug LIKE '<input>-%' or '<input>%'.
+      3. Substring: slug LIKE '%<input>%'.
+      4. Title substring (last resort).
+    Inputs shorter than 3 chars only do step 1 — '%a%' would match
+    almost anything. Returns the row dict or None."""
+    s = (slug or "").strip().lower()
+    if not s:
+        return None
+    cols = (
+        "id, slug, title, description, cover_image_url, "
+        "auto_play, display_mode, ai_narrate_mode, source"
+    )
+    # 1. Exact slug — return immediately if enabled.
+    row = query_db(
+        f"SELECT {cols}, enabled FROM presentations "
+        "WHERE LOWER(slug) = %s",
+        (s,),
+        fetchone=True,
+    )
+    if row:
+        if row.get("enabled"):
+            row.pop("enabled", None)
+            return row
+        # Exact slug exists but admin disabled it. Don't silently
+        # fuzzy-fall-back to a *different* deck — that would mask a
+        # genuine "I disabled this on purpose" admin action and serve
+        # the wrong content. Caller (public endpoint) should 404.
+        print(f"[presentations] slug '{slug}' exists but is disabled — not fuzzy-falling-back")
+        return None
+    if len(s) < 3:
+        return None
+    # Escape LIKE metacharacters in user input so a slug like '50%_off'
+    # doesn't accidentally over-broaden the wildcard match.
+    esc = s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    # 2. Prefix — prefer shorter (closer) slugs, then oldest id.
+    row = query_db(
+        f"SELECT {cols} FROM presentations WHERE enabled = TRUE "
+        "  AND (LOWER(slug) LIKE %s ESCAPE '\\' OR LOWER(slug) LIKE %s ESCAPE '\\') "
+        "ORDER BY LENGTH(slug) ASC, id ASC LIMIT 1",
+        (esc + "-%", esc + "%"),
+        fetchone=True,
+    )
+    if row:
+        print(f"[presentations] fuzzy slug '{slug}' → '{row['slug']}' (prefix)")
+        return row
+    # 3. Substring on slug.
+    row = query_db(
+        f"SELECT {cols} FROM presentations WHERE enabled = TRUE "
+        "  AND LOWER(slug) LIKE %s ESCAPE '\\' "
+        "ORDER BY LENGTH(slug) ASC, id ASC LIMIT 1",
+        ("%" + esc + "%",),
+        fetchone=True,
+    )
+    if row:
+        print(f"[presentations] fuzzy slug '{slug}' → '{row['slug']}' (substring)")
+        return row
+    # 4. Title substring as last resort.
+    row = query_db(
+        f"SELECT {cols} FROM presentations WHERE enabled = TRUE "
+        "  AND LOWER(title) LIKE %s ESCAPE '\\' "
+        "ORDER BY LENGTH(slug) ASC, id ASC LIMIT 1",
+        ("%" + esc + "%",),
+        fetchone=True,
+    )
+    if row:
+        print(f"[presentations] fuzzy slug '{slug}' → '{row['slug']}' (title)")
+    return row
+
+
 def lookup_presentation(slug=None, query=None, limit=10):
     """Look up an enabled presentation deck. If `slug` is given, returns one
     full deck with all slides (so the AI can decide whether to launch it).
     Otherwise returns a short list of available decks (slug + title +
-    description + slide count) for browsing."""
+    description + slide count) for browsing.
+
+    Slug lookup is fuzzy via _resolve_presentation_slug, so an
+    abbreviated guess like 'thetasync' resolves to 'thetasync-deck'
+    and the AI gets back the canonical slug it should use in the
+    follow-up start_presentation command."""
     if slug:
-        p = query_db(
-            "SELECT id, slug, title, description, cover_image_url, "
-            "auto_play, source FROM presentations "
-            "WHERE slug = %s AND enabled = TRUE",
-            (slug,),
-            fetchone=True,
-        )
+        p = _resolve_presentation_slug(slug)
         if not p:
             return {}
         slides = query_db(
@@ -12643,14 +12719,12 @@ def admin_delete_slide(sid):
 def public_get_presentation(slug):
     """GET /api/presentations/<slug> — fetch one enabled deck for the
     visitor-side overlay player. Returns deck metadata + ordered slides
-    including narration_text (the voice agent will speak it)."""
-    p = query_db(
-        "SELECT id, slug, title, description, cover_image_url, auto_play, "
-        "       display_mode, ai_narrate_mode "
-        "FROM presentations WHERE slug = %s AND enabled = TRUE",
-        (slug,),
-        fetchone=True,
-    )
+    including narration_text (the voice agent will speak it).
+
+    Uses _resolve_presentation_slug so that the visitor agent can emit
+    an abbreviated slug (e.g. 'thetasync' for 'thetasync-deck') and
+    still successfully open the deck instead of silently 404-ing."""
+    p = _resolve_presentation_slug(slug)
     if not p:
         return jsonify({"error": "Presentation not found"}), 404
     slides = query_db(
