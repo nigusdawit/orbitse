@@ -16656,7 +16656,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         <input type="hidden" id="skill-id-input">
         <input type="hidden" id="skill-builtin-input">
         <div id="skill-builtin-banner" style="display:none;background:rgba(96,165,250,0.1);border:1px solid #60a5fa;color:#cbd5e1;padding:0.5rem 0.75rem;border-radius:6px;margin-bottom:0.75rem;font-size:13px;">
-          This is a builtin skill. You can rename it or rewrite its description, but the technical name and execution logic are defined in code.
+          This is a builtin skill. The technical name is fixed in code, but everything else — its display name, description, category, and what it returns — is managed here. Leave the response text blank to keep using the live data lookup; fill it in to override that lookup with a fixed answer.
         </div>
         <label style="color:var(--admin-text);display:block;margin-bottom:0.75rem;">
           Name (unique, lowercase, no spaces)
@@ -16670,17 +16670,16 @@ TO CUSTOMIZE THIS DASHBOARD:
           Description (the AI reads this to decide when to call the skill)
           <textarea id="skill-description-input" rows="3" data-testid="input-skill-description" placeholder="e.g. Returns the company's current holiday closure dates. Call this whenever the visitor asks about holidays, time off, or when we'll be closed." style="width:100%;padding:8px;margin-top:4px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;"></textarea>
         </label>
-        <div id="skill-custom-section">
-          <label style="color:var(--admin-text);display:block;margin-bottom:0.75rem;">
-            Category (used to group skills in this list — pick an existing one or type a new name)
-            <input id="skill-category-input" type="text" list="skill-category-options" data-testid="input-skill-category" placeholder="custom" style="width:100%;padding:8px;margin-top:4px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;">
-            <datalist id="skill-category-options"></datalist>
-          </label>
-          <label style="color:var(--admin-text);display:block;margin-bottom:0.75rem;">
-            Response text (what the skill returns to the AI when called)
-            <textarea id="skill-response-input" rows="6" data-testid="input-skill-response" placeholder="The AI will receive this verbatim and weave it into its reply. Keep it concise and factual." style="width:100%;padding:8px;margin-top:4px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;"></textarea>
-          </label>
-        </div>
+        <label style="color:var(--admin-text);display:block;margin-bottom:0.75rem;">
+          Category (used to group skills in this list — pick an existing one or type a new name)
+          <input id="skill-category-input" type="text" list="skill-category-options" data-testid="input-skill-category" placeholder="custom" style="width:100%;padding:8px;margin-top:4px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;">
+          <datalist id="skill-category-options"></datalist>
+        </label>
+        <label style="color:var(--admin-text);display:block;margin-bottom:0.25rem;">
+          <span id="skill-response-label">Response text (what the skill returns to the AI when called)</span>
+          <textarea id="skill-response-input" rows="6" data-testid="input-skill-response" style="width:100%;padding:8px;margin-top:4px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;"></textarea>
+        </label>
+        <div id="skill-response-help" style="color:#9ca3af;font-size:12px;margin-bottom:0.75rem;">The AI will receive this verbatim and weave it into its reply. Keep it concise and factual.</div>
         <label style="color:var(--admin-text);display:flex;align-items:center;gap:6px;margin-bottom:0.5rem;">
           <input type="checkbox" id="skill-enabled-input" data-testid="checkbox-skill-enabled"> Enabled (the AI may call this skill)
         </label>
@@ -16951,6 +16950,15 @@ TO CUSTOMIZE THIS DASHBOARD:
         _skillsCache = Array.isArray(skills) ? skills : [];
         const byCat = {};
         for (const s of _skillsCache) (byCat[s.category] = byCat[s.category] || []).push(s);
+        // Helper — parse a skill's config_json (which can come back as a
+        // string or already-decoded object depending on the DB driver) and
+        // tell us whether an override response is configured. Used to
+        // badge skills whose code lookup is currently being short-circuited.
+        const hasOverride = (s) => {
+          let cfg = s.config_json || {};
+          if (typeof cfg === 'string') { try { cfg = JSON.parse(cfg); } catch (_) { cfg = {}; } }
+          return !!(cfg && typeof cfg.response_text === 'string' && cfg.response_text.trim());
+        };
         list.innerHTML = Object.keys(byCat).sort().map(cat => `
           <div style="margin-bottom:0.5rem;">
             <div style="color:var(--admin-text-muted);font-size:12px;text-transform:uppercase;letter-spacing:0.05em;margin:0.5rem 0 0.25rem;">${esc(cat)}</div>
@@ -16962,6 +16970,7 @@ TO CUSTOMIZE THIS DASHBOARD:
                     <span>${esc(s.display_name || s.name)}</span>
                     <code style="font-size:11px;color:var(--admin-text-muted);background:rgba(255,255,255,0.05);padding:1px 6px;border-radius:4px;">${esc(s.name)}</code>
                     ${s.builtin ? '<span style="font-size:11px;color:var(--admin-text-muted);">builtin</span>' : '<span style="font-size:11px;color:#60a5fa;">custom</span>'}
+                    ${(s.builtin && hasOverride(s)) ? '<span data-testid="badge-override-' + s.id + '" title="Live code lookup is being replaced by a fixed admin response. Clear the override in the editor to restore." style="font-size:11px;color:#fbbf24;background:rgba(251,191,36,0.12);padding:1px 6px;border-radius:4px;">override active</span>' : ''}
                   </div>
                   <div style="color:var(--admin-text-muted);font-size:12px;">${esc(s.description||'')}</div>
                 </div>
@@ -16977,7 +16986,14 @@ TO CUSTOMIZE THIS DASHBOARD:
               const dur = u.duration_ms != null ? `${u.duration_ms}ms` : '-';
               const rows = u.row_count != null ? `${u.row_count} rows` : '';
               const err = u.error ? ` <span style="color:#f87171;">err: ${esc(u.error)}</span>` : '';
-              return `<div>${esc(u.created_at)} <strong>${esc(u.skill_name)}</strong> ${dur} ${rows}${err}</div>`;
+              // _meta_override is stamped into args_json by _log_skill_usage
+              // when an admin override fired in place of the live code.
+              let a = u.args_json || {};
+              if (typeof a === 'string') { try { a = JSON.parse(a); } catch (_) { a = {}; } }
+              const overrideBadge = (a && a._meta_override)
+                ? ' <span title="Returned the admin override response — live code did not run." style="font-size:10px;color:#fbbf24;background:rgba(251,191,36,0.12);padding:1px 5px;border-radius:3px;">override</span>'
+                : '';
+              return `<div>${esc(u.created_at)} <strong>${esc(u.skill_name)}</strong>${overrideBadge} ${dur} ${rows}${err}</div>`;
             }).join('')
           : '<div style="color:var(--admin-text-muted);">No calls yet.</div>';
       } catch (e) {
@@ -17002,7 +17018,8 @@ TO CUSTOMIZE THIS DASHBOARD:
       const idEl = document.getElementById('skill-id-input');
       const builtinEl = document.getElementById('skill-builtin-input');
       const banner = document.getElementById('skill-builtin-banner');
-      const customSec = document.getElementById('skill-custom-section');
+      const respLabel = document.getElementById('skill-response-label');
+      const respHelp = document.getElementById('skill-response-help');
       const delBtn = document.getElementById('skill-delete-btn');
 
       // Populate the category dropdown from categories already in use, so
@@ -17014,6 +17031,34 @@ TO CUSTOMIZE THIS DASHBOARD:
         dl.innerHTML = cats.map(c => `<option value="${esc(c)}"></option>`).join('');
       }
 
+      // Helper — set the response-field label + help text based on whether
+      // this is a custom skill (response IS the behavior) or a builtin
+      // (response is an OPTIONAL OVERRIDE for the live code lookup). For
+      // a small set of builtins whose return value is machine-consumed
+      // downstream (e.g. the booking flow turns availability JSON into
+      // tap-to-pick chips), we add an extra warning so admins know an
+      // override silently disables that downstream UX.
+      const MACHINE_CONSUMED = new Set(['lookup_service_availability']);
+      const setResponseCopy = (isBuiltin, skillName) => {
+        if (isBuiltin) {
+          respLabel.textContent = 'Override response (optional — leave blank to use the live data lookup)';
+          let help = 'When blank, this skill runs the live data lookup defined in code. When you fill it in, the AI receives this text instead — useful for canned answers, seasonal messages, or replacing a lookup that\'s no longer accurate.';
+          if (skillName && MACHINE_CONSUMED.has(skillName)) {
+            help += ' WARNING: this skill\'s output is also read by the booking UI to render tap-to-pick time-slot chips. Setting an override disables those chips for visitors — only do this if you intend to take the booking flow offline.';
+            respHelp.style.color = '#fbbf24';
+          } else {
+            respHelp.style.color = '#9ca3af';
+          }
+          respHelp.textContent = help;
+          respEl.placeholder = 'Leave blank to keep using the live code lookup.';
+        } else {
+          respLabel.textContent = 'Response text (what the skill returns to the AI when called)';
+          respHelp.textContent = 'The AI will receive this verbatim and weave it into its reply. Keep it concise and factual.';
+          respHelp.style.color = '#9ca3af';
+          respEl.placeholder = 'The AI will receive this verbatim and weave it into its reply.';
+        }
+      };
+
       if (!id) {
         titleEl.textContent = 'Add custom skill';
         idEl.value = '';
@@ -17021,11 +17066,11 @@ TO CUSTOMIZE THIS DASHBOARD:
         nameEl.value = ''; nameEl.readOnly = false;
         displayEl.value = '';
         descEl.value = '';
-        catEl.value = 'custom'; catEl.readOnly = false;
+        catEl.value = 'custom';
         respEl.value = '';
         enabledEl.checked = true;
         banner.style.display = 'none';
-        customSec.style.display = '';
+        setResponseCopy(false, '');
         delBtn.style.display = 'none';
       } else {
         const s = _skillsCache.find(x => x.id === id);
@@ -17036,14 +17081,17 @@ TO CUSTOMIZE THIS DASHBOARD:
         nameEl.value = s.name; nameEl.readOnly = true;
         displayEl.value = s.display_name || '';
         descEl.value = s.description || '';
-        catEl.value = s.category || 'custom'; catEl.readOnly = !!s.builtin;
-        // For custom skills, surface the saved response_text from config_json.
+        catEl.value = s.category || 'custom';
+        // Pull any saved response/override from config_json (same field
+        // for builtins and customs — meaning differs as documented above).
         let cfg = s.config_json || {};
         if (typeof cfg === 'string') { try { cfg = JSON.parse(cfg); } catch (_) { cfg = {}; } }
         respEl.value = (cfg && cfg.response_text) || '';
         enabledEl.checked = !!s.enabled;
         banner.style.display = s.builtin ? '' : 'none';
-        customSec.style.display = s.builtin ? 'none' : '';
+        setResponseCopy(!!s.builtin, s.name);
+        // Builtins still can't be deleted (sync would re-add them next
+        // restart) — disable them instead.
         delBtn.style.display = s.builtin ? 'none' : '';
       }
       modal.style.display = 'flex';
@@ -17053,16 +17101,17 @@ TO CUSTOMIZE THIS DASHBOARD:
     };
     window.saveSkill = async function() {
       const id = document.getElementById('skill-id-input').value;
-      const builtin = document.getElementById('skill-builtin-input').value === 'true';
+      // Builtins and customs now share the same editable surface. For
+      // builtins, category groups them in the list, and response_text
+      // (when non-empty) overrides the live code lookup. For customs,
+      // category is purely cosmetic and response_text IS the behavior.
       const body = {
         display_name: document.getElementById('skill-display-input').value.trim(),
         description: document.getElementById('skill-description-input').value.trim(),
+        category: document.getElementById('skill-category-input').value.trim() || 'custom',
+        response_text: document.getElementById('skill-response-input').value.trim(),
         enabled: document.getElementById('skill-enabled-input').checked,
       };
-      if (!builtin) {
-        body.category = document.getElementById('skill-category-input').value.trim() || 'custom';
-        body.response_text = document.getElementById('skill-response-input').value.trim();
-      }
       try {
         let r;
         if (id) {

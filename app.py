@@ -5089,8 +5089,19 @@ def get_active_chat_tools():
 
 def _log_skill_usage(session_id, log_entry):
     """Persist one skill-call row to skill_usage_log. Best-effort — never
-    raises (so logging never breaks the chat path)."""
+    raises (so logging never breaks the chat path).
+
+    When the call returned an admin-supplied override instead of running
+    the live code, we stamp `_meta_override = true` into the stored
+    args JSON so the admin can see in the Recent Skill Calls panel which
+    invocations were canned-text overrides. We use the existing
+    args_json column (no schema change) and a leading underscore prefix
+    to avoid colliding with any real tool argument name.
+    """
     try:
+        args_for_log = dict(log_entry.get("args") or {})
+        if log_entry.get("override"):
+            args_for_log["_meta_override"] = True
         execute_db(
             """
             INSERT INTO skill_usage_log
@@ -5100,7 +5111,7 @@ def _log_skill_usage(session_id, log_entry):
             (
                 (session_id or "")[:100],
                 log_entry.get("name", "")[:100],
-                json.dumps(log_entry.get("args") or {}),
+                json.dumps(args_for_log),
                 int(log_entry.get("rows", 0) or 0),
                 int(log_entry.get("ms", 0) or 0),
                 str(log_entry.get("error", "") or "")[:500],
@@ -5134,37 +5145,60 @@ def _execute_chat_tool_inner(name, args_json):
     except Exception:
         args = {}
 
+    # Single DB read up front — used for two purposes:
+    #   1. For custom skills it's the only source of truth (no Python fn).
+    #   2. For builtin skills it lets the admin set an optional override
+    #      response in the AI Skills tab. When set, the override is
+    #      returned verbatim and the live Python lookup is skipped — so a
+    #      non-technical admin can fully control what a builtin returns
+    #      ("manage them the same way" as custom skills) without
+    #      touching code. Blank override means: run the code as before.
+    try:
+        skill_row = query_db(
+            "SELECT name, builtin, enabled, config_json FROM agent_skills "
+            "WHERE name = %s",
+            (name,), fetchone=True,
+        )
+    except Exception:
+        skill_row = None
+
+    cfg = {}
+    if skill_row:
+        raw_cfg = skill_row.get("config_json") or {}
+        if isinstance(raw_cfg, str):
+            try: cfg = json.loads(raw_cfg)
+            except Exception: cfg = {}
+        else:
+            cfg = raw_cfg or {}
+
+    override_text = (cfg.get("response_text") or "").strip() if cfg else ""
+
     fn = CHAT_LOOKUP_FUNCTIONS.get(name)
+
+    # Custom (non-builtin) skill path — the response_text IS the skill.
     if fn is None:
-        # Not a builtin Python function — check whether the admin has
-        # defined a custom skill with this name. Custom skills are
-        # canned-response tools: their config_json holds {"response_text":
-        # "..."} which is what we hand back to the model verbatim.
-        try:
-            row = query_db(
-                "SELECT name, config_json FROM agent_skills "
-                "WHERE name = %s AND builtin = false AND enabled = true",
-                (name,), fetchone=True,
-            )
-        except Exception as _e:
-            row = None
-        if row:
-            cfg = row.get("config_json") or {}
-            if isinstance(cfg, str):
-                try: cfg = json.loads(cfg)
-                except Exception: cfg = {}
-            response_text = (cfg or {}).get("response_text", "").strip()
+        if skill_row and not skill_row.get("builtin") and skill_row.get("enabled"):
             ms = int((_time.time() - started) * 1000)
-            payload = {"response": response_text} if response_text else {
+            payload = {"response": override_text} if override_text else {
                 "error": f"Custom skill '{name}' has no response text configured."
             }
             return (
                 json.dumps(payload),
-                {"name": name, "args": args, "rows": (1 if response_text else 0), "ms": ms},
+                {"name": name, "args": args, "rows": (1 if override_text else 0), "ms": ms},
             )
         return (
             json.dumps({"error": f"Unknown tool: {name}"}),
             {"name": name, "args": args, "error": "unknown_tool", "ms": 0},
+        )
+
+    # Builtin skill with an admin-supplied override — return that text
+    # instead of running the lookup. Logged with override=true so the
+    # admin can see in skill_usage_log that the override fired.
+    if override_text:
+        ms = int((_time.time() - started) * 1000)
+        return (
+            json.dumps({"response": override_text}),
+            {"name": name, "args": args, "rows": 1, "ms": ms, "override": True},
         )
 
     try:
@@ -6976,12 +7010,17 @@ def admin_create_skill():
 @app.route("/admin/api/skills/<int:sid>", methods=["PUT"])
 @admin_required
 def admin_update_skill(sid):
-    """PUT — Update a skill. Allowed fields differ by skill type:
+    """PUT — Update a skill. Both builtin and custom skills accept the
+    same editable fields:
 
-    - Builtin skills: enabled, display_name, description, config_json (the
-      `name` and `category` come from code and are read-only).
-    - Custom skills: enabled, display_name, description, category,
-      response_text (rewritten into config_json), config_json (raw).
+    - enabled, display_name, description, category, response_text
+      (rewritten into config_json), and config_json (raw).
+
+    The only immutable field is `name` (it's the identifier the model
+    passes back when calling the tool). For builtin skills, response_text
+    is treated as an OPTIONAL OVERRIDE: when set, the dispatcher returns
+    that text verbatim instead of running the live Python lookup; when
+    blank, the live lookup runs as before.
 
     Backward-compatible with the original toggle-only payload
     {enabled: true/false}.
@@ -6997,11 +7036,14 @@ def admin_update_skill(sid):
     if err:
         return jsonify({"error": err}), 400
 
-    # Builtin skills cannot have category or response_text changed via this
-    # endpoint — those belong to the code-defined identity.
-    if existing["builtin"]:
-        cleaned.pop("category", None)
-        cleaned.pop("response_text", None)
+    # Builtins now accept the same fields as custom skills:
+    #   - category: free-text grouping label (preserved across restarts
+    #     by sync_skills_to_db's COALESCE(NULLIF(...)) pattern).
+    #   - response_text: optional override. When set, the dispatcher
+    #     returns this verbatim instead of running the Python function;
+    #     when blank, the live code lookup runs as before.
+    # The skill's `name` is still immutable (filtered out above) because
+    # it's the identifier the model passes back when calling the tool.
 
     sets, params = [], []
     for col in ("display_name", "description", "category", "enabled"):
@@ -7010,9 +7052,11 @@ def admin_update_skill(sid):
             params.append(cleaned[col])
 
     # Two paths for config_json: a raw payload (legacy callers) OR the
-    # response_text field (custom-skill ergonomics).
+    # response_text field. Both builtins and customs go through the
+    # response_text path now — for customs it IS the skill's behavior,
+    # for builtins it's an optional override (blank = use code).
     raw_config = data.get("config_json")
-    if "response_text" in cleaned and not existing["builtin"]:
+    if "response_text" in cleaned:
         existing_cfg = existing.get("config_json") or {}
         if isinstance(existing_cfg, str):
             try: existing_cfg = json.loads(existing_cfg)
