@@ -5103,10 +5103,33 @@ def build_site_index():
     )
 
     decks = query_db(
-        "SELECT slug, title, description FROM presentations "
+        "SELECT id, slug, title, description FROM presentations "
         "WHERE enabled = TRUE ORDER BY id ASC LIMIT 50"
     ) or []
     if decks:
+        # Pre-load the first ~6 slide titles per deck in a single query so
+        # the AI sees the actual TOPICS each deck covers (e.g. product
+        # names, concepts) and can match a visitor's question to a deck
+        # even when the deck title doesn't literally contain that word.
+        # Without this, a visitor asking "tell me about thetasync" gets
+        # refused as off-topic because the AI only sees the deck slug
+        # ("thetasync-deck") and not the rich keywords inside it.
+        deck_ids = [d["id"] for d in decks]
+        slide_titles_by_deck = {}
+        if deck_ids:
+            placeholders = ",".join(["%s"] * len(deck_ids))
+            rows = query_db(
+                f"SELECT presentation_id, title FROM presentation_slides "
+                f"WHERE presentation_id IN ({placeholders}) "
+                f"AND COALESCE(title,'') <> '' "
+                f"ORDER BY presentation_id, order_index ASC, id ASC",
+                tuple(deck_ids),
+            ) or []
+            for r in rows:
+                slide_titles_by_deck.setdefault(r["presentation_id"], []).append(
+                    (r["title"] or "").strip()
+                )
+
         lines = []
         for d in decks:
             line = f'  - "{d["slug"]}" — "{d["title"]}"'
@@ -5115,13 +5138,23 @@ def build_site_index():
                 if len(desc) > 80:
                     desc = desc[:77] + "..."
                 line += f' — {desc}'
+            titles = slide_titles_by_deck.get(d["id"], [])[:6]
+            if titles:
+                # Compact one-line summary of topics inside the deck.
+                joined = " | ".join(t for t in titles if t)
+                if len(joined) > 220:
+                    joined = joined[:217] + "..."
+                line += f"\n      covers: {joined}"
             lines.append(line)
         parts.append(
-            f"PRESENTATION DECKS ({len(decks)} available) — call "
-            f"lookup_presentation with a slug for slide titles, then emit "
-            f"a ```command``` block with action 'start_presentation' and "
-            f"the slug to actually launch the deck on the visitor's "
-            f"screen with voice narration:\n" + "\n".join(lines)
+            f"PRESENTATION DECKS ({len(decks)} available) — these decks "
+            f"ARE on-topic content for this site. If the visitor mentions "
+            f"ANY word from a deck's title, slug, description, or 'covers:' "
+            f"topic list below, OFFER that deck instead of refusing as "
+            f"off-topic. Call lookup_presentation with a slug for full "
+            f"slide bodies, then emit a ```command``` block with action "
+            f"'start_presentation' and the slug to launch it with voice "
+            f"narration on the visitor's screen:\n" + "\n".join(lines)
         )
 
     return "\n\n".join(parts) if parts else ""
@@ -10258,11 +10291,17 @@ def api_chat():
         "submitForm, generatePage, showSavedPage, start_presentation, etc.).\n"
         "\n"
         "PRESENTATION DECKS:\n"
-        "  - When the SITE INDEX lists a presentation deck that matches what "
-        "the visitor is asking about (e.g. they ask for an overview, a tour, "
-        "a comparison the deck covers), and you decide it is the best "
-        "response, OFFER it first in plain language ('Want me to walk you "
-        "through our 5-slide overview?') unless the deck has auto_play=true.\n"
+        "  - The PRESENTATION DECKS block in the SITE INDEX is FIRST-CLASS "
+        "on-topic content. Treat every deck title, slug, description "
+        "keyword, and 'covers:' topic on equal footing with services, "
+        "experiences, and gallery cards. NEVER refuse a question as 'off-"
+        "topic' or 'unpublished' if the topic appears anywhere in the "
+        "PRESENTATION DECKS listing — offer the matching deck instead.\n"
+        "  - When a deck matches what the visitor is asking about (overview, "
+        "tour, comparison, a product/concept name in the 'covers:' list, "
+        "etc.) and you decide it is the best response, OFFER it first in "
+        "plain language ('Want me to walk you through our 5-slide "
+        "overview?') unless the deck has auto_play=true.\n"
         "  - When the visitor agrees (or auto_play=true), emit:\n"
         "    ```command\\n{\"action\": \"start_presentation\", \"slug\": \"<deck-slug>\"}\\n```\n"
         "  - Do NOT type the slide bodies into chat — the overlay will show "
