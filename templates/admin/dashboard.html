@@ -1945,6 +1945,10 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
       Analytics
     </button>
+    <button class="tab-btn" onclick="switchTab('marketing-insights', this); loadMarketingInsights();" data-testid="tab-marketing-insights">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h20v14H2z"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="3"/></svg>
+      AI Insights & Drafts
+    </button>
 
     <div class="sidebar-group-label">Messaging</div>
     <button class="tab-btn" onclick="switchTab('messaging-subscribers', this); loadMessagingSubscribers();" data-testid="tab-messaging-subscribers">
@@ -6503,6 +6507,75 @@ TO CUSTOMIZE THIS DASHBOARD:
       </table>
     </div>
 
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: AI INSIGHTS & DRAFTS
+  ========================================================================
+  Surfaces output from the admin AI's marketing tools: cached insight
+  runs (chat-topic mining, page-library reuse reports, content-gap
+  reports) and drafted blog / FAQ posts queued for approval.
+  -->
+  <div id="tab-marketing-insights" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>AI Insights & Drafts</h2>
+        <p>Marketing reports the admin AI has run, plus blog and FAQ entries it has drafted for your approval.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn btn-secondary btn-sm" onclick="loadMarketingInsights()" data-testid="button-marketing-refresh">Refresh</button>
+        <button class="btn btn-primary btn-sm" onclick="switchTab('admin-chat', document.querySelector('[data-testid=tab-admin-chat]')); loadAdminChat();" data-testid="button-marketing-open-chat">Ask the AI</button>
+      </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns: 1fr; gap:1.5rem; margin-top:1rem;">
+
+      <!-- DRAFTS — pending blog / FAQ entries the AI has composed. -->
+      <div class="form-panel">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; margin-bottom:0.75rem;">
+          <div>
+            <h3 style="margin:0;">Drafts awaiting approval</h3>
+            <p style="margin:0.25rem 0 0; color:var(--admin-text-muted); font-size:0.85rem;">Blog posts and FAQ entries the admin AI has written. Approve to publish, reject to discard.</p>
+          </div>
+          <div style="display:flex; gap:0.5rem; align-items:center;">
+            <label style="font-size:0.85rem; color:var(--admin-text-muted);">Status</label>
+            <select id="mi-drafts-status" onchange="loadMarketingInsights()" data-testid="select-marketing-drafts-status" style="padding:0.4rem 0.6rem; background:#0f1623; color:#e4e4e7; border:1px solid #243044; border-radius:4px; font-size:0.85rem;">
+              <option value="pending">Pending</option>
+              <option value="approved">Approved &amp; published</option>
+              <option value="rejected">Rejected</option>
+              <option value="failed">Failed</option>
+            </select>
+          </div>
+        </div>
+        <div id="mi-drafts-list" data-testid="list-marketing-drafts">
+          <div class="empty-state" style="padding:1rem 0; color:var(--admin-text-muted);">Loading drafts…</div>
+        </div>
+      </div>
+
+      <!-- INSIGHTS — cached insight runs from analyze_chat_topics / analyze_page_library / suggest_seo_improvements. -->
+      <div class="form-panel">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; margin-bottom:0.75rem;">
+          <div>
+            <h3 style="margin:0;">Insight reports</h3>
+            <p style="margin:0.25rem 0 0; color:var(--admin-text-muted); font-size:0.85rem;">Cached output from the admin AI's marketing analysis tools. Click a row to expand the full report.</p>
+          </div>
+          <div style="display:flex; gap:0.5rem; align-items:center;">
+            <label style="font-size:0.85rem; color:var(--admin-text-muted);">Type</label>
+            <select id="mi-insights-type" onchange="loadMarketingInsights()" data-testid="select-marketing-insights-type" style="padding:0.4rem 0.6rem; background:#0f1623; color:#e4e4e7; border:1px solid #243044; border-radius:4px; font-size:0.85rem;">
+              <option value="">All types</option>
+              <option value="chat_topics">Chat topics</option>
+              <option value="page_library">Page library</option>
+              <option value="seo_gaps">SEO / content gaps</option>
+            </select>
+          </div>
+        </div>
+        <div id="mi-insights-list" data-testid="list-marketing-insights">
+          <div class="empty-state" style="padding:1rem 0; color:var(--admin-text-muted);">Loading insights…</div>
+        </div>
+      </div>
+
+    </div>
   </div>
 
   <!--
@@ -12283,6 +12356,141 @@ TO CUSTOMIZE THIS DASHBOARD:
       if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
       if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
       return Math.floor(diff / 86400) + 'd ago';
+    }
+
+    /* ---------- AI Insights & Drafts tab ---------- */
+    /* Pulls cached insight runs (analyze_chat_topics, analyze_page_library,
+       suggest_seo_improvements) and pending blog/FAQ drafts the admin AI
+       has queued. Approve/reject re-uses the existing chat-action endpoints
+       so the dispatcher logic stays in one place. */
+    async function loadMarketingInsights() {
+      const draftsEl = document.getElementById('mi-drafts-list');
+      const insightsEl = document.getElementById('mi-insights-list');
+      const status = (document.getElementById('mi-drafts-status') || {}).value || 'pending';
+      const itype = (document.getElementById('mi-insights-type') || {}).value || '';
+
+      if (draftsEl) draftsEl.innerHTML = '<div class="empty-state" style="padding:1rem 0; color:var(--admin-text-muted);">Loading drafts…</div>';
+      if (insightsEl) insightsEl.innerHTML = '<div class="empty-state" style="padding:1rem 0; color:var(--admin-text-muted);">Loading insights…</div>';
+
+      const [draftsRes, insightsRes] = await Promise.all([
+        fetch('/admin/api/marketing/drafts?status=' + encodeURIComponent(status)).then(r => r.json()).catch(() => ({drafts: []})),
+        fetch('/admin/api/marketing/insights' + (itype ? '?type=' + encodeURIComponent(itype) : '')).then(r => r.json()).catch(() => ({insights: []})),
+      ]);
+
+      renderMarketingDrafts(draftsRes.drafts || [], status);
+      renderMarketingInsights(insightsRes.insights || []);
+    }
+
+    function renderMarketingDrafts(drafts, status) {
+      const el = document.getElementById('mi-drafts-list');
+      if (!el) return;
+      if (!drafts.length) {
+        el.innerHTML = `<div class="empty-state" style="padding:1.5rem 0; color:var(--admin-text-muted); text-align:center;">
+          No ${escapeHTML(status)} drafts. Ask the AI in <a href="#" onclick="switchTab('admin-chat', document.querySelector('[data-testid=tab-admin-chat]')); loadAdminChat(); return false;" style="color:#7dd3fc;">Admin Chat</a> to draft a blog post or FAQ entry — they'll appear here for approval.
+        </div>`;
+        return;
+      }
+      el.innerHTML = drafts.map(d => {
+        const created = d.created_at ? new Date(d.created_at).toLocaleString() : '';
+        const kindLabel = d.kind === 'blog' ? 'Blog post' : d.kind === 'faq' ? 'FAQ entry' : (d.kind || 'Draft');
+        const kindColor = d.kind === 'blog' ? '#1e3a8a' : '#3f1d6e';
+        const kindFg    = d.kind === 'blog' ? '#bfdbfe' : '#e9d5ff';
+        const isPending = d.status === 'pending';
+        const statusBadge = isPending
+          ? '<span style="background:#92400e; color:#fcd34d; padding:2px 8px; border-radius:4px; font-size:0.7rem;">Pending</span>'
+          : d.status === 'approved'
+            ? '<span style="background:#166534; color:#86efac; padding:2px 8px; border-radius:4px; font-size:0.7rem;">Approved</span>'
+            : d.status === 'rejected'
+              ? '<span style="background:#5b1a1a; color:#fca5a5; padding:2px 8px; border-radius:4px; font-size:0.7rem;">Rejected</span>'
+              : '<span style="background:#3f3f46; color:#d4d4d8; padding:2px 8px; border-radius:4px; font-size:0.7rem;">' + escapeHTML(d.status || '') + '</span>';
+        const errLine = d.error_text
+          ? `<div style="color:#fca5a5; font-size:0.8rem; margin-top:0.5rem;">Error: ${escapeHTML(d.error_text)}</div>`
+          : '';
+        const actions = isPending
+          ? `<div style="display:flex; gap:0.5rem; margin-top:0.75rem;">
+              <button class="btn btn-sm btn-primary" onclick="approveMarketingDraft(${d.id})" data-testid="button-marketing-approve-${d.id}">Approve & publish</button>
+              <button class="btn btn-sm btn-danger" onclick="rejectMarketingDraft(${d.id})" data-testid="button-marketing-reject-${d.id}">Reject</button>
+            </div>`
+          : '';
+        return `<div class="form-panel" style="background:#0f1623; padding:1rem; margin-bottom:0.75rem; border:1px solid #243044; border-radius:6px;" data-testid="row-marketing-draft-${d.id}">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:1rem;">
+            <div style="flex:1; min-width:0;">
+              <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.4rem;">
+                <span style="background:${kindColor}; color:${kindFg}; padding:2px 8px; border-radius:4px; font-size:0.7rem; font-weight:600;">${escapeHTML(kindLabel)}</span>
+                ${statusBadge}
+                <span style="color:var(--admin-text-muted); font-size:0.75rem;">${escapeHTML(created)}</span>
+              </div>
+              <div style="font-weight:600; margin-bottom:0.3rem;" data-testid="text-marketing-draft-title-${d.id}">${escapeHTML(d.title || '')}</div>
+              <div style="color:#cbd5e1; font-size:0.85rem; white-space:pre-wrap; line-height:1.45;">${escapeHTML(d.body_preview || '')}${(d.body_preview || '').length >= 400 ? '…' : ''}</div>
+              ${errLine}
+              ${actions}
+            </div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    function renderMarketingInsights(rows) {
+      const el = document.getElementById('mi-insights-list');
+      if (!el) return;
+      if (!rows.length) {
+        el.innerHTML = `<div class="empty-state" style="padding:1.5rem 0; color:var(--admin-text-muted); text-align:center;">
+          No insight reports yet. Ask the AI in <a href="#" onclick="switchTab('admin-chat', document.querySelector('[data-testid=tab-admin-chat]')); loadAdminChat(); return false;" style="color:#7dd3fc;">Admin Chat</a> to analyze visitor chat topics, page library reuse, or content gaps — results will be cached here.
+        </div>`;
+        return;
+      }
+      const labelOf = t => ({
+        chat_topics: 'Chat topics',
+        page_library: 'Page library',
+        seo_gaps: 'SEO / content gaps',
+      })[t] || t;
+      el.innerHTML = rows.map(r => {
+        const created = r.created_at ? new Date(r.created_at).toLocaleString() : '';
+        const window_ = (r.window_start ? new Date(r.window_start).toLocaleDateString() : '')
+                      + (r.window_end ? ' → ' + new Date(r.window_end).toLocaleDateString() : '');
+        const summary = (() => {
+          try { return JSON.stringify(r.summary_json, null, 2); }
+          catch (e) { return String(r.summary_json || ''); }
+        })();
+        return `<details style="background:#0f1623; padding:0.75rem 1rem; margin-bottom:0.5rem; border:1px solid #243044; border-radius:6px;" data-testid="row-marketing-insight-${r.id}">
+          <summary style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; gap:1rem; list-style:none;">
+            <span>
+              <span style="background:#1e3a5a; color:#bfdbfe; padding:2px 8px; border-radius:4px; font-size:0.7rem; font-weight:600; margin-right:0.5rem;">${escapeHTML(labelOf(r.insight_type))}</span>
+              <span style="color:#cbd5e1;">${escapeHTML(r.notes || '(no notes)')}</span>
+            </span>
+            <span style="color:var(--admin-text-muted); font-size:0.75rem; white-space:nowrap;">${escapeHTML(window_ || created)}</span>
+          </summary>
+          <pre style="margin:0.75rem 0 0; padding:0.75rem; background:#060b14; color:#a7f3d0; font-size:0.78rem; line-height:1.4; max-height:400px; overflow:auto; border-radius:4px; white-space:pre-wrap; word-break:break-word;">${escapeHTML(summary)}</pre>
+          <div style="color:var(--admin-text-muted); font-size:0.7rem; margin-top:0.5rem;">Run at ${escapeHTML(created)} · id ${r.id}</div>
+        </details>`;
+      }).join('');
+    }
+
+    async function approveMarketingDraft(id) {
+      try {
+        const res = await fetch('/admin/api/chat/action/' + id + '/approve', {method: 'POST'});
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          alert('Approve failed: ' + (data.error || res.status));
+        }
+      } catch (err) {
+        alert('Approve failed: ' + err.message);
+      }
+      loadMarketingInsights();
+    }
+
+    async function rejectMarketingDraft(id) {
+      if (!confirm('Reject this draft? It will be marked rejected and not published.')) return;
+      try {
+        const res = await fetch('/admin/api/chat/action/' + id + '/reject', {method: 'POST'});
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          alert('Reject failed: ' + (data.error || res.status));
+        }
+      } catch (err) {
+        alert('Reject failed: ' + err.message);
+      }
+      loadMarketingInsights();
     }
 
     async function loadOverview() {
