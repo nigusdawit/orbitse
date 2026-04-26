@@ -17359,14 +17359,24 @@ TO CUSTOMIZE THIS DASHBOARD:
           <label style="color:var(--admin-text);">Slug (optional)<input id="presentation-slug-input" type="text" data-testid="input-presentation-slug" placeholder="auto-from-title" style="width:100%;padding:8px;margin-top:4px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;"></label>
         </div>
         <label style="color:var(--admin-text);display:block;margin-bottom:0.75rem;">Description (one short sentence the AI uses to decide when to offer this deck)<textarea id="presentation-description-input" rows="2" data-testid="input-presentation-description" style="width:100%;padding:8px;margin-top:4px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;"></textarea></label>
-        <div style="display:flex; gap:1.5rem; margin-bottom:1rem; color:var(--admin-text);">
+        <div style="display:flex; gap:1.5rem; margin-bottom:0.75rem; color:var(--admin-text); flex-wrap:wrap;">
           <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="presentation-enabled-input" data-testid="checkbox-presentation-enabled"> Enabled</label>
           <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="presentation-autoplay-input" data-testid="checkbox-presentation-autoplay"> Auto-play (don't ask first)</label>
+          <label style="display:flex;align-items:center;gap:6px;" title="Show the original imported slide images full-bleed (no title/body overlay). Use this when each slide is a single designed image (PDF page, exported PPTX slide, etc.) and you don't want any text on top.">
+            <input type="checkbox" id="presentation-displaymode-input" data-testid="checkbox-presentation-original"> Show original slide images (no overlay)
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;" title="When narration is empty, auto-generate it from each slide's title and body using AI. (You can also click 'Generate narration' below to fill them all now.)">
+            <input type="checkbox" id="presentation-ainarrate-input" data-testid="checkbox-presentation-ainarrate"> Auto-narrate with AI
+          </label>
         </div>
         <hr style="border-color:var(--admin-border);">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin:0.75rem 0;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin:0.75rem 0;flex-wrap:wrap;gap:0.5rem;">
           <h4 style="margin:0;color:var(--admin-text);">Slides</h4>
-          <button class="btn btn-secondary" onclick="addPresentationSlide()" data-testid="button-add-slide">+ Add slide</button>
+          <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+            <button class="btn btn-secondary" id="presentation-narrate-empty-btn" onclick="generateNarrationForDeck(false)" data-testid="button-narrate-empty" title="Write voice narration for any slides that don't have any yet. Won't overwrite scripts you've already written.">✦ Generate narration for empty slides</button>
+            <button class="btn btn-secondary" id="presentation-narrate-all-btn" onclick="generateNarrationForDeck(true)" data-testid="button-narrate-all" title="Rewrite voice narration for EVERY slide, including ones that already have a script. Use after editing slide titles or bodies.">↻ Regenerate all narration</button>
+            <button class="btn btn-secondary" onclick="addPresentationSlide()" data-testid="button-add-slide">+ Add slide</button>
+          </div>
         </div>
         <div id="presentation-slides-list" data-testid="list-presentation-slides" style="display:flex;flex-direction:column;gap:0.75rem;"></div>
       </div>
@@ -17484,7 +17494,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           presentationDraft.slides = presentationDraft.slides || [];
         } catch (e) { alert('Failed to load deck'); return; }
       } else {
-        presentationDraft = { title:'', slug:'', description:'', enabled:true, auto_play:false, slides:[] };
+        presentationDraft = { title:'', slug:'', description:'', enabled:true, auto_play:false, display_mode:'rich', ai_narrate_mode:'manual', slides:[] };
       }
       document.getElementById('presentation-id').value = presentationDraft.id || '';
       document.getElementById('presentation-title-input').value = presentationDraft.title || '';
@@ -17492,8 +17502,99 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('presentation-description-input').value = presentationDraft.description || '';
       document.getElementById('presentation-enabled-input').checked = !!presentationDraft.enabled;
       document.getElementById('presentation-autoplay-input').checked = !!presentationDraft.auto_play;
+      document.getElementById('presentation-displaymode-input').checked = (presentationDraft.display_mode === 'original');
+      document.getElementById('presentation-ainarrate-input').checked = (presentationDraft.ai_narrate_mode === 'auto');
+      // The narration buttons need a saved deck id (to know which deck to
+      // narrate against) — disable them on brand-new unsaved decks.
+      const newDeck = !presentationDraft.id;
+      const nb1 = document.getElementById('presentation-narrate-empty-btn');
+      const nb2 = document.getElementById('presentation-narrate-all-btn');
+      if (nb1) { nb1.disabled = newDeck; nb1.title = newDeck ? 'Save the deck first, then you can generate narration.' : nb1.getAttribute('title'); }
+      if (nb2) { nb2.disabled = newDeck; nb2.title = newDeck ? 'Save the deck first, then you can regenerate narration.' : nb2.getAttribute('title'); }
       renderSlideRows();
       modal.style.display = 'flex';
+    };
+
+    /* Call the backend AI-narration generator for the current deck.
+       force=false fills only empty slides; force=true rewrites all.
+       After it returns we reload the deck so the modal shows the new
+       narration_text for every affected slide. */
+    window.generateNarrationForDeck = async function(force) {
+      if (!presentationDraft || !presentationDraft.id) {
+        alert('Save the deck first, then click this again.');
+        return;
+      }
+      const verb = force ? 'rewrite narration for ALL slides (overwriting existing scripts)' : 'fill narration for empty slides';
+      if (force && !confirm('This will ' + verb + '. Continue?')) return;
+      const btnId = force ? 'presentation-narrate-all-btn' : 'presentation-narrate-empty-btn';
+      const btn = document.getElementById(btnId);
+      const oldLabel = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = 'Writing narration…'; }
+      try {
+        const r = await fetch('/admin/api/presentations/' + presentationDraft.id + '/generate-narration', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ force: !!force }),
+        });
+        const data = await r.json();
+        if (!r.ok) { alert(data.error || ('Narration failed (HTTP ' + r.status + ').')); return; }
+        // Reload deck so updated narration_text shows in the slide rows.
+        const r2 = await fetch('/admin/api/presentations/' + presentationDraft.id, { credentials: 'same-origin' });
+        const fresh = await r2.json();
+        // Preserve any unsaved meta-field edits the admin had typed before clicking.
+        fresh.title = document.getElementById('presentation-title-input').value;
+        fresh.slug = document.getElementById('presentation-slug-input').value;
+        fresh.description = document.getElementById('presentation-description-input').value;
+        fresh.enabled = document.getElementById('presentation-enabled-input').checked;
+        fresh.auto_play = document.getElementById('presentation-autoplay-input').checked;
+        fresh.display_mode = document.getElementById('presentation-displaymode-input').checked ? 'original' : 'rich';
+        fresh.ai_narrate_mode = document.getElementById('presentation-ainarrate-input').checked ? 'auto' : 'manual';
+        presentationDraft = fresh;
+        renderSlideRows();
+        const tail = (data.errors && data.errors.length) ? ('\n\nNotes:\n• ' + data.errors.join('\n• ')) : '';
+        alert('Narration written for ' + data.updated + ' slide' + (data.updated === 1 ? '' : 's') + (data.skipped ? ' (' + data.skipped + ' skipped).' : '.') + tail);
+      } catch (e) {
+        alert('Narration failed: ' + (e && e.message ? e.message : e));
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = oldLabel; }
+      }
+    };
+
+    /* Per-slide regenerate — narrates a single slide. Saved decks only
+       (the per-slide endpoint needs a real slide id). */
+    window.regenerateSlideNarration = async function(idx) {
+      if (!presentationDraft || !presentationDraft.id) {
+        alert('Save the deck first, then you can regenerate per-slide narration.');
+        return;
+      }
+      const s = presentationDraft.slides[idx];
+      if (!s || !s.id) {
+        alert('Save the deck first so this slide has an id, then click Regen again.');
+        return;
+      }
+      const btn = document.querySelector('[data-testid="button-slide-regen-' + idx + '"]');
+      const old = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = '…'; }
+      try {
+        const r = await fetch('/admin/api/presentations/' + presentationDraft.id + '/generate-narration', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ force: true, slide_ids: [s.id] }),
+        });
+        const data = await r.json();
+        if (!r.ok) { alert(data.error || ('Narration failed (HTTP ' + r.status + ').')); return; }
+        const r2 = await fetch('/admin/api/presentations/' + presentationDraft.id, { credentials: 'same-origin' });
+        const fresh = await r2.json();
+        const updated = (fresh.slides || []).find(x => x.id === s.id);
+        if (updated) {
+          presentationDraft.slides[idx].narration_text = updated.narration_text || '';
+          renderSlideRows();
+        }
+      } catch (e) {
+        alert('Regenerate failed: ' + (e && e.message ? e.message : e));
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = old; }
+      }
     };
 
     window.closePresentationEditor = function() {
@@ -17518,6 +17619,10 @@ TO CUSTOMIZE THIS DASHBOARD:
           <input type="text" placeholder="Slide title" value="${esc(s.title||'')}" oninput="updateSlide(${i},'title',this.value)" data-testid="input-slide-title-${i}" style="width:100%;padding:6px;margin-bottom:6px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;">
           <textarea rows="2" placeholder="Slide body shown on screen" oninput="updateSlide(${i},'body',this.value)" data-testid="input-slide-body-${i}" style="width:100%;padding:6px;margin-bottom:6px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;">${esc(s.body||'')}</textarea>
           <input type="text" placeholder="Image URL (optional)" value="${esc(s.image_url||'')}" oninput="updateSlide(${i},'image_url',this.value)" data-testid="input-slide-image-${i}" style="width:100%;padding:6px;margin-bottom:6px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+            <span style="color:var(--admin-text-muted);font-size:12px;">Voice narration (what the AI reads aloud — leave blank to use the body)</span>
+            <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px;" onclick="regenerateSlideNarration(${i})" data-testid="button-slide-regen-${i}" title="Rewrite this slide's narration with AI from its title and body.">✦ Regen</button>
+          </div>
           <textarea rows="2" placeholder="Voice narration (what the AI reads aloud — leave blank to use the body)" oninput="updateSlide(${i},'narration_text',this.value)" data-testid="input-slide-narration-${i}" style="width:100%;padding:6px;background:var(--admin-bg);color:var(--admin-text);border:1px solid var(--admin-border);border-radius:6px;">${esc(s.narration_text||'')}</textarea>
         </div>
       `).join('');
@@ -17545,6 +17650,8 @@ TO CUSTOMIZE THIS DASHBOARD:
         description: document.getElementById('presentation-description-input').value,
         enabled: document.getElementById('presentation-enabled-input').checked,
         auto_play: document.getElementById('presentation-autoplay-input').checked,
+        display_mode: document.getElementById('presentation-displaymode-input').checked ? 'original' : 'rich',
+        ai_narrate_mode: document.getElementById('presentation-ainarrate-input').checked ? 'auto' : 'manual',
       };
       if (!meta.title) { alert('Title is required'); return; }
       try {

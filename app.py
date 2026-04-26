@@ -1318,6 +1318,17 @@ def init_db():
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS view_mode TEXT NOT NULL DEFAULT 'sections'",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_scale REAL NOT NULL DEFAULT 1.0",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_gap REAL NOT NULL DEFAULT 2.5",
+                # --- Presentation rendering + narration toggles ---
+                # display_mode controls what the visitor sees per slide:
+                #   'rich'     — render parsed title + body styled on top of the slide image (default)
+                #   'original' — show the imported slide image full-bleed only, no text overlay
+                # ai_narrate_mode controls how per-slide voice scripts are populated:
+                #   'manual'   — admin types narration_text per slide (default)
+                #   'auto'     — owner clicked "Auto-narrate with AI"; the
+                #                generator endpoint fills empty narration_text
+                #                rows from title+body using gpt-4o-mini
+                "ALTER TABLE presentations ADD COLUMN IF NOT EXISTS display_mode TEXT NOT NULL DEFAULT 'rich'",
+                "ALTER TABLE presentations ADD COLUMN IF NOT EXISTS ai_narrate_mode TEXT NOT NULL DEFAULT 'manual'",
             ]:
                 cur.execute(col_sql)
 
@@ -9698,6 +9709,13 @@ def api_chat():
     # session_id is unique per page load — each refresh starts a new conversation.
     # Together they let the admin track both individual conversations and returning visitors.
     visitor_id = data.get("visitor_id", "")
+    # presentation_active=True means the visitor is currently watching a deck
+    # in the overlay player and just typed a side question. We must answer in
+    # the chat bubble only — no new views, no page generation, no scrolls,
+    # no "open this" commands — so the deck can resume undisturbed when the
+    # answer finishes. The flag also nudges the system prompt and post-
+    # filters parsed commands below.
+    presentation_active = bool(data.get("presentation_active"))
 
     # Use database system prompt if available, otherwise fall back to hardcoded
     active_prompt = SYSTEM_PROMPT
@@ -10253,6 +10271,31 @@ def api_chat():
         "deck can resume."
     )
 
+    # ----- 7. PRESENTATION-MODE BEHAVIOR (only when a deck is playing) -----
+    # When the visitor is mid-presentation and asks a side question, the
+    # whole point is to NOT disrupt the deck. Be brief, answer in chat,
+    # and never emit a command that would open a new view (start a deck,
+    # build a page, render a visual, navigate, scroll, show a saved page).
+    # Tools (lookup_*) are still fine — they run server-side and feed the
+    # chat reply, they do not take over the screen.
+    if presentation_active:
+        active_prompt += (
+            "\n\nPRESENTATION-MODE — A DECK IS CURRENTLY PLAYING:\n"
+            "  - The visitor is watching a slide deck and just asked a side "
+            "question. Answer briefly in 1-3 sentences inside the chat "
+            "bubble so they can resume watching.\n"
+            "  - You MAY call lookup_* tools to fetch facts you need.\n"
+            "  - DO NOT emit any of these command actions this turn: "
+            "start_presentation, generatePage, generateVisual, "
+            "navigate, scrollToSection, showSavedPage, openImmersivePage, "
+            "openCanvas. Even if the visitor seems to ask for one of "
+            "these, just describe the answer briefly in text — they can "
+            "explore those views after the deck finishes.\n"
+            "  - Do not greet, do not summarize the deck so far, do not "
+            "promise to continue — the player resumes automatically when "
+            "your reply finishes."
+        )
+
     messages = [{"role": "system", "content": active_prompt}]
     for h in history[-20:]:
         role = "assistant" if h.get("role") == "agent" else "user"
@@ -10409,6 +10452,31 @@ def api_chat():
                 break
 
             reply, cmd = parse_command_from_text(full_text)
+            # Presentation-mode safety net: even though the system prompt
+            # tells the model not to issue intrusive commands while a deck
+            # is playing, the model occasionally still tries. Strip those
+            # at the wire so the deck never gets blown away by a side
+            # question. The list mirrors the prompt's "DO NOT emit"
+            # clause above. Tools already ran (their results are baked
+            # into `reply`) so the visitor still gets the answer.
+            # Actions blocked while a deck is on screen so the AI's Q&A
+            # answer can never yank the visitor away from the slide they're
+            # watching. NOTE: deck-internal actions (e.g. `showSlide` to
+            # navigate within the current deck) are intentionally NOT
+            # blocked — they're useful when the visitor asks "skip to the
+            # pricing slide". Anything that opens a NEW view, modal, or
+            # rewrites the homepage hero is blocked.
+            INTRUSIVE_PRESENTATION_ACTIONS = {
+                "start_presentation", "generatePage", "generateVisual",
+                "navigate", "scrollToSection", "showSavedPage",
+                "openImmersivePage", "openCanvas",
+                "heroMessage", "openBookingModal", "openServiceModal",
+            }
+            if presentation_active and cmd:
+                act = (cmd.get("action") or "") if isinstance(cmd, dict) else ""
+                if act in INTRUSIVE_PRESENTATION_ACTIONS:
+                    print(f"[chat] presentation_active: stripping '{act}' command so deck can resume")
+                    cmd = None
             if reply:
                 yield f"data: {json.dumps({'type': 'text', 'content': reply})}\n\n"
             if cmd:
@@ -10742,10 +10810,19 @@ def admin_create_presentation():
     ):
         slug = f"{base}-{n}"
         n += 1
+    # display_mode / ai_narrate_mode are validated against a small allow-list
+    # so a malformed payload can never poke a junk value into the column.
+    display_mode = (data.get("display_mode") or "rich").strip().lower()
+    if display_mode not in ("rich", "original"):
+        display_mode = "rich"
+    ai_narrate_mode = (data.get("ai_narrate_mode") or "manual").strip().lower()
+    if ai_narrate_mode not in ("manual", "auto"):
+        ai_narrate_mode = "manual"
     p = execute_db(
         """INSERT INTO presentations
-             (slug, title, description, cover_image_url, source, auto_play, enabled)
-           VALUES (%s, %s, %s, %s, %s, %s, %s)
+             (slug, title, description, cover_image_url, source, auto_play, enabled,
+              display_mode, ai_narrate_mode)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
            RETURNING *""",
         (
             slug,
@@ -10755,6 +10832,8 @@ def admin_create_presentation():
             data.get("source") or "admin",
             bool(data.get("auto_play")),
             bool(data.get("enabled", True)),
+            display_mode,
+            ai_narrate_mode,
         ),
     )
     return jsonify(p), 201
@@ -10765,13 +10844,21 @@ def admin_create_presentation():
 def admin_update_presentation(pid):
     """PUT — Update a presentation's metadata (not slides)."""
     data = request.get_json() or {}
+    display_mode = (data.get("display_mode") or "rich").strip().lower()
+    if display_mode not in ("rich", "original"):
+        display_mode = "rich"
+    ai_narrate_mode = (data.get("ai_narrate_mode") or "manual").strip().lower()
+    if ai_narrate_mode not in ("manual", "auto"):
+        ai_narrate_mode = "manual"
     p = execute_db(
         """UPDATE presentations SET
              title = %s,
              description = %s,
              cover_image_url = %s,
              auto_play = %s,
-             enabled = %s
+             enabled = %s,
+             display_mode = %s,
+             ai_narrate_mode = %s
            WHERE id = %s RETURNING *""",
         (
             data.get("title") or "",
@@ -10779,6 +10866,8 @@ def admin_update_presentation(pid):
             data.get("cover_image_url") or "",
             bool(data.get("auto_play")),
             bool(data.get("enabled", True)),
+            display_mode,
+            ai_narrate_mode,
             pid,
         ),
     )
@@ -11101,6 +11190,166 @@ def admin_import_presentation():
     }), 201
 
 
+@app.route("/admin/api/presentations/<int:pid>/generate-narration", methods=["POST"])
+@admin_required
+def admin_generate_narration(pid):
+    """POST /admin/api/presentations/<pid>/generate-narration
+
+    Use the LLM to write a short conversational voice script for each
+    slide based on its title and body, with optional context from the
+    surrounding slides for narrative flow. Saves the result to
+    presentation_slides.narration_text.
+
+    Body:
+      {
+        "force":     bool   # if true, overwrite existing narration_text;
+                            # if false (default), only fill empty rows
+        "slide_ids": [int]  # optional: limit to specific slide IDs;
+                            # default = all slides in the deck
+      }
+
+    Response: { "updated": <int>, "skipped": <int>, "errors": [str] }
+    """
+    body = request.get_json() or {}
+    force = bool(body.get("force"))
+    raw_only_ids = body.get("slide_ids") or []
+    # Validate slide_ids defensively — admin UI always sends ints, but a
+    # hand-crafted/buggy client could send strings or junk and an unguarded
+    # int() coerce would 500 instead of returning a useful error.
+    if not isinstance(raw_only_ids, list):
+        return jsonify({"error": "slide_ids must be an array of integers"}), 400
+    only_ids = []
+    for x in raw_only_ids:
+        try:
+            only_ids.append(int(x))
+        except (TypeError, ValueError):
+            return jsonify({"error": f"slide_ids contains a non-integer value: {x!r}"}), 400
+
+    deck = query_db(
+        "SELECT id, title, description FROM presentations WHERE id = %s",
+        (pid,), fetchone=True,
+    )
+    if not deck:
+        return jsonify({"error": "Presentation not found"}), 404
+
+    slides = query_db(
+        "SELECT id, order_index, title, body, narration_text "
+        "FROM presentation_slides WHERE presentation_id = %s "
+        "ORDER BY order_index ASC, id ASC",
+        (pid,),
+    ) or []
+    if not slides:
+        return jsonify({"updated": 0, "skipped": 0, "errors": ["No slides in this deck."]})
+
+    # Pick the slides to (re)narrate. When force=false (default) we only
+    # touch slides whose narration_text is empty so re-clicking the
+    # button never overwrites the owner's hand-edited scripts.
+    target_ids = set(only_ids) if only_ids else None
+    targets = []
+    for s in slides:
+        if target_ids is not None and s["id"] not in target_ids:
+            continue
+        if not force and (s.get("narration_text") or "").strip():
+            continue
+        targets.append(s)
+
+    if not targets:
+        return jsonify({"updated": 0, "skipped": len(slides), "errors": []})
+
+    # Build a single LLM call that writes narration for ALL target slides
+    # in one shot — much faster + cheaper than one call per slide, and
+    # the model can write with awareness of the deck's overall arc.
+    deck_outline = "\n".join(
+        f"  Slide {s['order_index']+1}: {(s.get('title') or '').strip()}"
+        for s in slides
+    )
+    slides_payload = []
+    for s in targets:
+        slides_payload.append({
+            "id": s["id"],
+            "position": s["order_index"] + 1,
+            "title": (s.get("title") or "").strip(),
+            "body":  (s.get("body")  or "").strip()[:1500],
+        })
+
+    sys_msg = (
+        "You write short, warm, spoken-word voice scripts for slide decks. "
+        "For each slide you receive, return 2-3 conversational sentences "
+        "that a friendly human narrator would say while that slide is on "
+        "screen. Do NOT just read the bullets — paraphrase, connect ideas, "
+        "and make it sound natural when spoken aloud. No greetings, no "
+        "'in this slide we will…' filler, no markdown, no emoji. 35-65 "
+        "words per slide. Reference the slide's place in the overall deck "
+        "outline only when it genuinely helps continuity (e.g. 'building "
+        "on what we just covered…'). Output STRICT JSON only:\n"
+        '{"slides":[{"id":<int>,"narration":"..."}, ...]}'
+    )
+    user_msg = (
+        f"Deck title: {deck.get('title') or ''}\n"
+        f"Deck description: {(deck.get('description') or '').strip()}\n\n"
+        f"Full deck outline (for flow awareness):\n{deck_outline}\n\n"
+        f"Write narration for these slides (return JSON exactly per the "
+        f"schema above):\n{json.dumps(slides_payload, ensure_ascii=False)}"
+    )
+
+    try:
+        resp = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": sys_msg},
+                {"role": "user",   "content": user_msg},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.7,
+        )
+        raw = resp.choices[0].message.content or "{}"
+        parsed = json.loads(raw)
+    except Exception as e:
+        return jsonify({"updated": 0, "skipped": len(slides) - len(targets),
+                        "errors": [f"LLM call failed: {e}"]}), 500
+
+    # Map back to slide IDs and save. We trust the model on the per-slide
+    # 'id' field but also fall back to position-order in case it strips ids.
+    out_map = {}
+    for row in (parsed.get("slides") or []):
+        sid = row.get("id")
+        narr = (row.get("narration") or "").strip()
+        if not narr:
+            continue
+        if sid is not None:
+            try: out_map[int(sid)] = narr
+            except Exception: pass
+
+    if not out_map and parsed.get("slides"):
+        # Model returned narrations without ids — line them up by position
+        for s, row in zip(targets, parsed["slides"]):
+            narr = (row.get("narration") or "").strip()
+            if narr:
+                out_map[s["id"]] = narr
+
+    updated = 0
+    errors = []
+    for s in targets:
+        narr = out_map.get(s["id"])
+        if not narr:
+            errors.append(f"slide {s['order_index']+1}: model returned no narration")
+            continue
+        try:
+            execute_db(
+                "UPDATE presentation_slides SET narration_text = %s WHERE id = %s",
+                (narr, s["id"]),
+            )
+            updated += 1
+        except Exception as e:
+            errors.append(f"slide {s['order_index']+1}: db save failed ({e})")
+
+    return jsonify({
+        "updated": updated,
+        "skipped": len(slides) - len(targets),
+        "errors": errors,
+    })
+
+
 @app.route("/admin/api/slides/<int:sid>", methods=["PUT"])
 @admin_required
 def admin_update_slide(sid):
@@ -11143,7 +11392,8 @@ def public_get_presentation(slug):
     visitor-side overlay player. Returns deck metadata + ordered slides
     including narration_text (the voice agent will speak it)."""
     p = query_db(
-        "SELECT id, slug, title, description, cover_image_url, auto_play "
+        "SELECT id, slug, title, description, cover_image_url, auto_play, "
+        "       display_mode, ai_narrate_mode "
         "FROM presentations WHERE slug = %s AND enabled = TRUE",
         (slug,),
         fetchone=True,
@@ -11162,6 +11412,11 @@ def public_get_presentation(slug):
         "description": p["description"],
         "cover_image_url": p["cover_image_url"],
         "auto_play": bool(p["auto_play"]),
+        # display_mode tells the player whether to overlay the parsed
+        # title+body styling ('rich'), or just show the original imported
+        # slide image full-bleed with no text on top ('original').
+        "display_mode": (p.get("display_mode") or "rich"),
+        "ai_narrate_mode": (p.get("ai_narrate_mode") or "manual"),
         "slides": slides,
     })
 

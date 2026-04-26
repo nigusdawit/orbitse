@@ -4647,7 +4647,14 @@ async function chatSendStreaming(message, wasCollapsed) {
         message: message,
         history: chatHistory,
         session_id: window._chatSessionId,
-        visitor_id: localStorage.getItem('chat_visitor_id')
+        visitor_id: localStorage.getItem('chat_visitor_id'),
+        /* When a deck is on screen, tell the backend so it answers
+           briefly inside the chat bubble and never emits a command
+           that would open a new view (start_presentation, generatePage,
+           navigate, etc.). Filter is enforced server-side too. */
+        presentation_active: !!(window.PresentationPlayer
+          && window.PresentationPlayer.state
+          && window.PresentationPlayer.state.deck),
       })
     });
 
@@ -5106,6 +5113,10 @@ async function chatSendStreaming(message, wasCollapsed) {
         typeof window.VoiceAgent.streamSpeakCancel === 'function') {
       window.VoiceAgent.streamSpeakCancel();
     }
+
+    /* If the visitor paused the deck by typing in the chat (side Q&A),
+       resume the deck once the AI's reply has had time to play. */
+    try { _scheduleAutoResumeAfterChatReply(displayText || ''); } catch (e) {}
 
   } catch (error) {
     console.error('Chat error:', error);
@@ -6377,6 +6388,69 @@ const PRESENTATION = {
   startSeq: 0,        // monotonic counter — see startPresentation race guard
 };
 
+/* True when the deck got paused specifically because the visitor focused
+   the chat input to ask a side question. The chat-stream finalizer
+   (chatSendStreaming) reads this flag to know whether to auto-resume the
+   deck once the AI's reply finishes — vs. an explicit Pause click which
+   should NOT auto-resume. Cleared by resumePresentation/closePresentation
+   and by the auto-resume hook itself once it fires. */
+let _presentationPausedForChat = false;
+
+/* Generation token for the auto-resume timer. Each scheduled resume
+   captures the current value; when it fires it checks the captured
+   value still matches before resuming. A second Q&A turn (or an
+   explicit Pause/Resume click, or closePresentation) bumps the token,
+   invalidating any in-flight earlier timer so an older slow reply can't
+   resume the deck on top of a newer one still streaming. */
+let _autoResumeToken = 0;
+function _bumpAutoResumeToken() { _autoResumeToken = (_autoResumeToken + 1) | 0; }
+
+/* Schedule auto-resume of the deck after the AI's chat reply finishes.
+   The reply is being spoken in parallel via VoiceAgent, so we estimate
+   spoken duration from the reply length (~65ms/char, bounded 2.5–30s)
+   and resume the deck after that. If the visitor refocuses the input
+   to ask another question, we re-defer instead of barging in. Each
+   scheduled resume is invalidated by any subsequent token bump so a
+   newer turn can't be barged in on by an older timer. */
+function _scheduleAutoResumeAfterChatReply(replyText) {
+  if (!_presentationPausedForChat) return;
+  if (!PRESENTATION.deck) return;
+  /* Bump the token so any earlier-scheduled resume from a prior Q&A
+     turn becomes a no-op when its setTimeout fires. */
+  _bumpAutoResumeToken();
+  const myToken = _autoResumeToken;
+  const muted = (function() {
+    try { return localStorage.getItem("voiceRepliesMuted") === "1"; }
+    catch (e) { return false; }
+  })();
+  const len = (replyText || '').length;
+  const delayMs = muted ? 1500 : Math.min(30000, Math.max(2500, len * 65));
+  setTimeout(function tryResume() {
+    if (myToken !== _autoResumeToken) return;       // a newer turn (or close/resume) invalidated us
+    if (!PRESENTATION.deck) return;
+    if (!_presentationPausedForChat) return;        // Pause/Resume happened in the meantime
+    /* Don't resume while a TTS stream from the AI's reply is still
+       playing — that would step on the answer. */
+    if (window.VoiceAgent && window.VoiceAgent.state && window.VoiceAgent.state.stream
+        && !window.VoiceAgent.state.stream.finalized
+        && !window.VoiceAgent.state.stream.stopped) {
+      setTimeout(tryResume, 800);
+      return;
+    }
+    /* If the visitor is typing again, defer — they're asking another
+       question and the answer-then-resume flow restarts naturally on
+       the next /api/chat round (which will bump the token and supersede
+       this timer). */
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT')) {
+      setTimeout(tryResume, 1500);
+      return;
+    }
+    _presentationPausedForChat = false;
+    if (typeof resumePresentation === 'function') resumePresentation();
+  }, delayMs);
+}
+
 function ensurePresentationOverlay() {
   if (PRESENTATION.overlay) return PRESENTATION.overlay;
   const root = document.createElement('div');
@@ -6449,7 +6523,13 @@ function renderCurrentSlide() {
   // with `contain` sizing so portrait or 4:3 slides aren't cropped.
   const hasTitle = !!(slide.title && slide.title.trim());
   const hasBody = !!(slide.body && slide.body.trim());
-  const imageOnly = !hasTitle && !hasBody && !!slide.image_url;
+  /* "Original" display mode = show the imported slide image full-bleed
+     with no title/body overlay, so the audience sees the deck exactly as
+     the owner designed it in PowerPoint/Keynote/PDF. Falls back to the
+     normal "image-only" detection for slides that genuinely have no
+     title/body to overlay. */
+  const useOriginal = (deck.display_mode === 'original') && !!slide.image_url;
+  const imageOnly = useOriginal || (!hasTitle && !hasBody && !!slide.image_url);
   if (slide.image_url) {
     img.style.backgroundImage = `url(${JSON.stringify(slide.image_url)})`;
     img.classList.add('has-image');
@@ -6458,8 +6538,8 @@ function renderCurrentSlide() {
     img.classList.remove('has-image');
   }
   img.classList.toggle('image-fill', imageOnly);
-  root.querySelector('.presentation-title').textContent = slide.title || '';
-  root.querySelector('.presentation-body').textContent = slide.body || '';
+  root.querySelector('.presentation-title').textContent = useOriginal ? '' : (slide.title || '');
+  root.querySelector('.presentation-body').textContent = useOriginal ? '' : (slide.body || '');
   root.querySelector('.presentation-progress').textContent =
     `${deck.title} — ${PRESENTATION.index + 1} of ${deck.slides.length}`;
   const prev = root.querySelector('.presentation-prev');
@@ -6565,6 +6645,11 @@ function pausePresentation() {
 
 function resumePresentation() {
   if (!PRESENTATION.deck) return;
+  /* Any explicit/auto resume clears the chat-pause flag so a later AI
+     reply doesn't trigger a second resume attempt, and bumps the
+     auto-resume token so any in-flight timer becomes a no-op. */
+  _presentationPausedForChat = false;
+  _bumpAutoResumeToken();
   PRESENTATION.paused = false;
   if (PRESENTATION.overlay) {
     const t = PRESENTATION.overlay.querySelector('.presentation-toggle');
@@ -6579,6 +6664,8 @@ function togglePresentation() {
 }
 
 function closePresentation() {
+  _presentationPausedForChat = false;
+  _bumpAutoResumeToken();    // invalidate any pending resume timer
   stopPresentationAudio();
   PRESENTATION.deck = null;
   PRESENTATION.index = 0;
@@ -6601,7 +6688,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const inputs = document.querySelectorAll('.chat-input, #side-chat-input, #landing-chat-input, textarea[data-chat-input]');
   inputs.forEach((el) => {
     el.addEventListener('focus', () => {
-      if (PRESENTATION.deck && !PRESENTATION.paused) pausePresentation();
+      if (PRESENTATION.deck && !PRESENTATION.paused) {
+        /* Mark this pause as "chat-driven" so the auto-resume hook
+           knows to bring the deck back after the AI's reply. An
+           explicit user Pause click never goes through this path so
+           it stays paused until the user resumes manually. */
+        _presentationPausedForChat = true;
+        pausePresentation();
+      }
     });
   });
 });
