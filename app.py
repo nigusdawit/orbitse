@@ -81,6 +81,7 @@ import messaging
 import automations
 import scraper
 import storage
+import image_optimize
 from flask import (
     Flask, request, jsonify, send_from_directory,
     render_template, session, redirect, url_for, Response, stream_with_context,
@@ -19799,7 +19800,23 @@ def serve_upload(filename):
     """Serve uploaded media via the configured storage backend (local
     disk or S3-compatible bucket). The S3 backend transparently falls
     back to disk for files written before the migration, so existing
-    /uploads/<file> URLs in the DB keep working post-cutover."""
+    /uploads/<file> URLs in the DB keep working post-cutover.
+
+    Optimization #4: when the request matches the responsive-WebP
+    variant naming convention (`<stem>-<width>.webp`) and the variant
+    isn't already in storage, synthesize it on the fly from any
+    matching source image. This lets the frontend `imgSrcset()` helper
+    point at variants for ALL existing uploads — pre-Opt-4 files get
+    optimized the first time a viewer requests one, post-Opt-4 files
+    are pre-warmed at upload time. `ensure_variant_on_demand` is a
+    no-op for non-variant URLs and never raises (it logs and returns
+    False), so the legacy serve path is unaffected on every other
+    request."""
+    if image_optimize.is_variant_filename(filename):
+        try:
+            image_optimize.ensure_variant_on_demand(filename)
+        except Exception as e:
+            app.logger.exception("on-demand variant generation failed for %s: %s", filename, e)
     return storage.get_storage().serve(filename)
 
 
@@ -19821,6 +19838,15 @@ def admin_upload_image():
     _store = storage.get_storage()
     _store.write_fileobj(unique_name, f, content_type=mime)
     file_size = _store.size(unique_name) or 0
+
+    # Opt #4: pre-warm responsive WebP variants (400/800/1600 widths).
+    # Skipped for gif/webp/non-images — see image_optimize for the
+    # rules. Best-effort: any failure is logged and swallowed so we
+    # never fail an upload over a downstream optimization.
+    try:
+        image_optimize.generate_webp_variants(unique_name)
+    except Exception as e:
+        app.logger.exception("variant pre-warm failed for %s: %s", unique_name, e)
 
     execute_db(
         "INSERT INTO uploaded_images (filename, original_name, file_size, media_type, mime_type) "
@@ -19885,6 +19911,18 @@ def admin_upload_media():
         _store = storage.get_storage()
         _store.write_fileobj(unique_name, f, content_type=mime)
         size = _store.size(unique_name) or 0
+
+        # Opt #4: pre-warm responsive WebP variants for image uploads.
+        # `generate_webp_variants` short-circuits on non-jpg/png/jpeg
+        # so it's safe to call unconditionally for every media type;
+        # the explicit guard here just avoids the read_bytes for
+        # videos and audio.
+        if media_type == "image":
+            try:
+                image_optimize.generate_webp_variants(unique_name)
+            except Exception as e:
+                app.logger.exception("variant pre-warm failed for %s: %s", unique_name, e)
+
         row = query_db(
             "INSERT INTO uploaded_images (filename, original_name, file_size, media_type, mime_type) "
             "VALUES (%s, %s, %s, %s, %s) RETURNING id, uploaded_at",

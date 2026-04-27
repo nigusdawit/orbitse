@@ -405,7 +405,7 @@ function renderTestimonials() {
 
     /* Optional reviewer photo — show initials circle if no image */
     const avatar = t.image_url
-      ? `<img src="${t.image_url}" alt="${t.reviewer_name}" class="testimonial-photo" data-testid="img-testimonial-${t.id}">`
+      ? `<img ${imgAttrs(t.image_url, '80px')} alt="${escapeHtml(t.reviewer_name || '')}" class="testimonial-photo" loading="lazy" data-testid="img-testimonial-${t.id}">`
       : `<div class="testimonial-photo-placeholder" data-testid="avatar-testimonial-${t.id}">${(t.reviewer_name || '?').charAt(0).toUpperCase()}</div>`;
 
     /* role="article" and aria-label with the reviewer name let screen readers
@@ -438,7 +438,7 @@ function renderTeam() {
   grid.innerHTML = teamMembers.map((m, index) => {
     /* Optional member photo — show initials circle if no image */
     const photo = m.image_url
-      ? `<img src="${m.image_url}" alt="${m.name}" class="team-photo" data-testid="img-team-${m.id}">`
+      ? `<img ${imgAttrs(m.image_url, '120px')} alt="${escapeHtml(m.name || '')}" class="team-photo" loading="lazy" data-testid="img-team-${m.id}">`
       : `<div class="team-photo-placeholder" data-testid="avatar-team-${m.id}">${(m.name || '?').charAt(0).toUpperCase()}</div>`;
 
     /* role="article" and aria-label with the member name let screen readers
@@ -807,7 +807,7 @@ function renderStore() {
   grid.innerHTML = storeProducts.map(p => {
     const outOfStock = p.track_inventory && (p.stock || 0) <= 0;
     const img = p.image_url
-      ? `<img class="store-card-img" src="${escapeHtml(p.image_url)}" alt="${escapeHtml(p.name)}" loading="lazy">`
+      ? `<img class="store-card-img" ${imgAttrs(p.image_url, '(min-width: 1024px) 25vw, (min-width: 640px) 50vw, 100vw')} alt="${escapeHtml(p.name)}" loading="lazy">`
       : `<div class="store-card-img store-card-img-placeholder">Product</div>`;
     return `
       <article class="store-card fade-in-view" data-testid="card-product-${p.id}">
@@ -2083,7 +2083,7 @@ function renderServicesCustomTemplate(sectionId, sectionTitle) {
         s.pricing_model === 'contract' ? 'Request' :
         s.pricing_model === 'deposit'  ? 'Book' : 'Book';
       const img = s.image_url
-        ? `<img class="service-card-img" src="${escapeHtml(s.image_url)}" alt="${escapeHtml(s.name)}" loading="lazy" style="width:100%;height:180px;object-fit:cover;border-radius:8px 8px 0 0;">`
+        ? `<img class="service-card-img" ${imgAttrs(s.image_url, '(min-width: 1024px) 33vw, (min-width: 640px) 50vw, 100vw')} alt="${escapeHtml(s.name)}" loading="lazy" style="width:100%;height:180px;object-fit:cover;border-radius:8px 8px 0 0;">`
         : '';
       return `
         <article class="service-card fade-in-view" data-testid="card-custom-service-${s.id}" style="border:1px solid rgba(255,255,255,0.12);border-radius:8px;overflow:hidden;display:flex;flex-direction:column;">
@@ -2123,7 +2123,7 @@ function renderProductsCustomTemplate(sectionId) {
     ${products.map(p => {
       const outOfStock = p.track_inventory && (p.stock || 0) <= 0;
       const img = p.image_url
-        ? `<img class="store-card-img" src="${escapeHtml(p.image_url)}" alt="${escapeHtml(p.name)}" loading="lazy">`
+        ? `<img class="store-card-img" ${imgAttrs(p.image_url, '(min-width: 1024px) 25vw, (min-width: 640px) 50vw, 100vw')} alt="${escapeHtml(p.name)}" loading="lazy">`
         : `<div class="store-card-img store-card-img-placeholder">Product</div>`;
       return `
         <article class="store-card fade-in-view" data-testid="card-custom-product-${p.id}">
@@ -5567,6 +5567,66 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+/* ===========================================================================
+ * Optimization #4: responsive WebP image helpers (April 2026).
+ *
+ * The backend (image_optimize.py) generates 400 / 800 / 1600 px WebP variants
+ * for every JPEG / PNG uploaded through /admin/api/upload-image and
+ * /admin/api/media/upload. The serve_upload route also generates them
+ * on-demand for legacy uploads, so the helpers below can unconditionally
+ * point at the variant URLs even for files uploaded before Opt #4.
+ *
+ * The decision rules MUST match `srcset_for()` in image_optimize.py — same
+ * extensions accepted, same widths emitted, same top-level-only check. If
+ * you change one, change the other.
+ *
+ * Why no srcset for avatars without sizes: without an accurate `sizes`
+ * attribute, the browser assumes 100vw and downloads the LARGEST variant —
+ * which would be worse than the original for a 60px avatar. So `imgAttrs`
+ * requires the caller to pass a `sizes` value that reflects how big the
+ * image will actually render.
+ * ======================================================================= */
+const IMG_RESPONSIVE_WIDTHS = [400, 800, 1600];
+const IMG_VARIANT_SOURCE_EXTS = new Set(['jpg', 'jpeg', 'png']);
+
+/**
+ * Build a `srcset` string for an upload URL, or '' if the URL doesn't refer
+ * to a top-level /uploads/<file>.{jpg,jpeg,png}. Subdirectory uploads
+ * (`/uploads/voice/...`, `/uploads/contracts/...`) and absolute external URLs
+ * (`https://cdn.example.com/...`) return '' — those don't have variants.
+ */
+function imgSrcset(url) {
+  if (!url || typeof url !== 'string') return '';
+  if (!url.startsWith('/uploads/')) return '';
+  const filename = url.slice('/uploads/'.length);
+  if (!filename || filename.indexOf('/') !== -1) return '';
+  const dot = filename.lastIndexOf('.');
+  if (dot === -1) return '';
+  const ext = filename.slice(dot + 1).toLowerCase();
+  if (!IMG_VARIANT_SOURCE_EXTS.has(ext)) return '';
+  const stem = filename.slice(0, dot);
+  return IMG_RESPONSIVE_WIDTHS.map(w => `/uploads/${stem}-${w}.webp ${w}w`).join(', ');
+}
+
+/**
+ * Build the `src=... srcset=... sizes=...` attribute triple for an <img>.
+ * Always returns at least `src="..."` with the original URL escaped, so it's
+ * a safe drop-in replacement for `src="${escapeHtml(url)}"`. When the URL is
+ * eligible AND the caller provided `sizes`, also emits srcset + sizes so
+ * browsers download an appropriately-sized WebP variant.
+ *
+ * @param {string} url - The image URL (typically /uploads/<file>.<ext>).
+ * @param {string} [sizes] - The CSS `sizes` attribute, e.g. "80px" or
+ *        "(min-width: 1024px) 25vw, 100vw". Required for srcset to be
+ *        emitted — passing nothing falls back to plain src= only.
+ */
+function imgAttrs(url, sizes) {
+  const safeUrl = escapeHtml(url || '');
+  const srcset = imgSrcset(url);
+  if (!srcset || !sizes) return `src="${safeUrl}"`;
+  return `src="${safeUrl}" srcset="${srcset}" sizes="${escapeHtml(sizes)}"`;
+}
+
 /**
  * Convert a hex color string to comma-separated RGB values.
  * Used for building rgba() strings from theme accent colors.
@@ -8269,7 +8329,7 @@ function syncSplitToChat() {
         s.pricing_model==='deposit' ? ('Deposit ' + moneyFmt(s.deposit_cents) + ' (Total ' + moneyFmt(s.base_price_cents) + ')') :
         s.pricing_model==='full'    ? moneyFmt(s.base_price_cents) :
         s.pricing_model==='contract'? 'Contract — see details' : '';
-      const img = s.image_url ? `<img src="${escHtml(s.image_url)}" alt="${escHtml(s.name)}" style="width:100%;height:180px;object-fit:cover;border-radius:8px 8px 0 0;" loading="lazy">` : '';
+      const img = s.image_url ? `<img ${imgAttrs(s.image_url, '(min-width: 1024px) 33vw, (min-width: 640px) 50vw, 100vw')} alt="${escHtml(s.name)}" style="width:100%;height:180px;object-fit:cover;border-radius:8px 8px 0 0;" loading="lazy">` : '';
       return `
         <article class="experience-card" data-testid="card-service-${s.id}" style="overflow:hidden;">
           ${img}
