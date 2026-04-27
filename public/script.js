@@ -104,44 +104,39 @@ let touchStartY = null;
  */
 async function loadAllData() {
   try {
-    /* Fetch all data sources in parallel for speed */
-    const [settingsRes, cardsRes, expRes, pricingRes, testimonialsRes, teamRes, faqRes, blogRes, bizRes, sectionsRes, sphereRes, videoGalleryRes, podcastRes, productsRes, storeConfigRes, eventsRes, servicesRes] = await Promise.all([
-      fetch('/api/site-settings'),
-      fetch('/api/gallery-cards'),
-      fetch('/api/experiences'),
-      fetch('/api/pricing'),
-      fetch('/api/testimonials'),
-      fetch('/api/team'),
-      fetch('/api/faq'),
-      fetch('/api/blog'),
-      fetch('/api/business-info'),
-      fetch('/api/page-sections'),
-      fetch('/api/sphere-settings'),
-      fetch('/api/video-gallery'),
-      fetch('/api/podcast'),
-      fetch('/api/products'),
-      fetch('/api/storefront-config'),
-      fetch('/api/events'),
-      fetch('/api/services')
-    ]);
+    /* PERF: one bundled fetch replaces 17 individual /api/* calls.
+       The /api/page-bundle endpoint in app.py runs the same SQL queries
+       as the 17 source endpoints (which are kept intact for admin /
+       presentation / external use) and returns a single JSON dict keyed
+       by the variable names below. A drift-guard smoke test
+       (tests/test_smoke.py::test_page_bundle_matches_individual_endpoints)
+       asserts the bundle stays in sync with each source endpoint. */
+    const bundleRes = await fetch('/api/page-bundle');
+    if (!bundleRes.ok) {
+      /* Explicit failure surface: a 500 here means the whole homepage
+         is dark anyway, so fail loudly into the catch block below
+         rather than letting `.json()` throw an opaque parse error. */
+      throw new Error('page-bundle fetch failed: HTTP ' + bundleRes.status);
+    }
+    const bundle = await bundleRes.json();
 
-    siteSettings = await settingsRes.json();
-    galleryCards = await cardsRes.json();
-    experiences = await expRes.json();
-    pricingSeasons = await pricingRes.json();
-    testimonials = await testimonialsRes.json();
-    teamMembers = await teamRes.json();
-    faqItems = await faqRes.json();
-    blogPosts = await blogRes.json();
-    businessInfo = await bizRes.json();
-    pageSections = await sectionsRes.json();
-    sphereSettings = await sphereRes.json();
-    videoGalleryItems = await videoGalleryRes.json();
-    podcastEpisodes = await podcastRes.json();
-    storeProducts = await productsRes.json();
-    storefrontConfig = await storeConfigRes.json();
-    upcomingEvents = await eventsRes.json();
-    try { services = await servicesRes.json(); } catch(_) { services = []; }
+    siteSettings = bundle.site_settings;
+    galleryCards = bundle.gallery_cards || [];
+    experiences = bundle.experiences || [];
+    pricingSeasons = bundle.pricing || [];
+    testimonials = bundle.testimonials || [];
+    teamMembers = bundle.team || [];
+    faqItems = bundle.faq || [];
+    blogPosts = bundle.blog || [];
+    businessInfo = bundle.business_info || {};
+    pageSections = bundle.page_sections || [];
+    sphereSettings = bundle.sphere_settings || {};
+    videoGalleryItems = bundle.video_gallery || [];
+    podcastEpisodes = bundle.podcast || [];
+    storeProducts = bundle.products || [];
+    storefrontConfig = bundle.storefront_config || {};
+    upcomingEvents = bundle.events || [];
+    services = bundle.services || [];
     loadCartFromStorage();
 
     renderHero();

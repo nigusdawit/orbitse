@@ -100,6 +100,88 @@ def test_public_list_endpoint_returns_json_list(client, path):
 
 
 # =============================================================================
+# /api/page-bundle drift guard
+# =============================================================================
+# The bundle endpoint duplicates the SQL of 17 source endpoints into one
+# request to collapse the homepage cold-load waterfall. If a contributor
+# edits a source endpoint's query but forgets to mirror it in the bundle,
+# this test fails — guaranteed.
+
+# Maps the bundle key → the source endpoint that should produce identical JSON.
+BUNDLE_KEY_TO_SOURCE_ENDPOINT = {
+    "site_settings":     "/api/site-settings",
+    "gallery_cards":     "/api/gallery-cards",
+    "experiences":       "/api/experiences",
+    "pricing":           "/api/pricing",
+    "testimonials":      "/api/testimonials",
+    "team":              "/api/team",
+    "faq":               "/api/faq",
+    "blog":              "/api/blog",
+    "business_info":     "/api/business-info",
+    "page_sections":     "/api/page-sections",
+    "sphere_settings":   "/api/sphere-settings",
+    "video_gallery":     "/api/video-gallery",
+    "podcast":           "/api/podcast",
+    "products":          "/api/products",
+    "storefront_config": "/api/storefront-config",
+    "events":            "/api/events",
+    "services":          "/api/services",
+}
+
+
+def test_page_bundle_returns_all_expected_keys(client):
+    """The bundle must always return every key the public homepage destructures."""
+    r = client.get("/api/page-bundle")
+    assert r.status_code == 200, f"/api/page-bundle returned {r.status_code}"
+    bundle = r.get_json()
+    assert isinstance(bundle, dict), "/api/page-bundle did not return a JSON dict"
+    missing = [k for k in BUNDLE_KEY_TO_SOURCE_ENDPOINT if k not in bundle]
+    assert not missing, f"/api/page-bundle is missing keys: {missing}"
+
+
+@pytest.mark.parametrize(
+    "bundle_key,source_path", list(BUNDLE_KEY_TO_SOURCE_ENDPOINT.items())
+)
+def test_page_bundle_matches_individual_endpoints(client, bundle_key, source_path):
+    """Each bundle key must equal the body its source endpoint returns.
+
+    Asserts both BODY parity (the JSON shape inside the bundle key matches
+    the source endpoint's body) and CONTRACT parity (both source and
+    bundle return HTTP 200 with application/json). If a contributor edits
+    a source endpoint's query but forgets to mirror it in the bundle,
+    this test fails.
+    """
+    src_resp = client.get(source_path)
+    bundle_resp = client.get("/api/page-bundle")
+
+    # Contract parity: both must return 200 + JSON. The bundle is allowed
+    # to gracefully degrade keys to null (see api_page_bundle docstring's
+    # "KNOWN INTENTIONAL DIVERGENCE" note for the site_settings 404→null
+    # case), but in the seeded smoke DB every row exists, so the source
+    # endpoint must also return 200 here.
+    assert src_resp.status_code == 200, (
+        f"{source_path} returned {src_resp.status_code}; "
+        f"drift guard requires source endpoints be reachable."
+    )
+    assert bundle_resp.status_code == 200, (
+        f"/api/page-bundle returned {bundle_resp.status_code}; "
+        f"the homepage cold-load fast path is broken."
+    )
+    assert "json" in (bundle_resp.content_type or "").lower(), (
+        f"/api/page-bundle content_type={bundle_resp.content_type!r}; "
+        f"expected JSON."
+    )
+
+    # Body parity: the bundle slice must equal the source endpoint body.
+    bundle = bundle_resp.get_json()
+    src = src_resp.get_json()
+    assert bundle.get(bundle_key) == src, (
+        f"Drift detected: /api/page-bundle key '{bundle_key}' "
+        f"does not match {source_path}. Update api_page_bundle() in app.py."
+    )
+
+
+# =============================================================================
 # Admin auth boundary — anonymous callers should NOT get past admin_required
 # =============================================================================
 

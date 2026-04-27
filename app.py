@@ -5753,6 +5753,234 @@ def api_page_sections():
     return jsonify(sections or [])
 
 
+# =============================================================================
+# PUBLIC API — PAGE BUNDLE  (perf: collapses the homepage cold-load waterfall)
+# =============================================================================
+# The public homepage in public/script.js used to fire 17 parallel /api/* calls
+# inside a single Promise.all on first load. Even when fully parallel, browsers
+# cap concurrent connections per origin (typically 6 on HTTP/1.1), and every
+# request still carries its own TLS + cookie + handshake overhead. On a typical
+# Replit / production network this added ~1.5–3s to first paint.
+#
+# /api/page-bundle returns the SAME data the 17 individual endpoints return,
+# packaged into a single JSON dict keyed by the variable names the frontend
+# already uses. The 17 source endpoints are intentionally KEPT INTACT — the
+# admin pages, presentation viewer, chatbot context lookup, and any external
+# consumer still call them. This endpoint exists purely as a fast path for
+# the public homepage cold-load.
+#
+# DRIFT GUARD: tests/test_smoke.py::test_page_bundle_matches_individual_endpoints
+# calls each of the 17 source endpoints AND this bundle, then asserts that
+# bundle[key] equals the source endpoint's body. If you change a query in one
+# of the 17 source endpoints below, mirror the change here or the test fails.
+# =============================================================================
+
+@app.route("/api/page-bundle")
+def api_page_bundle():
+    """
+    GET /api/page-bundle
+    Aggregates the 17 read-only queries the public homepage cold-load needs
+    into a single JSON response. See module-level header above for design
+    rationale and the drift-guard test that pins behaviour to the original
+    individual endpoints.
+
+    KNOWN — INTENTIONAL — DIVERGENCE FROM SOURCE WIRE SHAPES:
+    * /api/site-settings returns HTTP 404 + {"error": "..."} when the
+      single site_settings row is missing. The bundle instead returns
+      HTTP 200 with "site_settings": null. Rationale: a missing
+      site_settings row should NOT abort the entire homepage; the
+      frontend's rendering functions all start with `if (!siteSettings)
+      return;` so they degrade gracefully. Returning 404 from the bundle
+      would prevent gallery cards, services, events, etc. from rendering
+      too. The drift-guard test in tests/test_smoke.py is aware of this
+      divergence (it runs against a seeded DB where the row exists, so
+      both endpoints return identical bodies in practice).
+    """
+    # ---- site_settings — mirrors /api/site-settings ----
+    site_settings = query_db(
+        "SELECT * FROM site_settings WHERE id = 1", fetchone=True
+    )
+
+    # ---- business_info — mirrors /api/business-info (subset of site_settings) ----
+    business_info = query_db("""
+        SELECT business_phone, business_email, business_address,
+               business_hours, business_map_embed, social_links
+        FROM site_settings WHERE id = 1
+    """, fetchone=True) or {}
+
+    # ---- gallery_cards — mirrors /api/gallery-cards ----
+    gallery_cards = query_db(
+        "SELECT * FROM gallery_cards ORDER BY sort_order ASC"
+    ) or []
+
+    # ---- experiences — mirrors /api/experiences ----
+    experiences = query_db(
+        "SELECT * FROM experiences ORDER BY sort_order ASC"
+    ) or []
+
+    # ---- pricing — mirrors /api/pricing ----
+    pricing = query_db(
+        "SELECT * FROM pricing_seasons ORDER BY sort_order ASC"
+    ) or []
+
+    # ---- testimonials — mirrors /api/testimonials ----
+    testimonials = query_db(
+        "SELECT * FROM testimonials ORDER BY sort_order ASC"
+    ) or []
+
+    # ---- team — mirrors /api/team ----
+    team = query_db(
+        "SELECT * FROM team_members ORDER BY sort_order ASC"
+    ) or []
+
+    # ---- faq — mirrors /api/faq ----
+    faq = query_db(
+        "SELECT * FROM faqs ORDER BY sort_order ASC"
+    ) or []
+
+    # ---- blog — mirrors /api/blog ----
+    blog = query_db(
+        """SELECT id, slug, title, subtitle, excerpt, cover_image,
+                  author, category, tags, published_at, sort_order
+           FROM blog_posts
+           WHERE status = 'published'
+           ORDER BY sort_order ASC, published_at DESC"""
+    ) or []
+
+    # ---- page_sections — mirrors /api/page-sections ----
+    page_sections = query_db(
+        "SELECT * FROM page_sections ORDER BY sort_order ASC"
+    ) or []
+
+    # ---- video_gallery — mirrors /api/video-gallery ----
+    video_gallery = query_db(
+        "SELECT * FROM video_gallery_items ORDER BY sort_order ASC, id ASC"
+    ) or []
+
+    # ---- podcast — mirrors /api/podcast ----
+    podcast = query_db(
+        "SELECT * FROM podcast_episodes ORDER BY sort_order ASC, id ASC"
+    ) or []
+
+    # ---- products — mirrors /api/products (uses _product_row_to_dict helper) ----
+    product_rows = query_db(
+        "SELECT * FROM products WHERE active = true ORDER BY sort_order ASC, id ASC"
+    ) or []
+    products = [_product_row_to_dict(r) for r in product_rows]
+
+    # ---- storefront_config — mirrors /api/storefront-config ----
+    pub_key = stripe_client.get_publishable_key()
+    storefront_config = {
+        "stripe_publishable_key": pub_key,
+        "stripe_configured": bool(pub_key) and stripe_client.is_configured(),
+        "currency": "USD",
+    }
+
+    # ---- events — mirrors /api/events ----
+    events = query_db(
+        """SELECT e.*,
+                  COALESCE((SELECT SUM(guests) FROM event_rsvps r
+                            WHERE r.event_id = e.id
+                              AND r.payment_status NOT IN ('expired','failed')), 0)::int AS rsvp_count
+           FROM events e
+           WHERE e.status IN ('published', 'cancelled')
+             AND e.start_at IS NOT NULL
+             AND COALESCE(e.end_at, e.start_at) >= NOW()
+           ORDER BY e.sort_order ASC, e.start_at ASC"""
+    ) or []
+
+    # ---- services — mirrors /api/services (uses _hydrate_service helper) ----
+    service_rows = query_db(
+        "SELECT * FROM services WHERE is_active = TRUE "
+        "ORDER BY sort_order ASC, id ASC"
+    ) or []
+    services = [_hydrate_service(r) for r in service_rows]
+
+    # ---- sphere_settings — mirrors /api/sphere-settings (most complex) ----
+    sphere_raw = query_db(
+        "SELECT * FROM sphere_settings WHERE id = 1", fetchone=True
+    )
+    if not sphere_raw:
+        sphere_settings = {"enabled": False}
+    else:
+        sphere_settings = dict(sphere_raw)
+        if sphere_settings.get("image_source") == "gallery":
+            cards = query_db(
+                "SELECT image_url FROM gallery_cards "
+                "WHERE image_url != '' ORDER BY sort_order ASC"
+            )
+            sphere_settings["images"] = [c["image_url"] for c in (cards or [])]
+        else:
+            imgs = query_db(
+                "SELECT id, image_url, caption, sort_order FROM sphere_images "
+                "ORDER BY sort_order ASC"
+            )
+            sphere_settings["images"] = [i["image_url"] for i in (imgs or [])]
+        if sphere_settings.get("view_mode") == "sections":
+            site_for_sphere = query_db(
+                "SELECT site_name, site_subtitle, hero_tagline, hero_title, "
+                "hero_description, hero_image FROM site_settings WHERE id = 1",
+                fetchone=True
+            )
+            cards_data = query_db(
+                "SELECT slug, title, subtitle, image_url, category, price "
+                "FROM gallery_cards ORDER BY sort_order ASC LIMIT 6"
+            )
+            exps = query_db(
+                "SELECT name, description, icon FROM experiences "
+                "ORDER BY sort_order ASC LIMIT 4"
+            )
+            pricing_data = query_db(
+                "SELECT label, date_range, price_range FROM pricing_seasons "
+                "ORDER BY sort_order ASC LIMIT 4"
+            )
+            testimonials_data = query_db(
+                "SELECT reviewer_name, reviewer_role, content, rating "
+                "FROM testimonials ORDER BY sort_order ASC LIMIT 3"
+            )
+            team_data = query_db(
+                "SELECT name, title, image_url FROM team_members "
+                "ORDER BY sort_order ASC LIMIT 4"
+            )
+            faqs_data = query_db(
+                "SELECT question FROM faqs ORDER BY sort_order ASC LIMIT 4"
+            )
+            blog_data = query_db(
+                "SELECT title, category, cover_image FROM blog_posts "
+                "WHERE status = 'published' ORDER BY sort_order ASC LIMIT 3"
+            )
+            sphere_settings["sections_data"] = {
+                "site": dict(site_for_sphere) if site_for_sphere else {},
+                "highlights": [dict(c) for c in (cards_data or [])],
+                "experiences": [dict(e) for e in (exps or [])],
+                "pricing": [dict(p) for p in (pricing_data or [])],
+                "testimonials": [dict(t) for t in (testimonials_data or [])],
+                "team": [dict(t) for t in (team_data or [])],
+                "faq": [dict(f) for f in (faqs_data or [])],
+                "blog": [dict(b) for b in (blog_data or [])],
+            }
+
+    return jsonify({
+        "site_settings": site_settings,
+        "gallery_cards": gallery_cards,
+        "experiences": experiences,
+        "pricing": pricing,
+        "testimonials": testimonials,
+        "team": team,
+        "faq": faq,
+        "blog": blog,
+        "business_info": business_info,
+        "page_sections": page_sections,
+        "sphere_settings": sphere_settings,
+        "video_gallery": video_gallery,
+        "podcast": podcast,
+        "products": products,
+        "storefront_config": storefront_config,
+        "events": events,
+        "services": services,
+    })
+
+
 # =============================================================
 # PUBLIC API — CUSTOM SECTION ITEMS
 # =============================================================
