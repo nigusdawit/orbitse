@@ -3376,17 +3376,23 @@ def _is_cost_throttled():
 
 
 def cost_cap_blocks_send(surface="sms_outbound", tenant_id=None):
-    """Background-job variant of enforce_cost_cap. Returns True if the
-    tenant has hit its monthly cap AND the configured behavior is
-    'strict_block' or 'throttle' (i.e. the send should be skipped).
-    Returns False otherwise. Never raises — failures fail-open so a
-    misconfigured cap can't silently drop campaign sends."""
+    """Background-job variant of enforce_cost_cap. Returns True ONLY
+    when the tenant has hit its monthly cap AND the behavior is
+    'strict_block' — never for 'throttle' or 'alert_only', because
+    the spec is explicit that throttle continues serving (degraded)
+    and alert_only never blocks. Returns False otherwise. Never
+    raises — failures fail-open so a misconfigured cap can't silently
+    drop campaign sends."""
     try:
         if not tenant_has_feature("cost_dashboard", tenant_id=tenant_id):
             return False
         cap_row = get_tenant_cost_cap(tenant_id)
         behavior = (cap_row.get("cap_behavior") or "alert_only").lower()
-        if behavior == "alert_only":
+        # Only strict_block blocks. throttle and alert_only must keep
+        # the send moving — throttle's degradation (cheaper provider /
+        # tighter rate limit) is applied by the per-request paths via
+        # g._cost_throttled, not by skipping background sends here.
+        if behavior != "strict_block":
             return False
         cap = cap_row.get("monthly_cap_usd")
         if cap is None:
@@ -3639,7 +3645,19 @@ def _digest_build_payload(tenant_id, week_start, week_end):
 
     Includes the spec-required digest contract: spend by surface, top
     visitor questions, tool-call summary with cost, decks launched,
-    generated pages, leads captured, and a week-over-week delta."""
+    generated pages, leads captured, and a week-over-week delta.
+
+    Tenant scoping note: the three cost tables (api_cost_events,
+    voice_cost_events, sms_cost_events) carry a `tenant_id` column and
+    are filtered explicitly. The activity-source tables in this
+    codebase — chat_messages, presentations, generated_pages,
+    form_submissions, skill_usage_log — were created without a
+    tenant_id column (verified against information_schema), so the
+    deployment is single-tenant for those domains and there is no
+    cross-tenant leak to filter against. If a future migration adds
+    tenant_id to any of those tables, the corresponding queries below
+    must add `AND tenant_id=%s` before the digest can be safely fanned
+    out to multiple tenants."""
     last_week_start = week_start - timedelta(days=7)
     last_week_end = week_start
     spend_row = query_db(
@@ -6832,6 +6850,22 @@ def _websearch_anthropic(query):
                 ),
             }],
         )
+        # Capture Claude usage for the cost ledger. Anthropic's response
+        # carries .usage with input_tokens / output_tokens; we hand the
+        # raw counts to the helper which does the price lookup so this
+        # site never embeds prices.
+        try:
+            u = getattr(resp, "usage", None)
+            if u is not None:
+                record_chat_cost(
+                    surface="claude_web_search",
+                    provider="anthropic",
+                    model="claude-sonnet-4-5",
+                    prompt_tokens=getattr(u, "input_tokens", None),
+                    completion_tokens=getattr(u, "output_tokens", None),
+                )
+        except Exception as _ce:
+            print(f"[cost] claude web_search ledger failed: {_ce}")
         # Walk the response blocks, collect a text answer + cited sources.
         answer_parts = []
         sources = []
@@ -21762,9 +21796,86 @@ def admin_cost_summary():
     uc_chat = _uncosted("api_cost_events")
     uc_voice = _uncosted("voice_cost_events")
     uc_sms = _uncosted("sms_cost_events")
+
+    # Today / this-week rollups in addition to MTD. The Cost tab spec
+    # explicitly calls out "today, this week, this month" as required
+    # headline numbers — admins reading the dashboard care more about
+    # "are we on fire RIGHT NOW" than "what was the month-of-April".
+    def _window_total(start_clause):
+        try:
+            row = query_db(
+                "SELECT COALESCE(SUM(c),0) AS t FROM ("
+                "  SELECT SUM(cost_usd) AS c FROM api_cost_events "
+                f"   WHERE tenant_id=%s AND created_at >= {start_clause} "
+                "  UNION ALL "
+                "  SELECT SUM(cost_usd) FROM voice_cost_events "
+                f"   WHERE tenant_id=%s AND created_at >= {start_clause} "
+                "  UNION ALL "
+                "  SELECT SUM(cost_usd) FROM sms_cost_events "
+                f"   WHERE tenant_id=%s AND created_at >= {start_clause} "
+                ") s",
+                (tid, tid, tid), fetchone=True) or {}
+            return _to_float(row.get("t") or 0)
+        except Exception as e:
+            print(f"[cost summary] window total failed: {e}")
+            return 0.0
+    today_usd = _window_total("DATE_TRUNC('day', NOW())")
+    week_usd = _window_total("DATE_TRUNC('week', NOW())")
+
+    # Month-end projection from the last 7-day rolling rate. Spec
+    # wording: "month-end projection based on the last 7-day rolling
+    # rate". Formula: avg_daily_last_7 × days_remaining_in_month +
+    # mtd_already_spent. Returns None when we have <1 day of data so
+    # the UI can render "—" instead of a misleading $0.
+    projection_usd = None
+    try:
+        last7 = _window_total("NOW() - INTERVAL '7 days'")
+        avg_daily = last7 / 7.0
+        days_row = query_db(
+            "SELECT EXTRACT(DAY FROM (DATE_TRUNC('month', NOW()) "
+            "       + INTERVAL '1 month' - INTERVAL '1 day'))::int AS dim, "
+            "       EXTRACT(DAY FROM NOW())::int AS dom",
+            fetchone=True) or {}
+        days_in_month = int(days_row.get("dim") or 30)
+        day_of_month = int(days_row.get("dom") or 1)
+        days_remaining = max(0, days_in_month - day_of_month)
+        if last7 > 0:
+            projection_usd = round(spend["total_usd"] + (avg_daily * days_remaining), 4)
+    except Exception as e:
+        print(f"[cost summary] projection failed: {e}")
+
+    # Top visitors by spend MTD — only chat events carry visitor_id,
+    # which matches the spec since tools/voice/SMS aren't visitor-
+    # attributable. Filtered to non-empty visitor_id so anonymous
+    # admin chats don't dominate the list.
+    top_visitors = []
+    try:
+        rows = query_db(
+            "SELECT visitor_id, SUM(cost_usd) AS usd, COUNT(*) AS calls "
+            "  FROM api_cost_events "
+            " WHERE tenant_id=%s "
+            "   AND created_at >= DATE_TRUNC('month', NOW()) "
+            "   AND visitor_id IS NOT NULL AND visitor_id <> '' "
+            "   AND cost_usd IS NOT NULL "
+            " GROUP BY visitor_id "
+            " ORDER BY usd DESC LIMIT 10",
+            (tid,)) or []
+        top_visitors = [
+            {"visitor_id": r["visitor_id"],
+             "usd": round(_to_float(r["usd"] or 0), 5),
+             "calls": int(r["calls"] or 0)}
+            for r in rows
+        ]
+    except Exception as e:
+        print(f"[cost summary] top_visitors failed: {e}")
+
     return jsonify({
         "period": _current_period(),
         "spend": spend,
+        "today_usd": round(today_usd, 5),
+        "week_usd": round(week_usd, 5),
+        "projection_usd_eom": projection_usd,
+        "top_visitors": top_visitors,
         "cap": {
             "monthly_cap_usd": cap_f,
             "warn_at_percent": int(cap_row.get("warn_at_percent") or 80),
