@@ -18336,14 +18336,25 @@ def admin_generate_seo():
     optimized SEO suggestions for meta title, description, and keywords.
     The admin can review and apply these suggestions before saving.
     """
-    # Gather site content to provide context for SEO generation
+    # Gather site content to provide context for SEO generation.
+    # We pull a wide-but-shallow slice (titles only, capped) so the prompt
+    # stays small while still reflecting what the site is actually about —
+    # this is how the admin AI assistant gets its broader context too.
     settings = query_db("SELECT * FROM site_settings WHERE id = 1", fetchone=True)
-    cards = query_db("SELECT title, subtitle, description FROM gallery_cards ORDER BY sort_order LIMIT 10")
-    experiences = query_db("SELECT name, description FROM experiences ORDER BY sort_order LIMIT 10")
+    cards = query_db("SELECT title FROM gallery_cards ORDER BY sort_order LIMIT 10") or []
+    experiences = query_db("SELECT name FROM experiences ORDER BY sort_order LIMIT 10") or []
+    services = query_db("SELECT name FROM services ORDER BY sort_order LIMIT 10") or []
+    faqs = query_db("SELECT question FROM faqs ORDER BY sort_order ASC LIMIT 8") or []
+    blog = query_db(
+        "SELECT title FROM blog_posts WHERE status = 'published' "
+        "ORDER BY COALESCE(published_at, created_at) DESC LIMIT 8"
+    ) or []
+    products = query_db("SELECT name FROM products ORDER BY sort_order LIMIT 10") or []
 
     site_name = settings.get("site_name", "My Site") if settings else "My Site"
     site_subtitle = settings.get("site_subtitle", "") if settings else ""
     hero_desc = settings.get("hero_description", "") if settings else ""
+    biz_address = settings.get("business_address", "") if settings else ""
 
     # Build a content summary for the AI to analyze
     content_summary = f"Site name: {site_name}\n"
@@ -18351,12 +18362,20 @@ def admin_generate_seo():
         content_summary += f"Tagline: {site_subtitle}\n"
     if hero_desc:
         content_summary += f"Main description: {hero_desc}\n"
+    if biz_address:
+        content_summary += f"Location: {biz_address}\n"
     if cards:
-        card_names = ", ".join([c["title"] for c in cards])
-        content_summary += f"Featured items: {card_names}\n"
+        content_summary += "Featured items: " + ", ".join(c["title"] for c in cards) + "\n"
     if experiences:
-        exp_names = ", ".join([e["name"] for e in experiences])
-        content_summary += f"Services/experiences: {exp_names}\n"
+        content_summary += "Experiences: " + ", ".join(e["name"] for e in experiences) + "\n"
+    if services:
+        content_summary += "Services: " + ", ".join(s["name"] for s in services) + "\n"
+    if products:
+        content_summary += "Products: " + ", ".join(p["name"] for p in products) + "\n"
+    if faqs:
+        content_summary += "Common questions: " + " | ".join(f["question"] for f in faqs) + "\n"
+    if blog:
+        content_summary += "Recent blog topics: " + ", ".join(b["title"] for b in blog) + "\n"
 
     try:
         # Call OpenAI to generate SEO suggestions based on the site's actual content
@@ -18369,9 +18388,12 @@ def admin_generate_seo():
                         "You are an SEO expert. Based on the website content provided, "
                         "generate optimized SEO metadata. Respond with ONLY a JSON object "
                         "(no markdown, no code fences) containing exactly these fields:\n"
-                        '  "meta_title": (max 60 characters, compelling and keyword-rich),\n'
-                        '  "meta_description": (max 160 characters, action-oriented summary),\n'
-                        '  "keywords": (comma-separated, max 10 relevant keywords)\n'
+                        '  "meta_title": (max 60 characters, compelling and keyword-rich,'
+                        " include the site/brand name when natural),\n"
+                        '  "meta_description": (max 160 characters, action-oriented summary'
+                        " that mentions what the business actually does),\n"
+                        '  "keywords": (comma-separated, max 10 relevant keywords drawn'
+                        " from the site's own services, products, and topics)\n"
                         "Make them compelling, search-engine friendly, and specific to the business."
                     )
                 },
@@ -18391,8 +18413,32 @@ def admin_generate_seo():
         result_text = re.sub(r'^```(?:json)?\s*', '', result_text)
         result_text = re.sub(r'\s*```$', '', result_text)
 
-        seo_data = json.loads(result_text)
-        return jsonify(seo_data)
+        seo_data = json.loads(result_text) or {}
+
+        # Map the AI's unprefixed keys to the seo_-prefixed shape the admin
+        # form expects (seo-meta-title, seo-meta-description, seo-keywords
+        # input ids and the matching column names on site_settings). Without
+        # this rename the front-end's `if (data.seo_meta_title)` checks all
+        # fail silently — the toast says "loaded" but the inputs stay empty.
+        # We accept either shape from the AI just in case it adds a prefix.
+        title = (seo_data.get("seo_meta_title")
+                 or seo_data.get("meta_title") or "").strip()
+        desc = (seo_data.get("seo_meta_description")
+                or seo_data.get("meta_description") or "").strip()
+        keywords = (seo_data.get("seo_keywords")
+                    or seo_data.get("keywords") or "")
+        if isinstance(keywords, list):
+            keywords = ", ".join(str(k).strip() for k in keywords if str(k).strip())
+        keywords = str(keywords).strip()
+
+        if not (title or desc or keywords):
+            return jsonify({"error": "AI returned no usable SEO suggestions"}), 502
+
+        return jsonify({
+            "seo_meta_title": title,
+            "seo_meta_description": desc,
+            "seo_keywords": keywords,
+        })
     except Exception as e:
         return jsonify({"error": f"Failed to generate SEO suggestions: {str(e)}"}), 500
 
