@@ -56,7 +56,11 @@ import secrets
 import threading
 import time as _time
 import uuid as _uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+try:
+    from zoneinfo import ZoneInfo  # py3.9+ stdlib
+except Exception:  # pragma: no cover - extremely old runtime fallback
+    ZoneInfo = None  # type: ignore
 from functools import wraps
 
 import base64
@@ -215,12 +219,19 @@ def _login_throttle_clear(ip):
     _LOGIN_ATTEMPTS.pop(ip, None)
 
 
-def _chat_rate_check(key):
-    """Return (allowed: bool, retry_after_sec: int)."""
+def _chat_rate_check(key, throttled=False):
+    """Return (allowed: bool, retry_after_sec: int).
+
+    When `throttled=True` (request-scoped flag set by enforce_cost_cap
+    on tenants in 'throttle' cap mode), the per-window budget drops to
+    a much tighter 5/min so a tenant that's already over their monthly
+    cap can't keep burning chat tokens at 30/min while we wait for the
+    next billing period."""
     now = _time.time()
     cutoff = now - _CHAT_RATE_WINDOW_SEC
     bucket = [t for t in _CHAT_RATE.get(key, []) if t > cutoff]
-    if len(bucket) >= _CHAT_RATE_MAX:
+    max_req = 5 if throttled else _CHAT_RATE_MAX
+    if len(bucket) >= max_req:
         retry_after = int(_CHAT_RATE_WINDOW_SEC - (now - bucket[0])) + 1
         _CHAT_RATE[key] = bucket
         return False, max(retry_after, 1)
@@ -1330,9 +1341,17 @@ def init_db():
                     name        TEXT        NOT NULL DEFAULT 'Default Tenant',
                     plan_id     INTEGER     REFERENCES plans(id) ON DELETE SET NULL,
                     status      VARCHAR(20) NOT NULL DEFAULT 'active',
+                    timezone    VARCHAR(64) NOT NULL DEFAULT 'UTC',
                     created_at  TIMESTAMP   DEFAULT NOW(),
                     updated_at  TIMESTAMP   DEFAULT NOW()
                 );
+                -- Older deployments created `tenants` before the
+                -- timezone column existed. This idempotent ALTER lets
+                -- the weekly digest fire on the tenant's local Monday
+                -- 09:00 instead of UTC. Defaults to 'UTC' so existing
+                -- behaviour is preserved unless the admin sets it.
+                ALTER TABLE tenants
+                    ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'UTC';
 
                 CREATE TABLE IF NOT EXISTS tenant_features (
                     id           SERIAL PRIMARY KEY,
@@ -2620,11 +2639,20 @@ def init_db():
                     provider                 VARCHAR(40)  NOT NULL DEFAULT 'twilio',
                     to_number                VARCHAR(40)  NOT NULL DEFAULT '',
                     message_sid              VARCHAR(80)  NOT NULL DEFAULT '',
-                    segments                 INTEGER NOT NULL DEFAULT 1,
+                    segments                 INTEGER,
                     unit_sms_price_usd       NUMERIC(14,8),
                     cost_usd                 NUMERIC(14,8),
                     created_at               TIMESTAMP DEFAULT NOW()
                 );
+                -- Earlier dev iterations had `segments INTEGER NOT NULL
+                -- DEFAULT 1`. The "no fabricated numbers" rule means we
+                -- now write segments=NULL when Twilio's POST response
+                -- doesn't include num_segments and let the status
+                -- webhook fill it in. Drop the NOT NULL post-hoc.
+                ALTER TABLE sms_cost_events
+                    ALTER COLUMN segments DROP NOT NULL;
+                ALTER TABLE sms_cost_events
+                    ALTER COLUMN segments DROP DEFAULT;
                 CREATE INDEX IF NOT EXISTS idx_sms_cost_tenant_created
                     ON sms_cost_events (tenant_id, created_at DESC);
                 -- UNIQUE so retries / webhook updates can never create
@@ -3082,9 +3110,11 @@ def _to_float(x, default=0.0):
 def record_chat_cost_from_response(response, *, surface="other", provider="openai",
                                    model="", session_id="", visitor_id=""):
     """Convenience wrapper that pulls .usage off a non-streaming OpenAI /
-    Claude response object and writes a cost row. Exception-safe — if
-    .usage isn't present we still write a row with zeros so callers can
-    see the call happened, just with an unknown cost."""
+    Claude response object and writes a cost row. Exception-safe.
+
+    If the provider didn't return usage data we still write a row so the
+    call is visible in the dashboard's "uncosted calls" tile, but with
+    cost_usd=NULL — never a fabricated 0."""
     try:
         u = getattr(response, "usage", None)
         prompt = int(getattr(u, "prompt_tokens", 0) or 0) if u else 0
@@ -3096,6 +3126,7 @@ def record_chat_cost_from_response(response, *, surface="other", provider="opena
             surface=surface, provider=provider, model=eff_model,
             prompt_tokens=prompt, completion_tokens=completion,
             total_tokens=total,
+            usage_known=bool(u),
         )
     except Exception as e:
         print(f"[cost] record_chat_cost_from_response failed: {e}")
@@ -3104,11 +3135,16 @@ def record_chat_cost_from_response(response, *, surface="other", provider="opena
 def record_chat_cost(*, tenant_id=None, session_id="", visitor_id="",
                      surface="visitor_chat", provider="", model="",
                      prompt_tokens=0, completion_tokens=0,
-                     total_tokens=None):
+                     total_tokens=None, usage_known=True):
     """Write one api_cost_events row. NEVER raises — failures log only.
 
     Stamps the unit prices from model_prices at write time so a later
-    price edit can never shift historical totals."""
+    price edit can never shift historical totals.
+
+    When `usage_known` is False (provider returned no usage object), or
+    both prompt and completion are zero, we write the row but leave
+    cost_usd = NULL so it shows up in the dashboard's 'uncosted calls'
+    tile rather than fabricating a $0 entry."""
     try:
         tid = tenant_id if tenant_id is not None else current_tenant_id()
         prompt = int(prompt_tokens or 0)
@@ -3119,9 +3155,12 @@ def record_chat_cost(*, tenant_id=None, session_id="", visitor_id="",
         if price_row:
             unit_in = price_row.get("input_price_per_million_tokens")
             unit_out = price_row.get("output_price_per_million_tokens")
-            if unit_in is not None and unit_out is not None:
-                cost = (prompt * _to_float(unit_in) +
-                        completion * _to_float(unit_out)) / 1_000_000.0
+        # Only compute a cost if we have BOTH a price row AND real usage
+        # numbers. Missing usage → cost_usd stays NULL (uncosted call).
+        if (usage_known and (prompt > 0 or completion > 0)
+                and unit_in is not None and unit_out is not None):
+            cost = (prompt * _to_float(unit_in) +
+                    completion * _to_float(unit_out)) / 1_000_000.0
         execute_db(
             "INSERT INTO api_cost_events "
             "  (tenant_id, session_id, visitor_id, surface, provider, "
@@ -3156,7 +3195,12 @@ def record_voice_cost(*, tenant_id=None, session_id="", surface="voice_tts",
         if price_row:
             unit_tts = price_row.get("tts_price_per_million_chars")
             unit_stt = price_row.get("stt_price_per_minute")
-        if (feature_type or "").startswith("tts_cached"):
+        # Cached TTS hits and intro playbacks do not call the provider,
+        # so cost is a real 0 (not "unknown"). The row still goes in
+        # the ledger so the dashboard can show "calls served from
+        # cache" — that's a value-prop number, not noise.
+        ft_lower = (feature_type or "").lower()
+        if ft_lower.startswith("tts_cached") or ft_lower == "intro_play":
             cost = 0.0
         elif chars > 0 and unit_tts is not None:
             cost = chars * _to_float(unit_tts) / 1_000_000.0
@@ -3179,16 +3223,32 @@ def record_voice_cost(*, tenant_id=None, session_id="", surface="voice_tts",
 
 
 def record_sms_cost(*, tenant_id=None, surface="sms_outbound", provider="twilio",
-                    to_number="", message_sid="", segments=1):
+                    to_number="", message_sid="", segments=None):
     """Write one sms_cost_events row. NEVER raises. The pricing model is
     flat per-segment using the seeded 'twilio'+'sms-us' row — admins
-    can edit it for non-US destinations."""
+    can edit it for non-US destinations.
+
+    `segments=None` (or 0) means Twilio's POST response didn't include
+    num_segments yet — we write segments=NULL + cost_usd=NULL and let
+    the status callback webhook fill in the real numbers. We never
+    fabricate `segments=1` just to make the row look billed."""
     try:
         tid = tenant_id if tenant_id is not None else current_tenant_id()
-        seg = max(1, int(segments or 1))
+        # Distinguish "unknown" (None / 0) from "real positive int".
+        seg_int = None
+        try:
+            if segments is not None:
+                _v = int(segments)
+                if _v > 0:
+                    seg_int = _v
+        except (TypeError, ValueError):
+            seg_int = None
         price_row = get_model_price(provider, "sms-us", "sms")
         unit = price_row.get("sms_price_per_segment") if price_row else None
-        cost = (seg * _to_float(unit)) if unit is not None else None
+        # cost only computable when BOTH a unit price AND a real seg
+        # count are known. Otherwise the row is "uncosted" — visible
+        # in the dashboard's uncosted tile, never silently zero.
+        cost = (seg_int * _to_float(unit)) if (seg_int is not None and unit is not None) else None
         # The (tenant_id, message_sid) UNIQUE index dedupes retries from
         # the call site as well as any race with the Twilio status
         # webhook firing before record_sms_cost finishes.
@@ -3202,7 +3262,7 @@ def record_sms_cost(*, tenant_id=None, surface="sms_outbound", provider="twilio"
             "  DO NOTHING",
             (tid, (surface or "")[:40], (provider or "")[:40],
              (to_number or "")[:40], (message_sid or "")[:80],
-             seg, unit, cost),
+             seg_int, unit, cost),
         )
         _async_warn_check(tid)
     except Exception as e:
@@ -3260,11 +3320,15 @@ def get_tenant_cost_cap(tenant_id=None):
 def enforce_cost_cap(surface="chat"):
     """Decide whether the current request should be blocked / throttled
     because the tenant has crossed its monthly cap. Returns:
-      * None      — request may proceed normally
-      * (resp, status) — Flask response tuple to return to the client
+      * None             — request may proceed normally (possibly with
+                           a request-scoped throttle flag set on `g`)
+      * (resp, status)   — Flask response tuple to return to the client
+
     Behavior is governed by tenant_cost_caps.cap_behavior:
       * 'alert_only'   — never blocks; cap is observability-only
-      * 'throttle'     — 429 when over cap (caller may retry next month)
+      * 'throttle'     — never blocks either, but sets g._cost_throttled
+                         so chat falls back to a tighter rate limit and
+                         TTS falls back to the cheaper OpenAI provider
       * 'strict_block' — 402 when over cap (payment required)"""
     if not tenant_has_feature("cost_dashboard"):
         return None
@@ -3278,17 +3342,37 @@ def enforce_cost_cap(surface="chat"):
     spend = compute_mtd_spend().get("total_usd", 0.0)
     if spend < _to_float(cap):
         return None
+    if behavior == "throttle":
+        # Non-blocking degraded mode: flag the request for downstream
+        # consumers (chat rate limit, TTS provider selector) and let
+        # it through. We do NOT 429 — the spec is "continue serving
+        # but cheaper".
+        try:
+            g._cost_throttled = True
+            g._cost_throttled_reason = {
+                "spent_usd": round(spend, 4),
+                "cap_usd": _to_float(cap),
+                "surface": surface,
+            }
+        except Exception:
+            pass
+        return None
+    # strict_block — only mode that actually blocks the request.
     msg = (f"Monthly AI spend cap reached ({spend:.2f} of {_to_float(cap):.2f} USD). "
            "Service will resume on the 1st of next month, or raise the cap in "
            "Admin → Cost.")
-    if behavior == "throttle":
-        return jsonify({"error": "cost_cap_reached", "message": msg,
-                        "spent_usd": round(spend, 4),
-                        "cap_usd": _to_float(cap)}), 429
-    # strict_block
     return jsonify({"error": "cost_cap_reached", "message": msg,
                     "spent_usd": round(spend, 4),
                     "cap_usd": _to_float(cap)}), 402
+
+
+def _is_cost_throttled():
+    """True if enforce_cost_cap flagged this request as throttle-degraded.
+    Safe to call outside a request context (returns False)."""
+    try:
+        return bool(getattr(g, "_cost_throttled", False))
+    except Exception:
+        return False
 
 
 def cost_cap_blocks_send(surface="sms_outbound", tenant_id=None):
@@ -3395,11 +3479,48 @@ def _digest_render_html(payload: dict) -> str:
     counts = payload.get("counts") or {}
     week_start = payload.get("week_start", "")
     week_end = payload.get("week_end", "")
+    wow = payload.get("wow") or {}
+    top_questions = payload.get("top_questions") or []
+    tool_calls = payload.get("tool_calls") or {}
+    activity = payload.get("activity") or {}
 
     def fmt_usd(v):
         try: f = float(v or 0)
         except (TypeError, ValueError): f = 0.0
         return f"${f:.2f}"
+
+    def _esc(t):
+        # Minimal HTML escape for user-supplied strings (visitor questions).
+        return (str(t or "")
+                .replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace('"', "&quot;"))
+
+    delta_pct = wow.get("delta_pct")
+    delta_usd_val = wow.get("delta_usd")
+    if delta_pct is None:
+        wow_html = ("<span style='color:#888'>vs prev week: "
+                    f"{fmt_usd(wow.get('prev_total_usd'))}</span>")
+    else:
+        sign = "+" if (delta_usd_val or 0) >= 0 else ""
+        color = "#c0392b" if (delta_usd_val or 0) > 0 else "#27ae60"
+        wow_html = (f"<span style='color:{color}'>"
+                    f"{sign}{delta_pct:.1f}% vs prev week "
+                    f"({fmt_usd(wow.get('prev_total_usd'))})</span>")
+
+    rows_questions = "".join(
+        f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'>"
+        f"{_esc(r.get('question'))}</td>"
+        f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>"
+        f"{int(r.get('count') or 0):,}</td></tr>"
+        for r in top_questions
+    )
+    rows_skills = "".join(
+        f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'>"
+        f"{_esc(r.get('skill'))}</td>"
+        f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>"
+        f"{int(r.get('count') or 0):,}</td></tr>"
+        for r in (tool_calls.get("by_skill") or [])
+    )
 
     rows_surface = "".join(
         f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'>"
@@ -3428,7 +3549,8 @@ def _digest_render_html(payload: dict) -> str:
         "<div style='display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px;'>"
         f"<div style='flex:1;min-width:140px;background:#f5f7fa;border-radius:8px;padding:12px 16px;'>"
         f"<div style='font-size:11px;text-transform:uppercase;color:#666;letter-spacing:.05em;'>Total spend</div>"
-        f"<div style='font-size:22px;font-weight:700;'>{fmt_usd(s.get('total_usd'))}</div></div>"
+        f"<div style='font-size:22px;font-weight:700;'>{fmt_usd(s.get('total_usd'))}</div>"
+        f"<div style='font-size:12px;margin-top:4px;'>{wow_html}</div></div>"
         f"<div style='flex:1;min-width:140px;background:#f5f7fa;border-radius:8px;padding:12px 16px;'>"
         f"<div style='font-size:11px;text-transform:uppercase;color:#666;letter-spacing:.05em;'>Conversations</div>"
         f"<div style='font-size:22px;font-weight:700;'>{int(counts.get('chat_events') or 0):,}</div></div>"
@@ -3439,6 +3561,24 @@ def _digest_render_html(payload: dict) -> str:
         f"<div style='font-size:11px;text-transform:uppercase;color:#666;letter-spacing:.05em;'>SMS sent</div>"
         f"<div style='font-size:22px;font-weight:700;'>{int(counts.get('sms_events') or 0):,}</div></div>"
         "</div>"
+        # Activity strip — decks launched / pages generated / leads captured.
+        # Shown even when 0 so the admin sees the full story week-over-week.
+        "<div style='display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px;'>"
+        f"<div style='flex:1;min-width:140px;background:#fff;border:1px solid #eee;border-radius:8px;padding:12px 16px;'>"
+        f"<div style='font-size:11px;text-transform:uppercase;color:#666;letter-spacing:.05em;'>Decks launched</div>"
+        f"<div style='font-size:22px;font-weight:700;'>{int(activity.get('decks_launched') or 0):,}</div></div>"
+        f"<div style='flex:1;min-width:140px;background:#fff;border:1px solid #eee;border-radius:8px;padding:12px 16px;'>"
+        f"<div style='font-size:11px;text-transform:uppercase;color:#666;letter-spacing:.05em;'>Pages generated</div>"
+        f"<div style='font-size:22px;font-weight:700;'>{int(activity.get('pages_generated') or 0):,}</div></div>"
+        f"<div style='flex:1;min-width:140px;background:#fff;border:1px solid #eee;border-radius:8px;padding:12px 16px;'>"
+        f"<div style='font-size:11px;text-transform:uppercase;color:#666;letter-spacing:.05em;'>Leads captured</div>"
+        f"<div style='font-size:22px;font-weight:700;'>{int(activity.get('leads_captured') or 0):,}</div></div>"
+        f"<div style='flex:1;min-width:140px;background:#fff;border:1px solid #eee;border-radius:8px;padding:12px 16px;'>"
+        f"<div style='font-size:11px;text-transform:uppercase;color:#666;letter-spacing:.05em;'>Tool calls</div>"
+        f"<div style='font-size:22px;font-weight:700;'>{int(tool_calls.get('total') or 0):,}</div>"
+        f"<div style='font-size:12px;color:#666;margin-top:2px;'>"
+        f"{int(tool_calls.get('errors') or 0):,} errors · {fmt_usd(tool_calls.get('cost_usd'))}</div>"
+        "</div></div>"
         "<h3 style='margin:24px 0 8px 0;'>Where the money went</h3>"
         "<table style='width:100%;border-collapse:collapse;font-size:14px;'>"
         "<thead><tr style='text-align:left;color:#666;font-size:12px;text-transform:uppercase;'>"
@@ -3457,15 +3597,51 @@ def _digest_render_html(payload: dict) -> str:
             f"<tbody>{rows_model}</tbody></table>"
             if rows_model else ""
         )
+        + (
+            "<h3 style='margin:24px 0 8px 0;'>Top visitor questions</h3>"
+            "<table style='width:100%;border-collapse:collapse;font-size:14px;'>"
+            "<thead><tr style='text-align:left;color:#666;font-size:12px;text-transform:uppercase;'>"
+            "<th style='padding:6px 12px;'>Question</th>"
+            "<th style='padding:6px 12px;text-align:right;'>Asked</th></tr></thead>"
+            f"<tbody>{rows_questions}</tbody></table>"
+            if rows_questions else ""
+        )
+        + (
+            "<h3 style='margin:24px 0 8px 0;'>What tools were used</h3>"
+            "<table style='width:100%;border-collapse:collapse;font-size:14px;'>"
+            "<thead><tr style='text-align:left;color:#666;font-size:12px;text-transform:uppercase;'>"
+            "<th style='padding:6px 12px;'>Tool</th>"
+            "<th style='padding:6px 12px;text-align:right;'>Calls</th></tr></thead>"
+            f"<tbody>{rows_skills}</tbody></table>"
+            if rows_skills else ""
+        )
         + "<p style='margin:32px 0 0 0;font-size:12px;color:#888;'>"
         "Adjust your monthly cap or turn off this digest in Admin → Cost.</p>"
         "</body></html>"
     )
 
 
+def _digest_count(sql, params):
+    """Run a single COUNT(*) query, returning an int. Never raises."""
+    try:
+        row = query_db(sql, params, fetchone=True) or {}
+        # row may be {"count": N} or {"c": N}; just take the first value
+        for v in row.values():
+            return int(v or 0)
+    except Exception as e:
+        print(f"[digest] count failed: {e}")
+    return 0
+
+
 def _digest_build_payload(tenant_id, week_start, week_end):
-    """Aggregate the last 7 days of cost into a payload dict the email
-    template + the JSONB persistence both use."""
+    """Aggregate the last 7 days of cost + activity into a payload dict
+    the email template + the JSONB persistence both use.
+
+    Includes the spec-required digest contract: spend by surface, top
+    visitor questions, tool-call summary with cost, decks launched,
+    generated pages, leads captured, and a week-over-week delta."""
+    last_week_start = week_start - timedelta(days=7)
+    last_week_end = week_start
     spend_row = query_db(
         "SELECT "
         "  COALESCE((SELECT SUM(cost_usd) FROM api_cost_events "
@@ -3539,6 +3715,108 @@ def _digest_build_payload(tenant_id, week_start, week_end):
                            "cost_usd": _to_float(r["s"])})
     top_models.sort(key=lambda x: x["cost_usd"], reverse=True)
 
+    # Week-over-week delta — used as the headline number in the email.
+    # If there was no spend last week the delta_pct is left as None so the
+    # template can show "—" instead of dividing by zero.
+    last_total_row = query_db(
+        "SELECT "
+        "  COALESCE((SELECT SUM(cost_usd) FROM api_cost_events "
+        "   WHERE tenant_id=%s AND created_at >= %s AND created_at < %s),0) "
+        "+ COALESCE((SELECT SUM(cost_usd) FROM voice_cost_events "
+        "   WHERE tenant_id=%s AND created_at >= %s AND created_at < %s),0) "
+        "+ COALESCE((SELECT SUM(cost_usd) FROM sms_cost_events "
+        "   WHERE tenant_id=%s AND created_at >= %s AND created_at < %s),0) AS t",
+        (tenant_id, last_week_start, last_week_end,
+         tenant_id, last_week_start, last_week_end,
+         tenant_id, last_week_start, last_week_end),
+        fetchone=True,
+    ) or {"t": 0}
+    last_total = _to_float(last_total_row.get("t"))
+    delta_usd = spend["total_usd"] - last_total
+    delta_pct = None
+    if last_total > 0:
+        delta_pct = round((delta_usd / last_total) * 100.0, 1)
+    wow = {"prev_total_usd": last_total,
+           "delta_usd": round(delta_usd, 4),
+           "delta_pct": delta_pct}
+
+    # Top 10 visitor questions by frequency. We trim+normalise so trivial
+    # capitalisation differences don't fragment the buckets, and exclude
+    # blank rows. tenant_id isn't on chat_messages today (single-tenant
+    # deploy) — when that changes, add the join here.
+    top_questions = []
+    try:
+        q_rows = query_db(
+            "SELECT TRIM(LOWER(content)) AS q, COUNT(*) AS n "
+            "FROM chat_messages "
+            "WHERE role='user' "
+            "  AND created_at >= %s AND created_at < %s "
+            "  AND content IS NOT NULL AND TRIM(content) <> '' "
+            "GROUP BY TRIM(LOWER(content)) "
+            "ORDER BY n DESC LIMIT 10",
+            (week_start, week_end),
+        ) or []
+        for r in q_rows:
+            top_questions.append({
+                "question": (r.get("q") or "").strip()[:200],
+                "count": int(r.get("n") or 0),
+            })
+    except Exception as e:
+        print(f"[digest] top_questions failed: {e}")
+
+    # Tool calls — count + success rate + cost. We attribute cost from
+    # api_cost_events rows whose surface starts with 'skill_' (the
+    # convention used by tool dispatch). Best-effort; if the surfaces
+    # don't match we still report the count + duration.
+    tool_calls = {"total": 0, "errors": 0, "cost_usd": 0.0, "by_skill": []}
+    try:
+        tc_total = _digest_count(
+            "SELECT COUNT(*) AS c FROM skill_usage_log "
+            "WHERE created_at >= %s AND created_at < %s",
+            (week_start, week_end))
+        tc_err = _digest_count(
+            "SELECT COUNT(*) AS c FROM skill_usage_log "
+            "WHERE created_at >= %s AND created_at < %s "
+            "  AND error <> ''",
+            (week_start, week_end))
+        tc_cost_row = query_db(
+            "SELECT COALESCE(SUM(cost_usd),0) AS s FROM api_cost_events "
+            "WHERE tenant_id=%s AND created_at >= %s AND created_at < %s "
+            "  AND surface LIKE 'skill_%%'",
+            (tenant_id, week_start, week_end), fetchone=True) or {"s": 0}
+        by_skill_rows = query_db(
+            "SELECT skill_name, COUNT(*) AS c "
+            "FROM skill_usage_log "
+            "WHERE created_at >= %s AND created_at < %s "
+            "GROUP BY skill_name ORDER BY c DESC LIMIT 10",
+            (week_start, week_end)) or []
+        tool_calls = {
+            "total": tc_total, "errors": tc_err,
+            "cost_usd": _to_float(tc_cost_row.get("s")),
+            "by_skill": [
+                {"skill": r.get("skill_name") or "",
+                 "count": int(r.get("c") or 0)}
+                for r in by_skill_rows
+            ],
+        }
+    except Exception as e:
+        print(f"[digest] tool_calls failed: {e}")
+
+    activity = {
+        "decks_launched": _digest_count(
+            "SELECT COUNT(*) AS c FROM presentations "
+            "WHERE created_at >= %s AND created_at < %s",
+            (week_start, week_end)),
+        "pages_generated": _digest_count(
+            "SELECT COUNT(*) AS c FROM generated_pages "
+            "WHERE created_at >= %s AND created_at < %s",
+            (week_start, week_end)),
+        "leads_captured": _digest_count(
+            "SELECT COUNT(*) AS c FROM form_submissions "
+            "WHERE submitted_at >= %s AND submitted_at < %s",
+            (week_start, week_end)),
+    }
+
     return {
         "week_start": week_start.isoformat() if hasattr(week_start, "isoformat") else str(week_start),
         "week_end": week_end.isoformat() if hasattr(week_end, "isoformat") else str(week_end),
@@ -3546,49 +3824,89 @@ def _digest_build_payload(tenant_id, week_start, week_end):
         "counts": counts,
         "by_surface": by_surface,
         "top_models": top_models,
+        "wow": wow,
+        "top_questions": top_questions,
+        "tool_calls": tool_calls,
+        "activity": activity,
     }
 
 
 _DIGEST_TICK_LOCK = threading.Lock()
-_DIGEST_LAST_RUN_KEY = None  # week-start date we already attempted, for cheap dedupe
+# Per-tenant dedup: tid -> "YYYY-MM-DD" of the local week_start we already
+# tried this cycle. Survives until the worker restarts; the UNIQUE index on
+# weekly_digest_sends is still the authoritative guard, this just keeps us
+# from re-walking the same tenant 60 times during the 30-minute window.
+_DIGEST_LAST_RUN_KEY = {}
+
+
+def _tenant_local_now(tz_name):
+    """Return (now_local, tz) for a tenant. Falls back to UTC if the
+    name is missing/invalid or zoneinfo is unavailable."""
+    name = (tz_name or "UTC").strip() or "UTC"
+    if ZoneInfo is not None:
+        try:
+            tz = ZoneInfo(name)
+            return datetime.now(tz), tz
+        except Exception:
+            pass
+    return datetime.now(timezone.utc), timezone.utc
 
 
 def _weekly_digest_tick():
-    """Scheduler tick. Cheap path: bail unless it's Monday 09:00-09:30 UTC.
-    Heavy path: enumerate tenants with the weekly_digest feature, build +
-    send + record once per tenant per week."""
-    global _DIGEST_LAST_RUN_KEY
-    now = datetime.utcnow()
-    # Monday is weekday()==0; only fire in the 09:00-09:30 UTC window so a
-    # late tenant join still gets caught but we don't burn cycles all day.
-    if now.weekday() != 0 or now.hour != 9 or now.minute >= 30:
-        return
-    week_start = (now.date() - timedelta(days=now.weekday()))  # this Monday
-    week_end = week_start + timedelta(days=7)
-    last_week_start = week_start - timedelta(days=7)
-    last_week_end = week_start
-    if _DIGEST_LAST_RUN_KEY == week_start.isoformat():
-        # Already iterated tenants in this 30-min window. Avoid re-walking
-        # tenants every 30s — the per-row UNIQUE index is the real guard,
-        # this is just a CPU saver.
-        return
+    """Scheduler tick. Walks every tenant on every tick (cheap: 1 SELECT)
+    and per-tenant decides whether *their* local Monday 09:00-09:30 (or
+    whatever digest_send_hour they configured) falls in the current
+    minute. Heavy path only runs once per tenant per week."""
     if not _DIGEST_TICK_LOCK.acquire(blocking=False):
         return
     try:
-        _DIGEST_LAST_RUN_KEY = week_start.isoformat()
         try:
-            tenants = query_db("SELECT id FROM tenants") or []
+            tenants = query_db(
+                "SELECT id, COALESCE(timezone,'UTC') AS tz FROM tenants"
+            ) or []
         except Exception as e:
             print(f"[digest] tenant enumeration failed: {e}")
             return
         for trow in tenants:
             tid = trow.get("id") if isinstance(trow, dict) else trow[0]
+            tz_name = (trow.get("tz") if isinstance(trow, dict) else "UTC") or "UTC"
             try:
                 if not tenant_has_feature("weekly_digest", tenant_id=tid):
                     continue
                 cap = query_db(
-                    "SELECT digest_email, alert_email FROM tenant_cost_caps "
-                    "WHERE tenant_id=%s", (tid,), fetchone=True) or {}
+                    "SELECT digest_email, alert_email, digest_send_hour_utc "
+                    "FROM tenant_cost_caps WHERE tenant_id=%s",
+                    (tid,), fetchone=True) or {}
+                # digest_send_hour_utc was originally named for UTC but we
+                # treat it as the *local* hour in the tenant's timezone so
+                # a NYC admin gets their digest at 9 NYC time, not 9 UTC.
+                # The column name is preserved for backward compat.
+                send_hour = int(cap.get("digest_send_hour_utc") or 9)
+                if send_hour < 0 or send_hour > 23:
+                    send_hour = 9
+                now_local, _tz = _tenant_local_now(tz_name)
+                # Only fire on Monday in the configured local hour, in the
+                # first half of the hour. Outside that window: skip cheaply.
+                if now_local.weekday() != 0:
+                    continue
+                if now_local.hour != send_hour or now_local.minute >= 30:
+                    continue
+                # Local week boundaries — Monday 00:00 local → next Monday.
+                this_monday_local = now_local.replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                ) - timedelta(days=now_local.weekday())
+                last_monday_local = this_monday_local - timedelta(days=7)
+                # Convert to naive UTC datetimes for the queries — every
+                # cost_events.created_at is stored as UTC TIMESTAMP without
+                # tz info (server runs in UTC).
+                last_week_start = last_monday_local.astimezone(
+                    timezone.utc).replace(tzinfo=None)
+                last_week_end = this_monday_local.astimezone(
+                    timezone.utc).replace(tzinfo=None)
+                week_key = this_monday_local.date().isoformat()
+                if _DIGEST_LAST_RUN_KEY.get(tid) == week_key:
+                    continue
+                _DIGEST_LAST_RUN_KEY[tid] = week_key
                 to_email = (cap.get("digest_email") or cap.get("alert_email")
                             or os.environ.get("ADMIN_EMAIL") or "").strip()
                 if not to_email:
@@ -3600,13 +3918,19 @@ def _weekly_digest_tick():
                 # process restarts and concurrent ticks. If the INSERT
                 # is suppressed by ON CONFLICT we know another worker
                 # already sent (or is about to send) the digest.
+                # The dedup key is the local Monday on which we are
+                # firing — this is the date the admin will see in their
+                # inbox subject line and what the UNIQUE index protects.
+                # Stored as a naive date (no tz) which matches every
+                # other DATE column in the schema.
+                claim_week = this_monday_local.date()
                 claimed = execute_db(
                     "INSERT INTO weekly_digest_sends "
                     "  (tenant_id, week_start, payload_json) "
                     "VALUES (%s, %s, %s) "
                     "ON CONFLICT (tenant_id, week_start) DO NOTHING "
                     "RETURNING id",
-                    (tid, week_start, json.dumps(payload)),
+                    (tid, claim_week, json.dumps(payload)),
                 )
                 if not claimed:
                     continue  # someone else already claimed this week
@@ -13369,7 +13693,8 @@ def api_chat():
     # because every key starts with the same IP prefix and we ALSO enforce
     # an IP-only bucket below).
     _ip = _client_ip()
-    _rate_allowed, _rate_retry = _chat_rate_check(f"ip:{_ip}")
+    _rate_allowed, _rate_retry = _chat_rate_check(
+        f"ip:{_ip}", throttled=_is_cost_throttled())
     if not _rate_allowed:
         return jsonify({
             "error": "rate_limited",
@@ -20178,12 +20503,13 @@ def _log_voice_usage(feature_type, char_count=0, voice_id="", session_id="",
 
     try:
         ft = (feature_type or "").lower()
-        # Cached / intro / sample playback hits no provider, so we don't
-        # record a cost row at all — those would just be 0-USD noise on
-        # the dashboard's "By model" breakdown.
-        _NON_BILLABLE = {"tts_cached", "intro_play"}
-        if ft in _NON_BILLABLE:
-            return
+        # Cached playbacks and intro plays DO write a cost event row —
+        # the architect review was right that hiding them creates
+        # blind spots. They're recorded with cost_usd = 0 (real zero,
+        # no provider call happened) so admins can still see how often
+        # cache hits avoided a paid call. record_voice_cost itself
+        # short-circuits the cost calc when feature_type starts with
+        # 'tts_cached' or 'intro_play'.
         if provider is None or model is None:
             if ft == "tts_generate_openai":
                 provider = provider or "openai"
@@ -20586,6 +20912,11 @@ def api_voice_tts():
     # ElevenLabs is gated behind premium_enabled (master toggle that lets
     # admins disable all paid providers without deleting their config).
     provider = (settings.get("tts_provider") or "openai").lower()
+    # Cost-cap throttle: when this tenant has crossed their monthly cap
+    # in 'throttle' mode, force the cheaper OpenAI provider regardless
+    # of admin preference. They keep getting voice; just cheaper voice.
+    if _is_cost_throttled() and provider == "elevenlabs":
+        provider = "openai"
     if provider == "elevenlabs" and not settings.get("premium_enabled"):
         return jsonify({"error": "Premium TTS providers are disabled"}), 403
 
@@ -20724,6 +21055,9 @@ def api_voice_tts_stream_prepare():
         return _cap
 
     provider = (settings.get("tts_provider") or "openai").lower()
+    # Same throttle fallback as /api/voice/tts.
+    if _is_cost_throttled() and provider == "elevenlabs":
+        provider = "openai"
     if provider == "elevenlabs" and not settings.get("premium_enabled"):
         return jsonify({"error": "Premium TTS providers are disabled"}), 403
 
@@ -21225,6 +21559,14 @@ def admin_generate_intro_audio(intro_id):
     if not text:
         return jsonify({"error": "Intro has no message text"}), 400
 
+    # Cap enforcement BEFORE any TTS spend. In strict_block mode this
+    # returns a 402 response that the admin sees; in throttle/alert
+    # mode it returns None and sets g._cost_throttled, which the
+    # provider-selection block below honors by forcing OpenAI.
+    _cap = enforce_cost_cap("voice_intro")
+    if _cap is not None:
+        return _cap
+
     settings = query_db(
         "SELECT tts_model, tts_provider, premium_enabled, "
         "elevenlabs_voice_id, elevenlabs_model "
@@ -21238,6 +21580,11 @@ def admin_generate_intro_audio(intro_id):
     # failed" error — they get a working OpenAI render and can fix the
     # ElevenLabs config in voice settings.
     desired_provider = (settings.get("tts_provider") or "openai").lower()
+    # Cost-cap throttle short-circuits to OpenAI before the ElevenLabs
+    # gate evaluates — the tenant is over their cap so we want the
+    # cheapest viable render regardless of admin preference.
+    if _is_cost_throttled():
+        desired_provider = "openai"
     el_voice = (settings.get("elevenlabs_voice_id") or "").strip()
     el_model = (settings.get("elevenlabs_model") or "eleven_turbo_v2_5").strip()
     use_elevenlabs = (
@@ -21393,6 +21740,28 @@ def admin_cost_summary():
     pct = None
     if cap_f and cap_f > 0:
         pct = round((spend["total_usd"] / cap_f) * 100.0, 1)
+    # Uncosted-call visibility — rows ledgered with cost_usd IS NULL
+    # (usage data missing or no price configured for the model). The
+    # admin needs to see these so the dashboard can't quietly under-
+    # report by simply skipping them. We expose per-channel + total.
+    # Window matches compute_mtd_spend (DATE_TRUNC('month', NOW())) so
+    # totals + uncosted counts cover the same rows.
+    tid = current_tenant_id()
+    def _uncosted(table):
+        try:
+            row = query_db(
+                f"SELECT COUNT(*) AS c FROM {table} "
+                f"WHERE tenant_id=%s "
+                f"  AND created_at >= DATE_TRUNC('month', NOW()) "
+                f"  AND cost_usd IS NULL",
+                (tid,), fetchone=True) or {}
+            return int(row.get("c") or 0)
+        except Exception as e:
+            print(f"[cost summary] uncosted({table}) failed: {e}")
+            return 0
+    uc_chat = _uncosted("api_cost_events")
+    uc_voice = _uncosted("voice_cost_events")
+    uc_sms = _uncosted("sms_cost_events")
     return jsonify({
         "period": _current_period(),
         "spend": spend,
@@ -21403,6 +21772,12 @@ def admin_cost_summary():
             "alert_email": cap_row.get("alert_email") or "",
             "digest_email": cap_row.get("digest_email") or "",
             "percent_used": pct,
+        },
+        "uncosted_calls": {
+            "chat":  uc_chat,
+            "voice": uc_voice,
+            "sms":   uc_sms,
+            "total": uc_chat + uc_voice + uc_sms,
         },
     })
 
@@ -24916,10 +25291,16 @@ def _send_one(template_or_snapshot: dict, subscriber: dict, *, campaign_id=None,
                 to_address, rendered_body, status_callback_url=status_cb,
             )
             provider_id = resp.get("sid") or ""
-            try:
-                segs = int(resp.get("num_segments") or 1)
-            except (TypeError, ValueError):
-                segs = 1
+            # Pass through Twilio's reported segment count exactly. If
+            # it's missing or unparseable we pass None so the ledger row
+            # records segments=NULL / cost=NULL — never fabricate "1".
+            raw_segs = resp.get("num_segments")
+            segs = None
+            if raw_segs is not None:
+                try:
+                    segs = int(raw_segs)
+                except (TypeError, ValueError):
+                    segs = None
             record_sms_cost(
                 surface="sms_campaign",
                 to_number=to_address,
@@ -26848,10 +27229,17 @@ def _scrape_send_change_notification(schedule: dict, job: dict,
         else:
             try:
                 r = messaging.send_sms(notify_phone, text_body[:1500])
-                try:
-                    segs = int((r or {}).get("num_segments") or 1)
-                except (TypeError, ValueError):
-                    segs = 1
+                # Pass through Twilio's segment count exactly; never
+                # fabricate "1" — record_sms_cost will store NULL when
+                # the real count is unknown so the dashboard's
+                # "uncosted_calls" surfaces the gap to the admin.
+                raw_segs = (r or {}).get("num_segments")
+                segs = None
+                if raw_segs is not None:
+                    try:
+                        segs = int(raw_segs)
+                    except (TypeError, ValueError):
+                        segs = None
                 record_sms_cost(
                     surface="scrape_change_notify", to_number=notify_phone,
                     message_sid=(r or {}).get("sid") or "", segments=segs,
@@ -26911,10 +27299,16 @@ def _scrape_send_auto_pause_notification(schedule: dict, failure_count: int,
         else:
             try:
                 r = messaging.send_sms(notify_phone, text_body[:1500])
-                try:
-                    segs = int((r or {}).get("num_segments") or 1)
-                except (TypeError, ValueError):
-                    segs = 1
+                # Twilio reports the real segment count; pass it through
+                # untouched and use None when it's missing so the cost
+                # ledger writes NULL instead of inventing a "1".
+                raw_segs = (r or {}).get("num_segments")
+                segs = None
+                if raw_segs is not None:
+                    try:
+                        segs = int(raw_segs)
+                    except (TypeError, ValueError):
+                        segs = None
                 record_sms_cost(
                     surface="scrape_pause_notify", to_number=notify_phone,
                     message_sid=(r or {}).get("sid") or "", segments=segs,
@@ -28028,10 +28422,17 @@ def _send_review_request(req: dict) -> dict:
                 )
                 return {"ok": False, "error": "cost_cap_reached"}
             r = messaging.send_sms(req["recipient_phone"], body)
-            try:
-                segs = int((r or {}).get("num_segments") or 1)
-            except (TypeError, ValueError):
-                segs = 1
+            # Twilio's reported segment count is the source of truth.
+            # When it's missing we record segments=NULL (and the helper
+            # then writes cost_usd=NULL) so the cost dashboard's
+            # "uncosted_calls" counter exposes the gap to admins.
+            raw_segs = (r or {}).get("num_segments")
+            segs = None
+            if raw_segs is not None:
+                try:
+                    segs = int(raw_segs)
+                except (TypeError, ValueError):
+                    segs = None
             record_sms_cost(
                 surface="review_request_sms",
                 to_number=req["recipient_phone"],
