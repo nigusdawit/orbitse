@@ -276,6 +276,68 @@ Manual spot-checks if you don't want to run the doctor:
 
 ---
 
+## Cloning an existing install (snapshot → fresh deploy)
+
+Once you have one client's install dialed in (settings, persona, plan,
+FAQs, services, team page, etc.), you can snapshot it and use that JSON
+as the baseline for every subsequent client. No manual re-entry.
+
+**On the source install** (the working client):
+
+```bash
+# Settings + features + faqs only (the most portable shape):
+python scripts/snapshot.py --pretty -o ~/clientA-template.json
+
+# Include the operator-facing content too (services + team profiles):
+python scripts/snapshot.py --pretty --include-content -o ~/clientA-full.json
+
+# Or grab everything (all 10 content types — only do this if you really
+# want to clone testimonials, blog posts, events, etc.):
+python scripts/snapshot.py --pretty --include-all-content -o ~/clientA-full.json
+```
+
+**On the target install** (the new client), apply via the API:
+
+POST the snapshot to `bootstrap_install` through `/api/velo/command`
+(two-step confirm-token flow — see `replit.md` for details). Re-apply
+behavior by section:
+
+- **Settings**: `UPDATE`-style, fully idempotent.
+- **Features**: `bulk_set`, fully idempotent (every feature flag in the
+  snapshot is set to its captured value, regardless of prior state).
+- **FAQs**: deduped on question text — re-running won't insert duplicates.
+- **Content**: `INSERT`-style. Most content tables (`blog_posts`,
+  `events`, `products`, `services`, `gallery_cards`, `page_sections`)
+  have a `UNIQUE` constraint on `slug`, so re-applying a content section
+  that already exists will fail with a duplicate-key error rather than
+  silently duplicate. Only include content on a known-empty target, or
+  delete the conflicting rows first.
+- **Admin user**: only included if you passed `--include-admin-user`;
+  on existing email it returns `existed: true` (no-op), otherwise it
+  creates the customer row.
+
+A future revision of the `/setup` wizard will accept a snapshot JSON
+upload directly (no-code clone). For now, the API path above is the
+one supported flow.
+
+**What snapshots intentionally don't include**:
+
+- `admin_user` (off by default — admin identity is per-install, not
+  per-template; pass `--include-admin-user` if you really want to
+  copy the operator's email/name across)
+- Customer / order / chat-history rows (these are runtime data, never
+  template data)
+- Tenant-specific content (events, blog posts, testimonials, etc.) —
+  opt in via `--include-content=blog,events,...`
+- Auto-generated columns (`id`, `created_at`, `updated_at`) so the
+  target install's sequences and uniqueness constraints stay clean
+
+Exit codes: `0` = clean snapshot, `1` = couldn't connect to the DB,
+`2` = partial snapshot (some sections failed but JSON was still written;
+warnings on stderr).
+
+---
+
 ## Notes on legacy Replit-isms
 
 A few things in the repo are leftovers from this app's Replit origins. None

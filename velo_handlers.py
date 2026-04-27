@@ -1006,6 +1006,7 @@ def get_mcp_servers(params):
 )
 def update_content(params):
     from app import query_db, execute_db
+    import json as _json
     p = params or {}
     info, err = _resolve_content(p.get("type"))
     if err:
@@ -1015,20 +1016,32 @@ def update_content(params):
     if not isinstance(fields, dict) or not fields:
         return {"error": "fields must be a non-empty object"}
 
-    # Discover the real column list for this table so we don't trust the
-    # master with raw INSERT/UPDATE strings. Anything not in the live
-    # schema is silently dropped + reported back.
+    # Discover the real column list AND types for this table so we don't
+    # trust the master with raw INSERT/UPDATE strings, and so dict/list
+    # values destined for JSONB columns get serialized + cast properly
+    # (same coercion pattern as update_settings — without it psycopg2
+    # raises `can't adapt type 'dict'` on JSONB columns like
+    # products.gallery_images, gallery_cards.details, page_sections.settings).
     cols_rows = query_db(
-        "SELECT column_name FROM information_schema.columns "
+        "SELECT column_name, data_type FROM information_schema.columns "
         "WHERE table_schema='public' AND table_name = %s",
         (table,),
     )
-    valid_cols = {r["column_name"] for r in (cols_rows or [])} - {"id", "created_at", "updated_at"}
+    col_types = {r["column_name"]: r["data_type"] for r in (cols_rows or [])}
+    valid_cols = set(col_types.keys()) - {"id", "created_at", "updated_at"}
     safe = {k: v for k, v in fields.items() if k in valid_cols}
     rejected = sorted(set(fields.keys()) - set(safe.keys()))
     if not safe:
         return {"error": "no valid columns supplied", "rejected": rejected,
                 "valid_columns": sorted(valid_cols)}
+
+    def _coerce(col, val):
+        # JSONB / JSON columns need explicit json.dumps + ::jsonb cast.
+        # Plain dict/list values for any other column type stay as-is
+        # so psycopg2 can adapt them via its normal mechanisms.
+        if col_types.get(col) in ("jsonb", "json") and isinstance(val, (dict, list)):
+            return _json.dumps(val), True
+        return val, False
 
     raw_id = p.get("id")
     row_id = _safe_int(raw_id) if raw_id is not None else None
@@ -1036,17 +1049,26 @@ def update_content(params):
         return {"error": f"invalid id: {raw_id!r}"}
 
     if row_id:
-        sets = ", ".join(f"{k} = %s" for k in safe.keys())
-        vals = list(safe.values()) + [row_id]
-        execute_db(f"UPDATE {table} SET {sets} WHERE id = %s", tuple(vals))
+        set_parts, vals = [], []
+        for k, v in safe.items():
+            coerced, is_json = _coerce(k, v)
+            set_parts.append(f"{k} = %s::jsonb" if is_json else f"{k} = %s")
+            vals.append(coerced)
+        vals.append(row_id)
+        execute_db(f"UPDATE {table} SET {', '.join(set_parts)} WHERE id = %s",
+                   tuple(vals))
         return {"type": p.get("type"), "id": row_id, "updated": True,
                 "rejected_columns": rejected}
 
     cols_sql = ", ".join(safe.keys())
-    placeholders = ", ".join(["%s"] * len(safe))
+    placeholders, vals = [], []
+    for k, v in safe.items():
+        coerced, is_json = _coerce(k, v)
+        placeholders.append("%s::jsonb" if is_json else "%s")
+        vals.append(coerced)
     new_row = query_db(
-        f"INSERT INTO {table} ({cols_sql}) VALUES ({placeholders}) RETURNING id",
-        tuple(safe.values()), fetchone=True,
+        f"INSERT INTO {table} ({cols_sql}) VALUES ({', '.join(placeholders)}) RETURNING id",
+        tuple(vals), fetchone=True,
     )
     return {"type": p.get("type"), "id": new_row["id"] if new_row else None,
             "created": True, "rejected_columns": rejected}

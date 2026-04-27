@@ -54,6 +54,26 @@ The schema bootstraps itself on first boot — every `CREATE TABLE` and column
 migration runs as `IF NOT EXISTS`, so pointing the app at an empty Postgres
 database is enough.
 
+### Cloning a working install to a new client
+
+Once you have one client tuned the way you like, snapshot it and use that
+JSON as the starting point for every subsequent client:
+
+```bash
+# On the source install (the dialled-in client):
+python scripts/snapshot.py --pretty -o my-baseline.json
+
+# Move my-baseline.json to the new client's environment, then POST it
+# to /api/velo/command with command=bootstrap_install — see
+# DEPLOY.md → "Cloning an existing install" for the full recipe and
+# the per-section re-apply behavior.
+```
+
+The snapshot includes settings, feature flags, and FAQs by default.
+Pass `--include-content` to also clone services and team profiles, or
+`--include-all-content` for every content type. Customer/order/chat-history
+rows are never included — those are runtime data, not template data.
+
 ---
 
 ## One‑command Docker spin‑up
