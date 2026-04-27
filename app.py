@@ -19228,6 +19228,58 @@ def admin_update_theme():
             loading_alpha, glass_blur, radius_rem, transition_s,
         )
     )
+
+    # ----------------------------------------------------------------
+    # Write-through to the active named theme.
+    #
+    # _resolve_active_theme() (which both /api/theme and the admin GET
+    # use) overlays the active site_themes row's palette_json and
+    # fonts_json on top of these legacy theme_* columns — non-empty
+    # values from the active row WIN. Without this write-through, edits
+    # made here would land in the legacy columns, then be silently
+    # masked by the active theme overlay on every public page load.
+    # That caused the long-standing "preview shows my new color but
+    # the live site never changes" bug: the in-form preview reads form
+    # values directly so it always looked correct, but the resolver
+    # (and thus the live site, *and* the next time you opened this
+    # editor) kept showing the active named theme's values instead.
+    #
+    # We MERGE with `||` so any extra keys the named theme carries
+    # (e.g. palette-level numeric overlays for blur/radius/etc. that
+    # _resolve_active_theme also reads from palette_json) survive.
+    # Empty strings are stored as "" — the resolver explicitly treats
+    # those as "fall back to legacy column", which we just wrote, so a
+    # cleared field correctly bubbles down to the stylesheet default.
+    # ----------------------------------------------------------------
+    active_id_row = query_db(
+        "SELECT active_theme_id FROM site_settings WHERE id = 1",
+        fetchone=True,
+    ) or {}
+    active_id = active_id_row.get("active_theme_id")
+    if active_id:
+        palette_overlay = {
+            "bg":           data.get("theme_bg", "") or "",
+            "section1":     data.get("theme_section1", "") or "",
+            "section2":     data.get("theme_section2", "") or "",
+            "accent":       data.get("theme_accent", "") or "",
+            "text":         data.get("theme_text", "") or "",
+            "glass_border": data.get("theme_glass_border", "") or "",
+            "glass_bg":     data.get("theme_glass_bg", "") or "",
+        }
+        fonts_overlay = {
+            "serif": data.get("theme_font_serif", "") or "",
+            "sans":  data.get("theme_font_sans",  "") or "",
+        }
+        execute_db(
+            """UPDATE site_themes
+                  SET palette_json = COALESCE(palette_json, '{}'::jsonb)
+                                     || %s::jsonb,
+                      fonts_json   = COALESCE(fonts_json,   '{}'::jsonb)
+                                     || %s::jsonb
+                WHERE id = %s""",
+            (json.dumps(palette_overlay), json.dumps(fonts_overlay), active_id),
+        )
+
     return jsonify(result)
 
 
