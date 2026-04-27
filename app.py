@@ -31517,6 +31517,7 @@ def register_with_velo():
     agent_key = os.environ.get("VELO_AGENT_KEY", "").strip()
     site_url = _resolve_velo_callback_url()
     command_url = f"{site_url}/api/velo/command"
+    chat_url = f"{site_url}/api/velo/chat"
     capabilities = get_registered_capabilities()
     print(f"[velo] callback site_url={site_url} → {command_url}")
     headers = {"Authorization": f"Bearer {agent_key}", "Content-Type": "application/json"}
@@ -31561,6 +31562,7 @@ def register_with_velo():
                     "endpoint": command_url,
                     "command_endpoint": command_url,
                     "callback_url": command_url,
+                    "chat_endpoint": chat_url,
                     "capabilities": capabilities,
                     "metadata": {"framework": "flask", "version": "1.0"},
                 },
