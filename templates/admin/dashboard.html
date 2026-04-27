@@ -2017,6 +2017,12 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       AI Provider
     </button>
+
+    <div class="sidebar-group-label">System</div>
+    <button class="tab-btn" onclick="switchTab('plans-features', this); loadPlansFeatures();" data-testid="tab-plans-features">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l9 4.5v11L12 22l-9-4.5v-11L12 2z"/><path d="M3 6.5L12 11l9-4.5"/><line x1="12" y1="22" x2="12" y2="11"/></svg>
+      Plans &amp; Features
+    </button>
   </nav>
 
   <main class="admin-main">
@@ -4025,6 +4031,32 @@ TO CUSTOMIZE THIS DASHBOARD:
         <div style="margin-bottom: 1rem;">
           <button class="btn btn-secondary btn-sm" onclick="loadDefaultSystemPrompt()" data-testid="button-load-default-prompt">Load Default Prompt</button>
         </div>
+      </div>
+
+      <!--
+      ====================================================================
+      SCOPE TIGHTNESS — gated by feature flag `agent_scope_slider`
+      ====================================================================
+      Hidden by default; loadChatbotSettings() reveals it when settings._features.agent_scope_slider === true.
+      -->
+      <div id="chatbot-scope-section" style="display:none; margin-top:1.5rem; padding:1rem 1.25rem; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:var(--admin-radius);">
+        <h3 style="margin-top:0;">Agent Scope</h3>
+        <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 1rem;">
+          Controls how freely the AI volunteers tools, decks, and page suggestions during a chat.
+        </p>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;" id="chatbot-scope-buttons">
+          <button type="button" class="btn btn-secondary" data-scope="strict" onclick="setAgentScope('strict')" data-testid="button-scope-strict">
+            Strict
+          </button>
+          <button type="button" class="btn btn-secondary" data-scope="balanced" onclick="setAgentScope('balanced')" data-testid="button-scope-balanced">
+            Balanced
+          </button>
+          <button type="button" class="btn btn-secondary" data-scope="generous" onclick="setAgentScope('generous')" data-testid="button-scope-generous">
+            Generous
+          </button>
+        </div>
+        <p id="chatbot-scope-description" style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-top: 0.75rem;"></p>
+        <input type="hidden" id="chatbot-scope-tightness" value="balanced">
       </div>
 
       <div class="form-actions">
@@ -7433,6 +7465,35 @@ TO CUSTOMIZE THIS DASHBOARD:
     </div>
   </div>
 
+  <!-- ====================================================================
+       PLANS & FEATURES TAB — tenant plan info + per-feature on/off toggles
+       ==================================================================== -->
+  <div id="tab-plans-features" class="tab-content">
+    <div class="content-header">
+      <h2>Plans &amp; Features</h2>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <span id="plans-features-updated" style="font-size:0.8125rem; color:var(--admin-text-muted);"></span>
+        <button class="btn-secondary" onclick="loadPlansFeatures()" data-testid="button-plans-features-refresh">Refresh</button>
+      </div>
+    </div>
+
+    <div id="plans-features-tenant-card" style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:1rem 1.25rem; margin-bottom:1rem;">
+      <div class="empty-state">Loading plan info…</div>
+    </div>
+
+    <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:0.5rem 0;">
+      <div style="padding:0.75rem 1.25rem; border-bottom:1px solid var(--admin-border); display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <div style="font-weight:600;">Feature toggles</div>
+          <div style="font-size:0.8125rem; color:var(--admin-text-muted);">Turn capabilities on or off for this site. Changes take effect on the next request.</div>
+        </div>
+      </div>
+      <div id="plans-features-list" data-testid="list-plans-features">
+        <div class="empty-state" style="padding:1.5rem;">Loading features…</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Preview modal for saved pages -->
   <div id="page-preview-modal" style="display:none; position:fixed; inset:0; z-index:10000; background:rgba(0,0,0,0.85); padding:2rem;">
     <div style="position:relative; width:100%; height:100%; background:#060b14; border-radius:12px; overflow:hidden;">
@@ -7949,10 +8010,45 @@ TO CUSTOMIZE THIS DASHBOARD:
         const prompts = settings.quick_prompts || [];
         document.getElementById('chatbot-quick-prompts').value = prompts.join('\n');
 
+        /* Agent scope tightness — only show when the feature is enabled. */
+        const scopeSection = document.getElementById('chatbot-scope-section');
+        const scopeShown = !!(settings._features && settings._features.agent_scope_slider);
+        if (scopeSection) scopeSection.style.display = scopeShown ? 'block' : 'none';
+        const initialScope = (settings.agent_scope_tightness || 'balanced').toLowerCase();
+        setAgentScope(['strict','balanced','generous'].indexOf(initialScope) >= 0 ? initialScope : 'balanced');
+
         /* Show/hide mode-specific fields */
         toggleChatbotMode();
       } catch (err) {
         showToast('Failed to load chatbot settings', 'error');
+      }
+    }
+
+    function setAgentScope(mode) {
+      const valid = ['strict', 'balanced', 'generous'];
+      if (valid.indexOf(mode) < 0) mode = 'balanced';
+      const hidden = document.getElementById('chatbot-scope-tightness');
+      if (hidden) hidden.value = mode;
+      const container = document.getElementById('chatbot-scope-buttons');
+      if (container) {
+        container.querySelectorAll('button[data-scope]').forEach(btn => {
+          if (btn.getAttribute('data-scope') === mode) {
+            btn.classList.remove('btn-secondary');
+            btn.classList.add('btn-primary');
+          } else {
+            btn.classList.remove('btn-primary');
+            btn.classList.add('btn-secondary');
+          }
+        });
+      }
+      const desc = document.getElementById('chatbot-scope-description');
+      if (desc) {
+        const descriptions = {
+          strict:   'Strict — laser-focused on the active page; never volunteers tools the visitor didn\'t ask for; short answers.',
+          balanced: 'Balanced — proactively suggests one obvious next step or tool when relevant.',
+          generous: 'Generous — expansive: surfaces decks, store items, and page suggestions even when the visitor\'s question is narrow.',
+        };
+        desc.textContent = descriptions[mode] || '';
       }
     }
 
@@ -7980,7 +8076,8 @@ TO CUSTOMIZE THIS DASHBOARD:
         quick_prompts: quickPrompts,
         api_endpoint: document.getElementById('chatbot-api-endpoint').value,
         embed_code: document.getElementById('chatbot-embed-code').value,
-        system_prompt: document.getElementById('chatbot-system-prompt').value
+        system_prompt: document.getElementById('chatbot-system-prompt').value,
+        agent_scope_tightness: (document.getElementById('chatbot-scope-tightness') || {}).value || 'balanced'
       };
 
       try {
@@ -17426,6 +17523,123 @@ TO CUSTOMIZE THIS DASHBOARD:
           : '<tr><td colspan="6" class="empty-state">No destinations yet.</td></tr>';
       } catch (err) {
         overall.innerHTML = '<div style="color:#ef4444;">Failed to load insights.</div>';
+      }
+    }
+
+
+    /*
+    ========================================================================
+    PLANS & FEATURES TAB
+    ========================================================================
+    Loads tenant plan info + every feature flag from the backend, renders
+    a row per feature with an on/off toggle. Toggling fires PATCH which
+    busts the in-process cache so the change is live immediately.
+    */
+    async function loadPlansFeatures() {
+      const tenantCard = document.getElementById('plans-features-tenant-card');
+      const list = document.getElementById('plans-features-list');
+      const updated = document.getElementById('plans-features-updated');
+      if (list) list.innerHTML = '<div class="empty-state" style="padding:1.5rem;">Loading features…</div>';
+      try {
+        const res = await fetch('/admin/api/tenant/features', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        renderPlansFeaturesTenant(data, tenantCard);
+        renderPlansFeaturesList(data.features || [], list);
+        if (updated) updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      } catch (e) {
+        console.error('plans/features load failed', e);
+        if (list) list.innerHTML = '<div class="empty-state" style="padding:1.5rem; color:#ef4444;">Could not load features: ' + escapeHTML(String(e.message || e)) + '</div>';
+      }
+    }
+
+    function renderPlansFeaturesTenant(data, el) {
+      if (!el) return;
+      const t = data.tenant || {};
+      const planLabel = t.plan_name || t.plan_code || '—';
+      el.innerHTML = `
+        <div style="display:flex; gap:1.5rem; flex-wrap:wrap; align-items:baseline;">
+          <div>
+            <div style="font-size:0.75rem; text-transform:uppercase; color:var(--admin-text-muted); letter-spacing:0.05em;">Tenant</div>
+            <div style="font-size:1.25rem; font-weight:600;" data-testid="text-tenant-name">${escapeHTML(t.tenant_name || ('Tenant #' + (t.id || 1)))}</div>
+          </div>
+          <div>
+            <div style="font-size:0.75rem; text-transform:uppercase; color:var(--admin-text-muted); letter-spacing:0.05em;">Plan</div>
+            <div style="font-size:1.25rem; font-weight:600;" data-testid="text-tenant-plan">${escapeHTML(planLabel)}</div>
+          </div>
+          <div style="margin-left:auto; font-size:0.8125rem; color:var(--admin-text-muted);">
+            ${(data.features || []).filter(f => f.enabled).length} of ${(data.features || []).length} features enabled
+          </div>
+        </div>
+      `;
+    }
+
+    function renderPlansFeaturesList(features, el) {
+      if (!el) return;
+      if (!features.length) {
+        el.innerHTML = '<div class="empty-state" style="padding:1.5rem;">No features registered.</div>';
+        return;
+      }
+      const groupOrder = ['core', 'engagement', 'advanced'];
+      const groups = {};
+      features.forEach(f => {
+        const g = f.group || 'core';
+        if (!groups[g]) groups[g] = [];
+        groups[g].push(f);
+      });
+      const sortedGroupNames = Object.keys(groups).sort((a, b) => {
+        const ai = groupOrder.indexOf(a), bi = groupOrder.indexOf(b);
+        return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+      });
+      el.innerHTML = sortedGroupNames.map(gname => `
+        <div style="padding:0.5rem 1.25rem; font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--admin-text-muted); background:rgba(255,255,255,0.02);">
+          ${escapeHTML(gname)}
+        </div>
+        ${groups[gname].map(f => `
+          <div style="display:flex; gap:1rem; align-items:center; padding:0.85rem 1.25rem; border-bottom:1px solid var(--admin-border);" data-testid="row-feature-${escapeHTML(f.name)}">
+            <div style="flex:1; min-width:0;">
+              <div style="font-weight:500;">${escapeHTML(f.label || f.name)}</div>
+              <div style="font-size:0.8125rem; color:var(--admin-text-muted);">
+                <code style="font-size:0.75rem; opacity:0.7;">${escapeHTML(f.name)}</code>
+                · plan: <strong>${escapeHTML(f.plan_tier || '—')}</strong>
+                ${f.is_addon ? ' · <span style="color:#fbbf24;">add-on</span>' : ''}
+              </div>
+            </div>
+            <label class="toggle-switch" style="display:inline-flex; align-items:center; gap:0.5rem; cursor:pointer;">
+              <input type="checkbox" ${f.enabled ? 'checked' : ''}
+                     data-feature="${escapeHTML(f.name)}"
+                     onchange="togglePlanFeature(this)"
+                     data-testid="toggle-feature-${escapeHTML(f.name)}">
+              <span style="font-size:0.875rem; color:${f.enabled ? '#10b981' : 'var(--admin-text-muted)'};">${f.enabled ? 'On' : 'Off'}</span>
+            </label>
+          </div>
+        `).join('')}
+      `).join('');
+    }
+
+    async function togglePlanFeature(input) {
+      const name = input.getAttribute('data-feature');
+      const enabled = input.checked;
+      input.disabled = true;
+      try {
+        const res = await fetch('/admin/api/tenant/features/' + encodeURIComponent(name), {
+          method: 'PATCH',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || err.error || 'HTTP ' + res.status);
+        }
+        showToast('Feature "' + name + '" ' + (enabled ? 'enabled' : 'disabled'));
+        loadPlansFeatures();
+      } catch (e) {
+        console.error('toggle failed', e);
+        input.checked = !enabled;
+        showToast('Failed to toggle: ' + (e.message || e), 'error');
+      } finally {
+        input.disabled = false;
       }
     }
 

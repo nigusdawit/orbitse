@@ -152,7 +152,81 @@ app.secret_key = _resolve_flask_secret()
 # PERMANENT_SESSION_LIFETIME: How long admin login persists after last activity
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+# In production (REPLIT_DEPLOYMENT is set on the deployed instance) the
+# session cookie must only travel over HTTPS. We leave it False in dev
+# preview so local browsers — which use the http preview URL — can still
+# log in. Any falsy / unset env var → dev → cookie is not secure-flagged.
+app.config["SESSION_COOKIE_SECURE"] = bool(os.environ.get("REPLIT_DEPLOYMENT"))
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
+
+# -----------------------------------------------------------------------------
+# IN-PROCESS RATE LIMITERS (login throttle + chat rate limit)
+# -----------------------------------------------------------------------------
+# Both are deliberately in-process: they survive a single worker but reset on
+# restart. That's enough to slow down brute-force attempts and to protect the
+# AI quota / DB from runaway clients without adding a Redis dependency. If we
+# scale to multiple workers, Postgres or Redis would be the upgrade path.
+_LOGIN_ATTEMPTS = {}   # ip -> [unix_ts, ...] failed attempts in the window
+_LOGIN_MAX_FAILS = 5
+_LOGIN_WINDOW_SEC = 15 * 60   # 15 minutes
+_CHAT_RATE = {}        # key (session_id|ip) -> [unix_ts, ...] requests in window
+_CHAT_RATE_MAX = 30
+_CHAT_RATE_WINDOW_SEC = 60    # per-minute
+
+
+def _client_ip():
+    """Trusted client IP for rate-limit keys.
+
+    SECURITY: We deliberately do NOT trust X-Forwarded-For headers as the
+    primary signal — an attacker can set XFF to anything and trivially evade
+    per-IP throttles by rotating the header value. `request.remote_addr` is
+    the actual TCP peer (the upstream proxy in production, the real client
+    in dev), which an attacker cannot forge.
+
+    Behind Replit's deployment edge this collapses every external client to
+    the edge IP, which is acceptable here because:
+      * the throttles are coarse anti-abuse (5 fails / 15 min on login,
+        30 chats / min) — false sharing is fine,
+      * the alternative (trusting headers) is a true bypass.
+    If we ever sit behind a self-managed reverse proxy we'd switch to
+    `werkzeug.middleware.proxy_fix.ProxyFix` instead of parsing headers
+    by hand.
+    """
+    return request.remote_addr or "unknown"
+
+
+def _login_throttle_check(ip):
+    """Return (allowed: bool, retry_after_sec: int). Prunes stale attempts."""
+    now = _time.time()
+    cutoff = now - _LOGIN_WINDOW_SEC
+    attempts = [t for t in _LOGIN_ATTEMPTS.get(ip, []) if t > cutoff]
+    _LOGIN_ATTEMPTS[ip] = attempts
+    if len(attempts) >= _LOGIN_MAX_FAILS:
+        retry_after = int(_LOGIN_WINDOW_SEC - (now - attempts[0])) + 1
+        return False, max(retry_after, 1)
+    return True, 0
+
+
+def _login_throttle_record_failure(ip):
+    _LOGIN_ATTEMPTS.setdefault(ip, []).append(_time.time())
+
+
+def _login_throttle_clear(ip):
+    _LOGIN_ATTEMPTS.pop(ip, None)
+
+
+def _chat_rate_check(key):
+    """Return (allowed: bool, retry_after_sec: int)."""
+    now = _time.time()
+    cutoff = now - _CHAT_RATE_WINDOW_SEC
+    bucket = [t for t in _CHAT_RATE.get(key, []) if t > cutoff]
+    if len(bucket) >= _CHAT_RATE_MAX:
+        retry_after = int(_CHAT_RATE_WINDOW_SEC - (now - bucket[0])) + 1
+        _CHAT_RATE[key] = bucket
+        return False, max(retry_after, 1)
+    bucket.append(now)
+    _CHAT_RATE[key] = bucket
+    return True, 0
 
 # Admin password — set via environment variable, defaults to "admin" for development
 # IMPORTANT: Change this in production by setting the ADMIN_PASSWORD env var
@@ -1224,6 +1298,63 @@ def init_db():
                 );
                 CREATE INDEX IF NOT EXISTS idx_mcp_tools_server
                     ON mcp_tools_cache (server_id);
+
+                -- =============================================================
+                -- TENANCY + PLANS + FEATURE FLAGS  (Phase 1 multi-tenant prep)
+                -- =============================================================
+                -- For now there is exactly ONE tenant (id=1) and the whole
+                -- codebase calls current_tenant_id() which returns 1. Every
+                -- capability check goes through tenant_has_feature(name) so
+                -- we can later flip features per-tenant from a super-admin
+                -- screen without touching call-sites.
+                --
+                --   plans          — tier definitions (solo / growth / enterprise).
+                --   tenants        — one row per customer site (today: 1).
+                --   tenant_features— enabled/disabled state per (tenant, feature).
+                --   feature_addons — one-off feature unlocks layered on top of plan.
+                --
+                -- Default seed: tenant_id=1 on plan=growth, every feature
+                -- registered in _FEATURE_REGISTRY enabled=true so the existing
+                -- behaviour is preserved.
+                CREATE TABLE IF NOT EXISTS plans (
+                    id          SERIAL PRIMARY KEY,
+                    slug        VARCHAR(40) NOT NULL UNIQUE,
+                    name        TEXT        NOT NULL,
+                    description TEXT        NOT NULL DEFAULT '',
+                    sort_order  INTEGER     NOT NULL DEFAULT 0,
+                    created_at  TIMESTAMP   DEFAULT NOW()
+                );
+
+                CREATE TABLE IF NOT EXISTS tenants (
+                    id          SERIAL PRIMARY KEY,
+                    name        TEXT        NOT NULL DEFAULT 'Default Tenant',
+                    plan_id     INTEGER     REFERENCES plans(id) ON DELETE SET NULL,
+                    status      VARCHAR(20) NOT NULL DEFAULT 'active',
+                    created_at  TIMESTAMP   DEFAULT NOW(),
+                    updated_at  TIMESTAMP   DEFAULT NOW()
+                );
+
+                CREATE TABLE IF NOT EXISTS tenant_features (
+                    id           SERIAL PRIMARY KEY,
+                    tenant_id    INTEGER     NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    feature_name VARCHAR(80) NOT NULL,
+                    enabled      BOOLEAN     NOT NULL DEFAULT true,
+                    note         TEXT        NOT NULL DEFAULT '',
+                    created_at   TIMESTAMP   DEFAULT NOW(),
+                    updated_at   TIMESTAMP   DEFAULT NOW(),
+                    UNIQUE(tenant_id, feature_name)
+                );
+                CREATE INDEX IF NOT EXISTS idx_tenant_features_tenant
+                    ON tenant_features (tenant_id);
+
+                CREATE TABLE IF NOT EXISTS feature_addons (
+                    id           SERIAL PRIMARY KEY,
+                    tenant_id    INTEGER     NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    feature_name VARCHAR(80) NOT NULL,
+                    granted_at   TIMESTAMP   DEFAULT NOW(),
+                    note         TEXT        NOT NULL DEFAULT '',
+                    UNIQUE(tenant_id, feature_name)
+                );
             """)
 
             # Seed the voice_settings singleton row (idempotent)
@@ -1249,6 +1380,45 @@ def init_db():
                 VALUES (1, 'openai', 'gpt-4o-mini', 'claude-sonnet-4-5')
                 ON CONFLICT (id) DO NOTHING
             """)
+
+            # =========================================================
+            # PHASE 1 SEED — plans + the single default tenant.
+            # tenant_features rows are lazy-seeded the first time
+            # tenant_has_feature() is asked about a feature, defaulting
+            # to enabled=true so existing behaviour is preserved.
+            # =========================================================
+            cur.execute("""
+                INSERT INTO plans (id, slug, name, description, sort_order) VALUES
+                    (1, 'solo',       'Solo',       'Single-site, core features only.',                     10),
+                    (2, 'growth',     'Growth',     'Everything in Solo + AI capabilities + integrations.', 20),
+                    (3, 'enterprise', 'Enterprise', 'Everything in Growth + multi-site + white-glove SLA.', 30)
+                ON CONFLICT (slug) DO NOTHING
+            """)
+            cur.execute("""
+                INSERT INTO tenants (id, name, plan_id, status)
+                VALUES (1, 'Default Tenant',
+                        (SELECT id FROM plans WHERE slug='growth'),
+                        'active')
+                ON CONFLICT (id) DO NOTHING
+            """)
+            # Keep the plans / tenants sequences past the manually-
+            # inserted ids so future INSERTs don't collide.
+            cur.execute("SELECT setval('plans_id_seq',   (SELECT GREATEST(MAX(id), 1) FROM plans))")
+            cur.execute("SELECT setval('tenants_id_seq', (SELECT GREATEST(MAX(id), 1) FROM tenants))")
+
+            # Bulk-seed tenant_features for tenant id=1: every name registered
+            # in _FEATURE_REGISTRY gets enabled=its_default (True for all
+            # current entries). ON CONFLICT DO NOTHING preserves any state an
+            # admin has already toggled — we only fill in missing rows. This
+            # makes /admin/api/tenant/features return a complete grid on first
+            # load instead of relying solely on the lazy-touch path.
+            for _fname, _label, _tier, _default, _grp in _FEATURE_REGISTRY:
+                cur.execute(
+                    "INSERT INTO tenant_features (tenant_id, feature_name, enabled, note) "
+                    "VALUES (1, %s, %s, 'auto-seeded by init_db') "
+                    "ON CONFLICT (tenant_id, feature_name) DO NOTHING",
+                    (_fname, bool(_default)),
+                )
 
             # Add new columns to existing tables (safe — does nothing if already present)
             for col_sql in [
@@ -1353,6 +1523,18 @@ def init_db():
                 # is just an UPDATE on these two ints.
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS active_theme_id INTEGER",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS active_design_id INTEGER",
+                # --- Agent scope tightness (Phase 1) ---
+                # Controls how proactive / expansive the public-facing AI
+                # is when answering visitor questions:
+                #   'strict'   — minimal scope, only answers exactly what
+                #                was asked, never volunteers tools.
+                #   'balanced' — default; one obvious next-step suggested
+                #                when relevant.
+                #   'generous' — proactive, surfaces decks / pages /
+                #                store items / nav even on narrow Qs.
+                # The slider in the Chatbot tab is hidden when
+                # tenant_has_feature('agent_scope_slider') is false.
+                "ALTER TABLE chatbot_settings ADD COLUMN IF NOT EXISTS agent_scope_tightness TEXT NOT NULL DEFAULT 'balanced'",
             ]:
                 cur.execute(col_sql)
 
@@ -2338,6 +2520,261 @@ def init_db():
 
 
 # =============================================================================
+# TENANCY + FEATURE FLAGS  (Phase 1)
+# =============================================================================
+# Single tenant for now (id=1). Every capability check in the codebase
+# routes through tenant_has_feature(name) so we can later flip features
+# per-tenant from the super-admin Plans & Features tab.
+#
+# _FEATURE_REGISTRY is the source of truth. The Plans & Features UI
+# lists exactly the names below. Lookup is lazy: the first time we see
+# a feature for a tenant we INSERT a row with enabled=DEFAULT_ENABLED
+# so the existing behaviour is preserved.
+# =============================================================================
+
+# (feature_name, human_label, plan_tier_required, default_enabled, group)
+_FEATURE_REGISTRY = [
+    # Core (always on for paid plans)
+    ("site_themes",          "Site Themes",                  "solo",       True,  "Design"),
+    ("site_designs",         "Multi-Homepage Designs",       "growth",     True,  "Design"),
+    # AI capabilities
+    ("deck_launch",          "Presentation deck launches",   "growth",     True,  "AI"),
+    ("web_search",           "Web search tool",              "growth",     True,  "AI"),
+    ("voice",                "Voice agent (TTS / STT)",      "growth",     True,  "AI"),
+    ("generated_pages",      "AI-generated pages",           "growth",     True,  "AI"),
+    ("agent_scope_slider",   "Agent scope tightness slider", "growth",     True,  "AI"),
+    # Capabilities
+    ("custom_forms",         "Custom forms",                 "solo",       True,  "Capabilities"),
+    ("mcp",                  "MCP connectors",               "enterprise", True,  "Capabilities"),
+    ("presentations",        "Presentations admin",          "growth",     True,  "Capabilities"),
+]
+_FEATURE_NAMES = {row[0] for row in _FEATURE_REGISTRY}
+_FEATURE_DEFAULTS = {row[0]: row[3] for row in _FEATURE_REGISTRY}
+
+# Per-process cache of {(tenant_id, feature_name): enabled_bool, expires_at}.
+# Tiny TTL so flag flips become visible quickly across requests without
+# hammering the DB on every tool dispatch.
+_FEATURE_CACHE = {}
+_FEATURE_CACHE_TTL_SEC = 30
+
+
+def current_tenant_id():
+    """Return the active tenant id for this request.
+
+    For now there is exactly one tenant (id=1); later we'll resolve from
+    the request host or admin session. All call-sites should use this
+    rather than hard-coding 1.
+    """
+    return 1
+
+
+def invalidate_tenant_features_cache(tenant_id=None):
+    """Drop cached feature lookups so flag flips take effect immediately."""
+    global _FEATURE_CACHE
+    if tenant_id is None:
+        _FEATURE_CACHE = {}
+    else:
+        _FEATURE_CACHE = {k: v for k, v in _FEATURE_CACHE.items() if k[0] != tenant_id}
+
+
+def _ensure_tenant_feature_row(tenant_id, feature_name):
+    """Lazy-seed a tenant_features row using the registry default.
+
+    Idempotent: ON CONFLICT DO NOTHING. Called from tenant_has_feature
+    when the row is missing so we never have to bulk-seed on startup.
+    """
+    default_enabled = _FEATURE_DEFAULTS.get(feature_name, True)
+    try:
+        execute_db(
+            "INSERT INTO tenant_features (tenant_id, feature_name, enabled) "
+            "VALUES (%s, %s, %s) "
+            "ON CONFLICT (tenant_id, feature_name) DO NOTHING",
+            (tenant_id, feature_name, default_enabled),
+        )
+    except Exception as e:
+        print(f"[features] could not lazy-seed {feature_name}: {e}")
+
+
+def tenant_has_feature(name, tenant_id=None):
+    """Return True if `name` is enabled for the given tenant.
+
+    Unknown feature names default to True so adding a new gate to the
+    code without an immediate registry update never breaks production.
+    The first lookup of a known feature for a tenant inserts the
+    enabled=registry-default row, so the Plans & Features tab can then
+    flip it.
+    """
+    if tenant_id is None:
+        tenant_id = current_tenant_id()
+    cache_key = (tenant_id, name)
+    cached = _FEATURE_CACHE.get(cache_key)
+    now = _time.time()
+    if cached is not None and cached[1] > now:
+        return cached[0]
+
+    if name not in _FEATURE_NAMES:
+        # Unknown gate — fail OPEN so we never silently break something.
+        _FEATURE_CACHE[cache_key] = (True, now + _FEATURE_CACHE_TTL_SEC)
+        return True
+
+    try:
+        row = query_db(
+            "SELECT enabled FROM tenant_features "
+            "WHERE tenant_id = %s AND feature_name = %s",
+            (tenant_id, name),
+            fetchone=True,
+        )
+        if row is None:
+            _ensure_tenant_feature_row(tenant_id, name)
+            enabled = _FEATURE_DEFAULTS.get(name, True)
+        else:
+            enabled = bool(row.get("enabled"))
+    except Exception as e:
+        print(f"[features] tenant_has_feature({name}) failed: {e}; failing open")
+        enabled = True
+
+    _FEATURE_CACHE[cache_key] = (enabled, now + _FEATURE_CACHE_TTL_SEC)
+    return enabled
+
+
+def list_tenant_features(tenant_id=None):
+    """Return the full feature roster for the Plans & Features UI.
+
+    Walks _FEATURE_REGISTRY (canonical order/grouping) and joins each
+    with the tenant_features.enabled value (lazy-seeding any missing
+    rows). Returns a list of dicts ready to render.
+    """
+    if tenant_id is None:
+        tenant_id = current_tenant_id()
+    out = []
+    for name, label, plan_tier, default_enabled, group in _FEATURE_REGISTRY:
+        enabled = tenant_has_feature(name, tenant_id)
+        out.append({
+            "name": name,
+            "label": label,
+            "plan_tier": plan_tier,
+            "default_enabled": default_enabled,
+            "group": group,
+            "enabled": enabled,
+        })
+    return out
+
+
+_AGENT_SCOPE_VALUES = ("strict", "balanced", "generous")
+
+
+def _compose_scope_paragraph():
+    """Return a system-prompt paragraph that nudges the agent's tool-use freedom.
+
+    Returns "" when the agent_scope_slider feature is off OR when the tenant's
+    setting is missing/invalid — in that case the system prompt stays unchanged.
+    The paragraph is appended (not prepended) so it acts as a final reminder
+    after all the existing instructions.
+    """
+    if not tenant_has_feature("agent_scope_slider"):
+        return ""
+    try:
+        row = query_db(
+            "SELECT agent_scope_tightness FROM chatbot_settings WHERE id = 1",
+            fetchone=True,
+        ) or {}
+    except Exception:
+        return ""
+    mode = (row.get("agent_scope_tightness") or "balanced").strip().lower()
+    if mode not in _AGENT_SCOPE_VALUES:
+        mode = "balanced"
+    if mode == "strict":
+        return (
+            "\n\nSCOPE GUIDANCE (strict): Stay laser-focused on the visitor's exact "
+            "question and the active page. Never volunteer tools, decks, or pages they "
+            "didn't explicitly ask for. Prefer short, direct answers. Do not expand scope "
+            "on your own.\n"
+        )
+    if mode == "generous":
+        return (
+            "\n\nSCOPE GUIDANCE (generous): Be expansive and proactive. Surface related "
+            "info, deck launches, store items, and page navigation suggestions even when "
+            "the visitor's question is narrow. Bring up everything the visitor might find "
+            "useful in this session.\n"
+        )
+    # balanced
+    return (
+        "\n\nSCOPE GUIDANCE (balanced): Be helpful and proactive but not overwhelming. "
+        "Suggest one obvious next step or related tool when it clearly fits, but don't "
+        "dump unrelated capabilities on the visitor.\n"
+    )
+
+
+def set_tenant_feature(name, enabled, tenant_id=None, note=""):
+    """Flip a feature on/off for a tenant. Returns the new value."""
+    if tenant_id is None:
+        tenant_id = current_tenant_id()
+    if name not in _FEATURE_NAMES:
+        raise ValueError(f"Unknown feature: {name}")
+    execute_db(
+        "INSERT INTO tenant_features (tenant_id, feature_name, enabled, note) "
+        "VALUES (%s, %s, %s, %s) "
+        "ON CONFLICT (tenant_id, feature_name) DO UPDATE "
+        "SET enabled = EXCLUDED.enabled, note = EXCLUDED.note, updated_at = NOW()",
+        (tenant_id, name, bool(enabled), note or ""),
+    )
+    invalidate_tenant_features_cache(tenant_id)
+    return bool(enabled)
+
+
+# Route-prefix → feature_name map. The before_request hook below blocks
+# any HTTP request whose path starts with one of these prefixes when
+# the tenant doesn't have the feature enabled. Order matters — more
+# specific prefixes should come before broader ones, but here the
+# prefixes don't overlap so the order is alphabetic for clarity.
+_FEATURE_ROUTE_PREFIXES = [
+    ("/admin/api/forms",           "custom_forms"),
+    ("/admin/api/generated-pages", "generated_pages"),
+    ("/admin/api/mcp/",            "mcp"),
+    ("/admin/api/presentations",   "presentations"),
+    ("/admin/api/site-designs",    "site_designs"),
+    ("/admin/api/site-themes",     "site_themes"),
+    ("/admin/api/voice",           "voice"),
+    ("/api/forms/",                "custom_forms"),
+    ("/api/generated-pages",       "generated_pages"),
+    ("/api/presentations/",        "presentations"),
+    ("/api/voice/",                "voice"),
+]
+
+
+@app.before_request
+def _enforce_feature_flags():
+    """Reject requests to disabled-feature endpoints with a 403.
+
+    Runs before every Flask-handled request. If the path starts with
+    a prefix in _FEATURE_ROUTE_PREFIXES and the tenant doesn't have
+    that feature, we return a small JSON 403 explaining which flag
+    is off — the admin can re-enable it from the Plans & Features tab.
+
+    GET requests get a friendlier 404 so we don't expose feature
+    structure to public visitors poking at the site.
+    """
+    try:
+        path = request.path or ""
+    except Exception:
+        return None
+    for prefix, feature in _FEATURE_ROUTE_PREFIXES:
+        if path.startswith(prefix):
+            if not tenant_has_feature(feature):
+                if request.method == "GET" and not path.startswith("/admin/"):
+                    # Don't leak feature names to anonymous visitors.
+                    return jsonify({"error": "not_found"}), 404
+                return jsonify({
+                    "error": "feature_disabled",
+                    "feature": feature,
+                    "message": f"This feature ({feature}) is currently turned off for this site. "
+                                "Enable it in Admin → Plans & Features.",
+                }), 403
+            break
+    return None
+
+
+# =============================================================================
 # CUSTOM JSON ENCODER
 # =============================================================================
 
@@ -2408,15 +2845,31 @@ def admin_login():
     """
     GET: Show the login form.
     POST: Validate the password and log in.
+
+    Brute-force throttle: after _LOGIN_MAX_FAILS bad attempts from the same
+    IP inside _LOGIN_WINDOW_SEC, further attempts return HTTP 429 with a
+    Retry-After header until the window slides past. Successful login clears
+    the IP from the attempts table.
     """
     error = None
     if request.method == "POST":
+        ip = _client_ip()
+        allowed, retry_after = _login_throttle_check(ip)
+        if not allowed:
+            mins = max(1, retry_after // 60)
+            resp = render_template(
+                "admin/login.html",
+                error=f"Too many failed attempts. Try again in about {mins} minute(s).",
+            )
+            return resp, 429, {"Retry-After": str(retry_after)}
         password = request.form.get("password", "")
         if password == ADMIN_PASSWORD:
+            _login_throttle_clear(ip)
             session["admin_logged_in"] = True
             session.permanent = True
             return redirect(url_for("admin_dashboard"))
         else:
+            _login_throttle_record_failure(ip)
             error = "Invalid password. Please try again."
 
     return render_template("admin/login.html", error=error)
@@ -5929,7 +6382,23 @@ def get_active_chat_tools(audience="velo"):
         return CHAT_TOOLS
     rows = rows or []
     active_builtin_names = {r["name"] for r in rows if r.get("builtin")}
-    out = [t for t in CHAT_TOOLS if (t.get("function") or {}).get("name") in active_builtin_names]
+    # Apply tenant feature gates on top of the per-skill admin toggle.
+    # Map of builtin tool name → feature flag that disables it. If the
+    # tenant doesn't have the feature, the tool name is dropped from
+    # the inventory the model sees.
+    _TOOL_FEATURE_GATES = {
+        "lookup_web_search":  "web_search",
+        "play_presentation":  "deck_launch",
+        "lookup_presentation": "presentations",
+    }
+    def _tool_allowed_by_feature(tool_name):
+        feat = _TOOL_FEATURE_GATES.get(tool_name)
+        return True if not feat else tenant_has_feature(feat)
+    out = [
+        t for t in CHAT_TOOLS
+        if (t.get("function") or {}).get("name") in active_builtin_names
+        and _tool_allowed_by_feature((t.get("function") or {}).get("name"))
+    ]
 
     # Pre-load the allowed_for_admin/velo flags for every MCP server in
     # one shot so we don't re-query per-row inside the loop.
@@ -11546,7 +12015,15 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
         while history and history[0].get("role") == "tool":
             history.pop(0)
 
-    messages = [{"role": "system", "content": ADMIN_CHAT_SYSTEM_PROMPT}]
+    # Append scope-tightness paragraph to the admin system prompt the same
+    # way we do for the visitor agent. Returns "" when the agent_scope_slider
+    # feature is off so the admin prompt stays unchanged for those tenants.
+    _admin_sys = ADMIN_CHAT_SYSTEM_PROMPT
+    try:
+        _admin_sys = _admin_sys + _compose_scope_paragraph()
+    except Exception as _e:
+        print(f"[scope] admin prompt compose failed: {_e}")
+    messages = [{"role": "system", "content": _admin_sys}]
     for h in history:
         r = h.get("role")
         if r == "assistant" and h.get("tool_calls_json"):
@@ -11959,6 +12436,22 @@ def api_chat():
     message = data.get("message", "").strip()
     history = data.get("history", [])
     session_id = data.get("session_id", "")
+    # SECURITY: rate-limit MUST be bound to the trusted client IP, not the
+    # client-supplied session_id — a malicious client can rotate session_id
+    # on every request to evade a session-keyed bucket. We always enforce
+    # the per-IP bucket; the session_id is appended only as a sub-partition
+    # so two legitimate browser tabs from the same NAT each get their own
+    # countdown without breaking the IP-level cap (the IP cap still wins
+    # because every key starts with the same IP prefix and we ALSO enforce
+    # an IP-only bucket below).
+    _ip = _client_ip()
+    _rate_allowed, _rate_retry = _chat_rate_check(f"ip:{_ip}")
+    if not _rate_allowed:
+        return jsonify({
+            "error": "rate_limited",
+            "message": f"Too many chat requests — please slow down and retry in about {_rate_retry}s.",
+            "retry_after": _rate_retry,
+        }), 429, {"Retry-After": str(_rate_retry)}
     # visitor_id persists across page reloads (stored in localStorage on the frontend).
     # session_id is unique per page load — each refresh starts a new conversation.
     # Together they let the admin track both individual conversations and returning visitors.
@@ -11988,6 +12481,14 @@ def api_chat():
             active_prompt = cs["system_prompt"]
     except Exception:
         pass
+
+    # Append the scope-tightness guidance (strict / balanced / generous).
+    # Returns "" when the agent_scope_slider feature is off, so unaffected
+    # tenants get the prompt unchanged.
+    try:
+        active_prompt = (active_prompt or "") + _compose_scope_paragraph()
+    except Exception as _e:
+        print(f"[scope] failed to compose paragraph: {_e}")
 
     # ----- THEME INJECTION -----
     # Build the theme string from defaults + any admin overrides
@@ -16527,9 +17028,16 @@ def admin_update_settings():
 @app.route("/admin/api/chatbot-settings", methods=["GET"])
 @admin_required
 def admin_get_chatbot():
-    """GET the current chatbot settings."""
-    settings = query_db("SELECT * FROM chatbot_settings WHERE id = 1", fetchone=True)
-    return jsonify(settings or {})
+    """GET the current chatbot settings + feature visibility flags."""
+    settings = query_db("SELECT * FROM chatbot_settings WHERE id = 1", fetchone=True) or {}
+    out = dict(settings)
+    # Surface feature visibility so the UI can hide gated controls without a
+    # second round-trip. The frontend uses _features.agent_scope_slider to
+    # decide whether to render the Scope Tightness slider.
+    out["_features"] = {
+        "agent_scope_slider": tenant_has_feature("agent_scope_slider"),
+    }
+    return jsonify(out)
 
 
 @app.route("/admin/api/chatbot-settings", methods=["PUT"])
@@ -16537,7 +17045,7 @@ def admin_get_chatbot():
 def admin_update_chatbot():
     """
     PUT /admin/api/chatbot-settings
-    Update the chatbot configuration including system_prompt.
+    Update the chatbot configuration including system_prompt and agent_scope_tightness.
     """
     data = request.get_json()
     try:
@@ -16545,11 +17053,17 @@ def admin_update_chatbot():
                             "Updated from admin dashboard")
     except Exception as _e:
         print(f"[snapshot] chatbot_settings: {_e}")
+    # Validate agent_scope_tightness — fall back to 'balanced' on garbage so
+    # we never store an unknown value that would later confuse the prompt.
+    scope_in = (data.get("agent_scope_tightness") or "balanced").strip().lower()
+    if scope_in not in _AGENT_SCOPE_VALUES:
+        scope_in = "balanced"
     settings = execute_db(
         """UPDATE chatbot_settings SET
              enabled = %s, mode = %s, agent_name = %s, agent_role = %s,
              agent_avatar = %s, greeting = %s, quick_prompts = %s::jsonb,
              api_endpoint = %s, embed_code = %s, system_prompt = %s,
+             agent_scope_tightness = %s,
              updated_at = NOW()
            WHERE id = 1 RETURNING *""",
         (
@@ -16562,7 +17076,8 @@ def admin_update_chatbot():
             json.dumps(data.get("quick_prompts", [])),
             data.get("api_endpoint", "/api/chat"),
             data.get("embed_code", ""),
-            data.get("system_prompt", "")
+            data.get("system_prompt", ""),
+            scope_in,
         )
     )
     return jsonify(settings)
@@ -27888,6 +28403,66 @@ def _unsubscribe_page(message: str) -> str:
         f'<div class="card"><h1>Unsubscribe</h1><p>{message}</p></div>'
         '</body></html>'
     )
+
+
+# =============================================================================
+# PLANS & FEATURES — admin endpoints
+# =============================================================================
+# Backs the "Plans & Features" tab in the dashboard. Lists every feature in
+# _FEATURE_REGISTRY together with whether the current tenant has it enabled,
+# and lets an admin flip the toggle. The flip writes through to tenant_features
+# and busts the in-process cache so the change is live on the very next request.
+
+@app.route("/admin/api/tenant/features", methods=["GET"])
+@admin_required
+def admin_list_tenant_features():
+    """Return every known feature + on/off state + plan tier + addon flag."""
+    try:
+        tid = current_tenant_id()
+        # Pull plan + tenant info so the UI can show "you're on the Growth plan".
+        # NOTE: the plans table has columns (id, slug, name, description,
+        # sort_order). We expose `slug` as `plan_code` for UI back-compat.
+        tenant = query_db(
+            "SELECT t.id, t.name AS tenant_name, t.plan_id, "
+            "       p.slug AS plan_code, p.name AS plan_name "
+            "FROM tenants t LEFT JOIN plans p ON p.id = t.plan_id "
+            "WHERE t.id = %s",
+            (tid,), fetchone=True,
+        ) or {}
+        features = list_tenant_features(tid)
+        plans = query_db(
+            "SELECT id, slug AS code, name, description, sort_order "
+            "FROM plans ORDER BY sort_order, id"
+        ) or []
+        return jsonify({
+            "tenant": dict(tenant) if tenant else {"id": tid},
+            "features": features,
+            "plans": [dict(p) for p in plans],
+        })
+    except Exception as e:
+        print(f"[plans] list_tenant_features failed: {e}")
+        return jsonify({"error": "failed_to_list_features", "detail": str(e)}), 500
+
+
+@app.route("/admin/api/tenant/features/<name>", methods=["PATCH"])
+@admin_required
+def admin_toggle_tenant_feature(name):
+    """Flip one feature on/off. Body: {"enabled": bool, "note"?: str}."""
+    body = request.get_json(silent=True) or {}
+    if "enabled" not in body:
+        return jsonify({"error": "missing_field", "field": "enabled"}), 400
+    try:
+        new_val = set_tenant_feature(
+            name,
+            bool(body.get("enabled")),
+            note=str(body.get("note") or ""),
+        )
+        return jsonify({"feature": name, "enabled": new_val})
+    except ValueError as ve:
+        return jsonify({"error": "unknown_feature", "feature": name, "detail": str(ve)}), 400
+    except Exception as e:
+        print(f"[plans] toggle feature {name} failed: {e}")
+        return jsonify({"error": "toggle_failed", "detail": str(e)}), 500
 
 
 # --- Scheduler boot ----------------------------------------------------------
