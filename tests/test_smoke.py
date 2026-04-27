@@ -255,3 +255,42 @@ def test_setup_route_responds_in_either_state(client):
     """/setup is 200 on a fresh install, 404 once bootstrapped — both fine."""
     r = client.get("/setup")
     assert r.status_code in (200, 404), f"got {r.status_code}"
+
+
+# =============================================================================
+# Storage backend (Tier 9 — April 2026)
+#
+# These run against whatever backend is configured for the test session
+# (default `local`; set UPLOADS_BACKEND=s3 + the S3_* vars in CI to also
+# exercise the boto3 path). The dummy key lives under `__smoke__/` so it
+# can't collide with any real /uploads/<file> URL the app might produce.
+# =============================================================================
+
+def test_storage_singleton_returns_known_backend():
+    """get_storage() must return one of the two known backends so the
+    test environment fails loud if a third one is wired in by accident."""
+    from storage import get_storage
+    name = get_storage().name
+    assert name in ("local", "s3"), f"unexpected backend: {name!r}"
+
+
+def test_storage_write_read_delete_roundtrip():
+    """write_bytes -> read_bytes -> exists -> delete -> exists must be
+    transactional from the caller's POV. Hits the same code path that the
+    deck-import, admin-upload, and TTS-cache call sites all rely on."""
+    import secrets as _s
+    from storage import get_storage
+    store = get_storage()
+    key = f"__smoke__/{_s.token_hex(8)}.bin"
+    payload = b"tier-9-storage-roundtrip-" + _s.token_bytes(8)
+    try:
+        store.write_bytes(key, payload, content_type="application/octet-stream")
+        assert store.exists(key) is True, "exists() should report True after write"
+        assert store.read_bytes(key) == payload, "read_bytes() must round-trip exact bytes"
+    finally:
+        # Always clean up so a test crash doesn't leave litter for the next run.
+        try:
+            store.delete(key)
+        except Exception:
+            pass
+    assert store.exists(key) is False, "exists() should report False after delete"

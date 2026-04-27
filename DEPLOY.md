@@ -254,6 +254,38 @@ The doctor reports on:
     `10` is plenty; for a `gunicorn -w N` deploy set `DB_POOL_MAX` per
     worker so total open conns stay within your Postgres `max_connections`
     (cluster total ≤ `N × DB_POOL_MAX + headroom`).
+- **Object storage env vars (Tier 9 — April 2026)**: leave **all seven**
+  unset to keep the legacy local-disk behaviour (everything goes under
+  `uploads/`, `uploads/voice/`, `uploads/contracts/` on the application's
+  filesystem). Set them all to push every upload through any S3-compatible
+  bucket — AWS S3, Cloudflare R2, MinIO, Wasabi, etc. The S3 backend has a
+  built-in fallback to local disk on any read miss, so you can flip the
+  switch on a deploy that already has files under `uploads/` and they
+  keep serving while every new write lands in the bucket. (A one-shot
+  migration script to copy the legacy files into the bucket is on the
+  follow-up list.)
+  - `UPLOADS_BACKEND` — `local` (default) or `s3`. Anything else falls
+    through to `local`.
+  - `S3_BUCKET` — bucket / R2-namespace name. Required when backend is `s3`.
+  - `S3_REGION` — AWS region (`us-east-1`, `eu-central-1`, …). For R2 and
+    MinIO this can be any non-empty string (`auto` is conventional for R2).
+  - `S3_ENDPOINT_URL` — custom endpoint for non-AWS targets. Examples:
+    R2: `https://<account-id>.r2.cloudflarestorage.com`;
+    MinIO: `https://minio.example.com`;
+    Wasabi: `https://s3.us-east-1.wasabisys.com`. Leave unset for AWS.
+  - `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` — credentials with read +
+    write on the bucket. Treat them as secrets; never commit them.
+  - `S3_FORCE_PATH_STYLE` — `1` for MinIO and any S3-proxy that doesn't
+    do virtual-hosted-style addressing; `0` or unset for AWS / R2 / Wasabi.
+  - `UPLOADS_PUBLIC_BASE_URL` — optional. When set (e.g. to a CloudFront
+    distribution or an R2 public hostname), the app emits CDN-direct URLs
+    instead of routing every byte through Flask. Leave unset to serve
+    through `/uploads/<file>` like before.
+
+  Switch to `s3` if any of the following is true: the host has an
+  ephemeral filesystem (Replit deploys, Heroku-style PaaS, Fly machines
+  without volumes), you run multiple `gunicorn` workers behind a load
+  balancer, or you want a CDN in front of uploaded media.
 - **CSRF protection (Tier 7 — automatic, no env vars)**: every
   state-changing request to `/admin/*` is now validated against a
   per-session CSRF token. The dashboard SPA picks the token up from a

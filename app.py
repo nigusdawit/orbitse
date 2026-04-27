@@ -75,10 +75,12 @@ import psycopg2.extras
 import sentry_sdk
 from cryptography.fernet import Fernet, InvalidToken
 
+import io
 import stripe_client
 import messaging
 import automations
 import scraper
+import storage
 from flask import (
     Flask, request, jsonify, send_from_directory,
     render_template, session, redirect, url_for, Response, stream_with_context,
@@ -16237,13 +16239,13 @@ def _render_pdf_to_slide_rows(pdf_bytes, created_files, fitz_mod, pil_image_mod)
             buf = _io.BytesIO()
             img.save(buf, format="JPEG", quality=85, optimize=True)
             unique_name = f"{secrets.token_hex(8)}.jpg"
-            disk_path = os.path.join(UPLOAD_FOLDER, unique_name)
             try:
-                with open(disk_path, "wb") as fh:
-                    fh.write(buf.getvalue())
-                created_files.append(disk_path)
+                storage.get_storage().write_bytes(
+                    unique_name, buf.getvalue(), content_type="image/jpeg"
+                )
+                created_files.append(unique_name)
             except Exception as _e:
-                # Disk write failure is a server-side problem, not the
+                # Storage write failure is a server-side problem, not the
                 # admin's fault — return 500 so they don't think their
                 # file is malformed.
                 return rows, f"Could not save page image: {_e}", 500
@@ -16371,14 +16373,16 @@ def admin_import_presentation():
 
     warnings = []
     slide_rows = []  # accumulator: dicts with title/body/image_url/narration_text
-    created_files = []  # absolute disk paths we wrote during extraction; we
+    created_files = []  # storage subpaths we wrote during extraction; we
                         # delete these if anything fails before COMMIT, so a
-                        # half-finished import never leaves orphaned uploads.
+                        # half-finished import never leaves orphaned uploads
+                        # (works for both local-disk and S3 backends).
 
     def _cleanup_created_files():
+        _store = storage.get_storage()
         for _p in created_files:
             try:
-                os.unlink(_p)
+                _store.delete(_p)
             except Exception:
                 pass
 
@@ -16436,10 +16440,9 @@ def admin_import_presentation():
         for f in sorted_files:
             ext = f.filename.rsplit(".", 1)[-1].lower()
             unique_name = f"{secrets.token_hex(8)}.{ext}"
-            disk_path = os.path.join(UPLOAD_FOLDER, unique_name)
             try:
-                f.save(disk_path)
-                created_files.append(disk_path)
+                storage.get_storage().write_fileobj(unique_name, f)
+                created_files.append(unique_name)
             except Exception as e:
                 _cleanup_created_files()
                 return jsonify({"error": f"Could not save uploaded image: {str(e)[:300]}"}), 500
@@ -16629,23 +16632,22 @@ def admin_generate_narration(pid):
         # External URLs (admin pasted a CDN link, etc.) — pass through.
         if img.startswith(("http://", "https://")):
             return img
-        # Local /uploads/<file> — read from disk, base64 encode.
+        # Local-style /uploads/<file> URL — read bytes via the storage
+        # backend (disk or S3) and base64-encode for the vision API.
         if img.startswith("/uploads/"):
             rel = img[len("/uploads/"):]
-            # Belt-and-braces: although image_url comes from our own
-            # import code (never user input), an admin could in theory
-            # paste a crafted path. Resolve and confirm the result is
-            # actually inside UPLOAD_FOLDER before opening it.
-            disk = os.path.realpath(os.path.join(UPLOAD_FOLDER, rel))
-            upload_root = os.path.realpath(UPLOAD_FOLDER)
-            if not disk.startswith(upload_root + os.sep) and disk != upload_root:
-                return None
-            if not os.path.isfile(disk):
+            # Belt-and-braces: image_url comes from our own import code,
+            # but defend against an admin pasting a crafted ../traversal.
+            # The storage layer also rejects '..' but we double-check here
+            # so a hostile input fails closed (returns None) instead of
+            # raising into the caller's try/except as a 500.
+            if not rel or rel.startswith("/") or ".." in rel.split("/"):
                 return None
             try:
-                with open(disk, "rb") as fh:
-                    raw = fh.read()
+                raw = storage.get_storage().read_bytes(rel)
             except Exception:
+                return None
+            if raw is None:
                 return None
             ext = (rel.rsplit(".", 1)[-1] or "jpg").lower()
             mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
@@ -19388,8 +19390,11 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 @app.route("/uploads/<path:filename>")
 def serve_upload(filename):
-    """Serve uploaded images from the /uploads directory."""
-    return send_from_directory(UPLOAD_FOLDER, filename)
+    """Serve uploaded media via the configured storage backend (local
+    disk or S3-compatible bucket). The S3 backend transparently falls
+    back to disk for files written before the migration, so existing
+    /uploads/<file> URLs in the DB keep working post-cutover."""
+    return storage.get_storage().serve(filename)
 
 
 @app.route("/admin/api/upload-image", methods=["POST"])
@@ -19406,9 +19411,10 @@ def admin_upload_image():
         return jsonify({"error": f"File type .{ext} not allowed. Use jpg, png, gif, or webp."}), 400
 
     unique_name = f"{secrets.token_hex(8)}.{ext}"
-    f.save(os.path.join(UPLOAD_FOLDER, unique_name))
-    file_size = os.path.getsize(os.path.join(UPLOAD_FOLDER, unique_name))
     _, mime = _classify_media(ext)
+    _store = storage.get_storage()
+    _store.write_fileobj(unique_name, f, content_type=mime)
+    file_size = _store.size(unique_name) or 0
 
     execute_db(
         "INSERT INTO uploaded_images (filename, original_name, file_size, media_type, mime_type) "
@@ -19470,9 +19476,9 @@ def admin_upload_media():
             errors.append({"filename": f.filename, "error": "Unknown media type"})
             continue
         unique_name = f"{secrets.token_hex(8)}.{ext}"
-        path = os.path.join(UPLOAD_FOLDER, unique_name)
-        f.save(path)
-        size = os.path.getsize(path)
+        _store = storage.get_storage()
+        _store.write_fileobj(unique_name, f, content_type=mime)
+        size = _store.size(unique_name) or 0
         row = query_db(
             "INSERT INTO uploaded_images (filename, original_name, file_size, media_type, mime_type) "
             "VALUES (%s, %s, %s, %s, %s) RETURNING id, uploaded_at",
@@ -19502,10 +19508,8 @@ def admin_delete_media(media_id):
         return jsonify({"error": "Not found"}), 404
     # Best-effort file removal — DB delete is the source of truth.
     try:
-        path = os.path.join(UPLOAD_FOLDER, row["filename"])
-        if os.path.isfile(path):
-            os.remove(path)
-    except OSError:
+        storage.get_storage().delete(row["filename"])
+    except Exception:
         pass
     execute_db("DELETE FROM uploaded_images WHERE id = %s", (media_id,))
     return jsonify({"ok": True})
@@ -21631,10 +21635,11 @@ def _voice_provider_status():
     }
 
 
-def _generate_tts_openai(text, voice_id, model, filepath):
-    """OpenAI TTS implementation. Streams the result to `filepath`. Raises
-    if the direct OpenAI client isn't configured (i.e. OPENAI_API_KEY
-    secret not set) so the caller can return a helpful 503."""
+def _generate_tts_openai(text, voice_id, model, cache_subpath):
+    """OpenAI TTS implementation (non-streaming). Synthesizes the full MP3
+    in memory and uploads it to `cache_subpath` via the storage backend.
+    Raises if the direct OpenAI client isn't configured so the caller can
+    return a helpful 503."""
     if not openai_direct_client:
         raise RuntimeError("OPENAI_API_KEY not configured — required for OpenAI TTS")
     response = openai_direct_client.audio.speech.create(
@@ -21642,14 +21647,17 @@ def _generate_tts_openai(text, voice_id, model, filepath):
         voice=voice_id,
         input=text,
     )
-    response.stream_to_file(filepath)
+    # OpenAI's binary response exposes both `.read()` and `.content`; prefer
+    # `.read()` so we work whether the SDK returns a streamed or buffered body.
+    audio_bytes = response.read() if hasattr(response, "read") else response.content
+    storage.get_storage().write_bytes(cache_subpath, audio_bytes, content_type="audio/mpeg")
 
 
-def _generate_tts_elevenlabs(text, voice_id, model, filepath):
-    """ElevenLabs TTS implementation. POSTs to the v1 text-to-speech
-    endpoint and writes the returned MP3 stream to `filepath`. Raises with
-    a useful message if the API rejects the request (bad voice id, no
-    quota, missing key, etc)."""
+def _generate_tts_elevenlabs(text, voice_id, model, cache_subpath):
+    """ElevenLabs TTS implementation (non-streaming). POSTs to the v1
+    text-to-speech endpoint, buffers the MP3 in memory, then uploads to
+    `cache_subpath`. Raises with a useful message if the API rejects the
+    request (bad voice id, no quota, missing key, etc)."""
     if not ELEVENLABS_API_KEY:
         raise RuntimeError("ELEVENLABS_API_KEY not configured — required for ElevenLabs TTS")
     if not voice_id:
@@ -21674,28 +21682,31 @@ def _generate_tts_elevenlabs(text, voice_id, model, filepath):
         },
     }
     # 60s timeout — TTS can take a few seconds for longer text
+    buf = io.BytesIO()
     with httpx.stream("POST", url, headers=headers, json=body, timeout=60.0) as r:
         if r.status_code != 200:
             # Drain to grab the JSON error body
             err_text = r.read().decode("utf-8", errors="replace")[:300]
             raise RuntimeError(f"ElevenLabs API error {r.status_code}: {err_text}")
-        with open(filepath, "wb") as f:
-            for chunk in r.iter_bytes():
-                if chunk:
-                    f.write(chunk)
+        for chunk in r.iter_bytes():
+            if chunk:
+                buf.write(chunk)
+    storage.get_storage().write_bytes(cache_subpath, buf.getvalue(), content_type="audio/mpeg")
 
 
-def _stream_tts_openai(text, voice_id, model, cache_filepath, tmp_path):
+def _stream_tts_openai(text, voice_id, model, cache_subpath):
     """Generator that yields MP3 chunks from OpenAI's streaming TTS endpoint
-    while teeing the bytes to a cache file on disk. The cache file is only
+    while buffering the bytes in memory; on a clean stream end we upload the
+    full MP3 to the storage backend at `cache_subpath`. The cache write is
+    only
     promoted to its final location once the stream completes successfully —
     a partial download (client disconnect, provider error) leaves no cache
     artifact, so the next request retries from scratch.
 
-    `tmp_path` MUST be unique per request (e.g. include a uuid) so that two
-    concurrent misses for the same cache key don't write to the same file
-    and corrupt each other. Last writer wins on the final `os.replace`,
-    which is fine — both produced the same MP3 from the same input.
+    Concurrent misses for the same cache key are harmless: each request
+    builds its own in-memory buffer and uploads independently. Last writer
+    wins on the final storage upload, which is fine — both produced the
+    same MP3 from the same input.
 
     Raises RuntimeError if OpenAI is not configured. The caller is expected
     to handle this BEFORE entering the streaming response (since once we've
@@ -21714,38 +21725,41 @@ def _stream_tts_openai(text, voice_id, model, cache_filepath, tmp_path):
     )
 
     def gen():
+        # Buffer in memory while streaming so the cache write is atomic from
+        # the client's perspective: either the whole MP3 lands in storage or
+        # nothing does. Memory cost is bounded by TTS_MAX_CHARS (~10KB MP3 per
+        # 1KB text), well below any reasonable per-worker cap.
+        buf = io.BytesIO()
         try:
             with streaming_ctx as response:
-                with open(tmp_path, "wb") as f:
-                    for chunk in response.iter_bytes(chunk_size=4096):
-                        if chunk:
-                            f.write(chunk)
-                            yield chunk
-            os.replace(tmp_path, cache_filepath)
-        except GeneratorExit:
-            # Client disconnected mid-stream — drop the partial cache file.
+                for chunk in response.iter_bytes(chunk_size=4096):
+                    if chunk:
+                        buf.write(chunk)
+                        yield chunk
+            # Stream complete — promote the buffered MP3 to permanent storage.
+            # A cache write failure must NOT corrupt the user's playback (they
+            # already received the bytes in real time); the next request just
+            # re-synthesizes from the provider.
             try:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except OSError:
-                pass
+                storage.get_storage().write_bytes(
+                    cache_subpath, buf.getvalue(), content_type="audio/mpeg"
+                )
+            except Exception as _e:
+                print(f"[TTS cache write failed — playback unaffected] {_e}")
+        except GeneratorExit:
+            # Client disconnected mid-stream — discard the partial buffer.
             raise
         except Exception:
-            try:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except OSError:
-                pass
             raise
 
     return gen()
 
 
-def _stream_tts_elevenlabs(text, voice_id, model, cache_filepath, tmp_path):
+def _stream_tts_elevenlabs(text, voice_id, model, cache_subpath):
     """Generator that yields MP3 chunks from ElevenLabs' /stream endpoint
-    while teeing the bytes to a cache file on disk. Same partial-cleanup
-    contract as `_stream_tts_openai`. `tmp_path` MUST be unique per request.
-    """
+    while buffering the bytes in memory; on clean stream end we upload the
+    full MP3 to `cache_subpath`. Same partial-cleanup contract as
+    `_stream_tts_openai` (cache write failure does not break playback)."""
     if not ELEVENLABS_API_KEY:
         raise RuntimeError("ELEVENLABS_API_KEY not configured — required for ElevenLabs TTS")
     if not voice_id:
@@ -21770,30 +21784,26 @@ def _stream_tts_elevenlabs(text, voice_id, model, cache_filepath, tmp_path):
     }
 
     def gen():
+        buf = io.BytesIO()
         try:
             with httpx.stream("POST", url, headers=headers, json=body, timeout=60.0) as r:
                 if r.status_code != 200:
                     err_text = r.read().decode("utf-8", errors="replace")[:300]
                     raise RuntimeError(f"ElevenLabs API error {r.status_code}: {err_text}")
-                with open(tmp_path, "wb") as f:
-                    for chunk in r.iter_bytes():
-                        if chunk:
-                            f.write(chunk)
-                            yield chunk
-            os.replace(tmp_path, cache_filepath)
-        except GeneratorExit:
+                for chunk in r.iter_bytes():
+                    if chunk:
+                        buf.write(chunk)
+                        yield chunk
+            # Stream complete — promote the buffered MP3 to permanent storage.
             try:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except OSError:
-                pass
+                storage.get_storage().write_bytes(
+                    cache_subpath, buf.getvalue(), content_type="audio/mpeg"
+                )
+            except Exception as _e:
+                print(f"[TTS cache write failed — playback unaffected] {_e}")
+        except GeneratorExit:
             raise
         except Exception:
-            try:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except OSError:
-                pass
             raise
 
     return gen()
@@ -21830,17 +21840,17 @@ def _generate_tts_audio(text, voice_id, model, provider="openai", elevenlabs_voi
     # Cache key includes the provider so different providers don't collide
     cache_key = f"{provider}:{eff_model}:{eff_voice}:{text}"
     filename = _voice_cache_filename(cache_key, eff_voice, eff_model)
-    filepath = os.path.join(VOICE_CACHE_DIR, filename)
+    cache_subpath = f"voice/{filename}"
     audio_url = f"/uploads/voice/{filename}"
 
-    if os.path.exists(filepath):
+    if storage.get_storage().exists(cache_subpath):
         return audio_url, True, provider  # Cache hit — no API call needed
 
     # Cache miss — dispatch to the right provider implementation
     if provider == "elevenlabs":
-        _generate_tts_elevenlabs(text, eff_voice, eff_model, filepath)
+        _generate_tts_elevenlabs(text, eff_voice, eff_model, cache_subpath)
     else:
-        _generate_tts_openai(text, eff_voice, eff_model, filepath)
+        _generate_tts_openai(text, eff_voice, eff_model, cache_subpath)
 
     return audio_url, False, provider
 
@@ -21851,9 +21861,9 @@ def _generate_tts_audio(text, voice_id, model, provider="openai", elevenlabs_voi
 
 @app.route("/uploads/voice/<path:filename>")
 def serve_voice_file(filename):
-    """Serve a cached TTS audio file. Browser will treat it as audio/mpeg
-    based on the .mp3 extension."""
-    return send_from_directory(VOICE_CACHE_DIR, filename)
+    """Serve a cached TTS audio file via the configured storage backend.
+    Forces audio/mpeg so browsers play it inline rather than downloading."""
+    return storage.get_storage().serve(f"voice/{filename}", mimetype="audio/mpeg")
 
 
 # -----------------------------------------------------------------------------
@@ -22020,7 +22030,7 @@ def api_voice_tts():
     # you'd want to honor X-Forwarded-For.
     cache_key_preview = f"{provider}:{model}:{voice_id}:{text[:TTS_MAX_CHARS]}"
     cache_filename = _voice_cache_filename(cache_key_preview, voice_id, model)
-    will_be_cached = os.path.exists(os.path.join(VOICE_CACHE_DIR, cache_filename))
+    will_be_cached = storage.get_storage().exists(f"voice/{cache_filename}")
     if not will_be_cached:
         client_ip = request.remote_addr or "unknown"
         if not _check_tts_ip_budget(client_ip, len(text)):
@@ -22163,9 +22173,9 @@ def api_voice_tts_stream_prepare():
     # Cache lookup — if already synthesized, return the static URL directly.
     cache_key = f"{provider}:{eff_model}:{eff_voice}:{text}"
     filename = _voice_cache_filename(cache_key, eff_voice, eff_model)
-    filepath = os.path.join(VOICE_CACHE_DIR, filename)
+    cache_subpath = f"voice/{filename}"
 
-    if os.path.exists(filepath):
+    if storage.get_storage().exists(cache_subpath):
         _log_voice_usage(
             feature_type="tts_cached", char_count=len(text),
             voice_id=eff_voice, session_id=session_id,
@@ -22188,7 +22198,7 @@ def api_voice_tts_stream_prepare():
         "model": eff_model,
         "provider": provider,
         "cache_filename": filename,
-        "cache_filepath": filepath,
+        "cache_subpath": cache_subpath,
         "session_id": session_id,
     })
     return jsonify({
@@ -22225,31 +22235,31 @@ def api_voice_tts_stream_consume():
     eff_voice = payload["voice"]
     eff_model = payload["model"]
     provider = payload["provider"]
-    filepath = payload["cache_filepath"]
+    cache_subpath = payload["cache_subpath"]
     filename = payload["cache_filename"]
     session_id = payload["session_id"]
 
     # A second client could have generated the cache file between prepare
     # and consume — serve it if so, no need to re-synthesize.
-    if os.path.exists(filepath):
+    _store = storage.get_storage()
+    if _store.exists(cache_subpath):
         _log_voice_usage(
             feature_type="tts_cached", char_count=len(text),
             voice_id=eff_voice, session_id=session_id,
         )
-        return send_from_directory(VOICE_CACHE_DIR, filename, mimetype="audio/mpeg")
+        return _store.serve(cache_subpath, mimetype="audio/mpeg")
 
-    # Unique per-request tmp file so concurrent same-key misses don't trample
-    # each other. Last writer wins on `os.replace`, which is harmless because
-    # both produce identical MP3 bytes from identical inputs.
-    tmp_path = filepath + f".{os.getpid()}.{_uuid.uuid4().hex}.part"
+    # Concurrent same-key misses are harmless: the last write wins, and both
+    # producers buffer identical MP3 bytes from identical inputs before
+    # uploading. No per-request tmp file needed with the buffered approach.
 
     # Open the provider stream synchronously so config/auth errors surface
     # as proper HTTP errors before we start writing the audio body.
     try:
         if provider == "elevenlabs":
-            byte_iter = _stream_tts_elevenlabs(text, eff_voice, eff_model, filepath, tmp_path)
+            byte_iter = _stream_tts_elevenlabs(text, eff_voice, eff_model, cache_subpath)
         else:
-            byte_iter = _stream_tts_openai(text, eff_voice, eff_model, filepath, tmp_path)
+            byte_iter = _stream_tts_openai(text, eff_voice, eff_model, cache_subpath)
     except RuntimeError as e:
         print(f"[TTS stream config error] {e}")
         return Response(str(e), status=503, mimetype="text/plain")
@@ -24022,7 +24032,7 @@ def admin_upload_contract_template(svc_id):
             "error": f"File type .{ext} not allowed. Use pdf, doc, or docx."
         }), 400
     unique_name = f"template_{svc_id}_{secrets.token_hex(6)}.{ext}"
-    f.save(os.path.join(CONTRACT_UPLOAD_FOLDER, unique_name))
+    storage.get_storage().write_fileobj(f"contracts/{unique_name}", f)
     url = f"/uploads/contracts/{unique_name}"
     row = execute_db(
         "UPDATE services SET contract_template_url = %s, "
@@ -24035,8 +24045,9 @@ def admin_upload_contract_template(svc_id):
 
 @app.route("/uploads/contracts/<path:filename>")
 def serve_contract(filename):
-    """Serve uploaded contract templates and signed copies."""
-    return send_from_directory(CONTRACT_UPLOAD_FOLDER, filename)
+    """Serve uploaded contract templates and signed copies via the
+    configured storage backend (local disk or S3-compatible bucket)."""
+    return storage.get_storage().serve(f"contracts/{filename}")
 
 
 # --------------- Admin: bookings list + status updates ---------------
@@ -24683,7 +24694,7 @@ def api_upload_signed_contract(token):
             "error": f"File type .{ext} not allowed. Use pdf, doc, or docx."
         }), 400
     unique_name = f"signed_{booking['id']}_{secrets.token_hex(6)}.{ext}"
-    f.save(os.path.join(CONTRACT_UPLOAD_FOLDER, unique_name))
+    storage.get_storage().write_fileobj(f"contracts/{unique_name}", f)
     url = f"/uploads/contracts/{unique_name}"
     row = execute_db(
         "UPDATE service_bookings SET signed_contract_url = %s, "
