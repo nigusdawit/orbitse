@@ -2514,7 +2514,235 @@ def init_db():
                       AND payment_status NOT IN ('expired', 'refunded');
                 CREATE INDEX IF NOT EXISTS idx_bookings_recent
                     ON service_bookings (created_at DESC);
+
+                -- =============================================================
+                -- COST TRANSPARENCY (Phase 2)
+                -- =============================================================
+                -- model_prices: admin-editable per-unit prices for every
+                -- third-party API the app meters. We use *unit* names
+                -- specific to each provider so the math is transparent:
+                --   * OpenAI / Claude chat: input_price_per_million_tokens
+                --     and output_price_per_million_tokens (cost = tokens
+                --     * price / 1_000_000).
+                --   * TTS (OpenAI / ElevenLabs): tts_price_per_million_chars.
+                --   * STT (Whisper): stt_price_per_minute.
+                --   * SMS (Twilio): sms_price_per_segment.
+                -- A single row holds whichever fields apply for that
+                -- model; unused fields are NULL (NOT zero — zero would
+                -- silently price something at $0). The `active` flag
+                -- lets the admin retire an old model row without losing
+                -- the historical reference.
+                CREATE TABLE IF NOT EXISTS model_prices (
+                    id                                SERIAL PRIMARY KEY,
+                    provider                          VARCHAR(40)  NOT NULL,
+                    model                             VARCHAR(120) NOT NULL,
+                    surface                           VARCHAR(40)  NOT NULL DEFAULT 'chat',
+                    input_price_per_million_tokens    NUMERIC(12,6),
+                    output_price_per_million_tokens   NUMERIC(12,6),
+                    tts_price_per_million_chars       NUMERIC(12,6),
+                    stt_price_per_minute              NUMERIC(12,6),
+                    sms_price_per_segment             NUMERIC(12,6),
+                    notes                             TEXT NOT NULL DEFAULT '',
+                    active                            BOOLEAN NOT NULL DEFAULT TRUE,
+                    updated_at                        TIMESTAMP DEFAULT NOW()
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_model_prices_lookup
+                    ON model_prices (provider, model, surface);
+
+                -- api_cost_events: one row per LLM round (visitor chat,
+                -- admin chat, page generation, deck narration, etc).
+                -- The unit_*_price_usd columns stamp the price *at the
+                -- time of the call* so a later price edit never shifts
+                -- historical totals. cost_usd = NULL means the call
+                -- happened but we couldn't price it (no matching
+                -- model_prices row, or provider didn't return usage).
+                CREATE TABLE IF NOT EXISTS api_cost_events (
+                    id                       SERIAL PRIMARY KEY,
+                    tenant_id                INTEGER NOT NULL DEFAULT 1,
+                    session_id               VARCHAR(100) NOT NULL DEFAULT '',
+                    visitor_id               VARCHAR(100) NOT NULL DEFAULT '',
+                    surface                  VARCHAR(40)  NOT NULL DEFAULT 'visitor_chat',
+                    provider                 VARCHAR(40)  NOT NULL DEFAULT '',
+                    model                    VARCHAR(120) NOT NULL DEFAULT '',
+                    prompt_tokens            INTEGER NOT NULL DEFAULT 0,
+                    completion_tokens        INTEGER NOT NULL DEFAULT 0,
+                    total_tokens             INTEGER NOT NULL DEFAULT 0,
+                    unit_input_price_usd     NUMERIC(14,8),
+                    unit_output_price_usd    NUMERIC(14,8),
+                    cost_usd                 NUMERIC(14,8),
+                    created_at               TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_api_cost_tenant_created
+                    ON api_cost_events (tenant_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_api_cost_tenant_surface
+                    ON api_cost_events (tenant_id, surface, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_api_cost_tenant_model
+                    ON api_cost_events (tenant_id, provider, model, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_api_cost_tenant_session
+                    ON api_cost_events (tenant_id, session_id, created_at DESC);
+
+                -- voice_cost_events: one row per TTS render OR STT
+                -- transcription. feature_type mirrors voice_usage_log
+                -- ('tts_generate_openai', 'tts_generate_elevenlabs',
+                -- 'tts_cached', 'stt_whisper', 'sample_audition').
+                -- char_count is set for TTS, audio_seconds for STT.
+                CREATE TABLE IF NOT EXISTS voice_cost_events (
+                    id                       SERIAL PRIMARY KEY,
+                    tenant_id                INTEGER NOT NULL DEFAULT 1,
+                    session_id               VARCHAR(100) NOT NULL DEFAULT '',
+                    surface                  VARCHAR(40)  NOT NULL DEFAULT 'voice_tts',
+                    provider                 VARCHAR(40)  NOT NULL DEFAULT '',
+                    model                    VARCHAR(120) NOT NULL DEFAULT '',
+                    feature_type             VARCHAR(40)  NOT NULL DEFAULT '',
+                    voice_id                 TEXT NOT NULL DEFAULT '',
+                    char_count               INTEGER NOT NULL DEFAULT 0,
+                    audio_seconds            NUMERIC(10,3) NOT NULL DEFAULT 0,
+                    unit_tts_price_usd       NUMERIC(14,8),
+                    unit_stt_price_usd       NUMERIC(14,8),
+                    cost_usd                 NUMERIC(14,8),
+                    created_at               TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_voice_cost_tenant_created
+                    ON voice_cost_events (tenant_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_voice_cost_tenant_provider
+                    ON voice_cost_events (tenant_id, provider, created_at DESC);
+
+                -- sms_cost_events: one row per outbound SMS send
+                -- attempt. Twilio's response includes 'num_segments'
+                -- which we use to compute cost. The status callback
+                -- webhook can correct the segment count if Twilio
+                -- later revises it (rare but possible for long /
+                -- non-GSM7 messages); we update by message_sid.
+                CREATE TABLE IF NOT EXISTS sms_cost_events (
+                    id                       SERIAL PRIMARY KEY,
+                    tenant_id                INTEGER NOT NULL DEFAULT 1,
+                    surface                  VARCHAR(40)  NOT NULL DEFAULT 'sms_outbound',
+                    provider                 VARCHAR(40)  NOT NULL DEFAULT 'twilio',
+                    to_number                VARCHAR(40)  NOT NULL DEFAULT '',
+                    message_sid              VARCHAR(80)  NOT NULL DEFAULT '',
+                    segments                 INTEGER NOT NULL DEFAULT 1,
+                    unit_sms_price_usd       NUMERIC(14,8),
+                    cost_usd                 NUMERIC(14,8),
+                    created_at               TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_sms_cost_tenant_created
+                    ON sms_cost_events (tenant_id, created_at DESC);
+                -- UNIQUE so retries / webhook updates can never create
+                -- duplicate ledger rows for the same Twilio SID. The
+                -- empty-string filter lets older rows (or any future
+                -- non-Twilio path) continue to insert without conflict.
+                -- DROP first because earlier dev iterations created the
+                -- index as non-unique under the same name; IF NOT EXISTS
+                -- alone would silently skip the upgrade.
+                DROP INDEX IF EXISTS idx_sms_cost_msgsid;
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_sms_cost_msgsid
+                    ON sms_cost_events (tenant_id, message_sid)
+                    WHERE message_sid <> '';
+
+                -- tenant_cost_caps: one row per tenant configuring the
+                -- monthly USD cap, the warn-at-percent trigger, and the
+                -- behaviour to apply when the cap is reached. Default
+                -- on first seed is 'alert_only' so existing tenants get
+                -- visibility without any service interruption.
+                CREATE TABLE IF NOT EXISTS tenant_cost_caps (
+                    id                       SERIAL PRIMARY KEY,
+                    tenant_id                INTEGER NOT NULL UNIQUE,
+                    monthly_cap_usd          NUMERIC(12,2),
+                    warn_at_percent          INTEGER NOT NULL DEFAULT 80,
+                    cap_behavior             VARCHAR(20) NOT NULL DEFAULT 'alert_only',
+                    alert_email              TEXT NOT NULL DEFAULT '',
+                    digest_email             TEXT NOT NULL DEFAULT '',
+                    digest_send_hour_utc     INTEGER NOT NULL DEFAULT 14,
+                    last_warned_period       VARCHAR(10) NOT NULL DEFAULT '',
+                    last_capped_period       VARCHAR(10) NOT NULL DEFAULT '',
+                    updated_at               TIMESTAMP DEFAULT NOW()
+                );
+
+                -- cost_alerts: idempotency log for warn-line and cap
+                -- alert emails. (tenant_id, period, kind) is unique
+                -- so the async warn-check can never double-fire even
+                -- under concurrent requests.
+                CREATE TABLE IF NOT EXISTS cost_alerts (
+                    id              SERIAL PRIMARY KEY,
+                    tenant_id       INTEGER NOT NULL,
+                    period          VARCHAR(10) NOT NULL,
+                    kind            VARCHAR(20) NOT NULL,
+                    spent_usd       NUMERIC(12,4) NOT NULL DEFAULT 0,
+                    cap_usd         NUMERIC(12,4) NOT NULL DEFAULT 0,
+                    sent_at         TIMESTAMP DEFAULT NOW()
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_cost_alerts_unique
+                    ON cost_alerts (tenant_id, period, kind);
+
+                -- weekly_digest_sends: idempotency log for the Monday
+                -- "What your AI did this week" email. (tenant_id,
+                -- week_start) is unique so a scheduler restart on a
+                -- Monday morning can never double-send.
+                CREATE TABLE IF NOT EXISTS weekly_digest_sends (
+                    id              SERIAL PRIMARY KEY,
+                    tenant_id       INTEGER NOT NULL,
+                    week_start      DATE NOT NULL,
+                    sent_at         TIMESTAMP DEFAULT NOW(),
+                    payload_json    JSONB
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_weekly_digest_unique
+                    ON weekly_digest_sends (tenant_id, week_start);
             """)
+
+            # Seed model_prices with current public list prices for the
+            # models actually wired into this app. ON CONFLICT DO NOTHING
+            # so an admin who edits a price in the UI never gets it
+            # reverted on the next restart. (provider, model, surface)
+            # is the conflict target via idx_model_prices_lookup.
+            cur.execute(
+                """
+                INSERT INTO model_prices
+                  (provider, model, surface,
+                   input_price_per_million_tokens,
+                   output_price_per_million_tokens,
+                   tts_price_per_million_chars,
+                   stt_price_per_minute,
+                   sms_price_per_segment, notes)
+                VALUES
+                  ('openai',     'gpt-4o-mini',           'chat', 0.150, 0.600, NULL, NULL, NULL,
+                   'OpenAI gpt-4o-mini list price (2025)'),
+                  ('openai',     'gpt-4o',                'chat', 2.500, 10.000, NULL, NULL, NULL,
+                   'OpenAI gpt-4o list price (2025)'),
+                  ('anthropic',  'claude-sonnet-4-5',     'chat', 3.000, 15.000, NULL, NULL, NULL,
+                   'Anthropic Claude Sonnet 4.5 list price (2025)'),
+                  ('anthropic',  'claude-opus-4',         'chat', 15.000, 75.000, NULL, NULL, NULL,
+                   'Anthropic Claude Opus 4 list price (2025)'),
+                  ('openai',     'tts-1',                 'tts',  NULL, NULL, 15.000, NULL, NULL,
+                   'OpenAI tts-1 list price (2025): $15 per 1M chars'),
+                  ('openai',     'tts-1-hd',              'tts',  NULL, NULL, 30.000, NULL, NULL,
+                   'OpenAI tts-1-hd list price (2025): $30 per 1M chars'),
+                  ('elevenlabs', 'eleven_turbo_v2_5',     'tts',  NULL, NULL, 50.000, NULL, NULL,
+                   'ElevenLabs Turbo v2.5 approx price (2025)'),
+                  ('elevenlabs', 'eleven_multilingual_v2','tts',  NULL, NULL, 90.000, NULL, NULL,
+                   'ElevenLabs Multilingual v2 approx price (2025)'),
+                  ('openai',     'whisper-1',             'stt',  NULL, NULL, NULL, 0.006, NULL,
+                   'OpenAI Whisper list price (2025): $0.006 per minute'),
+                  ('twilio',     'sms-us',                'sms',  NULL, NULL, NULL, NULL, 0.0079,
+                   'Twilio US outbound SMS approx price (2025): $0.0079 per segment')
+                ON CONFLICT (provider, model, surface) DO NOTHING
+                """
+            )
+
+            # Seed the default tenant cost cap row. cap_behavior =
+            # 'alert_only' so no existing tenant suddenly starts being
+            # blocked / throttled the moment this ships — they get
+            # observability + an email when they cross 80% of any cap
+            # they later set, but no behaviour change unless they
+            # opt in.
+            cur.execute(
+                """
+                INSERT INTO tenant_cost_caps
+                  (tenant_id, monthly_cap_usd, warn_at_percent,
+                   cap_behavior)
+                VALUES (1, NULL, 80, 'alert_only')
+                ON CONFLICT (tenant_id) DO NOTHING
+                """
+            )
     finally:
         conn.close()
 
@@ -2552,6 +2780,8 @@ _FEATURE_REGISTRY = [
     ("chat_history",         "Chat history & transcripts",   "solo",       True,  "Capabilities"),
     # Analytics
     ("analytics",            "Analytics dashboard",          "growth",     True,  "Analytics"),
+    ("cost_dashboard",       "Cost transparency dashboard",  "growth",     True,  "Analytics"),
+    ("weekly_digest",        "Weekly AI activity digest",    "growth",     True,  "Analytics"),
 ]
 _FEATURE_NAMES = {row[0] for row in _FEATURE_REGISTRY}
 _FEATURE_DEFAULTS = {row[0]: row[3] for row in _FEATURE_REGISTRY}
@@ -2785,6 +3015,624 @@ def _enforce_feature_flags():
                 }), 403
             break
     return None
+
+
+# =============================================================================
+# COST TRANSPARENCY  (Phase 2)
+# =============================================================================
+# Three ledgers (api_cost_events, voice_cost_events, sms_cost_events) plus
+# an admin-editable model_prices table and a per-tenant tenant_cost_caps
+# row drive the Cost dashboard, the warn-line alerts, and the weekly
+# digest. Every record_* helper here is exception-safe by design — a
+# logging failure must NEVER cause a chat / voice / SMS request to fail.
+# =============================================================================
+
+# Tiny in-process TTL cache for model_prices lookups. The price row is
+# read on every chat / voice / SMS event so even a 10-row table is worth
+# memoizing. _invalidate_price_cache() is called by the admin PATCH
+# endpoint so edits become visible immediately.
+_PRICE_CACHE = {}
+_PRICE_CACHE_EXP = {}
+_PRICE_CACHE_TTL_SEC = 60
+
+
+def _invalidate_price_cache():
+    _PRICE_CACHE.clear()
+    _PRICE_CACHE_EXP.clear()
+
+
+def get_model_price(provider, model, surface="chat"):
+    """Look up the active price row for (provider, model, surface).
+    Returns the row dict or None. Cached for 60s in-process."""
+    key = ((provider or "").lower(), (model or "").strip(), (surface or "chat").lower())
+    now = _time.time()
+    exp = _PRICE_CACHE_EXP.get(key, 0)
+    if exp > now and key in _PRICE_CACHE:
+        return _PRICE_CACHE[key]
+    try:
+        row = query_db(
+            "SELECT * FROM model_prices "
+            "WHERE LOWER(provider) = %s AND model = %s AND LOWER(surface) = %s "
+            "  AND active = TRUE LIMIT 1",
+            (key[0], key[1], key[2]),
+            fetchone=True,
+        )
+    except Exception as e:
+        print(f"[cost] price lookup failed for {key}: {e}")
+        row = None
+    _PRICE_CACHE[key] = row
+    _PRICE_CACHE_EXP[key] = now + _PRICE_CACHE_TTL_SEC
+    return row
+
+
+def _current_period():
+    """The 'YYYY-MM' string used to bucket monthly spend. UTC for now."""
+    return datetime.utcnow().strftime("%Y-%m")
+
+
+def _to_float(x, default=0.0):
+    try:
+        if x is None:
+            return default
+        return float(x)
+    except (TypeError, ValueError):
+        return default
+
+
+def record_chat_cost_from_response(response, *, surface="other", provider="openai",
+                                   model="", session_id="", visitor_id=""):
+    """Convenience wrapper that pulls .usage off a non-streaming OpenAI /
+    Claude response object and writes a cost row. Exception-safe — if
+    .usage isn't present we still write a row with zeros so callers can
+    see the call happened, just with an unknown cost."""
+    try:
+        u = getattr(response, "usage", None)
+        prompt = int(getattr(u, "prompt_tokens", 0) or 0) if u else 0
+        completion = int(getattr(u, "completion_tokens", 0) or 0) if u else 0
+        total = int(getattr(u, "total_tokens", prompt + completion) or 0) if u else 0
+        eff_model = model or getattr(response, "model", "") or ""
+        record_chat_cost(
+            session_id=session_id, visitor_id=visitor_id,
+            surface=surface, provider=provider, model=eff_model,
+            prompt_tokens=prompt, completion_tokens=completion,
+            total_tokens=total,
+        )
+    except Exception as e:
+        print(f"[cost] record_chat_cost_from_response failed: {e}")
+
+
+def record_chat_cost(*, tenant_id=None, session_id="", visitor_id="",
+                     surface="visitor_chat", provider="", model="",
+                     prompt_tokens=0, completion_tokens=0,
+                     total_tokens=None):
+    """Write one api_cost_events row. NEVER raises — failures log only.
+
+    Stamps the unit prices from model_prices at write time so a later
+    price edit can never shift historical totals."""
+    try:
+        tid = tenant_id if tenant_id is not None else current_tenant_id()
+        prompt = int(prompt_tokens or 0)
+        completion = int(completion_tokens or 0)
+        total = int(total_tokens) if total_tokens is not None else (prompt + completion)
+        price_row = get_model_price(provider, model, "chat")
+        unit_in = unit_out = cost = None
+        if price_row:
+            unit_in = price_row.get("input_price_per_million_tokens")
+            unit_out = price_row.get("output_price_per_million_tokens")
+            if unit_in is not None and unit_out is not None:
+                cost = (prompt * _to_float(unit_in) +
+                        completion * _to_float(unit_out)) / 1_000_000.0
+        execute_db(
+            "INSERT INTO api_cost_events "
+            "  (tenant_id, session_id, visitor_id, surface, provider, "
+            "   model, prompt_tokens, completion_tokens, total_tokens, "
+            "   unit_input_price_usd, unit_output_price_usd, cost_usd) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (tid, (session_id or "")[:100], (visitor_id or "")[:100],
+             (surface or "")[:40], (provider or "")[:40],
+             (model or "")[:120], prompt, completion, total,
+             unit_in, unit_out, cost),
+        )
+        # Async warn-check — also exception-safe, see helper below.
+        _async_warn_check(tid)
+    except Exception as e:
+        print(f"[cost] record_chat_cost failed: {e}")
+
+
+def record_voice_cost(*, tenant_id=None, session_id="", surface="voice_tts",
+                      provider="", model="", feature_type="", voice_id="",
+                      char_count=0, audio_seconds=0):
+    """Write one voice_cost_events row. NEVER raises."""
+    try:
+        tid = tenant_id if tenant_id is not None else current_tenant_id()
+        chars = int(char_count or 0)
+        secs = _to_float(audio_seconds, 0.0)
+        # Pick the price by the unit that's actually populated. STT is
+        # priced per minute, TTS per million chars. A 'cached' TTS hit
+        # has zero outgoing chars to the provider — record it for
+        # observability but cost = 0.
+        price_row = get_model_price(provider, model, "stt" if surface == "voice_stt" else "tts")
+        unit_tts = unit_stt = cost = None
+        if price_row:
+            unit_tts = price_row.get("tts_price_per_million_chars")
+            unit_stt = price_row.get("stt_price_per_minute")
+        if (feature_type or "").startswith("tts_cached"):
+            cost = 0.0
+        elif chars > 0 and unit_tts is not None:
+            cost = chars * _to_float(unit_tts) / 1_000_000.0
+        elif secs > 0 and unit_stt is not None:
+            cost = (secs / 60.0) * _to_float(unit_stt)
+        execute_db(
+            "INSERT INTO voice_cost_events "
+            "  (tenant_id, session_id, surface, provider, model, "
+            "   feature_type, voice_id, char_count, audio_seconds, "
+            "   unit_tts_price_usd, unit_stt_price_usd, cost_usd) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (tid, (session_id or "")[:100], (surface or "")[:40],
+             (provider or "")[:40], (model or "")[:120],
+             (feature_type or "")[:40], (voice_id or "")[:200],
+             chars, secs, unit_tts, unit_stt, cost),
+        )
+        _async_warn_check(tid)
+    except Exception as e:
+        print(f"[cost] record_voice_cost failed: {e}")
+
+
+def record_sms_cost(*, tenant_id=None, surface="sms_outbound", provider="twilio",
+                    to_number="", message_sid="", segments=1):
+    """Write one sms_cost_events row. NEVER raises. The pricing model is
+    flat per-segment using the seeded 'twilio'+'sms-us' row — admins
+    can edit it for non-US destinations."""
+    try:
+        tid = tenant_id if tenant_id is not None else current_tenant_id()
+        seg = max(1, int(segments or 1))
+        price_row = get_model_price(provider, "sms-us", "sms")
+        unit = price_row.get("sms_price_per_segment") if price_row else None
+        cost = (seg * _to_float(unit)) if unit is not None else None
+        # The (tenant_id, message_sid) UNIQUE index dedupes retries from
+        # the call site as well as any race with the Twilio status
+        # webhook firing before record_sms_cost finishes.
+        execute_db(
+            "INSERT INTO sms_cost_events "
+            "  (tenant_id, surface, provider, to_number, message_sid, "
+            "   segments, unit_sms_price_usd, cost_usd) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (tenant_id, message_sid) "
+            "  WHERE message_sid <> '' "
+            "  DO NOTHING",
+            (tid, (surface or "")[:40], (provider or "")[:40],
+             (to_number or "")[:40], (message_sid or "")[:80],
+             seg, unit, cost),
+        )
+        _async_warn_check(tid)
+    except Exception as e:
+        print(f"[cost] record_sms_cost failed: {e}")
+
+
+def compute_mtd_spend(tenant_id=None):
+    """Sum the three ledgers for the current month. Returns a dict with
+    chat_usd, voice_usd, sms_usd, total_usd (all floats, never None)."""
+    tid = tenant_id if tenant_id is not None else current_tenant_id()
+    period = _current_period() + "-01"
+    out = {"chat_usd": 0.0, "voice_usd": 0.0, "sms_usd": 0.0, "total_usd": 0.0}
+    try:
+        a = query_db(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS s FROM api_cost_events "
+            "WHERE tenant_id = %s AND created_at >= DATE_TRUNC('month', NOW())",
+            (tid,), fetchone=True)
+        v = query_db(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS s FROM voice_cost_events "
+            "WHERE tenant_id = %s AND created_at >= DATE_TRUNC('month', NOW())",
+            (tid,), fetchone=True)
+        s = query_db(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS s FROM sms_cost_events "
+            "WHERE tenant_id = %s AND created_at >= DATE_TRUNC('month', NOW())",
+            (tid,), fetchone=True)
+        out["chat_usd"] = _to_float((a or {}).get("s"))
+        out["voice_usd"] = _to_float((v or {}).get("s"))
+        out["sms_usd"] = _to_float((s or {}).get("s"))
+        out["total_usd"] = out["chat_usd"] + out["voice_usd"] + out["sms_usd"]
+    except Exception as e:
+        print(f"[cost] compute_mtd_spend failed: {e}")
+    return out
+
+
+def get_tenant_cost_cap(tenant_id=None):
+    """Read the tenant_cost_caps row, returning a dict with sane defaults
+    if no row exists yet (e.g. fresh tenant before init_db re-runs)."""
+    tid = tenant_id if tenant_id is not None else current_tenant_id()
+    try:
+        row = query_db(
+            "SELECT * FROM tenant_cost_caps WHERE tenant_id = %s",
+            (tid,), fetchone=True)
+        if row:
+            return row
+    except Exception as e:
+        print(f"[cost] get_tenant_cost_cap failed: {e}")
+    return {
+        "tenant_id": tid, "monthly_cap_usd": None, "warn_at_percent": 80,
+        "cap_behavior": "alert_only", "alert_email": "",
+        "digest_email": "", "digest_send_hour_utc": 14,
+        "last_warned_period": "", "last_capped_period": "",
+    }
+
+
+def enforce_cost_cap(surface="chat"):
+    """Decide whether the current request should be blocked / throttled
+    because the tenant has crossed its monthly cap. Returns:
+      * None      — request may proceed normally
+      * (resp, status) — Flask response tuple to return to the client
+    Behavior is governed by tenant_cost_caps.cap_behavior:
+      * 'alert_only'   — never blocks; cap is observability-only
+      * 'throttle'     — 429 when over cap (caller may retry next month)
+      * 'strict_block' — 402 when over cap (payment required)"""
+    if not tenant_has_feature("cost_dashboard"):
+        return None
+    cap_row = get_tenant_cost_cap()
+    behavior = (cap_row.get("cap_behavior") or "alert_only").lower()
+    if behavior == "alert_only":
+        return None
+    cap = cap_row.get("monthly_cap_usd")
+    if cap is None:
+        return None
+    spend = compute_mtd_spend().get("total_usd", 0.0)
+    if spend < _to_float(cap):
+        return None
+    msg = (f"Monthly AI spend cap reached ({spend:.2f} of {_to_float(cap):.2f} USD). "
+           "Service will resume on the 1st of next month, or raise the cap in "
+           "Admin → Cost.")
+    if behavior == "throttle":
+        return jsonify({"error": "cost_cap_reached", "message": msg,
+                        "spent_usd": round(spend, 4),
+                        "cap_usd": _to_float(cap)}), 429
+    # strict_block
+    return jsonify({"error": "cost_cap_reached", "message": msg,
+                    "spent_usd": round(spend, 4),
+                    "cap_usd": _to_float(cap)}), 402
+
+
+def cost_cap_blocks_send(surface="sms_outbound", tenant_id=None):
+    """Background-job variant of enforce_cost_cap. Returns True if the
+    tenant has hit its monthly cap AND the configured behavior is
+    'strict_block' or 'throttle' (i.e. the send should be skipped).
+    Returns False otherwise. Never raises — failures fail-open so a
+    misconfigured cap can't silently drop campaign sends."""
+    try:
+        if not tenant_has_feature("cost_dashboard", tenant_id=tenant_id):
+            return False
+        cap_row = get_tenant_cost_cap(tenant_id)
+        behavior = (cap_row.get("cap_behavior") or "alert_only").lower()
+        if behavior == "alert_only":
+            return False
+        cap = cap_row.get("monthly_cap_usd")
+        if cap is None:
+            return False
+        spend = compute_mtd_spend(tenant_id).get("total_usd", 0.0)
+        return spend >= _to_float(cap)
+    except Exception as e:
+        print(f"[cost] cost_cap_blocks_send failed: {e}")
+        return False
+
+
+def _async_warn_check(tenant_id):
+    """Fire-and-forget warn-line check. If MTD spend has just crossed
+    the configured warn-at-percent for the first time this period, send
+    one alert email. cost_alerts (tenant_id, period, kind) UNIQUE
+    guarantees idempotency even under concurrent inserts."""
+    def _run():
+        try:
+            cap_row = get_tenant_cost_cap(tenant_id)
+            cap = cap_row.get("monthly_cap_usd")
+            if cap is None:
+                return
+            cap_f = _to_float(cap)
+            if cap_f <= 0:
+                return
+            warn_pct = int(cap_row.get("warn_at_percent") or 80)
+            spend = compute_mtd_spend(tenant_id).get("total_usd", 0.0)
+            ratio = spend / cap_f
+            kind = None
+            if ratio >= 1.0:
+                kind = "cap"
+            elif ratio >= (warn_pct / 100.0):
+                kind = "warn"
+            if not kind:
+                return
+            period = _current_period()
+            # Try-insert; if (tenant, period, kind) already exists we
+            # silently no-op thanks to ON CONFLICT (execute_db returns
+            # None when RETURNING produces no row).
+            inserted = execute_db(
+                "INSERT INTO cost_alerts (tenant_id, period, kind, "
+                "                         spent_usd, cap_usd) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (tenant_id, period, kind) DO NOTHING "
+                "RETURNING id",
+                (tenant_id, period, kind, spend, cap_f),
+            )
+            if not inserted:
+                return  # already alerted this period
+            to_email = (cap_row.get("alert_email") or "").strip() or \
+                       (os.environ.get("ADMIN_EMAIL") or "").strip()
+            if not to_email:
+                return
+            subject = (f"[AI cost {kind.upper()}] {spend:.2f} USD of "
+                       f"{cap_f:.2f} cap reached")
+            body = (
+                f"Heads-up — your AI assistant has reached "
+                f"{spend:.2f} USD of your {cap_f:.2f} USD monthly cap "
+                f"({ratio*100:.1f}%).\n\n"
+                f"Period: {period}\n"
+                f"Behavior: {cap_row.get('cap_behavior')}\n\n"
+                f"You can adjust the cap or behavior in Admin → Cost."
+            )
+            try:
+                messaging.send_email(to_email, subject, body)
+            except Exception as e:
+                print(f"[cost] warn email send failed: {e}")
+        except Exception as e:
+            print(f"[cost] _async_warn_check failed: {e}")
+    try:
+        threading.Thread(target=_run, daemon=True).start()
+    except Exception as e:
+        print(f"[cost] async warn thread failed to start: {e}")
+
+
+# =============================================================================
+# WEEKLY DIGEST — "What your AI did this week"
+# A messaging.register_tick() callback fires every 30 seconds. We only do
+# work between Monday 09:00 and 09:30 UTC, and the (tenant_id, week_start)
+# unique index on weekly_digest_sends guarantees a scheduler restart in
+# that window cannot double-send.
+# =============================================================================
+
+def _digest_render_html(payload: dict) -> str:
+    """Render the digest payload to a small standalone HTML body.
+    No CSS framework — keeps render predictable across mail clients."""
+    s = payload.get("spend") or {}
+    by_surface = payload.get("by_surface") or []
+    top_models = payload.get("top_models") or []
+    counts = payload.get("counts") or {}
+    week_start = payload.get("week_start", "")
+    week_end = payload.get("week_end", "")
+
+    def fmt_usd(v):
+        try: f = float(v or 0)
+        except (TypeError, ValueError): f = 0.0
+        return f"${f:.2f}"
+
+    rows_surface = "".join(
+        f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'>"
+        f"{r.get('surface','')}</td>"
+        f"<td style='padding:6px 12px;border-bottom:1px solid #eee;color:#666'>"
+        f"{r.get('channel','')}</td>"
+        f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>"
+        f"{int(r.get('events') or 0):,}</td>"
+        f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>"
+        f"{fmt_usd(r.get('cost_usd'))}</td></tr>"
+        for r in by_surface[:10]
+    )
+    rows_model = "".join(
+        f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'>"
+        f"{r.get('provider','')} / {r.get('model','')}</td>"
+        f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>"
+        f"{fmt_usd(r.get('cost_usd'))}</td></tr>"
+        for r in top_models[:8]
+    )
+    return (
+        "<!doctype html><html><body style='font-family:-apple-system,Segoe UI,Roboto,sans-serif;"
+        "color:#222;max-width:640px;margin:24px auto;padding:0 16px;'>"
+        f"<h2 style='margin:0 0 4px 0;'>What your AI did this week</h2>"
+        f"<div style='color:#666;font-size:13px;margin-bottom:24px;'>"
+        f"{week_start} → {week_end}</div>"
+        "<div style='display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px;'>"
+        f"<div style='flex:1;min-width:140px;background:#f5f7fa;border-radius:8px;padding:12px 16px;'>"
+        f"<div style='font-size:11px;text-transform:uppercase;color:#666;letter-spacing:.05em;'>Total spend</div>"
+        f"<div style='font-size:22px;font-weight:700;'>{fmt_usd(s.get('total_usd'))}</div></div>"
+        f"<div style='flex:1;min-width:140px;background:#f5f7fa;border-radius:8px;padding:12px 16px;'>"
+        f"<div style='font-size:11px;text-transform:uppercase;color:#666;letter-spacing:.05em;'>Conversations</div>"
+        f"<div style='font-size:22px;font-weight:700;'>{int(counts.get('chat_events') or 0):,}</div></div>"
+        f"<div style='flex:1;min-width:140px;background:#f5f7fa;border-radius:8px;padding:12px 16px;'>"
+        f"<div style='font-size:11px;text-transform:uppercase;color:#666;letter-spacing:.05em;'>Voice calls</div>"
+        f"<div style='font-size:22px;font-weight:700;'>{int(counts.get('voice_events') or 0):,}</div></div>"
+        f"<div style='flex:1;min-width:140px;background:#f5f7fa;border-radius:8px;padding:12px 16px;'>"
+        f"<div style='font-size:11px;text-transform:uppercase;color:#666;letter-spacing:.05em;'>SMS sent</div>"
+        f"<div style='font-size:22px;font-weight:700;'>{int(counts.get('sms_events') or 0):,}</div></div>"
+        "</div>"
+        "<h3 style='margin:24px 0 8px 0;'>Where the money went</h3>"
+        "<table style='width:100%;border-collapse:collapse;font-size:14px;'>"
+        "<thead><tr style='text-align:left;color:#666;font-size:12px;text-transform:uppercase;'>"
+        "<th style='padding:6px 12px;'>Surface</th>"
+        "<th style='padding:6px 12px;'>Channel</th>"
+        "<th style='padding:6px 12px;text-align:right;'>Events</th>"
+        "<th style='padding:6px 12px;text-align:right;'>Spend</th></tr></thead>"
+        f"<tbody>{rows_surface or '<tr><td colspan=4 style=padding:12px;color:#888;>No activity this week.</td></tr>'}</tbody>"
+        "</table>"
+        + (
+            "<h3 style='margin:24px 0 8px 0;'>Top models</h3>"
+            "<table style='width:100%;border-collapse:collapse;font-size:14px;'>"
+            "<thead><tr style='text-align:left;color:#666;font-size:12px;text-transform:uppercase;'>"
+            "<th style='padding:6px 12px;'>Model</th>"
+            "<th style='padding:6px 12px;text-align:right;'>Spend</th></tr></thead>"
+            f"<tbody>{rows_model}</tbody></table>"
+            if rows_model else ""
+        )
+        + "<p style='margin:32px 0 0 0;font-size:12px;color:#888;'>"
+        "Adjust your monthly cap or turn off this digest in Admin → Cost.</p>"
+        "</body></html>"
+    )
+
+
+def _digest_build_payload(tenant_id, week_start, week_end):
+    """Aggregate the last 7 days of cost into a payload dict the email
+    template + the JSONB persistence both use."""
+    spend_row = query_db(
+        "SELECT "
+        "  COALESCE((SELECT SUM(cost_usd) FROM api_cost_events "
+        "   WHERE tenant_id=%s AND created_at >= %s AND created_at < %s),0) AS chat,"
+        "  COALESCE((SELECT SUM(cost_usd) FROM voice_cost_events "
+        "   WHERE tenant_id=%s AND created_at >= %s AND created_at < %s),0) AS voice,"
+        "  COALESCE((SELECT SUM(cost_usd) FROM sms_cost_events "
+        "   WHERE tenant_id=%s AND created_at >= %s AND created_at < %s),0) AS sms",
+        (tenant_id, week_start, week_end,
+         tenant_id, week_start, week_end,
+         tenant_id, week_start, week_end),
+        fetchone=True,
+    ) or {"chat": 0, "voice": 0, "sms": 0}
+    chat_v = _to_float(spend_row["chat"])
+    voice_v = _to_float(spend_row["voice"])
+    sms_v = _to_float(spend_row["sms"])
+    spend = {"chat_usd": chat_v, "voice_usd": voice_v, "sms_usd": sms_v,
+             "total_usd": chat_v + voice_v + sms_v}
+
+    counts_row = query_db(
+        "SELECT "
+        "  COALESCE((SELECT COUNT(*) FROM api_cost_events "
+        "   WHERE tenant_id=%s AND created_at >= %s AND created_at < %s),0) AS chat_events,"
+        "  COALESCE((SELECT COUNT(*) FROM voice_cost_events "
+        "   WHERE tenant_id=%s AND created_at >= %s AND created_at < %s),0) AS voice_events,"
+        "  COALESCE((SELECT COUNT(*) FROM sms_cost_events "
+        "   WHERE tenant_id=%s AND created_at >= %s AND created_at < %s),0) AS sms_events",
+        (tenant_id, week_start, week_end,
+         tenant_id, week_start, week_end,
+         tenant_id, week_start, week_end),
+        fetchone=True,
+    ) or {}
+    counts = {k: int(v or 0) for k, v in (counts_row or {}).items()}
+
+    by_surface = []
+    for tbl, ch in (("api_cost_events", "chat"),
+                    ("voice_cost_events", "voice"),
+                    ("sms_cost_events", "sms")):
+        rows = query_db(
+            f"SELECT surface, COUNT(*) AS events, "
+            f"       COALESCE(SUM(cost_usd),0) AS s "
+            f"FROM {tbl} WHERE tenant_id=%s "
+            f"  AND created_at >= %s AND created_at < %s "
+            f"GROUP BY surface",
+            (tenant_id, week_start, week_end),
+        ) or []
+        for r in rows:
+            by_surface.append({
+                "surface": r["surface"], "channel": ch,
+                "events": int(r["events"] or 0),
+                "cost_usd": _to_float(r["s"]),
+            })
+    by_surface.sort(key=lambda x: x["cost_usd"], reverse=True)
+
+    top_models = []
+    rows = query_db(
+        "SELECT provider, model, COALESCE(SUM(cost_usd),0) AS s "
+        "FROM api_cost_events WHERE tenant_id=%s "
+        "  AND created_at >= %s AND created_at < %s "
+        "GROUP BY provider, model", (tenant_id, week_start, week_end)) or []
+    for r in rows:
+        top_models.append({"provider": r["provider"], "model": r["model"],
+                           "cost_usd": _to_float(r["s"])})
+    rows = query_db(
+        "SELECT provider, model, COALESCE(SUM(cost_usd),0) AS s "
+        "FROM voice_cost_events WHERE tenant_id=%s "
+        "  AND created_at >= %s AND created_at < %s "
+        "GROUP BY provider, model", (tenant_id, week_start, week_end)) or []
+    for r in rows:
+        top_models.append({"provider": r["provider"], "model": r["model"],
+                           "cost_usd": _to_float(r["s"])})
+    top_models.sort(key=lambda x: x["cost_usd"], reverse=True)
+
+    return {
+        "week_start": week_start.isoformat() if hasattr(week_start, "isoformat") else str(week_start),
+        "week_end": week_end.isoformat() if hasattr(week_end, "isoformat") else str(week_end),
+        "spend": spend,
+        "counts": counts,
+        "by_surface": by_surface,
+        "top_models": top_models,
+    }
+
+
+_DIGEST_TICK_LOCK = threading.Lock()
+_DIGEST_LAST_RUN_KEY = None  # week-start date we already attempted, for cheap dedupe
+
+
+def _weekly_digest_tick():
+    """Scheduler tick. Cheap path: bail unless it's Monday 09:00-09:30 UTC.
+    Heavy path: enumerate tenants with the weekly_digest feature, build +
+    send + record once per tenant per week."""
+    global _DIGEST_LAST_RUN_KEY
+    now = datetime.utcnow()
+    # Monday is weekday()==0; only fire in the 09:00-09:30 UTC window so a
+    # late tenant join still gets caught but we don't burn cycles all day.
+    if now.weekday() != 0 or now.hour != 9 or now.minute >= 30:
+        return
+    week_start = (now.date() - timedelta(days=now.weekday()))  # this Monday
+    week_end = week_start + timedelta(days=7)
+    last_week_start = week_start - timedelta(days=7)
+    last_week_end = week_start
+    if _DIGEST_LAST_RUN_KEY == week_start.isoformat():
+        # Already iterated tenants in this 30-min window. Avoid re-walking
+        # tenants every 30s — the per-row UNIQUE index is the real guard,
+        # this is just a CPU saver.
+        return
+    if not _DIGEST_TICK_LOCK.acquire(blocking=False):
+        return
+    try:
+        _DIGEST_LAST_RUN_KEY = week_start.isoformat()
+        try:
+            tenants = query_db("SELECT id FROM tenants") or []
+        except Exception as e:
+            print(f"[digest] tenant enumeration failed: {e}")
+            return
+        for trow in tenants:
+            tid = trow.get("id") if isinstance(trow, dict) else trow[0]
+            try:
+                if not tenant_has_feature("weekly_digest", tenant_id=tid):
+                    continue
+                cap = query_db(
+                    "SELECT digest_email, alert_email FROM tenant_cost_caps "
+                    "WHERE tenant_id=%s", (tid,), fetchone=True) or {}
+                to_email = (cap.get("digest_email") or cap.get("alert_email")
+                            or os.environ.get("ADMIN_EMAIL") or "").strip()
+                if not to_email:
+                    continue
+                payload = _digest_build_payload(tid, last_week_start, last_week_end)
+                # CLAIM the send slot BEFORE emailing. The UNIQUE
+                # (tenant_id, week_start) index plus RETURNING gives us
+                # a single-row "did I win the race?" check that survives
+                # process restarts and concurrent ticks. If the INSERT
+                # is suppressed by ON CONFLICT we know another worker
+                # already sent (or is about to send) the digest.
+                claimed = execute_db(
+                    "INSERT INTO weekly_digest_sends "
+                    "  (tenant_id, week_start, payload_json) "
+                    "VALUES (%s, %s, %s) "
+                    "ON CONFLICT (tenant_id, week_start) DO NOTHING "
+                    "RETURNING id",
+                    (tid, week_start, json.dumps(payload)),
+                )
+                if not claimed:
+                    continue  # someone else already claimed this week
+                html = _digest_render_html(payload)
+                subject = (
+                    f"Your AI weekly digest — "
+                    f"${payload['spend']['total_usd']:.2f} spent")
+                try:
+                    messaging.send_email(to_email, subject, html,
+                                         tags=[("kind", "weekly_digest")])
+                except Exception as e:
+                    # Row is already written; we deliberately don't roll
+                    # it back so a permanently invalid address doesn't
+                    # cause us to re-send every 30s. Operators can
+                    # re-enable by deleting the row in psql.
+                    print(f"[digest] tenant={tid} email send failed: {e}")
+            except Exception as e:
+                print(f"[digest] tenant={tid} digest failed: {e}")
+    finally:
+        _DIGEST_TICK_LOCK.release()
+
+
+try:
+    messaging.register_tick(_weekly_digest_tick)
+except Exception as _e:
+    print(f"[digest] register_tick failed: {_e}")
 
 
 # =============================================================================
@@ -7825,7 +8673,13 @@ def _messages_for_claude(openai_messages):
 
 
 def _stream_round_openai(model, messages, tools, max_tokens=4096, temperature=0.7):
-    """One OpenAI streaming round. Yields uniform provider events."""
+    """One OpenAI streaming round. Yields uniform provider events.
+
+    `stream_options.include_usage=True` makes OpenAI emit a final chunk
+    with `chunk.usage` populated (prompt_tokens, completion_tokens,
+    total_tokens). We capture that and yield a final ("usage", {...})
+    event so callers can write a cost ledger row without re-tokenizing
+    the conversation."""
     stream = openai_client.chat.completions.create(
         model=model,
         messages=messages,
@@ -7834,10 +8688,22 @@ def _stream_round_openai(model, messages, tools, max_tokens=4096, temperature=0.
         max_tokens=max_tokens,
         temperature=temperature,
         stream=True,
+        stream_options={"include_usage": True},
     )
     tool_calls_acc = {}
     finish_reason = None
+    usage_info = None
     for chunk in stream:
+        # The usage chunk arrives at the very end and has empty .choices.
+        u = getattr(chunk, "usage", None)
+        if u is not None:
+            usage_info = {
+                "provider": "openai",
+                "model": model,
+                "prompt_tokens": getattr(u, "prompt_tokens", 0) or 0,
+                "completion_tokens": getattr(u, "completion_tokens", 0) or 0,
+                "total_tokens": getattr(u, "total_tokens", 0) or 0,
+            }
         if not chunk.choices:
             continue
         choice = chunk.choices[0]
@@ -7868,6 +8734,8 @@ def _stream_round_openai(model, messages, tools, max_tokens=4096, temperature=0.
             "name": slot["name"],
             "args": slot["args"] or "{}",
         })
+    if usage_info is not None:
+        yield ("usage", usage_info)
     yield ("finish", finish_reason or "stop")
 
 
@@ -7889,11 +8757,23 @@ def _stream_round_claude(model, system, claude_messages, claude_tools, max_token
     # as JSON deltas. We accumulate by block index.
     tool_blocks = {}   # idx -> {"id","name","args_str"}
     finish_reason = "stop"
+    # Claude reports input_tokens on message_start and updates
+    # output_tokens on each message_delta — the *last* message_delta
+    # value is the final output count. We yield a single ("usage", ...)
+    # event after the loop so callers can write a cost row.
+    in_tokens = 0
+    out_tokens = 0
 
     with anthropic_client.messages.stream(**kwargs) as stream:
         for event in stream:
             etype = getattr(event, "type", "")
-            if etype == "content_block_start":
+            if etype == "message_start":
+                msg = getattr(event, "message", None)
+                u = getattr(msg, "usage", None) if msg is not None else None
+                if u is not None:
+                    in_tokens = getattr(u, "input_tokens", 0) or 0
+                    out_tokens = getattr(u, "output_tokens", 0) or out_tokens
+            elif etype == "content_block_start":
                 block = getattr(event, "content_block", None)
                 if block is not None and getattr(block, "type", "") == "tool_use":
                     tool_blocks[event.index] = {
@@ -7926,6 +8806,9 @@ def _stream_round_claude(model, system, claude_messages, claude_tools, max_token
                             finish_reason = "length"
                         else:
                             finish_reason = "stop"
+                u = getattr(event, "usage", None)
+                if u is not None:
+                    out_tokens = getattr(u, "output_tokens", 0) or out_tokens
 
     for idx in sorted(tool_blocks.keys()):
         slot = tool_blocks[idx]
@@ -7935,6 +8818,14 @@ def _stream_round_claude(model, system, claude_messages, claude_tools, max_token
             "id": slot["id"] or f"call_{idx}",
             "name": slot["name"],
             "args": slot["args_str"] or "{}",
+        })
+    if in_tokens or out_tokens:
+        yield ("usage", {
+            "provider": "anthropic",
+            "model": model,
+            "prompt_tokens": int(in_tokens),
+            "completion_tokens": int(out_tokens),
+            "total_tokens": int(in_tokens) + int(out_tokens),
         })
     yield ("finish", finish_reason)
 
@@ -12083,6 +12974,17 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
                     yield {"type": "token", "content": event[1]}
                 elif kind == "tool_call":
                     tcs.append(event[1])
+                elif kind == "usage":
+                    u = event[1] or {}
+                    record_chat_cost(
+                        session_id=session_id,
+                        surface="admin_chat",
+                        provider=u.get("provider", "openai"),
+                        model=u.get("model", model),
+                        prompt_tokens=u.get("prompt_tokens", 0),
+                        completion_tokens=u.get("completion_tokens", 0),
+                        total_tokens=u.get("total_tokens"),
+                    )
                 elif kind == "finish":
                     finish_reason = event[1]
         except Exception as e:
@@ -12211,6 +13113,9 @@ def admin_agent_chat_send():
     message = (data.get("message") or "").strip()
     if not session_id or not message:
         return jsonify({"error": "session_id and message are required"}), 400
+    _cap = enforce_cost_cap("admin_chat")
+    if _cap is not None:
+        return _cap
     text, trace = _admin_chat_run_loop(session_id, message)
     return jsonify({"reply": text, "tool_trace": trace})
 
@@ -12237,6 +13142,9 @@ def admin_agent_chat_stream():
     message = (data.get("message") or "").strip()
     if not session_id or not message:
         return jsonify({"error": "session_id and message are required"}), 400
+    _cap = enforce_cost_cap("admin_chat")
+    if _cap is not None:
+        return _cap
 
     def generate():
         try:
@@ -12449,6 +13357,9 @@ def api_chat():
     message = data.get("message", "").strip()
     history = data.get("history", [])
     session_id = data.get("session_id", "")
+    _cap = enforce_cost_cap("visitor_chat")
+    if _cap is not None:
+        return _cap
     # SECURITY: rate-limit MUST be bound to the trusted client IP, not the
     # client-supplied session_id — a malicious client can rotate session_id
     # on every request to evade a session-keyed bucket. We always enforce
@@ -13291,6 +14202,23 @@ def api_chat():
                         yield f"data: {json.dumps({'type': 'token', 'content': event[1]})}\n\n"
                     elif kind == "tool_call":
                         tcs.append(event[1])
+                    elif kind == "usage":
+                        # Provider-reported token usage for this round —
+                        # write a cost-ledger row immediately so the
+                        # dashboard reflects spend the moment the round
+                        # finishes (each round in a multi-tool turn is
+                        # billed separately by the provider).
+                        u = event[1] or {}
+                        record_chat_cost(
+                            session_id=session_id,
+                            visitor_id=visitor_id,
+                            surface="visitor_chat",
+                            provider=u.get("provider", provider),
+                            model=u.get("model", model),
+                            prompt_tokens=u.get("prompt_tokens", 0),
+                            completion_tokens=u.get("completion_tokens", 0),
+                            total_tokens=u.get("total_tokens"),
+                        )
                     elif kind == "finish":
                         finish_reason = event[1]
 
@@ -13575,8 +14503,14 @@ def admin_dashboard():
     GET /admin
     Render the admin dashboard HTML page.
     Protected by password authentication.
+
+    Exposes `has_feature(name)` to the template so sidebar entries can be
+    gated by feature flags without an extra round-trip.
     """
-    return render_template("admin/dashboard.html")
+    return render_template(
+        "admin/dashboard.html",
+        has_feature=tenant_has_feature,
+    )
 
 
 # =============================================================================
@@ -14621,6 +15555,8 @@ def admin_generate_narration(pid):
                 temperature=0.7,
                 max_tokens=220,
             )
+            record_chat_cost_from_response(resp, surface="deck_narration",
+                                           model="gpt-4o-mini")
             txt = (resp.choices[0].message.content or "").strip()
             if txt:
                 return slide["id"], txt, None
@@ -14648,6 +15584,8 @@ def admin_generate_narration(pid):
                     temperature=0.7,
                     max_tokens=220,
                 )
+                record_chat_cost_from_response(resp, surface="deck_narration",
+                                               model="gpt-4o-mini")
                 txt = (resp.choices[0].message.content or "").strip()
                 if txt:
                     return slide["id"], txt, None
@@ -16891,6 +17829,8 @@ def admin_generate_seo():
             max_tokens=500,
             temperature=0.7,
         )
+        record_chat_cost_from_response(response, surface="seo_suggest",
+                                       model="gpt-4o-mini")
 
         result_text = response.choices[0].message.content.strip()
         # Remove markdown code fences if the AI wrapped the JSON
@@ -19213,11 +20153,19 @@ def _voice_cache_filename(text, voice_id, model):
     return f"{digest}.mp3"
 
 
-def _log_voice_usage(feature_type, char_count=0, voice_id="", session_id="", intro_id=None):
-    """Insert a row into voice_usage_log. Used for billing and analytics.
+def _log_voice_usage(feature_type, char_count=0, voice_id="", session_id="",
+                     intro_id=None, provider=None, model=None, audio_seconds=0):
+    """Insert a row into voice_usage_log AND a parallel voice_cost_events
+    row for the cost dashboard. Used for billing and analytics.
+
+    Provider/model are inferred from feature_type if not passed:
+      tts_generate_openai     → openai / tts-1
+      tts_generate_elevenlabs → elevenlabs / eleven_turbo_v2_5
+      tts_cached / intro_play → cost = 0 (no provider call)
+      stt_whisper             → openai / whisper-1
 
     Wrapped in try/except so logging failures never break the user-facing
-    request — voice should still work even if the log table is unavailable."""
+    request — voice should still work even if the log tables are unavailable."""
     try:
         execute_db(
             """INSERT INTO voice_usage_log
@@ -19227,6 +20175,37 @@ def _log_voice_usage(feature_type, char_count=0, voice_id="", session_id="", int
         )
     except Exception as e:
         print(f"[voice usage log error] {e}")
+
+    try:
+        ft = (feature_type or "").lower()
+        # Cached / intro / sample playback hits no provider, so we don't
+        # record a cost row at all — those would just be 0-USD noise on
+        # the dashboard's "By model" breakdown.
+        _NON_BILLABLE = {"tts_cached", "intro_play"}
+        if ft in _NON_BILLABLE:
+            return
+        if provider is None or model is None:
+            if ft == "tts_generate_openai":
+                provider = provider or "openai"
+                model = model or "tts-1"
+            elif ft == "tts_generate_elevenlabs":
+                provider = provider or "elevenlabs"
+                model = model or "eleven_turbo_v2_5"
+            elif ft == "stt_whisper":
+                provider = provider or "openai"
+                model = model or "whisper-1"
+            else:
+                provider = provider or ""
+                model = model or ""
+        surface = "voice_stt" if ft.startswith("stt") else "voice_tts"
+        record_voice_cost(
+            session_id=session_id, surface=surface,
+            provider=provider, model=model,
+            feature_type=feature_type, voice_id=voice_id,
+            char_count=char_count, audio_seconds=audio_seconds,
+        )
+    except Exception as e:
+        print(f"[voice cost event error] {e}")
 
 
 def _voice_provider_status():
@@ -19599,6 +20578,9 @@ def api_voice_tts():
     session_id = (data.get("session_id") or "").strip()
     if not text:
         return jsonify({"error": "Missing text"}), 400
+    _cap = enforce_cost_cap("voice_tts")
+    if _cap is not None:
+        return _cap
 
     # Resolve provider + per-provider voice/model from admin settings.
     # ElevenLabs is gated behind premium_enabled (master toggle that lets
@@ -19737,6 +20719,9 @@ def api_voice_tts_stream_prepare():
         return jsonify({"error": "Missing text"}), 400
     if len(text) > TTS_MAX_CHARS:
         text = text[:TTS_MAX_CHARS]
+    _cap = enforce_cost_cap("voice_tts")
+    if _cap is not None:
+        return _cap
 
     provider = (settings.get("tts_provider") or "openai").lower()
     if provider == "elevenlabs" and not settings.get("premium_enabled"):
@@ -19878,6 +20863,9 @@ def api_voice_stt():
         return jsonify({"error": "Premium STT is disabled"}), 403
     if not openai_direct_client:
         return jsonify({"error": "OPENAI_API_KEY not configured"}), 503
+    _cap = enforce_cost_cap("voice_stt")
+    if _cap is not None:
+        return _cap
 
     # Per-IP daily request cap — Whisper bills per minute of uploaded
     # audio, so even with the 5MB size cap an attacker could hammer this
@@ -19913,23 +20901,33 @@ def api_voice_stt():
     try:
         # The OpenAI SDK accepts a (filename, file_obj) tuple for uploads.
         # We pass the original filename so the API can sniff the format.
+        # response_format="verbose_json" gives us .duration (seconds) so
+        # the cost ledger can bill what Whisper actually charged for —
+        # per-minute pricing requires the audio length, not the
+        # transcript length.
         from io import BytesIO
         bio = BytesIO(blob)
         bio.name = audio_file.filename or "audio.webm"
         result = openai_direct_client.audio.transcriptions.create(
             model="whisper-1",
             file=bio,
+            response_format="verbose_json",
         )
-        text = (result.text or "").strip()
+        text = (getattr(result, "text", None) or "").strip()
+        try:
+            duration = float(getattr(result, "duration", 0) or 0)
+        except (TypeError, ValueError):
+            duration = 0.0
     except Exception as e:
         print(f"[Whisper STT error] {e}")
         return jsonify({"error": "Transcription failed"}), 500
 
-    # Bill clients on transcribed character count — gives a usage-based
-    # signal even though Whisper actually charges per minute of audio.
+    # Char count is kept for analytics in voice_usage_log. The cost
+    # ledger bills on `audio_seconds` because Whisper is per-minute.
     _log_voice_usage(
         feature_type="stt_whisper",
         char_count=len(text),
+        audio_seconds=duration,
         session_id=session_id,
     )
     return jsonify({"text": text})
@@ -19945,6 +20943,10 @@ def api_voice_sample():
     # anyone could call this to bypass the AI voice toggle and burn $$).
     if not session.get("admin_logged_in"):
         return jsonify({"error": "Admin only"}), 403
+
+    _cap = enforce_cost_cap("voice_sample")
+    if _cap is not None:
+        return _cap
 
     data = request.get_json(silent=True) or {}
     provider = (data.get("provider") or "openai").lower()
@@ -20357,6 +21359,341 @@ def _product_row_to_dict(row):
         "active": row["active"],
         "sort_order": row["sort_order"],
     }
+
+
+# =============================================================================
+# COST DASHBOARD — Admin-facing endpoints for the cost transparency tab.
+# Each endpoint is gated behind the cost_dashboard feature flag so tenants
+# without the entitlement get a clean 404 (the tab is also hidden in the UI
+# for them — defense in depth).
+# =============================================================================
+
+def _cost_feature_required():
+    """Returns a Flask error response if the cost_dashboard feature is off
+    for this tenant, else None. Centralized so every cost endpoint reads
+    the same way."""
+    if not tenant_has_feature("cost_dashboard"):
+        return jsonify({"error": "cost dashboard not enabled"}), 404
+    return None
+
+
+@app.route("/admin/api/cost/summary", methods=["GET"])
+@admin_required
+def admin_cost_summary():
+    """MTD totals + cap status. The headline numbers shown at the top of
+    the Cost tab. Includes both raw spend and the configured cap so the
+    UI can render a progress bar without a second round-trip."""
+    err = _cost_feature_required()
+    if err is not None:
+        return err
+    spend = compute_mtd_spend()
+    cap_row = get_tenant_cost_cap()
+    cap_usd = cap_row.get("monthly_cap_usd")
+    cap_f = _to_float(cap_usd) if cap_usd is not None else None
+    pct = None
+    if cap_f and cap_f > 0:
+        pct = round((spend["total_usd"] / cap_f) * 100.0, 1)
+    return jsonify({
+        "period": _current_period(),
+        "spend": spend,
+        "cap": {
+            "monthly_cap_usd": cap_f,
+            "warn_at_percent": int(cap_row.get("warn_at_percent") or 80),
+            "cap_behavior": cap_row.get("cap_behavior") or "alert_only",
+            "alert_email": cap_row.get("alert_email") or "",
+            "digest_email": cap_row.get("digest_email") or "",
+            "percent_used": pct,
+        },
+    })
+
+
+@app.route("/admin/api/cost/series", methods=["GET"])
+@admin_required
+def admin_cost_series():
+    """Daily totals for the last N days (default 30). Used to draw the
+    spend-over-time line chart on the dashboard."""
+    err = _cost_feature_required()
+    if err is not None:
+        return err
+    try:
+        days = max(1, min(90, int(request.args.get("days", 30))))
+    except (TypeError, ValueError):
+        days = 30
+    tid = current_tenant_id()
+    sql = (
+        "WITH days AS ("
+        "  SELECT generate_series("
+        "    DATE_TRUNC('day', NOW()) - (%s - 1) * INTERVAL '1 day',"
+        "    DATE_TRUNC('day', NOW()), INTERVAL '1 day'"
+        "  )::date AS d"
+        "), api AS ("
+        "  SELECT DATE_TRUNC('day', created_at)::date AS d, "
+        "         COALESCE(SUM(cost_usd),0) AS s "
+        "  FROM api_cost_events WHERE tenant_id = %s "
+        "    AND created_at >= NOW() - (%s - 1) * INTERVAL '1 day' "
+        "  GROUP BY 1"
+        "), v AS ("
+        "  SELECT DATE_TRUNC('day', created_at)::date AS d, "
+        "         COALESCE(SUM(cost_usd),0) AS s "
+        "  FROM voice_cost_events WHERE tenant_id = %s "
+        "    AND created_at >= NOW() - (%s - 1) * INTERVAL '1 day' "
+        "  GROUP BY 1"
+        "), s AS ("
+        "  SELECT DATE_TRUNC('day', created_at)::date AS d, "
+        "         COALESCE(SUM(cost_usd),0) AS s "
+        "  FROM sms_cost_events WHERE tenant_id = %s "
+        "    AND created_at >= NOW() - (%s - 1) * INTERVAL '1 day' "
+        "  GROUP BY 1"
+        ") "
+        "SELECT days.d AS day, "
+        "       COALESCE(api.s,0) AS chat_usd, "
+        "       COALESCE(v.s,0)   AS voice_usd, "
+        "       COALESCE(s.s,0)   AS sms_usd, "
+        "       COALESCE(api.s,0)+COALESCE(v.s,0)+COALESCE(s.s,0) AS total_usd "
+        "  FROM days "
+        "  LEFT JOIN api ON api.d = days.d "
+        "  LEFT JOIN v   ON v.d   = days.d "
+        "  LEFT JOIN s   ON s.d   = days.d "
+        " ORDER BY days.d ASC"
+    )
+    rows = query_db(sql, (days, tid, days, tid, days, tid, days)) or []
+    series = [{
+        "day": (r["day"].isoformat() if hasattr(r["day"], "isoformat") else str(r["day"])),
+        "chat_usd": _to_float(r["chat_usd"]),
+        "voice_usd": _to_float(r["voice_usd"]),
+        "sms_usd": _to_float(r["sms_usd"]),
+        "total_usd": _to_float(r["total_usd"]),
+    } for r in rows]
+    return jsonify({"days": days, "series": series})
+
+
+@app.route("/admin/api/cost/by-surface", methods=["GET"])
+@admin_required
+def admin_cost_by_surface():
+    """MTD spend grouped by surface (visitor_chat, admin_chat, voice_tts,
+    voice_stt, sms_campaign, etc). Powers the breakdown table on the
+    Cost tab — answers 'where is my money actually going?'"""
+    err = _cost_feature_required()
+    if err is not None:
+        return err
+    tid = current_tenant_id()
+    out = []
+    try:
+        rows = query_db(
+            "SELECT surface, COUNT(*) AS events, COALESCE(SUM(cost_usd),0) AS s "
+            "FROM api_cost_events "
+            "WHERE tenant_id=%s AND created_at >= DATE_TRUNC('month', NOW()) "
+            "GROUP BY surface", (tid,)) or []
+        for r in rows:
+            out.append({"surface": r["surface"], "channel": "chat",
+                        "events": int(r["events"] or 0),
+                        "cost_usd": _to_float(r["s"])})
+        rows = query_db(
+            "SELECT surface, COUNT(*) AS events, COALESCE(SUM(cost_usd),0) AS s "
+            "FROM voice_cost_events "
+            "WHERE tenant_id=%s AND created_at >= DATE_TRUNC('month', NOW()) "
+            "GROUP BY surface", (tid,)) or []
+        for r in rows:
+            out.append({"surface": r["surface"], "channel": "voice",
+                        "events": int(r["events"] or 0),
+                        "cost_usd": _to_float(r["s"])})
+        rows = query_db(
+            "SELECT surface, COUNT(*) AS events, COALESCE(SUM(cost_usd),0) AS s "
+            "FROM sms_cost_events "
+            "WHERE tenant_id=%s AND created_at >= DATE_TRUNC('month', NOW()) "
+            "GROUP BY surface", (tid,)) or []
+        for r in rows:
+            out.append({"surface": r["surface"], "channel": "sms",
+                        "events": int(r["events"] or 0),
+                        "cost_usd": _to_float(r["s"])})
+    except Exception as e:
+        print(f"[cost] by-surface failed: {e}")
+    out.sort(key=lambda x: x["cost_usd"], reverse=True)
+    return jsonify({"rows": out})
+
+
+@app.route("/admin/api/cost/by-model", methods=["GET"])
+@admin_required
+def admin_cost_by_model():
+    """MTD spend grouped by provider+model across all three ledgers.
+    Lets the admin see e.g. 'GPT-4o-mini = $4.12, ElevenLabs Turbo =
+    $1.30, Twilio US SMS = $0.18' at a glance."""
+    err = _cost_feature_required()
+    if err is not None:
+        return err
+    tid = current_tenant_id()
+    out = []
+    try:
+        rows = query_db(
+            "SELECT provider, model, COUNT(*) AS events, "
+            "       COALESCE(SUM(cost_usd),0) AS s, "
+            "       COALESCE(SUM(prompt_tokens),0)::bigint AS prompt_tok, "
+            "       COALESCE(SUM(completion_tokens),0)::bigint AS completion_tok "
+            "FROM api_cost_events "
+            "WHERE tenant_id=%s AND created_at >= DATE_TRUNC('month', NOW()) "
+            "GROUP BY provider, model", (tid,)) or []
+        for r in rows:
+            out.append({"channel": "chat",
+                        "provider": r["provider"], "model": r["model"],
+                        "events": int(r["events"] or 0),
+                        "prompt_tokens": int(r["prompt_tok"] or 0),
+                        "completion_tokens": int(r["completion_tok"] or 0),
+                        "cost_usd": _to_float(r["s"])})
+        rows = query_db(
+            "SELECT provider, model, COUNT(*) AS events, "
+            "       COALESCE(SUM(cost_usd),0) AS s, "
+            "       COALESCE(SUM(char_count),0)::bigint AS chars, "
+            "       COALESCE(SUM(audio_seconds),0) AS secs "
+            "FROM voice_cost_events "
+            "WHERE tenant_id=%s AND created_at >= DATE_TRUNC('month', NOW()) "
+            "GROUP BY provider, model", (tid,)) or []
+        for r in rows:
+            out.append({"channel": "voice",
+                        "provider": r["provider"], "model": r["model"],
+                        "events": int(r["events"] or 0),
+                        "chars": int(r["chars"] or 0),
+                        "audio_seconds": _to_float(r["secs"]),
+                        "cost_usd": _to_float(r["s"])})
+        rows = query_db(
+            "SELECT provider, COUNT(*) AS events, "
+            "       COALESCE(SUM(cost_usd),0) AS s, "
+            "       COALESCE(SUM(segments),0)::bigint AS segs "
+            "FROM sms_cost_events "
+            "WHERE tenant_id=%s AND created_at >= DATE_TRUNC('month', NOW()) "
+            "GROUP BY provider", (tid,)) or []
+        for r in rows:
+            out.append({"channel": "sms",
+                        "provider": r["provider"], "model": "sms",
+                        "events": int(r["events"] or 0),
+                        "segments": int(r["segs"] or 0),
+                        "cost_usd": _to_float(r["s"])})
+    except Exception as e:
+        print(f"[cost] by-model failed: {e}")
+    out.sort(key=lambda x: x["cost_usd"], reverse=True)
+    return jsonify({"rows": out})
+
+
+@app.route("/admin/api/cost/prices", methods=["GET"])
+@admin_required
+def admin_cost_prices_get():
+    """List every model_prices row so the admin can audit/edit unit
+    prices. Sorted for stable rendering across reloads."""
+    err = _cost_feature_required()
+    if err is not None:
+        return err
+    rows = query_db(
+        "SELECT * FROM model_prices ORDER BY provider, model, surface") or []
+    return jsonify({"rows": [dict(r) for r in rows]})
+
+
+@app.route("/admin/api/cost/prices/<int:row_id>", methods=["PATCH"])
+@admin_required
+def admin_cost_prices_patch(row_id):
+    """Update one model_prices row. Only the four price columns and
+    notes are editable — provider/model/kind are identity and changing
+    them would orphan historical events. Existing event rows are NOT
+    rewritten (we stamp unit price at write time on purpose), so a
+    price edit only affects future events."""
+    err = _cost_feature_required()
+    if err is not None:
+        return err
+    body = request.get_json(silent=True) or {}
+    allowed = {
+        "input_price_per_million_tokens",
+        "output_price_per_million_tokens",
+        "tts_price_per_million_chars",
+        "stt_price_per_minute",
+        "sms_price_per_segment",
+        "notes",
+    }
+    sets = []
+    args = []
+    for k, v in body.items():
+        if k not in allowed:
+            continue
+        if k == "notes":
+            sets.append("notes = %s")
+            args.append((v or "")[:500])
+        else:
+            sets.append(f"{k} = %s")
+            args.append(None if v in ("", None) else _to_float(v))
+    if not sets:
+        return jsonify({"error": "no editable fields supplied"}), 400
+    sets.append("updated_at = NOW()")
+    args.append(row_id)
+    execute_db(
+        f"UPDATE model_prices SET {', '.join(sets)} WHERE id = %s", tuple(args))
+    # Bust the in-process price cache so the next cost write picks up
+    # the new unit price immediately.
+    try:
+        _PRICE_CACHE.clear()
+    except Exception:
+        pass
+    row = query_db("SELECT * FROM model_prices WHERE id = %s",
+                   (row_id,), fetchone=True)
+    return jsonify(dict(row) if row else {})
+
+
+@app.route("/admin/api/cost/cap", methods=["GET"])
+@admin_required
+def admin_cost_cap_get():
+    """Return the current tenant's cost cap configuration."""
+    err = _cost_feature_required()
+    if err is not None:
+        return err
+    return jsonify(dict(get_tenant_cost_cap()))
+
+
+@app.route("/admin/api/cost/cap", methods=["PUT"])
+@admin_required
+def admin_cost_cap_put():
+    """Upsert the cost-cap row. Validates cap_behavior to one of three
+    known values and warn_at_percent to a 1-100 integer so a bad payload
+    can't silently disable the cap."""
+    err = _cost_feature_required()
+    if err is not None:
+        return err
+    body = request.get_json(silent=True) or {}
+    tid = current_tenant_id()
+
+    monthly = body.get("monthly_cap_usd")
+    if monthly in ("", None):
+        monthly_v = None
+    else:
+        try:
+            monthly_v = max(0.0, _to_float(monthly))
+        except Exception:
+            return jsonify({"error": "monthly_cap_usd must be a number"}), 400
+
+    try:
+        warn_pct = int(body.get("warn_at_percent", 80))
+    except (TypeError, ValueError):
+        return jsonify({"error": "warn_at_percent must be an integer"}), 400
+    if warn_pct < 1 or warn_pct > 100:
+        return jsonify({"error": "warn_at_percent must be 1-100"}), 400
+
+    behavior = (body.get("cap_behavior") or "alert_only").lower()
+    if behavior not in ("alert_only", "throttle", "strict_block"):
+        return jsonify({"error": "cap_behavior must be alert_only|throttle|strict_block"}), 400
+
+    alert_email = (body.get("alert_email") or "")[:200]
+    digest_email = (body.get("digest_email") or "")[:200]
+
+    execute_db(
+        "INSERT INTO tenant_cost_caps "
+        "  (tenant_id, monthly_cap_usd, warn_at_percent, cap_behavior, "
+        "   alert_email, digest_email, updated_at) "
+        "VALUES (%s,%s,%s,%s,%s,%s,NOW()) "
+        "ON CONFLICT (tenant_id) DO UPDATE SET "
+        "  monthly_cap_usd = EXCLUDED.monthly_cap_usd, "
+        "  warn_at_percent = EXCLUDED.warn_at_percent, "
+        "  cap_behavior    = EXCLUDED.cap_behavior, "
+        "  alert_email     = EXCLUDED.alert_email, "
+        "  digest_email    = EXCLUDED.digest_email, "
+        "  updated_at      = NOW()",
+        (tid, monthly_v, warn_pct, behavior, alert_email, digest_email),
+    )
+    return jsonify(dict(get_tenant_cost_cap()))
 
 
 def _generate_order_number() -> str:
@@ -23557,6 +24894,17 @@ def _send_one(template_or_snapshot: dict, subscriber: dict, *, campaign_id=None,
             )
             provider_id = resp.get("id") or ""
         else:
+            # Cap gate before paying Twilio. Background-job variant so we
+            # short-circuit cleanly instead of returning a Flask response.
+            if cost_cap_blocks_send("sms_campaign"):
+                execute_db(
+                    "UPDATE messaging_log SET status='failed', "
+                    "  error_text='AI spend cap reached — send skipped' "
+                    " WHERE id=%s",
+                    (log_id,),
+                )
+                return {"ok": False, "log_id": log_id,
+                        "error": "cost_cap_reached"}
             # Ask Twilio to POST status updates to our webhook so the per-
             # recipient log gets delivered/failed updates without the admin
             # needing to wire StatusCallback in the Twilio console.
@@ -23568,6 +24916,16 @@ def _send_one(template_or_snapshot: dict, subscriber: dict, *, campaign_id=None,
                 to_address, rendered_body, status_callback_url=status_cb,
             )
             provider_id = resp.get("sid") or ""
+            try:
+                segs = int(resp.get("num_segments") or 1)
+            except (TypeError, ValueError):
+                segs = 1
+            record_sms_cost(
+                surface="sms_campaign",
+                to_number=to_address,
+                message_sid=provider_id,
+                segments=segs,
+            )
         execute_db(
             """
             UPDATE messaging_log
@@ -25484,10 +26842,22 @@ def _scrape_send_change_notification(schedule: dict, job: dict,
             print(f"[scraper] email notify failed for schedule {schedule['id']}: {e}")
     notify_phone = (schedule.get("notify_phone") or "").strip()
     if notify_phone:
-        try:
-            messaging.send_sms(notify_phone, text_body[:1500])
-        except messaging.MessagingError as e:
-            print(f"[scraper] sms notify failed for schedule {schedule['id']}: {e}")
+        if cost_cap_blocks_send("scrape_change_notify"):
+            print(f"[scraper] sms notify skipped for schedule "
+                  f"{schedule['id']}: AI spend cap reached")
+        else:
+            try:
+                r = messaging.send_sms(notify_phone, text_body[:1500])
+                try:
+                    segs = int((r or {}).get("num_segments") or 1)
+                except (TypeError, ValueError):
+                    segs = 1
+                record_sms_cost(
+                    surface="scrape_change_notify", to_number=notify_phone,
+                    message_sid=(r or {}).get("sid") or "", segments=segs,
+                )
+            except messaging.MessagingError as e:
+                print(f"[scraper] sms notify failed for schedule {schedule['id']}: {e}")
 
 
 def _scrape_send_auto_pause_notification(schedule: dict, failure_count: int,
@@ -25535,11 +26905,23 @@ def _scrape_send_auto_pause_notification(schedule: dict, failure_count: int,
                   f"{schedule['id']}: {e}")
     notify_phone = (schedule.get("notify_phone") or "").strip()
     if notify_phone:
-        try:
-            messaging.send_sms(notify_phone, text_body[:1500])
-        except messaging.MessagingError as e:
-            print(f"[scraper] auto-pause sms failed for schedule "
-                  f"{schedule['id']}: {e}")
+        if cost_cap_blocks_send("scrape_pause_notify"):
+            print(f"[scraper] auto-pause sms skipped for schedule "
+                  f"{schedule['id']}: AI spend cap reached")
+        else:
+            try:
+                r = messaging.send_sms(notify_phone, text_body[:1500])
+                try:
+                    segs = int((r or {}).get("num_segments") or 1)
+                except (TypeError, ValueError):
+                    segs = 1
+                record_sms_cost(
+                    surface="scrape_pause_notify", to_number=notify_phone,
+                    message_sid=(r or {}).get("sid") or "", segments=segs,
+                )
+            except messaging.MessagingError as e:
+                print(f"[scraper] auto-pause sms failed for schedule "
+                      f"{schedule['id']}: {e}")
 
 
 def _scrape_kick_off(job_id: int) -> None:
@@ -26458,6 +27840,8 @@ def _ai_draft_review_message(channel: str, recipient_name: str, item: str,
             max_tokens=400,
             temperature=0.7,
         )
+        record_chat_cost_from_response(response, surface="review_email_draft",
+                                       model="gpt-4o-mini")
         text = (response.choices[0].message.content or "").strip()
     except Exception as e:
         print(f"[reviews] AI draft failed, using fallback: {e}")
@@ -26636,7 +28020,24 @@ def _send_review_request(req: dict) -> dict:
         if channel == "email":
             messaging.send_email(req["recipient_email"], subject, body)
         else:
-            messaging.send_sms(req["recipient_phone"], body)
+            if cost_cap_blocks_send("review_request_sms"):
+                execute_db(
+                    "UPDATE review_requests SET status='failed', "
+                    "  error_text=%s WHERE id=%s",
+                    ("AI spend cap reached — send skipped", req["id"]),
+                )
+                return {"ok": False, "error": "cost_cap_reached"}
+            r = messaging.send_sms(req["recipient_phone"], body)
+            try:
+                segs = int((r or {}).get("num_segments") or 1)
+            except (TypeError, ValueError):
+                segs = 1
+            record_sms_cost(
+                surface="review_request_sms",
+                to_number=req["recipient_phone"],
+                message_sid=(r or {}).get("sid") or "",
+                segments=segs,
+            )
     except messaging.MessagingError as e:
         execute_db(
             """
@@ -27992,6 +29393,8 @@ def admin_messaging_ai_draft():
             max_tokens=900,
             temperature=0.7,
         )
+        record_chat_cost_from_response(response, surface="sms_draft",
+                                       model="gpt-4o-mini")
         text = (response.choices[0].message.content or "").strip()
     except Exception as e:
         return jsonify({"error": f"AI drafting failed: {e}"}), 502
@@ -28311,6 +29714,35 @@ def webhook_twilio_status():
     new_status = mapping.get(status)
     if not new_status:
         return jsonify({"ok": True})
+
+    # Twilio sometimes revises NumSegments on the delivered callback
+    # (e.g. after re-encoding). Recompute the row's cost using the
+    # SAME unit price that was stamped at insert time — never refresh
+    # from current model_prices, otherwise an admin price edit would
+    # retroactively rewrite history. If unit_sms_price_usd is NULL
+    # (cost wasn't priceable when written), we leave cost_usd alone.
+    raw_segs = form.get("NumSegments")
+    if raw_segs:
+        try:
+            new_segs = max(1, int(raw_segs))
+        except (TypeError, ValueError):
+            new_segs = None
+        if new_segs:
+            try:
+                execute_db(
+                    "UPDATE sms_cost_events "
+                    "   SET segments = %s, "
+                    "       cost_usd = CASE "
+                    "         WHEN unit_sms_price_usd IS NOT NULL "
+                    "           THEN %s * unit_sms_price_usd "
+                    "         ELSE cost_usd "
+                    "       END "
+                    " WHERE message_sid = %s",
+                    (new_segs, new_segs, sid),
+                )
+            except Exception as e:
+                print(f"[cost] webhook segment update failed: {e}")
+
     if new_status == "delivered":
         execute_db(
             """

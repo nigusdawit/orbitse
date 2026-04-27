@@ -2023,6 +2023,12 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l9 4.5v11L12 22l-9-4.5v-11L12 2z"/><path d="M3 6.5L12 11l9-4.5"/><line x1="12" y1="22" x2="12" y2="11"/></svg>
       Plans &amp; Features
     </button>
+    {% if has_feature('cost_dashboard') %}
+    <button class="tab-btn" onclick="switchTab('cost', this); loadCost();" data-testid="tab-cost">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+      Cost
+    </button>
+    {% endif %}
   </nav>
 
   <main class="admin-main">
@@ -7490,6 +7496,121 @@ TO CUSTOMIZE THIS DASHBOARD:
       </div>
       <div id="plans-features-list" data-testid="list-plans-features">
         <div class="empty-state" style="padding:1.5rem;">Loading features…</div>
+      </div>
+    </div>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: COST — spend transparency, model pricing, and the monthly cap.
+  Loaded by loadCost() which fans out to four backend endpoints in
+  parallel (summary, series, by-surface, by-model). Pricing and cap
+  edits happen inline; price edits bust the in-process price cache so
+  the very next event uses the new unit price.
+  ========================================================================
+  -->
+  <div id="tab-cost" class="tab-content">
+    <div class="content-header">
+      <h2>Cost</h2>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <span id="cost-updated" style="font-size:0.8125rem; color:var(--admin-text-muted);"></span>
+        <button class="btn-secondary" onclick="loadCost()" data-testid="button-cost-refresh">Refresh</button>
+      </div>
+    </div>
+
+    <!-- Headline KPI cards: MTD total, by-channel split, cap progress -->
+    <div id="cost-summary-cards" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem; margin-bottom:1rem;">
+      <div class="empty-state" style="padding:1rem; grid-column:1/-1;">Loading cost summary…</div>
+    </div>
+
+    <!-- Spend-over-time chart -->
+    <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:1rem 1.25rem; margin-bottom:1rem;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+        <div style="font-weight:600;">Spend over time</div>
+        <select id="cost-series-days" onchange="loadCostSeries()" data-testid="select-cost-days"
+                style="background:var(--admin-card); border:1px solid var(--admin-border); color:var(--admin-text); padding:0.35rem 0.5rem; border-radius:6px;">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="60">Last 60 days</option>
+          <option value="90">Last 90 days</option>
+        </select>
+      </div>
+      <div style="position:relative; height:240px;">
+        <canvas id="cost-series-chart" data-testid="chart-cost-series"></canvas>
+      </div>
+    </div>
+
+    <!-- Two-column: by-surface + by-model breakdowns -->
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(360px, 1fr)); gap:0.75rem; margin-bottom:1rem;">
+      <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:0.5rem 0;">
+        <div style="padding:0.75rem 1.25rem; border-bottom:1px solid var(--admin-border); font-weight:600;">By surface (this month)</div>
+        <div id="cost-by-surface" data-testid="list-cost-by-surface">
+          <div class="empty-state" style="padding:1.5rem;">Loading…</div>
+        </div>
+      </div>
+      <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:0.5rem 0;">
+        <div style="padding:0.75rem 1.25rem; border-bottom:1px solid var(--admin-border); font-weight:600;">By model (this month)</div>
+        <div id="cost-by-model" data-testid="list-cost-by-model">
+          <div class="empty-state" style="padding:1.5rem;">Loading…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Monthly cap config -->
+    <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:1rem 1.25rem; margin-bottom:1rem;">
+      <div style="font-weight:600; margin-bottom:0.25rem;">Monthly cost cap</div>
+      <div style="font-size:0.8125rem; color:var(--admin-text-muted); margin-bottom:0.75rem;">
+        When MTD spend reaches the warn threshold an email goes out. When it reaches the cap the chosen behaviour kicks in.
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem;">
+        <label style="display:flex; flex-direction:column; gap:0.25rem; font-size:0.875rem;">
+          <span>Cap (USD / month)</span>
+          <input type="number" min="0" step="1" id="cost-cap-amount" data-testid="input-cap-amount"
+                 placeholder="No cap"
+                 style="background:var(--admin-bg); border:1px solid var(--admin-border); color:var(--admin-text); padding:0.45rem 0.6rem; border-radius:6px;">
+        </label>
+        <label style="display:flex; flex-direction:column; gap:0.25rem; font-size:0.875rem;">
+          <span>Warn at %</span>
+          <input type="number" min="1" max="100" step="1" id="cost-cap-warn" value="80" data-testid="input-cap-warn"
+                 style="background:var(--admin-bg); border:1px solid var(--admin-border); color:var(--admin-text); padding:0.45rem 0.6rem; border-radius:6px;">
+        </label>
+        <label style="display:flex; flex-direction:column; gap:0.25rem; font-size:0.875rem;">
+          <span>Behaviour at cap</span>
+          <select id="cost-cap-behavior" data-testid="select-cap-behavior"
+                  style="background:var(--admin-bg); border:1px solid var(--admin-border); color:var(--admin-text); padding:0.45rem 0.6rem; border-radius:6px;">
+            <option value="alert_only">Alert only (don't block)</option>
+            <option value="throttle">Throttle (slow new requests)</option>
+            <option value="strict_block">Strict block (return 402)</option>
+          </select>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:0.25rem; font-size:0.875rem;">
+          <span>Alert email</span>
+          <input type="email" id="cost-cap-alert-email" data-testid="input-cap-alert-email"
+                 placeholder="alerts@example.com"
+                 style="background:var(--admin-bg); border:1px solid var(--admin-border); color:var(--admin-text); padding:0.45rem 0.6rem; border-radius:6px;">
+        </label>
+        <label style="display:flex; flex-direction:column; gap:0.25rem; font-size:0.875rem;">
+          <span>Weekly digest email</span>
+          <input type="email" id="cost-cap-digest-email" data-testid="input-cap-digest-email"
+                 placeholder="(uses alert email if blank)"
+                 style="background:var(--admin-bg); border:1px solid var(--admin-border); color:var(--admin-text); padding:0.45rem 0.6rem; border-radius:6px;">
+        </label>
+      </div>
+      <div style="margin-top:0.75rem; display:flex; gap:0.5rem;">
+        <button class="btn-primary" onclick="saveCostCap()" data-testid="button-save-cap">Save cap</button>
+      </div>
+    </div>
+
+    <!-- Pricing table — admin-editable model_prices -->
+    <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:0.5rem 0;">
+      <div style="padding:0.75rem 1.25rem; border-bottom:1px solid var(--admin-border);">
+        <div style="font-weight:600;">Model pricing</div>
+        <div style="font-size:0.8125rem; color:var(--admin-text-muted);">
+          Edits affect future events only. Past events keep the unit price stamped at write time.
+        </div>
+      </div>
+      <div id="cost-prices-list" data-testid="list-cost-prices">
+        <div class="empty-state" style="padding:1.5rem;">Loading prices…</div>
       </div>
     </div>
   </div>
@@ -17640,6 +17761,293 @@ TO CUSTOMIZE THIS DASHBOARD:
         showToast('Failed to toggle: ' + (e.message || e), 'error');
       } finally {
         input.disabled = false;
+      }
+    }
+
+    /*
+    ========================================================================
+    COST TAB — fans out to four backend endpoints in parallel and
+    renders summary cards, a daily spend chart, two breakdown tables,
+    a cap form, and an editable pricing table.
+    ========================================================================
+    */
+    let _costSeriesChart = null;
+    function _money(n) {
+      const v = Number(n || 0);
+      if (v < 0.01 && v > 0) return '$' + v.toFixed(4);
+      return '$' + v.toFixed(2);
+    }
+    function _int(n) { return (Number(n || 0)).toLocaleString(); }
+
+    async function loadCost() {
+      const updated = document.getElementById('cost-updated');
+      try {
+        await Promise.all([
+          loadCostSummary(),
+          loadCostSeries(),
+          loadCostBySurface(),
+          loadCostByModel(),
+          loadCostCap(),
+          loadCostPrices(),
+        ]);
+        if (updated) updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      } catch (e) {
+        console.error('cost load failed', e);
+      }
+    }
+
+    async function loadCostSummary() {
+      const el = document.getElementById('cost-summary-cards');
+      if (!el) return;
+      try {
+        const res = await fetch('/admin/api/cost/summary', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        const s = data.spend || {};
+        const cap = data.cap || {};
+        const capLine = cap.monthly_cap_usd
+          ? `${_money(s.total_usd)} / ${_money(cap.monthly_cap_usd)}`
+          : `${_money(s.total_usd)} (no cap)`;
+        const pct = cap.percent_used;
+        const barColor = pct == null ? '#3b82f6'
+                       : pct >= 100 ? '#ef4444'
+                       : pct >= cap.warn_at_percent ? '#f59e0b'
+                       : '#10b981';
+        const barWidth = pct == null ? 0 : Math.min(100, pct);
+        el.innerHTML = `
+          <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:1rem 1.25rem;">
+            <div style="font-size:0.75rem; text-transform:uppercase; color:var(--admin-text-muted); letter-spacing:0.05em;">MTD spend</div>
+            <div style="font-size:1.6rem; font-weight:700;" data-testid="text-cost-total">${capLine}</div>
+            ${pct == null ? '' : `
+              <div style="margin-top:0.5rem; height:6px; background:rgba(255,255,255,0.06); border-radius:3px; overflow:hidden;">
+                <div style="height:100%; width:${barWidth}%; background:${barColor}; transition:width 200ms;"></div>
+              </div>
+              <div style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.25rem;" data-testid="text-cost-pct">${pct}% used · cap behaviour: ${escapeHTML(cap.cap_behavior || 'alert_only')}</div>
+            `}
+          </div>
+          <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:1rem 1.25rem;">
+            <div style="font-size:0.75rem; text-transform:uppercase; color:var(--admin-text-muted); letter-spacing:0.05em;">Chat (LLM)</div>
+            <div style="font-size:1.4rem; font-weight:700;" data-testid="text-cost-chat">${_money(s.chat_usd)}</div>
+            <div style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.25rem;">Prompt + completion tokens</div>
+          </div>
+          <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:1rem 1.25rem;">
+            <div style="font-size:0.75rem; text-transform:uppercase; color:var(--admin-text-muted); letter-spacing:0.05em;">Voice (TTS + STT)</div>
+            <div style="font-size:1.4rem; font-weight:700;" data-testid="text-cost-voice">${_money(s.voice_usd)}</div>
+            <div style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.25rem;">Characters synthesized + audio transcribed</div>
+          </div>
+          <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:1rem 1.25rem;">
+            <div style="font-size:0.75rem; text-transform:uppercase; color:var(--admin-text-muted); letter-spacing:0.05em;">SMS</div>
+            <div style="font-size:1.4rem; font-weight:700;" data-testid="text-cost-sms">${_money(s.sms_usd)}</div>
+            <div style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.25rem;">Carrier segments</div>
+          </div>
+        `;
+      } catch (e) {
+        el.innerHTML = '<div class="empty-state" style="padding:1rem; grid-column:1/-1; color:#ef4444;">Could not load summary: ' + escapeHTML(String(e.message || e)) + '</div>';
+      }
+    }
+
+    async function loadCostSeries() {
+      const days = parseInt((document.getElementById('cost-series-days') || {}).value || '30', 10);
+      try {
+        const res = await fetch('/admin/api/cost/series?days=' + days, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        const series = data.series || [];
+        const labels = series.map(r => r.day);
+        const ds = (key, label, color) => ({
+          label, data: series.map(r => Number(r[key] || 0)),
+          backgroundColor: color, borderColor: color, borderWidth: 1,
+        });
+        const ctx = document.getElementById('cost-series-chart');
+        if (!ctx || typeof Chart === 'undefined') return;
+        if (_costSeriesChart) { _costSeriesChart.destroy(); _costSeriesChart = null; }
+        _costSeriesChart = new Chart(ctx, {
+          type: 'bar',
+          data: { labels, datasets: [
+            ds('chat_usd',  'Chat',  '#3b82f6'),
+            ds('voice_usd', 'Voice', '#a855f7'),
+            ds('sms_usd',   'SMS',   '#10b981'),
+          ]},
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { position: 'bottom' } },
+            scales: {
+              x: { stacked: true, ticks: { color: '#888', maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }, grid: { display: false } },
+              y: { stacked: true, ticks: { color: '#888', callback: v => '$' + v }, grid: { color: 'rgba(255,255,255,0.05)' } },
+            },
+          },
+        });
+      } catch (e) {
+        console.error('cost series failed', e);
+      }
+    }
+
+    async function loadCostBySurface() {
+      const el = document.getElementById('cost-by-surface');
+      if (!el) return;
+      try {
+        const res = await fetch('/admin/api/cost/by-surface', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        const rows = data.rows || [];
+        if (!rows.length) { el.innerHTML = '<div class="empty-state" style="padding:1.5rem;">No cost events this month.</div>'; return; }
+        el.innerHTML = rows.map(r => `
+          <div style="display:flex; justify-content:space-between; align-items:center; padding:0.65rem 1.25rem; border-bottom:1px solid var(--admin-border);" data-testid="row-surface-${escapeHTML(r.surface)}">
+            <div>
+              <div style="font-weight:500;">${escapeHTML(r.surface)}</div>
+              <div style="font-size:0.75rem; color:var(--admin-text-muted);">${escapeHTML(r.channel)} · ${_int(r.events)} events</div>
+            </div>
+            <div style="font-weight:600;">${_money(r.cost_usd)}</div>
+          </div>
+        `).join('');
+      } catch (e) {
+        el.innerHTML = '<div class="empty-state" style="padding:1.5rem; color:#ef4444;">' + escapeHTML(String(e.message || e)) + '</div>';
+      }
+    }
+
+    async function loadCostByModel() {
+      const el = document.getElementById('cost-by-model');
+      if (!el) return;
+      try {
+        const res = await fetch('/admin/api/cost/by-model', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        const rows = data.rows || [];
+        if (!rows.length) { el.innerHTML = '<div class="empty-state" style="padding:1.5rem;">No cost events this month.</div>'; return; }
+        el.innerHTML = rows.map(r => {
+          let detail = `${_int(r.events)} events`;
+          if (r.prompt_tokens != null) detail += ` · ${_int(r.prompt_tokens)} in / ${_int(r.completion_tokens)} out tok`;
+          if (r.chars != null) detail += ` · ${_int(r.chars)} chars`;
+          if (r.audio_seconds != null && r.audio_seconds > 0) detail += ` · ${(r.audio_seconds/60).toFixed(1)} min`;
+          if (r.segments != null) detail += ` · ${_int(r.segments)} segments`;
+          return `
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:0.65rem 1.25rem; border-bottom:1px solid var(--admin-border);" data-testid="row-model-${escapeHTML(r.provider)}-${escapeHTML(r.model)}">
+              <div style="min-width:0; flex:1;">
+                <div style="font-weight:500;">${escapeHTML(r.provider)} <span style="opacity:0.7;">/</span> ${escapeHTML(r.model)}</div>
+                <div style="font-size:0.75rem; color:var(--admin-text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHTML(r.channel)} · ${detail}</div>
+              </div>
+              <div style="font-weight:600; padding-left:0.5rem;">${_money(r.cost_usd)}</div>
+            </div>
+          `;
+        }).join('');
+      } catch (e) {
+        el.innerHTML = '<div class="empty-state" style="padding:1.5rem; color:#ef4444;">' + escapeHTML(String(e.message || e)) + '</div>';
+      }
+    }
+
+    async function loadCostCap() {
+      try {
+        const res = await fetch('/admin/api/cost/cap', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const c = await res.json();
+        const set = (id, v) => { const el = document.getElementById(id); if (el != null) el.value = (v == null ? '' : v); };
+        set('cost-cap-amount', c.monthly_cap_usd);
+        set('cost-cap-warn', c.warn_at_percent || 80);
+        set('cost-cap-behavior', c.cap_behavior || 'alert_only');
+        set('cost-cap-alert-email', c.alert_email || '');
+        set('cost-cap-digest-email', c.digest_email || '');
+      } catch (e) {
+        console.error('cap load failed', e);
+      }
+    }
+
+    async function saveCostCap() {
+      const body = {
+        monthly_cap_usd: document.getElementById('cost-cap-amount').value || null,
+        warn_at_percent: parseInt(document.getElementById('cost-cap-warn').value || '80', 10),
+        cap_behavior: document.getElementById('cost-cap-behavior').value,
+        alert_email: document.getElementById('cost-cap-alert-email').value,
+        digest_email: document.getElementById('cost-cap-digest-email').value,
+      };
+      try {
+        const res = await fetch('/admin/api/cost/cap', {
+          method: 'PUT', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || 'HTTP ' + res.status);
+        }
+        showToast('Cost cap saved');
+        loadCostSummary();
+      } catch (e) {
+        showToast('Save failed: ' + (e.message || e), 'error');
+      }
+    }
+
+    async function loadCostPrices() {
+      const el = document.getElementById('cost-prices-list');
+      if (!el) return;
+      try {
+        const res = await fetch('/admin/api/cost/prices', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        const rows = data.rows || [];
+        if (!rows.length) { el.innerHTML = '<div class="empty-state" style="padding:1.5rem;">No prices configured.</div>'; return; }
+        // Build a column set per row based on the kind so we only show
+        // the inputs that are meaningful for chat / tts / stt / sms.
+        el.innerHTML = `
+          <div style="display:grid; grid-template-columns:1.5fr 1fr 1fr 1fr 1fr 1fr auto; gap:0.5rem; padding:0.5rem 1.25rem; font-size:0.7rem; text-transform:uppercase; color:var(--admin-text-muted); letter-spacing:0.05em; border-bottom:1px solid var(--admin-border);">
+            <div>Provider / Model · Kind</div>
+            <div>Input $/M tok</div>
+            <div>Output $/M tok</div>
+            <div>TTS $/M chars</div>
+            <div>STT $/min</div>
+            <div>SMS $/seg</div>
+            <div></div>
+          </div>
+        ` + rows.map(r => `
+          <div style="display:grid; grid-template-columns:1.5fr 1fr 1fr 1fr 1fr 1fr auto; gap:0.5rem; padding:0.6rem 1.25rem; align-items:center; border-bottom:1px solid var(--admin-border);" data-testid="row-price-${r.id}">
+            <div style="min-width:0;">
+              <div style="font-weight:500;">${escapeHTML(r.provider)} / ${escapeHTML(r.model)}</div>
+              <div style="font-size:0.75rem; color:var(--admin-text-muted);">${escapeHTML(r.surface)}</div>
+            </div>
+            ${_priceInput(r, 'input_price_per_million_tokens',  r.surface === 'chat')}
+            ${_priceInput(r, 'output_price_per_million_tokens', r.surface === 'chat')}
+            ${_priceInput(r, 'tts_price_per_million_chars',     r.surface === 'tts')}
+            ${_priceInput(r, 'stt_price_per_minute',            r.surface === 'stt')}
+            ${_priceInput(r, 'sms_price_per_segment',           r.surface === 'sms')}
+            <button class="btn-secondary" onclick="saveCostPrice(${r.id})" data-testid="button-save-price-${r.id}" style="padding:0.4rem 0.7rem;">Save</button>
+          </div>
+        `).join('');
+      } catch (e) {
+        el.innerHTML = '<div class="empty-state" style="padding:1.5rem; color:#ef4444;">' + escapeHTML(String(e.message || e)) + '</div>';
+      }
+    }
+
+    function _priceInput(row, field, applies) {
+      const v = row[field];
+      const val = v == null ? '' : v;
+      if (!applies) {
+        return '<div style="font-size:0.8125rem; color:var(--admin-text-muted); text-align:center;">—</div>';
+      }
+      return `<input type="number" step="0.0001" min="0" value="${val}"
+                     data-row="${row.id}" data-field="${field}"
+                     data-testid="input-price-${row.id}-${field}"
+                     style="background:var(--admin-bg); border:1px solid var(--admin-border); color:var(--admin-text); padding:0.35rem 0.5rem; border-radius:6px; width:100%;">`;
+    }
+
+    async function saveCostPrice(rowId) {
+      const inputs = document.querySelectorAll('input[data-row="' + rowId + '"]');
+      const body = {};
+      inputs.forEach(i => {
+        const f = i.getAttribute('data-field');
+        body[f] = i.value === '' ? null : i.value;
+      });
+      try {
+        const res = await fetch('/admin/api/cost/prices/' + rowId, {
+          method: 'PATCH', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || 'HTTP ' + res.status);
+        }
+        showToast('Price updated');
+      } catch (e) {
+        showToast('Save failed: ' + (e.message || e), 'error');
       }
     }
 
