@@ -1,0 +1,104 @@
+{
+  "$schema_version": 1,
+  "$description": "Restaurant starter template — assumes a single-location restaurant with menu items + reservations workflow. Edit business hours, contact info, and menu items before passing to bootstrap_install.",
+
+  "settings": {
+    "site_settings": {
+      "site_name": "Trattoria Example",
+      "site_subtitle": "Authentic Italian, neighborhood prices.",
+      "hero_title": "Welcome to Trattoria Example",
+      "hero_tagline": "Family-owned since 1998.",
+      "hero_description": "Hand-rolled pasta, wood-fired pizza, and a wine list curated by our sommelier. Walk-ins welcome; reservations recommended on weekends.",
+      "logo_initials": "TE"
+    },
+    "business_info": {
+      "business_phone": "+1-555-0100",
+      "business_email": "hello@example.com",
+      "business_address": "123 Main Street, Anytown, USA",
+      "business_hours": {
+        "mon": "Closed",
+        "tue": "5:00 PM - 10:00 PM",
+        "wed": "5:00 PM - 10:00 PM",
+        "thu": "5:00 PM - 10:00 PM",
+        "fri": "5:00 PM - 11:00 PM",
+        "sat": "12:00 PM - 11:00 PM",
+        "sun": "12:00 PM - 9:00 PM"
+      },
+      "social_links": {
+        "instagram": "https://instagram.com/example",
+        "facebook": "https://facebook.com/example"
+      }
+    },
+    "chatbot_settings": {
+      "enabled": true,
+      "agent_name": "Sofia",
+      "agent_role": "Reservations & Menu Concierge",
+      "greeting": "Ciao! I'm Sofia. Ask me about our menu, allergens, or to help you book a table.",
+      "system_prompt": "You are Sofia, the digital concierge for Trattoria Example. Help guests with: menu questions (ingredients, allergens, vegan/vegetarian options), hours, location and parking, dress code, and reservations. For reservations of 6+ ask the guest to call directly. Never invent menu items — only describe what's in the FAQ list and content you've been given. Be warm, brief, and use 1-2 sentences max per response."
+    },
+    "voice_settings": {
+      "enabled_intros": true,
+      "enabled_visitor_voice": true,
+      "enabled_ai_voice": true,
+      "default_voice": "warm-female",
+      "tts_provider": "elevenlabs"
+    }
+  },
+
+  "features": {
+    "plan": "growth"
+  },
+
+  "faqs": [
+    {
+      "question": "Do you take reservations?",
+      "answer": "Yes — for parties of 1-5 you can book through our website. For 6 or more, please call us at +1-555-0100 so we can arrange seating.",
+      "sort_order": 1
+    },
+    {
+      "question": "Do you have vegetarian and vegan options?",
+      "answer": "Yes. Roughly half our menu is vegetarian, and we always have at least 2 vegan pasta dishes plus a wood-fired vegan pizza.",
+      "sort_order": 2
+    },
+    {
+      "question": "Is there parking nearby?",
+      "answer": "Free street parking after 6 PM. There's also a paid lot one block north on Main Street.",
+      "sort_order": 3
+    },
+    {
+      "question": "Are you open for lunch?",
+      "answer": "Lunch service is Saturday and Sunday only, starting at 12 PM. Tuesday through Friday we open at 5 PM.",
+      "sort_order": 4
+    },
+    {
+      "question": "Do you accommodate gluten allergies?",
+      "answer": "Yes — we offer gluten-free pasta on request and have a dedicated prep area to avoid cross-contamination. Please mention your allergy when ordering.",
+      "sort_order": 5
+    },
+    {
+      "question": "Is there a dress code?",
+      "answer": "Smart casual. No formal requirements, but we do ask guests to skip beachwear and athletic gear in the dining room.",
+      "sort_order": 6
+    }
+  ],
+
+  "admin_user": {
+    "email": "owner@trattoria-example.com",
+    "name": "Restaurant Owner"
+  },
+
+  "content": {
+    "services": [
+      {
+        "name": "Private Dining",
+        "slug": "private-dining",
+        "description": "Our back room seats up to 24 for rehearsal dinners, birthdays, and corporate events. Includes a dedicated server and customizable prix-fixe menu."
+      },
+      {
+        "name": "Catering",
+        "slug": "catering",
+        "description": "Off-site catering for groups of 15-150. Antipasti spreads, pasta stations, and full plated dinners available."
+      }
+    ]
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "$schema_version": 1,
+  "$description": "Generic starter template — bare-minimum baseline that lights up the homepage and chatbot. Safe default for any new install when the operator hasn't picked an industry yet. Replace placeholder values before passing to bootstrap_install.",
+
+  "settings": {
+    "site_settings": {
+      "site_name": "My Business",
+      "site_subtitle": "Tell visitors what you do in one line.",
+      "hero_title": "Welcome",
+      "hero_tagline": "Your tagline goes here",
+      "hero_description": "A short paragraph that introduces who you serve and what makes you different.",
+      "logo_initials": "MB"
+    },
+    "business_info": {
+      "business_phone": "",
+      "business_email": "",
+      "business_address": "",
+      "business_hours": {
+        "mon": "9:00 AM - 5:00 PM",
+        "tue": "9:00 AM - 5:00 PM",
+        "wed": "9:00 AM - 5:00 PM",
+        "thu": "9:00 AM - 5:00 PM",
+        "fri": "9:00 AM - 5:00 PM",
+        "sat": "Closed",
+        "sun": "Closed"
+      },
+      "social_links": {}
+    },
+    "chatbot_settings": {
+      "enabled": true,
+      "agent_name": "Assistant",
+      "agent_role": "Concierge",
+      "greeting": "Hi there! How can I help you today?",
+      "system_prompt": "You are a helpful concierge for this business. Be concise, friendly, and ground every answer in the FAQ list and business information you have access to. If you don't know, say so and offer to take a message."
+    }
+  },
+
+  "features": {
+    "plan": "growth"
+  },
+
+  "faqs": [
+    {
+      "question": "What are your hours?",
+      "answer": "We're open Monday through Friday, 9 AM to 5 PM. Closed weekends.",
+      "sort_order": 1
+    },
+    {
+      "question": "How do I contact you?",
+      "answer": "You can reach us by phone, email, or through the chat on this page.",
+      "sort_order": 2
+    },
+    {
+      "question": "Where are you located?",
+      "answer": "Please see the address and map at the bottom of the page.",
+      "sort_order": 3
+    }
+  ],
+
+  "admin_user": {
+    "email": "owner@example.com",
+    "name": "Site Owner"
+  }
+}

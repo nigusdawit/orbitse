@@ -1487,3 +1487,287 @@ def refund_order(params):
         "refund_id": getattr(refund, "id", None),
         "amount_cents": getattr(refund, "amount", None),
     }
+
+
+# ---------------------------------------------------------------------------
+# bootstrap_install — Tier 2: VELO-driven provisioning in one gated call
+# ---------------------------------------------------------------------------
+# Composes the existing single-purpose handlers (update_settings,
+# update_faq, manage_features, manage_user, update_content) so the master
+# can bring a freshly-deployed install up to a usable baseline with one
+# round-trip instead of 20+. Idempotent by design:
+#   * Settings rows are singletons (UPDATE only, no duplicates possible).
+#   * FAQs are deduped on question text before insert.
+#   * The admin customer is deduped on email by manage_user itself.
+#   * Content rows without an explicit `id` insert fresh — callers should
+#     omit the `content` block on re-runs unless they actually want
+#     additional rows.
+# Per-section errors are collected into the summary instead of aborting,
+# so a partial bootstrap stays diagnosable. Whole thing is gated behind
+# the standard confirm-token flow because it touches a lot of state.
+@velo_command(
+    "bootstrap_install",
+    description=(
+        "Bootstrap a fresh install from a client_template object. Composes "
+        "update_settings/update_faq/manage_features/manage_user/update_content "
+        "in one confirmation-gated call. Idempotent for settings + FAQs + admin user."
+    ),
+    params_schema={
+        "type": "object",
+        "properties": {
+            "template": {
+                "type": "object",
+                "description": (
+                    "Client template. Top-level keys: settings (dict of "
+                    "settings_key → fields_dict), features (dict with 'plan' "
+                    "OR 'set'), faqs (list of {question, answer, sort_order}), "
+                    "admin_user (dict with email + name), content (dict of "
+                    "content_type → list of fields_dict). All keys optional; "
+                    "omitted sections are skipped."
+                ),
+            },
+        },
+        "required": ["template"],
+    },
+    requires_confirmation=True,
+)
+def bootstrap_install(params):
+    from app import query_db
+    import re as _re
+
+    def _canon_q(s):
+        # Canonical FAQ key: lowercase, collapse all whitespace runs to a
+        # single space, strip trailing punctuation. Catches the realistic
+        # template-drift cases (case changes, double spaces, trailing "?").
+        s = (s or "").lower().strip()
+        s = _re.sub(r"\s+", " ", s)
+        s = s.rstrip("?.!")
+        return s
+
+    def _safe_call(fn, args, on_error):
+        # Wrap a composed handler call so a raw exception (e.g. duplicate
+        # unique-key from update_content, transient DB hiccup) never aborts
+        # the whole bootstrap. Returns the handler dict on success or
+        # invokes on_error(exc) and returns None on raise.
+        try:
+            return fn(args)
+        except Exception as exc:
+            on_error(str(exc))
+            return None
+
+    p = params or {}
+    template = p.get("template") or {}
+    if not isinstance(template, dict) or not template:
+        return {"error": "template object required"}
+
+    summary = {
+        "settings_applied": [],
+        "settings_errors": [],
+        "features": None,
+        "features_error": None,
+        "faqs_created": 0,
+        "faqs_skipped_existing": 0,
+        "faqs_errors": [],
+        "admin_user": None,
+        "admin_user_error": None,
+        "content_created": {},
+        "content_errors": [],
+        "template_errors": [],   # malformed shapes — surfaced, not silent
+    }
+
+    # 1. Settings — one update_settings call per key in template.settings.
+    settings = template.get("settings")
+    if settings is not None:
+        if not isinstance(settings, dict):
+            summary["template_errors"].append(
+                {"section": "settings",
+                 "error": f"must be a dict, got {type(settings).__name__}"}
+            )
+        else:
+            for key, fields in settings.items():
+                if not isinstance(fields, dict) or not fields:
+                    summary["settings_errors"].append(
+                        {"key": key, "error": "fields must be a non-empty object"}
+                    )
+                    continue
+                r = _safe_call(
+                    update_settings, {"key": key, "fields": fields},
+                    lambda e, k=key: summary["settings_errors"].append(
+                        {"key": k, "error": f"exception: {e}"}
+                    ),
+                )
+                if r is None:
+                    continue
+                if r.get("error"):
+                    summary["settings_errors"].append({"key": key, "error": r["error"]})
+                else:
+                    summary["settings_applied"].append(
+                        {"key": key, "fields": r.get("fields", []),
+                         "rejected_columns": r.get("rejected_columns", [])}
+                    )
+
+    # 2. Features — either apply_plan (preferred) or bulk_set.
+    feat_spec = template.get("features")
+    if feat_spec is not None:
+        if not isinstance(feat_spec, dict):
+            summary["features_error"] = (
+                f"features must be a dict, got {type(feat_spec).__name__}"
+            )
+        elif not feat_spec:
+            pass  # empty dict — treat as omitted
+        else:
+            if feat_spec.get("plan"):
+                r = _safe_call(
+                    manage_features, {"action": "apply_plan", "plan": feat_spec["plan"]},
+                    lambda e: summary.update(features_error=f"exception: {e}"),
+                )
+                if r is not None:
+                    if r.get("error"):
+                        summary["features_error"] = r["error"]
+                    else:
+                        summary["features"] = {
+                            "mode": "apply_plan",
+                            "plan": feat_spec["plan"],
+                            "applied_count": r.get("count", 0),
+                        }
+            elif isinstance(feat_spec.get("set"), dict):
+                r = _safe_call(
+                    manage_features, {"action": "bulk_set", "features": feat_spec["set"]},
+                    lambda e: summary.update(features_error=f"exception: {e}"),
+                )
+                if r is not None:
+                    if r.get("error"):
+                        summary["features_error"] = r["error"]
+                    else:
+                        summary["features"] = {
+                            "mode": "bulk_set",
+                            "applied_count": r.get("count", 0),
+                            "skipped_unknown": r.get("skipped_unknown", []),
+                        }
+            else:
+                summary["features_error"] = "features must include 'plan' or 'set'"
+
+    # 3. FAQs — dedupe on canonical question text so minor drift (case,
+    # spacing, trailing punctuation) doesn't create duplicate rows.
+    faqs = template.get("faqs")
+    if faqs is not None:
+        if not isinstance(faqs, list):
+            summary["template_errors"].append(
+                {"section": "faqs",
+                 "error": f"must be a list, got {type(faqs).__name__}"}
+            )
+        else:
+            # Pre-fetch once and canonicalize so we don't N+1 the DB
+            # AND we catch dupes that exact-match SQL would miss.
+            existing_rows = query_db("SELECT question FROM faqs", ()) or []
+            existing_canon = {_canon_q(r["question"]) for r in existing_rows}
+            seen_in_template = set()
+            for f in faqs:
+                if not isinstance(f, dict):
+                    summary["faqs_errors"].append(
+                        {"faq": f, "error": f"item must be a dict, got {type(f).__name__}"}
+                    )
+                    continue
+                q = (f.get("question") or "").strip()
+                a = (f.get("answer") or "").strip()
+                if not q or not a:
+                    summary["faqs_errors"].append(
+                        {"faq": f, "error": "question and answer both required"}
+                    )
+                    continue
+                ck = _canon_q(q)
+                if ck in existing_canon or ck in seen_in_template:
+                    summary["faqs_skipped_existing"] += 1
+                    continue
+                r = _safe_call(
+                    update_faq, {
+                        "question": q, "answer": a,
+                        "sort_order": f.get("sort_order", 0),
+                    },
+                    lambda e, ff=f: summary["faqs_errors"].append(
+                        {"faq": ff, "error": f"exception: {e}"}
+                    ),
+                )
+                if r is None:
+                    continue
+                if r.get("error"):
+                    summary["faqs_errors"].append({"faq": f, "error": r["error"]})
+                else:
+                    summary["faqs_created"] += 1
+                    seen_in_template.add(ck)
+
+    # 4. Admin user — manage_user already returns 'already exists' on dupe email.
+    au = template.get("admin_user")
+    if au is not None:
+        if not isinstance(au, dict):
+            summary["admin_user_error"] = (
+                f"admin_user must be a dict, got {type(au).__name__}"
+            )
+        elif au.get("email"):
+            r = _safe_call(
+                manage_user, {
+                    "action": "create",
+                    "email": au["email"],
+                    "name": au.get("name") or "",
+                },
+                lambda e: summary.update(admin_user_error=f"exception: {e}"),
+            )
+            if r is not None:
+                if r.get("error"):
+                    if "already exists" in r["error"]:
+                        summary["admin_user"] = {"existed": True, "id": r.get("id")}
+                    else:
+                        summary["admin_user_error"] = r["error"]
+                else:
+                    summary["admin_user"] = {"created": True, "id": r.get("id")}
+
+    # 5. Content — optional starter rows by content_type. INSERT-only here;
+    # callers should omit this block on re-runs unless they want more rows.
+    content = template.get("content")
+    if content is not None:
+        if not isinstance(content, dict):
+            summary["template_errors"].append(
+                {"section": "content",
+                 "error": f"must be a dict, got {type(content).__name__}"}
+            )
+        else:
+            for ctype, items in content.items():
+                if not isinstance(items, list):
+                    summary["content_errors"].append(
+                        {"type": ctype,
+                         "error": f"items must be a list, got {type(items).__name__}"}
+                    )
+                    continue
+                created = 0
+                for item in items:
+                    if not isinstance(item, dict) or not item:
+                        summary["content_errors"].append(
+                            {"type": ctype, "error": "item must be a non-empty dict"}
+                        )
+                        continue
+                    r = _safe_call(
+                        update_content, {"type": ctype, "fields": item},
+                        lambda e, ct=ctype: summary["content_errors"].append(
+                            {"type": ct, "error": f"exception: {e}"}
+                        ),
+                    )
+                    if r is None:
+                        continue
+                    if r.get("error"):
+                        summary["content_errors"].append(
+                            {"type": ctype, "error": r["error"]}
+                        )
+                    else:
+                        created += 1
+                if created:
+                    summary["content_created"][ctype] = created
+
+    summary["ok"] = (
+        not summary["settings_errors"]
+        and not summary["faqs_errors"]
+        and not summary["features_error"]
+        and not summary["admin_user_error"]
+        and not summary["content_errors"]
+        and not summary["template_errors"]
+    )
+    return summary
