@@ -169,6 +169,118 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1, x_for=1)
 app.config["COMPRESS_ALGORITHM_STREAMING"] = ["zstd", "br", "gzip", "deflate"]
 Compress(app)
 
+# =============================================================================
+# CACHE HEADERS — public read-only /api/* endpoints (perf, Optimization #3)
+# =============================================================================
+# Most public /api/* endpoints serve content the operator edits once a week
+# at most (site settings, gallery, blog, services, etc.). Without explicit
+# Cache-Control headers, browsers re-fetch them on every page load and any
+# CDN we put in front of the app re-asks the origin every time too.
+#
+# We add `Cache-Control: public, max-age=60, stale-while-revalidate=300` to
+# a TIGHT, EXPLICIT allowlist of read endpoints:
+#   * 60s of fresh-cache: a refresh within a minute hits the browser cache.
+#   * 300s of stale-while-revalidate: between 60s and 360s the browser
+#     instantly serves the stale copy AND silently revalidates in the
+#     background, so the user never waits even when the cache "expires".
+#   * `public`: a CDN (Cloudflare/Fastly/etc.) in front of the origin can
+#     share one cache entry across every anonymous visitor. Massive win
+#     once the operator puts a CDN in front of /uploads/ and /api/.
+#
+# Defense layers, in priority order — the hook bails if ANY are tripped:
+#   1. method != GET                  (writes obviously aren't cacheable)
+#   2. status != 200                  (don't cache 4xx/5xx, redirects)
+#   3. path not in allowlist           (only well-known anonymous reads)
+#   4. response already has Cache-Control  (respect explicit overrides like
+#      the `no-cache` SSE streams at /admin/chat/stream and the `no-store`
+#      TTS prepare endpoint — never override an intentional no-cache)
+#   5. response has Set-Cookie         (a fresh session cookie was minted —
+#      caching `public` would let a CDN replay one user's session to others)
+#   6. request carries a Flask session cookie  (an admin — or anyone with
+#      a stale session — might be logged in; skip caching so admins
+#      editing content always see fresh writes. CRITICAL: we inspect the
+#      REQUEST cookies via request.cookies.get(...) — we do NOT call
+#      session.get(...), because reading the session object marks it as
+#      accessed and Flask then auto-adds `Vary: Cookie` to the response,
+#      fragmenting any shared CDN cache across every cookie value clients
+#      send (analytics cookies, locale, A/B test buckets, etc.) and
+#      largely defeating the `public` cache header.)
+#
+# WHY ALLOWLIST AND NOT GET-BY-DEFAULT: a denylist is one missed endpoint
+# away from caching `/api/admin-something` for the world. Allowlist is one
+# new endpoint away from missing a perf win. The latter is a much smaller
+# blast radius.
+_CACHEABLE_API_PATHS = frozenset({
+    # The bundle itself — replaces 17 cold-load fetches.
+    "/api/page-bundle",
+    # The 17 source endpoints the bundle aggregates (kept intact for
+    # admin pages, presentation viewer, and chatbot context lookup).
+    "/api/site-settings",
+    "/api/gallery-cards",
+    "/api/experiences",
+    "/api/pricing",
+    "/api/testimonials",
+    "/api/team",
+    "/api/faq",
+    "/api/blog",
+    "/api/business-info",
+    "/api/page-sections",
+    "/api/sphere-settings",
+    "/api/video-gallery",
+    "/api/podcast",
+    "/api/products",
+    "/api/storefront-config",
+    "/api/events",
+    "/api/services",
+    # The 3 standalone reads the homepage fires alongside the bundle.
+    "/api/theme",
+    "/api/chatbot-settings",
+    "/api/voice/settings",
+})
+_CACHE_HEADER_VALUE = "public, max-age=60, stale-while-revalidate=300"
+
+
+@app.after_request
+def _add_public_api_cache_headers(response):
+    # 1. Writes are never cacheable.
+    if request.method != "GET":
+        return response
+    # 2. Don't cache failures or redirects — they should re-evaluate.
+    if response.status_code != 200:
+        return response
+    # 3. Tight allowlist — see _CACHEABLE_API_PATHS rationale above.
+    if request.path not in _CACHEABLE_API_PATHS:
+        return response
+    # 4. Respect any endpoint that already chose its own cache policy
+    #    (the SSE chat / voice streams set 'no-cache', TTS prepare sets
+    #    'no-store'). Never silently overwrite.
+    if "Cache-Control" in response.headers:
+        return response
+    # 5. Anti-session-bleed: if Flask minted a Set-Cookie on this response
+    #    (e.g. session interface decided to refresh the cookie), `public`
+    #    caching could let a shared CDN serve that cookie to other clients.
+    #    Skip caching entirely rather than risk it.
+    if response.headers.get("Set-Cookie"):
+        return response
+    # 6. If the caller carries a Flask session cookie, an admin MIGHT be
+    #    logged in — skip the cache so admins editing content see their
+    #    writes immediately. Crucially we inspect the REQUEST cookie, not
+    #    the session object: touching session would force Flask to emit
+    #    `Vary: Cookie` and shatter the shared CDN cache. The trade-off
+    #    is that anonymous visitors who once received a session cookie
+    #    (e.g. they accidentally hit an admin URL) won't benefit from
+    #    caching either — small price for keeping CDN sharing intact.
+    session_cookie_name = app.config.get("SESSION_COOKIE_NAME", "session")
+    # `key in request.cookies` (not `.get(key)`) so a present-but-empty
+    # session cookie (`session=`) also triggers the skip. .get() returns
+    # "" → falsy → would incorrectly cache; `in` treats presence alone
+    # as "an admin might be logged in, play it safe."
+    if session_cookie_name in request.cookies:
+        return response
+
+    response.headers["Cache-Control"] = _CACHE_HEADER_VALUE
+    return response
+
 # Secret key for Flask sessions (used for admin login persistence).
 # Priority: FLASK_SECRET_KEY env var > persisted .flask_secret file > new random.
 # We persist a generated key to a local file so admin sessions survive workflow
