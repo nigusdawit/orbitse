@@ -17871,8 +17871,8 @@ TO CUSTOMIZE THIS DASHBOARD:
             const rows = tv.map(v => `
               <tr>
                 <td style="padding:0.4rem 0.6rem; font-family:var(--font-mono, monospace); font-size:0.8rem;" data-testid="text-topvisitor-id-${escapeHTML(String(v.visitor_id || ''))}">${escapeHTML(v.visitor_id || '(unknown)')}</td>
-                <td style="padding:0.4rem 0.6rem; text-align:right; font-weight:600;" data-testid="text-topvisitor-spend-${escapeHTML(String(v.visitor_id || ''))}">${_money(v.spend_usd)}</td>
-                <td style="padding:0.4rem 0.6rem; text-align:right; color:var(--admin-text-muted);">${v.events || 0}</td>
+                <td style="padding:0.4rem 0.6rem; text-align:right; font-weight:600;" data-testid="text-topvisitor-spend-${escapeHTML(String(v.visitor_id || ''))}">${_money(v.usd)}</td>
+                <td style="padding:0.4rem 0.6rem; text-align:right; color:var(--admin-text-muted);">${v.calls || 0}</td>
               </tr>`).join('');
             tvEl.innerHTML = `
               <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:1rem 1.25rem; margin-top:0.75rem;">

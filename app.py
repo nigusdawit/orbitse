@@ -21405,6 +21405,8 @@ def api_voice_sample():
                 elevenlabs_voice_id=voice_id,
                 elevenlabs_model=model or "eleven_turbo_v2_5",
             )
+            sample_model = model or "eleven_turbo_v2_5"
+            sample_voice = voice_id
         else:
             audio_url, was_cached, used_provider = _generate_tts_audio(
                 text=sample_text,
@@ -21412,11 +21414,31 @@ def api_voice_sample():
                 model=model or "tts-1",
                 provider="openai",
             )
+            sample_model = model or "tts-1"
+            sample_voice = voice_id or "alloy"
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 503
     except Exception as e:
         print(f"[Voice sample error] {e}")
         return jsonify({"error": "Sample generation failed"}), 500
+
+    # Ledger the TTS render — but only when we actually called the
+    # provider. Cache hits return was_cached=True and don't burn API
+    # characters, so a $0 ledger row would just clutter the dashboard.
+    if not was_cached:
+        try:
+            record_voice_cost(
+                surface="voice_sample",
+                provider=used_provider,
+                model=sample_model,
+                feature_type="tts",
+                voice_id=sample_voice,
+                char_count=len(sample_text or ""),
+                audio_seconds=0,
+            )
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            print(f"[voice sample cost] {e}")
 
     return jsonify({
         "audio_url": audio_url,
@@ -25601,6 +25623,11 @@ automations.configure(
     table_blocklist=_INTERNAL_DB_TABLE_BLOCKLIST,
     qident_fn=_qident,
     messaging_module=messaging,
+    # Phase 2 hooks so automation-triggered SMS sends respect the
+    # tenant cost cap and write a ledger row exactly like the
+    # in-process SMS call sites do.
+    cost_cap_blocks_send_fn=cost_cap_blocks_send,
+    record_sms_cost_fn=record_sms_cost,
 )
 automations.register_with_scheduler(messaging)
 

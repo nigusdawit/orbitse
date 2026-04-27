@@ -155,6 +155,8 @@ def configure(
     table_blocklist: Optional[set] = None,
     qident_fn: Optional[Callable[[str], str]] = None,
     messaging_module: Any = None,
+    cost_cap_blocks_send_fn: Optional[Callable[..., bool]] = None,
+    record_sms_cost_fn: Optional[Callable[..., None]] = None,
 ) -> None:
     """Bind app-level helpers in. Called once from app.py at import time.
     `database_url` is required for the atomic rate-limit + queue path
@@ -168,6 +170,11 @@ def configure(
     _DB["table_blocklist"] = table_blocklist or set()
     _DB["qident_fn"] = qident_fn or (lambda n: '"' + n.replace('"', '""') + '"')
     _DB["messaging"] = messaging_module
+    # Phase 2 cost-control hooks. Optional — when not wired (older
+    # tests / callers) the SMS action falls back to send-without-ledger
+    # so existing automations don't break.
+    _DB["cost_cap_blocks_send"] = cost_cap_blocks_send_fn
+    _DB["record_sms_cost"] = record_sms_cost_fn
 
 
 def _query_db(*args, **kwargs):
@@ -635,14 +642,45 @@ def _action_send_sms(cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]
     body = cfg.get("body") or ""
     if not to:
         return {"ok": False, "error": "Recipient phone is empty."}
+    # Cap enforcement — keep automations from quietly racking up SMS
+    # spend after the tenant has crossed their monthly limit. If the
+    # hook isn't wired (older callers) we fall through and send.
+    cap_blocks = _DB.get("cost_cap_blocks_send")
+    if callable(cap_blocks):
+        try:
+            if cap_blocks("automation_sms"):
+                return {"ok": False, "error": "cap_reached"}
+        except Exception as e:
+            print(f"[automation_sms cap check] {e}")
     try:
         result = messaging.send_sms(to_phone=to, body=body)
-        return {
-            "ok": True,
-            "message_sid": result.get("sid") or "",
-        }
     except Exception as e:
         return {"ok": False, "error": str(e)[:500]}
+    # Ledger the send. Twilio's reported num_segments is the source of
+    # truth; when missing we record segments=NULL so the dashboard's
+    # "uncosted_calls" tile surfaces the gap rather than guessing.
+    rec = _DB.get("record_sms_cost")
+    if callable(rec):
+        raw_segs = (result or {}).get("num_segments")
+        segs = None
+        if raw_segs is not None:
+            try:
+                segs = int(raw_segs)
+            except (TypeError, ValueError):
+                segs = None
+        try:
+            rec(
+                surface="automation_sms",
+                to_number=to,
+                message_sid=(result or {}).get("sid") or "",
+                segments=segs,
+            )
+        except Exception as e:
+            print(f"[automation_sms cost log] {e}")
+    return {
+        "ok": True,
+        "message_sid": (result or {}).get("sid") or "",
+    }
 
 
 def _action_ai_draft(cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
