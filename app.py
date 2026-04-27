@@ -31519,15 +31519,44 @@ def register_with_velo():
     command_url = f"{site_url}/api/velo/command"
     capabilities = get_registered_capabilities()
     print(f"[velo] callback site_url={site_url} → {command_url}")
+    headers = {"Authorization": f"Bearer {agent_key}", "Content-Type": "application/json"}
     import requests as _requests
+
+    # Step 1 — register THIS install as a managed client of VELO Master.
+    # The master needs to know us as a client (Admin → Clients tab, health
+    # checks, feature gating) before agent registrations are meaningful.
+    # Failure is logged but does not abort the agent-register step below —
+    # if the client is already known, /api/agent-register still works.
+    try:
+        resp = _requests.post(
+            f"{velo_url}/api/clients/register",
+            headers=headers,
+            json={
+                "client_id": "replit-flask-app",
+                "client_name": "AI Concierge Platform",
+                "velo_url": site_url,
+                "site_url": site_url,
+                "agent_key": agent_key,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        print(f"[velo] registered as client at {velo_url}")
+    except Exception as e:
+        print(f"[velo] client registration failed: {e}")
+
+    # Step 2 — register each logical agent. Both share the same single
+    # /api/velo/command endpoint on this side; the gateway gets the URL
+    # under three field names so it never falls back to auto-derivation.
     for agent_type in ("admin_ai", "visitor_ai"):
         try:
             resp = _requests.post(
                 f"{velo_url}/api/agent-register",
-                headers={"Authorization": f"Bearer {agent_key}"},
+                headers=headers,
                 json={
                     "agent_id": agent_type,
                     "agent_type": agent_type,
+                    "client_id": "replit-flask-app",
                     "base_url": site_url,
                     "endpoint": command_url,
                     "command_endpoint": command_url,
@@ -31535,7 +31564,7 @@ def register_with_velo():
                     "capabilities": capabilities,
                     "metadata": {"framework": "flask", "version": "1.0"},
                 },
-                timeout=5,
+                timeout=10,
             )
             resp.raise_for_status()
             print(

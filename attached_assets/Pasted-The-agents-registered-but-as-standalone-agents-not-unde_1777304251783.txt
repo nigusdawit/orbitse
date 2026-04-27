@@ -1,0 +1,60 @@
+The agents registered but as standalone agents, not under a client. Two things to fix:
+
+1. Register as a client first, then register agents. Change the startup registration to do both:
+
+
+def register_with_velo():
+    velo_url = os.environ.get("VELO_MASTER_URL", "")
+    agent_key = os.environ.get("VELO_AGENT_KEY", "")
+    site_url = os.environ.get("SITE_URL", "")
+    
+    if not velo_url:
+        print("[velo] VELO_MASTER_URL not set — skipping")
+        return
+    
+    headers = {"Authorization": f"Bearer {agent_key}", "Content-Type": "application/json"}
+    
+    # Step 1: Register as a client VELO instance
+    try:
+        resp = requests.post(
+            f"{velo_url}/api/clients/register",
+            headers=headers,
+            json={
+                "client_id": "replit-flask-app",
+                "client_name": "AI Concierge Platform",
+                "velo_url": site_url,
+                "site_url": site_url,
+                "agent_key": agent_key,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        print(f"[velo] registered as client at {velo_url}")
+    except Exception as e:
+        print(f"[velo] client registration failed: {e}")
+    
+    # Step 2: Register both agents with explicit endpoint
+    caps = get_registered_capabilities()
+    for agent_id in ["admin_ai", "visitor_ai"]:
+        try:
+            resp = requests.post(
+                f"{velo_url}/api/agent-register",
+                headers=headers,
+                json={
+                    "agent_id": agent_id,
+                    "agent_type": agent_id,
+                    "base_url": site_url,
+                    "endpoint": f"{site_url}/api/velo/command",  # <-- THIS WAS MISSING
+                    "capabilities": caps,
+                    "metadata": {"framework": "flask", "version": "1.0"},
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            print(f"[velo] registered {agent_id} with {len(caps)} capabilities")
+        except Exception as e:
+            print(f"[velo] {agent_id} registration failed: {e}")
+Two things that were wrong:
+
+No client registration — the app should register via /api/clients/register so the master knows it as a managed client (shows up in Admin → Clients tab, supports health checks, feature gating, etc.)
+Missing endpoint field — without it, the gateway auto-derived the endpoint as /api/velo/admin_ai which doesn't exist. The explicit endpoint should be {site_url}/api/velo/command.
