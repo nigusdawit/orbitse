@@ -2680,11 +2680,22 @@ def init_db():
                     cap_behavior             VARCHAR(20) NOT NULL DEFAULT 'alert_only',
                     alert_email              TEXT NOT NULL DEFAULT '',
                     digest_email             TEXT NOT NULL DEFAULT '',
-                    digest_send_hour_utc     INTEGER NOT NULL DEFAULT 14,
+                    digest_send_hour_utc     INTEGER NOT NULL DEFAULT 9,
                     last_warned_period       VARCHAR(10) NOT NULL DEFAULT '',
                     last_capped_period       VARCHAR(10) NOT NULL DEFAULT '',
                     updated_at               TIMESTAMP DEFAULT NOW()
                 );
+
+                -- The original table shipped with DEFAULT 14 (UTC-only
+                -- assumption); the spec actually wants Monday 09:00 in
+                -- the tenant's local timezone. Re-aim the default for
+                -- new tenants AND fix any existing rows still on the
+                -- old default so they don't keep emailing at 14:00 local.
+                ALTER TABLE tenant_cost_caps
+                  ALTER COLUMN digest_send_hour_utc SET DEFAULT 9;
+                UPDATE tenant_cost_caps
+                   SET digest_send_hour_utc = 9
+                 WHERE digest_send_hour_utc = 14;
 
                 -- cost_alerts: idempotency log for warn-line and cap
                 -- alert emails. (tenant_id, period, kind) is unique
@@ -3086,6 +3097,7 @@ def get_model_price(provider, model, surface="chat"):
             fetchone=True,
         )
     except Exception as e:
+        sentry_sdk.capture_exception(e)
         print(f"[cost] price lookup failed for {key}: {e}")
         row = None
     _PRICE_CACHE[key] = row
@@ -3129,6 +3141,7 @@ def record_chat_cost_from_response(response, *, surface="other", provider="opena
             usage_known=bool(u),
         )
     except Exception as e:
+        sentry_sdk.capture_exception(e)
         print(f"[cost] record_chat_cost_from_response failed: {e}")
 
 
@@ -3175,6 +3188,7 @@ def record_chat_cost(*, tenant_id=None, session_id="", visitor_id="",
         # Async warn-check — also exception-safe, see helper below.
         _async_warn_check(tid)
     except Exception as e:
+        sentry_sdk.capture_exception(e)
         print(f"[cost] record_chat_cost failed: {e}")
 
 
@@ -3219,6 +3233,7 @@ def record_voice_cost(*, tenant_id=None, session_id="", surface="voice_tts",
         )
         _async_warn_check(tid)
     except Exception as e:
+        sentry_sdk.capture_exception(e)
         print(f"[cost] record_voice_cost failed: {e}")
 
 
@@ -3266,6 +3281,7 @@ def record_sms_cost(*, tenant_id=None, surface="sms_outbound", provider="twilio"
         )
         _async_warn_check(tid)
     except Exception as e:
+        sentry_sdk.capture_exception(e)
         print(f"[cost] record_sms_cost failed: {e}")
 
 
@@ -3293,6 +3309,7 @@ def compute_mtd_spend(tenant_id=None):
         out["sms_usd"] = _to_float((s or {}).get("s"))
         out["total_usd"] = out["chat_usd"] + out["voice_usd"] + out["sms_usd"]
     except Exception as e:
+        sentry_sdk.capture_exception(e)
         print(f"[cost] compute_mtd_spend failed: {e}")
     return out
 
@@ -3308,11 +3325,12 @@ def get_tenant_cost_cap(tenant_id=None):
         if row:
             return row
     except Exception as e:
+        sentry_sdk.capture_exception(e)
         print(f"[cost] get_tenant_cost_cap failed: {e}")
     return {
         "tenant_id": tid, "monthly_cap_usd": None, "warn_at_percent": 80,
         "cap_behavior": "alert_only", "alert_email": "",
-        "digest_email": "", "digest_send_hour_utc": 14,
+        "digest_email": "", "digest_send_hour_utc": 9,
         "last_warned_period": "", "last_capped_period": "",
     }
 
@@ -3354,16 +3372,20 @@ def enforce_cost_cap(surface="chat"):
                 "cap_usd": _to_float(cap),
                 "surface": surface,
             }
-        except Exception:
-            pass
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
         return None
     # strict_block — only mode that actually blocks the request.
     msg = (f"Monthly AI spend cap reached ({spend:.2f} of {_to_float(cap):.2f} USD). "
            "Service will resume on the 1st of next month, or raise the cap in "
            "Admin → Cost.")
-    return jsonify({"error": "cost_cap_reached", "message": msg,
-                    "spent_usd": round(spend, 4),
-                    "cap_usd": _to_float(cap)}), 402
+    # Spec contract: {"error":"cap_reached","cap":..,"spent":..}
+    # `message` is non-spec but useful for the admin chat UI's toast,
+    # so we keep it as an extra field. Renaming spent_usd→spent and
+    # cap_usd→cap to match the documented JSON contract.
+    return jsonify({"error": "cap_reached", "message": msg,
+                    "spent": round(spend, 4),
+                    "cap": _to_float(cap)}), 402
 
 
 def _is_cost_throttled():
@@ -3400,6 +3422,7 @@ def cost_cap_blocks_send(surface="sms_outbound", tenant_id=None):
         spend = compute_mtd_spend(tenant_id).get("total_usd", 0.0)
         return spend >= _to_float(cap)
     except Exception as e:
+        sentry_sdk.capture_exception(e)
         print(f"[cost] cost_cap_blocks_send failed: {e}")
         return False
 
@@ -25390,7 +25413,7 @@ def _send_one(template_or_snapshot: dict, subscriber: dict, *, campaign_id=None,
                     (log_id,),
                 )
                 return {"ok": False, "log_id": log_id,
-                        "error": "cost_cap_reached"}
+                        "error": "cap_reached"}
             # Ask Twilio to POST status updates to our webhook so the per-
             # recipient log gets delivered/failed updates without the admin
             # needing to wire StatusCallback in the Twilio console.
@@ -28531,7 +28554,7 @@ def _send_review_request(req: dict) -> dict:
                     "  error_text=%s WHERE id=%s",
                     ("AI spend cap reached — send skipped", req["id"]),
                 )
-                return {"ok": False, "error": "cost_cap_reached"}
+                return {"ok": False, "error": "cap_reached"}
             r = messaging.send_sms(req["recipient_phone"], body)
             # Twilio's reported segment count is the source of truth.
             # When it's missing we record segments=NULL (and the helper
