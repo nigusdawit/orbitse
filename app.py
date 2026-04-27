@@ -31464,12 +31464,46 @@ import velo_handlers  # noqa: F401, E402  — import side-effect registers handl
 app.register_blueprint(velo_bp)
 
 
+def _resolve_velo_callback_url():
+    """Pick the public URL VELO Master should call back to for /api/velo/command.
+
+    Priority:
+      1. SITE_URL env var, **only if** it's a real http(s) URL that isn't
+         localhost / 127.0.0.1 (master can't reach localhost on this box).
+      2. https://<first entry of REPLIT_DOMAINS> — Replit's runtime-managed
+         public hostname. Works in both dev and deployed instances.
+      3. SITE_URL as-is (even if localhost) for pure-local testing.
+
+    Returning a base origin (no trailing slash, no path).
+    """
+    explicit = os.environ.get("SITE_URL", "").strip().rstrip("/")
+    is_localish = (
+        not explicit
+        or "localhost" in explicit
+        or "127.0.0.1" in explicit
+    )
+    if not is_localish:
+        return explicit
+    domains = os.environ.get("REPLIT_DOMAINS", "").strip()
+    if domains:
+        first = domains.split(",")[0].strip()
+        if first:
+            return f"https://{first}"
+    return explicit or "http://localhost:5000"
+
+
 def register_with_velo():
     """Tell VELO Master what this install can do.
 
     Posts the full capability list once for each agent_id this install
     serves (admin_ai + visitor_ai both route to the same /api/velo/command
     endpoint — they're separate logical agents from VELO's perspective).
+
+    Sends the explicit callback URL in **three** field names (`endpoint`,
+    `command_endpoint`, `callback_url`) so the master gateway honors it
+    regardless of which field name its parser expects, instead of falling
+    back to the auto-derived `/api/velo/<agent_id>` pattern (which doesn't
+    exist on this app — every agent shares one /api/velo/command route).
 
     Failure modes are deliberately silent-ish: missing VELO_MASTER_URL is
     a no-op, network errors get printed but never raised. Boot must never
@@ -31481,8 +31515,10 @@ def register_with_velo():
         print("[velo] VELO_MASTER_URL not set — skipping master registration.")
         return
     agent_key = os.environ.get("VELO_AGENT_KEY", "").strip()
-    site_url = os.environ.get("SITE_URL", "http://localhost:5000").strip()
+    site_url = _resolve_velo_callback_url()
+    command_url = f"{site_url}/api/velo/command"
     capabilities = get_registered_capabilities()
+    print(f"[velo] callback site_url={site_url} → {command_url}")
     import requests as _requests
     for agent_type in ("admin_ai", "visitor_ai"):
         try:
@@ -31493,7 +31529,9 @@ def register_with_velo():
                     "agent_id": agent_type,
                     "agent_type": agent_type,
                     "base_url": site_url,
-                    "endpoint": f"{site_url}/api/velo/command",
+                    "endpoint": command_url,
+                    "command_endpoint": command_url,
+                    "callback_url": command_url,
                     "capabilities": capabilities,
                     "metadata": {"framework": "flask", "version": "1.0"},
                 },
@@ -31502,7 +31540,7 @@ def register_with_velo():
             resp.raise_for_status()
             print(
                 f"[velo] registered {agent_type} with {len(capabilities)} "
-                f"capabilities at {velo_url}"
+                f"capabilities → {command_url}"
             )
         except Exception as e:
             print(f"[velo] failed to register {agent_type}: {e}")
