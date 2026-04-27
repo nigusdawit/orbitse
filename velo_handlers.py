@@ -524,7 +524,217 @@ _SETTINGS_TABLES = {
          "position_randomness", "particle_opacity", "zoom_min", "zoom_max",
          "card_scale", "card_gap"},
     ),
+    # ---- Tier 6 additions: admin-side singletons ----
+    # These are the agency operator's own knobs (which model the admin AI
+    # uses, retention policies for automation history). Routing them through
+    # update_settings (instead of a parallel update_admin_settings handler)
+    # keeps the UPSERT logic single-sourced and gets the JSONB coercion for
+    # free. Both rows are bootstrapped with id=1 by app.py at boot.
+    "agent_provider_settings": (
+        "agent_provider_settings",
+        {"provider", "openai_model", "claude_model"},
+    ),
+    "automation_settings": (
+        "automation_settings",
+        {"retention_days", "keep_recent_per_automation"},
+    ),
 }
+
+
+# ---- Tier 6: admin-side multi-row tables (skills, MCPs, dashboards, etc.)
+# Each entry maps a stable logical key (used in snapshot JSON) → metadata
+# the snapshot reader / bootstrap_install applier need:
+#   table:           real Postgres table name
+#   key_cols:        natural-key columns used for UPSERT match (one or more)
+#   sensitive_cols:  columns redacted from snapshot unless --include-admin-secrets
+#   drop_cols:       columns ALWAYS stripped from snapshot (id, timestamps,
+#                    operational state like last_run_at, FK columns that get
+#                    re-resolved on import)
+#   children:        optional list of child tables nested under each parent
+#                    row in the snapshot, with their own metadata + the FK
+#                    column that links back to the parent's id
+# `mcp_servers.auth_credential` and `automations.webhook_token` carry secrets
+# / per-install identity — redacted by default to make cross-client cloning
+# safe by accident, opt-in only when the operator knows what they're doing.
+_ADMIN_RECORD_TABLES = {
+    "agent_skills": {
+        "table": "agent_skills",
+        "key_cols": ("name",),
+        "sensitive_cols": set(),
+        "drop_cols": {"id", "created_at"},
+    },
+    "custom_sql_skills": {
+        "table": "custom_sql_skills",
+        "key_cols": ("name",),
+        "sensitive_cols": set(),
+        "drop_cols": {"id", "created_at", "updated_at"},
+    },
+    "custom_webhook_skills": {
+        "table": "custom_webhook_skills",
+        "key_cols": ("name",),
+        "sensitive_cols": {"headers_json"},  # may carry auth tokens
+        "drop_cols": {"id", "created_at", "updated_at"},
+    },
+    "mcp_servers": {
+        "table": "mcp_servers",
+        "key_cols": ("name",),
+        "sensitive_cols": {"auth_credential", "oauth_state"},
+        "drop_cols": {"id", "created_at", "updated_at",
+                      "last_test_at", "last_test_ok", "last_test_error"},
+    },
+    "automations": {
+        "table": "automations",
+        "key_cols": ("name",),
+        "sensitive_cols": {"webhook_token"},  # per-install identity
+        "drop_cols": {"id", "created_at", "updated_at",
+                      "last_run_at", "last_run_status", "next_scheduled_at"},
+    },
+    "messaging_templates": {
+        "table": "messaging_templates",
+        "key_cols": ("name",),
+        "sensitive_cols": set(),
+        "drop_cols": {"id", "created_at", "updated_at"},
+    },
+    "model_prices": {
+        "table": "model_prices",
+        "key_cols": ("provider", "model", "surface"),
+        "sensitive_cols": set(),
+        "drop_cols": {"id", "updated_at"},
+    },
+    "dashboards": {
+        "table": "dashboards",
+        "key_cols": ("name",),
+        "sensitive_cols": set(),
+        "drop_cols": {"id", "created_at"},
+        "children": [{
+            "logical_key": "widgets",      # nested under each dashboard
+            "table": "dashboard_widgets",
+            "fk_col": "dashboard_id",      # set from parent's resolved id
+            # Composite natural key: a widget's name is only unique
+            # WITHIN its parent dashboard. Matching on `name` alone
+            # would let two dashboards with same-named widgets collide
+            # on import and silently overwrite each other (architect
+            # caught this). The `parent_fk` value is injected into
+            # `fields` before the missing-keys check, so the upsert
+            # helper's normal logic does the rest.
+            "key_cols": ("dashboard_id", "name"),
+            "sensitive_cols": set(),
+            # Note: dashboard_id is NO LONGER in drop_cols — it's part
+            # of the natural key now and must reach the WHERE clause.
+            # parent_fk injection puts it back at insert/update time.
+            "drop_cols": {"id", "created_at"},
+        }],
+    },
+}
+
+
+def _coerce_jsonb_value(col_types, col, val):
+    """Mirror of update_content/update_settings JSONB pattern. Returns
+    (value_to_bind, needs_jsonb_cast). Plain dict/list values destined
+    for JSONB get json.dumps'd and the caller appends ::jsonb to the
+    placeholder so psycopg2 doesn't raise `can't adapt type 'dict'`."""
+    import json as _json
+    if col_types.get(col) in ("jsonb", "json") and isinstance(val, (dict, list)):
+        return _json.dumps(val), True
+    return val, False
+
+
+def _upsert_admin_record(meta, fields, parent_fk=None):
+    """UPSERT a single admin record. Returns ('created'|'updated', row_id)
+    or ('error', error_message). Uses meta['key_cols'] as the natural key
+    (SELECT-by-key → UPDATE-or-INSERT). parent_fk, if provided, is a
+    (col_name, value) tuple injected into fields before the lookup so
+    children like dashboard_widgets get the correct dashboard_id even
+    though the snapshot didn't carry it (FK is re-resolved by parent name).
+
+    JSONB coercion is identical to update_content's pattern. Whitelisting:
+    only columns the table actually has are accepted; everything else
+    is silently dropped (snapshot files written by an older app version
+    against a newer schema, or vice versa, don't crash the import)."""
+    from app import query_db, execute_db
+    table = meta["table"]
+    key_cols = meta["key_cols"]
+    fields = dict(fields or {})  # don't mutate caller's dict
+    if parent_fk:
+        fields[parent_fk[0]] = parent_fk[1]
+
+    cols_rows = query_db(
+        "SELECT column_name, data_type FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name = %s",
+        (table,),
+    )
+    if not cols_rows:
+        return ("error", f"unknown table: {table}")
+    col_types = {r["column_name"]: r["data_type"] for r in cols_rows}
+    # Always strip these from inputs even if a snapshot somehow carries
+    # them — id/timestamps are managed by Postgres + this helper.
+    forbidden = {"id", "created_at", "updated_at"}
+    valid_cols = set(col_types.keys()) - forbidden
+    safe = {k: v for k, v in fields.items() if k in valid_cols}
+
+    # Every key column must be present in the input for the UPSERT match
+    # to be defined. Without it we'd risk silently inserting duplicates.
+    missing_keys = [k for k in key_cols if k not in safe]
+    if missing_keys:
+        return ("error", f"missing key column(s) {missing_keys} for {table}")
+    # And every key column must have a non-None value: SQL's `WHERE col = NULL`
+    # never matches (NULL = NULL is NULL, not TRUE), so a NULL key would
+    # silently miss every existing row and INSERT instead of UPDATE. None
+    # of the current admin tables have nullable name columns, but we guard
+    # in case a future caller passes `{"name": None}` from a malformed
+    # snapshot.
+    null_keys = [k for k in key_cols if safe[k] is None]
+    if null_keys:
+        return ("error", f"null key column(s) {null_keys} for {table}")
+
+    where_parts = [f"{kc} = %s" for kc in key_cols]
+    where_vals = [safe[kc] for kc in key_cols]
+    # ORDER BY id ASC: makes the "first match wins" deterministic for
+    # tables without a UNIQUE constraint on the natural key (dashboards,
+    # automations, messaging_templates). Lowest-id row is the canonical
+    # one — newer duplicate-name rows are ignored on UPDATE, which
+    # matches what the docs claim and gives operators a stable mental
+    # model of which row their snapshot will overwrite.
+    existing = query_db(
+        f"SELECT id FROM {table} WHERE {' AND '.join(where_parts)} "
+        "ORDER BY id ASC LIMIT 1",
+        tuple(where_vals), fetchone=True,
+    )
+
+    if existing:
+        # UPDATE path — change everything except the key columns themselves
+        # (no point overwriting a key with the same value, and it lets us
+        # safely no-op when only key cols were supplied).
+        set_parts, vals = [], []
+        for k, v in safe.items():
+            if k in key_cols:
+                continue
+            coerced, is_json = _coerce_jsonb_value(col_types, k, v)
+            set_parts.append(f"{k} = %s::jsonb" if is_json else f"{k} = %s")
+            vals.append(coerced)
+        if set_parts:
+            # Touch updated_at if the table has one — keeps audit trails honest.
+            if "updated_at" in col_types:
+                set_parts.append("updated_at = NOW()")
+            vals.append(existing["id"])
+            execute_db(
+                f"UPDATE {table} SET {', '.join(set_parts)} WHERE id = %s",
+                tuple(vals),
+            )
+        return ("updated", existing["id"])
+
+    # INSERT path — fresh row.
+    placeholders, vals = [], []
+    for k, v in safe.items():
+        coerced, is_json = _coerce_jsonb_value(col_types, k, v)
+        placeholders.append("%s::jsonb" if is_json else "%s")
+        vals.append(coerced)
+    new_row = query_db(
+        f"INSERT INTO {table} ({', '.join(safe.keys())}) "
+        f"VALUES ({', '.join(placeholders)}) RETURNING id",
+        tuple(vals), fetchone=True,
+    )
+    return ("created", new_row["id"] if new_row else None)
 
 
 def _resolve_content(content_type):
@@ -1594,6 +1804,8 @@ def bootstrap_install(params):
         "admin_user_error": None,
         "content_created": {},
         "content_errors": [],
+        "admin_records": {},      # Tier 6: per-table {created, updated, skipped, errors}
+        "admin_records_errors": [],
         "template_errors": [],   # malformed shapes — surfaced, not silent
     }
 
@@ -1784,12 +1996,122 @@ def bootstrap_install(params):
                 if created:
                     summary["content_created"][ctype] = created
 
+    # 6. Admin records — Tier 6. Multi-row admin tables (skills, MCPs,
+    # dashboards, automations, etc.) UPSERTed by natural key so re-pushing
+    # the same snapshot from a master install updates existing rows in
+    # place instead of erroring on duplicate keys. Dashboards iterate
+    # FIRST so each dashboard's id is known before its widgets need
+    # their dashboard_id resolved.
+    admin_records = template.get("admin_records")
+    if admin_records is not None:
+        if not isinstance(admin_records, dict):
+            summary["template_errors"].append(
+                {"section": "admin_records",
+                 "error": f"must be a dict, got {type(admin_records).__name__}"}
+            )
+        else:
+            # Process parents (those with children meta) ahead of pure-leaf
+            # tables so child FKs are resolvable. dashboards is currently
+            # the only parent; this generalizes for future ones.
+            ordered_keys = sorted(
+                admin_records.keys(),
+                key=lambda k: 0 if _ADMIN_RECORD_TABLES.get(k, {}).get("children") else 1,
+            )
+            for logical_key in ordered_keys:
+                rows = admin_records[logical_key]
+                meta = _ADMIN_RECORD_TABLES.get(logical_key)
+                if not meta:
+                    summary["admin_records_errors"].append(
+                        {"key": logical_key,
+                         "error": f"unknown admin record key; available: "
+                                  f"{sorted(_ADMIN_RECORD_TABLES.keys())}"}
+                    )
+                    continue
+                if not isinstance(rows, list):
+                    summary["admin_records_errors"].append(
+                        {"key": logical_key,
+                         "error": f"must be a list, got {type(rows).__name__}"}
+                    )
+                    continue
+                table_summary = {"created": 0, "updated": 0,
+                                 "skipped": 0, "errors": []}
+                children_meta = meta.get("children", [])
+                for row in rows:
+                    if not isinstance(row, dict) or not row:
+                        table_summary["skipped"] += 1
+                        table_summary["errors"].append(
+                            {"row": row, "error": "row must be a non-empty dict"}
+                        )
+                        continue
+                    # Children come nested under their parent — pull them
+                    # off before the parent UPSERT (so they don't get
+                    # mistakenly passed as parent columns and rejected).
+                    nested_children = {}
+                    for ch in children_meta:
+                        if ch["logical_key"] in row:
+                            nested_children[ch["logical_key"]] = row.pop(ch["logical_key"])
+                    try:
+                        action, parent_id = _upsert_admin_record(meta, row)
+                    except Exception as exc:
+                        action, parent_id = "error", f"exception: {exc}"
+                    if action == "error":
+                        table_summary["errors"].append(
+                            {"row_keys": [row.get(k) for k in meta["key_cols"]],
+                             "error": parent_id}
+                        )
+                        continue
+                    table_summary[action] = table_summary.get(action, 0) + 1
+
+                    # Apply each child set against the resolved parent id.
+                    for ch in children_meta:
+                        children_rows = nested_children.get(ch["logical_key"], [])
+                        if not isinstance(children_rows, list):
+                            table_summary["errors"].append(
+                                {"parent": row.get(meta["key_cols"][0]),
+                                 "child": ch["logical_key"],
+                                 "error": "must be a list"}
+                            )
+                            continue
+                        ch_summary = table_summary.setdefault(
+                            ch["logical_key"], {"created": 0, "updated": 0, "errors": []}
+                        )
+                        for ch_row in children_rows:
+                            if not isinstance(ch_row, dict) or not ch_row:
+                                ch_summary["errors"].append(
+                                    {"row": ch_row, "error": "row must be a non-empty dict"}
+                                )
+                                continue
+                            try:
+                                ch_action, ch_id = _upsert_admin_record(
+                                    ch, ch_row, parent_fk=(ch["fk_col"], parent_id),
+                                )
+                            except Exception as exc:
+                                ch_action, ch_id = "error", f"exception: {exc}"
+                            if ch_action == "error":
+                                ch_summary["errors"].append(
+                                    {"row_keys": [ch_row.get(k) for k in ch["key_cols"]],
+                                     "error": ch_id}
+                                )
+                            else:
+                                ch_summary[ch_action] = ch_summary.get(ch_action, 0) + 1
+                summary["admin_records"][logical_key] = table_summary
+
     summary["ok"] = (
         not summary["settings_errors"]
         and not summary["faqs_errors"]
         and not summary["features_error"]
         and not summary["admin_user_error"]
         and not summary["content_errors"]
+        and not summary["admin_records_errors"]
         and not summary["template_errors"]
+        # An admin_records section is "ok" only if NO per-row errors
+        # appeared in any table-summary or any nested child summary.
+        and not any(
+            (ts.get("errors") or [])
+            or any((v.get("errors") or [])
+                   for v in ts.values()
+                   if isinstance(v, dict))
+            for ts in summary["admin_records"].values()
+        )
     )
     return summary

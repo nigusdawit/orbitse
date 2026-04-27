@@ -22,6 +22,8 @@ Usage:
     python scripts/snapshot.py --include-all-content
     python scripts/snapshot.py --no-content                   # explicit opt-out
     python scripts/snapshot.py --include-admin-user           # include first customer's email/name
+    python scripts/snapshot.py --include-admin                # include admin AI / skills / MCPs / dashboards / etc.
+    python scripts/snapshot.py --include-admin --include-admin-secrets  # also include MCP credentials & webhook tokens
     python scripts/snapshot.py --tenant-id 1                  # which tenant to snapshot
 
 Exit codes:
@@ -60,6 +62,14 @@ _DEFAULT_CONTENT_TYPES = ("services", "team")
 # uniqueness constraints if re-applied.
 _STRIP_COLS = {"id", "created_at", "updated_at"}
 
+# Tier 6: which _SETTINGS_TABLES keys are actually admin-side singletons
+# (registered there for DRY UPSERT routing through update_settings, but
+# semantically NOT part of the customer-facing settings group). We filter
+# these out of the default snapshot so a normal customer-content snapshot
+# doesn't quietly carry the agency's admin AI / automation policy
+# alongside. They get included only when --include-admin is passed.
+_ADMIN_SINGLETON_KEYS = ("agent_provider_settings", "automation_settings")
+
 
 def _json_default(obj: Any) -> Any:
     """JSON encoder fallback for psycopg2 row values that don't natively
@@ -91,9 +101,17 @@ def _connect():
 # ---------- per-section readers ----------
 
 
-def read_settings(conn, cursor_factory, tenant_id: int, errors: list[str]) -> dict:
-    """Read each _SETTINGS_TABLES entry and emit a dict matching the
-    bootstrap_install template shape: {settings_key: {col: value, ...}}.
+def read_settings(conn, cursor_factory, tenant_id: int, errors: list[str],
+                  include_admin: bool = False) -> tuple[dict, dict]:
+    """Read each _SETTINGS_TABLES entry and emit two dicts:
+        (customer_settings, admin_settings)
+    matching the bootstrap_install template shape: {settings_key: {col: value, ...}}.
+
+    Customer settings always go in customer_settings. Admin singletons (those
+    listed in _ADMIN_SINGLETON_KEYS) go in admin_settings — but only when
+    include_admin=True. When include_admin=False they're skipped entirely so
+    a customer-content snapshot never quietly leaks the agency's admin AI
+    config to a client.
 
     Skips empty/missing rows silently (not every install populates every
     settings table). Multiple settings keys can map to the same physical
@@ -103,8 +121,12 @@ def read_settings(conn, cursor_factory, tenant_id: int, errors: list[str]) -> di
     """
     from velo_handlers import _SETTINGS_TABLES
 
-    out: dict[str, dict] = {}
+    customer_out: dict[str, dict] = {}
+    admin_out: dict[str, dict] = {}
     for key, (table, columns) in _SETTINGS_TABLES.items():
+        is_admin = key in _ADMIN_SINGLETON_KEYS
+        if is_admin and not include_admin:
+            continue
         col_list = ", ".join(sorted(columns))
         try:
             with conn.cursor(cursor_factory=cursor_factory) as cur:
@@ -119,10 +141,124 @@ def read_settings(conn, cursor_factory, tenant_id: int, errors: list[str]) -> di
             # defaults on the target install with explicit nulls. The
             # operator can re-set them post-clone if needed.
             cleaned = {k: v for k, v in row.items() if v is not None}
-            if cleaned:
-                out[key] = cleaned
+            if not cleaned:
+                continue
+            if is_admin:
+                admin_out[key] = cleaned
+            else:
+                customer_out[key] = cleaned
         except Exception as e:
             errors.append(f"settings.{key}: {type(e).__name__}: {e}")
+    return customer_out, admin_out
+
+
+def read_admin_records(conn, cursor_factory, errors: list[str],
+                       include_secrets: bool = False) -> dict:
+    """Tier 6: read each _ADMIN_RECORD_TABLES entry as a list of dicts and
+    emit a top-level `admin_records` block. bootstrap_install will UPSERT
+    each row by its natural key (meta['key_cols']) so re-applying the same
+    snapshot on a master+clients fleet updates existing rows in place.
+
+    Sensitive columns (mcp_servers.auth_credential, oauth_state;
+    custom_webhook_skills.headers_json; automations.webhook_token) are
+    redacted unless include_secrets=True. Operational columns
+    (last_run_at, last_test_at, etc.) and id/timestamps are always
+    stripped — those are per-install state, not template content.
+
+    Tables with `children` metadata (currently just dashboards →
+    dashboard_widgets) get their child rows nested under each parent
+    keyed by the child's logical_key. The FK column is not emitted in
+    the snapshot — bootstrap_install resolves it back from the parent's
+    name on import. This way snapshot files survive moving across
+    installs where dashboards.id sequences differ.
+    """
+    from velo_handlers import _ADMIN_RECORD_TABLES
+
+    def _read_table(meta, parent_id_col=None, parent_id_val=None):
+        table = meta["table"]
+        sensitive = meta.get("sensitive_cols", set())
+        drop = meta.get("drop_cols", set()) | _STRIP_COLS
+        # Discover real columns via information_schema so future schema
+        # additions are picked up automatically without editing this script.
+        with conn.cursor(cursor_factory=cursor_factory) as cur:
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name = %s",
+                (table,),
+            )
+            all_cols = [r["column_name"] for r in cur.fetchall()]
+        keep_cols = [c for c in all_cols if c not in drop]
+        if not include_secrets:
+            keep_cols = [c for c in keep_cols if c not in sensitive]
+        if not keep_cols:
+            return []
+        col_list = ", ".join(keep_cols)
+        if parent_id_col is not None:
+            sql = (f"SELECT {col_list} FROM {table} "
+                   f"WHERE {parent_id_col} = %s ORDER BY 1")
+            args: tuple = (parent_id_val,)
+        else:
+            sql = f"SELECT {col_list} FROM {table} ORDER BY 1"
+            args = ()
+        with conn.cursor(cursor_factory=cursor_factory) as cur:
+            cur.execute(sql, args)
+            rows = cur.fetchall()
+        # Drop None values per-row (same reason as read_settings).
+        return [{k: v for k, v in r.items() if v is not None} for r in rows]
+
+    out: dict[str, list[dict]] = {}
+    for logical_key, meta in _ADMIN_RECORD_TABLES.items():
+        try:
+            parent_rows = _read_table(meta)
+            if not parent_rows:
+                continue
+            children_meta = meta.get("children", [])
+            if children_meta:
+                # We need each parent's id to read its children — but we
+                # stripped id from the projection above. Re-fetch (id, key_cols)
+                # so we can pair them up. Cheap because the parent table
+                # is always small (dashboards = handful of rows). ORDER BY
+                # id ASC matches the import-side _upsert_admin_record's
+                # tie-breaker (lowest-id wins), so on a parent table with
+                # duplicate-name rows the snapshot scopes children to the
+                # same canonical parent that import will resolve to.
+                with conn.cursor(cursor_factory=cursor_factory) as cur:
+                    key_cols = meta["key_cols"]
+                    cur.execute(
+                        f"SELECT id, {', '.join(key_cols)} "
+                        f"FROM {meta['table']} ORDER BY id ASC"
+                    )
+                    id_map: dict = {}
+                    for r in cur.fetchall():
+                        id_map.setdefault(
+                            tuple(r[k] for k in key_cols), r["id"]
+                        )  # setdefault preserves the LOWEST id on dup keys
+                for parent_row in parent_rows:
+                    parent_key = tuple(parent_row.get(k) for k in meta["key_cols"])
+                    parent_id = id_map.get(parent_key)
+                    if parent_id is None:
+                        # Should be impossible — every parent_row came
+                        # from the same SELECT we just re-ran. Surface
+                        # it explicitly instead of silently dropping
+                        # this parent's children, which would be a real
+                        # data-loss bug to debug later.
+                        errors.append(
+                            f"admin_records.{logical_key}: parent id "
+                            f"remap miss for key={parent_key} "
+                            f"(child rows skipped)"
+                        )
+                        continue
+                    for ch in children_meta:
+                        children = _read_table(
+                            ch, parent_id_col=ch["fk_col"],
+                            parent_id_val=parent_id,
+                        )
+                        if children:
+                            parent_row[ch["logical_key"]] = children
+            out[logical_key] = parent_rows
+        except Exception as e:
+            errors.append(f"admin_records.{logical_key}: "
+                          f"{type(e).__name__}: {e}")
     return out
 
 
@@ -258,9 +394,18 @@ def build_snapshot(args) -> tuple[dict, list[str]]:
             ),
         }
 
-        settings = read_settings(conn, cursor_factory, args.tenant_id, errors)
-        if settings:
-            snapshot["settings"] = settings
+        customer_settings, admin_settings = read_settings(
+            conn, cursor_factory, args.tenant_id, errors,
+            include_admin=args.include_admin,
+        )
+        if customer_settings:
+            snapshot["settings"] = customer_settings
+        # Admin singletons go into the same `settings` block — bootstrap_install
+        # routes them through update_settings exactly like customer settings,
+        # but they're conceptually distinct so we only emit them when the
+        # operator opted in via --include-admin.
+        if admin_settings:
+            snapshot.setdefault("settings", {}).update(admin_settings)
 
         features = read_features(conn, cursor_factory, args.tenant_id, errors)
         if features:
@@ -274,6 +419,21 @@ def build_snapshot(args) -> tuple[dict, list[str]]:
             au = read_admin_user(conn, cursor_factory, errors)
             if au:
                 snapshot["admin_user"] = au
+
+        # Tier 6: admin-side multi-row tables (skills, MCPs, dashboards,
+        # automations, messaging templates, model prices). Off by default
+        # because they're agency-internal; --include-admin opts in.
+        # Secrets within those tables (mcp_servers.auth_credential, etc.)
+        # require the additional --include-admin-secrets flag — defence
+        # against accidentally leaking the master's credentials when
+        # someone snapshots without thinking.
+        if args.include_admin:
+            admin_recs = read_admin_records(
+                conn, cursor_factory, errors,
+                include_secrets=args.include_admin_secrets,
+            )
+            if admin_recs:
+                snapshot["admin_records"] = admin_recs
 
         # Resolve which content types to include. CLI semantics:
         #   --no-content                       → []
@@ -355,7 +515,31 @@ def main(argv: list[str] | None = None) -> int:
             "per-template."
         ),
     )
+    p.add_argument(
+        "--include-admin", action="store_true",
+        help=(
+            "Tier 6: include admin-side data — agent provider settings, "
+            "automation policy, agent_skills, custom_sql_skills, "
+            "custom_webhook_skills, mcp_servers, automations, messaging "
+            "templates, model_prices, dashboards (with widgets nested). "
+            "On import these UPSERT by natural key (name) so re-pushing "
+            "from a master install updates clients in place."
+        ),
+    )
+    p.add_argument(
+        "--include-admin-secrets", action="store_true",
+        help=(
+            "Also include sensitive admin columns (mcp_servers.auth_credential, "
+            "mcp_servers.oauth_state, custom_webhook_skills.headers_json, "
+            "automations.webhook_token). Requires --include-admin. Off by "
+            "default — cloning credentials across clients is rarely safe."
+        ),
+    )
     args = p.parse_args(argv)
+    if args.include_admin_secrets and not args.include_admin:
+        print("ERROR: --include-admin-secrets requires --include-admin",
+              file=sys.stderr)
+        return 2
 
     snapshot, errors = build_snapshot(args)
 
@@ -379,12 +563,24 @@ def main(argv: list[str] | None = None) -> int:
             f.write(text)
             if not text.endswith("\n"):
                 f.write("\n")
+        # Roll up admin record counts (parents + nested children) for a
+        # one-line confirmation that --include-admin actually picked stuff up.
+        admin_total = 0
+        for parent_rows in snapshot.get("admin_records", {}).values():
+            admin_total += len(parent_rows)
+            for parent in parent_rows:
+                for v in parent.values():
+                    if isinstance(v, list):
+                        admin_total += len(v)
+        admin_part = (f", {admin_total} admin records"
+                      if "admin_records" in snapshot else "")
         print(
             f"Wrote snapshot to {args.output} "
             f"({len(text)} bytes, "
             f"{len(snapshot.get('settings', {}))} settings sections, "
             f"{len(snapshot.get('faqs', []))} faqs, "
-            f"{sum(len(v) for v in snapshot.get('content', {}).values())} content rows)",
+            f"{sum(len(v) for v in snapshot.get('content', {}).values())} content rows"
+            f"{admin_part})",
             file=sys.stderr,
         )
     else:

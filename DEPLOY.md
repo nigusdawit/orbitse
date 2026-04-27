@@ -336,6 +336,75 @@ Exit codes: `0` = clean snapshot, `1` = couldn't connect to the DB,
 `2` = partial snapshot (some sections failed but JSON was still written;
 warnings on stderr).
 
+### Cloning admin-side configuration (Tier 6)
+
+Beyond the customer-facing settings/FAQs/content above, the snapshot tool
+can also export your **admin-side** configuration — agent skills, MCP
+servers, dashboards, automations, messaging templates, model prices, and
+the AI provider/automation policy. This is the "agency master → all
+clients" path: dial in a skill on the master install, snapshot, replay
+on every client, and they all get the new skill (or the updated version
+of an existing one).
+
+```bash
+# Master install — export admin config alongside customer config:
+python scripts/snapshot.py --pretty --include-admin -o ~/master-admin.json
+
+# If you also want MCP credentials and webhook tokens copied across
+# (rarely the right call — clients usually need their own credentials):
+python scripts/snapshot.py --pretty --include-admin --include-admin-secrets -o ~/master-full.json
+```
+
+What `--include-admin` adds to the snapshot:
+
+- `settings.agent_provider_settings` and `settings.automation_settings`
+  (singletons — folded into the existing `settings` block, applied via
+  the same `update_settings` route).
+- `admin_records.agent_skills`, `custom_sql_skills`, `custom_webhook_skills`,
+  `mcp_servers`, `automations`, `messaging_templates`, `model_prices`.
+  Multi-row tables, exported as full lists.
+- `admin_records.dashboards` with each dashboard's `widgets` nested
+  underneath (the `dashboard_id` foreign key is stripped on export and
+  re-resolved by parent name on import, so dashboards survive moving
+  across installs even though their `id` sequences differ).
+
+**Re-apply behavior on the target install** (UPSERT-by-natural-key):
+
+- `agent_skills`, `custom_sql_skills`, `custom_webhook_skills`,
+  `mcp_servers`: keyed by `name` (UNIQUE-constrained). If a row with the
+  same name exists, it's UPDATED in place. Otherwise INSERTed.
+- `model_prices`: keyed by composite `(provider, model, surface)`.
+- `dashboards`, `automations`, `messaging_templates`: keyed by `name`
+  (no UNIQUE constraint at the DB level — the upsert uses
+  `ORDER BY id ASC LIMIT 1` so on an install with duplicate-name rows
+  the lowest-id row is the canonical one and gets updated; newer
+  duplicates are left untouched).
+- `dashboard_widgets`: keyed by composite `(dashboard_id, name)` —
+  widget names are only unique within a dashboard, so the parent FK is
+  part of the natural key. On import the `dashboard_id` is re-resolved
+  from the parent dashboard's name (the FK is not carried in the
+  snapshot file).
+- The bootstrap summary returns per-table `{created, updated, skipped, errors}`
+  counts plus nested per-child counts under `dashboards.widgets`.
+
+**Sensitive-column redaction** (default behavior):
+
+- `mcp_servers.auth_credential` and `mcp_servers.oauth_state` (OAuth
+  tokens, basic-auth secrets) — **stripped** from the snapshot.
+- `custom_webhook_skills.headers_json` (may contain auth headers) —
+  **stripped** from the snapshot.
+- `automations.webhook_token` (per-install secret used to authenticate
+  inbound webhook calls) — **stripped** from the snapshot.
+
+Pass `--include-admin-secrets` to keep them. The CLI rejects
+`--include-admin-secrets` without `--include-admin` (exit 2) so a typo
+can't accidentally produce a snapshot file you didn't mean to.
+
+**Operational columns are always stripped** regardless of flags:
+`created_at`, `updated_at`, `last_test_at`, `last_test_ok`,
+`last_test_error`, `last_run_at`, `last_run_status`, `next_scheduled_at`.
+These are per-install runtime state, not template content.
+
 ---
 
 ## Notes on legacy Replit-isms

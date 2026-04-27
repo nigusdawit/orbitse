@@ -74,6 +74,16 @@ Pass `--include-content` to also clone services and team profiles, or
 `--include-all-content` for every content type. Customer/order/chat-history
 rows are never included — those are runtime data, not template data.
 
+For agencies running a master install whose **admin-side** config (agent
+skills, MCP servers, dashboards, automations, messaging templates, model
+prices, AI provider settings) should flow to every client, pass
+`--include-admin`. Records are UPSERTed by name on re-apply, so re-pushing
+the same snapshot updates clients in place instead of erroring on
+duplicates. Sensitive columns (MCP credentials, automation webhook tokens)
+are redacted by default; opt in with `--include-admin-secrets` if you
+really do want to clone credentials too. See DEPLOY.md for the full
+admin-clone recipe.
+
 ---
 
 ## One‑command Docker spin‑up
