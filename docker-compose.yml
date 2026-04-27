@@ -1,0 +1,53 @@
+# =============================================================================
+# AI Concierge Platform — local one-command spin-up
+# =============================================================================
+# Usage:
+#   1. Copy .env.example to .env and fill in the keys you want
+#   2. docker compose up --build
+#   3. Open http://localhost:5000  (admin: /admin)
+#
+# This brings up the app + a Postgres 16 sidecar with persistent storage.
+# For production, point DATABASE_URL at a managed Postgres instead and drop
+# the `db` service.
+# =============================================================================
+
+services:
+  app:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      # Override DATABASE_URL to point at the sidecar; everything else
+      # comes from your .env file
+      DATABASE_URL: postgresql://aiconcierge:aiconcierge@db:5432/aiconcierge
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - uploads:/app/uploads
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aiconcierge
+      POSTGRES_PASSWORD: aiconcierge
+      POSTGRES_DB: aiconcierge
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiconcierge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    # Expose on a non-default host port for direct DB access (psql, etc).
+    # Comment out if you don't want the DB reachable from the host.
+    ports:
+      - "55432:5432"
+
+volumes:
+  postgres_data:
+  uploads:

@@ -43,6 +43,7 @@ TO RUN:
 
 import os
 import re
+import sys
 import json
 import html as html_module
 
@@ -160,11 +161,15 @@ app.secret_key = _resolve_flask_secret()
 # PERMANENT_SESSION_LIFETIME: How long admin login persists after last activity
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-# In production (REPLIT_DEPLOYMENT is set on the deployed instance) the
-# session cookie must only travel over HTTPS. We leave it False in dev
-# preview so local browsers — which use the http preview URL — can still
-# log in. Any falsy / unset env var → dev → cookie is not secure-flagged.
-app.config["SESSION_COOKIE_SECURE"] = bool(os.environ.get("REPLIT_DEPLOYMENT"))
+# Session cookies must only travel over HTTPS in production. We honor:
+#   FORCE_SECURE_COOKIES=1   — explicit, host-agnostic (any Docker/VPS deploy)
+#   REPLIT_DEPLOYMENT=1      — auto-set by Replit on deployed instances
+# Either flips this on. Left False in dev preview so local browsers (which
+# use the http preview URL) can still log in.
+app.config["SESSION_COOKIE_SECURE"] = bool(
+    os.environ.get("FORCE_SECURE_COOKIES")
+    or os.environ.get("REPLIT_DEPLOYMENT")
+)
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
 # -----------------------------------------------------------------------------
@@ -246,6 +251,15 @@ def _chat_rate_check(key, throttled=False):
 # Admin password — set via environment variable, defaults to "admin" for development
 # IMPORTANT: Change this in production by setting the ADMIN_PASSWORD env var
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")
+if ADMIN_PASSWORD == "admin":
+    # Loud, single-line warning so it's visible in any deploy log. The app
+    # still boots — first-run wizard / preflight script will help users fix it.
+    print(
+        "WARNING: ADMIN_PASSWORD is at the default value 'admin'. "
+        "Set ADMIN_PASSWORD in your environment for any non-local install.",
+        file=sys.stderr,
+        flush=True,
+    )
 
 # Database connection string from environment variable
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -4172,6 +4186,17 @@ def admin_logout():
     """Log out of the admin dashboard and redirect to login."""
     session.pop("admin_logged_in", None)
     return redirect(url_for("admin_login"))
+
+
+# -----------------------------------------------------------------------------
+# Liveness probe for container orchestrators (Docker HEALTHCHECK, K8s, Render,
+# Fly.io, Railway). Deliberately does NOT touch the database — this is a
+# liveness check ("is the worker process up?"), not a readiness check. A DB
+# blip should not cause every replica to be killed and restarted.
+# -----------------------------------------------------------------------------
+@app.route("/healthz")
+def healthz():
+    return ("ok", 200, {"Content-Type": "text/plain; charset=utf-8"})
 
 
 # =============================================================================
@@ -25814,6 +25839,11 @@ def _public_base_url() -> str:
     settings = query_db("SELECT seo_canonical_url FROM site_settings WHERE id = 1", fetchone=True)
     if settings and (settings.get("seo_canonical_url") or "").strip():
         return settings["seo_canonical_url"].rstrip("/")
+    # Explicit PUBLIC_BASE_URL wins (works on any host).
+    explicit = (os.environ.get("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    # Replit-managed hostname fallback for Replit-hosted installs.
     domains = (os.environ.get("REPLIT_DOMAINS") or "").strip()
     if domains:
         first = domains.split(",")[0].strip()
@@ -31470,9 +31500,11 @@ def _resolve_velo_callback_url():
     Priority:
       1. SITE_URL env var, **only if** it's a real http(s) URL that isn't
          localhost / 127.0.0.1 (master can't reach localhost on this box).
-      2. https://<first entry of REPLIT_DOMAINS> — Replit's runtime-managed
+      2. PUBLIC_BASE_URL env var (the new canonical name) under the same
+         localhost guard. Works on any host.
+      3. https://<first entry of REPLIT_DOMAINS> — Replit's runtime-managed
          public hostname. Works in both dev and deployed instances.
-      3. SITE_URL as-is (even if localhost) for pure-local testing.
+      4. SITE_URL as-is (even if localhost) for pure-local testing.
 
     Returning a base origin (no trailing slash, no path).
     """
@@ -31484,6 +31516,9 @@ def _resolve_velo_callback_url():
     )
     if not is_localish:
         return explicit
+    public = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if public and "localhost" not in public and "127.0.0.1" not in public:
+        return public
     domains = os.environ.get("REPLIT_DOMAINS", "").strip()
     if domains:
         first = domains.split(",")[0].strip()

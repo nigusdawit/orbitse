@@ -492,6 +492,20 @@ Two-way bridge between this Flask install and an external **VELO Master** FastAP
 - **Dynamic re-registration**: `POST /api/velo/refresh-registration` re-runs `register_with_velo(force=True)`, returns `{forced, client_registered, agents{...}, capability_count, site_url, command_count, commands[...]}`. `register_with_velo` now accepts a `force` kwarg and returns its result dict so this endpoint can echo what happened. Use case: enable a new feature group → call refresh → master sees the expanded capability list without restarting the worker.
 - **`/api/velo/status` extras**: now includes `command_count` and `gated_commands` (sorted list of which commands require the confirmation flow) so master can render a UI hint without enumerating descriptions.
 
+## Onboarding & Deployment (Tier 0 — April 2026)
+
+First slice of the multi-tier client-onboarding work. Goal: any developer can clone this repo and stand up a fresh client install on any host (Replit, Render, Fly.io, Railway, plain VPS, Docker) without reverse-engineering the codebase. Tiers 1–4 (preflight script, VELO-driven provisioning, first-run wizard, snapshots/cloning) are scoped but not yet built.
+
+- **Files added**: `.env.example` (full 22-var inventory with REQUIRED / STRONGLY RECOMMENDED / OPTIONAL labels and per-feature comments), `README.md` (human-facing quickstart — distinct from the agent-facing `replit.md`/`AGENT_KNOWLEDGE_BASE.md`/`GUIDE.md`), `requirements.in` (mirror of `pyproject.toml` deps for non-uv tooling — Docker, buildpacks; uses `.in` extension because the system protects `requirements.txt`), `Dockerfile` (Python 3.11-slim base, `libreoffice-impress` + `libreoffice-core` for the PPT export pipeline, gunicorn entrypoint with `WEB_CONCURRENCY` knob, `/healthz` HEALTHCHECK), `docker-compose.yml` (one-command local spin-up: app + Postgres 16-alpine + persistent `uploads` volume, DB exposed on host port 55432 for direct psql access), `DEPLOY.md` (per-platform recipes for Replit / Render / Fly.io / Railway / plain VPS Ubuntu + Docker, including systemd unit + nginx reverse-proxy + certbot snippets for the VPS path).
+- **Replit-isms made portable** (env-var swaps, both names accepted so Replit keeps working):
+  - `_public_base_url()` (used by unsubscribe / webhook / SEO canonical links): now prefers `PUBLIC_BASE_URL` over `REPLIT_DOMAINS`. Falls through to `request.host_url` as before.
+  - `_resolve_velo_callback_url()` (the URL VELO Master calls back to): priority is now `SITE_URL` → `PUBLIC_BASE_URL` → `REPLIT_DOMAINS` → localhost fallback. All three honor the same localhost-guard so master never gets handed an unreachable URL.
+  - `SESSION_COOKIE_SECURE`: now flips on if either `FORCE_SECURE_COOKIES=1` (explicit, host-agnostic) OR `REPLIT_DEPLOYMENT=1` (Replit-auto) is set.
+- **ADMIN_PASSWORD footgun guard**: app boots with `ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")` unchanged (back-compat for existing installs), but now prints a loud `WARNING: ADMIN_PASSWORD is at the default value 'admin'...` to stderr at module import if the default is in effect. Visible in any deploy log; doesn't block boot.
+- **Things deliberately NOT changed in Tier 0**: `messaging.py` and `stripe_client.py` still use `REPLIT_DEPLOYMENT` to pick prod-vs-dev for the Replit connector lookup — those code paths only run when a `REPL_IDENTITY` token exists (i.e. on Replit), so the env-var name is correct as-is. The `stripe-replit-sync` Node dep in `package.json` is a Replit-only convenience and is not imported by any Python runtime code; it's documented as safe-to-leave in `DEPLOY.md` (file protection blocked direct removal). The `latent NameError on sys` in scraper progress logging is fixed as a side effect — `sys` is now imported at module top, so those error paths no longer silently NameError.
+- **`.gitignore` rewritten**: added Python (`__pycache__/`, `*.pyc`, `.venv/`, `.pytest_cache/`, `.ruff_cache/`, `*.egg-info/`), env-secrets (`.env`, `.env.*` with `!.env.example` allowlist, `.flask_secret`), build artifacts, OS/editor files, and the `uploads/` directory (should be a persistent volume, not a git tree). Old entries (`server/public`, `vite.config.ts.*`) preserved under a "legacy" comment in case some other tooling relies on them.
+- **Verification**: workflow restarted clean. Boot log shows the new `WARNING: ADMIN_PASSWORD...` line, then the existing VELO registration sequence (`30 capabilities`, both `admin_ai` + `visitor_ai` agents registered against the cloudflare callback URL). All public `/api/*` endpoints return 200 on the smoke test. `app.py` AST-parses cleanly.
+
 ## How to Edit Content
 
 1. Go to `/admin` in your browser (password: set via ADMIN_PASSWORD env var, default "admin")
@@ -587,8 +601,14 @@ chat-ui-kit/                    — Standalone sellable chat UI template package
     server.py                   — Reference Flask backend with all API routes
     admin.html                  — Standalone admin dashboard (frosted glass dark theme)
 GUIDE.md                       — Developer guide for customizing the template
-pyproject.toml                  — Python package dependencies
-uv.lock                        — Python dependency lock file
-replit.md                       — This documentation file
-.replit                        — Replit run/deploy configuration
+pyproject.toml                  — Python package dependencies (source of truth)
+uv.lock                         — Python dependency lock file
+requirements.in                 — Mirror of pyproject deps for Docker / buildpacks
+Dockerfile                      — Production container image (libreoffice + gunicorn)
+docker-compose.yml              — One-command local spin-up (app + Postgres + volume)
+.env.example                    — Full env-var inventory with required/optional labels
+README.md                       — Human-facing quickstart for new operators
+DEPLOY.md                       — Per-platform deployment recipes (Render/Fly/Railway/VPS)
+replit.md                       — This documentation file (agent-facing)
+.replit                         — Replit run/deploy configuration
 ```
