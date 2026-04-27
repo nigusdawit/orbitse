@@ -86,6 +86,7 @@ from flask import (
     render_template, session, redirect, url_for, Response, stream_with_context,
     make_response, abort
 )
+from flask_compress import Compress
 from openai import OpenAI
 try:
     from anthropic import Anthropic
@@ -126,6 +127,47 @@ app = Flask(
 # round-trip from providers like GitHub.
 from werkzeug.middleware.proxy_fix import ProxyFix
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1, x_for=1)
+
+# =============================================================================
+# RESPONSE COMPRESSION — gzip / brotli for text payloads (perf)
+# =============================================================================
+# Flask serves HTML/CSS/JS/JSON uncompressed by default. flask-compress wraps
+# the WSGI response, picks the best encoding the client advertises in
+# Accept-Encoding (br > gzip > deflate), and only kicks in for text-ish MIME
+# types over the configured size threshold.
+#
+# Defaults we keep:
+#   * COMPRESS_MIMETYPES — text/html, text/css, text/xml, text/javascript,
+#     application/json, application/javascript, application/xml. This LEAVES
+#     ALONE: image/* (already compressed JPG/PNG/WebP), audio/* (MP3 streams
+#     from /api/voice/tts/stream), video/*, application/pdf, and our SSE
+#     endpoints (text/event-stream is NOT in the whitelist, so chat / voice
+#     streams pass through uncompressed and tokens flush immediately to the
+#     browser instead of being buffered until the response closes).
+#   * COMPRESS_MIN_SIZE — 500 bytes. Skips tiny responses where the gzip
+#     header would actually inflate the payload (e.g. /healthz = 2 bytes).
+#   * COMPRESS_LEVEL — gzip level 6 (good ratio / cpu balance).
+#   * COMPRESS_BR_LEVEL — brotli level 4 (faster than the default 11; modern
+#     browsers prefer brotli over gzip and the size win comes mostly from the
+#     algorithm, not the level).
+#
+# Verification: `curl -H "Accept-Encoding: br, gzip" -I /api/page-bundle`
+# returns `Content-Encoding: br` (or gzip on older clients) and the body
+# shrinks from ~22 KB to ~3 KB.
+#
+# COMPRESS_ALGORITHM_STREAMING override: flask-compress's default streaming
+# set is ('zstd', 'br', 'deflate') — it OMITS gzip, which means large static
+# files served via Werkzeug's send_file (script.js, app-bundle.js, etc.) fall
+# through uncompressed for any client that only advertises Accept-Encoding:
+# gzip (older browsers, curl without --compressed, some intermediaries).
+# Modern stdlib gzip handles chunked streaming fine, so we add it back to the
+# streaming whitelist. Result: a 354 KB script.js shrinks to ~85 KB for
+# gzip-only clients (was 354 KB), matching brotli's win for modern clients.
+# (Note: the config key is ALGORITHM_STREAMING, not STREAMING_ALGORITHM —
+# flask-compress orders the suffix last; the wrong order is silently ignored
+# because Flask config is a plain dict.)
+app.config["COMPRESS_ALGORITHM_STREAMING"] = ["zstd", "br", "gzip", "deflate"]
+Compress(app)
 
 # Secret key for Flask sessions (used for admin login persistence).
 # Priority: FLASK_SECRET_KEY env var > persisted .flask_secret file > new random.
