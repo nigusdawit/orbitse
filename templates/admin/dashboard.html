@@ -7712,6 +7712,18 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('tab-' + tabId).classList.add('active');
       if (btn) btn.classList.add('active');
 
+      /* Reset scroll back to the top of the new tab so short tabs
+         (Plans & Features, Cost) don't appear blank when the user
+         lands on them while still scrolled deep into the previous
+         (longer) tab. Both window scroll and the .admin-main scroll
+         container are reset because the layout uses one or the other
+         depending on viewport. */
+      try {
+        window.scrollTo({ top: 0, behavior: 'auto' });
+        const main = document.querySelector('.admin-main');
+        if (main) main.scrollTop = 0;
+      } catch (_) { /* ignore */ }
+
       /* Close mobile sidebar after selecting a tab */
       const sidebar = document.getElementById('admin-sidebar');
       const overlay = document.getElementById('sidebar-overlay');
