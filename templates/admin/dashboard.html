@@ -14908,9 +14908,19 @@ TO CUSTOMIZE THIS DASHBOARD:
           ? `<em>Objective:</em> ${escapeHtml((job.objective || '').slice(0, 80))}`
           : `<a href="${escapeHtml(job.url || '')}" target="_blank" rel="noopener">${escapeHtml((job.url || '').slice(0, 80))}</a>`;
         const statusColor = ({
-          done: '#28a745', failed: '#dc3545', running: '#0d6efd', queued: '#6c757d'
+          done: '#28a745', failed: '#dc3545', running: '#0d6efd',
+          queued: '#6c757d', stopped: '#f59e0b'
         })[job.status] || '#6c757d';
         const requested = job.requested_at ? new Date(job.requested_at).toLocaleString() : '';
+        // Per-row Stop / Resume affordance so the admin doesn't have to
+        // open the detail panel just to halt a runaway job or pick up a
+        // paused one. Mirrors the buttons inside the detail panel.
+        let liveBtn = '';
+        if (job.status === 'queued' || job.status === 'running') {
+          liveBtn = `<button class="btn btn-secondary btn-xs" onclick="stopScrapeJob(${job.id})" data-testid="button-stop-scrape-${job.id}">Stop</button>`;
+        } else if (job.status === 'stopped') {
+          liveBtn = `<button class="btn btn-primary btn-xs" onclick="resumeScrapeJob(${job.id})" data-testid="button-resume-scrape-${job.id}">Resume</button>`;
+        }
         return `
           <tr data-testid="row-scrape-job-${job.id}">
             <td>${src}</td>
@@ -14919,6 +14929,7 @@ TO CUSTOMIZE THIS DASHBOARD:
             <td style="font-size:0.8125rem; color: var(--admin-text-muted);">${escapeHtml(requested)}</td>
             <td>
               <button class="btn btn-secondary btn-xs" onclick="viewScrapeJob(${job.id})" data-testid="button-view-scrape-${job.id}">View</button>
+              ${liveBtn}
               <button class="btn btn-secondary btn-xs" onclick="rerunScrapeJob(${job.id})" data-testid="button-rerun-scrape-${job.id}">Re-run</button>
               <button class="btn btn-danger btn-xs" onclick="deleteScrapeJob(${job.id})" data-testid="button-delete-scrape-${job.id}">Delete</button>
             </td>
@@ -15322,11 +15333,31 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('scraper-current-meta').innerHTML = meta.join(' &middot; ');
 
       const statusColor = ({
-        done: '#28a745', failed: '#dc3545', running: '#0d6efd', queued: '#6c757d'
+        done: '#28a745', failed: '#dc3545', running: '#0d6efd',
+        queued: '#6c757d', stopped: '#f59e0b'
       })[job.status] || '#6c757d';
       let statusHtml = `<span style="color:${statusColor}; font-weight:600;" data-testid="current-status-scrape">Status: ${escapeHtml(job.status)}</span>`;
       if (job.status === 'queued' || job.status === 'running') {
+        // Inline Stop button right next to the status so it's the first
+        // place an admin reaches when a job is misbehaving. The /stop
+        // endpoint is cooperative — it sets a flag the worker checks
+        // between major steps, so progress already made is preserved.
+        const stopDisabled = job.stop_requested ? 'disabled' : '';
+        const stopLabel = job.stop_requested ? 'Stopping…' : 'Stop';
+        statusHtml += ` <button class="btn btn-secondary btn-xs" onclick="stopScrapeJob(${job.id})" ${stopDisabled} data-testid="button-stop-current">${stopLabel}</button>`;
         statusHtml += ' <span style="color: var(--admin-text-muted);">(refreshing every 2s…)</span>';
+        if (job.stop_requested) {
+          statusHtml += ' <span style="color:#b45309; font-size:0.8125rem;">Stop requested — will halt at the next checkpoint.</span>';
+        }
+      } else if (job.status === 'stopped') {
+        // Stopped jobs offer Resume right inline. When partial state was
+        // captured we tell the admin which step we'll skip, so they know
+        // the resume isn't starting from zero.
+        const resumeHint = job.has_partial_state
+          ? ` <span style="color: var(--admin-text-muted); font-size:0.8125rem;">Saved progress: ${escapeHtml(job.partial_phase || 'partial state')} — Resume will skip ahead.</span>`
+          : ` <span style="color: var(--admin-text-muted); font-size:0.8125rem;">No partial state saved — Resume will start the run from the beginning.</span>`;
+        statusHtml += ` <button class="btn btn-primary btn-xs" onclick="resumeScrapeJob(${job.id})" data-testid="button-resume-current">Resume</button>`;
+        statusHtml += resumeHint;
       }
       if (job.error) {
         statusHtml += `<div style="margin-top:0.5rem; color:#c33;">${escapeHtml(job.error)}</div>`;
@@ -15379,6 +15410,15 @@ TO CUSTOMIZE THIS DASHBOARD:
       } else if (job.status === 'failed') {
         resultEl.innerHTML = '';
         actionsEl.innerHTML = `<button class="btn btn-secondary btn-sm" onclick="rerunScrapeJob(${job.id})" data-testid="button-rerun-current">Re-run</button>`;
+      } else if (job.status === 'stopped') {
+        // Stopped is its own terminal state. We offer Resume (preserves
+        // history + skips already-done steps) AND Re-run (clean slate)
+        // so the admin can pick whichever makes sense for their case.
+        resultEl.innerHTML = '';
+        actionsEl.innerHTML = `
+          <button class="btn btn-primary btn-sm" onclick="resumeScrapeJob(${job.id})" data-testid="button-resume-current-actions">Resume</button>
+          <button class="btn btn-secondary btn-sm" onclick="rerunScrapeJob(${job.id})" data-testid="button-rerun-current">Re-run from scratch</button>
+        `;
       } else {
         resultEl.innerHTML = '';
         actionsEl.innerHTML = '';
@@ -15441,6 +15481,45 @@ TO CUSTOMIZE THIS DASHBOARD:
         });
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || 'Re-run failed');
+        loadScrapeJobs();
+        viewScrapeJob(jobId);
+      } catch (e) {
+        alert(e.message);
+      }
+    }
+
+    async function stopScrapeJob(jobId) {
+      // Cooperative cancel: server flips stop_requested=TRUE; the worker
+      // halts at the next checkpoint (between fetch / clean / render /
+      // AI extract). We don't optimistically mutate the UI here — the
+      // 2s poll will pick up the flag and re-render the Stop button as
+      // "Stopping…" until the worker actually exits to 'stopped'.
+      try {
+        const r = await fetch(`/admin/api/scrape-jobs/${jobId}/stop`, {
+          method: 'POST', credentials: 'same-origin',
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Stop failed');
+        // If we're looking at this job's detail, give the poller a nudge
+        // so the "Stop requested" hint shows up immediately instead of
+        // waiting up to 2s.
+        if (Scraper.currentJobId === jobId) pollScrapeJob(jobId);
+        loadScrapeJobs();
+      } catch (e) {
+        alert(e.message);
+      }
+    }
+
+    async function resumeScrapeJob(jobId) {
+      // Re-queue a stopped job, preserving its progress timeline and
+      // partial state so the worker can skip ahead instead of starting
+      // over. Distinct from /rerun, which wipes the slate.
+      try {
+        const r = await fetch(`/admin/api/scrape-jobs/${jobId}/resume`, {
+          method: 'POST', credentials: 'same-origin',
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Resume failed');
         loadScrapeJobs();
         viewScrapeJob(jobId);
       } catch (e) {

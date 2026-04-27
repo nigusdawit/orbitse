@@ -2411,6 +2411,24 @@ def init_db():
                 "ALTER TABLE scrape_jobs ADD COLUMN IF NOT EXISTS "
                 "progress_steps JSONB NOT NULL DEFAULT '[]'::jsonb"
             )
+            # Cooperative-cancellation flag. The /stop admin endpoint sets
+            # this to TRUE; the worker checks it between major steps and
+            # exits gracefully (status='stopped') without losing the
+            # progress timeline or any partially-fetched content.
+            cur.execute(
+                "ALTER TABLE scrape_jobs ADD COLUMN IF NOT EXISTS "
+                "stop_requested BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            # Mid-run snapshot used for resume. After each expensive step
+            # (URL fetch, HTML clean, render fallback, objective research)
+            # the worker writes the bits needed to skip ahead on a future
+            # /resume — e.g. {"cleaned": "...", "source": {...}} so a
+            # resumed job can jump straight to AI extraction without
+            # re-paying for the fetch + clean.
+            cur.execute(
+                "ALTER TABLE scrape_jobs ADD COLUMN IF NOT EXISTS "
+                "partial_state JSONB"
+            )
             # Auto-pause guardrail: when a schedule fails N times in a row
             # (e.g. dead site, missing API key, page shape changed) we stop
             # firing it instead of burning API budget and spamming alerts.
@@ -27449,6 +27467,15 @@ def _scrape_serialize_job(row: dict) -> dict:
     # list (older rows pre-migration would otherwise show as None).
     if not isinstance(out.get("progress_steps"), list):
         out["progress_steps"] = []
+    # Surface a tiny boolean for the UI ("can this job be resumed?")
+    # without shipping the full partial_state blob (which can be tens of
+    # KB of cleaned text). Callers that need the blob can fetch the row
+    # directly; the dashboard only cares about the flag.
+    partial = out.get("partial_state") if isinstance(out.get("partial_state"), dict) else None
+    out["has_partial_state"] = bool(partial and partial.get("phase"))
+    out["partial_phase"] = (partial or {}).get("phase") or ""
+    out.pop("partial_state", None)
+    out["stop_requested"] = bool(out.get("stop_requested"))
     return out
 
 
@@ -27492,6 +27519,68 @@ def _scrape_log_step(job_id: int, message: str, *,
             pass
 
 
+def _scrape_should_stop(job_id: int) -> bool:
+    """True if admin has hit Stop on this job since the worker started.
+
+    Cheap single SELECT (~1ms); the runner calls this between major
+    steps so a long-running job halts promptly without abandoning the
+    progress timeline or partial state we've already saved.
+
+    Defaults to False on a transient DB error — better to let the
+    worker finish than to silently kill it on a flaky read.
+    """
+    try:
+        row = query_db(
+            "SELECT stop_requested FROM scrape_jobs WHERE id = %s",
+            (job_id,), fetchone=True,
+        )
+        return bool((row or {}).get("stop_requested"))
+    except Exception:
+        return False
+
+
+def _scrape_save_partial(job_id: int, partial: dict) -> None:
+    """Snapshot mid-run state so a future /resume can pick up here.
+
+    `partial` is a small dict like
+    ``{"phase": "fetched_clean", "cleaned": "...", "fetched_meta": {...}}``
+    — deliberately *not* the raw HTML body, just what the next step
+    needs (cleaned text + source metadata). Best-effort: a save failure
+    must not abort the worker.
+    """
+    try:
+        execute_db(
+            "UPDATE scrape_jobs SET partial_state = %s::jsonb WHERE id = %s",
+            (json.dumps(partial), job_id),
+        )
+    except Exception as e:  # noqa: BLE001
+        try:
+            print(f"[scraper] partial save failed for job {job_id}: {e}",
+                  file=sys.stderr)
+        except Exception:
+            pass
+
+
+def _scrape_finish_stopped(job_id: int) -> None:
+    """Mark the job as cleanly stopped (admin-initiated cancel).
+
+    Distinct from 'failed' so the UI can show a different colour and a
+    "Resume" affordance instead of "Re-run". progress_steps and
+    partial_state stay intact so the admin keeps full visibility into
+    what got done and the next attempt can skip ahead. We also clear
+    `stop_requested` so a later resume doesn't immediately self-cancel.
+    """
+    execute_db(
+        """UPDATE scrape_jobs
+              SET status = 'stopped',
+                  stop_requested = FALSE,
+                  completed_at = NOW()
+            WHERE id = %s""",
+        (job_id,),
+    )
+    _scrape_log_step(job_id, "Stopped by admin.", level="warn")
+
+
 def _scrape_run_job(job_id: int) -> None:
     """Background worker: fetch + clean + AI-extract for one job.
 
@@ -27512,13 +27601,24 @@ def _scrape_run_job(job_id: int) -> None:
         if not job:
             return
 
+        # Cooperative-cancel snapshot loaded once at the top: subsequent
+        # stop checks re-query so they always see the latest flag.
+        partial = job.get("partial_state") if isinstance(job.get("partial_state"), dict) else {}
+        resuming = bool(partial and partial.get("phase"))
+
         input_mode = job.get("input_mode") or "url"
         target_shape = job.get("target_shape") or "free_form"
         custom_schema = job.get("custom_schema") if target_shape == "custom" else None
         _scrape_log_step(
             job_id,
-            f"Mode='{input_mode}', target shape='{target_shape}'.",
-            meta={"input_mode": input_mode, "target_shape": target_shape},
+            f"Mode='{input_mode}', target shape='{target_shape}'"
+            + (f" — resuming from '{partial.get('phase')}'." if resuming else "."),
+            meta={
+                "input_mode": input_mode,
+                "target_shape": target_shape,
+                "resuming": resuming,
+                "resume_phase": (partial or {}).get("phase") or "",
+            },
         )
 
         if input_mode == "url":
@@ -27526,95 +27626,137 @@ def _scrape_run_job(job_id: int) -> None:
             if not url:
                 _scrape_finish_job(job_id, error="Missing URL.")
                 return
-            disallowed = _scrape_get_disallowed_domains()
-            _scrape_log_step(
-                job_id, f"Fetching URL: {url}",
-                meta={"url": url, "disallowed_count": len(disallowed)},
-            )
-            fetched = scraper.fetch_url(url, disallowed_domains=disallowed)
-            if not fetched.get("ok"):
-                err = fetched.get("error", "Fetch failed.")
-                _scrape_log_step(job_id, f"Fetch failed: {err}", level="error")
-                _scrape_finish_job(job_id, error=err)
-                return
-            _scrape_log_step(
-                job_id,
-                f"Fetched {len(fetched.get('body') or '')} bytes "
-                f"({fetched.get('content_type', '')}).",
-                meta={
-                    "final_url": fetched.get("final_url", url),
-                    "content_type": fetched.get("content_type", ""),
-                    "body_bytes": len(fetched.get("body") or ""),
-                },
-            )
-            cleaned = scraper.clean_html(fetched["body"], fetched.get("content_type", ""))
-            _scrape_log_step(
-                job_id,
-                f"Cleaned page text: {len(cleaned)} chars of readable content.",
-                meta={"cleaned_chars": len(cleaned)},
-            )
+
+            cleaned = ""
             note = ""
             rendered_used = False
-            # Auto-fallback: if the cleaned body looks like a JS-only SPA shell
-            # (and the admin has opted in to rendered fetch), retry through the
-            # headless-browser provider so SPA sites become scrapeable too.
-            if (not cleaned or scraper.looks_js_only(cleaned)) and _scrape_get_render_enabled():
+            fetched_meta: dict = {}
+
+            if resuming and partial.get("phase") == "fetched_clean":
+                # Resume: skip fetch + clean + render-fallback entirely.
+                cleaned = partial.get("cleaned") or ""
+                note = partial.get("note") or ""
+                rendered_used = bool(partial.get("rendered_used"))
+                fm = partial.get("fetched_meta") if isinstance(partial.get("fetched_meta"), dict) else {}
+                fetched_meta = {
+                    "final_url": fm.get("final_url") or url,
+                    "content_type": fm.get("content_type") or "",
+                    "render_provider": fm.get("render_provider") or "",
+                }
                 _scrape_log_step(
                     job_id,
-                    "Page looks JavaScript-only — retrying through headless browser…",
-                    level="warn",
+                    f"Resuming from saved state — skipping fetch & clean "
+                    f"({len(cleaned)} chars of cleaned text already on hand).",
+                    meta={"phase": "fetched_clean",
+                          "cleaned_chars": len(cleaned)},
                 )
-                rendered = scraper.fetch_url_rendered(url, disallowed_domains=disallowed)
-                if rendered.get("ok"):
-                    fetched = rendered
-                    cleaned = scraper.clean_html(
-                        rendered["body"], rendered.get("content_type", ""),
-                    )
-                    rendered_used = True
-                    provider = rendered.get("render_provider", "headless")
-                    note = (
-                        f"Used rendered fetch ({provider}) "
-                        "because the plain page looked JavaScript-only."
-                    )
+            else:
+                if _scrape_should_stop(job_id):
+                    _scrape_finish_stopped(job_id); return
+                disallowed = _scrape_get_disallowed_domains()
+                _scrape_log_step(
+                    job_id, f"Fetching URL: {url}",
+                    meta={"url": url, "disallowed_count": len(disallowed)},
+                )
+                fetched = scraper.fetch_url(url, disallowed_domains=disallowed)
+                if not fetched.get("ok"):
+                    err = fetched.get("error", "Fetch failed.")
+                    _scrape_log_step(job_id, f"Fetch failed: {err}", level="error")
+                    _scrape_finish_job(job_id, error=err)
+                    return
+                _scrape_log_step(
+                    job_id,
+                    f"Fetched {len(fetched.get('body') or '')} bytes "
+                    f"({fetched.get('content_type', '')}).",
+                    meta={
+                        "final_url": fetched.get("final_url", url),
+                        "content_type": fetched.get("content_type", ""),
+                        "body_bytes": len(fetched.get("body") or ""),
+                    },
+                )
+                cleaned = scraper.clean_html(fetched["body"], fetched.get("content_type", ""))
+                _scrape_log_step(
+                    job_id,
+                    f"Cleaned page text: {len(cleaned)} chars of readable content.",
+                    meta={"cleaned_chars": len(cleaned)},
+                )
+                # Auto-fallback: if the cleaned body looks like a JS-only SPA
+                # shell (and the admin has opted in to rendered fetch), retry
+                # through the headless-browser provider so SPA sites become
+                # scrapeable too.
+                if (not cleaned or scraper.looks_js_only(cleaned)) and _scrape_get_render_enabled():
                     _scrape_log_step(
                         job_id,
-                        f"Rendered fetch via '{provider}' succeeded — "
-                        f"{len(cleaned)} chars after cleaning.",
-                        meta={"render_provider": provider,
-                              "cleaned_chars": len(cleaned)},
+                        "Page looks JavaScript-only — retrying through headless browser…",
+                        level="warn",
                     )
-                else:
-                    # Render attempt failed — keep going with the original
-                    # cleaned text and surface the reason in the note so the
-                    # admin can fix their provider config.
+                    rendered = scraper.fetch_url_rendered(url, disallowed_domains=disallowed)
+                    if rendered.get("ok"):
+                        fetched = rendered
+                        cleaned = scraper.clean_html(
+                            rendered["body"], rendered.get("content_type", ""),
+                        )
+                        rendered_used = True
+                        provider = rendered.get("render_provider", "headless")
+                        note = (
+                            f"Used rendered fetch ({provider}) "
+                            "because the plain page looked JavaScript-only."
+                        )
+                        _scrape_log_step(
+                            job_id,
+                            f"Rendered fetch via '{provider}' succeeded — "
+                            f"{len(cleaned)} chars after cleaning.",
+                            meta={"render_provider": provider,
+                                  "cleaned_chars": len(cleaned)},
+                        )
+                    else:
+                        # Render attempt failed — keep going with the original
+                        # cleaned text and surface the reason in the note so
+                        # the admin can fix their provider config.
+                        note = (
+                            "Tried rendered fetch but it failed: "
+                            + str(rendered.get("error") or "unknown error")
+                        )
+                        _scrape_log_step(job_id, note, level="warn")
+                if not cleaned:
+                    _scrape_log_step(
+                        job_id, "No readable text after cleaning — aborting.",
+                        level="error",
+                    )
+                    _scrape_finish_job(
+                        job_id,
+                        error="Page had no readable text after cleaning.",
+                    )
+                    return
+                if not rendered_used and not note and scraper.looks_js_only(cleaned):
+                    # Plain fetch only, no prior note from a failed render
+                    # attempt, and the page still looks JS-only. Tell the
+                    # admin so they know to enable rendered fetch.
                     note = (
-                        "Tried rendered fetch but it failed: "
-                        + str(rendered.get("error") or "unknown error")
+                        "This page looks JavaScript-only — very little text was "
+                        "available without a real browser. Enable 'Use rendered "
+                        "fetch' in Web Scraper settings to retry through a "
+                        "headless browser."
                     )
                     _scrape_log_step(job_id, note, level="warn")
-            if not cleaned:
-                _scrape_log_step(
-                    job_id, "No readable text after cleaning — aborting.",
-                    level="error",
-                )
-                _scrape_finish_job(
-                    job_id,
-                    error="Page had no readable text after cleaning.",
-                )
-                return
-            if not rendered_used and not note and scraper.looks_js_only(cleaned):
-                # Plain fetch only, no prior note from a failed render attempt,
-                # and the page still looks JS-only. Tell the admin so they know
-                # to enable rendered fetch. We deliberately don't overwrite a
-                # rendered-fetch failure note above — that one is more
-                # actionable than this generic hint.
-                note = (
-                    "This page looks JavaScript-only — very little text was "
-                    "available without a real browser. Enable 'Use rendered "
-                    "fetch' in Web Scraper settings to retry through a "
-                    "headless browser."
-                )
-                _scrape_log_step(job_id, note, level="warn")
+                # Snapshot what we have *before* the long AI step so a stop
+                # here can be resumed later without re-paying for fetch+clean.
+                fetched_meta = {
+                    "final_url": fetched.get("final_url", url),
+                    "content_type": fetched.get("content_type", ""),
+                    "render_provider": fetched.get("render_provider", "") if rendered_used else "",
+                }
+                _scrape_save_partial(job_id, {
+                    "phase": "fetched_clean",
+                    "cleaned": cleaned,
+                    "note": note,
+                    "rendered_used": rendered_used,
+                    "fetched_meta": fetched_meta,
+                })
+
+            # Stop check immediately before the most expensive step.
+            if _scrape_should_stop(job_id):
+                _scrape_finish_stopped(job_id); return
             _scrape_log_step(
                 job_id,
                 f"Sending content to AI for extraction "
@@ -27627,7 +27769,7 @@ def _scrape_run_job(job_id: int) -> None:
                     target_shape=target_shape,
                     custom_schema=custom_schema,
                     source_kind="url",
-                    source_label=fetched.get("final_url", url),
+                    source_label=fetched_meta.get("final_url") or url,
                 )
             except Exception as e:  # noqa: BLE001
                 _scrape_log_step(
@@ -27644,12 +27786,12 @@ def _scrape_run_job(job_id: int) -> None:
                 "record": record,
                 "source": {
                     "kind": "url",
-                    "url": fetched.get("final_url", url),
-                    "content_type": fetched.get("content_type", ""),
+                    "url": fetched_meta.get("final_url") or url,
+                    "content_type": fetched_meta.get("content_type", ""),
                     "cleaned_chars": len(cleaned),
                     "note": note,
                     "rendered": rendered_used,
-                    "render_provider": fetched.get("render_provider", "") if rendered_used else "",
+                    "render_provider": fetched_meta.get("render_provider", ""),
                 },
             }
             _scrape_finish_job(job_id, result=payload)
@@ -27660,29 +27802,69 @@ def _scrape_run_job(job_id: int) -> None:
             if not objective:
                 _scrape_finish_job(job_id, error="Missing objective.")
                 return
-            _scrape_log_step(
-                job_id,
-                f"Researching objective via web search: {objective[:140]}",
-                meta={"objective_chars": len(objective)},
-            )
-            research = scraper.research_objective(
-                openai_client, openai_direct_client, objective,
-            )
-            if not research.get("ok"):
-                err = research.get("error", "Research failed.")
-                _scrape_log_step(job_id, f"Research failed: {err}", level="error")
-                _scrape_finish_job(job_id, error=err)
-                return
-            _scrape_log_step(
-                job_id,
-                f"Research gathered {len(research.get('sources') or [])} sources, "
-                f"{len(research.get('text') or '')} chars of context.",
-                meta={
-                    "web_used": bool(research.get("web_used")),
-                    "source_count": len(research.get("sources") or []),
-                    "context_chars": len(research.get("text") or ""),
-                },
-            )
+
+            research_text = ""
+            research_sources: list = []
+            web_used = False
+            research_note = ""
+
+            if resuming and partial.get("phase") == "researched":
+                # Resume: skip the (slow, web-search-heavy) research step.
+                research_text = partial.get("research_text") or ""
+                research_sources = partial.get("sources") or []
+                web_used = bool(partial.get("web_used"))
+                research_note = partial.get("note") or ""
+                _scrape_log_step(
+                    job_id,
+                    f"Resuming from saved state — skipping research "
+                    f"({len(research_sources)} sources, "
+                    f"{len(research_text)} chars of context already gathered).",
+                    meta={"phase": "researched",
+                          "source_count": len(research_sources)},
+                )
+            else:
+                if _scrape_should_stop(job_id):
+                    _scrape_finish_stopped(job_id); return
+                _scrape_log_step(
+                    job_id,
+                    f"Researching objective via web search: {objective[:140]}",
+                    meta={"objective_chars": len(objective)},
+                )
+                research = scraper.research_objective(
+                    openai_client, openai_direct_client, objective,
+                )
+                if not research.get("ok"):
+                    err = research.get("error", "Research failed.")
+                    _scrape_log_step(job_id, f"Research failed: {err}", level="error")
+                    _scrape_finish_job(job_id, error=err)
+                    return
+                research_text = research.get("text") or ""
+                research_sources = research.get("sources") or []
+                web_used = bool(research.get("web_used"))
+                research_note = research.get("note") or ""
+                _scrape_log_step(
+                    job_id,
+                    f"Research gathered {len(research_sources)} sources, "
+                    f"{len(research_text)} chars of context.",
+                    meta={
+                        "web_used": web_used,
+                        "source_count": len(research_sources),
+                        "context_chars": len(research_text),
+                    },
+                )
+                # Snapshot research output so a stop here is resumable
+                # without re-paying for web search + summarisation.
+                _scrape_save_partial(job_id, {
+                    "phase": "researched",
+                    "research_text": research_text,
+                    "sources": research_sources,
+                    "web_used": web_used,
+                    "note": research_note,
+                })
+
+            # Stop check immediately before the most expensive step.
+            if _scrape_should_stop(job_id):
+                _scrape_finish_stopped(job_id); return
             _scrape_log_step(
                 job_id,
                 f"Sending research context to AI for extraction "
@@ -27691,7 +27873,7 @@ def _scrape_run_job(job_id: int) -> None:
             try:
                 record = scraper.extract_with_ai(
                     openai_client,
-                    source_text=research["text"],
+                    source_text=research_text,
                     target_shape=target_shape,
                     custom_schema=custom_schema,
                     source_kind="objective",
@@ -27713,10 +27895,10 @@ def _scrape_run_job(job_id: int) -> None:
                 "source": {
                     "kind": "objective",
                     "objective": objective,
-                    "web_used": research.get("web_used", False),
-                    "sources": research.get("sources", []),
-                    "research_text": research.get("text", "")[:8000],
-                    "note": research.get("note", ""),
+                    "web_used": web_used,
+                    "sources": research_sources,
+                    "research_text": research_text[:8000],
+                    "note": research_note,
                 },
             }
             _scrape_finish_job(job_id, result=payload)
@@ -27745,13 +27927,28 @@ def _scrape_finish_job(job_id: int, result=None, error: str = "") -> None:
     final state by the time we return.
     """
     if error:
-        execute_db(
+        # Guard against a late "internal error" overwriting a clean
+        # admin-initiated 'stopped' status: if the row is already stopped,
+        # the worker's outer except handler should leave it alone instead
+        # of flipping the UI from orange (stopped) back to red (failed).
+        # Returning row-or-None lets us tell the two cases apart.
+        updated = execute_db(
             """UPDATE scrape_jobs
-               SET status = 'failed', error = %s,
-                   completed_at = NOW()
-               WHERE id = %s""",
+                  SET status = 'failed', error = %s,
+                      completed_at = NOW()
+                WHERE id = %s AND status != 'stopped'
+                RETURNING id""",
             (error[:1000], job_id),
         )
+        if not updated:
+            # Row was already stopped by the admin — log the would-be
+            # failure to the timeline as a non-fatal note and bail.
+            _scrape_log_step(
+                job_id,
+                f"Internal error after admin stop (no status change): {error}",
+                level="warn",
+            )
+            return
         # Final marker on the timeline so the admin sees an explicit
         # "stopped here" entry rather than the trail just going silent.
         _scrape_log_step(job_id, f"Job marked failed: {error}", level="error")
@@ -28265,7 +28462,8 @@ def admin_rerun_scrape_job(job_id):
         """UPDATE scrape_jobs
            SET status = 'queued', error = '',
                result_json = NULL, completed_at = NULL,
-               progress_steps = '[]'::jsonb
+               progress_steps = '[]'::jsonb,
+               partial_state = NULL, stop_requested = FALSE
            WHERE id = %s AND status NOT IN ('queued', 'running')
            RETURNING *""",
         (job_id,),
@@ -28281,6 +28479,87 @@ def admin_rerun_scrape_job(job_id):
         return jsonify({
             "error": f"Job is already {existing['status']} — wait for it to finish before re-running.",
         }), 409
+    _scrape_kick_off(row["id"])
+    return jsonify(_scrape_serialize_job(row))
+
+
+@app.route("/admin/api/scrape-jobs/<int:job_id>/stop", methods=["POST"])
+@admin_required
+def admin_stop_scrape_job(job_id):
+    """POST .../stop — request a cooperative cancel of an in-flight job.
+
+    The flag flips immediately; the worker thread sees it between major
+    steps (fetch, clean, render-fallback, AI extraction) and exits via
+    `_scrape_finish_stopped`, preserving the progress timeline and any
+    partial state already saved so /resume can pick up where it left off.
+
+    A blocking call already in progress (HTTP fetch, AI request) won't be
+    interrupted mid-flight — the cancel takes effect at the next checkpoint
+    so the admin gets a clean stop, not a torn-down half-write.
+    """
+    row = execute_db(
+        """UPDATE scrape_jobs
+              SET stop_requested = TRUE
+            WHERE id = %s AND status IN ('queued', 'running')
+            RETURNING *""",
+        (job_id,),
+    )
+    if not row:
+        existing = query_db(
+            "SELECT id, status FROM scrape_jobs WHERE id = %s",
+            (job_id,), fetchone=True,
+        )
+        if not existing:
+            return jsonify({"error": "Job not found."}), 404
+        return jsonify({
+            "error": f"Job is already {existing['status']} — nothing to stop.",
+        }), 409
+    _scrape_log_step(
+        job_id,
+        "Stop requested by admin — will halt at the next checkpoint.",
+        level="warn",
+    )
+    return jsonify(_scrape_serialize_job(row))
+
+
+@app.route("/admin/api/scrape-jobs/<int:job_id>/resume", methods=["POST"])
+@admin_required
+def admin_resume_scrape_job(job_id):
+    """POST .../resume — re-queue a stopped job, preserving its history.
+
+    Unlike /rerun (which wipes the timeline and starts from scratch), this
+    keeps `progress_steps` and `partial_state` intact. The worker reads
+    `partial_state` on entry and skips ahead — e.g. straight to AI
+    extraction if the page was already fetched and cleaned.
+
+    Only allowed from 'stopped' status; running/queued jobs are rejected so
+    a double-click can't race two workers onto the same row.
+    """
+    row = execute_db(
+        """UPDATE scrape_jobs
+              SET status = 'queued',
+                  stop_requested = FALSE,
+                  completed_at = NULL,
+                  error = ''
+            WHERE id = %s AND status = 'stopped'
+            RETURNING *""",
+        (job_id,),
+    )
+    if not row:
+        existing = query_db(
+            "SELECT id, status FROM scrape_jobs WHERE id = %s",
+            (job_id,), fetchone=True,
+        )
+        if not existing:
+            return jsonify({"error": "Job not found."}), 404
+        return jsonify({
+            "error": (
+                f"Can only resume jobs in 'stopped' state "
+                f"(this one is '{existing['status']}'). "
+                "Use Re-run instead to start a fresh attempt."
+            ),
+        }), 409
+    _scrape_log_step(job_id, "Resume requested by admin — re-queuing.")
     _scrape_kick_off(row["id"])
     return jsonify(_scrape_serialize_job(row))
 
