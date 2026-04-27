@@ -229,7 +229,39 @@ Put nginx (or the host's load balancer) in front for TLS.
 
 ## Post‑deploy checklist
 
-After your first successful boot, confirm:
+After your first successful boot, run the preflight doctor — it does
+most of the checking for you:
+
+```bash
+python scripts/preflight.py
+# Or for CI / scripting:
+python scripts/preflight.py --json | jq .summary
+python scripts/preflight.py --strict   # exit 2 if any warnings
+python scripts/preflight.py --quiet    # show only non-OK items
+```
+
+The doctor reports on:
+
+- **Required env vars** (DATABASE_URL reachable, ADMIN_PASSWORD set
+  and non-default, FLASK_SECRET_KEY, at least one AI provider key)
+- **Strongly-recommended env vars** (PUBLIC_BASE_URL/SITE_URL, ADMIN_EMAIL)
+- **Schema bootstrap state** (table count, first-run wizard marker,
+  admin user count)
+- **Optional integrations** (Resend, Twilio, Stripe, ElevenLabs, Brave,
+  Google Places, Yelp, TripAdvisor, Sentry, VELO) and which feature each
+  one enables
+- **Replit-specific env vars** (only when running on Replit)
+
+Exit codes: `0` = healthy, `1` = required check failed, `2` = `--strict`
+mode hit a warning. Wire it into your deploy pipeline if you want the
+build to fail on misconfig.
+
+If the doctor reports `[WARN] Install state: install marker is NULL`,
+visit `/setup` in the browser to run the first-run wizard — that
+provisions site name, theme, admin user, and feature plan in one
+submit. (See "First-run wizard" in `replit.md` for details.)
+
+Manual spot-checks if you don't want to run the doctor:
 
 1. **Admin login works** at `/admin` with the password you set.
 2. **The startup log doesn't print** `WARNING: ADMIN_PASSWORD is at the

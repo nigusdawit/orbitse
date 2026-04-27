@@ -32,7 +32,19 @@ cp .env.example .env
 python app.py
 # Production: gunicorn --bind 0.0.0.0:5000 --workers 4 app:app
 
-# 5. Visit
+# 5. Verify the install is healthy
+python scripts/preflight.py
+# Reports ✅/⚠️/❌ for required env vars, schema state, and each
+# optional integration. Exit 0 = healthy, 1 = required check failed.
+
+# 6. Run the first-run wizard
+#   Visit http://localhost:5000/setup, pick a preset (generic or
+#   restaurant), fill in your business name, paste your admin password,
+#   and submit. The wizard provisions site settings, FAQs, services,
+#   feature plan, and the admin user in one shot. After it completes
+#   /setup auto-closes (returns 404 to anyone else).
+
+# 7. Visit
 #   Public site:  http://localhost:5000
 #   Admin panel:  http://localhost:5000/admin
 #                 (log in with whatever you set ADMIN_PASSWORD to)

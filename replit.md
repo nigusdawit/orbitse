@@ -567,6 +567,29 @@ A second code review on the post-fix state confirmed the three original fixes ar
 
 **Documented limitation (out of Tier 3 scope)**: a worker process killed mid-bootstrap (after the atomic claim, before bootstrap_install returns) would leave the gate locked with no in-process rollback opportunity. Operator recovery is the same one-line UPDATE shown above. A TTL-based lease column would be the production-grade fix; deferred since process-kill mid-bootstrap is rare and the recovery is a single SQL command.
 
+## Preflight Doctor Script (Tier 4 — April 2026)
+
+Fourth slice of the onboarding work. Goal: an operator (or a CI pipeline) can verify a fresh install is healthy without poking through the admin UI or the boot log. Single Python file, no extra dependencies (just `psycopg2` which is already pulled in for the app).
+
+- **File added**: `scripts/preflight.py` — standalone CLI, executable (`chmod +x`), runnable as `python scripts/preflight.py`. Adds project root to `sys.path` itself so it works from any cwd.
+- **Categories of checks**:
+  - **Required** (FAIL = exit 1): `DATABASE_URL` set + reachable + reports Postgres version; `ADMIN_PASSWORD` set + not equal to `'admin'`; at least one of `OPENAI_API_KEY` / `AI_INTEGRATIONS_OPENAI_API_KEY` / `ANTHROPIC_API_KEY`.
+  - **Strongly recommended** (WARN): `FLASK_SECRET_KEY` (set as env or `.flask_secret` file present — WARN-not-FAIL because the app self-generates a random key on first boot, but missing it means sessions invalidate every restart); `SITE_URL`/`PUBLIC_BASE_URL` (or Replit-managed `REPLIT_DOMAINS`); `ADMIN_EMAIL`.
+  - **Schema & install state** (mix of OK/WARN/FAIL, each DB probe independently exception-safe): table count from `information_schema.tables` (expects ~80+, FAIL on 0, WARN on partial); Tier 3 wizard marker (`installation_bootstrapped_at` NULL → WARN with hint to visit `/setup`); customer row count (info-only — note this app's auth model is single-password ADMIN_PASSWORD, NOT a per-user `is_admin` flag, so the customers count is just a useful signal for "did the wizard's `manage_user` call run").
+  - **Optional integrations** (INFO/WARN, never FAIL): grouped checks for Resend (API key + from-email), Twilio (SID + token + from-number), Stripe (secret + webhook secret), ElevenLabs, Brave, Google Places, Yelp, TripAdvisor, Sentry, ADMIN_PHONE, VELO (master URL + agent key), Resend webhook secret. Each one labeled with the feature it enables (e.g. "outbound SMS", "Stripe checkout / storefront") so the operator can decide what's worth wiring.
+  - **Replit-specific** (only shown when `REPL_IDENTITY` or `REPLIT_DOMAINS` is set): `REPL_IDENTITY`, `REPLIT_DOMAINS`, `REPLIT_DEPLOYMENT`. Skipped entirely off-Replit so the report stays clean for VPS/Docker deploys.
+- **Output modes**:
+  - Default: human-readable with ANSI colors when stdout is a TTY, plain text otherwise. Each check shows `[ OK ]` / `[WARN]` / `[FAIL]` / `[ -- ]` icons. Failures and warnings always show their detail/feature lines; OK results are terse unless `--verbose`.
+  - `--json`: machine-readable, suitable for `jq` or CI gates. Each check is a `{name, status, message, feature, detail}` object plus a top-level `summary` with counts and a `healthy: bool`.
+  - `--quiet`: only prints non-OK items (good for cron / monitoring jobs).
+  - `--verbose`: shows feature/detail lines on OK results too.
+  - `--strict`: warnings also exit non-zero (exit code 2 instead of 0).
+  - `--no-color`: disables ANSI codes for log capture.
+- **Exit codes**: `0` = all required green, `1` = any required failed, `2` = `--strict` mode hit a warning. Designed to slot into a deploy pipeline as a gate.
+- **Verification**: ran the script in all 6 modes against the current dev DB. Default mode correctly reported 19 ok / 1 warn / 1 fail (FAIL on `ADMIN_PASSWORD='admin'`, WARN on install marker NULL since the wizard hasn't been run on this dev DB). `--json` produced valid parseable output. Exit code matrix: `[1 FAIL] → exit 1`, `[0 FAIL + 1 WARN] → exit 0`, `[0 FAIL + 1 WARN + --strict] → exit 2`. Wizard regression check: `/setup` still returns 200.
+- **Docs wired**: `DEPLOY.md` post-deploy checklist now leads with "run `python scripts/preflight.py`" and lists the flags, exit codes, and what to do on the install-marker WARN. `README.md` quickstart gained step 5 (run preflight) before step 6 (visit `/setup`).
+- **What's deliberately NOT in this script**: no `--init` flag (Tier 3 wizard supersedes interactive setup); no auto-fix actions (it's a doctor, not a surgeon — it tells you what's wrong, you decide); no live API ping for each integration (would take 10+ HTTP requests; checking key presence is the right scope for "did I configure things"). All three are reasonable follow-ups if the script grows.
+
 ## How to Edit Content
 
 1. Go to `/admin` in your browser (password: set via ADMIN_PASSWORD env var, default "admin")
