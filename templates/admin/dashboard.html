@@ -13949,20 +13949,67 @@ TO CUSTOMIZE THIS DASHBOARD:
         .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
+    /* Resilient JSON fetcher used by the themes panel: tolerates a transient
+       HTML response (login redirect, 405 from a method-not-allowed redirect
+       hop, proxy "service starting" page, etc.) by retrying with a short
+       backoff before surfacing an error. Returns parsed JSON or throws an
+       Error whose .friendly is a non-scary message we can show as-is. */
+    async function _fetchJsonResilient(url, opts) {
+      const attempts = 3;
+      let lastErr = null;
+      for (let i = 0; i < attempts; i++) {
+        try {
+          const res = await fetch(url, Object.assign({ credentials: 'same-origin' }, opts || {}));
+          if (res.status === 401 || res.status === 403) {
+            const e = new Error('auth');
+            e.friendly = 'Your session expired. Refresh the page to sign in again.';
+            throw e;
+          }
+          const ct = (res.headers.get('content-type') || '').toLowerCase();
+          if (!ct.includes('application/json')) {
+            // Server returned HTML (likely a transient redirect/error page).
+            // Wait briefly and try again before giving up.
+            lastErr = new Error('non-json response (' + res.status + ')');
+            await new Promise(r => setTimeout(r, 250 * (i + 1)));
+            continue;
+          }
+          if (!res.ok) {
+            let msg = 'Request failed (' + res.status + ')';
+            try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (_) {}
+            const e = new Error(msg);
+            e.friendly = msg;
+            throw e;
+          }
+          return await res.json();
+        } catch (e) {
+          if (e && e.friendly) throw e;
+          lastErr = e;
+          await new Promise(r => setTimeout(r, 250 * (i + 1)));
+        }
+      }
+      const e = new Error(lastErr ? lastErr.message : 'unknown error');
+      e.friendly = "Couldn't reach the server right now. This is usually momentary — please try again.";
+      throw e;
+    }
+
     async function loadSiteThemes() {
       const grid = document.getElementById('site-themes-grid');
       if (!grid) return;
       grid.innerHTML = '<div style="grid-column:1/-1; padding:2rem; text-align:center; color:var(--admin-text-muted);">Loading themes…</div>';
       try {
-        const res = await fetch('/admin/api/site-themes');
-        const themes = await res.json();
+        const themes = await _fetchJsonResilient('/admin/api/site-themes');
         if (!Array.isArray(themes) || themes.length === 0) {
           grid.innerHTML = '<div style="grid-column:1/-1; padding:2rem; text-align:center; color:var(--admin-text-muted);">No themes yet. Click "+ New theme" to create one.</div>';
           return;
         }
         grid.innerHTML = themes.map(renderSiteThemeCard).join('');
       } catch (e) {
-        grid.innerHTML = '<div style="grid-column:1/-1; padding:2rem; text-align:center; color:#f87171;">Failed to load themes: ' + _siteEsc(e.message || e) + '</div>';
+        const msg = (e && e.friendly) ? e.friendly : ('Could not load themes: ' + _siteEsc(e.message || e));
+        grid.innerHTML =
+          '<div style="grid-column:1/-1; padding:2rem; text-align:center; color:var(--admin-text-muted);">' +
+            '<div style="margin-bottom:0.75rem;">' + _siteEsc(msg) + '</div>' +
+            '<button class="btn btn-secondary" onclick="loadSiteThemes()" data-testid="button-site-themes-retry">Retry</button>' +
+          '</div>';
       }
     }
 
