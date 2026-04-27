@@ -1,0 +1,55 @@
+1. Does VELO Master exist?
+
+Yes, it's already built and running. It's a FastAPI app on my local machine (port 8000). Here's what's live right now:
+
+/api/capabilities — dynamic tool discovery (14 tools registered)
+/api/agent-gateway — agents call this to use VELO's tools
+/api/agent-register — agents self-register with their capabilities on startup
+/api/agent-command — VELO sends commands to registered agents
+/api/agents — lists connected agents
+/api/clients/register — client VELOs register here
+/api/clients — list all client VELOs
+/api/clients/{id}/command — route commands through a client's VELO to their agents
+/api/clients/{id}/health — health check client VELO + site
+Auth: VELO_AGENT_KEY (per-client) + VELO_SUPER_KEY (master key across all clients)
+The gateway is fully dynamic — no hardcoded command lists. Whatever capabilities you register, VELO sees them. It's not a prototype, it's production-ready routing.
+
+2. Single or multi-tenant?
+
+Single right now, but the multi-tenant layer is already built on the master side. So build as if it's single-client — just add the hooks. The multi-tenant routing will work automatically when we clone for a second client.
+
+3. Who's building what?
+
+I'm handling the master side. You're handling the Flask app side. Don't build VELO Master — it exists.
+
+What I need you to do: Phase 2 only — add VELO hooks to this Flask app.
+
+Specifically:
+
+velo_client.py — copy from the spec as-is, it's a pure HTTP client, framework-agnostic
+velo_endpoints.py — copy the blueprint + decorator pattern as-is, it's also framework-agnostic
+velo_handlers.py — THIS is where you need to adapt. Don't copy the example handlers verbatim. Rewrite each handler body to work with the actual codebase (raw SQL via psycopg2, the actual table names, the actual query patterns already in app.py). The decorator interface stays the same, only the handler bodies change.
+Startup registration — add register_with_velo() to app startup. If VELO is unreachable, just print a warning and continue — don't block boot.
+On your specific concerns:
+
+ORM vs raw SQL: Correct, rewrite handler bodies to use the app's existing DB pattern. The @velo_command decorator and routing layer are DB-agnostic — don't change those.
+Missing tables: For manage_features / apply_plan, yes, create a feature_flags table. Keep it simple: key VARCHAR, enabled BOOLEAN, updated_at TIMESTAMP. The plan presets dict stays in code. The table just stores the current state per-install.
+manage_user safety: Add an audit log entry for every action. The bearer token is already scoped per-client — losing one key only compromises that one client's install, not others.
+Boot registration warnings: That's fine. Expected behavior when VELO isn't pointed at yet.
+Key rotation: Not needed now. VELO_AGENT_KEY per client is sufficient for the current scale.
+Start with these handlers (adapted to the real codebase):
+
+get_analytics — query actual tables for signups, revenue, whatever metrics exist
+get_system_status — DB health, uptime, error counts
+manage_features — needs the new feature_flags table
+get_plans — returns the plan presets (static dict, no DB needed)
+get_faq / update_faq — if FAQ exists in the app
+get_users — adapt to actual customer/user tables
+Skip send_email, get_subscriptions, send_chat_message for now — those can be added later with one decorator each.
+
+Environment vars to expect:
+
+
+VELO_MASTER_URL=http://localhost:8000   (will be a real URL once deployed)
+VELO_AGENT_KEY=                         (I'll generate and share)
+Go ahead with Phase 2. The master is ready and waiting for your agents to register.

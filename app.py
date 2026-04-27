@@ -56,6 +56,10 @@ import secrets
 import threading
 import time as _time
 import uuid as _uuid
+
+# Captured at module import so /api/velo/status can report uptime
+# correctly under both `python app.py` and gunicorn workers.
+VELO_APP_START_TIME = _time.time()
 from datetime import datetime, timedelta, timezone
 try:
     from zoneinfo import ZoneInfo  # py3.9+ stdlib
@@ -2816,6 +2820,32 @@ def init_db():
                    cap_behavior)
                 VALUES (1, NULL, 80, 'alert_only')
                 ON CONFLICT (tenant_id) DO NOTHING
+                """
+            )
+
+            # =================================================================
+            # VELO AUDIT LOG
+            # =================================================================
+            # Every command VELO Master sends to /api/velo/command is logged
+            # here, including the params, status, a truncated result summary,
+            # and any error message. Used for traceability when VELO has
+            # made changes to this install (feature flips, FAQ edits, etc.).
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS velo_audit_log (
+                    id              SERIAL PRIMARY KEY,
+                    command         VARCHAR(100) NOT NULL,
+                    params          JSONB DEFAULT '{}'::jsonb,
+                    status          VARCHAR(20) NOT NULL DEFAULT 'ok',
+                    result_summary  TEXT NOT NULL DEFAULT '',
+                    error_msg       TEXT NOT NULL DEFAULT '',
+                    actor           VARCHAR(50) NOT NULL DEFAULT 'velo',
+                    created_at      TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_velo_audit_created
+                    ON velo_audit_log (created_at);
+                CREATE INDEX IF NOT EXISTS idx_velo_audit_command
+                    ON velo_audit_log (command);
                 """
             )
     finally:
@@ -31419,6 +31449,91 @@ def admin_toggle_tenant_feature(name):
 def _ensure_messaging_scheduler():
     if not messaging._SCHEDULER_STARTED:
         messaging.start_scheduler()
+
+
+# =============================================================================
+# VELO MASTER AI HOOKS
+# =============================================================================
+# Mounts the /api/velo/* blueprint that VELO Master calls into, imports
+# velo_handlers (which registers all @velo_command capabilities), and
+# fires register_with_velo() on a background thread so a slow / missing
+# VELO master can never block boot. All three steps run at module level
+# so they apply under gunicorn as well as `python app.py`.
+from velo_endpoints import velo_bp, get_registered_capabilities  # noqa: E402
+import velo_handlers  # noqa: F401, E402  — import side-effect registers handlers
+app.register_blueprint(velo_bp)
+
+
+def register_with_velo():
+    """Tell VELO Master what this install can do.
+
+    Posts the full capability list once for each agent_id this install
+    serves (admin_ai + visitor_ai both route to the same /api/velo/command
+    endpoint — they're separate logical agents from VELO's perspective).
+
+    Failure modes are deliberately silent-ish: missing VELO_MASTER_URL is
+    a no-op, network errors get printed but never raised. Boot must never
+    block on VELO availability. Non-2xx responses are surfaced explicitly
+    rather than logged as success (so a bad key doesn't look healthy).
+    """
+    velo_url = os.environ.get("VELO_MASTER_URL", "").strip()
+    if not velo_url:
+        print("[velo] VELO_MASTER_URL not set — skipping master registration.")
+        return
+    agent_key = os.environ.get("VELO_AGENT_KEY", "").strip()
+    site_url = os.environ.get("SITE_URL", "http://localhost:5000").strip()
+    capabilities = get_registered_capabilities()
+    import requests as _requests
+    for agent_type in ("admin_ai", "visitor_ai"):
+        try:
+            resp = _requests.post(
+                f"{velo_url}/api/agent-register",
+                headers={"Authorization": f"Bearer {agent_key}"},
+                json={
+                    "agent_id": agent_type,
+                    "agent_type": agent_type,
+                    "base_url": site_url,
+                    "endpoint": f"{site_url}/api/velo/command",
+                    "capabilities": capabilities,
+                    "metadata": {"framework": "flask", "version": "1.0"},
+                },
+                timeout=5,
+            )
+            resp.raise_for_status()
+            print(
+                f"[velo] registered {agent_type} with {len(capabilities)} "
+                f"capabilities at {velo_url}"
+            )
+        except Exception as e:
+            print(f"[velo] failed to register {agent_type}: {e}")
+
+
+# Run registration exactly once per worker, on the first request that
+# worker handles. Mirrors the messaging-scheduler pattern above and
+# avoids three traps:
+#   • Flask's debug reloader runs the module twice (parent + child); only
+#     the child actually serves requests, so this gate runs once in dev.
+#   • Under gunicorn each worker hits this once after fork — desirable,
+#     since master should accept idempotent re-registers.
+#   • Boot is never delayed: registration runs on a daemon thread.
+_VELO_REGISTRATION_TRIGGERED = False
+_VELO_REGISTRATION_LOCK = threading.Lock()
+
+
+@app.before_request
+def _ensure_velo_registration():
+    global _VELO_REGISTRATION_TRIGGERED
+    if _VELO_REGISTRATION_TRIGGERED:
+        return
+    with _VELO_REGISTRATION_LOCK:
+        if _VELO_REGISTRATION_TRIGGERED:
+            return
+        _VELO_REGISTRATION_TRIGGERED = True
+        threading.Thread(
+            target=register_with_velo,
+            daemon=True,
+            name="velo-register",
+        ).start()
 
 
 # =============================================================================
