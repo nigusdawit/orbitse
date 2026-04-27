@@ -31492,7 +31492,7 @@ def _resolve_velo_callback_url():
     return explicit or "http://localhost:5000"
 
 
-def register_with_velo():
+def register_with_velo(force=False):
     """Tell VELO Master what this install can do.
 
     Posts the full capability list once for each agent_id this install
@@ -31505,21 +31505,30 @@ def register_with_velo():
     back to the auto-derived `/api/velo/<agent_id>` pattern (which doesn't
     exist on this app — every agent shares one /api/velo/command route).
 
-    Failure modes are deliberately silent-ish: missing VELO_MASTER_URL is
-    a no-op, network errors get printed but never raised. Boot must never
-    block on VELO availability. Non-2xx responses are surfaced explicitly
-    rather than logged as success (so a bad key doesn't look healthy).
+    `force=True` is used by /api/velo/refresh-registration to re-publish
+    capabilities at runtime (e.g. after enabling a new feature group)
+    without restarting the worker. The boot-time path leaves it default.
+
+    Returns a small dict summarising what happened so callers like the
+    refresh endpoint can echo it back. Failure modes stay silent-ish:
+    missing VELO_MASTER_URL is a no-op; network errors get printed but
+    never raised. Boot must never block on VELO availability.
     """
+    result = {"forced": bool(force), "client_registered": False, "agents": {}}
     velo_url = os.environ.get("VELO_MASTER_URL", "").strip()
     if not velo_url:
         print("[velo] VELO_MASTER_URL not set — skipping master registration.")
-        return
+        result["skipped"] = "VELO_MASTER_URL not set"
+        return result
     agent_key = os.environ.get("VELO_AGENT_KEY", "").strip()
     site_url = _resolve_velo_callback_url()
     command_url = f"{site_url}/api/velo/command"
     chat_url = f"{site_url}/api/velo/chat"
     capabilities = get_registered_capabilities()
-    print(f"[velo] callback site_url={site_url} → {command_url}")
+    result["capability_count"] = len(capabilities)
+    result["site_url"] = site_url
+    print(f"[velo] callback site_url={site_url} → {command_url} "
+          f"({len(capabilities)} capabilities, force={force})")
     headers = {"Authorization": f"Bearer {agent_key}", "Content-Type": "application/json"}
     import requests as _requests
 
@@ -31543,8 +31552,10 @@ def register_with_velo():
         )
         resp.raise_for_status()
         print(f"[velo] registered as client at {velo_url}")
+        result["client_registered"] = True
     except Exception as e:
         print(f"[velo] client registration failed: {e}")
+        result["client_error"] = str(e)
 
     # Step 2 — register each logical agent. Both share the same single
     # /api/velo/command endpoint on this side; the gateway gets the URL
@@ -31573,8 +31584,12 @@ def register_with_velo():
                 f"[velo] registered {agent_type} with {len(capabilities)} "
                 f"capabilities → {command_url}"
             )
+            result["agents"][agent_type] = "ok"
         except Exception as e:
             print(f"[velo] failed to register {agent_type}: {e}")
+            result["agents"][agent_type] = f"error: {e}"
+
+    return result
 
 
 # Run registration exactly once per worker, on the first request that

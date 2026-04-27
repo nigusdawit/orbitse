@@ -19,6 +19,10 @@ velo_audit_log table for traceability.
 
 import os
 import json
+import hmac
+import hashlib
+import time
+import threading
 import traceback
 from flask import Blueprint, request, jsonify
 
@@ -31,13 +35,23 @@ VELO_AGENT_KEY = os.environ.get("VELO_AGENT_KEY", "").strip()
 _command_handlers = {}
 
 
-def velo_command(name, description="", params_schema=None):
-    """Decorator to register a callable as a VELO command handler."""
+def velo_command(name, description="", params_schema=None, requires_confirmation=False):
+    """Decorator to register a callable as a VELO command handler.
+
+    requires_confirmation=True opts a handler into a stateless two-step
+    confirm flow. The first call returns {"status": "confirmation_required",
+    "confirm_token": "..."}; the master must echo the token back inside
+    `params.confirm_token` within ~2 minutes for the handler to actually run.
+    Use this for any destructive write (delete, refund, send-to-customers,
+    plan/pricing changes) so a master-side bug or stale automation can't
+    immediately wipe state.
+    """
     def decorator(func):
         _command_handlers[name] = {
             "handler": func,
             "description": description,
             "params_schema": params_schema or {},
+            "requires_confirmation": bool(requires_confirmation),
         }
         return func
     return decorator
@@ -50,9 +64,84 @@ def get_registered_capabilities():
             "name": name,
             "description": info["description"],
             "params_schema": info["params_schema"],
+            "requires_confirmation": info.get("requires_confirmation", False),
         }
         for name, info in _command_handlers.items()
     ]
+
+
+# ---------------------------------------------------------------------------
+# Stateless confirmation tokens
+# ---------------------------------------------------------------------------
+# We sign HMAC(VELO_AGENT_KEY, command + sorted_params + window_bucket).
+# `window_bucket` is the current 60-second slot, so a token is good for
+# 60–120 seconds depending on when it was minted. Two minutes is plenty
+# for an operator/master round-trip and short enough that an intercepted
+# token can't be replayed days later.
+_CONFIRM_WINDOW_SECONDS = 60
+
+
+def _confirm_signing_key():
+    """Falls back to a fixed dev string when VELO_AGENT_KEY is unset so
+    confirm-tokens still work in local dev. The real security bound here
+    is the bearer-auth check in verify_velo_key()."""
+    return (VELO_AGENT_KEY or "velo-dev-confirm-key").encode("utf-8")
+
+
+def _params_for_signing(params):
+    """Strip confirm_token before hashing so the token from call #1 still
+    verifies on call #2 when the master adds it back into params."""
+    p = dict(params or {})
+    p.pop("confirm_token", None)
+    return json.dumps(p, sort_keys=True, default=str)
+
+
+def _make_confirm_token(command, params, bucket=None):
+    if bucket is None:
+        bucket = int(time.time() // _CONFIRM_WINDOW_SECONDS)
+    msg = f"{command}|{_params_for_signing(params)}|{bucket}".encode("utf-8")
+    return hmac.new(_confirm_signing_key(), msg, hashlib.sha256).hexdigest()
+
+
+# Single-use token cache. Without it, the same valid confirm_token could
+# be replayed multiple times within the 60–120s window — e.g. a master-side
+# retry loop firing send_email twice. We keep `(token → expires_at)` and
+# evict opportunistically; the cache is bounded by `_CONFIRM_LIFETIME` so
+# it can never grow unbounded.
+_USED_CONFIRM_TOKENS = {}
+_USED_CONFIRM_LOCK = threading.Lock()
+_CONFIRM_LIFETIME = _CONFIRM_WINDOW_SECONDS * 2  # matches verify window
+
+
+def _consume_confirm_token(token):
+    """Return True if this is the first time we've seen `token`. Mark it
+    used so subsequent verifications fail. Called only after the HMAC
+    check has already succeeded — replay defence for outbound/destructive
+    commands like send_email and refund_order."""
+    now = time.time()
+    with _USED_CONFIRM_LOCK:
+        # Evict expired entries while we hold the lock; cheap because the
+        # cache is small (≤ a few entries per minute under normal load).
+        for k in [t for t, exp in _USED_CONFIRM_TOKENS.items() if exp <= now]:
+            _USED_CONFIRM_TOKENS.pop(k, None)
+        if token in _USED_CONFIRM_TOKENS:
+            return False
+        _USED_CONFIRM_TOKENS[token] = now + _CONFIRM_LIFETIME
+        return True
+
+
+def _verify_confirm_token(command, params, token):
+    if not token:
+        return False
+    now_bucket = int(time.time() // _CONFIRM_WINDOW_SECONDS)
+    # Accept current OR previous bucket → effective lifetime 60–120s.
+    for bucket in (now_bucket, now_bucket - 1):
+        expected = _make_confirm_token(command, params, bucket=bucket)
+        if hmac.compare_digest(token, expected):
+            # Single-use guard: a token verifies only once. Subsequent
+            # presentations get treated as expired/invalid.
+            return _consume_confirm_token(token)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +211,37 @@ def handle_command():
             "error": f"Unknown command: {command}",
             "available_commands": sorted(_command_handlers.keys()),
         }), 400
+
+    # Two-step confirmation gate for destructive handlers. The handler is
+    # only invoked when the master echoes back a freshly-minted token; the
+    # first call returns the token + a short preview so the master can
+    # show its operator what is about to happen.
+    if handler_info.get("requires_confirmation"):
+        confirm_token = (params or {}).get("confirm_token")
+        if not confirm_token:
+            new_token = _make_confirm_token(command, params)
+            preview_params = {k: v for k, v in (params or {}).items() if k != "confirm_token"}
+            _audit(command, params, "ok", result_summary="confirmation_token_issued")
+            return jsonify({
+                "status": "confirmation_required",
+                "command": command,
+                "confirm_token": new_token,
+                "expires_in_seconds": _CONFIRM_WINDOW_SECONDS * 2,
+                "preview_params": preview_params,
+                "message": (
+                    "This command is destructive and requires confirmation. "
+                    "Re-send the same call with `confirm_token` included in params."
+                ),
+            }), 200
+        if not _verify_confirm_token(command, params, confirm_token):
+            _audit(command, params, "error", error_msg="invalid or expired confirm_token")
+            return jsonify({
+                "status": "error",
+                "error": (
+                    "invalid or expired confirm_token — request a new one by "
+                    "calling this command without confirm_token"
+                ),
+            }), 400
 
     try:
         result = handler_info["handler"](params)
@@ -282,8 +402,43 @@ def app_status():
         uptime_seconds = int(_time.time() - VELO_APP_START_TIME)
     except Exception:
         uptime_seconds = None
+    gated = sorted(
+        name for name, info in _command_handlers.items()
+        if info.get("requires_confirmation")
+    )
     return jsonify({
         "status": "ok",
         "available_commands": sorted(_command_handlers.keys()),
+        "command_count": len(_command_handlers),
+        "gated_commands": gated,
         "uptime_seconds": uptime_seconds,
     })
+
+
+@velo_bp.route("/refresh-registration", methods=["POST"])
+def refresh_registration():
+    """Re-publish this install's full capability list to VELO Master.
+
+    The "dynamic" piece of the dynamic registry. Adding a new command is
+    just dropping a `@velo_command(...)` function — but until the master
+    is told, it doesn't know the command exists. Hitting this endpoint
+    re-runs the registration flow without restarting Flask or waiting
+    for the boot-time `_VELO_REGISTRATION_TRIGGERED` flag to flip.
+
+    Useful after deploying a new handler, after an admin enables/disables
+    a feature group, or as a recovery path if the master lost state.
+    """
+    if not verify_velo_key():
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        from app import register_with_velo
+        result = register_with_velo(force=True) or {}
+        return jsonify({
+            "status": "ok",
+            "command_count": len(_command_handlers),
+            "commands": sorted(_command_handlers.keys()),
+            "registration": result,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"status": "error", "error": str(e)}), 500

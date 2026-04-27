@@ -1,0 +1,91 @@
+This is a great moment to think about productizing — let me first take stock of what's already in place and where the gaps are, then I'll propose a concrete plan you can pick from rather than just building blindly. Let me check the current setup machinery.
+
+
+8 actions
+Good question — and the honest answer is that you're closer than you think. Let me show you what's already in place and what's missing, then propose a concrete plan you can pick from.
+
+What's already done for you (the good news)
+Schema auto-creates itself. Every time the app starts, it runs through 82 CREATE TABLE IF NOT EXISTS statements and 87 ADD COLUMN IF NOT EXISTS migrations. So for any new client, the moment you point the app at an empty Postgres database, every table is built automatically. No migration scripts to run, no db:push to remember.
+Python deps are declared in pyproject.toml (anthropic, flask, gunicorn, openai, psycopg2, pillow, stripe, sentry, etc.).
+Production server is wired up — gunicorn binding 0.0.0.0:5000 is already configured.
+Most secrets fail gracefully. If a client doesn't have a Yelp/TripAdvisor/ElevenLabs/Brave key, those specific features just turn off — the app keeps running.
+Sessions self-bootstrap. FLASK_SECRET_KEY auto-generates a local file if missing.
+What's missing for fresh-client onboarding
+No .env.example — a new client has no checklist of what to fill in.
+No human-facing README — your docs (replit.md, AGENT_KNOWLEDGE_BASE.md, GUIDE.md) are written for me as the agent, not for someone setting this up.
+No "did I set everything correctly?" check — they'd have to start the app and hunt for errors.
+No first-run wizard. When a client opens a fresh install, the public site shows placeholder text ("My Business") and the admin password defaults to literally "admin" if nothing's set — that's a security footgun.
+No Dockerfile or docker-compose.yml — without these, deploying off Replit means hand-installing Python 3.11, Postgres, libreoffice (yes, it's a dependency for PowerPoint exports), and configuring gunicorn yourself.
+A handful of Replit-isms in the code — REPLIT_DOMAINS for CORS, REPLIT_DEPLOYMENT for cookie security flags, and a stripe-replit-sync Node helper. None of these break off-Replit, but they need explicit equivalents (PUBLIC_BASE_URL, FORCE_SECURE_COOKIES).
+No deployment recipes for Render / Fly.io / Railway / a plain VPS.
+The complete env-var inventory (so you know what you're dealing with)
+Required to boot at all:
+
+DATABASE_URL (Postgres connection string)
+ADMIN_PASSWORD (or you log in as admin/admin — bad for clients)
+FLASK_SECRET_KEY (auto-generated if missing, but better set explicitly so sessions survive deploys)
+Required for AI chat (one of):
+
+OPENAI_API_KEY or ANTHROPIC_API_KEY
+Optional, each enables a feature; all degrade silently if missing:
+
+Feature	Secret(s)
+Email sending	RESEND_API_KEY, RESEND_FROM_EMAIL, RESEND_WEBHOOK_SECRET
+SMS sending	TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER
+Storefront / checkout	STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
+Voice (TTS)	ELEVENLABS_API_KEY
+Web search tool	BRAVE_SEARCH_API_KEY
+Review aggregator	GOOGLE_PLACES_API_KEY, YELP_API_KEY, TRIPADVISOR_API_KEY
+Error tracking	SENTRY_DSN, SENTRY_ENV
+Admin alerts	ADMIN_EMAIL, ADMIN_PHONE
+Absolute URLs in email/SMS	PUBLIC_BASE_URL
+That's the whole list — about 22 env vars total, 3 of which are truly required.
+
+Proposed plan — pick what you want
+I'd build this in four optional pieces. They're independent; you can take any combo:
+
+📋 Piece 1 — Setup essentials (~30 min)
+.env.example with every var, marked required/optional, with comments on where to grab each key.
+A clean human-readable README.md: clone → install Python deps → set env → start → log in.
+requirements.txt (auto-generated from pyproject for clients who don't use uv).
+.gitignore audit so no client secrets sneak into a repo.
+🩺 Piece 2 — Setup doctor script (~30 min)
+A scripts/preflight.py you can run on any new client install:
+
+$ python scripts/preflight.py
+✅ DATABASE_URL set and reachable (postgres 16.4)
+✅ Tables created (82/82)
+✅ Admin password customized
+⚠  STRIPE_SECRET_KEY not set — store/checkout features disabled
+⚠  RESEND_API_KEY not set — outbound email disabled
+❌ ADMIN_EMAIL not set — admin alerts will go nowhere
+
+Same script with --init flag walks through interactive setup of business name, primary theme color, and admin user.
+
+🪄 Piece 3 — First-run web wizard (~2 hrs)
+When the app boots for the first time on a new install (detected by "default business name + no admin user record"), the public site redirects to /setup for a 4-step wizard:
+
+Set admin password (if still the default).
+Business name, tagline, contact email/phone.
+Pick a starting theme.
+Optionally paste API keys for Stripe / Resend / Twilio (saves them as encrypted env vars or to .env).
+After completing, marks itself done and redirects to /admin. Never shows again.
+
+🚀 Piece 4 — Deploy anywhere (~1 hr)
+Dockerfile (Python 3.11 slim, gunicorn, libreoffice for PPT export, exposes 5000).
+docker-compose.yml (app + Postgres + persistent volume → one-command local spin-up).
+DEPLOY.md covering:
+Render.com (closest to "click and go" — supports Postgres add-on)
+Fly.io (cheap, good for international clients)
+Railway (similar to Render)
+Plain VPS / DigitalOcean droplet (systemd + nginx reverse proxy + Let's Encrypt)
+Audit & replace Replit-isms: PUBLIC_BASE_URL instead of REPLIT_DOMAINS for CORS, FORCE_SECURE_COOKIES=1 instead of REPLIT_DEPLOYMENT, etc.
+Drop the stripe-replit-sync Node dependency (it's Replit-specific convenience, not used at runtime).
+My recommendation
+Start with Piece 1 + Piece 4 together (~90 min total). That gets you:
+
+A documented onboarding path so any developer can spin up a client install,
+And the ability to deploy anywhere (Docker = portable to literally any cloud).
+Then add Piece 2 if you want a doctor command for support, and Piece 3 if you want clients themselves (not just developers) to do the initial setup through a friendly UI.
+
+Which combo do you want me to build first? Tell me 1+4, all four, just 1, or any other combination — and I'll get started.
