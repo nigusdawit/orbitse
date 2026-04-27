@@ -2401,6 +2401,16 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_scrape_jobs_schedule "
                 "ON scrape_jobs (schedule_id, requested_at DESC)"
             )
+            # Live progress timeline. Each entry is
+            #   {"ts": iso8601, "level": "info|warn|error", "message": str,
+            #    "meta": {...optional structured detail...}}
+            # The runner appends entries as it moves through fetch / clean /
+            # render-fallback / AI extraction so the admin sees what the
+            # scraper is actually doing instead of a bare 'running' status.
+            cur.execute(
+                "ALTER TABLE scrape_jobs ADD COLUMN IF NOT EXISTS "
+                "progress_steps JSONB NOT NULL DEFAULT '[]'::jsonb"
+            )
             # Auto-pause guardrail: when a schedule fails N times in a row
             # (e.g. dead site, missing API key, page shape changed) we stop
             # firing it instead of burning API budget and spamming alerts.
@@ -27435,7 +27445,51 @@ def _scrape_serialize_job(row: dict) -> dict:
         v = out.get(k)
         if isinstance(v, datetime):
             out[k] = v.isoformat()
+    # Normalize progress_steps so callers can rely on it always being a
+    # list (older rows pre-migration would otherwise show as None).
+    if not isinstance(out.get("progress_steps"), list):
+        out["progress_steps"] = []
     return out
+
+
+def _scrape_log_step(job_id: int, message: str, *,
+                     level: str = "info", meta=None) -> None:
+    """Append one entry to the job's progress timeline.
+
+    The runner calls this at each meaningful checkpoint (fetch, clean,
+    render-fallback, AI extract, finish) so the admin sees what the
+    scraper is actually doing rather than a bare 'running' status.
+
+    Best-effort by design: a log failure must never abort the worker
+    thread, so we swallow exceptions and just print to stderr.
+    """
+    try:
+        entry = {
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "level": level if level in ("info", "warn", "error") else "info",
+            "message": str(message)[:500],
+        }
+        if meta is not None:
+            try:
+                # Round-trip through json so non-serializable bits get
+                # surfaced here (in the swallowed except) instead of
+                # poisoning the column write below.
+                json.dumps(meta)
+                entry["meta"] = meta
+            except Exception:
+                entry["meta"] = {"_unserializable": str(type(meta).__name__)}
+        execute_db(
+            "UPDATE scrape_jobs "
+            "SET progress_steps = COALESCE(progress_steps, '[]'::jsonb) || %s::jsonb "
+            "WHERE id = %s",
+            (json.dumps([entry]), job_id),
+        )
+    except Exception as e:  # noqa: BLE001
+        try:
+            print(f"[scraper] progress log failed for job {job_id}: {e}",
+                  file=sys.stderr)
+        except Exception:
+            pass
 
 
 def _scrape_run_job(job_id: int) -> None:
@@ -27450,6 +27504,7 @@ def _scrape_run_job(job_id: int) -> None:
             "UPDATE scrape_jobs SET status = 'running' WHERE id = %s",
             (job_id,),
         )
+        _scrape_log_step(job_id, "Worker picked up job; starting run.")
         job = query_db(
             "SELECT * FROM scrape_jobs WHERE id = %s",
             (job_id,), fetchone=True,
@@ -27460,6 +27515,11 @@ def _scrape_run_job(job_id: int) -> None:
         input_mode = job.get("input_mode") or "url"
         target_shape = job.get("target_shape") or "free_form"
         custom_schema = job.get("custom_schema") if target_shape == "custom" else None
+        _scrape_log_step(
+            job_id,
+            f"Mode='{input_mode}', target shape='{target_shape}'.",
+            meta={"input_mode": input_mode, "target_shape": target_shape},
+        )
 
         if input_mode == "url":
             url = (job.get("url") or "").strip()
@@ -27467,17 +27527,43 @@ def _scrape_run_job(job_id: int) -> None:
                 _scrape_finish_job(job_id, error="Missing URL.")
                 return
             disallowed = _scrape_get_disallowed_domains()
+            _scrape_log_step(
+                job_id, f"Fetching URL: {url}",
+                meta={"url": url, "disallowed_count": len(disallowed)},
+            )
             fetched = scraper.fetch_url(url, disallowed_domains=disallowed)
             if not fetched.get("ok"):
-                _scrape_finish_job(job_id, error=fetched.get("error", "Fetch failed."))
+                err = fetched.get("error", "Fetch failed.")
+                _scrape_log_step(job_id, f"Fetch failed: {err}", level="error")
+                _scrape_finish_job(job_id, error=err)
                 return
+            _scrape_log_step(
+                job_id,
+                f"Fetched {len(fetched.get('body') or '')} bytes "
+                f"({fetched.get('content_type', '')}).",
+                meta={
+                    "final_url": fetched.get("final_url", url),
+                    "content_type": fetched.get("content_type", ""),
+                    "body_bytes": len(fetched.get("body") or ""),
+                },
+            )
             cleaned = scraper.clean_html(fetched["body"], fetched.get("content_type", ""))
+            _scrape_log_step(
+                job_id,
+                f"Cleaned page text: {len(cleaned)} chars of readable content.",
+                meta={"cleaned_chars": len(cleaned)},
+            )
             note = ""
             rendered_used = False
             # Auto-fallback: if the cleaned body looks like a JS-only SPA shell
             # (and the admin has opted in to rendered fetch), retry through the
             # headless-browser provider so SPA sites become scrapeable too.
             if (not cleaned or scraper.looks_js_only(cleaned)) and _scrape_get_render_enabled():
+                _scrape_log_step(
+                    job_id,
+                    "Page looks JavaScript-only — retrying through headless browser…",
+                    level="warn",
+                )
                 rendered = scraper.fetch_url_rendered(url, disallowed_domains=disallowed)
                 if rendered.get("ok"):
                     fetched = rendered
@@ -27485,9 +27571,17 @@ def _scrape_run_job(job_id: int) -> None:
                         rendered["body"], rendered.get("content_type", ""),
                     )
                     rendered_used = True
+                    provider = rendered.get("render_provider", "headless")
                     note = (
-                        f"Used rendered fetch ({rendered.get('render_provider', 'headless')}) "
+                        f"Used rendered fetch ({provider}) "
                         "because the plain page looked JavaScript-only."
+                    )
+                    _scrape_log_step(
+                        job_id,
+                        f"Rendered fetch via '{provider}' succeeded — "
+                        f"{len(cleaned)} chars after cleaning.",
+                        meta={"render_provider": provider,
+                              "cleaned_chars": len(cleaned)},
                     )
                 else:
                     # Render attempt failed — keep going with the original
@@ -27497,7 +27591,12 @@ def _scrape_run_job(job_id: int) -> None:
                         "Tried rendered fetch but it failed: "
                         + str(rendered.get("error") or "unknown error")
                     )
+                    _scrape_log_step(job_id, note, level="warn")
             if not cleaned:
+                _scrape_log_step(
+                    job_id, "No readable text after cleaning — aborting.",
+                    level="error",
+                )
                 _scrape_finish_job(
                     job_id,
                     error="Page had no readable text after cleaning.",
@@ -27515,6 +27614,12 @@ def _scrape_run_job(job_id: int) -> None:
                     "fetch' in Web Scraper settings to retry through a "
                     "headless browser."
                 )
+                _scrape_log_step(job_id, note, level="warn")
+            _scrape_log_step(
+                job_id,
+                f"Sending content to AI for extraction "
+                f"(shape='{target_shape}', {len(cleaned)} chars)…",
+            )
             try:
                 record = scraper.extract_with_ai(
                     openai_client,
@@ -27525,8 +27630,16 @@ def _scrape_run_job(job_id: int) -> None:
                     source_label=fetched.get("final_url", url),
                 )
             except Exception as e:  # noqa: BLE001
+                _scrape_log_step(
+                    job_id, f"AI extraction failed: {e}", level="error",
+                )
                 _scrape_finish_job(job_id, error=f"AI extraction failed: {e}")
                 return
+            _scrape_log_step(
+                job_id,
+                f"AI extraction returned {len(record or {})} fields.",
+                meta={"field_count": len(record or {})},
+            )
             payload = {
                 "record": record,
                 "source": {
@@ -27547,12 +27660,34 @@ def _scrape_run_job(job_id: int) -> None:
             if not objective:
                 _scrape_finish_job(job_id, error="Missing objective.")
                 return
+            _scrape_log_step(
+                job_id,
+                f"Researching objective via web search: {objective[:140]}",
+                meta={"objective_chars": len(objective)},
+            )
             research = scraper.research_objective(
                 openai_client, openai_direct_client, objective,
             )
             if not research.get("ok"):
-                _scrape_finish_job(job_id, error=research.get("error", "Research failed."))
+                err = research.get("error", "Research failed.")
+                _scrape_log_step(job_id, f"Research failed: {err}", level="error")
+                _scrape_finish_job(job_id, error=err)
                 return
+            _scrape_log_step(
+                job_id,
+                f"Research gathered {len(research.get('sources') or [])} sources, "
+                f"{len(research.get('text') or '')} chars of context.",
+                meta={
+                    "web_used": bool(research.get("web_used")),
+                    "source_count": len(research.get("sources") or []),
+                    "context_chars": len(research.get("text") or ""),
+                },
+            )
+            _scrape_log_step(
+                job_id,
+                f"Sending research context to AI for extraction "
+                f"(shape='{target_shape}')…",
+            )
             try:
                 record = scraper.extract_with_ai(
                     openai_client,
@@ -27563,8 +27698,16 @@ def _scrape_run_job(job_id: int) -> None:
                     source_label=objective,
                 )
             except Exception as e:  # noqa: BLE001
+                _scrape_log_step(
+                    job_id, f"AI extraction failed: {e}", level="error",
+                )
                 _scrape_finish_job(job_id, error=f"AI extraction failed: {e}")
                 return
+            _scrape_log_step(
+                job_id,
+                f"AI extraction returned {len(record or {})} fields.",
+                meta={"field_count": len(record or {})},
+            )
             payload = {
                 "record": record,
                 "source": {
@@ -27581,6 +27724,10 @@ def _scrape_run_job(job_id: int) -> None:
 
         _scrape_finish_job(job_id, error=f"Unknown input mode '{input_mode}'.")
     except Exception as e:  # noqa: BLE001 — never let the worker thread die silently
+        try:
+            _scrape_log_step(job_id, f"Internal error: {e}", level="error")
+        except Exception:
+            pass
         try:
             _scrape_finish_job(job_id, error=f"Internal error: {e}")
         except Exception:
@@ -27605,6 +27752,9 @@ def _scrape_finish_job(job_id: int, result=None, error: str = "") -> None:
                WHERE id = %s""",
             (error[:1000], job_id),
         )
+        # Final marker on the timeline so the admin sees an explicit
+        # "stopped here" entry rather than the trail just going silent.
+        _scrape_log_step(job_id, f"Job marked failed: {error}", level="error")
         # On schedule failures we still update last_run_* so the UI shows
         # the most recent attempt even though it produced no data.
         _scrape_after_schedule_run(job_id, success=False, error=error)
@@ -27651,6 +27801,17 @@ def _scrape_finish_job(job_id: int, result=None, error: str = "") -> None:
            WHERE id = %s""",
         (json.dumps(result or {}), signature, changed, job_id),
     )
+    # Final success marker so the timeline closes with an explicit "done"
+    # entry (and surfaces the change-detection result for scheduled runs).
+    if schedule_id:
+        _scrape_log_step(
+            job_id,
+            "Job complete." + (" Result changed since last run."
+                               if changed else " No change vs. last run."),
+            meta={"changed_from_previous": bool(changed)},
+        )
+    else:
+        _scrape_log_step(job_id, "Job complete.")
 
     if schedule_id:
         _scrape_after_schedule_run(job_id, success=True, changed=changed)
@@ -28103,7 +28264,8 @@ def admin_rerun_scrape_job(job_id):
     row = execute_db(
         """UPDATE scrape_jobs
            SET status = 'queued', error = '',
-               result_json = NULL, completed_at = NULL
+               result_json = NULL, completed_at = NULL,
+               progress_steps = '[]'::jsonb
            WHERE id = %s AND status NOT IN ('queued', 'running')
            RETURNING *""",
         (job_id,),

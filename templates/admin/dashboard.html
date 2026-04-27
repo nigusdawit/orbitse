@@ -15230,6 +15230,80 @@ TO CUSTOMIZE THIS DASHBOARD:
       }
     }
 
+    function renderScrapeProgress(job) {
+      // Render the live worker timeline (one entry per meaningful step the
+      // background worker takes: fetch / clean / render-fallback / AI
+      // extract / finish). Updates every 2s while polling so the admin
+      // sees what the scraper is actually doing in real time.
+      const steps = Array.isArray(job && job.progress_steps) ? job.progress_steps : [];
+      if (!steps.length) {
+        if (job && (job.status === 'queued' || job.status === 'running')) {
+          return `<div style="margin-top:0.5rem; color: var(--admin-text-muted); font-size:0.8125rem;" data-testid="scrape-progress-empty">Worker hasn't reported any progress yet…</div>`;
+        }
+        return '';
+      }
+      const colorByLevel = {
+        info:  'var(--admin-text)',
+        warn:  '#b45309',
+        error: '#dc3545',
+      };
+      const dotByLevel = {
+        info:  '#0d6efd',
+        warn:  '#f59e0b',
+        error: '#dc3545',
+      };
+      const fmtTs = ts => {
+        if (!ts) return '';
+        try {
+          const d = new Date(ts);
+          if (isNaN(d.getTime())) return '';
+          // HH:MM:SS local time — full date is on hover via title=.
+          return d.toLocaleTimeString();
+        } catch (_) { return ''; }
+      };
+      // Show newest at the top so the most recent activity is always visible
+      // at a glance without scrolling — matches the "live tail" expectation.
+      const ordered = steps.slice().reverse();
+      const items = ordered.map((s, idx) => {
+        const lvl = (s && s.level) || 'info';
+        const dot = dotByLevel[lvl] || dotByLevel.info;
+        const txtColor = colorByLevel[lvl] || colorByLevel.info;
+        const ts = fmtTs(s && s.ts);
+        const tsTitle = (s && s.ts) ? escapeHtml(s.ts) : '';
+        const msg = (s && s.message) ? String(s.message) : '';
+        // Newest entry gets a subtle pulse so the eye is drawn there while
+        // polling. Only do this while the job is still in flight.
+        const isNewest = (idx === 0)
+          && (job.status === 'queued' || job.status === 'running');
+        const pulseStyle = isNewest
+          ? 'box-shadow: 0 0 0 0 rgba(13,110,253,0.6); animation: scrape-step-pulse 1.6s ease-out infinite;'
+          : '';
+        return `
+          <li style="display:flex; gap:0.5rem; padding:0.25rem 0; border-bottom: 1px dashed var(--admin-border);" data-testid="scrape-progress-step-${idx}">
+            <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${dot}; margin-top:6px; flex-shrink:0; ${pulseStyle}"></span>
+            <div style="flex:1; min-width:0;">
+              <div style="color:${txtColor}; font-size:0.8125rem; word-break:break-word;">${escapeHtml(msg)}</div>
+              ${ts ? `<div style="color: var(--admin-text-muted); font-size:0.6875rem;" title="${tsTitle}">${escapeHtml(ts)}</div>` : ''}
+            </div>
+          </li>`;
+      }).join('');
+      const live = (job.status === 'queued' || job.status === 'running')
+        ? ' <span style="color: var(--admin-text-muted); font-weight:400;">(live)</span>'
+        : '';
+      return `
+        <style>
+          @keyframes scrape-step-pulse {
+            0%   { box-shadow: 0 0 0 0 rgba(13,110,253,0.6); }
+            70%  { box-shadow: 0 0 0 6px rgba(13,110,253,0); }
+            100% { box-shadow: 0 0 0 0 rgba(13,110,253,0); }
+          }
+        </style>
+        <div style="margin-top:0.75rem; border:1px solid var(--admin-border); border-radius:4px; padding:0.5rem 0.75rem; background:var(--admin-surface);" data-testid="scrape-progress-${job.id}">
+          <div style="font-weight:600; font-size:0.8125rem; margin-bottom:0.25rem;">Worker progress${live} <span style="color: var(--admin-text-muted); font-weight:400;">(${steps.length} step${steps.length === 1 ? '' : 's'})</span></div>
+          <ul style="list-style:none; padding:0; margin:0; max-height:240px; overflow-y:auto;">${items}</ul>
+        </div>`;
+    }
+
     function renderScrapeJobDetail(job) {
       // Cache the latest job snapshot so the side-by-side push editor can
       // read the AI's extracted record without re-fetching.
@@ -15257,6 +15331,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       if (job.error) {
         statusHtml += `<div style="margin-top:0.5rem; color:#c33;">${escapeHtml(job.error)}</div>`;
       }
+      statusHtml += renderScrapeProgress(job);
       document.getElementById('scraper-current-status').innerHTML = statusHtml;
 
       const resultEl = document.getElementById('scraper-current-result');
