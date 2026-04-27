@@ -1451,6 +1451,14 @@ def init_db():
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_glass_bg TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_font_serif TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_font_sans TEXT NOT NULL DEFAULT ''",
+                # Universal master visual tokens — exposed in admin Themes
+                # editor so the loading screen, glass surfaces, corner radii
+                # and motion timing all flex with the active theme.
+                # NUMERIC keeps half-step values (0.85 alpha, 1.25rem radius).
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_loading_bg_alpha NUMERIC NOT NULL DEFAULT 0.85",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_glass_blur_px INTEGER NOT NULL DEFAULT 24",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_radius_rem NUMERIC NOT NULL DEFAULT 1.0",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_transition_sec NUMERIC NOT NULL DEFAULT 0.6",
                 "ALTER TABLE form_submissions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
                 "ALTER TABLE form_submissions ADD COLUMN IF NOT EXISTS confirmation_number VARCHAR(20) DEFAULT ''",
                 "ALTER TABLE form_fields ADD COLUMN IF NOT EXISTS step INTEGER NOT NULL DEFAULT 1",
@@ -4253,6 +4261,97 @@ def _build_json_ld():
 # PUBLIC ROUTES — Serve the static HTML site
 # =============================================================================
 
+def _hex_to_rgb_triple(hex_color, fallback="6 11 20"):
+    """'#060b14' -> '6 11 20' (space-separated rgb for use inside rgba()).
+    Returns the fallback (default theme bg) on any parse failure."""
+    try:
+        s = (hex_color or "").strip().lstrip("#")
+        if len(s) == 3:
+            s = "".join(c * 2 for c in s)
+        if len(s) != 6:
+            return fallback
+        return f"{int(s[0:2], 16)} {int(s[2:4], 16)} {int(s[4:6], 16)}"
+    except Exception:
+        return fallback
+
+
+def _build_theme_vars_style():
+    """Return a `<style>:root{...}</style>` block carrying every theme-driven
+    CSS custom property, built from the resolved active theme (legacy
+    columns + active site_themes overlay). Injected into the served HTML
+    BEFORE first paint so the loading screen, glass surfaces, corner radii
+    and motion timing all match the admin-configured theme on frame 1
+    instead of flashing the stylesheet defaults."""
+    try:
+        t = _resolve_active_theme() or {}
+        bg          = t.get("theme_bg") or "#060b14"
+        section1    = t.get("theme_section1") or "#0a0f1a"
+        section2    = t.get("theme_section2") or "#060b14"
+        accent      = t.get("theme_accent") or "#c9a96e"
+        text_color  = t.get("theme_text") or "#e4e4e7"
+        glass_bg    = t.get("theme_glass_bg") or "rgba(255,255,255,0.03)"
+        glass_brd   = t.get("theme_glass_border") or "rgba(255,255,255,0.08)"
+        font_serif  = t.get("theme_font_serif") or "Playfair Display"
+        font_sans   = t.get("theme_font_sans") or "DM Sans"
+        # Numeric tokens come from _resolve_active_theme too (it already
+        # SELECTs them and applies the site_themes palette_json overlay
+        # when an active theme is set), so we read them straight from `t`
+        # and only fall back to defaults for None — 0 is a legitimate
+        # value (e.g. radius_rem=0 for sharp corners).
+        def _f(k, d):
+            v = t.get(k)
+            try: return float(v) if v is not None else d
+            except (TypeError, ValueError): return d
+        def _i(k, d):
+            v = t.get(k)
+            try: return int(v) if v is not None else d
+            except (TypeError, ValueError): return d
+        loading_a   = _f("theme_loading_bg_alpha", 0.85)
+        glass_blur  = _i("theme_glass_blur_px",    24)
+        radius_rem  = _f("theme_radius_rem",       1.0)
+        trans_sec   = _f("theme_transition_sec",   0.6)
+        bg_rgb      = _hex_to_rgb_triple(bg)
+        return (
+            "<style id=\"theme-vars-injected\">:root{"
+            f"--color-bg:{bg};"
+            f"--color-bg-rgb:{bg_rgb};"
+            f"--color-section-1:{section1};"
+            f"--color-section-2:{section2};"
+            f"--color-accent:{accent};"
+            f"--color-text:{text_color};"
+            f"--glass-bg:{glass_bg};"
+            f"--glass-border:{glass_brd};"
+            f"--glass-blur:{glass_blur}px;"
+            f"--radius:{radius_rem}rem;"
+            f"--loading-bg-alpha:{loading_a};"
+            f"--transition-medium:{trans_sec}s;"
+            f"--font-serif:'{font_serif}',Georgia,serif;"
+            f"--font-sans:'{font_sans}',-apple-system,BlinkMacSystemFont,sans-serif;"
+            "}</style>"
+        )
+    except Exception as e:
+        print(f"[serve_index] theme vars injection failed: {e}; serving without")
+        return ""
+
+
+def _build_loading_initials_and_name():
+    """Return (initials, site_name) so the loading-screen badge + caption
+    render with the real values on first paint instead of flashing CS /
+    Loading. Falls back to the historic placeholders on any error."""
+    try:
+        s = query_db(
+            "SELECT logo_initials, site_name FROM site_settings WHERE id = 1",
+            fetchone=True,
+        ) or {}
+        initials = (s.get("logo_initials") or "CS").strip() or "CS"
+        name     = (s.get("site_name") or "Loading").strip() or "Loading"
+        # html-escape to prevent breakout via admin-set values.
+        from html import escape as _h
+        return _h(initials), _h(name)
+    except Exception:
+        return "CS", "Loading"
+
+
 @app.route("/")
 def serve_index():
     """
@@ -4298,6 +4397,51 @@ def serve_index():
         # Inject JSON-LD structured data (replaces the <!-- JSON_LD_INJECT --> placeholder before </head>)
         json_ld_html = _build_json_ld()
         html_content = html_content.replace("<!-- JSON_LD_INJECT -->", json_ld_html)
+
+        # Inject :root CSS vars from the active theme so the loading screen
+        # and every other themed surface paints the right colors on the
+        # very first frame instead of flashing the stylesheet defaults.
+        # The disk-template path uses the explicit placeholder; any
+        # admin-published design row stored in site_designs predates this
+        # placeholder, so we fall back to inserting the style block right
+        # before </head> (where it still wins over the linked stylesheet).
+        theme_style = _build_theme_vars_style()
+        if theme_style:
+            if "<!-- THEME_VARS_INJECT -->" in html_content:
+                html_content = html_content.replace(
+                    "<!-- THEME_VARS_INJECT -->", theme_style
+                )
+            else:
+                html_content = html_content.replace(
+                    "</head>", theme_style + "\n</head>", 1
+                )
+
+        # Inject loading-screen initials + site name so the boot overlay
+        # never shows the literal placeholders "CS" / "Loading" before the
+        # API responds. Same disk/db dual-path: prefer the placeholder,
+        # otherwise rewrite the badge text in place via a tight regex
+        # scoped to the loading badge / loading site-name elements.
+        initials, site_name = _build_loading_initials_and_name()
+        if "<!-- LOADING_INITIALS_INJECT -->" in html_content:
+            html_content = html_content.replace(
+                "<!-- LOADING_INITIALS_INJECT -->", initials
+            )
+        else:
+            html_content = re.sub(
+                r'(<[^>]+id="loading-logo-badge"[^>]*>)[^<]*(</)',
+                lambda m: m.group(1) + initials + m.group(2),
+                html_content, count=1,
+            )
+        if "<!-- LOADING_NAME_INJECT -->" in html_content:
+            html_content = html_content.replace(
+                "<!-- LOADING_NAME_INJECT -->", site_name
+            )
+        else:
+            html_content = re.sub(
+                r'(<[^>]+id="loading-site-name"[^>]*>)[^<]*(</)',
+                lambda m: m.group(1) + site_name + m.group(2),
+                html_content, count=1,
+            )
 
         return Response(html_content, mimetype="text/html")
     except Exception:
@@ -18728,10 +18872,23 @@ def _resolve_active_theme():
     settings = query_db("""
         SELECT theme_bg, theme_section1, theme_section2, theme_accent,
                theme_text, theme_glass_border, theme_glass_bg,
-               theme_font_serif, theme_font_sans, active_theme_id
+               theme_font_serif, theme_font_sans,
+               theme_loading_bg_alpha, theme_glass_blur_px,
+               theme_radius_rem, theme_transition_sec,
+               active_theme_id
         FROM site_settings WHERE id = 1
     """, fetchone=True) or {}
     active_id = settings.pop("active_theme_id", None)
+    # NUMERIC columns come back as Decimal — coerce to float so JSON
+    # serialization works and the frontend can do math on them directly.
+    for k in ("theme_loading_bg_alpha", "theme_radius_rem",
+              "theme_transition_sec"):
+        if settings.get(k) is not None:
+            try: settings[k] = float(settings[k])
+            except Exception: pass
+    if settings.get("theme_glass_blur_px") is not None:
+        try: settings["theme_glass_blur_px"] = int(settings["theme_glass_blur_px"])
+        except Exception: pass
     if active_id:
         active = query_db(
             "SELECT palette_json, fonts_json FROM site_themes WHERE id=%s",
@@ -18757,6 +18914,22 @@ def _resolve_active_theme():
                 # blank/None means "fall back to legacy column".
                 if v is not None and v != "":
                     settings[k] = v
+            # Numeric visual-token overlays: 0 is a legitimate override
+            # (e.g. radius=0 for a flat brutalist look), so we accept any
+            # non-None numeric value and skip blanks.
+            num_overlay = {
+                "theme_loading_bg_alpha": palette.get("loading_bg_alpha"),
+                "theme_glass_blur_px":    palette.get("glass_blur_px"),
+                "theme_radius_rem":       palette.get("radius_rem"),
+                "theme_transition_sec":   palette.get("transition_sec"),
+            }
+            for k, v in num_overlay.items():
+                if v is None or v == "":
+                    continue
+                try:
+                    settings[k] = int(v) if k == "theme_glass_blur_px" else float(v)
+                except (TypeError, ValueError):
+                    continue
     return settings
 
 
@@ -18780,13 +18953,31 @@ def admin_get_theme():
 @app.route("/admin/api/theme", methods=["PUT"])
 @admin_required
 def admin_update_theme():
-    """PUT /admin/api/theme — Save theme color/font overrides."""
-    data = request.get_json()
+    """PUT /admin/api/theme — Save theme color/font overrides plus the
+    universal visual tokens (loading-screen tint, glass blur, corner
+    radius, motion speed). Numeric fields are clamped to safe ranges so
+    a stray slider value can't break the public site."""
+    data = request.get_json() or {}
+
+    def _num(key, default, lo, hi, cast=float):
+        try:
+            v = cast(data.get(key, default))
+        except (TypeError, ValueError):
+            v = default
+        return max(lo, min(hi, v))
+
+    loading_alpha = _num("theme_loading_bg_alpha", 0.85, 0.0, 1.0, float)
+    glass_blur    = _num("theme_glass_blur_px",    24,   0,   80,  int)
+    radius_rem    = _num("theme_radius_rem",       1.0,  0.0, 3.0, float)
+    transition_s  = _num("theme_transition_sec",   0.6,  0.0, 3.0, float)
+
     result = execute_db(
         """UPDATE site_settings SET
              theme_bg = %s, theme_section1 = %s, theme_section2 = %s,
              theme_accent = %s, theme_text = %s, theme_glass_border = %s,
              theme_glass_bg = %s, theme_font_serif = %s, theme_font_sans = %s,
+             theme_loading_bg_alpha = %s, theme_glass_blur_px = %s,
+             theme_radius_rem = %s, theme_transition_sec = %s,
              updated_at = NOW()
            WHERE id = 1 RETURNING *""",
         (
@@ -18798,7 +18989,8 @@ def admin_update_theme():
             data.get("theme_glass_border", ""),
             data.get("theme_glass_bg", ""),
             data.get("theme_font_serif", ""),
-            data.get("theme_font_sans", "")
+            data.get("theme_font_sans", ""),
+            loading_alpha, glass_blur, radius_rem, transition_s,
         )
     )
     return jsonify(result)

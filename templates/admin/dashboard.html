@@ -5059,6 +5059,61 @@ TO CUSTOMIZE THIS DASHBOARD:
         </div>
       </div>
 
+      <!-- ============================================================
+           UNIVERSAL VISUAL TOKENS
+           Four master knobs that flow through every themed surface
+           (loading screen, glass panels, corner radius, motion). Each
+           slider live-previews via updateThemePreview() and persists in
+           site_settings.theme_* columns through saveTheme().
+           ============================================================ -->
+      <h3 style="margin-top:2rem;margin-bottom:0.25rem;">Visual Tokens</h3>
+      <p style="font-size:0.8rem;color:var(--admin-text-muted);margin-top:0;margin-bottom:1rem;">
+        Universal knobs that affect the loading screen, glass surfaces, corner
+        radius, and motion timing across the whole public site.
+      </p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="theme-loading-bg-alpha">
+            Loading-screen tint opacity
+            <span id="theme-loading-bg-alpha-val" style="float:right;color:var(--admin-text-muted);">0.85</span>
+          </label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">How opaque the boot overlay sits over the page background</span>
+          <input type="range" id="theme-loading-bg-alpha" min="0" max="1" step="0.05" value="0.85"
+                 oninput="document.getElementById('theme-loading-bg-alpha-val').textContent=parseFloat(this.value).toFixed(2);updateThemePreview()"
+                 data-testid="input-theme-loading-bg-alpha">
+        </div>
+        <div class="form-group">
+          <label for="theme-glass-blur-px">
+            Glass blur
+            <span id="theme-glass-blur-px-val" style="float:right;color:var(--admin-text-muted);">24px</span>
+          </label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Backdrop blur strength on every glass surface</span>
+          <input type="range" id="theme-glass-blur-px" min="0" max="40" step="1" value="24"
+                 oninput="document.getElementById('theme-glass-blur-px-val').textContent=this.value+'px';updateThemePreview()"
+                 data-testid="input-theme-glass-blur-px">
+        </div>
+        <div class="form-group">
+          <label for="theme-radius-rem">
+            Corner radius
+            <span id="theme-radius-rem-val" style="float:right;color:var(--admin-text-muted);">1.00rem</span>
+          </label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Roundness of cards, panels and the loading badge (0 for sharp corners)</span>
+          <input type="range" id="theme-radius-rem" min="0" max="2" step="0.05" value="1.0"
+                 oninput="document.getElementById('theme-radius-rem-val').textContent=parseFloat(this.value).toFixed(2)+'rem';updateThemePreview()"
+                 data-testid="input-theme-radius-rem">
+        </div>
+        <div class="form-group">
+          <label for="theme-transition-sec">
+            Motion speed
+            <span id="theme-transition-sec-val" style="float:right;color:var(--admin-text-muted);">0.60s</span>
+          </label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">How long medium fades and slides take (lower = snappier)</span>
+          <input type="range" id="theme-transition-sec" min="0.2" max="1.2" step="0.05" value="0.6"
+                 oninput="document.getElementById('theme-transition-sec-val').textContent=parseFloat(this.value).toFixed(2)+'s';updateThemePreview()"
+                 data-testid="input-theme-transition-sec">
+        </div>
+      </div>
+
       <div class="form-actions">
         <button class="btn btn-primary" onclick="saveTheme()" data-testid="button-save-theme">Save Theme</button>
       </div>
@@ -8994,6 +9049,35 @@ TO CUSTOMIZE THIS DASHBOARD:
       $('tp-btn').style.background = accent;
       $('tp-btn').style.color = bg;
       $('tp-link').style.color = accent;
+
+      // ----------------------------------------------------------------
+      // Universal visual tokens — push live values into :root so the
+      // admin can drag the sliders and see the loading screen / glass
+      // surfaces / corner radius / motion timing react across the whole
+      // tab without saving first.
+      // ----------------------------------------------------------------
+      const root = document.documentElement;
+      const loadingAlphaEl = $('theme-loading-bg-alpha');
+      const glassBlurEl    = $('theme-glass-blur-px');
+      const radiusRemEl    = $('theme-radius-rem');
+      const transitionEl   = $('theme-transition-sec');
+      if (loadingAlphaEl) root.style.setProperty('--loading-bg-alpha', loadingAlphaEl.value);
+      if (glassBlurEl)    root.style.setProperty('--glass-blur', glassBlurEl.value + 'px');
+      if (radiusRemEl)    root.style.setProperty('--radius', radiusRemEl.value + 'rem');
+      if (transitionEl)   root.style.setProperty('--transition-medium', transitionEl.value + 's');
+
+      // Derive --color-bg-rgb from the chosen bg hex so any rgba() that
+      // reads it (loading screen tint) re-tints in real time.
+      try {
+        const m = (bg || '').trim().replace('#', '');
+        const h = m.length === 3 ? m.split('').map(c => c + c).join('') : m;
+        if (/^[0-9a-fA-F]{6}$/.test(h)) {
+          const r = parseInt(h.slice(0, 2), 16);
+          const g = parseInt(h.slice(2, 4), 16);
+          const b = parseInt(h.slice(4, 6), 16);
+          root.style.setProperty('--color-bg-rgb', `${r} ${g} ${b}`);
+        }
+      } catch (_) { /* ignore parse errors */ }
     }
 
     async function loadTheme() {
@@ -9010,6 +9094,26 @@ TO CUSTOMIZE THIS DASHBOARD:
         });
         document.getElementById('theme-font-serif').value = data.theme_font_serif || '';
         document.getElementById('theme-font-sans').value = data.theme_font_sans || '';
+
+        // Universal visual tokens — pull saved values into the sliders
+        // and refresh their right-aligned numeric labels so the form
+        // reflects what's actually live on the public site.
+        const setSlider = (id, val, fmt) => {
+          const el = document.getElementById(id);
+          if (!el || val === undefined || val === null) return;
+          el.value = val;
+          const lbl = document.getElementById(id + '-val');
+          if (lbl) lbl.textContent = fmt(val);
+        };
+        setSlider('theme-loading-bg-alpha', data.theme_loading_bg_alpha,
+                  v => parseFloat(v).toFixed(2));
+        setSlider('theme-glass-blur-px', data.theme_glass_blur_px,
+                  v => v + 'px');
+        setSlider('theme-radius-rem', data.theme_radius_rem,
+                  v => parseFloat(v).toFixed(2) + 'rem');
+        setSlider('theme-transition-sec', data.theme_transition_sec,
+                  v => parseFloat(v).toFixed(2) + 's');
+
         updateThemePreview();
       } catch (err) {
         showToast('Failed to load theme', 'error');
@@ -9026,7 +9130,12 @@ TO CUSTOMIZE THIS DASHBOARD:
         theme_glass_border: document.getElementById('theme-glass-border').value,
         theme_glass_bg: document.getElementById('theme-glass-bg').value,
         theme_font_serif: document.getElementById('theme-font-serif').value,
-        theme_font_sans: document.getElementById('theme-font-sans').value
+        theme_font_sans: document.getElementById('theme-font-sans').value,
+        // Universal visual tokens — backend clamps these to safe ranges.
+        theme_loading_bg_alpha: parseFloat(document.getElementById('theme-loading-bg-alpha').value),
+        theme_glass_blur_px:    parseInt(document.getElementById('theme-glass-blur-px').value, 10),
+        theme_radius_rem:       parseFloat(document.getElementById('theme-radius-rem').value),
+        theme_transition_sec:   parseFloat(document.getElementById('theme-transition-sec').value),
       };
 
       try {
@@ -9051,7 +9160,12 @@ TO CUSTOMIZE THIS DASHBOARD:
       const data = {
         theme_bg: '', theme_section1: '', theme_section2: '',
         theme_accent: '', theme_text: '', theme_glass_border: '',
-        theme_glass_bg: '', theme_font_serif: '', theme_font_sans: ''
+        theme_glass_bg: '', theme_font_serif: '', theme_font_sans: '',
+        // Snap visual tokens back to the stylesheet defaults.
+        theme_loading_bg_alpha: 0.85,
+        theme_glass_blur_px: 24,
+        theme_radius_rem: 1.0,
+        theme_transition_sec: 0.6,
       };
 
       try {

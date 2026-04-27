@@ -75,6 +75,11 @@ SECTIONS:
 
   /* Colors — can be overridden by the Theme Editor in admin */
   --color-bg: #060b14;
+  /* Space-separated RGB triple of --color-bg, used inside rgba() so the
+     loading screen and any other tinted overlay can re-tint themselves
+     when the admin swaps theme colors. Server injects this in the head
+     <style> block from theme_bg; script.js keeps it in sync on live edit. */
+  --color-bg-rgb: 6 11 20;
   --color-section-1: #0a0f1a;
   --color-section-2: #060b14;
   --color-accent: #c9a96e;
@@ -82,11 +87,20 @@ SECTIONS:
   --glass-border: rgba(255, 255, 255, 0.08);
   --glass-bg: rgba(255, 255, 255, 0.03);
 
+  /* Universal master visual tokens — one knob each, exposed in admin
+     Themes editor, used everywhere a glass / loading / radius / motion
+     value used to be hardcoded. */
+  --glass-blur: 24px;
+  --radius: 1rem;
+  --loading-bg-alpha: 0.85;
+
   /* Dark backgrounds used in landing page sections */
   --bg-section-1: var(--color-section-1);
   --bg-section-2: var(--color-section-2);
 
-  /* Transition timing — controls how fast animations feel */
+  /* Transition timing — controls how fast animations feel.
+     --transition-medium is the master; admin Themes editor exposes it
+     as a single "motion speed" slider. */
   --transition-fast: 0.3s;
   --transition-medium: 0.6s;
   --transition-slow: 0.8s;
@@ -123,8 +137,12 @@ SECTIONS:
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(6, 11, 20, 0.85);
-  transition: opacity 0.6s var(--ease-smooth), transform 0.6s var(--ease-smooth);
+  /* Tinted with the active theme background + admin-configurable alpha
+     so the boot overlay always matches the site palette instead of
+     flashing the default navy. */
+  background: rgba(var(--color-bg-rgb), var(--loading-bg-alpha));
+  transition: opacity var(--transition-medium) var(--ease-smooth),
+              transform var(--transition-medium) var(--ease-smooth);
 }
 
 .loading-screen.fade-out {
@@ -139,11 +157,11 @@ SECTIONS:
   align-items: center;
   gap: 1.25rem;
   padding: 2.5rem 3.5rem;
-  border-radius: 1rem;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
+  border-radius: var(--radius);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
 
@@ -185,7 +203,10 @@ SECTIONS:
   inset: 0;
   width: 50%;
   border-radius: 1px;
-  background: linear-gradient(90deg, transparent, rgba(201, 169, 110, 0.6), transparent);
+  /* Shimmer travels in the active accent color so it always matches the
+     site palette rather than locking to the original gold. */
+  background: linear-gradient(90deg, transparent, var(--color-accent), transparent);
+  opacity: 0.6;
   animation: loadingShimmer 1.5s ease-in-out infinite;
 }
 

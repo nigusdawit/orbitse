@@ -3882,6 +3882,38 @@ async function loadAndApplyTheme() {
       document.documentElement.style.setProperty('--font-sans', `'${theme.theme_font_sans}', -apple-system, sans-serif`);
       loadGoogleFont(theme.theme_font_sans);
     }
+
+    /* ----------------------------------------------------------------
+       Universal visual tokens — keep loading-screen tint, glass blur,
+       corner radius and motion timing in sync after the API responds.
+       Server already injected matching values into <style>:root before
+       first paint, so this is mostly belt-and-braces for live admin
+       saves; numbers can be 0 (legitimate), so we check != null/'' not
+       falsy.
+       ---------------------------------------------------------------- */
+    const root = document.documentElement;
+    const setNumVar = (key, prop, suffix) => {
+      const v = theme[key];
+      if (v === null || v === undefined || v === '') return;
+      root.style.setProperty(prop, suffix ? v + suffix : String(v));
+    };
+    setNumVar('theme_loading_bg_alpha', '--loading-bg-alpha', '');
+    setNumVar('theme_glass_blur_px',    '--glass-blur',       'px');
+    setNumVar('theme_radius_rem',       '--radius',           'rem');
+    setNumVar('theme_transition_sec',   '--transition-medium', 's');
+
+    /* Derive --color-bg-rgb from theme_bg so any rgba() that reads it
+       (loading-screen tint) re-tints when the bg color changes. */
+    if (theme.theme_bg) {
+      const m = String(theme.theme_bg).trim().replace('#', '');
+      const h = m.length === 3 ? m.split('').map(c => c + c).join('') : m;
+      if (/^[0-9a-fA-F]{6}$/.test(h)) {
+        const r = parseInt(h.slice(0, 2), 16);
+        const g = parseInt(h.slice(2, 4), 16);
+        const b = parseInt(h.slice(4, 6), 16);
+        root.style.setProperty('--color-bg-rgb', `${r} ${g} ${b}`);
+      }
+    }
   } catch (e) { /* silent */ }
 }
 

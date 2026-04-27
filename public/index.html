@@ -65,6 +65,13 @@ FONTS:
   <!-- Stylesheet -->
   <link rel="stylesheet" href="/styles.css">
 
+  <!-- THEME_VARS_INJECT — replaced server-side with a <style>:root{...}</style>
+       block carrying the active theme's color/font/blur/radius/motion values
+       BEFORE the loading screen paints, so first frame already matches the
+       admin-configured palette instead of flashing the CSS defaults. See
+       app.py serve_index() / _build_theme_vars_style(). -->
+  <!-- THEME_VARS_INJECT -->
+
   <!-- Lucide Icons — Lightweight icon library (used for arrows, calendar, etc.) -->
   <!-- TO CHANGE ICONS: Browse available icons at https://lucide.dev/icons -->
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
@@ -97,8 +104,12 @@ FONTS:
   -->
   <div id="loading-screen" class="loading-screen" data-testid="loading-screen">
     <div class="loading-panel" data-testid="loading-panel">
-      <div id="loading-logo-badge" class="loading-logo-badge" data-testid="loading-logo">CS</div>
-      <p id="loading-site-name" class="loading-site-name" data-testid="loading-site-name">Loading</p>
+      <!-- Initials + name are server-injected from site_settings.logo_initials
+           and site_settings.site_name so the boot screen never flashes the
+           placeholder "CS" / "Loading" before the API responds. The HTML
+           comment placeholders below are replaced inside serve_index(). -->
+      <div id="loading-logo-badge" class="loading-logo-badge" data-testid="loading-logo"><!-- LOADING_INITIALS_INJECT --></div>
+      <p id="loading-site-name" class="loading-site-name" data-testid="loading-site-name"><!-- LOADING_NAME_INJECT --></p>
       <div class="loading-shimmer" data-testid="loading-shimmer">
         <div class="loading-shimmer-bar"></div>
       </div>
