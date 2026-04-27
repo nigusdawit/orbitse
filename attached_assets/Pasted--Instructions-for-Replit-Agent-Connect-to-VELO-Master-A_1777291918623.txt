@@ -1,0 +1,578 @@
+# Instructions for Replit Agent: Connect to VELO Master AI
+
+You are building AI agents inside a Flask web application. These agents connect to a **master AI called VELO** running on a separate server. VELO is the brain — your agents are specialized workers that can request VELO's capabilities and receive commands from VELO.
+
+**Everything is dynamic.** No hardcoded command lists. Agents self-register their capabilities. VELO discovers what's available at runtime. When you add new features to this Flask app, the agent registers them and VELO automatically knows.
+
+## Architecture
+
+```
+VELO Master (FastAPI)
+  ├── /api/capabilities       ← discover what VELO can do (dynamic)
+  ├── /api/agent-gateway      ← your agents call this to use VELO's tools
+  ├── /api/agent-register     ← your agents register here on startup
+  ├── /api/agent-command      ← VELO calls YOUR endpoints to command your agents
+  └── /api/agents             ← list all connected agents + their capabilities
+
+Your Flask App
+  ├── /api/velo/command       ← VELO sends commands here (single dynamic endpoint)
+  └── /api/velo/status        ← VELO checks health + state
+```
+
+## Part 1: Build the VELO Integration Layer
+
+### 1A. VELO Client — call VELO's tools (your app → VELO)
+
+```python
+# velo_client.py
+
+import requests
+import os
+
+VELO_URL = os.environ.get("VELO_MASTER_URL", "http://localhost:8000")
+VELO_AGENT_KEY = os.environ.get("VELO_AGENT_KEY", "")
+
+
+class VeloClient:
+    """Dynamic client for Flask agents to call VELO master capabilities."""
+
+    def __init__(self):
+        self.base_url = VELO_URL
+        self.headers = {
+            "Authorization": f"Bearer {VELO_AGENT_KEY}",
+            "Content-Type": "application/json",
+        }
+        self._capabilities = None
+
+    def discover(self) -> list[dict]:
+        """Fetch VELO's current capabilities. Call on startup or when needed."""
+        resp = requests.get(f"{self.base_url}/api/capabilities", headers=self.headers, timeout=10)
+        resp.raise_for_status()
+        self._capabilities = resp.json().get("capabilities", [])
+        return self._capabilities
+
+    def use_tool(self, agent_id: str, tool_name: str, tool_input: dict) -> dict:
+        """
+        Use any VELO tool dynamically.
+        tool_name: from discover() — e.g. "langchain_agent", "deploy", "browser_control"
+        tool_input: matches the tool's input_schema from discover()
+        """
+        resp = requests.post(
+            f"{self.base_url}/api/agent-gateway",
+            headers=self.headers,
+            json={"agent_id": agent_id, "tool_name": tool_name, "tool_input": tool_input},
+            timeout=120,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def report_event(self, agent_id: str, event_type: str, data: dict) -> dict:
+        """Report an event to VELO. VELO may auto-handle (e.g. escalations get auto-researched)."""
+        resp = requests.post(
+            f"{self.base_url}/api/agent-gateway",
+            headers=self.headers,
+            json={
+                "agent_id": agent_id,
+                "tool_name": "report_event",
+                "tool_input": {"event_type": event_type, "data": data},
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+velo = VeloClient()
+```
+
+### 1B. Command Receiver — accept commands from VELO (VELO → your app)
+
+**One dynamic endpoint.** Commands are routed by name to handler functions. Adding a new capability = adding a handler function + registering it.
+
+```python
+# velo_endpoints.py
+
+from flask import Blueprint, request, jsonify
+import os
+
+velo_bp = Blueprint("velo", __name__, url_prefix="/api/velo")
+VELO_AGENT_KEY = os.environ.get("VELO_AGENT_KEY", "")
+
+# ---------------------------------------------------------------------------
+# Dynamic command registry — add handlers here, they auto-register with VELO
+# ---------------------------------------------------------------------------
+_command_handlers = {}
+
+
+def velo_command(name: str, description: str = "", params_schema: dict = None):
+    """Decorator to register a command handler."""
+    def decorator(func):
+        _command_handlers[name] = {
+            "handler": func,
+            "description": description,
+            "params_schema": params_schema or {},
+        }
+        return func
+    return decorator
+
+
+def get_registered_capabilities() -> list[dict]:
+    """Return all registered capabilities for VELO registration."""
+    return [
+        {"name": name, "description": info["description"], "params_schema": info["params_schema"]}
+        for name, info in _command_handlers.items()
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+def verify_velo_key():
+    auth = request.headers.get("Authorization", "")
+    if VELO_AGENT_KEY and (not auth.startswith("Bearer ") or auth[7:] != VELO_AGENT_KEY):
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Single dynamic command endpoint
+# ---------------------------------------------------------------------------
+@velo_bp.route("/command", methods=["POST"])
+def handle_command():
+    """VELO sends any command here. Routed by command name to registered handlers."""
+    if not verify_velo_key():
+        return jsonify({"error": "unauthorized"}), 401
+
+    data = request.json
+    command = data.get("command", "")
+    params = data.get("params", {})
+
+    handler_info = _command_handlers.get(command)
+    if not handler_info:
+        return jsonify({
+            "error": f"Unknown command: {command}",
+            "available_commands": list(_command_handlers.keys()),
+        }), 400
+
+    try:
+        result = handler_info["handler"](params)
+        return jsonify({"status": "ok", "result": result})
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@velo_bp.route("/status", methods=["GET"])
+def app_status():
+    if not verify_velo_key():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify({
+        "status": "ok",
+        "available_commands": list(_command_handlers.keys()),
+        # Add dynamic stats: user_count, active_sessions, error_count, uptime, etc.
+    })
+```
+
+### 1C. Register Handlers — add capabilities by just writing functions
+
+```python
+# velo_handlers.py — import this file to register all your handlers
+# Each @velo_command becomes a capability VELO can call
+
+from velo_endpoints import velo_command
+from your_app import db  # your database session
+
+
+# --- Admin AI capabilities ---
+
+@velo_command("get_users", description="Get users with optional filters", params_schema={
+    "type": "object",
+    "properties": {
+        "limit": {"type": "integer", "description": "Max users to return"},
+        "role": {"type": "string", "description": "Filter by role"},
+        "search": {"type": "string", "description": "Search by name or email"},
+    },
+})
+def get_users(params):
+    limit = params.get("limit", 50)
+    role = params.get("role")
+    search = params.get("search")
+    # ... query your database ...
+    return {"users": [...], "total": 123}
+
+
+@velo_command("get_analytics", description="Get site analytics for a time range", params_schema={
+    "type": "object",
+    "properties": {
+        "period": {"type": "string", "description": "today, week, month, year"},
+        "metrics": {"type": "array", "items": {"type": "string"}, "description": "Which metrics to include"},
+    },
+})
+def get_analytics(params):
+    period = params.get("period", "week")
+    # ... query your database ...
+    return {"signups": 45, "revenue": 2400, "active_users": 312}
+
+
+@velo_command("manage_user", description="Perform an action on a user account", params_schema={
+    "type": "object",
+    "properties": {
+        "user_id": {"type": "integer"},
+        "action": {"type": "string", "description": "ban, unban, make_admin, reset_password, delete"},
+    },
+    "required": ["user_id", "action"],
+})
+def manage_user(params):
+    user_id = params["user_id"]
+    action = params["action"]
+    # ... perform the action ...
+    return {"user_id": user_id, "action": action, "done": True}
+
+
+@velo_command("send_email", description="Send an email via Flask-Mail", params_schema={
+    "type": "object",
+    "properties": {
+        "to": {"type": "string"},
+        "subject": {"type": "string"},
+        "body": {"type": "string"},
+        "html": {"type": "boolean", "description": "Send as HTML"},
+    },
+    "required": ["to", "subject", "body"],
+})
+def send_email(params):
+    # ... send via Flask-Mail ...
+    return {"sent": True, "to": params["to"]}
+
+
+@velo_command("update_content", description="Create or update site content", params_schema={
+    "type": "object",
+    "properties": {
+        "type": {"type": "string", "description": "blog, page, faq, setting"},
+        "id": {"type": "integer", "description": "Content ID (omit for create)"},
+        "data": {"type": "object", "description": "Content data (title, body, etc.)"},
+    },
+    "required": ["type", "data"],
+})
+def update_content(params):
+    # ... create or update content ...
+    return {"type": params["type"], "updated": True}
+
+
+@velo_command("get_subscriptions", description="Get Stripe subscription data", params_schema={
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "description": "active, canceled, past_due, all"},
+        "limit": {"type": "integer"},
+    },
+})
+def get_subscriptions(params):
+    # ... query Stripe or your DB ...
+    return {"subscriptions": [...], "total_mrr": 4800}
+
+
+@velo_command("get_system_status", description="Get app health, DB status, error counts")
+def get_system_status(params):
+    return {"db": "ok", "queue": "ok", "errors_24h": 3, "uptime_hours": 720}
+
+
+# --- Feature Gating (Super Admin controls what's on/off per client plan) ---
+
+# Define plan presets — which features each plan tier gets
+PLAN_FEATURES = {
+    "free": {
+        "blog": True, "basic_analytics": True, "contact_form": True,
+        "email_campaigns": False, "advanced_analytics": False, "api_access": False,
+        "custom_domain": False, "white_label": False, "priority_support": False,
+        "visitor_ai": False, "admin_ai_full": False, "stripe_billing": False,
+    },
+    "pro": {
+        "blog": True, "basic_analytics": True, "contact_form": True,
+        "email_campaigns": True, "advanced_analytics": True, "api_access": True,
+        "custom_domain": True, "white_label": False, "priority_support": True,
+        "visitor_ai": True, "admin_ai_full": False, "stripe_billing": True,
+    },
+    "enterprise": {
+        "blog": True, "basic_analytics": True, "contact_form": True,
+        "email_campaigns": True, "advanced_analytics": True, "api_access": True,
+        "custom_domain": True, "white_label": True, "priority_support": True,
+        "visitor_ai": True, "admin_ai_full": True, "stripe_billing": True,
+    },
+}
+
+
+@velo_command("manage_features", description="Get, set, or bulk-set feature flags for this client. Controls what's enabled based on their plan.", params_schema={
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "description": "get (list all features + status), set (toggle one feature), bulk_set (set multiple), apply_plan (apply a plan preset)"},
+        "feature": {"type": "string", "description": "Feature key for 'set' action"},
+        "enabled": {"type": "boolean", "description": "Enable or disable for 'set' action"},
+        "features": {"type": "object", "description": "For 'bulk_set': {feature_key: bool, ...}"},
+        "plan": {"type": "string", "description": "For 'apply_plan': free, pro, or enterprise"},
+    },
+    "required": ["action"],
+})
+def manage_features(params):
+    action = params.get("action", "get")
+
+    if action == "get":
+        # Read current feature flags from DB or config
+        # Example: FeatureFlag.query.all() or app.config["FEATURES"]
+        # Return: {"features": {"blog": True, "email_campaigns": False, ...}, "current_plan": "pro"}
+        pass
+
+    elif action == "set":
+        feature = params.get("feature", "")
+        enabled = params.get("enabled", False)
+        if not feature:
+            return {"error": "feature key required"}
+        # Update single feature in DB:
+        # FeatureFlag.query.filter_by(key=feature).update({"enabled": enabled})
+        # db.session.commit()
+        return {"feature": feature, "enabled": enabled, "updated": True}
+
+    elif action == "bulk_set":
+        features = params.get("features", {})
+        if not features:
+            return {"error": "features dict required, e.g. {'blog': true, 'api_access': false}"}
+        # Update multiple features:
+        # for key, val in features.items():
+        #     FeatureFlag.query.filter_by(key=key).update({"enabled": val})
+        # db.session.commit()
+        return {"updated": list(features.keys()), "count": len(features)}
+
+    elif action == "apply_plan":
+        plan = params.get("plan", "")
+        if plan not in PLAN_FEATURES:
+            return {"error": f"Unknown plan: {plan}. Options: {list(PLAN_FEATURES.keys())}"}
+        plan_config = PLAN_FEATURES[plan]
+        # Apply all features for this plan:
+        # for key, val in plan_config.items():
+        #     flag = FeatureFlag.query.filter_by(key=key).first()
+        #     if flag: flag.enabled = val
+        #     else: db.session.add(FeatureFlag(key=key, enabled=val))
+        # db.session.commit()
+        return {"plan": plan, "features_set": plan_config}
+
+    else:
+        return {"error": f"Unknown action: {action}. Use: get, set, bulk_set, apply_plan"}
+
+
+@velo_command("get_plans", description="Get available plan tiers and their feature sets")
+def get_plans(params):
+    return {"plans": PLAN_FEATURES}
+
+
+# --- Visitor AI capabilities ---
+
+@velo_command("get_visitor_sessions", description="List active visitor chat sessions")
+def get_visitor_sessions(params):
+    return {"sessions": [...]}
+
+
+@velo_command("send_chat_message", description="Push a message to a visitor's chat", params_schema={
+    "type": "object",
+    "properties": {
+        "session_id": {"type": "string"},
+        "message": {"type": "string"},
+    },
+    "required": ["session_id", "message"],
+})
+def send_chat_message(params):
+    # ... push to websocket or chat system ...
+    return {"sent": True, "session_id": params["session_id"]}
+
+
+@velo_command("get_faq", description="Get FAQ entries, optionally filtered by category")
+def get_faq(params):
+    return {"faqs": [...]}
+
+
+@velo_command("update_faq", description="Add or update FAQ entries", params_schema={
+    "type": "object",
+    "properties": {
+        "id": {"type": "integer"},
+        "question": {"type": "string"},
+        "answer": {"type": "string"},
+        "category": {"type": "string"},
+    },
+})
+def update_faq(params):
+    return {"updated": True}
+
+
+@velo_command("escalate_response", description="Deliver VELO's answer to a visitor who asked something the AI couldn't handle", params_schema={
+    "type": "object",
+    "properties": {
+        "session_id": {"type": "string"},
+        "answer": {"type": "string"},
+    },
+    "required": ["session_id", "answer"],
+})
+def escalate_response(params):
+    # ... push answer to visitor's chat session ...
+    return {"delivered": True}
+```
+
+### 1D. Auto-Register with VELO on Startup
+
+```python
+# In your Flask app startup (app.py)
+
+from velo_endpoints import velo_bp, get_registered_capabilities
+import velo_handlers  # importing this registers all @velo_command handlers
+
+app.register_blueprint(velo_bp)
+
+# Register with VELO after app starts
+import requests, os
+
+def register_with_velo():
+    """Register this app's agents with VELO so it knows what we can do."""
+    velo_url = os.environ.get("VELO_MASTER_URL", "http://localhost:8000")
+    agent_key = os.environ.get("VELO_AGENT_KEY", "")
+    site_url = os.environ.get("SITE_URL", "http://localhost:5000")
+
+    capabilities = get_registered_capabilities()
+
+    for agent_type in ["admin_ai", "visitor_ai"]:
+        try:
+            requests.post(
+                f"{velo_url}/api/agent-register",
+                headers={"Authorization": f"Bearer {agent_key}"},
+                json={
+                    "agent_id": agent_type,
+                    "agent_type": agent_type,
+                    "base_url": site_url,
+                    "endpoint": f"{site_url}/api/velo/command",  # single dynamic endpoint
+                    "capabilities": capabilities,
+                    "metadata": {"framework": "flask", "version": "1.0"},
+                },
+                timeout=10,
+            )
+            print(f"[VELO] Registered {agent_type} with {len(capabilities)} capabilities")
+        except Exception as e:
+            print(f"[VELO] Failed to register {agent_type}: {e}")
+
+# Call after app is ready
+with app.app_context():
+    register_with_velo()
+```
+
+### 1E. Environment Variables
+
+```bash
+VELO_MASTER_URL=http://<velo-server-ip>:8000
+VELO_AGENT_KEY=<shared-secret-key>
+SITE_URL=http://localhost:5000   # or your public URL
+```
+
+Generate the key: `python -c "import secrets; print(secrets.token_urlsafe(32))"`
+
+## Part 2: How to Add New Capabilities
+
+**To add something new your agents can do** — just write a handler:
+
+```python
+@velo_command("new_capability", description="What it does", params_schema={...})
+def new_capability(params):
+    # ... your logic ...
+    return {"result": "..."}
+```
+
+That's it. On next startup, it auto-registers with VELO. VELO's AI will see it in the capabilities list and can call it.
+
+**To use a new VELO tool** — VELO adds tools independently. Your agents discover them:
+
+```python
+# Refresh capabilities
+capabilities = velo.discover()
+# Now use whatever's available
+result = velo.use_tool("admin_ai", "some_new_tool", {"param": "value"})
+```
+
+## Part 3: How Communication Flows
+
+### Visitor asks something the AI can't answer:
+1. Visitors AI tries local knowledge base
+2. Can't answer → `velo.report_event("visitor_ai", "escalation", {"question": "...", "session_id": "..."})`
+3. VELO auto-researches and returns answer
+4. OR VELO calls back with `command: "escalate_response"` to push answer to visitor
+
+### VELO wants analytics:
+1. User asks VELO "how many signups this week?"
+2. VELO sees admin_ai has `get_analytics` capability
+3. Calls it with `{"period": "week"}`
+4. Your handler queries DB, returns numbers
+
+### VELO controls client features (super admin):
+1. Owner tells master VELO "Upgrade Acme Corp to Pro plan"
+2. VELO calls `client_velo` tool → `command_agent` → Acme's admin_ai → `manage_features`
+3. Handler receives `{"action": "apply_plan", "plan": "pro"}`
+4. All Pro features get enabled, non-Pro features disabled
+5. VELO confirms to owner
+
+### VELO toggles a single feature:
+1. Owner says "Disable email campaigns for Acme"
+2. VELO → Acme's admin_ai → `manage_features` with `{"action": "set", "feature": "email_campaigns", "enabled": false}`
+3. Feature disabled immediately
+
+### Adding a capability later:
+1. You write `@velo_command("generate_invoice", ...)` in your Flask app
+2. Restart Flask → auto-registers with VELO
+3. VELO's AI now knows it can generate invoices and will use it when relevant
+
+
+## Part 4: Multi-Tenant Setup
+
+When this Flask app + VELO pair is cloned for a business client:
+
+```
+Owner's Master VELO (super admin)
+    ├── Client A's VELO ←→ Client A's Flask Site
+    ├── Client B's VELO ←→ Client B's Flask Site
+    └── Client C's VELO ←→ Client C's Flask Site
+```
+
+### Each client VELO registers with master on startup:
+
+```python
+# In client VELO's startup (main.py lifespan)
+import httpx, os
+
+async def register_with_master():
+    master_url = os.environ.get("VELO_MASTER_URL", "")
+    super_key = os.environ.get("VELO_SUPER_KEY", "")
+    client_id = os.environ.get("VELO_CLIENT_ID", "")
+    if not master_url or not client_id:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"{master_url}/api/clients/register",
+                headers={"Authorization": f"Bearer {super_key}"},
+                json={
+                    "client_id": client_id,
+                    "client_name": os.environ.get("VELO_CLIENT_NAME", client_id),
+                    "velo_url": os.environ.get("VELO_PUBLIC_URL", "http://localhost:8000"),
+                    "site_url": os.environ.get("SITE_URL", ""),
+                    "agent_key": os.environ.get("VELO_AGENT_KEY", ""),
+                    "metadata": {},  # plan, region, owner, whatever you want
+                },
+            )
+    except Exception as e:
+        print(f"[VELO] Failed to register with master: {e}")
+```
+
+### Client env vars:
+
+```bash
+VELO_AGENT_KEY=<unique-per-client>
+VELO_MASTER_URL=https://master-velo.yourdomain.com
+VELO_SUPER_KEY=<your-one-master-key>
+VELO_CLIENT_ID=client_acme
+VELO_CLIENT_NAME=Acme Corp
+SITE_URL=https://acme.yourdomain.com
+```
+
+### Master inspects any client dynamically:
+
+The master VELO can call `GET /api/clients/{id}` which auto-discovers that client's tools, agents, and agent capabilities at runtime. No config needed — if the client's Flask app registered new commands, the master sees them immediately.
