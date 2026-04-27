@@ -82,7 +82,7 @@ import scraper
 from flask import (
     Flask, request, jsonify, send_from_directory,
     render_template, session, redirect, url_for, Response, stream_with_context,
-    make_response
+    make_response, abort
 )
 from openai import OpenAI
 try:
@@ -1469,6 +1469,14 @@ def init_db():
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_glass_bg TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_font_serif TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_font_sans TEXT NOT NULL DEFAULT ''",
+                # First-run wizard marker (Tier 3). NULL means "not yet
+                # bootstrapped" → /setup is reachable. Set to NOW() at the
+                # end of a successful bootstrap; reset to NULL if bootstrap
+                # fails so the operator can retry without manual SQL. Used
+                # instead of a sentinel string on site_name so an operator
+                # who legitimately names their business "My Site" doesn't
+                # leave the wizard publicly reachable.
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS installation_bootstrapped_at TIMESTAMPTZ NULL",
                 # Universal master visual tokens — exposed in admin Themes
                 # editor so the loading screen, glass surfaces, corner radii
                 # and motion timing all flex with the active theme.
@@ -4197,6 +4205,215 @@ def admin_logout():
 @app.route("/healthz")
 def healthz():
     return ("ok", 200, {"Content-Type": "text/plain; charset=utf-8"})
+
+
+# =============================================================================
+# FIRST-RUN WIZARD (Tier 3 — onboarding)
+# =============================================================================
+# A browser-based form that lets a non-technical operator configure a fresh
+# install without ever touching JSON. Submits to bootstrap_install (Tier 2)
+# server-side, so VELO_AGENT_KEY never leaves the worker.
+#
+# Lifecycle:
+#   * /setup is reachable ONLY while site_settings.site_name still equals the
+#     seed default 'My Site'. After the first successful bootstrap, the route
+#     returns 404 forever (until somebody manually resets site_name in the DB).
+#   * The wizard ALWAYS sets site_name on submit, so the gate naturally closes.
+#
+# Security model:
+#   * Public-fresh-install hijack guard: submit requires the operator's
+#     ADMIN_PASSWORD. Without it, anyone who finds /setup on a freshly-deployed
+#     public host could lock the install with their own values.
+#   * Brute-force throttle reuses the existing _login_throttle helpers so
+#     guess attempts on ADMIN_PASSWORD here count against the same per-IP
+#     budget as /admin/login.
+# =============================================================================
+import json as _wizard_json
+import os.path as _wizard_path
+
+
+def _is_install_bootstrapped() -> bool:
+    """Has this install ever been provisioned?
+
+    Returns True (→ /setup is closed) iff site_settings.installation_bootstrapped_at
+    is non-NULL. The column is set to NOW() at the end of a successful wizard
+    run and reset to NULL if the wizard fails partway, so the gate flips on
+    success and stays open for retries on failure.
+
+    Fail-closed on DB error: returns True so a transient hiccup never
+    accidentally re-opens the wizard on a configured production install.
+    A previous version sentinel-checked site_name == 'My Site', which broke
+    if the operator legitimately named their business "My Site".
+    """
+    try:
+        row = query_db(
+            "SELECT installation_bootstrapped_at FROM site_settings WHERE id = 1",
+            fetchone=True,
+        )
+        if not row:
+            return False  # singleton row missing → fresh install
+        return row.get("installation_bootstrapped_at") is not None
+    except Exception:
+        return True
+
+
+def _list_wizard_presets():
+    """Names (without .json) of every starter template in onboarding_templates/."""
+    out = []
+    presets_dir = _wizard_path.join(
+        os.path.dirname(__file__), "onboarding_templates"
+    )
+    try:
+        for fname in sorted(os.listdir(presets_dir)):
+            if fname.endswith(".json"):
+                out.append(fname[:-5])
+    except Exception:
+        pass
+    return out
+
+
+@app.route("/setup", methods=["GET"])
+def setup_wizard_get():
+    if _is_install_bootstrapped():
+        abort(404)
+    return render_template(
+        "setup_wizard.html",
+        presets=_list_wizard_presets(),
+    )
+
+
+@app.route("/setup/preset/<name>", methods=["GET"])
+def setup_wizard_preset(name):
+    """Return a starter template JSON for the form to pre-fill from."""
+    if _is_install_bootstrapped():
+        abort(404)
+    # Whitelist on the path component to block any traversal trick.
+    safe = "".join(c for c in name if c.isalnum() or c in "-_")
+    if safe != name:
+        abort(400)
+    path = _wizard_path.join(
+        os.path.dirname(__file__), "onboarding_templates", f"{safe}.json"
+    )
+    if not _wizard_path.exists(path):
+        abort(404)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return jsonify(_wizard_json.load(f))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/setup", methods=["POST"])
+def setup_wizard_post():
+    if _is_install_bootstrapped():
+        abort(404)
+
+    # Reuse the /admin/login per-IP throttle so guessing ADMIN_PASSWORD here
+    # doesn't get a fresh budget separate from regular admin-login attempts.
+    ip = _client_ip()
+    allowed, retry_after = _login_throttle_check(ip)
+    if not allowed:
+        return jsonify({
+            "error": f"Too many failed attempts. Try again in about {max(1, retry_after // 60)} minute(s).",
+            "retry_after": retry_after,
+        }), 429
+
+    pw = request.form.get("admin_password", "")
+    if pw != ADMIN_PASSWORD:
+        _login_throttle_record_failure(ip)
+        return jsonify({"error": "Invalid admin password."}), 401
+    _login_throttle_clear(ip)
+
+    raw_tpl = request.form.get("template_json", "").strip()
+    if not raw_tpl:
+        return jsonify({"error": "template_json field is required."}), 400
+    try:
+        tpl = _wizard_json.loads(raw_tpl)
+    except _wizard_json.JSONDecodeError as e:
+        return jsonify({"error": f"template_json is not valid JSON: {e}"}), 400
+    if not isinstance(tpl, dict) or not tpl:
+        return jsonify({"error": "template_json must be a non-empty object."}), 400
+
+    # Server-side guard on the one truly required field. The browser form
+    # has `required` on site_name but a crafted POST could bypass it and
+    # persist site_name="" — which would make every subsequent _is_install_bootstrapped
+    # check think the install is bootstrapped (column is set), but the
+    # public site would render a blank business name. Reject up-front.
+    site_name_in = (
+        (tpl.get("settings") or {}).get("site_settings") or {}
+    ).get("site_name", "")
+    if not isinstance(site_name_in, str) or not site_name_in.strip():
+        return jsonify({
+            "error": "settings.site_settings.site_name is required and must be a non-empty string.",
+        }), 400
+
+    # Atomic claim. Two concurrent POSTs would both pass the earlier gate
+    # check (TOCTOU), so we have to claim the bootstrap slot in a single
+    # SQL statement. The conditional UPDATE returns a row only for the
+    # first request to win the race; everything else gets rowcount=0 and
+    # returns 409 without running bootstrap_install.
+    try:
+        claimed = execute_db(
+            "UPDATE site_settings SET installation_bootstrapped_at = NOW() "
+            "WHERE id = 1 AND installation_bootstrapped_at IS NULL "
+            "RETURNING id"
+        )
+    except Exception as e:
+        return jsonify({"error": f"Could not reserve setup slot: {e}"}), 500
+    if not claimed:
+        return jsonify({"error": "Setup is already in progress or has finished."}), 409
+
+    # Local helper: release the claim. Returns (ok, error_str). If the
+    # release itself fails the install would be permanently locked, so we
+    # surface that to the caller rather than silently swallowing it — the
+    # operator gets a one-line SQL command they can run to recover.
+    def _release_claim():
+        try:
+            execute_db(
+                "UPDATE site_settings SET installation_bootstrapped_at = NULL WHERE id = 1"
+            )
+            return True, None
+        except Exception as exc:
+            return False, str(exc)
+
+    # Call bootstrap_install directly. The @velo_command decorator returns
+    # the function unchanged, so calling it here bypasses the HTTP layer's
+    # confirmation gate — which is correct, because the wizard's submit IS
+    # the operator's confirmation, and the per-IP password gate above is
+    # the actual "are you authorized" check.
+    from velo_handlers import bootstrap_install
+    try:
+        summary = bootstrap_install({"template": tpl})
+    except Exception as e:
+        released, rel_err = _release_claim()
+        return jsonify({
+            "ok": False,
+            "error": f"Bootstrap raised: {e}",
+            "rollback_failed": not released,
+            "manual_recovery_sql": (
+                "UPDATE site_settings SET installation_bootstrapped_at = NULL WHERE id = 1;"
+            ) if not released else None,
+            "rollback_error": rel_err,
+        }), 500
+
+    if summary.get("error") or not summary.get("ok"):
+        released, rel_err = _release_claim()
+        return jsonify({
+            "ok": False,
+            "error": summary.get("error") or "Bootstrap reported errors.",
+            "summary": summary,
+            "rollback_failed": not released,
+            "manual_recovery_sql": (
+                "UPDATE site_settings SET installation_bootstrapped_at = NULL WHERE id = 1;"
+            ) if not released else None,
+            "rollback_error": rel_err,
+        }), 400
+
+    return jsonify({
+        "ok": True,
+        "summary": summary,
+        "redirect": url_for("admin_login"),
+    })
 
 
 # =============================================================================

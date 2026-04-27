@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<!--
+===============================================================================
+FIRST-RUN WIZARD (Tier 3)
+===============================================================================
+Browser-based form for non-technical operators to bring a fresh install up
+to a working baseline without hand-editing JSON. Composes a template object
+on the client side and POSTs it to /setup, which calls bootstrap_install
+server-side. Reachable ONLY before the install has been bootstrapped.
+===============================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Setup Wizard</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,100..1000&family=Playfair+Display:ital,wght@0,400..900&display=swap">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: #060b14;
+      color: #e4e4e7;
+      min-height: 100vh;
+      padding: 2rem 1rem;
+      position: relative;
+      overflow-x: hidden;
+    }
+    body::before {
+      content: '';
+      position: fixed;
+      top: -40%;
+      left: -20%;
+      width: 70%;
+      height: 70%;
+      background: radial-gradient(circle, rgba(59,130,246,0.08) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    body::after {
+      content: '';
+      position: fixed;
+      bottom: -30%;
+      right: -20%;
+      width: 60%;
+      height: 60%;
+      background: radial-gradient(circle, rgba(139,92,246,0.06) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    .wrap {
+      max-width: 760px;
+      margin: 0 auto;
+      position: relative;
+      z-index: 1;
+    }
+    h1 {
+      font-family: 'Playfair Display', serif;
+      font-size: 2rem;
+      color: #fff;
+      margin-bottom: 0.5rem;
+    }
+    .subtitle {
+      color: rgba(255,255,255,0.5);
+      font-size: 0.95rem;
+      margin-bottom: 2rem;
+    }
+    section {
+      background: rgba(255,255,255,0.04);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 1rem;
+      padding: 1.5rem 1.75rem;
+      margin-bottom: 1.25rem;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+    }
+    section h2 {
+      font-family: 'Playfair Display', serif;
+      font-size: 1.25rem;
+      color: #fff;
+      margin-bottom: 0.25rem;
+    }
+    section .hint {
+      color: rgba(255,255,255,0.4);
+      font-size: 0.8rem;
+      margin-bottom: 1rem;
+    }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.85rem; margin-bottom: 0.85rem; }
+    .row.full { grid-template-columns: 1fr; }
+    .field { display: flex; flex-direction: column; }
+    label {
+      display: block;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: rgba(255,255,255,0.55);
+      margin-bottom: 0.35rem;
+    }
+    input[type=text], input[type=email], input[type=tel], input[type=password], textarea, select {
+      width: 100%;
+      background: rgba(0,0,0,0.3);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 0.5rem;
+      padding: 0.65rem 0.8rem;
+      color: #e4e4e7;
+      font: inherit;
+      font-size: 0.92rem;
+      transition: border-color 0.15s;
+    }
+    input:focus, textarea:focus, select:focus {
+      outline: none;
+      border-color: rgba(59,130,246,0.5);
+    }
+    textarea { min-height: 70px; resize: vertical; }
+    .plan-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; }
+    .plan-tile {
+      background: rgba(0,0,0,0.25);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 0.5rem;
+      padding: 0.85rem;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .plan-tile.selected { border-color: rgba(59,130,246,0.7); background: rgba(59,130,246,0.08); }
+    .plan-tile strong { display: block; color: #fff; font-size: 0.95rem; margin-bottom: 0.15rem; }
+    .plan-tile span { color: rgba(255,255,255,0.5); font-size: 0.78rem; }
+    .faq-item {
+      background: rgba(0,0,0,0.18);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      margin-bottom: 0.6rem;
+      position: relative;
+    }
+    .faq-item .remove-btn {
+      position: absolute; top: 0.5rem; right: 0.5rem;
+      background: transparent; border: none; color: rgba(255,255,255,0.4);
+      cursor: pointer; font-size: 1rem; padding: 0.15rem 0.4rem;
+    }
+    .faq-item .remove-btn:hover { color: rgba(239,68,68,0.9); }
+    .add-btn {
+      background: transparent; border: 1px dashed rgba(255,255,255,0.2);
+      color: rgba(255,255,255,0.55); padding: 0.55rem 0.8rem;
+      border-radius: 0.5rem; cursor: pointer; font: inherit; font-size: 0.85rem;
+      width: 100%;
+    }
+    .add-btn:hover { border-color: rgba(59,130,246,0.5); color: rgba(59,130,246,0.9); }
+    .actions {
+      display: flex; gap: 0.75rem; margin-top: 1.5rem;
+      align-items: center; flex-wrap: wrap;
+    }
+    .submit-btn {
+      flex: 1;
+      background: linear-gradient(135deg, rgba(59,130,246,0.9), rgba(139,92,246,0.9));
+      color: #fff; border: none; padding: 0.85rem 1.5rem;
+      border-radius: 0.5rem; cursor: pointer; font: inherit; font-size: 0.95rem;
+      font-weight: 600; transition: transform 0.1s, box-shadow 0.15s;
+    }
+    .submit-btn:hover { box-shadow: 0 8px 24px rgba(59,130,246,0.3); }
+    .submit-btn:active { transform: translateY(1px); }
+    .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .status {
+      padding: 0.85rem 1rem; border-radius: 0.5rem;
+      font-size: 0.9rem; margin-top: 1rem;
+    }
+    .status.ok { background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.3); color: #86efac; }
+    .status.err { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; }
+    .status pre {
+      margin-top: 0.5rem; font-size: 0.78rem;
+      background: rgba(0,0,0,0.3); padding: 0.6rem; border-radius: 0.35rem;
+      overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+    }
+    @media (max-width: 600px) {
+      .row { grid-template-columns: 1fr; }
+      .plan-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Welcome — let's set up your install</h1>
+    <p class="subtitle">A few minutes here and your site is ready. Everything below can be edited later from the admin dashboard.</p>
+
+    <form id="wizardForm">
+      <!-- Industry preset -->
+      {% if presets %}
+      <section>
+        <h2>Start from a preset</h2>
+        <p class="hint">Pick the closest match — you can change anything below.</p>
+        <div class="row full">
+          <div class="field">
+            <label for="preset">Industry preset</label>
+            <select id="preset" data-testid="select-preset">
+              <option value="">-- start blank --</option>
+              {% for p in presets %}
+                <option value="{{ p }}">{{ p.replace('_', ' ').title() }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+      </section>
+      {% endif %}
+
+      <!-- Business basics -->
+      <section>
+        <h2>Business basics</h2>
+        <p class="hint">Shows up on every page — header, hero, footer.</p>
+        <div class="row">
+          <div class="field">
+            <label for="site_name">Business / site name *</label>
+            <input type="text" id="site_name" required data-testid="input-site-name">
+          </div>
+          <div class="field">
+            <label for="logo_initials">Logo initials</label>
+            <input type="text" id="logo_initials" maxlength="4" data-testid="input-logo-initials">
+          </div>
+        </div>
+        <div class="row full">
+          <div class="field">
+            <label for="site_subtitle">One-line subtitle</label>
+            <input type="text" id="site_subtitle" data-testid="input-site-subtitle">
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="hero_title">Hero title</label>
+            <input type="text" id="hero_title" data-testid="input-hero-title">
+          </div>
+          <div class="field">
+            <label for="hero_tagline">Hero tagline</label>
+            <input type="text" id="hero_tagline" data-testid="input-hero-tagline">
+          </div>
+        </div>
+        <div class="row full">
+          <div class="field">
+            <label for="hero_description">Hero description</label>
+            <textarea id="hero_description" data-testid="textarea-hero-description"></textarea>
+          </div>
+        </div>
+      </section>
+
+      <!-- Contact -->
+      <section>
+        <h2>Contact info</h2>
+        <p class="hint">Used in the footer, the chatbot, and SEO structured data.</p>
+        <div class="row">
+          <div class="field">
+            <label for="business_phone">Phone</label>
+            <input type="tel" id="business_phone" data-testid="input-phone">
+          </div>
+          <div class="field">
+            <label for="business_email">Email</label>
+            <input type="email" id="business_email" data-testid="input-email">
+          </div>
+        </div>
+        <div class="row full">
+          <div class="field">
+            <label for="business_address">Address</label>
+            <input type="text" id="business_address" data-testid="input-address">
+          </div>
+        </div>
+      </section>
+
+      <!-- Chatbot -->
+      <section>
+        <h2>Chatbot persona</h2>
+        <p class="hint">How the on-site assistant introduces itself.</p>
+        <div class="row">
+          <div class="field">
+            <label for="agent_name">Agent name</label>
+            <input type="text" id="agent_name" data-testid="input-agent-name">
+          </div>
+          <div class="field">
+            <label for="agent_role">Agent role</label>
+            <input type="text" id="agent_role" data-testid="input-agent-role">
+          </div>
+        </div>
+        <div class="row full">
+          <div class="field">
+            <label for="greeting">Greeting</label>
+            <input type="text" id="greeting" data-testid="input-greeting">
+          </div>
+        </div>
+        <div class="row full">
+          <div class="field">
+            <label for="system_prompt">System prompt</label>
+            <textarea id="system_prompt" data-testid="textarea-system-prompt" style="min-height:120px"></textarea>
+          </div>
+        </div>
+      </section>
+
+      <!-- Plan -->
+      <section>
+        <h2>Feature plan</h2>
+        <p class="hint">Determines which features are turned on out of the box.</p>
+        <div class="plan-grid" id="planGrid">
+          <div class="plan-tile" data-plan="solo" data-testid="plan-tile-solo">
+            <strong>Solo</strong><span>Basics: site, blog, FAQ, simple chatbot.</span>
+          </div>
+          <div class="plan-tile selected" data-plan="growth" data-testid="plan-tile-growth">
+            <strong>Growth</strong><span>Solo + voice, gallery, analytics, SEO.</span>
+          </div>
+          <div class="plan-tile" data-plan="enterprise" data-testid="plan-tile-enterprise">
+            <strong>Enterprise</strong><span>Everything Growth has, plus advanced.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- FAQs -->
+      <section>
+        <h2>Starter FAQs</h2>
+        <p class="hint">The chatbot is grounded on these. Add as many as you like; you can always edit them later.</p>
+        <div id="faqList"></div>
+        <button type="button" class="add-btn" id="addFaqBtn" data-testid="button-add-faq">+ Add another FAQ</button>
+      </section>
+
+      <!-- Admin user -->
+      <section>
+        <h2>Owner contact</h2>
+        <p class="hint">We'll create a customer record with this email so the system can reach you.</p>
+        <div class="row">
+          <div class="field">
+            <label for="owner_name">Your name</label>
+            <input type="text" id="owner_name" data-testid="input-owner-name">
+          </div>
+          <div class="field">
+            <label for="owner_email">Your email *</label>
+            <input type="email" id="owner_email" required data-testid="input-owner-email">
+          </div>
+        </div>
+      </section>
+
+      <!-- Auth gate -->
+      <section>
+        <h2>Confirm</h2>
+        <p class="hint">Type your <code>ADMIN_PASSWORD</code> to authorize this setup. (Only you, the operator, know this — set in your environment.)</p>
+        <div class="row full">
+          <div class="field">
+            <label for="admin_password">Admin password *</label>
+            <input type="password" id="admin_password" required data-testid="input-admin-password">
+          </div>
+        </div>
+        <div class="actions">
+          <button type="submit" class="submit-btn" id="submitBtn" data-testid="button-submit-wizard">Run setup</button>
+        </div>
+        <div id="status"></div>
+      </section>
+    </form>
+  </div>
+
+<script>
+(function() {
+  const form = document.getElementById('wizardForm');
+  const presetSel = document.getElementById('preset');
+  const planGrid = document.getElementById('planGrid');
+  const faqList = document.getElementById('faqList');
+  const addFaqBtn = document.getElementById('addFaqBtn');
+  const status = document.getElementById('status');
+  const submitBtn = document.getElementById('submitBtn');
+
+  let chosenPlan = 'growth';
+  // Holds the most-recently-loaded preset object so buildTemplate() can
+  // overlay form-edited fields on top of the full preset (preserving
+  // sections like business_hours, voice_settings, social_links, content,
+  // etc. that the wizard form doesn't expose). Without this, those
+  // sections would be silently dropped when the form is submitted.
+  let currentPreset = null;
+
+  // Plan tile selection
+  planGrid.querySelectorAll('.plan-tile').forEach(tile => {
+    tile.addEventListener('click', () => {
+      planGrid.querySelectorAll('.plan-tile').forEach(t => t.classList.remove('selected'));
+      tile.classList.add('selected');
+      chosenPlan = tile.getAttribute('data-plan');
+    });
+  });
+
+  // FAQ management
+  function makeFaqRow(question, answer) {
+    const row = document.createElement('div');
+    row.className = 'faq-item';
+    row.innerHTML = `
+      <button type="button" class="remove-btn" title="Remove">&times;</button>
+      <div class="row full" style="margin-bottom:0.4rem">
+        <div class="field">
+          <label>Question</label>
+          <input type="text" class="faq-q" value="${(question||'').replace(/"/g,'&quot;')}">
+        </div>
+      </div>
+      <div class="row full" style="margin-bottom:0">
+        <div class="field">
+          <label>Answer</label>
+          <textarea class="faq-a">${(answer||'').replace(/</g,'&lt;')}</textarea>
+        </div>
+      </div>
+    `;
+    row.querySelector('.remove-btn').addEventListener('click', () => row.remove());
+    return row;
+  }
+  addFaqBtn.addEventListener('click', () => {
+    faqList.appendChild(makeFaqRow('', ''));
+  });
+
+  // Industry preset loader
+  if (presetSel) {
+    presetSel.addEventListener('change', async () => {
+      const name = presetSel.value;
+      if (!name) {
+        currentPreset = null;
+        return;
+      }
+      try {
+        const r = await fetch('/setup/preset/' + encodeURIComponent(name));
+        if (!r.ok) throw new Error('Could not load preset.');
+        const data = await r.json();
+        // Stash the FULL preset so buildTemplate() can preserve sections
+        // the wizard form doesn't expose (business_hours, voice_settings,
+        // social_links, content, etc.).
+        currentPreset = data;
+        applyPreset(data);
+      } catch (e) {
+        alert('Failed to load preset: ' + e.message);
+      }
+    });
+  }
+
+  function applyPreset(tpl) {
+    const s = tpl.settings || {};
+    const ss = s.site_settings || {};
+    const bi = s.business_info || {};
+    const cb = s.chatbot_settings || {};
+    const setVal = (id, v) => { if (v !== undefined && v !== null) document.getElementById(id).value = v; };
+    setVal('site_name', ss.site_name);
+    setVal('site_subtitle', ss.site_subtitle);
+    setVal('hero_title', ss.hero_title);
+    setVal('hero_tagline', ss.hero_tagline);
+    setVal('hero_description', ss.hero_description);
+    setVal('logo_initials', ss.logo_initials);
+    setVal('business_phone', bi.business_phone);
+    setVal('business_email', bi.business_email);
+    setVal('business_address', bi.business_address);
+    setVal('agent_name', cb.agent_name);
+    setVal('agent_role', cb.agent_role);
+    setVal('greeting', cb.greeting);
+    setVal('system_prompt', cb.system_prompt);
+    if (tpl.admin_user) {
+      setVal('owner_name', tpl.admin_user.name);
+      setVal('owner_email', tpl.admin_user.email);
+    }
+    if (tpl.features && tpl.features.plan) {
+      chosenPlan = tpl.features.plan;
+      planGrid.querySelectorAll('.plan-tile').forEach(t => {
+        t.classList.toggle('selected', t.getAttribute('data-plan') === chosenPlan);
+      });
+    }
+    faqList.innerHTML = '';
+    (tpl.faqs || []).forEach(f => {
+      faqList.appendChild(makeFaqRow(f.question || '', f.answer || ''));
+    });
+  }
+
+  function buildTemplate() {
+    const v = id => document.getElementById(id).value.trim();
+    // Start from a deep clone of the loaded preset (or {} for blank start).
+    // This preserves preset sections the wizard form doesn't expose —
+    // business_hours, voice_settings, social_links, content.services, etc. —
+    // so picking "Restaurant" actually applies the restaurant's full config
+    // and not just the half-dozen fields the form happens to surface.
+    const tpl = currentPreset ? JSON.parse(JSON.stringify(currentPreset)) : {};
+    tpl.settings = tpl.settings || {};
+    tpl.settings.site_settings = tpl.settings.site_settings || {};
+    tpl.settings.business_info = tpl.settings.business_info || {};
+    tpl.settings.chatbot_settings = tpl.settings.chatbot_settings || {};
+
+    // Overlay form-edited site_settings fields. Empty strings are treated
+    // as "user didn't touch this field" → fall back to whatever the preset
+    // already has. The one exception is site_name, which is required and
+    // always overwrites (it's the gate value).
+    const ss = tpl.settings.site_settings;
+    ss.site_name = v('site_name');  // required
+    if (v('site_subtitle')) ss.site_subtitle = v('site_subtitle');
+    if (v('hero_title')) ss.hero_title = v('hero_title');
+    else if (!ss.hero_title) ss.hero_title = v('site_name');
+    if (v('hero_tagline')) ss.hero_tagline = v('hero_tagline');
+    if (v('hero_description')) ss.hero_description = v('hero_description');
+    if (v('logo_initials')) ss.logo_initials = v('logo_initials');
+    else if (!ss.logo_initials) ss.logo_initials = v('site_name').slice(0, 2).toUpperCase();
+
+    const bi = tpl.settings.business_info;
+    if (v('business_phone')) bi.business_phone = v('business_phone');
+    if (v('business_email')) bi.business_email = v('business_email');
+    if (v('business_address')) bi.business_address = v('business_address');
+    if (Object.keys(bi).length === 0) delete tpl.settings.business_info;
+
+    const cb = tpl.settings.chatbot_settings;
+    if (v('agent_name')) cb.agent_name = v('agent_name');
+    if (v('agent_role')) cb.agent_role = v('agent_role');
+    if (v('greeting')) cb.greeting = v('greeting');
+    if (v('system_prompt')) cb.system_prompt = v('system_prompt');
+    if (Object.keys(cb).length > 0) {
+      // Only force enabled=true if we actually have chatbot fields set.
+      if (cb.enabled === undefined) cb.enabled = true;
+    } else {
+      delete tpl.settings.chatbot_settings;
+    }
+
+    // Plan tile choice always overrides preset's features.plan
+    tpl.features = tpl.features || {};
+    tpl.features.plan = chosenPlan;
+
+    // FAQ list: the form is the source of truth (operator added/removed
+    // rows). Replace any preset-supplied list entirely.
+    const formFaqs = [];
+    faqList.querySelectorAll('.faq-item').forEach((row, i) => {
+      const q = row.querySelector('.faq-q').value.trim();
+      const a = row.querySelector('.faq-a').value.trim();
+      if (q && a) formFaqs.push({ question: q, answer: a, sort_order: i });
+    });
+    if (formFaqs.length > 0) tpl.faqs = formFaqs;
+    else if (!tpl.faqs || tpl.faqs.length === 0) delete tpl.faqs;
+
+    // Owner contact always comes from the form (it's how the operator
+    // identifies themselves; preset's admin_user is a placeholder).
+    tpl.admin_user = {
+      email: v('owner_email'),
+      name: v('owner_name'),
+    };
+
+    return tpl;
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    status.innerHTML = '';
+    const tpl = buildTemplate();
+    const fd = new FormData();
+    fd.append('admin_password', document.getElementById('admin_password').value);
+    fd.append('template_json', JSON.stringify(tpl));
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Setting up...';
+    try {
+      const r = await fetch('/setup', { method: 'POST', body: fd });
+      const data = await r.json();
+      if (!r.ok || !data.ok) {
+        const msg = data.error || 'Setup failed.';
+        const summaryDump = data.summary ? '\n\n' + JSON.stringify(data.summary, null, 2) : '';
+        status.innerHTML = `<div class="status err">${msg}${summaryDump ? '<pre>' + summaryDump + '</pre>' : ''}</div>`;
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Run setup';
+        return;
+      }
+      status.innerHTML = `<div class="status ok">Setup complete. Redirecting to admin login...</div>`;
+      setTimeout(() => { window.location.href = data.redirect || '/admin/login'; }, 1200);
+    } catch (err) {
+      status.innerHTML = `<div class="status err">Network error: ${err.message}</div>`;
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Run setup';
+    }
+  });
+
+  // Seed one empty FAQ so the section isn't empty on load
+  faqList.appendChild(makeFaqRow('', ''));
+})();
+</script>
+</body>
+</html>
