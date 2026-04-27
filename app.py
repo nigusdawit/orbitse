@@ -7728,7 +7728,8 @@ ADMIN_WRITE_BLACKLIST = {
 # (TRIGGER_TYPES / ACTION_TYPES / call_skill skill-name lookup) by
 # proposing a raw `INSERT INTO automations …` through the generic
 # tools — same defense-in-depth idea as mcp_servers's V1 guards.
-ADMIN_DEDICATED_WRITE_TABLES = {"mcp_servers", "automations"}
+ADMIN_DEDICATED_WRITE_TABLES = {"mcp_servers", "automations",
+                                 "site_designs", "site_themes"}
 
 
 def _admin_table_columns(table_name):
@@ -8008,6 +8009,19 @@ def _admin_tool_propose_insert(table_name=None, fields=None,
                               "the automations table — it validates "
                               "trigger_type, action kinds, and "
                               "call_skill skill_names.")}
+        if table_name == "site_designs":
+            return {"error": ("Use admin_propose_create_site_design "
+                              "instead of admin_propose_insert for "
+                              "the site_designs table — it validates "
+                              "the HTML document shape and length so "
+                              "the Website tab never gets a broken "
+                              "page.")}
+        if table_name == "site_themes":
+            return {"error": ("Use admin_propose_create_site_theme "
+                              "instead of admin_propose_insert for "
+                              "the site_themes table — it validates "
+                              "palette + fonts keys so the Themes "
+                              "tab never gets a malformed palette.")}
         return {"error": (f"Use the dedicated tool for '{table_name}' — "
                           f"call admin_mcp_propose_add_server (or the "
                           f"matching admin_mcp_propose_* tool) instead "
@@ -8045,6 +8059,22 @@ def _admin_tool_propose_update(table_name=None, row_id=None, fields=None,
                               "for an enable/disable flip) instead "
                               "of admin_propose_update for the "
                               "automations table.")}
+        if table_name in ("site_designs", "site_themes"):
+            tab = ("Website tab" if table_name == "site_designs"
+                   else "Themes tab")
+            return {"error": (f"Editing existing rows in "
+                              f"'{table_name}' from chat is "
+                              f"disabled — the owner manages "
+                              f"updates from the {tab} UI. To "
+                              f"propose a NEW row, call "
+                              f"admin_propose_create_"
+                              f"site_design / "
+                              f"admin_propose_create_"
+                              f"site_theme. To switch which row "
+                              f"is active, propose_update on "
+                              f"site_settings setting "
+                              f"active_design_id / "
+                              f"active_theme_id.")}
         return {"error": (f"Use the dedicated tool for '{table_name}' — "
                           f"call admin_mcp_propose_update_server / "
                           f"admin_mcp_propose_toggle_velo / "
@@ -8108,6 +8138,12 @@ def _admin_tool_propose_delete(table_name=None, row_id=None,
             return {"error": ("Use admin_propose_delete_automation "
                               "instead of admin_propose_delete for "
                               "the automations table.")}
+        if table_name in ("site_designs", "site_themes"):
+            tab = ("Website tab" if table_name == "site_designs"
+                   else "Themes tab")
+            return {"error": (f"Deleting rows in '{table_name}' "
+                              f"from chat is disabled — the owner "
+                              f"removes drafts from the {tab} UI.")}
         return {"error": (f"Use the dedicated tool for '{table_name}' — "
                           f"call admin_mcp_propose_remove_server "
                           f"instead of admin_propose_delete.")}
@@ -10166,6 +10202,126 @@ def _admin_tool_propose_draft_faq_entry(
     )
 
 
+def _admin_tool_propose_create_site_design(name=None, html=None,
+                                            notes="", model_used="",
+                                            _session_id="", **_):
+    """Propose creating a NEW site design (a complete homepage HTML
+    document) so the owner can review it from the Website tab and then
+    publish it. The AI must compose the FULL HTML in its turn and pass
+    it here — this tool is what wires the "build me a website" flow
+    end-to-end. Goes through the standard approve card; nothing is
+    written until the owner clicks Approve."""
+    if not isinstance(name, str) or not name.strip():
+        return {"error": ("name is required (e.g. "
+                          "'Futuristic Hero v1')")}
+    if not isinstance(html, str) or not html.strip():
+        return {"error": ("html is required — pass the COMPLETE "
+                          "<html> document, not a markdown plan or a "
+                          "snippet.")}
+    html = html.strip()
+    low = html.lower()
+    if "<html" not in low or "</html>" not in low:
+        return {"error": ("html must be a complete document. Wrap your "
+                          "content in "
+                          "<!doctype html><html>...</html> with a "
+                          "<head> and a <body>.")}
+    if "<head" not in low or "</head>" not in low:
+        return {"error": ("html is missing a <head>...</head> block "
+                          "(needed for the title and inline styles).")}
+    if "<body" not in low or "</body>" not in low:
+        return {"error": "html is missing a <body>...</body> block"}
+    if not low.lstrip().startswith("<!doctype html"):
+        return {"error": ("html must start with '<!doctype html>' "
+                          "(case-insensitive) so browsers render in "
+                          "standards mode.")}
+    if len(html) > 600_000:
+        return {"error": (f"html is too large ({len(html):,} chars > "
+                          f"600,000 char limit). Trim inline assets or "
+                          f"split into multiple designs.")}
+    fields = {
+        "name":       name.strip()[:200],
+        "html":       html,
+        "notes":      (notes or "").strip()[:2000],
+        "model_used": (model_used or "ai_chat").strip()[:80],
+        "source":     "ai_chat",
+        "status":     "draft",
+    }
+    preview = (f"Create site design '{fields['name']}' "
+               f"({len(html):,} chars HTML, status=draft, "
+               f"source=ai_chat)")
+    if fields["notes"]:
+        preview += f"\n  notes: {fields['notes'][:200]}"
+    return _admin_create_pending(
+        _session_id, "insert",
+        target_table="site_designs",
+        payload={"fields": fields},
+        preview=preview[:2000],
+    )
+
+
+def _admin_tool_propose_create_site_theme(name=None, palette=None,
+                                           fonts=None, notes="",
+                                           _session_id="", **_):
+    """Propose creating a NEW named theme (palette + fonts) directly in
+    the site_themes table. Use this when the owner asks for a theme
+    by name ('a futuristic dark theme', 'a coastal pastel theme'). The
+    palette dict accepts keys: bg, text, accent, section1, section2,
+    glass_bg, glass_border. The fonts dict accepts keys: serif, sans.
+    Anything else is ignored. The new row lands as status='draft' so
+    the owner can preview it in the Themes tab before publishing."""
+    if not isinstance(name, str) or not name.strip():
+        return {"error": ("name is required (e.g. "
+                          "'Futuristic Neon')")}
+    palette = palette or {}
+    fonts = fonts or {}
+    if not isinstance(palette, dict):
+        return {"error": "palette must be a JSON object"}
+    if not isinstance(fonts, dict):
+        return {"error": "fonts must be a JSON object"}
+    allowed_pal = {"bg", "text", "accent",
+                   "section1", "section2",
+                   "glass_bg", "glass_border"}
+    allowed_fonts = {"serif", "sans"}
+    palette_clean = {k: str(v).strip()
+                     for k, v in palette.items()
+                     if k in allowed_pal and str(v or "").strip()}
+    fonts_clean = {k: str(v).strip()
+                   for k, v in fonts.items()
+                   if k in allowed_fonts and str(v or "").strip()}
+    if not palette_clean and not fonts_clean:
+        return {"error": ("palette or fonts must contain at least one "
+                          "value. Allowed palette keys: bg, text, "
+                          "accent, section1, section2, glass_bg, "
+                          "glass_border. Allowed fonts keys: serif, "
+                          "sans.")}
+    fields = {
+        "name":         name.strip()[:200],
+        "palette_json": json.dumps(palette_clean),
+        "fonts_json":   json.dumps(fonts_clean),
+        "notes":        (notes or "").strip()[:2000],
+        "source":       "ai_chat",
+        "status":       "draft",
+    }
+    pal_lines = "\n".join(f"  {k} = {v}"
+                          for k, v in palette_clean.items())
+    font_lines = "\n".join(f"  font_{k} = {v}"
+                           for k, v in fonts_clean.items())
+    preview = (f"Create theme '{fields['name']}' (status=draft, "
+               f"source=ai_chat)")
+    if pal_lines:
+        preview += f"\nPalette:\n{pal_lines}"
+    if font_lines:
+        preview += f"\nFonts:\n{font_lines}"
+    if fields["notes"]:
+        preview += f"\nnotes: {fields['notes'][:200]}"
+    return _admin_create_pending(
+        _session_id, "insert",
+        target_table="site_themes",
+        payload={"fields": fields},
+        preview=preview[:2000],
+    )
+
+
 ADMIN_TOOL_FUNCTIONS = {
     # --- Read-only (run immediately, no approval) ---
     "admin_list_tables":            _admin_tool_list_tables,
@@ -10221,6 +10377,9 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_suggest_seo_improvements":       _admin_tool_suggest_seo_improvements,
     "admin_propose_draft_blog_post":        _admin_tool_propose_draft_blog_post,
     "admin_propose_draft_faq_entry":        _admin_tool_propose_draft_faq_entry,
+    # --- Site themes (Themes tab) + site designs (Website tab) ---
+    "admin_propose_create_site_design":     _admin_tool_propose_create_site_design,
+    "admin_propose_create_site_theme":      _admin_tool_propose_create_site_theme,
 }
 
 # Tools whose write-side effect runs only after explicit owner approval.
@@ -10243,6 +10402,8 @@ ADMIN_PROPOSE_TOOLS = {
     "admin_propose_archive_generated_page",
     "admin_propose_draft_blog_post",
     "admin_propose_draft_faq_entry",
+    "admin_propose_create_site_design",
+    "admin_propose_create_site_theme",
 }
 
 
@@ -10659,6 +10820,49 @@ ADMIN_TOOLS = [
         {"type": "object",
          "properties": {"automation_id": {"type": "integer"}},
          "required": ["automation_id"]}),
+
+    # ---- Site themes (Themes tab) + site designs (Website tab) ----
+    _admin_tool_schema(
+        "admin_propose_create_site_design",
+        "Propose creating a NEW site design (a complete homepage HTML "
+        "document) so the owner can preview and publish it from the "
+        "Website tab. CALL THIS — DO NOT JUST WRITE A MARKDOWN PLAN — "
+        "whenever the owner asks to 'build a website', 'redesign the "
+        "homepage', 'make a futuristic site', 'create a new landing "
+        "page', or any request that implies a full-page rebuild. The "
+        "html argument MUST be a complete <!doctype html><html>..."
+        "</html> document with <head> + <body>. Inline CSS and inline "
+        "JS are fine; external assets only via public CDNs. To make "
+        "the design follow whichever theme is active, prefer the CSS "
+        "variables --bg, --text, --accent, --bg-section-1, "
+        "--bg-section-2, --glass-bg, --glass-border (these are set "
+        "from /api/theme on every page load). Lands as status=draft.",
+        {"type": "object",
+         "properties": {
+             "name":       {"type": "string"},
+             "html":       {"type": "string"},
+             "notes":      {"type": "string"},
+             "model_used": {"type": "string"},
+         },
+         "required": ["name", "html"]}),
+    _admin_tool_schema(
+        "admin_propose_create_site_theme",
+        "Propose creating a NEW named theme (palette + fonts) directly "
+        "in the site_themes table. Use this when the owner asks for a "
+        "theme by name ('a futuristic dark theme', 'a coastal pastel "
+        "palette'). Lands as status=draft so the owner can preview "
+        "and publish from the Themes tab. Allowed palette keys: bg, "
+        "text, accent, section1, section2, glass_bg, glass_border. "
+        "Allowed fonts keys: serif, sans. Values should be valid CSS "
+        "(hex colors, rgba(...), or font-family stacks).",
+        {"type": "object",
+         "properties": {
+             "name":    {"type": "string"},
+             "palette": {"type": "object"},
+             "fonts":   {"type": "object"},
+             "notes":   {"type": "string"},
+         },
+         "required": ["name"]}),
 
     # ---- Generated-page curation (reads run immediately;
     #      propose_* are approval-gated) ----
@@ -11118,7 +11322,42 @@ ADMIN_CHAT_SYSTEM_PROMPT = (
     "grounded in REAL visitor questions, not generic advice. When "
     "drafting a blog post or FAQ from a gap, write the body fully in "
     "your reply (so the owner can read it) and ALSO queue it via the "
-    "draft tool so they get a one-click approve."
+    "draft tool so they get a one-click approve.\n\n"
+    "SITE THEMES (Themes tab) + SITE DESIGNS (Website tab):\n"
+    "Two surfaces let the owner curate the public site. Always use "
+    "the DEDICATED chat tools below — do NOT propose_insert these "
+    "tables by hand:\n"
+    "  • THEMES — named color palettes + fonts. When the owner asks "
+    "'make me a pink and gold theme' / 'try a futuristic dark theme' "
+    "/ 'a coastal pastel palette', call "
+    "admin_propose_create_site_theme with `name` and a `palette` "
+    "object using any subset of the keys bg, text, accent, section1, "
+    "section2, glass_bg, glass_border, plus an optional `fonts` "
+    "object with serif/sans CSS font-family stacks. Lands as "
+    "status=draft. (You CAN also tweak the legacy theme_* columns on "
+    "site_settings via admin_propose_update — that path now "
+    "auto-creates a draft snapshot in the Themes tab too — but the "
+    "dedicated tool is preferred for naming + grouping.)\n"
+    "  • DESIGNS — full homepage HTML documents. When the owner asks "
+    "'build me a website' / 'redesign the homepage' / 'make a "
+    "futuristic site' / 'create a new landing page' / anything that "
+    "implies a full-page rebuild, you MUST call "
+    "admin_propose_create_site_design with the COMPLETE HTML you "
+    "compose in your turn. DO NOT just reply with a markdown plan or "
+    "wireframe — the owner wants the page actually generated. The "
+    "html argument must be a real <!doctype html><html><head>..."
+    "</head><body>...</body></html> document. Inline CSS and inline "
+    "JS are fine; external assets only via public CDNs. To make the "
+    "design follow whichever theme is active, use the CSS variables "
+    "--bg, --text, --accent, --bg-section-1, --bg-section-2, "
+    "--glass-bg, --glass-border (these are set automatically from "
+    "/api/theme on every page load). Lands as status=draft; the "
+    "owner publishes from the Website tab.\n"
+    "  • PUBLISHING / SWITCHING — to make a draft theme/design the "
+    "active one, propose_update on site_settings setting "
+    "active_theme_id or active_design_id (run admin_describe_table "
+    "site_settings first to confirm column names). The owner can "
+    "also do this with one click from the tab UI."
 )
 
 
