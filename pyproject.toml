@@ -1,3 +1,8 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q --strict-markers --tb=short"
+
 [project]
 name = "repl-nix-workspace"
 version = "0.1.0"
@@ -13,8 +18,10 @@ dependencies = [
     "pillow>=12.2.0",
     "psycopg2-binary>=2.9.11",
     "pymupdf>=1.27.2.3",
+    "pytest>=9.0.3",
     "python-pptx>=1.0.2",
     "requests>=2.33.1",
     "sentry-sdk[flask]>=2.53.0",
     "stripe>=15.1.0",
+    "werkzeug>=3.1.6",
 ]

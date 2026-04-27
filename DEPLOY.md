@@ -292,6 +292,20 @@ Manual spot-checks if you don't want to run the doctor:
    you set keys for.
 5. **VELO Master, if used** — visit `/api/velo/status` and confirm it
    reports `count: 30` registered commands.
+6. **Run the smoke suite (Tier 8)** — `python -m pytest -q tests/`
+   exercises 37 customer-affecting paths (homepage, public content APIs,
+   admin auth boundary, CSRF, VELO status, POST validation, public
+   detail pages) in under 10 seconds. If anything goes red, that route
+   is broken before your visitors hit it. The suite is read-only or
+   sends deliberately-invalid payloads, with one exception: the CSRF
+   happy-path test clears the chat history for the dummy session_id
+   `smoke-csrf-pass` (one row, never used by real visitors). The three
+   CSRF tests skip cleanly when `ADMIN_PASSWORD` isn't in the env.
+   Pytest opens its own DB pool so during a run you'll briefly see
+   roughly 2× the workflow's pool ceiling — fine on the dev tier; if
+   your production Postgres has tight `max_connections`, stop the
+   workflow before running the suite or temporarily lower
+   `DB_POOL_MAX`.
 
 ---
 

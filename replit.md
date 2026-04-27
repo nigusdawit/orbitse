@@ -658,6 +658,43 @@ Seventh slice. Two production-grade hardening items that cost the operator nothi
 - **Front-end fetch wrapper (`templates/admin/dashboard.html`)**: a 30-line IIFE at the top of the first `<script>` block reads the meta tag, wraps `window.fetch`, and auto-injects `X-CSRF-Token` on every same-origin `/admin/*` POST/PUT/PATCH/DELETE. Existing `fetch()` call sites (276 of them in dashboard.html) need zero changes — the wrapper is transparent. On a 403 response with `{"csrf_failed": true}` the wrapper soft-reloads the page so the operator picks up a fresh token (handles the case where session expires mid-edit).
 - **Smoke-test transcript**: pool — `/healthz` 200 in 3 ms, `/api/site-settings` 200 in 5 ms, 5 parallel public hits all 200 in 3-5 ms. CSRF — `POST /admin/api/chat/clear` without header returns 403 `csrf_failed`, with header but missing body returns 400 `session_id required` (validation reached past CSRF), with header and valid body returns 200 `ok: true` (full path: CSRF + admin_required + DB write via execute_db + connection returned to pool). Public endpoints (`/api/track/pageview`) unaffected.
 
+## Test Suite (Tier 8 — April 2026)
+
+Eighth slice. Stand up `pytest` and seed it with smoke tests around every customer-affecting path so future commits run against a baseline. Not unit tests — these don't pin down business logic. They ask the only question that matters at refactor time: "did this commit break a route the visitor or the operator relies on?" Run with `python -m pytest -q tests/`. Full suite is 37 tests, finishes in well under 10 seconds.
+
+**What's covered (37 tests across 10 sections):**
+
+- **Liveness + public marketing site (4)**: `GET /healthz` returns the literal `ok` body, `GET /` renders HTML, `GET /sitemap.xml` serves XML, `GET /robots.txt` serves a User-agent / Sitemap text body.
+- **Public content APIs returning a JSON object (7, parametrized)**: `/api/site-settings`, `/api/business-info`, `/api/seo`, `/api/chatbot-settings`, `/api/voice/settings`, `/api/storefront-config`, `/api/sphere-settings`. Each must respond 200 and the top-level JSON body must be a `dict`.
+- **Public content APIs returning a JSON list (13, parametrized)**: `/api/services`, `/api/events`, `/api/products`, `/api/blog`, `/api/faq`, `/api/team`, `/api/gallery-cards`, `/api/video-gallery`, `/api/podcast`, `/api/experiences`, `/api/pricing`, `/api/testimonials`, `/api/page-sections`. Each must respond 200 and the top-level JSON body must be a `list`.
+- **Admin auth boundary (3)**: `/admin/login` GET serves a form-bearing HTML page; `/admin` redirects an anon caller to the login page (301/302); `POST /admin/api/chat/clear` from an anon caller is bounced with **302 or 401 only** (a 403 here would mean the CSRF middleware fired before `@admin_required` — a Tier 7 contract violation, so we deliberately exclude that code from the band).
+- **CSRF protection (Tier 7 regression — 3)**: logged-in `POST /admin/api/chat/clear` without `X-CSRF-Token` returns 403 `{"csrf_failed": true}`; `GET /admin/api/csrf-token` returns a string token of sane length; the same POST with the token succeeds (200 `{"ok": true}`).
+- **VELO surface (1)**: `GET /api/velo/status` mounts and responds (200/401/403 are all acceptable depending on whether `VELO_AGENT_KEY` is enforced on `/status`).
+- **Route-mounting introspection (1)**: walks `app.url_map` directly and asserts `/api/chat` is registered with `POST` in its method set. We can't probe via HTTP because `/api/chat` doesn't validate the payload up front (an empty body still falls through to the rate-limit + cost-cap path) **and** the catch-all `@app.route("/<path:filename>")` near the bottom of `app.py` swallows any GET that no specific rule matched, so `GET /api/chat` returns 200, not 405. Pure introspection is the only safe probe.
+- **POST validation paths (2)**: `POST /api/events/<bogus>/rsvp` and `POST /api/forms/<bogus>/submit` with empty body must return 400 or 404 — **not 405**, which would mean POST routing broke. We don't accept "any non-5xx" because that masks regressions where the route gets accidentally turned into GET-only.
+- **Public detail pages (2, parametrized)**: `GET /blog/<bogus>` and `GET /event/<bogus>` must return exactly 404. Proves the slug-lookup path renders the not-found page rather than crashing on a missing row.
+- **Setup wizard state (1)**: `GET /setup` returns 200 on a fresh install and 404 once `installation_bootstrapped_at` is set — both are correct behaviour and the test accepts either.
+
+**Design decisions:**
+
+- **In-process via Flask's `test_client`, not over the network**: tests boot the app once via `from app import app` (heavy: runs `init_db()`, starts background scheduler threads, imports `velo_handlers`, mounts the velo blueprint) and reuse it across the session. Each test gets a fresh `test_client()` so cookie / session state is isolated. No second port binds — these tests can run alongside the regular `python app.py` workflow without a port collision.
+- **Read-only on the dev DB except for one bounded write**: every POST in the suite either authenticates with the real `ADMIN_PASSWORD` (only the CSRF-pass test, which **deliberately mutates one row** by clearing the chat history for the dummy session_id `smoke-csrf-pass` — that id is intentionally never used by real visitors) or sends a deliberately-invalid payload that exercises the validation path without writing real data (`__nonexistent_smoke_test__` slugs, empty bodies). No real visitor data is touched.
+- **Skip-on-missing-creds, never fall back to `'admin'`**: the three CSRF tests that require an authenticated session call `pytest.skip(...)` if `ADMIN_PASSWORD` isn't set in the env. We do **not** default to `'admin'` because if the real password isn't `admin` the login silently fails and the "logged in but missing token → 403" test would pass for the wrong reason (the CSRF middleware skips for anon sessions).
+- **Status-code bands ONLY where the right answer depends on environment config**: `/api/velo/status` returns 200 OR 401/403 depending on whether `VELO_AGENT_KEY` is set; `/setup` returns 200 OR 404 depending on bootstrap state. Everywhere else the assertion is tight (exactly 404, exactly 405-not-allowed via introspection, exactly 403 csrf_failed) so genuine regressions don't get masked.
+- **Schedulers and background threads still run during tests**: importing `app` boots the messaging + automations schedulers a second time alongside the workflow process. For a smoke seed this is fine (daemons die with the pytest process) but it does mean two copies of every periodic job race during a `pytest` run. If a future scheduler job mutates DB rows on a tight interval this could become flaky — at that point either (a) gate scheduler startup behind an env var that pytest clears, or (b) stop the workflow before running the suite.
+
+**Files added (3):**
+
+- `tests/__init__.py` — empty package marker.
+- `tests/conftest.py` — session-scoped `flask_app` fixture (one boot per pytest run) + per-test `client` fixture.
+- `tests/test_smoke.py` — the 37-test smoke suite, organized by the section headers above.
+
+**pyproject.toml**: a `[tool.pytest.ini_options]` block at the top sets `testpaths = ["tests"]`, `python_files = ["test_*.py"]`, and `addopts = "-q --strict-markers --tb=short"` so `pytest` picks the right directory and uses concise output without flags.
+
+**Connection-pool footprint while tests run**: pytest's app instance opens its own `ThreadedConnectionPool(min=DB_POOL_MIN, max=DB_POOL_MAX)`, so when both processes are up the cluster sees ~2× the pool ceiling (≤20 conns at the defaults). Comfortable on the dev tier but worth knowing if a small-tier Postgres deploy hits `too many connections` — drop `DB_POOL_MAX` for the workflow, or stop the workflow before running the suite.
+
+**How to extend:** when adding a new public route, append a one-liner to the relevant parametrized list in `tests/test_smoke.py` (no new function needed). When adding a new admin route, copy the CSRF-pass pattern (`_require_login(client)` → fetch `/admin/api/csrf-token` → POST with `X-CSRF-Token` header). When adding a route that's hard to probe over HTTP without side effects, copy the introspection pattern (`flask_app.url_map.iter_rules()`). Smoke tests stay shallow on purpose — anything that needs DB-state setup belongs in a separate `tests/test_<feature>.py` module with its own per-test transactional fixture.
+
 ## How to Edit Content
 
 1. Go to `/admin` in your browser (password: set via ADMIN_PASSWORD env var, default "admin")
