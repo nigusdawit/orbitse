@@ -10408,7 +10408,30 @@ def _admin_execute_pending(action_row):
                 conn.commit()
             conn.close()
             _admin_post_write_sync(table)
-            return {"inserted_id": new_id, "table": table}, None
+            result = {"inserted_id": new_id, "table": table}
+            # Optional second leg: when the propose tool set
+            # `_publish_after_insert=True` (currently only the
+            # admin_propose_create_site_design path does this), flip
+            # site_settings.active_design_id to the new row in the same
+            # approve. Best-effort: a failure here leaves the draft
+            # intact but reports the error so the owner can re-publish
+            # from the Website tab.
+            if (table == "site_designs"
+                    and payload.get("_publish_after_insert")
+                    and new_id is not None):
+                try:
+                    if _publish_atomic("site_designs",
+                                       "active_design_id", new_id):
+                        result["published"] = True
+                        result["active_design_id"] = new_id
+                    else:
+                        result["published"] = False
+                        result["publish_error"] = (
+                            "row vanished between insert and publish")
+                except Exception as _pe:
+                    result["published"] = False
+                    result["publish_error"] = str(_pe)[:200]
+            return result, None
         except Exception as e:
             try: conn.rollback(); conn.close()
             except Exception: pass
@@ -10562,6 +10585,31 @@ def _admin_execute_pending(action_row):
             try: conn.rollback(); conn.close()
             except Exception: pass
             return None, str(e)[:400]
+
+    if a_type == "publish_site_design":
+        # Atomic flip of the live homepage to an existing site_designs
+        # row. payload = {design_id: N}. Re-validates the row exists at
+        # execute time (defense-in-depth: the propose-time check could
+        # be stale by approval time).
+        try:
+            did = int(payload.get("design_id"))
+        except Exception:
+            return None, "publish_site_design: design_id missing/invalid"
+        row = query_db(
+            "SELECT id, name FROM site_designs WHERE id=%s",
+            (did,), fetchone=True,
+        )
+        if not row:
+            return None, f"site design #{did} no longer exists"
+        try:
+            ok = _publish_atomic("site_designs",
+                                 "active_design_id", did)
+        except Exception as e:
+            return None, f"publish failed: {str(e)[:200]}"
+        if not ok:
+            return None, f"site design #{did} disappeared mid-publish"
+        return {"published": True, "active_design_id": did,
+                "name": row.get("name"), "table": "site_designs"}, None
 
     return None, f"unknown action_type: {a_type}"
 
@@ -12124,13 +12172,20 @@ def _admin_tool_propose_draft_faq_entry(
 
 def _admin_tool_propose_create_site_design(name=None, html=None,
                                             notes="", model_used="",
+                                            publish=True,
                                             _session_id="", **_):
     """Propose creating a NEW site design (a complete homepage HTML
-    document) so the owner can review it from the Website tab and then
-    publish it. The AI must compose the FULL HTML in its turn and pass
+    document). The AI must compose the FULL HTML in its turn and pass
     it here — this tool is what wires the "build me a website" flow
     end-to-end. Goes through the standard approve card; nothing is
-    written until the owner clicks Approve."""
+    written until the owner clicks Approve.
+
+    publish (default True): when True, approving the action ALSO flips
+    the site's active homepage to this new design in the same atomic
+    step (no separate Website-tab visit needed). Pass publish=False ONLY
+    when the owner explicitly says they want a draft preview without
+    going live yet ('save it as a draft', 'don't publish yet', 'just
+    show me a preview first')."""
     if not isinstance(name, str) or not name.strip():
         return {"error": ("name is required (e.g. "
                           "'Futuristic Hero v1')")}
@@ -12158,23 +12213,80 @@ def _admin_tool_propose_create_site_design(name=None, html=None,
         return {"error": (f"html is too large ({len(html):,} chars > "
                           f"600,000 char limit). Trim inline assets or "
                           f"split into multiple designs.")}
+    will_publish = bool(publish)
     fields = {
         "name":       name.strip()[:200],
         "html":       html,
         "notes":      (notes or "").strip()[:2000],
         "model_used": (model_used or "ai_chat").strip()[:80],
         "source":     "ai_chat",
+        # The row is born as 'draft'; if publish=True the executor flips
+        # it to 'published' atomically right after the INSERT (see
+        # _admin_execute_pending insert branch's site_designs hook).
         "status":     "draft",
     }
-    preview = (f"Create site design '{fields['name']}' "
-               f"({len(html):,} chars HTML, status=draft, "
-               f"source=ai_chat)")
+    if will_publish:
+        preview = (f"Create AND PUBLISH site design '{fields['name']}' "
+                   f"({len(html):,} chars HTML) — approving will make "
+                   f"this the LIVE homepage immediately.")
+    else:
+        preview = (f"Create site design '{fields['name']}' "
+                   f"({len(html):,} chars HTML, status=draft, "
+                   f"source=ai_chat) — saved as draft only; publish "
+                   f"separately from the Website tab.")
     if fields["notes"]:
         preview += f"\n  notes: {fields['notes'][:200]}"
+    payload = {"fields": fields}
+    if will_publish:
+        # Sibling key (NOT inside fields) — the insert executor reads
+        # this flag and chains _publish_atomic in the same approve.
+        payload["_publish_after_insert"] = True
     return _admin_create_pending(
         _session_id, "insert",
         target_table="site_designs",
-        payload={"fields": fields},
+        payload=payload,
+        preview=preview[:2000],
+    )
+
+
+def _admin_tool_propose_publish_site_design(design_id=None,
+                                             _session_id="", **_):
+    """Propose publishing an EXISTING site design (one that's already
+    in the site_designs table, e.g. an earlier draft) so it becomes the
+    live homepage. Use this when the owner asks 'publish design 3', 'go
+    live with the futuristic one', 'switch the homepage to the design
+    you made yesterday'. Atomic with _publish_atomic — flips
+    site_settings.active_design_id and marks the row published in one
+    transaction. Approval-gated."""
+    if design_id is None:
+        return {"error": "design_id is required"}
+    try:
+        did = int(design_id)
+    except Exception:
+        return {"error": "design_id must be an integer"}
+    row = query_db(
+        "SELECT id, name, status FROM site_designs WHERE id=%s",
+        (did,), fetchone=True,
+    )
+    if not row:
+        return {"error": f"Site design #{did} not found"}
+    cur_active = (query_db(
+        "SELECT active_design_id FROM site_settings WHERE id=1",
+        fetchone=True,
+    ) or {}).get("active_design_id")
+    if cur_active == did:
+        return {"error": (f"Site design #{did} ('{row.get('name')}') "
+                          f"is already the active homepage. Nothing to "
+                          f"publish.")}
+    preview = (f"PUBLISH site design #{did} ('{row.get('name')}') — "
+               f"approving will make this the LIVE homepage "
+               f"(was status='{row.get('status') or 'draft'}'"
+               + (f", currently active: #{cur_active}" if cur_active
+                  else ", currently no active design") + ").")
+    return _admin_create_pending(
+        _session_id, "publish_site_design",
+        target_table="site_designs", target_id=did,
+        payload={"design_id": did},
         preview=preview[:2000],
     )
 
@@ -12299,6 +12411,7 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_propose_draft_faq_entry":        _admin_tool_propose_draft_faq_entry,
     # --- Site themes (Themes tab) + site designs (Website tab) ---
     "admin_propose_create_site_design":     _admin_tool_propose_create_site_design,
+    "admin_propose_publish_site_design":    _admin_tool_propose_publish_site_design,
     "admin_propose_create_site_theme":      _admin_tool_propose_create_site_theme,
 }
 
@@ -12323,6 +12436,7 @@ ADMIN_PROPOSE_TOOLS = {
     "admin_propose_draft_blog_post",
     "admin_propose_draft_faq_entry",
     "admin_propose_create_site_design",
+    "admin_propose_publish_site_design",
     "admin_propose_create_site_theme",
 }
 
@@ -12745,8 +12859,7 @@ ADMIN_TOOLS = [
     _admin_tool_schema(
         "admin_propose_create_site_design",
         "Propose creating a NEW site design (a complete homepage HTML "
-        "document) so the owner can preview and publish it from the "
-        "Website tab. CALL THIS — DO NOT JUST WRITE A MARKDOWN PLAN — "
+        "document). CALL THIS — DO NOT JUST WRITE A MARKDOWN PLAN — "
         "whenever the owner asks to 'build a website', 'redesign the "
         "homepage', 'make a futuristic site', 'create a new landing "
         "page', or any request that implies a full-page rebuild. The "
@@ -12754,17 +12867,37 @@ ADMIN_TOOLS = [
         "</html> document with <head> + <body>. Inline CSS and inline "
         "JS are fine; external assets only via public CDNs. To make "
         "the design follow whichever theme is active, prefer the CSS "
-        "variables --bg, --text, --accent, --bg-section-1, "
-        "--bg-section-2, --glass-bg, --glass-border (these are set "
-        "from /api/theme on every page load). Lands as status=draft.",
+        "variables --color-bg, --color-text, --color-accent, "
+        "--color-section-1, --color-section-2, --glass-bg, "
+        "--glass-border (set from /api/theme on every page load). "
+        "publish defaults to TRUE — approving the action both creates "
+        "the design AND makes it the live homepage in one atomic step. "
+        "Pass publish=false ONLY when the owner explicitly says they "
+        "want a draft preview without going live yet ('save as draft', "
+        "'don't publish yet', 'just show me first').",
         {"type": "object",
          "properties": {
              "name":       {"type": "string"},
              "html":       {"type": "string"},
              "notes":      {"type": "string"},
              "model_used": {"type": "string"},
+             "publish":    {"type": "boolean", "default": True},
          },
          "required": ["name", "html"]}),
+    _admin_tool_schema(
+        "admin_propose_publish_site_design",
+        "Propose publishing an EXISTING site design (one already in "
+        "the site_designs table — typically an earlier draft) so it "
+        "becomes the LIVE homepage. Use this when the owner says "
+        "'publish design 3', 'go live with the futuristic one', "
+        "'switch the homepage to the design you made yesterday', or "
+        "anything that asks to swap the active homepage to a "
+        "design that already exists. Atomic — flips "
+        "site_settings.active_design_id and marks the row published "
+        "in one transaction. Approval-gated.",
+        {"type": "object",
+         "properties": {"design_id": {"type": "integer"}},
+         "required": ["design_id"]}),
     _admin_tool_schema(
         "admin_propose_create_site_theme",
         "Propose creating a NEW named theme (palette + fonts) directly "
@@ -13373,16 +13506,33 @@ ADMIN_CHAT_SYSTEM_PROMPT = (
     "theme_glass_border:'--glass-border'})) if(t[k]) "
     "document.documentElement.style.setProperty(v,t[k]); });`. "
     "External assets only via public CDNs.\n"
-    "  Lands as status=draft; the owner publishes from the Website "
-    "tab. The model_used arg is optional — if you used a specific "
+    "  PUBLISH-ON-APPROVE (DEFAULT) — admin_propose_create_site_design "
+    "takes a `publish` arg that defaults to TRUE. With publish=true the "
+    "approval card both creates the design AND atomically flips the "
+    "site's active homepage to it in the same approve click — the "
+    "owner does NOT need to visit the Website tab afterwards. When "
+    "you reply after queuing the action, tell the owner clearly "
+    "something like 'Approve to make this your live homepage' (NOT "
+    "the misleading 'approve to apply this design' wording, and NOT "
+    "'go to the Website tab to publish' — both are wrong now). Only "
+    "pass publish=false when the owner explicitly asks for a draft "
+    "preview ('save as a draft', 'don't go live yet', 'show me "
+    "first'). The model_used arg is optional — if you used a specific "
     "Claude tier (e.g. 'claude-opus-4', 'claude-sonnet-4-5') for "
     "generation, pass it so the owner sees what tier produced the "
     "design.\n"
-    "  • PUBLISHING / SWITCHING — to make a draft theme/design the "
-    "active one, propose_update on site_settings setting "
-    "active_theme_id or active_design_id (run admin_describe_table "
-    "site_settings first to confirm column names). The owner can "
-    "also do this with one click from the tab UI."
+    "  • PUBLISHING AN EXISTING DRAFT — when the owner asks to "
+    "publish or switch to a design that ALREADY exists in the "
+    "site_designs table ('publish design 3', 'go live with the "
+    "futuristic one we made yesterday', 'switch the homepage to that "
+    "draft'), call admin_propose_publish_site_design(design_id=N). "
+    "This is approval-gated and atomic. Do NOT use the generic "
+    "admin_propose_update on site_settings for this — the dedicated "
+    "tool also marks the row as published in the same transaction.\n"
+    "  • PUBLISHING A THEME — themes still go through the Themes-tab "
+    "Publish button (or admin_propose_update on site_settings setting "
+    "active_theme_id). The owner can do this in one click from the "
+    "tab UI."
 )
 
 
