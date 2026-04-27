@@ -7518,10 +7518,13 @@ TO CUSTOMIZE THIS DASHBOARD:
       </div>
     </div>
 
-    <!-- Headline KPI cards: MTD total, by-channel split, cap progress -->
-    <div id="cost-summary-cards" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem; margin-bottom:1rem;">
+    <!-- Headline KPI cards: MTD total, by-channel split, cap progress,
+         today / week / projected EOM -->
+    <div id="cost-summary-cards" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem; margin-bottom:0.5rem;">
       <div class="empty-state" style="padding:1rem; grid-column:1/-1;">Loading cost summary…</div>
     </div>
+    <!-- Top-spending visitors mini-table; populated by loadCostSummary -->
+    <div id="cost-top-visitors" style="margin-bottom:1rem;"></div>
 
     <!-- Spend-over-time chart -->
     <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:1rem 1.25rem; margin-bottom:1rem;">
@@ -17840,7 +17843,53 @@ TO CUSTOMIZE THIS DASHBOARD:
             <div style="font-size:1.4rem; font-weight:700;" data-testid="text-cost-sms">${_money(s.sms_usd)}</div>
             <div style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.25rem;">Carrier segments</div>
           </div>
+          <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:1rem 1.25rem;">
+            <div style="font-size:0.75rem; text-transform:uppercase; color:var(--admin-text-muted); letter-spacing:0.05em;">Today</div>
+            <div style="font-size:1.4rem; font-weight:700;" data-testid="text-cost-today">${_money(data.today_usd)}</div>
+            <div style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.25rem;">All channels, today</div>
+          </div>
+          <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:1rem 1.25rem;">
+            <div style="font-size:0.75rem; text-transform:uppercase; color:var(--admin-text-muted); letter-spacing:0.05em;">This week</div>
+            <div style="font-size:1.4rem; font-weight:700;" data-testid="text-cost-week">${_money(data.week_usd)}</div>
+            <div style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.25rem;">All channels, last 7 days</div>
+          </div>
+          <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:1rem 1.25rem;">
+            <div style="font-size:0.75rem; text-transform:uppercase; color:var(--admin-text-muted); letter-spacing:0.05em;">Projected month-end</div>
+            <div style="font-size:1.4rem; font-weight:700;" data-testid="text-cost-projection">${_money(data.projection_usd_eom)}</div>
+            <div style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.25rem;">MTD + 7-day rolling rate</div>
+          </div>
         `;
+        // Top visitors by spend (rendered separately so the cards grid
+        // stays uniform). Hidden when the list is empty so we don't show
+        // a stub "No data" panel during the first month of usage.
+        const tv = (data.top_visitors || []);
+        const tvEl = document.getElementById('cost-top-visitors');
+        if (tvEl) {
+          if (!tv.length) {
+            tvEl.innerHTML = '';
+          } else {
+            const rows = tv.map(v => `
+              <tr>
+                <td style="padding:0.4rem 0.6rem; font-family:var(--font-mono, monospace); font-size:0.8rem;" data-testid="text-topvisitor-id-${escapeHTML(String(v.visitor_id || ''))}">${escapeHTML(v.visitor_id || '(unknown)')}</td>
+                <td style="padding:0.4rem 0.6rem; text-align:right; font-weight:600;" data-testid="text-topvisitor-spend-${escapeHTML(String(v.visitor_id || ''))}">${_money(v.spend_usd)}</td>
+                <td style="padding:0.4rem 0.6rem; text-align:right; color:var(--admin-text-muted);">${v.events || 0}</td>
+              </tr>`).join('');
+            tvEl.innerHTML = `
+              <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:1rem 1.25rem; margin-top:0.75rem;">
+                <div style="font-size:0.75rem; text-transform:uppercase; color:var(--admin-text-muted); letter-spacing:0.05em; margin-bottom:0.5rem;">Top visitors by spend (MTD)</div>
+                <table style="width:100%; border-collapse:collapse; font-size:0.85rem;">
+                  <thead>
+                    <tr style="text-align:left; color:var(--admin-text-muted); font-weight:500;">
+                      <th style="padding:0.3rem 0.6rem;">Visitor</th>
+                      <th style="padding:0.3rem 0.6rem; text-align:right;">Spend</th>
+                      <th style="padding:0.3rem 0.6rem; text-align:right;">Events</th>
+                    </tr>
+                  </thead>
+                  <tbody data-testid="table-top-visitors">${rows}</tbody>
+                </table>
+              </div>`;
+          }
+        }
       } catch (e) {
         el.innerHTML = '<div class="empty-state" style="padding:1rem; grid-column:1/-1; color:#ef4444;">Could not load summary: ' + escapeHTML(String(e.message || e)) + '</div>';
       }

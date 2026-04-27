@@ -9115,8 +9115,19 @@ def _stream_round_openai(model, messages, tools, max_tokens=4096, temperature=0.
             "name": slot["name"],
             "args": slot["args"] or "{}",
         })
+    # Always emit a usage event — even when the API didn't include the
+    # final usage chunk — so the consumer can guarantee one ledger row
+    # per round. usage_known=False means the row will be written with
+    # cost_usd=NULL and surface in the dashboard's "uncosted_calls" tile.
     if usage_info is not None:
+        usage_info["usage_known"] = True
         yield ("usage", usage_info)
+    else:
+        yield ("usage", {
+            "provider": "openai", "model": model,
+            "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+            "usage_known": False,
+        })
     yield ("finish", finish_reason or "stop")
 
 
@@ -9200,6 +9211,10 @@ def _stream_round_claude(model, system, claude_messages, claude_tools, max_token
             "name": slot["name"],
             "args": slot["args_str"] or "{}",
         })
+    # Always emit a usage event — even when neither input nor output
+    # tokens were reported — so the consumer can guarantee one ledger
+    # row per round. usage_known=False writes the row with cost_usd=NULL
+    # and surfaces in the dashboard's "uncosted_calls" tile.
     if in_tokens or out_tokens:
         yield ("usage", {
             "provider": "anthropic",
@@ -9207,6 +9222,13 @@ def _stream_round_claude(model, system, claude_messages, claude_tools, max_token
             "prompt_tokens": int(in_tokens),
             "completion_tokens": int(out_tokens),
             "total_tokens": int(in_tokens) + int(out_tokens),
+            "usage_known": True,
+        })
+    else:
+        yield ("usage", {
+            "provider": "anthropic", "model": model,
+            "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+            "usage_known": False,
         })
     yield ("finish", finish_reason)
 
@@ -13365,6 +13387,7 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
                         prompt_tokens=u.get("prompt_tokens", 0),
                         completion_tokens=u.get("completion_tokens", 0),
                         total_tokens=u.get("total_tokens"),
+                        usage_known=u.get("usage_known", True),
                     )
                 elif kind == "finish":
                     finish_reason = event[1]
@@ -14590,6 +14613,10 @@ def api_chat():
                         # dashboard reflects spend the moment the round
                         # finishes (each round in a multi-tool turn is
                         # billed separately by the provider).
+                        # The streaming primitives ALWAYS emit a usage
+                        # event now; usage_known=False means the API
+                        # didn't include a usage chunk and the row will
+                        # be written with cost_usd=NULL (uncosted call).
                         u = event[1] or {}
                         record_chat_cost(
                             session_id=session_id,
@@ -14600,6 +14627,7 @@ def api_chat():
                             prompt_tokens=u.get("prompt_tokens", 0),
                             completion_tokens=u.get("completion_tokens", 0),
                             total_tokens=u.get("total_tokens"),
+                            usage_known=u.get("usage_known", True),
                         )
                     elif kind == "finish":
                         finish_reason = event[1]
@@ -21181,6 +21209,14 @@ def api_voice_tts_stream_consume():
     (typically 200-500ms). On any provider error or client disconnect,
     the partial cache file is discarded so the next request retries clean.
     """
+    # Re-check the cap at consume time. The token was minted in
+    # /prepare, possibly seconds-to-minutes ago — without this the
+    # tenant could keep replaying tokens that were issued just before
+    # they crossed the cap, defeating strict_block. enforce_cost_cap
+    # never blocks for throttle / alert_only.
+    capped = enforce_cost_cap("voice_tts")
+    if capped is not None:
+        return capped
     payload = _consume_tts_token(request.args.get("token"))
     if not payload:
         return Response("Invalid or expired token", status=410, mimetype="text/plain")
