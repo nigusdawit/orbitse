@@ -31214,10 +31214,17 @@ def webhook_twilio_status():
     raw_segs = form.get("NumSegments")
     if raw_segs:
         try:
-            new_segs = max(1, int(raw_segs))
+            new_segs = int(raw_segs)
         except (TypeError, ValueError):
             new_segs = None
-        if new_segs:
+        # Pass Twilio's reported segment count through untouched — never
+        # fabricate "1". Twilio sends NumSegments=0 during transitional
+        # routing states (queued/sending) before the real count is
+        # known; treat both 0 and unparseable values as "no authoritative
+        # count yet" by skipping the UPDATE so the original send-side
+        # value (or NULL) stands. Final delivered/failed callbacks carry
+        # the real positive count, which then writes through.
+        if new_segs and new_segs > 0:
             try:
                 execute_db(
                     "UPDATE sms_cost_events "
