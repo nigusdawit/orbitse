@@ -496,10 +496,42 @@ they're safe:
 
 ## Upgrading
 
-The app handles its own schema migrations on every boot via `CREATE TABLE
-IF NOT EXISTS` and `ADD COLUMN IF NOT EXISTS`. To upgrade an install:
+The app handles its own schema upkeep on every boot through two tracks
+that run back‑to‑back:
+
+1. **`init_db()`** — the legacy fresh‑install path. Idempotent
+   `CREATE TABLE IF NOT EXISTS` and `ADD COLUMN IF NOT EXISTS` for the
+   ~80 historical tables. Frozen as of April 2026; no new columns get
+   added here.
+2. **Alembic `upgrade head`** — applies any new revisions in
+   `migrations/versions/` that the database hasn't seen yet. New
+   columns and tables go through Alembic from now on. See
+   `replit.md` → "Schema Migrations (Alembic — April 2026)" for the
+   recipe to add a column.
+
+To upgrade an install:
 
 1. Pull the new code.
 2. Restart the app process (or rebuild + redeploy the container).
+3. **If you are deploying with `gunicorn app:app`** (the default
+   production command — see "Replit Deploy", "Render", "Fly.io",
+   "Railway", "Plain VPS", and "Docker on any other host" sections
+   above), **run both schema steps once before traffic is sent to the
+   new container**:
 
-That's it — no migration step.
+   ```bash
+   python -c "import app; app.init_db(); app._run_alembic_upgrade()"
+   ```
+
+   Both `init_db()` and `alembic upgrade head` are idempotent, so
+   re‑running them on a tip database is a fast no‑op (a couple of
+   `SELECT`s). Wire this command into your release / pre‑deploy
+   pipeline so it runs automatically on every deploy. The dev workflow
+   (`python app.py`) does both steps on its own; gunicorn imports
+   `app:app` as a module and skips them by design.
+
+If a release is bad and you need to roll the code back while the
+revision tree is still ahead of where the rolled‑back code expects, set
+`SKIP_ALEMBIC=1` in the environment and restart. The app will boot
+without touching schema; clear the env var once a forward fix is
+deployed.

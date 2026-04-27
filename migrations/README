@@ -1,0 +1,15 @@
+Alembic migrations live here. See `replit.md` -> "Schema Migrations
+(Alembic — April 2026)" for the full contract.
+
+TL;DR
+-----
+Existing 80+ tables are still created by `init_db()` in `app.py` on
+first boot (idempotent CREATE TABLE IF NOT EXISTS). That code path is
+frozen — do NOT add new columns or tables to it.
+
+To add a new column or table going forward:
+
+    alembic revision -m "add foo column to bar"
+
+Edit the new file in `migrations/versions/`. On the next app boot
+`alembic upgrade head` runs automatically and applies the change.

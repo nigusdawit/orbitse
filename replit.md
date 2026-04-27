@@ -140,6 +140,56 @@ When debugging or adding features that touch the placeholder list, assume the up
     - **Endpoints**: `GET /admin/api/skills`, `POST /admin/api/skills`, `PUT /admin/api/skills/<id>`, `DELETE /admin/api/skills/<id>` (custom only — builtins refuse with a 400 explaining they'd resync on next restart; disable them instead).
   - `skill_usage_log` — Observability table written by `_log_skill_usage` every time the AI calls a skill. Has skill_name, args_json, row_count, duration_ms, error, conversation_id, session_id, created_at. Powers the "Recent Skill Calls" panel in the AI Skills admin tab.
   - `agent_provider_settings` — Singleton row (id=1) holding the active LLM provider. Has provider ('openai' or 'claude'), openai_model, claude_model, updated_at. The chat dispatcher reads this on every visitor message via `get_active_llm_provider`.
+  - `alembic_version` — Owned by Alembic. Single-row tracker that records the latest migration revision applied to this database. Never written to by app code; managed entirely by `alembic upgrade` (auto-run on boot — see "Schema Migrations" below).
+
+## Schema Migrations (Alembic — April 2026)
+
+The project uses **two coexisting schema-management tracks**. Both run on every dev boot, in this order, after the connection pool is initialised:
+
+1. **`init_db()` in `app.py`** — the LEGACY "fresh install" path. It owns every table and column that existed when Alembic was adopted. Idempotent (CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS only — never DROP, never ALTER TYPE), so re-running it on an existing DB is a no-op. **This code is FROZEN.** Do not add new tables or columns to it.
+2. **`_run_alembic_upgrade()` in `app.py`** — runs `alembic upgrade head` against the live `DATABASE_URL`. Applies every revision in `migrations/versions/` that the DB hasn't seen yet, then exits. On a brand-new DB the empty `0001_baseline` migration is a no-op that just creates `alembic_version` and stamps the starting row; on an up-to-date DB the upgrade is a single `SELECT version_num FROM alembic_version` and exits.
+
+The two tracks coexist cleanly because init_db never touches anything Alembic might add (the historical create-statements predate every migration), and Alembic migrations never redeclare anything init_db owns (every revision starts from the post-init_db state).
+
+### Adding a new column or table
+
+```bash
+# 1. Generate a new revision file (Alembic creates it under migrations/versions/).
+uv run alembic revision -m "add foo column to bar"
+
+# 2. Edit the generated file. Use op.add_column() / op.create_table() / op.execute() — see Alembic's "Operation Reference".
+#    The downgrade() must be a precise inverse so deploys can be rolled back.
+
+# 3. Test locally:
+uv run alembic upgrade head     # apply
+uv run alembic downgrade -1     # roll back one revision (verify downgrade works)
+uv run alembic upgrade head     # re-apply
+
+# 4. Restart the dev workflow — `_run_alembic_upgrade()` confirms the boot path picks it up.
+# 5. Commit BOTH the new revision file AND any new code that depends on the column/table.
+```
+
+### Why the dual-track scheme
+
+The legacy `init_db()` had grown to ~7500 lines and was the source of every "I added a column but forgot to also add it to init_db" outage. Freezing it and routing all new schema work through Alembic stops the file from growing further while preserving the existing fresh-install guarantees for the historical tables. Operators upgrading an existing install pay no extra cost — Alembic upgrade-to-head against a tip database is a single SELECT.
+
+### Files
+
+- `alembic.ini` — Alembic config (placeholder DATABASE_URL; the real one is read from env in `migrations/env.py`).
+- `migrations/env.py` — Custom env that connects via SQLAlchemy + psycopg2 using the live `DATABASE_URL`. `target_metadata = None` because the codebase has no SQLAlchemy declarative models — every revision is hand-written.
+- `migrations/script.py.mako` — Template for new revision files.
+- `migrations/versions/0001_baseline.py` — Intentionally empty baseline.
+- `migrations/README` — Quick-start reminder for contributors.
+
+### Escape hatches
+
+- `SKIP_ALEMBIC=1` — bypass the upgrade on boot. Only for emergency recovery (e.g. rolling back a bad release while the bad revision is still in the tree). The app will boot but may serve 500s if its code expects a column the DB doesn't have.
+- `uv run alembic upgrade head --sql` — render the pending SQL to stdout for review without touching the DB.
+- `uv run alembic current` / `uv run alembic history` — inspect the live revision and the full history.
+
+### Known limitation (pre-existing, not introduced here)
+
+Like `init_db()`, `_run_alembic_upgrade()` is called only from the `if __name__ == "__main__":` block in `app.py`. That means the dev workflow runs it but production gunicorn (`gunicorn app:app`) and the pytest fixture do not — both rely on the dev boot to keep the DB in sync. This matches the existing init_db blast radius; lifting both to module-level boot is a separate task.
 
 ### API Endpoints
 

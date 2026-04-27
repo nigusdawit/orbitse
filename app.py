@@ -562,12 +562,36 @@ def decrypt_secret(token):
 # =============================================================================
 # DATABASE INITIALIZATION
 # =============================================================================
+#
+# Two-track schema management (adopted Tier 10, April 2026):
+#
+#   * `init_db()` below is the LEGACY "fresh install" path. It owns every
+#     table and column that existed when Alembic was adopted. It is
+#     idempotent (CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS
+#     only — never DROP, never ALTER TYPE), so re-running it on an
+#     existing DB is a no-op. This code is FROZEN: do not add new tables
+#     or columns to it.
+#
+#   * `_run_alembic_upgrade()` below runs immediately after init_db() on
+#     boot and applies any pending Alembic migrations from
+#     `migrations/versions/`. ALL new columns and tables go through
+#     Alembic from now on. See `replit.md` -> "Schema Migrations
+#     (Alembic — April 2026)" for the recipe to add a column.
+#
+# The two tracks coexist cleanly because init_db never touches anything
+# Alembic might have added (the historical create-statements predate
+# every migration), and Alembic migrations never redeclare anything
+# init_db owns (every revision starts from the post-init_db state).
+
 
 def init_db():
     """
     Create all required tables if they don't already exist.
     This runs on every app startup to ensure the schema is ready.
     Existing data is never touched (IF NOT EXISTS / ON CONFLICT).
+
+    FROZEN as of Tier 10 (April 2026). New schema changes go through
+    Alembic — see `_run_alembic_upgrade()` below and `migrations/`.
     """
     conn = get_db()
     try:
@@ -32136,8 +32160,65 @@ def _ensure_velo_registration():
 # APP ENTRY POINT
 # =============================================================================
 
+
+def _run_alembic_upgrade() -> None:
+    """Apply pending Alembic migrations, called once at boot after init_db().
+
+    Two-track schema management (see init_db's preamble for the full
+    contract): init_db owns historical tables; Alembic owns everything
+    added after April 2026. Running upgrade-to-head on every boot is
+    cheap — Alembic just queries `alembic_version` and no-ops when
+    already at head — and keeps the running app's schema in lockstep
+    with the deployed code.
+
+    Behaviour:
+      * On a brand-new DB, init_db has just created the historical
+        tables. Alembic finds no `alembic_version` table, creates it,
+        runs the empty 0001_baseline migration, and stamps the row.
+      * On an existing DB without Alembic state, same flow as above —
+        the baseline migration is a no-op so this is purely bookkeeping.
+      * On an existing DB already at head, the upgrade is a single
+        SELECT against `alembic_version` and exits.
+      * On a DB behind head, every pending revision runs in order.
+
+    A migration failure is fatal: the running code expects whatever
+    schema HEAD defines, so coming up against a stale DB would lead to
+    mid-request 500s that are much harder to diagnose than a loud boot
+    failure. Set `SKIP_ALEMBIC=1` to bypass for emergency recovery (e.g.
+    rolling back a bad release while the bad migration is still in the
+    revision tree).
+    """
+    if os.environ.get("SKIP_ALEMBIC", "").strip().lower() in ("1", "true", "yes"):
+        print("[alembic] skipped (SKIP_ALEMBIC set)", file=sys.stderr)
+        return
+
+    # Lazy import so projects that never run this codepath (e.g. one-off
+    # scripts that only `from app import some_helper`) don't pay the
+    # ~80ms alembic + sqlalchemy import cost.
+    try:
+        from alembic.config import Config as _AlembicConfig
+        from alembic import command as _alembic_command
+    except ImportError as exc:
+        raise RuntimeError(
+            "alembic is not installed but is required for schema migrations; "
+            "run `uv add alembic` or set SKIP_ALEMBIC=1 to bypass"
+        ) from exc
+
+    cfg_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "alembic.ini")
+    if not os.path.exists(cfg_path):
+        raise RuntimeError(
+            f"alembic.ini not found at {cfg_path} — Alembic scaffolding is "
+            "missing; restore from version control or set SKIP_ALEMBIC=1")
+
+    cfg = _AlembicConfig(cfg_path)
+    _alembic_command.upgrade(cfg, "head")
+    print("[alembic] migrations up to date", file=sys.stderr)
+
+
 if __name__ == "__main__":
     init_db()
+    _run_alembic_upgrade()
     sync_skills_to_db()
     sync_custom_skills_to_agent_skills()
     app.run(host="0.0.0.0", port=5000, debug=True)
