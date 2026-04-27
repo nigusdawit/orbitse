@@ -10842,13 +10842,17 @@ def _admin_tool_recent_visitor_chats(limit=20, **_):
         n = max(1, min(int(limit), 100))
     except Exception:
         n = 20
+    # chat_conversations stores its creation timestamp in `started_at`,
+    # not `created_at` (see init_db). We alias it back so the tool's
+    # JSON result shape stays stable for callers that expect created_at.
     rows = query_db(
-        "SELECT c.id, c.session_id, c.visitor_id, c.created_at, "
+        "SELECT c.id, c.session_id, c.visitor_id, "
+        "       c.started_at AS created_at, "
         "  (SELECT count(*) FROM chat_messages m WHERE m.conversation_id=c.id) AS msg_count, "
         "  (SELECT content FROM chat_messages m WHERE m.conversation_id=c.id "
         "     AND m.role='user' ORDER BY m.created_at ASC LIMIT 1) AS first_user_msg "
         "FROM chat_conversations c "
-        "ORDER BY c.created_at DESC LIMIT %s",
+        "ORDER BY c.started_at DESC LIMIT %s",
         (n,),
     ) or []
     for r in rows:
@@ -10881,11 +10885,16 @@ def _admin_tool_recent_form_submissions(limit=20, **_):
     except Exception:
         n = 20
     try:
+        # form_submissions stores its creation timestamp in `submitted_at`
+        # and its payload in `submission_data` (see init_db). Aliased back
+        # to the historical names so the JSON shape returned to callers
+        # stays stable.
         rows = query_db(
-            "SELECT s.id, s.form_id, f.name AS form_name, s.created_at, "
-            "       LEFT(s.data_json::text, 300) AS preview "
+            "SELECT s.id, s.form_id, f.name AS form_name, "
+            "       s.submitted_at AS created_at, "
+            "       LEFT(s.submission_data::text, 300) AS preview "
             "FROM form_submissions s LEFT JOIN custom_forms f ON f.id=s.form_id "
-            "ORDER BY s.created_at DESC LIMIT %s", (n,)
+            "ORDER BY s.submitted_at DESC LIMIT %s", (n,)
         ) or []
     except Exception as e:
         return {"error": f"Could not read form submissions: {str(e)[:200]}"}
@@ -10907,11 +10916,13 @@ def _admin_tool_overview_stats(**_):
             "SELECT count(*) AS n FROM page_views "
             "WHERE created_at > NOW() - INTERVAL '7 days'",
         "form_submissions_7d":
+            # form_submissions uses `submitted_at`, not `created_at`.
             "SELECT count(*) AS n FROM form_submissions "
-            "WHERE created_at > NOW() - INTERVAL '7 days'",
+            "WHERE submitted_at > NOW() - INTERVAL '7 days'",
         "chat_conversations_7d":
+            # chat_conversations uses `started_at`, not `created_at`.
             "SELECT count(*) AS n FROM chat_conversations "
-            "WHERE created_at > NOW() - INTERVAL '7 days'",
+            "WHERE started_at > NOW() - INTERVAL '7 days'",
         "orders_7d":
             "SELECT count(*) AS n FROM orders "
             "WHERE created_at > NOW() - INTERVAL '7 days'",
