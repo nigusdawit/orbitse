@@ -36,6 +36,8 @@ TO CUSTOMIZE THIS DASHBOARD:
   <meta charset="UTF-8">
   <!-- interactive-widget=resizes-content keeps fixed elements above the mobile keyboard -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
+  <!-- CSRF token: rotated per session, validated on every state-changing /admin/* request. -->
+  <meta name="csrf-token" content="{{ csrf_token }}">
   <title>Admin Dashboard</title>
 
   <!-- Google Fonts — same as the main site for visual consistency -->
@@ -3466,6 +3468,58 @@ TO CUSTOMIZE THIS DASHBOARD:
   </div>
 
   <script>
+  // ===== CSRF: auto-inject token on same-origin admin fetches =====
+  // Reads the token from the <meta name="csrf-token"> tag rendered into
+  // <head> and wraps window.fetch so every state-changing /admin/* request
+  // carries the X-CSRF-Token header. Existing fetch() call sites need no
+  // changes — the wrapper transparently adds the header before delegating.
+  // On 403 csrf_failed responses we surface a friendly toast and force a
+  // page reload so the user picks up a fresh token.
+  (function installCsrfFetchWrapper() {
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    const TOKEN = meta ? (meta.getAttribute('content') || '') : '';
+    if (!TOKEN) return;
+    window.__CSRF_TOKEN = TOKEN;
+    const origFetch = window.fetch.bind(window);
+    const PROTECTED_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+    window.fetch = function patchedFetch(input, init) {
+      init = init || {};
+      const reqMethod = (
+        init.method ||
+        (typeof input === 'object' && input && input.method) ||
+        'GET'
+      ).toUpperCase();
+      if (PROTECTED_METHODS.has(reqMethod)) {
+        let url = '';
+        try { url = (typeof input === 'string') ? input : (input && input.url) || ''; } catch (_e) {}
+        // Same-origin admin paths only (relative or absolute).
+        const isAdmin = url.startsWith('/admin') ||
+                        url.startsWith(window.location.origin + '/admin');
+        if (isAdmin) {
+          const headers = new Headers(init.headers || {});
+          if (!headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', TOKEN);
+          init.headers = headers;
+        }
+      }
+      return origFetch(input, init).then(function(res) {
+        // If the server rotated/expired our token, soft-reload to pick up a new one.
+        if (res && res.status === 403) {
+          const ct = res.headers.get('content-type') || '';
+          if (ct.indexOf('application/json') !== -1) {
+            const cloned = res.clone();
+            cloned.json().then(function(j) {
+              if (j && j.csrf_failed) {
+                console.warn('[csrf] token rejected — reloading');
+                setTimeout(function() { window.location.reload(); }, 250);
+              }
+            }).catch(function() {});
+          }
+        }
+        return res;
+      });
+    };
+  })();
+
   // ===== Admin Chat (in-dashboard) =====
   // Two separate session ids, one per mode, persisted in localStorage so
   // each mode keeps its own thread across reloads.

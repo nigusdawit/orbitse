@@ -307,15 +307,158 @@ ELEVENLABS_API_BASE = "https://api.elevenlabs.io/v1"
 # DATABASE HELPERS
 # =============================================================================
 
+# -----------------------------------------------------------------------------
+# Connection pool (Tier 7)
+# -----------------------------------------------------------------------------
+# Process-wide pool so we don't pay TCP+auth setup on every request. Each
+# gunicorn worker gets its own pool. Defaults are conservative; tune via
+# DB_POOL_MIN / DB_POOL_MAX env vars. Falls back to a direct connection if
+# the pool is unavailable or exhausted, so a misconfiguration never breaks
+# the app — it just degrades to the pre-pool behaviour.
+import psycopg2.pool as _psql_pool
+
+_DB_POOL = None
+_DB_POOL_LOCK = threading.Lock()
+_DB_POOL_DISABLED = False
+_DB_POOL_MIN = max(1, int(os.environ.get("DB_POOL_MIN", "1") or "1"))
+_DB_POOL_MAX = max(_DB_POOL_MIN, int(os.environ.get("DB_POOL_MAX", "10") or "10"))
+
+
+def _direct_connect():
+    """Un-pooled connection. Used by the get_db() fallback path only.
+    Closes for real (no pool involvement) so a fallback under pool exhaustion
+    doesn't accumulate."""
+    return psycopg2.connect(DATABASE_URL)
+
+
+class _PooledConnection(psycopg2.extensions.connection):
+    """psycopg2 connection subclass whose `.close()` returns to the pool.
+
+    psycopg2's C-level connection forbids reassigning `.close` as an
+    instance attribute, so we override it via a subclass and pass the
+    subclass to the pool via `connection_factory=`. This way every
+    existing `conn.close()` call site returns the connection to the pool
+    instead of closing it.
+
+    Re-entrancy guard: ThreadedConnectionPool.putconn() *itself* calls
+    `conn.close()` internally to discard a connection when the pool is
+    full or the conn is in an unknown txn state. Without the
+    `_closing_directly` flag we'd recurse into putconn forever — close
+    is the very symptom that brought us in. When that flag is set we
+    fall straight through to the real close().
+    """
+    _pool = None  # set right after pool construction in _init_db_pool()
+
+    def close(self):
+        # Re-entrancy guard: pool internally calls .close() on overflow/discard.
+        if getattr(self, "_closing_directly", False):
+            super().close()
+            return
+        pool = type(self)._pool
+        if pool is None:
+            super().close()
+            return
+        try:
+            self._closing_directly = True
+            if self.closed:
+                # Already dead — tell the pool to discard cleanly.
+                try:
+                    pool.putconn(self, close=True)
+                    return
+                except Exception:
+                    pass
+            else:
+                # Reset state so a handler that left autocommit=False or
+                # an open transaction cannot poison the next borrower.
+                try:
+                    if not self.autocommit:
+                        self.rollback()
+                except Exception:
+                    pass
+                try:
+                    self.autocommit = True
+                except Exception:
+                    pass
+                try:
+                    pool.putconn(self)
+                    return
+                except Exception:
+                    pass
+            # putconn raised — fall through to real close so we don't leak.
+            super().close()
+        finally:
+            self._closing_directly = False
+
+
+def _init_db_pool():
+    """Lazily initialise the process-wide pool. Returns the pool or None on failure."""
+    global _DB_POOL, _DB_POOL_DISABLED
+    if _DB_POOL_DISABLED:
+        return None
+    if _DB_POOL is not None:
+        return _DB_POOL
+    with _DB_POOL_LOCK:
+        if _DB_POOL is None and not _DB_POOL_DISABLED:
+            try:
+                _DB_POOL = _psql_pool.ThreadedConnectionPool(
+                    _DB_POOL_MIN, _DB_POOL_MAX, DATABASE_URL,
+                    connection_factory=_PooledConnection,
+                )
+                # Wire the subclass back to the pool so close() can find it.
+                _PooledConnection._pool = _DB_POOL
+                print(
+                    f"[db pool] initialised (min={_DB_POOL_MIN}, max={_DB_POOL_MAX})",
+                    file=sys.stderr,
+                )
+            except Exception as e:
+                print(
+                    f"[db pool] init failed, falling back to per-request connections: {e}",
+                    file=sys.stderr,
+                )
+                _DB_POOL_DISABLED = True
+                return None
+    return _DB_POOL
+
+
 def get_db():
     """
-    Create and return a new database connection.
-    Uses RealDictCursor so query results come back as dictionaries
-    instead of tuples, making them easy to convert to JSON.
+    Borrow a Postgres connection from the process-wide pool.
+
+    The returned connection is a `_PooledConnection` whose `.close()`
+    returns it to the pool — every existing `try: ... finally: conn.close()`
+    call site works unchanged. Falls back to a fresh direct connection if
+    the pool is unavailable or exhausted, so the app never hard-fails on
+    a pool misconfiguration.
+
+    Callers create cursors with `cursor_factory=psycopg2.extras.RealDictCursor`
+    explicitly (matches the pre-pool convention used throughout this file).
     """
-    conn = psycopg2.connect(DATABASE_URL)
-    conn.autocommit = True
-    return conn
+    pool = _init_db_pool()
+    if pool is not None:
+        try:
+            conn = pool.getconn()
+            # Defence: if Postgres killed the conn while it was idle in the
+            # pool, discard it and grab another rather than handing the
+            # caller a dead handle that errors on first use.
+            if getattr(conn, "closed", 0):
+                try:
+                    pool.putconn(conn, close=True)
+                except Exception:
+                    pass
+                conn = pool.getconn()
+            try:
+                conn.autocommit = True
+            except Exception:
+                pass
+            return conn
+        except _psql_pool.PoolError as e:
+            print(f"[db pool] exhausted, falling back to direct connect: {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"[db pool] borrow error, falling back to direct connect: {e}", file=sys.stderr)
+    # Fallback: behave exactly like the pre-pool implementation.
+    fallback = _direct_connect()
+    fallback.autocommit = True
+    return fallback
 
 
 def query_db(sql, params=None, fetchone=False):
@@ -4193,7 +4336,113 @@ def admin_login():
 def admin_logout():
     """Log out of the admin dashboard and redirect to login."""
     session.pop("admin_logged_in", None)
+    session.pop("_csrf_token", None)
     return redirect(url_for("admin_login"))
+
+
+# -----------------------------------------------------------------------------
+# CSRF protection (Tier 7)
+# -----------------------------------------------------------------------------
+# Per-session token validated on every state-changing request to the admin
+# surface. The dashboard SPA picks up the token from a <meta> tag rendered
+# into admin/dashboard.html and a tiny window.fetch wrapper auto-injects it
+# as `X-CSRF-Token` on same-origin admin requests. Form posts may also send
+# the token as `csrf_token` field.
+#
+# Deliberately NOT protected:
+#   - Public /api/* (anonymous; no session = no CSRF surface)
+#   - VELO endpoints under /api/velo/*  (Bearer-token auth)
+#   - Webhook endpoints                  (HMAC-verified payloads)
+#   - /admin/login & /admin/logout       (login CSRF is moot when the password
+#                                         IS the credential — an attacker who
+#                                         knows the password is already in)
+#   - /setup wizard                      (password-gated, install-once,
+#                                         404 once `installation_bootstrapped_at`
+#                                         is set)
+#   - GET / HEAD / OPTIONS               (idempotent by HTTP contract)
+_CSRF_PROTECTED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_CSRF_EXEMPT_PATHS = {"/admin/login", "/admin/logout"}
+
+
+def _csrf_token():
+    """Per-session CSRF token, generated lazily on first read."""
+    tok = session.get("_csrf_token")
+    if not tok:
+        tok = secrets.token_urlsafe(32)
+        session["_csrf_token"] = tok
+    return tok
+
+
+def _csrf_should_check(path, method):
+    if method not in _CSRF_PROTECTED_METHODS:
+        return False
+    if not path.startswith("/admin"):
+        return False
+    if path in _CSRF_EXEMPT_PATHS:
+        return False
+    return True
+
+
+@app.before_request
+def _csrf_validate_request():
+    """Reject state-changing admin requests that lack a valid CSRF token.
+
+    Runs before the route handler (and before @admin_required's auth check
+    for unauthenticated callers). For unauthenticated callers we defer to
+    @admin_required so the user sees the standard 401-or-redirect rather
+    than a confusing CSRF error.
+    """
+    try:
+        path = request.path or ""
+        method = (request.method or "GET").upper()
+    except Exception:
+        return None
+    if not _csrf_should_check(path, method):
+        return None
+    if not session.get("admin_logged_in"):
+        # Let @admin_required do its thing — auth boundary first, then CSRF.
+        return None
+    expected = session.get("_csrf_token")
+    if not expected:
+        return jsonify({
+            "error": "CSRF token missing from session. Please reload the admin page.",
+            "csrf_failed": True,
+        }), 403
+    # Prefer the header (used by the dashboard SPA's fetch wrapper). Only
+    # touch request.form for actual form-encoded payloads — accessing it
+    # on a JSON or binary body would needlessly trigger Flask's form
+    # parser (slow, allocates, and broadens the DoS surface for large
+    # multipart bodies on every admin request).
+    provided = request.headers.get("X-CSRF-Token")
+    if not provided:
+        ct = (request.content_type or "").lower()
+        if "form-urlencoded" in ct or "multipart/form-data" in ct:
+            try:
+                provided = request.form.get("csrf_token")
+            except Exception:
+                provided = None
+    if not provided or not secrets.compare_digest(str(provided), str(expected)):
+        return jsonify({
+            "error": "CSRF token invalid or missing.",
+            "csrf_failed": True,
+        }), 403
+    return None
+
+
+@app.context_processor
+def _inject_csrf_token():
+    """Make `csrf_token` available to all rendered templates without per-call plumbing."""
+    try:
+        return {"csrf_token": _csrf_token()}
+    except Exception:
+        return {"csrf_token": ""}
+
+
+@app.route("/admin/api/csrf-token", methods=["GET"])
+@admin_required
+def admin_get_csrf_token():
+    """Refresh handle for the dashboard SPA after a long idle (token rotation hook)."""
+    return jsonify({"csrf_token": _csrf_token()})
 
 
 # -----------------------------------------------------------------------------
@@ -8401,7 +8650,7 @@ def _exec_custom_sql(name, args):
     if st_err:
         return {"error": st_err}, 0
     try:
-        conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
+        conn = get_db(); conn.autocommit = False
         rows = []
         with conn.cursor(
             cursor_factory=psycopg2.extras.RealDictCursor
@@ -9836,7 +10085,7 @@ def _admin_tool_describe_table(table_name=None):
     row_count = 0
     conn = None
     try:
-        conn = psycopg2.connect(DATABASE_URL)
+        conn = get_db()
         conn.autocommit = False
         with conn.cursor() as cur:
             cur.execute("SET LOCAL statement_timeout = '5s'")
@@ -9879,7 +10128,7 @@ def _admin_tool_run_sql(sql=None, **_):
         return {"error": err}
     conn = None
     try:
-        conn = psycopg2.connect(DATABASE_URL)
+        conn = get_db()
         conn.autocommit = False
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("SET LOCAL statement_timeout = '5s'")
@@ -10320,7 +10569,7 @@ def _admin_tool_propose_update(table_name=None, row_id=None, fields=None,
     from psycopg2 import sql as _pgsql
     current = None
     try:
-        conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
+        conn = get_db(); conn.autocommit = False
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("SET LOCAL statement_timeout = '5s'")
             cur.execute("SET LOCAL transaction_read_only = on")
@@ -10376,7 +10625,7 @@ def _admin_tool_propose_delete(table_name=None, row_id=None,
     from psycopg2 import sql as _pgsql
     current = None
     try:
-        conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
+        conn = get_db(); conn.autocommit = False
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("SET LOCAL statement_timeout = '5s'")
             cur.execute("SET LOCAL transaction_read_only = on")
@@ -10578,7 +10827,7 @@ def _admin_snapshot_row(table_name, row_id, action_id, reason):
         return None
     from psycopg2 import sql as _pgsql
     try:
-        conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
+        conn = get_db(); conn.autocommit = False
         with conn.cursor(
             cursor_factory=psycopg2.extras.RealDictCursor
         ) as cur:
@@ -10700,7 +10949,7 @@ def _admin_execute_pending(action_row):
             _pgsql.SQL(", ").join(_pgsql.Placeholder() * len(cols)),
         )
         try:
-            conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
+            conn = get_db(); conn.autocommit = False
             with conn.cursor() as cur:
                 cur.execute("SET LOCAL statement_timeout = '10s'")
                 cur.execute(stmt, vals)
@@ -10764,7 +11013,7 @@ def _admin_execute_pending(action_row):
             set_clause,
         )
         try:
-            conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
+            conn = get_db(); conn.autocommit = False
             with conn.cursor() as cur:
                 cur.execute("SET LOCAL statement_timeout = '10s'")
                 cur.execute(stmt, vals)
@@ -10812,7 +11061,7 @@ def _admin_execute_pending(action_row):
             _pgsql.Identifier(table),
         )
         try:
-            conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
+            conn = get_db(); conn.autocommit = False
             with conn.cursor() as cur:
                 cur.execute("SET LOCAL statement_timeout = '10s'")
                 cur.execute(stmt, (rid,))
@@ -10853,7 +11102,7 @@ def _admin_execute_pending(action_row):
         if st_err:
             return None, st_err
         try:
-            conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
+            conn = get_db(); conn.autocommit = False
             preview_rows = None
             with conn.cursor(
                 cursor_factory=psycopg2.extras.RealDictCursor
@@ -10998,7 +11247,7 @@ def _admin_execute_revert(action_id, payload):
     existing = None
     if snap_row_id is not None:
         try:
-            conn = psycopg2.connect(DATABASE_URL)
+            conn = get_db()
             with conn.cursor() as cur:
                 cur.execute(
                     _pgsql.SQL(
@@ -11012,7 +11261,7 @@ def _admin_execute_revert(action_id, payload):
         except Exception as e:
             return None, f"Could not check current row: {str(e)[:200]}"
     try:
-        conn = psycopg2.connect(DATABASE_URL); conn.autocommit = False
+        conn = get_db(); conn.autocommit = False
         with conn.cursor() as cur:
             cur.execute("SET LOCAL statement_timeout = '10s'")
             # JSONB columns need a ::jsonb cast on their placeholder

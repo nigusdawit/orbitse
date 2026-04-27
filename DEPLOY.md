@@ -245,6 +245,25 @@ The doctor reports on:
 - **Required env vars** (DATABASE_URL reachable, ADMIN_PASSWORD set
   and non-default, FLASK_SECRET_KEY, at least one AI provider key)
 - **Strongly-recommended env vars** (PUBLIC_BASE_URL/SITE_URL, ADMIN_EMAIL)
+- **Tuning env vars (Tier 7 — connection pool)**:
+  - `DB_POOL_MIN` (default `1`) — pre-warmed conns kept alive in the pool.
+  - `DB_POOL_MAX` (default `10`) — hard cap on pooled conns. Bursts above
+    this cap fall back to a fresh direct `psycopg2.connect()` (with a
+    stderr `[db pool] exhausted` warning) so traffic spikes degrade
+    gracefully instead of hard-failing. For a single-worker debug server
+    `10` is plenty; for a `gunicorn -w N` deploy set `DB_POOL_MAX` per
+    worker so total open conns stay within your Postgres `max_connections`
+    (cluster total ≤ `N × DB_POOL_MAX + headroom`).
+- **CSRF protection (Tier 7 — automatic, no env vars)**: every
+  state-changing request to `/admin/*` is now validated against a
+  per-session CSRF token. The dashboard SPA picks the token up from a
+  `<meta name="csrf-token">` tag and a `window.fetch` wrapper auto-injects
+  it as the `X-CSRF-Token` header — no per-call-site changes needed. If
+  you write your own admin tooling that POSTs to `/admin/api/*`, fetch
+  the token from `GET /admin/api/csrf-token` and pass it back in the
+  `X-CSRF-Token` header (or as a `csrf_token` form field). Public
+  `/api/*` routes, VELO Bearer-auth endpoints, HMAC webhooks, the
+  `/admin/login` POST, and the `/setup` wizard are all exempt.
 - **Schema bootstrap state** (table count, first-run wizard marker,
   admin user count)
 - **Optional integrations** (Resend, Twilio, Stripe, ElevenLabs, Brave,
