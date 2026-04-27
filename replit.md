@@ -1,5 +1,7 @@
 # Database-Driven Website Template
 
+> **AI agents:** read [`AGENT_KNOWLEDGE_BASE.md`](./AGENT_KNOWLEDGE_BASE.md) first — it is the canonical agent-oriented map of this project (architecture, routes, tables, env vars, conventions). Use this `replit.md` for the long-form feature changelog detail.
+
 ## Overview
 
 A database-driven website template built as a reusable, industry-agnostic HTML/CSS/JS application. All content (gallery slides, experiences, pricing, site settings, chatbot) is managed through a PostgreSQL database and a password-protected admin dashboard — no code editing needed to change content. Suitable for any business type: hospitality, real estate, restaurants, portfolios, agencies, and more.
