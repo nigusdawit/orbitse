@@ -4951,7 +4951,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           <div class="theme-color-input">
             <div class="theme-swatch" id="swatch-theme-bg" onclick="document.getElementById('theme-bg-picker').click()"></div>
             <input type="color" id="theme-bg-picker" class="theme-picker-hidden" onchange="document.getElementById('theme-bg').value=this.value;syncPickerSwatch('theme-bg');updateThemePreview()" data-testid="picker-theme-bg">
-            <input type="text" id="theme-bg" placeholder="#0a0f1a" oninput="syncPickerSwatch('theme-bg');updateThemePreview()" data-testid="input-theme-bg">
+            <input type="text" id="theme-bg" placeholder="#060b14" oninput="syncPickerSwatch('theme-bg');updateThemePreview()" data-testid="input-theme-bg">
           </div>
         </div>
         <div class="form-group">
@@ -4960,7 +4960,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           <div class="theme-color-input">
             <div class="theme-swatch" id="swatch-theme-section1" onclick="document.getElementById('theme-section1-picker').click()"></div>
             <input type="color" id="theme-section1-picker" class="theme-picker-hidden" onchange="document.getElementById('theme-section1').value=this.value;syncPickerSwatch('theme-section1');updateThemePreview()" data-testid="picker-theme-section1">
-            <input type="text" id="theme-section1" placeholder="#060b14" oninput="syncPickerSwatch('theme-section1');updateThemePreview()" data-testid="input-theme-section1">
+            <input type="text" id="theme-section1" placeholder="#0a0f1a" oninput="syncPickerSwatch('theme-section1');updateThemePreview()" data-testid="input-theme-section1">
           </div>
         </div>
         <div class="form-group">
@@ -4969,7 +4969,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           <div class="theme-color-input">
             <div class="theme-swatch" id="swatch-theme-section2" onclick="document.getElementById('theme-section2-picker').click()"></div>
             <input type="color" id="theme-section2-picker" class="theme-picker-hidden" onchange="document.getElementById('theme-section2').value=this.value;syncPickerSwatch('theme-section2');updateThemePreview()" data-testid="picker-theme-section2">
-            <input type="text" id="theme-section2" placeholder="#0d1420" oninput="syncPickerSwatch('theme-section2');updateThemePreview()" data-testid="input-theme-section2">
+            <input type="text" id="theme-section2" placeholder="#060b14" oninput="syncPickerSwatch('theme-section2');updateThemePreview()" data-testid="input-theme-section2">
           </div>
         </div>
       </div>
@@ -8994,7 +8994,11 @@ TO CUSTOMIZE THIS DASHBOARD:
     ========================================================================
     */
     function syncPickerSwatch(fieldId) {
-      const val = document.getElementById(fieldId).value.trim();
+      const el = document.getElementById(fieldId);
+      // Fall back to the placeholder when the field is blank, so the swatch
+      // and color-picker reflect the *effective* color (server defaults
+      // when the admin hasn't overridden anything) instead of going black.
+      const val = (el.value || el.placeholder || '').trim();
       const picker = document.getElementById(fieldId + '-picker');
       const swatch = document.getElementById('swatch-' + fieldId);
       if (picker && /^#[0-9a-f]{3,8}$/i.test(val)) {
