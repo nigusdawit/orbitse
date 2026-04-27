@@ -120,6 +120,12 @@ async function loadAllData() {
     }
     const bundle = await bundleRes.json();
 
+    /* Opt #5: pull the CDN base BEFORE any render function runs so every
+     * imgAttrs/imgSrcset call sees it. Empty string when no CDN is
+     * configured. Trailing slashes stripped defensively even though the
+     * server already strips them on its end. */
+    IMG_UPLOADS_BASE = (bundle.uploads_public_base_url || '').replace(/\/+$/, '');
+
     siteSettings = bundle.site_settings;
     galleryCards = bundle.gallery_cards || [];
     experiences = bundle.experiences || [];
@@ -5589,6 +5595,16 @@ function escapeHtml(text) {
 const IMG_RESPONSIVE_WIDTHS = [400, 800, 1600];
 const IMG_VARIANT_SOURCE_EXTS = new Set(['jpg', 'jpeg', 'png']);
 
+/* Optimization #5 — CDN base for /uploads/. Empty string by default
+ * (paths stay relative); populated from /api/page-bundle's
+ * `uploads_public_base_url` field at the top of loadAllData() before any
+ * render function runs. Trailing slashes are stripped on assignment so
+ * imgSrcset / imgAttrs can do `${IMG_UPLOADS_BASE}/uploads/...` without
+ * producing `//uploads/...`. Reset to '' if the operator clears the
+ * UPLOADS_PUBLIC_BASE_URL env var; the frontend re-reads on each cold
+ * load. */
+let IMG_UPLOADS_BASE = '';
+
 /**
  * Build a `srcset` string for an upload URL, or '' if the URL doesn't refer
  * to a top-level /uploads/<file>.{jpg,jpeg,png}. Subdirectory uploads
@@ -5605,7 +5621,10 @@ function imgSrcset(url) {
   const ext = filename.slice(dot + 1).toLowerCase();
   if (!IMG_VARIANT_SOURCE_EXTS.has(ext)) return '';
   const stem = filename.slice(0, dot);
-  return IMG_RESPONSIVE_WIDTHS.map(w => `/uploads/${stem}-${w}.webp ${w}w`).join(', ');
+  /* Opt #5: prefix with CDN base when set so variants load directly
+   * from the CDN. Falls back to relative `/uploads/...` otherwise. */
+  const prefix = IMG_UPLOADS_BASE ? `${IMG_UPLOADS_BASE}/uploads` : '/uploads';
+  return IMG_RESPONSIVE_WIDTHS.map(w => `${prefix}/${stem}-${w}.webp ${w}w`).join(', ');
 }
 
 /**
@@ -5621,7 +5640,16 @@ function imgSrcset(url) {
  *        emitted — passing nothing falls back to plain src= only.
  */
 function imgAttrs(url, sizes) {
-  const safeUrl = escapeHtml(url || '');
+  /* Opt #5: rewrite src= to the CDN URL too when base is set and the
+   * URL points at /uploads/. Eliminates the redirect tax that the
+   * origin's serve_upload would otherwise add for every image. URLs
+   * that aren't /uploads/ paths (data: URIs, external https://...
+   * absolute URLs, etc.) pass through unchanged. */
+  let displayUrl = url || '';
+  if (IMG_UPLOADS_BASE && typeof displayUrl === 'string' && displayUrl.startsWith('/uploads/')) {
+    displayUrl = IMG_UPLOADS_BASE + displayUrl;
+  }
+  const safeUrl = escapeHtml(displayUrl);
   const srcset = imgSrcset(url);
   if (!srcset || !sizes) return `src="${safeUrl}"`;
   return `src="${safeUrl}" srcset="${srcset}" sizes="${escapeHtml(sizes)}"`;

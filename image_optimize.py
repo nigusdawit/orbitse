@@ -318,7 +318,8 @@ def ensure_variant_on_demand(filename: str) -> bool:
 
 
 def srcset_for(public_url: str,
-               widths: Iterable[int] = _RESPONSIVE_WIDTHS) -> str:
+               widths: Iterable[int] = _RESPONSIVE_WIDTHS,
+               base_url: Optional[str] = None) -> str:
     """Build a `srcset` attribute value for an image's public URL.
 
     `/uploads/abc123.jpg` ->
@@ -336,6 +337,13 @@ def srcset_for(public_url: str,
     browser that doesn't pick any srcset candidate (or a srcset entry
     that fails to load — no variant generated, weird mime, etc.) still
     gets the original.
+
+    Optimization #5: when `base_url` is provided (or `UPLOADS_PUBLIC_BASE_URL`
+    env var is set, picked up automatically when base_url is None), variant
+    URLs are emitted as `<base>/uploads/<stem>-<w>.webp` so visitors fetch
+    them straight from the CDN instead of paying an origin-redirect round-
+    trip. Pass `base_url=""` explicitly to force the relative form even
+    when the env var is set (used by tests to compare both shapes).
     """
     if not public_url or not isinstance(public_url, str):
         return ""
@@ -348,4 +356,10 @@ def srcset_for(public_url: str,
     if ext not in _VARIANT_SOURCE_EXTENSIONS:
         return ""
     stem = _stem(filename)
-    return ", ".join(f"/uploads/{stem}-{w}.webp {w}w" for w in widths)
+    if base_url is None:
+        import os as _os
+        base_url = (_os.environ.get("UPLOADS_PUBLIC_BASE_URL") or "").rstrip("/")
+    else:
+        base_url = (base_url or "").rstrip("/")
+    prefix = f"{base_url}/uploads" if base_url else "/uploads"
+    return ", ".join(f"{prefix}/{stem}-{w}.webp {w}w" for w in widths)

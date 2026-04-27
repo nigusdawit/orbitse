@@ -6133,6 +6133,11 @@ def api_page_bundle():
         "storefront_config": storefront_config,
         "events": events,
         "services": services,
+        # Optimization #5 — empty string when no CDN is configured (the
+        # frontend treats '' as "use relative /uploads/ paths as-is").
+        # Read fresh on every request so the operator can flip it without
+        # a restart. Trailing slashes already stripped by _uploads_public_base.
+        "uploads_public_base_url": _uploads_public_base(),
     })
 
 
@@ -19795,6 +19800,106 @@ def _classify_media(ext):
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 
+# =============================================================================
+# Uploads CDN routing — Optimization #5 (April 2026)
+# =============================================================================
+# Tier 9 added a pluggable storage backend (`storage.py`); Optimization #4
+# added responsive WebP variants. This optimization wires those together so
+# the operator can put a CDN (CloudFront / Cloudflare / Bunny / Fastly /
+# anything) in front of /uploads/ and stop serving image bytes from the
+# Flask origin entirely.
+#
+# Two layers, both gated on `UPLOADS_PUBLIC_BASE_URL` being set:
+#
+#   1. ORIGIN REDIRECT (safety net) — when set, /uploads/<file> returns 301
+#      to <base>/uploads/<file>. Catches any traffic that didn't come
+#      through the frontend's CDN-aware imgAttrs helper: cached HTML in
+#      browser histories, externally-shared image links, RSS readers
+#      fetching blog cover images, social-media unfurlers, anything. The
+#      301 itself is cached so subsequent requests skip the origin.
+#
+#   2. FRONTEND REWRITE (perf optimization) — /api/page-bundle exposes the
+#      base in `uploads_public_base_url`; imgSrcset / imgAttrs prepend it
+#      so freshly-rendered <img> tags point straight at the CDN with zero
+#      origin round-trip. See public/script.js IMG_UPLOADS_BASE.
+#
+# CACHE-CONTROL — Filenames are content-hashed (16-hex stems for originals,
+# `<stem>-<width>.webp` for variants), so a given URL never changes its
+# bytes. We send `public, max-age=86400` (1 day) on originals and the
+# stronger `public, max-age=2592000, immutable` (30 days) on variants.
+# This is a meaningful perf win on its own, even before the operator sets
+# up a CDN — repeat visitors stop re-fetching every image on every page
+# load. Contracts (`/uploads/contracts/...`) are deliberately left alone:
+# they're operator-uploaded business documents that may want stricter
+# cache / CDN treatment in the future.
+#
+# ORIGIN-PULL BYPASS — When the operator's CDN is configured to point its
+# origin BACK at the Flask app (vs the bucket directly), the CDN's pulls
+# through /uploads/ would loop forever if we redirected them. The CDN
+# sets `X-CDN-Origin-Pull: 1` on origin requests and serve_upload skips
+# the redirect on that header. Bunny CDN: "Custom Headers". Cloudflare:
+# a Page Rule or a Worker. CloudFront: an Origin Custom Header.
+# =============================================================================
+_UPLOADS_REDIRECT_BYPASS_HEADER = "X-CDN-Origin-Pull"
+_UPLOADS_CDN_PULL_SECRET_ENV = "UPLOADS_CDN_PULL_SECRET"
+_UPLOADS_CACHE_HEADER_ORIGINAL = "public, max-age=86400"
+_UPLOADS_CACHE_HEADER_VARIANT = "public, max-age=2592000, immutable"
+_UPLOADS_REDIRECT_CACHE_HEADER = "public, max-age=86400"
+
+
+def _uploads_public_base():
+    """Return the CDN / public-bucket prefix from env, or '' if unset.
+    Trailing slashes stripped so callers can append `/uploads/<file>`
+    without producing `//uploads/...`. Read at request time (not module
+    import time) so tests can monkeypatch the env var per-test."""
+    return (os.environ.get("UPLOADS_PUBLIC_BASE_URL") or "").rstrip("/")
+
+
+def _is_origin_pull_request():
+    """True when the request is the CDN reaching back to origin to fill
+    its cache. Operator configures their CDN to set the bypass header
+    on origin requests so the redirect handler doesn't bounce them back
+    to the CDN (which would loop forever).
+
+    Hardening: when `UPLOADS_CDN_PULL_SECRET` env var is set, the header
+    value must equal the secret to bypass — defends against malicious
+    clients that would otherwise trick origin into serving bytes by
+    faking `X-CDN-Origin-Pull: 1` (a performance-degradation attack).
+    Compared with `secrets.compare_digest` to avoid timing-oracle leaks.
+    When the env var is unset (default), any header value of `1` works,
+    backward-compatible with the simple operator setup."""
+    header_value = (request.headers.get(_UPLOADS_REDIRECT_BYPASS_HEADER) or "").strip()
+    if not header_value:
+        return False
+    secret = (os.environ.get(_UPLOADS_CDN_PULL_SECRET_ENV) or "").strip()
+    if secret:
+        return secrets.compare_digest(header_value, secret)
+    return header_value == "1"
+
+
+def _base_points_at_self(base):
+    """True when `base` parses to the same host:port as the inbound
+    request — i.e. the operator misconfigured `UPLOADS_PUBLIC_BASE_URL`
+    to point back at this same Flask app. Without this guard, every
+    /uploads/ request would 301 back to itself until the browser hits
+    its redirect-chain limit (~20) and gives up. With the guard, we
+    log once and serve bytes from origin (degraded perf, working site)
+    instead of breaking every page load. The CDN's normal origin-pull
+    case is already handled separately by `_is_origin_pull_request()`,
+    so this guard fires only on real misconfiguration."""
+    if not base:
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(base)
+    except Exception:
+        return False
+    base_host = (parsed.netloc or "").lower()
+    if not base_host:
+        return False
+    request_host = (request.host or "").lower()
+    return base_host == request_host
+
+
 @app.route("/uploads/<path:filename>")
 def serve_upload(filename):
     """Serve uploaded media via the configured storage backend (local
@@ -19811,13 +19916,37 @@ def serve_upload(filename):
     are pre-warmed at upload time. `ensure_variant_on_demand` is a
     no-op for non-variant URLs and never raises (it logs and returns
     False), so the legacy serve path is unaffected on every other
-    request."""
+    request.
+
+    Optimization #5: when `UPLOADS_PUBLIC_BASE_URL` is set, redirect to
+    the CDN instead of serving bytes — UNLESS the request carries the
+    `X-CDN-Origin-Pull` header (the CDN reaching back to fill its
+    cache, in which case we must serve bytes or we'd loop). Variant
+    generation runs BEFORE the redirect so the CDN's origin pull
+    (whatever its origin is configured to be — bucket directly or this
+    same Flask app) finds the variant in storage. Cache-Control on the
+    byte-serving path is `public, max-age=2592000, immutable` for
+    variants and `public, max-age=86400` for originals — both filenames
+    are content-hashed so a given URL truly never changes its bytes."""
     if image_optimize.is_variant_filename(filename):
         try:
             image_optimize.ensure_variant_on_demand(filename)
         except Exception as e:
             app.logger.exception("on-demand variant generation failed for %s: %s", filename, e)
-    return storage.get_storage().serve(filename)
+
+    base = _uploads_public_base()
+    if base and not _is_origin_pull_request() and not _base_points_at_self(base):
+        target = f"{base}/uploads/{filename}"
+        resp = redirect(target, code=301)
+        resp.headers["Cache-Control"] = _UPLOADS_REDIRECT_CACHE_HEADER
+        return resp
+
+    resp = storage.get_storage().serve(filename)
+    if image_optimize.is_variant_filename(filename):
+        resp.headers["Cache-Control"] = _UPLOADS_CACHE_HEADER_VARIANT
+    else:
+        resp.headers["Cache-Control"] = _UPLOADS_CACHE_HEADER_ORIGINAL
+    return resp
 
 
 @app.route("/admin/api/upload-image", methods=["POST"])
@@ -22306,8 +22435,22 @@ def _generate_tts_audio(text, voice_id, model, provider="openai", elevenlabs_voi
 @app.route("/uploads/voice/<path:filename>")
 def serve_voice_file(filename):
     """Serve a cached TTS audio file via the configured storage backend.
-    Forces audio/mpeg so browsers play it inline rather than downloading."""
-    return storage.get_storage().serve(f"voice/{filename}", mimetype="audio/mpeg")
+    Forces audio/mpeg so browsers play it inline rather than downloading.
+
+    Optimization #5: redirects to the CDN when UPLOADS_PUBLIC_BASE_URL is
+    set and the request isn't an X-CDN-Origin-Pull. Voice cache filenames
+    are SHA-1 content hashes (see _voice_cache_filename) so they're
+    effectively immutable; we send the same long Cache-Control as upload
+    originals so browsers and any CDN aggressively cache them."""
+    base = _uploads_public_base()
+    if base and not _is_origin_pull_request() and not _base_points_at_self(base):
+        target = f"{base}/uploads/voice/{filename}"
+        resp = redirect(target, code=301)
+        resp.headers["Cache-Control"] = _UPLOADS_REDIRECT_CACHE_HEADER
+        return resp
+    resp = storage.get_storage().serve(f"voice/{filename}", mimetype="audio/mpeg")
+    resp.headers["Cache-Control"] = _UPLOADS_CACHE_HEADER_ORIGINAL
+    return resp
 
 
 # -----------------------------------------------------------------------------
