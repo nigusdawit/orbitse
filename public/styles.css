@@ -342,6 +342,30 @@ html[data-scroll-mode="smooth"] .snap-section {
   scroll-snap-align: none;
 }
 
+/* -------- Mobile: disable mandatory snap (was trapping touch scroll) --------
+   On phones, single-column stacked content (highlights, pricing, FAQ,
+   testimonials, blog, etc.) makes most sections taller than the viewport.
+   Combined with `scroll-snap-type: y mandatory` + `scroll-snap-stop: always`,
+   iOS Safari and Android Chrome interrupt finger drags and snap back to the
+   section start, so visitors literally cannot scroll past the top of any
+   tall section — what looks like "scroll is broken" on phones.
+
+   The fix: turn off snap on small viewports. Sections still feel full-screen
+   thanks to their `min-height: 100dvh`, but touch drag works normally. This
+   override applies regardless of the smooth/snap admin toggle, because snap
+   on mobile is unreliable across browsers no matter what mode is selected.
+   Desktop keeps the original page-by-page snap experience untouched.        */
+@media (max-width: 768px), (hover: none) and (pointer: coarse) {
+  .landing-container {
+    scroll-snap-type: none;
+    scroll-snap-stop: normal;
+    overscroll-behavior-y: contain;
+  }
+  .snap-section {
+    scroll-snap-align: none;
+  }
+}
+
 .snap-section.landing-section {
   position: relative;
 }
