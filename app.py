@@ -2547,6 +2547,11 @@ _FEATURE_REGISTRY = [
     ("custom_forms",         "Custom forms",                 "solo",       True,  "Capabilities"),
     ("mcp",                  "MCP connectors",               "enterprise", True,  "Capabilities"),
     ("presentations",        "Presentations admin",          "growth",     True,  "Capabilities"),
+    ("automations",          "Automations builder",          "growth",     True,  "Capabilities"),
+    ("messaging",            "Email & SMS messaging",        "growth",     True,  "Capabilities"),
+    ("chat_history",         "Chat history & transcripts",   "solo",       True,  "Capabilities"),
+    # Analytics
+    ("analytics",            "Analytics dashboard",          "growth",     True,  "Analytics"),
 ]
 _FEATURE_NAMES = {row[0] for row in _FEATURE_REGISTRY}
 _FEATURE_DEFAULTS = {row[0]: row[3] for row in _FEATURE_REGISTRY}
@@ -2728,9 +2733,13 @@ def set_tenant_feature(name, enabled, tenant_id=None, note=""):
 # specific prefixes should come before broader ones, but here the
 # prefixes don't overlap so the order is alphabetic for clarity.
 _FEATURE_ROUTE_PREFIXES = [
+    ("/admin/api/analytics",       "analytics"),
+    ("/admin/api/automations",     "automations"),
+    ("/admin/api/chat-history",    "chat_history"),
     ("/admin/api/forms",           "custom_forms"),
     ("/admin/api/generated-pages", "generated_pages"),
     ("/admin/api/mcp/",            "mcp"),
+    ("/admin/api/messaging",       "messaging"),
     ("/admin/api/presentations",   "presentations"),
     ("/admin/api/site-designs",    "site_designs"),
     ("/admin/api/site-themes",     "site_themes"),
@@ -2739,6 +2748,10 @@ _FEATURE_ROUTE_PREFIXES = [
     ("/api/generated-pages",       "generated_pages"),
     ("/api/presentations/",        "presentations"),
     ("/api/voice/",                "voice"),
+    # Public ingress for the automations webhook trigger. We DO gate this
+    # one — if a tenant turns Automations off, third-party services hitting
+    # the saved hook URL should get a 404 (not silently consume the post).
+    ("/automations/hook/",         "automations"),
 ]
 
 
