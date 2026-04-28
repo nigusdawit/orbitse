@@ -83,6 +83,7 @@ import scraper
 import storage
 import image_optimize
 import asset_bundle
+import devconsole
 from flask import (
     Flask, request, jsonify, send_from_directory,
     render_template, session, redirect, url_for, Response, stream_with_context,
@@ -20563,6 +20564,160 @@ def _stats_preconnect():
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+# =============================================================================
+# DEVELOPER CONSOLE (Admin → Developer tab)
+# =============================================================================
+# Powers an embedded "runbook + service health" tab so operators don't
+# need to grep replit.md or shell into the box to diagnose a problem.
+# Three thin endpoints:
+#
+#   GET  /admin/api/devconsole/snapshot        — read-only state, no network
+#   POST /admin/api/devconsole/test-provider   — fires ONE provider probe
+#   POST /admin/api/devconsole/test-email      — sends test email to ADMIN_EMAIL
+#   POST /admin/api/devconsole/test-sms        — sends test SMS to ADMIN_PHONE
+#   POST /admin/api/devconsole/reregister-velo — re-runs the boot-time call
+#
+# Auth: every route is @admin_required. POSTs are CSRF-checked by the
+# middleware (no extra work). Test-send routes deliberately target the
+# admin's own email/phone — never an arbitrary recipient — so the button
+# can't be repurposed as an outbound spam vector if the session leaks.
+
+@app.route("/admin/api/devconsole/snapshot", methods=["GET"])
+@admin_required
+def admin_devconsole_snapshot():
+    """GET — small bundle of state the runbook + health panels need.
+    No outbound network calls; safe to refresh frequently."""
+    perf = _collect_performance_stats()
+
+    # Derive small counts from the perf stats we already collected so the
+    # runbook cards can show live numbers without re-querying the backend.
+    bundle = perf.get("bundle") or {}
+    images = perf.get("images") or {}
+    api_cache = perf.get("api_cache") or {}
+    preconnect = perf.get("preconnect") or {}
+
+    # Scheduler liveness — messaging.py owns the in-process scheduler.
+    # We can't introspect the thread directly without exposing internals,
+    # so we surface a coarse "module loaded" signal. The dev tab adds
+    # context that this only confirms the import path, not active ticks.
+    scheduler_loaded = False
+    try:
+        scheduler_loaded = bool(getattr(messaging, "_scheduler_started", False))
+    except Exception:
+        scheduler_loaded = False
+
+    velo_master = (os.environ.get("VELO_MASTER_URL") or "").strip()
+    velo_key = (os.environ.get("VELO_AGENT_KEY") or "").strip()
+
+    return jsonify({
+        "providers": devconsole.provider_summary(),
+        "runbook_state": {
+            "image_variants_supported": bool(images.get("regenerate_supported")),
+            "originals_on_disk": images.get("originals_on_disk"),
+            "variants_on_disk": images.get("variants_on_disk"),
+            "preconnect_count": preconnect.get("origin_count"),
+            "bundle_source_count": len(bundle.get("sources") or []),
+            "cacheable_endpoint_count": api_cache.get("endpoint_count"),
+            "feature_flag_count": len(_FEATURE_REGISTRY),
+            "admin_email_set": bool((os.environ.get("ADMIN_EMAIL") or "").strip()),
+            "admin_phone_set": bool((os.environ.get("ADMIN_PHONE") or "").strip()),
+            "velo_master_url_set": bool(velo_master),
+            "velo_agent_key_set": bool(velo_key),
+            "scheduler_loaded": scheduler_loaded,
+            "site_url": (os.environ.get("SITE_URL") or "").strip(),
+        },
+    })
+
+
+@app.route("/admin/api/devconsole/test-provider", methods=["POST"])
+@admin_required
+def admin_devconsole_test_provider():
+    """POST — fire a single provider probe and return its result.
+    Body: {"provider": "openai"}. Each probe is a cheap free-tier
+    request (account fetch, model list, or 1-result search)."""
+    body = request.get_json(silent=True) or {}
+    name = (body.get("provider") or "").strip()
+    if not name:
+        return jsonify({"error": "provider name required"}), 400
+    if name not in devconsole.PROVIDERS:
+        return jsonify({
+            "error": f"unknown provider: {name}",
+            "known": devconsole.PROVIDERS,
+        }), 400
+    result = devconsole.probe(name)
+    result["provider"] = name
+    return jsonify(result)
+
+
+@app.route("/admin/api/devconsole/test-email", methods=["POST"])
+@admin_required
+def admin_devconsole_test_email():
+    """POST — send a tiny test email to ADMIN_EMAIL. Recipient is fixed
+    to the admin contact so this can't be used as an open relay even
+    if the admin session leaks."""
+    to_email = (os.environ.get("ADMIN_EMAIL") or "").strip()
+    if not to_email:
+        return jsonify({"error": "ADMIN_EMAIL is not set"}), 400
+    try:
+        result = messaging.send_email(
+            to_email,
+            "Developer Console — test email",
+            "<p>This is a self-test from the admin Developer Console. "
+            "If you received this, Resend is wired up correctly.</p>",
+            text_body=("This is a self-test from the admin Developer "
+                       "Console. If you received this, Resend is wired "
+                       "up correctly."),
+        )
+        return jsonify({
+            "ok": True,
+            "to": to_email,
+            "provider_id": result.get("id"),
+        })
+    except messaging.MessagingError as e:
+        return jsonify({"ok": False, "to": to_email, "error": str(e)}), 502
+
+
+@app.route("/admin/api/devconsole/test-sms", methods=["POST"])
+@admin_required
+def admin_devconsole_test_sms():
+    """POST — send a tiny test SMS to ADMIN_PHONE. Same fixed-recipient
+    safety as test-email."""
+    to_phone = (os.environ.get("ADMIN_PHONE") or "").strip()
+    if not to_phone:
+        return jsonify({"error": "ADMIN_PHONE is not set"}), 400
+    try:
+        result = messaging.send_sms(
+            to_phone,
+            "Self-test from the admin Developer Console. "
+            "Twilio is wired up correctly.",
+        )
+        return jsonify({
+            "ok": True,
+            "to": to_phone,
+            "provider_sid": result.get("sid"),
+            "segments": result.get("num_segments"),
+        })
+    except messaging.MessagingError as e:
+        return jsonify({"ok": False, "to": to_phone, "error": str(e)}), 502
+
+
+@app.route("/admin/api/devconsole/reregister-velo", methods=["POST"])
+@admin_required
+def admin_devconsole_reregister_velo():
+    """POST — re-run the boot-time agent registration. Use after
+    rotating VELO_AGENT_KEY or pointing at a new VELO_MASTER_URL."""
+    if not (os.environ.get("VELO_MASTER_URL") or "").strip():
+        return jsonify({
+            "ok": False,
+            "error": "VELO_MASTER_URL is not set; nothing to register against.",
+        }), 400
+    try:
+        register_with_velo(force=True)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 502
 
 
 # --------------- Drag-and-Drop Reorder ---------------

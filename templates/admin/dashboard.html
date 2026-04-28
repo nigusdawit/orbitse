@@ -1829,6 +1829,10 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       Performance
     </button>
+    <button class="tab-btn" onclick="switchTab('developer', this); loadDeveloper();" data-testid="tab-developer">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+      Developer
+    </button>
 
     <div class="sidebar-group-label">Layout</div>
     <button class="tab-btn" onclick="switchTab('page-layout', this)" data-testid="tab-page-layout">
@@ -2469,6 +2473,36 @@ TO CUSTOMIZE THIS DASHBOARD:
     </p>
     <div id="performance-loading" class="empty-state" style="padding:1.5rem;" data-testid="text-performance-loading">Loading…</div>
     <div id="performance-grid" style="display:none; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:1rem;" data-testid="grid-performance"></div>
+  </div>
+
+  <!-- ========================================================================
+  Developer tab — runbook of "when you change X, do Y" cards + service
+  health probes. Loaded on demand by loadDeveloper(). The runbook cards
+  are static frontend content (no backend round-trip needed for the
+  text); the snapshot endpoint provides live state (counts, configured
+  flags) so cards can show "5 origins" instead of "—".
+  ======================================================================== -->
+  <div id="tab-developer" class="tab-content">
+    <div class="content-header">
+      <h2>Developer Console</h2>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <span id="developer-updated" style="font-size:0.8125rem; color:var(--admin-text-muted);" data-testid="text-developer-updated"></span>
+        <button class="btn-secondary" onclick="loadDeveloper()" data-testid="button-developer-refresh">Refresh</button>
+      </div>
+    </div>
+    <p style="color:var(--admin-text-muted); margin:0 0 1rem 0; font-size:0.875rem;">
+      Shortcuts and reminders for the most common changes. Click any card to expand.
+    </p>
+    <div id="developer-loading" class="empty-state" style="padding:1.5rem;" data-testid="text-developer-loading">Loading…</div>
+    <div id="developer-content" style="display:none;">
+      <h3 style="margin:1rem 0 0.5rem 0; font-size:1rem; color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:0.05em;">Runbook</h3>
+      <div id="developer-runbook" style="display:flex; flex-direction:column; gap:0.5rem;" data-testid="list-developer-runbook"></div>
+      <h3 style="margin:1.5rem 0 0.5rem 0; font-size:1rem; color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:0.05em;">Service Health</h3>
+      <p style="margin:0 0 0.75rem 0; font-size:0.8125rem; color:var(--admin-text-muted);">
+        Each card shows whether the provider is configured. Press <strong>Test now</strong> to fire a tiny free-tier request and confirm connectivity.
+      </p>
+      <div id="developer-health" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:0.75rem;" data-testid="grid-developer-health"></div>
+    </div>
   </div>
 
   <div id="tab-page-layout" class="tab-content">
@@ -13395,6 +13429,319 @@ TO CUSTOMIZE THIS DASHBOARD:
         btn.disabled = false;
         btn.textContent = original;
       }
+    }
+
+    // ===== Developer Console — runbook + service health =====
+    // The runbook cards are static frontend content (text + actions).
+    // Live numbers (image counts, preconnect count, etc.) come from
+    // /admin/api/devconsole/snapshot which also lists configured providers.
+    // Network probes only fire when the operator presses "Test now".
+
+    let __devSnapshot = null;
+
+    async function loadDeveloper() {
+      const loading = document.getElementById('developer-loading');
+      const content = document.getElementById('developer-content');
+      const updated = document.getElementById('developer-updated');
+      if (!loading || !content) return;
+      loading.style.display = 'block';
+      loading.textContent = 'Loading…';
+      content.style.display = 'none';
+      try {
+        const res = await fetch('/admin/api/devconsole/snapshot', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        __devSnapshot = await res.json();
+        document.getElementById('developer-runbook').innerHTML = _devRenderRunbook(__devSnapshot.runbook_state || {});
+        document.getElementById('developer-health').innerHTML = _devRenderHealth(__devSnapshot.providers || []);
+        loading.style.display = 'none';
+        content.style.display = 'block';
+        if (updated) updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      } catch (e) {
+        loading.textContent = 'Could not load developer console: ' + e.message;
+      }
+    }
+
+    // Runbook card definitions. Each card.body is HTML; {state.X}
+    // placeholders get substituted with values from runbook_state.
+    // Each action: {label, fn (window-global function name with no args
+    // OR a literal JS expression), kind: 'primary'|'secondary'|'danger'}.
+    const _DEV_RUNBOOK_CARDS = [
+      // ---- Images & Media ----
+      {
+        id: 'images-shell-replace',
+        category: 'Images & Media',
+        title: 'You replaced source images via shell, snapshot, or sync',
+        body: `If the upload didn't go through the admin Media Library, the auto-cleanup didn't fire — visitors may see the OLD WebP previews for up to a year because of the cache rules. <strong>Currently on disk:</strong> {state.originals_on_disk} originals, {state.variants_on_disk} previews.`,
+        actions: [
+          {label: 'Regenerate all variants', fn: '_devGotoPerformanceAndRegen', kind: 'primary'},
+          {label: 'Open Performance tab', fn: '_devGotoPerformance', kind: 'secondary'},
+        ],
+      },
+      {
+        id: 'images-widths-changed',
+        category: 'Images & Media',
+        title: 'You changed image width breakpoints in image_optimize.py',
+        body: `The constant <code>_RESPONSIVE_WIDTHS</code> drives the three preview sizes. If you change it, every existing preview is now at the OLD widths and the NEW widths are missing. Bulk-regenerate to bring the library back in sync.`,
+        actions: [
+          {label: 'Regenerate all variants', fn: '_devGotoPerformanceAndRegen', kind: 'primary'},
+        ],
+      },
+      {
+        id: 'images-new-upload-route',
+        category: 'Images & Media',
+        title: 'You added a new image upload route',
+        body: `New upload handlers must call <code>image_optimize.delete_variants(filename)</code> <em>before</em> <code>image_optimize.generate_webp_variants(filename)</code>. Otherwise replacing a same-named file leaves stale previews cached for 30+ days. The two existing handlers (<code>admin_upload_image</code>, <code>admin_upload_media</code>) are the patterns to copy.`,
+        actions: [],
+      },
+
+      // ---- Site Performance ----
+      {
+        id: 'perf-third-party-script',
+        category: 'Site Performance',
+        title: 'You added a new third-party script (CDN, analytics, embed)',
+        body: `Add the origin to <code>_build_preconnect_hints_html()</code> in app.py so cold visits don't pay an extra DNS + TLS round-trip. <strong>Currently sending preconnect for {state.preconnect_count} origins.</strong>`,
+        actions: [
+          {label: 'Show current origins', fn: '_devGotoPerformance', kind: 'secondary'},
+        ],
+      },
+      {
+        id: 'perf-new-local-js',
+        category: 'Site Performance',
+        title: 'You added a new local JavaScript file',
+        body: `Add it to <code>BUNDLE_SOURCES</code> in <code>asset_bundle.py</code> or it won't be served. <strong>Currently bundling {state.bundle_source_count} files</strong> into one minified payload with a content-hash URL.`,
+        actions: [
+          {label: 'Show bundle sources', fn: '_devGotoPerformance', kind: 'secondary'},
+        ],
+      },
+      {
+        id: 'perf-new-public-api',
+        category: 'Site Performance',
+        title: 'You added a new public read-only API endpoint',
+        body: `If it's read-mostly and the response is the same for everyone (no per-user data), add the path to <code>_CACHEABLE_API_PATHS</code> so the CDN/browser caches it for 60s + serves stale for 5min while revalidating. <strong>Currently caching {state.cacheable_endpoint_count} endpoints.</strong> Logged-in admins always bypass — they see fresh content.`,
+        actions: [
+          {label: 'Show cached endpoints', fn: '_devGotoPerformance', kind: 'secondary'},
+        ],
+      },
+
+      // ---- Integrations & Secrets ----
+      {
+        id: 'int-rotated-secret',
+        category: 'Integrations & Secrets',
+        title: 'You rotated a provider secret (OpenAI, Anthropic, Twilio, etc.)',
+        body: `The new key won't be used until the workflow restarts (env vars are read at boot). After restart, hit <strong>Test now</strong> on the matching provider card below to confirm connectivity before traffic finds the broken state.`,
+        actions: [],
+      },
+      {
+        id: 'int-new-email-template',
+        category: 'Integrations & Secrets',
+        title: 'You added a new email template or changed sender domain',
+        body: `Send a test to your admin address first — Resend will silently drop messages from a domain that hasn't passed DKIM + SPF verification. The button below targets <code>ADMIN_EMAIL</code> only, so it can't be used as a relay.`,
+        actions: [
+          {label: 'Send test email to admin', fn: '_devTestEmail', kind: 'primary',
+           disabledIf: 'admin_email_set', disabledMsg: 'ADMIN_EMAIL is not set'},
+        ],
+      },
+      {
+        id: 'int-new-sms-template',
+        category: 'Integrations & Secrets',
+        title: 'You added a new SMS template or changed Twilio FROM number',
+        body: `Twilio bills per <em>segment</em> — a message over 160 characters (or any unicode emoji) silently splits into multiple billed segments. Send a test to your admin phone to confirm the new number is provisioned and the body fits in one segment.`,
+        actions: [
+          {label: 'Send test SMS to admin', fn: '_devTestSms', kind: 'primary',
+           disabledIf: 'admin_phone_set', disabledMsg: 'ADMIN_PHONE is not set'},
+        ],
+      },
+
+      // ---- Deployment & Operations ----
+      {
+        id: 'ops-new-domain',
+        category: 'Deployment & Operations',
+        title: 'You\'re deploying to a new domain or rotated VELO_AGENT_KEY',
+        body: `Checklist for a new domain:
+        <ul style="margin:0.5rem 0 0 1.25rem; padding:0;">
+          <li>Set <code>SITE_URL</code> to the public origin (currently: <code>{state.site_url}</code>)</li>
+          <li>Verify the new domain in Resend so DKIM + SPF pass</li>
+          <li>Update Twilio webhook URLs (status callback + inbound SMS) to the new origin</li>
+          <li>Re-register the agent so the master picks up the new callback URL</li>
+        </ul>`,
+        actions: [
+          {label: 'Re-register agent now', fn: '_devReregisterVelo', kind: 'primary',
+           disabledIf: 'velo_master_url_set', disabledMsg: 'VELO_MASTER_URL is not set'},
+        ],
+      },
+    ];
+
+    function _devRenderRunbook(state) {
+      const byCategory = {};
+      for (const card of _DEV_RUNBOOK_CARDS) {
+        (byCategory[card.category] = byCategory[card.category] || []).push(card);
+      }
+      const out = [];
+      for (const cat of Object.keys(byCategory)) {
+        out.push(`<div style="font-size:0.75rem; color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:0.05em; margin:0.5rem 0 0.25rem 0;">${escapeHTML(cat)}</div>`);
+        for (const card of byCategory[cat]) {
+          out.push(_devCard(card, state));
+        }
+      }
+      return out.join('');
+    }
+
+    function _devCard(card, state) {
+      // Body substitution: replace {state.foo} with the runbook value.
+      const body = (card.body || '').replace(/\{state\.([a-z_]+)\}/g, (_, k) => {
+        const v = state[k];
+        if (v === null || v === undefined || v === '') return '<em>—</em>';
+        return escapeHTML(String(v));
+      });
+      const actionsHtml = (card.actions || []).map(a => {
+        const disabled = a.disabledIf && !state[a.disabledIf];
+        const onclick = disabled
+          ? `event.stopPropagation(); alert(${JSON.stringify(a.disabledMsg || 'Action unavailable')});`
+          : `event.stopPropagation(); ${a.fn}(this);`;
+        const cls = a.kind === 'danger' ? 'btn-danger'
+                  : a.kind === 'primary' ? 'btn-primary'
+                  : 'btn-secondary';
+        const dis = disabled ? ' style="opacity:0.5;"' : '';
+        return `<button class="${cls}"${dis} onclick='${onclick}' data-testid="button-runbook-${escapeHTML(card.id)}-${escapeHTML(a.fn)}">${escapeHTML(a.label)}</button>`;
+      }).join(' ');
+
+      return `<div data-testid="card-runbook-${escapeHTML(card.id)}" style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:8px; overflow:hidden;">
+        <button onclick="_devToggleCard('${escapeHTML(card.id)}')" style="width:100%; text-align:left; background:none; border:none; padding:0.75rem 1rem; cursor:pointer; color:inherit; display:flex; gap:0.75rem; align-items:center; font:inherit;" data-testid="toggle-runbook-${escapeHTML(card.id)}">
+          <span id="caret-${escapeHTML(card.id)}" style="display:inline-block; width:0.6rem; transition:transform 0.15s;">▶</span>
+          <span style="flex:1; font-weight:500;">${escapeHTML(card.title)}</span>
+        </button>
+        <div id="body-${escapeHTML(card.id)}" style="display:none; padding:0 1rem 1rem 2.25rem; color:var(--admin-text-muted); font-size:0.9rem; line-height:1.5;">
+          <div style="margin-bottom:0.75rem;">${body}</div>
+          ${actionsHtml ? `<div style="display:flex; gap:0.5rem; flex-wrap:wrap;">${actionsHtml}</div>` : ''}
+        </div>
+      </div>`;
+    }
+
+    function _devToggleCard(id) {
+      const body = document.getElementById('body-' + id);
+      const caret = document.getElementById('caret-' + id);
+      if (!body) return;
+      const open = body.style.display === 'block';
+      body.style.display = open ? 'none' : 'block';
+      if (caret) caret.style.transform = open ? 'rotate(0deg)' : 'rotate(90deg)';
+    }
+
+    function _devRenderHealth(providers) {
+      if (!providers.length) return '<div class="empty-state">No providers known.</div>';
+      return providers.map(p => {
+        const badge = p.configured
+          ? `<span style="background:rgba(34,197,94,0.15); color:rgb(34,197,94); padding:0.125rem 0.5rem; border-radius:999px; font-size:0.75rem;">Configured</span>`
+          : `<span style="background:rgba(148,163,184,0.15); color:rgb(148,163,184); padding:0.125rem 0.5rem; border-radius:999px; font-size:0.75rem;">Not configured</span>`;
+        const testBtn = p.configured
+          ? `<button class="btn-secondary" onclick="_devTestProvider('${escapeHTML(p.name)}', this)" data-testid="button-test-${escapeHTML(p.name)}">Test now</button>`
+          : `<button class="btn-secondary" disabled style="opacity:0.5;">Test now</button>`;
+        return `<div data-testid="card-health-${escapeHTML(p.name)}" style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:8px; padding:0.875rem 1rem;">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem; margin-bottom:0.5rem;">
+            <span style="font-weight:500;">${escapeHTML(p.name)}</span>
+            ${badge}
+          </div>
+          <div id="health-result-${escapeHTML(p.name)}" style="font-size:0.8125rem; color:var(--admin-text-muted); min-height:1.25rem; margin-bottom:0.5rem;" data-testid="text-health-result-${escapeHTML(p.name)}">—</div>
+          ${testBtn}
+        </div>`;
+      }).join('');
+    }
+
+    async function _devTestProvider(name, btnEl) {
+      const out = document.getElementById('health-result-' + name);
+      if (out) out.textContent = 'Testing…';
+      if (btnEl) btnEl.disabled = true;
+      try {
+        const res = await fetch('/admin/api/devconsole/test-provider', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({provider: name}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+        if (out) {
+          out.innerHTML = data.ok
+            ? `<span style="color:rgb(34,197,94);">✓ OK</span> · ${data.latency_ms} ms`
+            : `<span style="color:rgb(239,68,68);">✗ Failed</span> · ${escapeHTML(data.error || 'unknown')}`;
+        }
+      } catch (e) {
+        if (out) out.innerHTML = `<span style="color:rgb(239,68,68);">✗ Failed</span> · ${escapeHTML(e.message)}`;
+      } finally {
+        if (btnEl) btnEl.disabled = false;
+      }
+    }
+
+    async function _devTestEmail(btnEl) {
+      if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Sending…'; }
+      try {
+        const res = await fetch('/admin/api/devconsole/test-email', {
+          method: 'POST', credentials: 'same-origin',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          alert('Test email failed:\n\n' + (data.error || ('HTTP ' + res.status)));
+        } else {
+          alert(`Test email sent to ${data.to}.\n\nProvider message id: ${data.provider_id || '(not returned)'}`);
+        }
+      } catch (e) {
+        alert('Test email failed: ' + e.message);
+      } finally {
+        if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Send test email to admin'; }
+      }
+    }
+
+    async function _devTestSms(btnEl) {
+      if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Sending…'; }
+      try {
+        const res = await fetch('/admin/api/devconsole/test-sms', {
+          method: 'POST', credentials: 'same-origin',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          alert('Test SMS failed:\n\n' + (data.error || ('HTTP ' + res.status)));
+        } else {
+          alert(`Test SMS sent to ${data.to}.\n\nTwilio SID: ${data.provider_sid || '(not returned)'}\nSegments: ${data.segments || '?'}`);
+        }
+      } catch (e) {
+        alert('Test SMS failed: ' + e.message);
+      } finally {
+        if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Send test SMS to admin'; }
+      }
+    }
+
+    async function _devReregisterVelo(btnEl) {
+      if (!confirm('Re-register agent with VELO Master?\n\nUse this after rotating VELO_AGENT_KEY or pointing at a new VELO_MASTER_URL.')) return;
+      if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Registering…'; }
+      try {
+        const res = await fetch('/admin/api/devconsole/reregister-velo', {
+          method: 'POST', credentials: 'same-origin',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          alert('Re-registration failed:\n\n' + (data.error || ('HTTP ' + res.status)));
+        } else {
+          alert('Agent re-registered with VELO Master.');
+        }
+      } catch (e) {
+        alert('Re-registration failed: ' + e.message);
+      } finally {
+        if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Re-register agent now'; }
+      }
+    }
+
+    function _devGotoPerformance() {
+      const tabBtn = document.querySelector('[data-testid="tab-performance"]');
+      if (tabBtn) tabBtn.click();
+    }
+
+    function _devGotoPerformanceAndRegen() {
+      _devGotoPerformance();
+      // Give the tab content a tick to render before clicking the button.
+      setTimeout(() => {
+        const btn = document.getElementById('regen-variants-btn');
+        if (btn) btn.click();
+        else alert('Performance tab opened — click "Regenerate all variants" there.');
+      }, 250);
     }
 
     async function loadDashboards() {
