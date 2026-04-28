@@ -424,6 +424,92 @@ def _super_admin_throttle_clear(ip):
     _SUPER_ADMIN_ATTEMPTS.pop(ip, None)
 
 
+# Per-process dedupe for the auto_lock/ttl_expired audit. When a
+# stale unlock window expires, multiple concurrent requests from the
+# same logged-in admin can all observe the same pre-pop session
+# cookie and each emit a duplicate audit row. We dedupe on the
+# original unlocked_at timestamp (which is unique per unlock event
+# down to sub-second precision) and keep entries for 60s — long
+# enough to absorb any plausible concurrent burst, short enough that
+# the dict can never grow without bound.
+_SUPER_ADMIN_AUDIT_RECENT_EXPIRY: dict = {}
+_SUPER_ADMIN_AUDIT_DEDUPE_LOCK = threading.Lock()
+
+
+def _audit_expiry_should_emit(stale_ts) -> bool:
+    """Return True if no other concurrent request has already
+    audited this exact expiry. Best-effort, single-process scope —
+    if multiple worker processes are running, each will dedupe its
+    own requests and a tiny number of cross-process duplicates may
+    still slip through; an operator can dedupe visually because the
+    duplicate rows share the same `reason=unlocked_at=…`."""
+    if not stale_ts:
+        return True
+    key = float(stale_ts)
+    now = _time.time()
+    with _SUPER_ADMIN_AUDIT_DEDUPE_LOCK:
+        # Sweep expired entries before checking — keeps the dict
+        # small under any sustained traffic.
+        for k in list(_SUPER_ADMIN_AUDIT_RECENT_EXPIRY.keys()):
+            if _SUPER_ADMIN_AUDIT_RECENT_EXPIRY[k] < now:
+                del _SUPER_ADMIN_AUDIT_RECENT_EXPIRY[k]
+        if key in _SUPER_ADMIN_AUDIT_RECENT_EXPIRY:
+            return False
+        _SUPER_ADMIN_AUDIT_RECENT_EXPIRY[key] = now + 60.0
+        return True
+
+
+def _audit_super_admin(action, outcome, reason=None):
+    """Best-effort audit log write for the super-admin lock.
+
+    Inserts one row into super_admin_audit and swallows any DB error
+    so the auth flow never fails because the audit log is unavailable
+    (e.g. the migration hasn't been applied yet on a freshly-pulled
+    branch). Must be called from within a Flask request context — it
+    reads request.headers and the current IP via _client_ip().
+
+    action  — 'unlock' | 'lock' | 'auto_lock'
+    outcome — 'success' | 'invalid_key' | 'throttled' | 'manual'
+              | 'ttl_expired' | 'logout'
+    reason  — optional free-form context (e.g. original unlock_at ts)
+    """
+    try:
+        ip = _client_ip()
+    except Exception:
+        ip = None
+    try:
+        ua = (request.headers.get("User-Agent") or "")[:500]
+    except Exception:
+        ua = None
+    conn = None
+    try:
+        conn = get_db()
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO super_admin_audit (ip, user_agent, action, outcome, reason) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (ip, ua, action, outcome, (reason or None)),
+            )
+            conn.commit()
+    except Exception as e:
+        try:
+            app.logger.warning(
+                "super-admin audit write failed (action=%s outcome=%s): %s",
+                action, outcome, e,
+            )
+        except Exception:
+            pass
+    finally:
+        # Return the connection to the pool. close() on a
+        # _PooledConnection calls putconn under the hood; never
+        # re-raise from the cleanup path.
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _chat_rate_check(key, throttled=False):
     """Return (allowed: bool, retry_after_sec: int).
 
@@ -4659,6 +4745,10 @@ def admin_login():
 @app.route("/admin/logout")
 def admin_logout():
     """Log out of the admin dashboard and redirect to login."""
+    # Audit the implicit super-admin lock that happens at logout, but
+    # only if this session was actually unlocked at the time.
+    if session.get("super_admin_unlocked_at"):
+        _audit_super_admin("auto_lock", "logout")
     session.pop("admin_logged_in", None)
     session.pop("_csrf_token", None)
     session.pop("super_admin_unlocked_at", None)
@@ -4743,6 +4833,17 @@ def _enforce_super_admin_lock():
     for prefix in _SUPER_ADMIN_PROTECTED_PREFIXES:
         if path.startswith(prefix):
             if not _super_admin_unlocked():
+                # If this session HAD an unlock that just expired,
+                # audit the auto-lock exactly once (pop the stale ts
+                # so we don't re-audit on every subsequent request)
+                # and include the original unlock time so an operator
+                # can correlate it with the prior unlock event.
+                stale_ts = session.pop("super_admin_unlocked_at", None)
+                if stale_ts and _audit_expiry_should_emit(stale_ts):
+                    _audit_super_admin(
+                        "auto_lock", "ttl_expired",
+                        f"unlocked_at={float(stale_ts):.0f}",
+                    )
                 return jsonify({
                     "error": "super_admin_required",
                     "message": "This section is locked. Enter the super-admin key to unlock.",
@@ -4791,6 +4892,7 @@ def super_admin_unlock():
     ip = _client_ip()
     allowed, retry_after = _super_admin_throttle_check(ip)
     if not allowed:
+        _audit_super_admin("unlock", "throttled", f"retry_after={retry_after}")
         mins = max(1, retry_after // 60)
         return jsonify({
             "ok": False,
@@ -4804,6 +4906,10 @@ def super_admin_unlock():
     if not provided or not secrets.compare_digest(provided, expected):
         _super_admin_throttle_record_failure(ip)
         app.logger.warning("super-admin unlock FAILED from ip=%s", ip)
+        _audit_super_admin(
+            "unlock", "invalid_key",
+            "empty_key" if not provided else None,
+        )
         return jsonify({
             "ok": False,
             "error": "invalid_key",
@@ -4813,6 +4919,7 @@ def super_admin_unlock():
     now = _time.time()
     session["super_admin_unlocked_at"] = now
     app.logger.info("super-admin unlock OK from ip=%s", ip)
+    _audit_super_admin("unlock", "success")
     return jsonify({
         "ok": True,
         "enabled": True,
@@ -4826,8 +4933,66 @@ def super_admin_unlock():
 def super_admin_lock():
     """Manually re-lock the session (e.g. operator clicks
     'Lock now' before stepping away). Always returns ok."""
+    # Only audit if we were actually unlocked — clicking "Lock now"
+    # while already locked shouldn't add noise to the audit trail.
+    if session.get("super_admin_unlocked_at"):
+        _audit_super_admin("lock", "manual")
     session.pop("super_admin_unlocked_at", None)
     return jsonify({"ok": True, "unlocked": False})
+
+
+@app.route("/admin/api/super-admin/audit", methods=["GET"])
+@admin_required
+def super_admin_audit_list():
+    """Return the most recent super-admin lock events.
+
+    Query: ?limit=N (default 50, capped at 200).
+
+    Endpoint sits under /admin/api/super-admin/* which is exempt from
+    the super-admin lock itself (see _enforce_super_admin_lock), so
+    the Developer tab can render the panel even when locked. The data
+    is non-secret (no keys, no session tokens) — only IPs, user
+    agents, action labels, and outcomes — so this is safe to expose
+    to any logged-in admin."""
+    try:
+        limit = int(request.args.get("limit", 50) or 50)
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, 200))
+    conn = None
+    try:
+        conn = get_db()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, ts, ip, user_agent, action, outcome, reason "
+                "FROM super_admin_audit ORDER BY ts DESC LIMIT %s",
+                (limit,),
+            )
+            rows = [
+                {
+                    "id": r[0],
+                    "ts": r[1].isoformat() if r[1] else None,
+                    "ip": r[2],
+                    "user_agent": r[3],
+                    "action": r[4],
+                    "outcome": r[5],
+                    "reason": r[6],
+                }
+                for r in cur.fetchall()
+            ]
+        return jsonify({"ok": True, "rows": rows})
+    except Exception as e:
+        # Most likely cause on a fresh branch: migration not yet run
+        # (super_admin_audit table doesn't exist). Surface that rather
+        # than 500ing — the UI can render an inline hint.
+        msg = f"{type(e).__name__}: {e}"
+        return jsonify({"ok": False, "error": msg, "rows": []}), 200
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # -----------------------------------------------------------------------------

@@ -98,6 +98,9 @@ KNOWN_VARS: list[dict] = [
     {"key": "ADMIN_PHONE", "level": "optional", "category": "Admin access",
      "description": "Where SMS alerts are sent (E.164 format, e.g. +15551234567).",
      "sensitive": False, "restart": False},
+    {"key": "SUPER_ADMIN_KEY", "level": "optional", "category": "Admin access",
+     "description": "Second factor for the highest-risk admin tabs (Plans & Features, Performance, Developer, Secrets). Leave empty to disable the lock. Pick a long random string.",
+     "sensitive": True, "restart": False},
 
     # ---- Email (Resend) ----
     {"key": "RESEND_API_KEY", "level": "recommended", "category": "Email (Resend)",

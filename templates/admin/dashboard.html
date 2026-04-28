@@ -2747,6 +2747,15 @@ TO CUSTOMIZE THIS DASHBOARD:
         Each card shows whether the provider is configured. Press <strong>Test now</strong> to fire a tiny free-tier request and confirm connectivity.
       </p>
       <div id="developer-health" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:0.75rem;" data-testid="grid-developer-health"></div>
+
+      <h3 style="margin:1.5rem 0 0.5rem 0; font-size:1rem; color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:0.05em;">Super-admin activity</h3>
+      <p style="margin:0 0 0.75rem 0; font-size:0.8125rem; color:var(--admin-text-muted);">
+        The 50 most recent lock events: unlocks (success / wrong key / throttled), manual locks, and auto-locks when the 30-min TTL expires or you log out. Useful for spotting unauthorized attempts.
+      </p>
+      <div id="developer-audit" data-testid="list-developer-audit"
+           style="background:var(--admin-bg-soft, rgba(127,127,127,0.06)); border:1px solid var(--admin-border, rgba(127,127,127,0.18)); border-radius:8px; padding:0.5rem; max-height:360px; overflow-y:auto;">
+        <div class="empty-state" style="padding:0.75rem;" data-testid="text-developer-audit-loading">Loading…</div>
+      </div>
     </div>
   </div>
 
@@ -14238,8 +14247,84 @@ TO CUSTOMIZE THIS DASHBOARD:
         loading.style.display = 'none';
         content.style.display = 'block';
         if (updated) updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
+        // Audit log loads in parallel — never blocks the rest of the
+        // tab. Failure here renders an inline hint, not a tab error.
+        _loadSuperAdminAudit();
       } catch (e) {
         loading.textContent = 'Could not load developer console: ' + e.message;
+      }
+    }
+
+    function _escAuditCell(s) {
+      if (s === null || s === undefined || s === '') return '';
+      return String(s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function _fmtAuditTs(iso) {
+      if (!iso) return '—';
+      try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return _escAuditCell(iso);
+        return d.toLocaleString();
+      } catch (_e) { return _escAuditCell(iso); }
+    }
+
+    function _auditOutcomeColor(outcome) {
+      // Colors mirror the existing dashboard palette (success / warn / danger / muted).
+      if (outcome === 'success') return '#16a34a';
+      if (outcome === 'invalid_key') return '#dc2626';
+      if (outcome === 'throttled') return '#dc2626';
+      if (outcome === 'manual') return '#0ea5e9';
+      if (outcome === 'logout') return 'var(--admin-text-muted)';
+      if (outcome === 'ttl_expired') return 'var(--admin-text-muted)';
+      return 'var(--admin-text-muted)';
+    }
+
+    async function _loadSuperAdminAudit() {
+      const wrap = document.getElementById('developer-audit');
+      if (!wrap) return;
+      try {
+        const res = await fetch('/admin/api/super-admin/audit?limit=50', { credentials: 'same-origin' });
+        const data = await res.json().catch(() => ({}));
+        if (!data || data.ok === false || !Array.isArray(data.rows)) {
+          const hint = (data && data.error)
+            ? 'Audit log unavailable: ' + _escAuditCell(data.error) + '. The migration may not have run yet — restart the workflow.'
+            : 'Audit log unavailable.';
+          wrap.innerHTML = '<div class="empty-state" style="padding:0.75rem;" data-testid="text-developer-audit-error">' + hint + '</div>';
+          return;
+        }
+        if (data.rows.length === 0) {
+          wrap.innerHTML = '<div class="empty-state" style="padding:0.75rem;" data-testid="text-developer-audit-empty">No super-admin activity recorded yet.</div>';
+          return;
+        }
+        const rows = data.rows.map(function (r) {
+          const action = r.action || '—';
+          const outcome = r.outcome || '—';
+          const color = _auditOutcomeColor(outcome);
+          const ua = (r.user_agent || '').slice(0, 60);
+          return '<tr data-testid="row-developer-audit-' + (r.id || '') + '">' +
+            '<td style="padding:0.4rem 0.6rem; font-size:0.8125rem; white-space:nowrap;">' + _fmtAuditTs(r.ts) + '</td>' +
+            '<td style="padding:0.4rem 0.6rem; font-size:0.8125rem;">' + _escAuditCell(action) + '</td>' +
+            '<td style="padding:0.4rem 0.6rem; font-size:0.8125rem; color:' + color + '; font-weight:600;">' + _escAuditCell(outcome) + '</td>' +
+            '<td style="padding:0.4rem 0.6rem; font-size:0.8125rem; font-family:ui-monospace,monospace;">' + _escAuditCell(r.ip || '—') + '</td>' +
+            '<td style="padding:0.4rem 0.6rem; font-size:0.75rem; color:var(--admin-text-muted);" title="' + _escAuditCell(r.user_agent || '') + '">' + _escAuditCell(ua) + (r.user_agent && r.user_agent.length > 60 ? '…' : '') + '</td>' +
+            '<td style="padding:0.4rem 0.6rem; font-size:0.75rem; color:var(--admin-text-muted);">' + _escAuditCell(r.reason || '') + '</td>' +
+            '</tr>';
+        }).join('');
+        wrap.innerHTML =
+          '<table style="width:100%; border-collapse:collapse;" data-testid="table-developer-audit">' +
+          '<thead><tr style="text-align:left; color:var(--admin-text-muted); font-size:0.75rem; text-transform:uppercase; letter-spacing:0.05em;">' +
+          '<th style="padding:0.4rem 0.6rem;">When</th>' +
+          '<th style="padding:0.4rem 0.6rem;">Action</th>' +
+          '<th style="padding:0.4rem 0.6rem;">Outcome</th>' +
+          '<th style="padding:0.4rem 0.6rem;">IP</th>' +
+          '<th style="padding:0.4rem 0.6rem;">User agent</th>' +
+          '<th style="padding:0.4rem 0.6rem;">Reason</th>' +
+          '</tr></thead><tbody>' + rows + '</tbody></table>';
+      } catch (e) {
+        wrap.innerHTML = '<div class="empty-state" style="padding:0.75rem;" data-testid="text-developer-audit-error">Audit log unavailable: ' + _escAuditCell(e.message || String(e)) + '</div>';
       }
     }
 
