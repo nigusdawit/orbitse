@@ -468,17 +468,72 @@ ELEVENLABS_API_BASE = "https://api.elevenlabs.io/v1"
 # Connection pool (Tier 7)
 # -----------------------------------------------------------------------------
 # Process-wide pool so we don't pay TCP+auth setup on every request. Each
-# gunicorn worker gets its own pool. Defaults are conservative; tune via
-# DB_POOL_MIN / DB_POOL_MAX env vars. Falls back to a direct connection if
-# the pool is unavailable or exhausted, so a misconfiguration never breaks
-# the app — it just degrades to the pre-pool behaviour.
+# gunicorn worker gets its own pool. Defaults are tuned for Replit autoscale
+# under bursty traffic (see _resolve_pool_sizes); operators on managed
+# Postgres with low max_connections should override DB_POOL_MAX to keep
+# total in-flight connections (= max * num_app_instances) under their cap.
+# Falls back to a direct connection if the pool is unavailable or exhausted,
+# so a misconfiguration never breaks the app — it just degrades to the
+# pre-pool behaviour.
 import psycopg2.pool as _psql_pool
 
 _DB_POOL = None
 _DB_POOL_LOCK = threading.Lock()
 _DB_POOL_DISABLED = False
-_DB_POOL_MIN = max(1, int(os.environ.get("DB_POOL_MIN", "1") or "1"))
-_DB_POOL_MAX = max(_DB_POOL_MIN, int(os.environ.get("DB_POOL_MAX", "10") or "10"))
+
+
+def _resolve_pool_sizes(env=None):
+    """Resolve (min, max) Postgres pool sizes from env vars with sensible
+    defaults for an autoscale Flask deployment.
+
+    Defaults: min=2, max=20.
+      - min=2 (vs the old min=1): keeps a warm spare connection so a
+        traffic burst doesn't pay TCP+TLS+auth handshake (~30-150 ms on
+        managed Postgres) on the FIRST request of every cold worker.
+        On Replit autoscale, instances are spun up on demand and serve
+        traffic in waves — a min=1 pool means every wave's first request
+        eats the cold-connection tax. Two warm conns covers the common
+        case of a page request firing two queries in parallel without
+        any wait.
+      - max=20 (vs the old max=10): the app fans out per request — a
+        single page-bundle response can run 8-12 queries, and concurrent
+        users multiply that. A 10-cap was hitting `_psql_pool.PoolError`
+        on bursty traffic and falling back to direct-connect (which is
+        slower than just having had a bigger pool to begin with). 20 is
+        well under managed-Postgres caps for a single app instance.
+
+    Validation: min is clamped to >= 1 (psycopg2 requires it); max is
+    clamped to >= min so a misconfig like DB_POOL_MAX=5 with the new
+    default min=2 doesn't error at construction. Empty strings (the
+    common operator mistake of `export DB_POOL_MAX=` with no value)
+    fall back to the documented defaults via `or "<default>"`. Truly
+    invalid values (DB_POOL_MIN=banana) raise a ValueError at startup
+    with a message naming the offending var and value — silent
+    fallback to the default would hide the misconfiguration for
+    weeks, fail-loud is the right policy for an infra knob."""
+    env = env if env is not None else os.environ
+    min_val = max(1, _parse_pool_int(env, "DB_POOL_MIN", "2"))
+    max_val = max(min_val, _parse_pool_int(env, "DB_POOL_MAX", "20"))
+    return min_val, max_val
+
+
+def _parse_pool_int(env, var_name, default):
+    """Parse an integer from env with an operator-friendly error message.
+    Wraps `int()` so a typo like `DB_POOL_MAX=banana` produces a
+    diagnostic that says exactly which var and which value, rather than
+    psycopg2's bare `invalid literal for int()` traceback at startup."""
+    raw = env.get(var_name, default) or default
+    try:
+        return int(raw)
+    except (ValueError, TypeError) as e:
+        raise ValueError(
+            f"[db pool] env var {var_name}={raw!r} is not a valid integer. "
+            f"Set it to a positive integer (e.g. {var_name}={default}) or "
+            f"unset it to use the default ({default})."
+        ) from e
+
+
+_DB_POOL_MIN, _DB_POOL_MAX = _resolve_pool_sizes()
 
 
 def _direct_connect():
