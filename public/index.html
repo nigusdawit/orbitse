@@ -56,6 +56,17 @@ FONTS:
        (like the chat bar) naturally stay above the keyboard without JS hacks. -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
 
+  <!-- PRECONNECT_HINTS_INJECT — Replaced server-side by Flask with
+       <link rel="preconnect"> + <link rel="dns-prefetch"> hints for the
+       third-party origins this page loads scripts/fonts from (unpkg,
+       cdnjs, jsdelivr, js.stripe, fonts.googleapis, fonts.gstatic).
+       Placed FIRST in <head> so the DNS+TCP+TLS handshakes start in
+       parallel with HTML parsing, BEFORE the parser hits the blocking
+       <script> tags below — saves ~30-300 ms per origin on cold-cache
+       loads. See app.py serve_index() and _build_preconnect_hints_html().
+       Optimization #10. -->
+  <!-- PRECONNECT_HINTS_INJECT -->
+
   <!-- SEO_META_INJECT — This placeholder is replaced server-side by Flask
        with actual SEO meta tags from the database (title, description, OG tags,
        Twitter Cards, canonical URL, etc.) so crawlers see proper SEO data

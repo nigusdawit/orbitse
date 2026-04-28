@@ -5119,6 +5119,59 @@ def _build_theme_vars_style():
         return ""
 
 
+def _build_preconnect_hints_html():
+    """Return a block of <link rel="preconnect"> + <link rel="dns-prefetch">
+    hints for the third-party origins this template loads from. Injected
+    into <head> server-side BEFORE the parser-blocking <script> tags below
+    so the DNS+TCP+TLS handshakes start in parallel with HTML parsing —
+    saves ~30-300 ms per origin on cold-cache loads, which matters most
+    on the very first paint when the connection cost is fully unhidden.
+    Optimization #10.
+
+    Why these specific origins (every page load hits all six):
+      - unpkg.com               Lucide icons (parser-blocking <script> in head)
+      - cdnjs.cloudflare.com    Three.js + DOMPurify (two head <script> tags)
+      - cdn.jsdelivr.net        Three.js CSS3DRenderer (head <script>)
+      - js.stripe.com           Stripe SDK (head <script>; loads on every
+                                page even when storefront is disabled)
+      - fonts.googleapis.com    Google Fonts CSS (loaded dynamically by
+                                script.js loadGoogleFont() after theme fetch)
+      - fonts.gstatic.com       Actual font files; needs `crossorigin`
+                                because the CSS spec fetches font files as
+                                anonymous-CORS — a preconnect WITHOUT
+                                crossorigin would warm a different connection
+                                pool that the font fetch never uses, wasting
+                                the hint entirely.
+
+    Why preconnect AND dns-prefetch: preconnect (DNS+TCP+TLS) is supported
+    by every modern browser. dns-prefetch (DNS only) is the harmless
+    fallback for the few legacy browsers that don't support preconnect;
+    modern browsers ignore the dns-prefetch line when a matching preconnect
+    is present, so listing both costs nothing.
+
+    Hardcoded list rather than introspected because the script tags these
+    mirror are themselves hardcoded in public/index.html — keep them in
+    sync if you add/remove a third-party head script. The cost of a
+    leftover preconnect for a removed origin is one unused TCP connection
+    held open for ~10 seconds; the cost of a missing preconnect for a
+    new origin is the full handshake on the critical path. Err toward
+    keeping the list (and updating it during reviews)."""
+    return (
+        '<link rel="preconnect" href="https://fonts.googleapis.com">'
+        '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+        '<link rel="preconnect" href="https://unpkg.com">'
+        '<link rel="preconnect" href="https://cdnjs.cloudflare.com">'
+        '<link rel="preconnect" href="https://cdn.jsdelivr.net">'
+        '<link rel="preconnect" href="https://js.stripe.com">'
+        '<link rel="dns-prefetch" href="https://fonts.googleapis.com">'
+        '<link rel="dns-prefetch" href="https://fonts.gstatic.com">'
+        '<link rel="dns-prefetch" href="https://unpkg.com">'
+        '<link rel="dns-prefetch" href="https://cdnjs.cloudflare.com">'
+        '<link rel="dns-prefetch" href="https://cdn.jsdelivr.net">'
+        '<link rel="dns-prefetch" href="https://js.stripe.com">'
+    )
+
+
 def _build_loading_initials_and_name():
     """Return (initials, site_name) so the loading-screen badge + caption
     render with the real values on first paint instead of flashing CS /
@@ -5182,6 +5235,49 @@ def serve_index():
         # Inject JSON-LD structured data (replaces the <!-- JSON_LD_INJECT --> placeholder before </head>)
         json_ld_html = _build_json_ld()
         html_content = html_content.replace("<!-- JSON_LD_INJECT -->", json_ld_html)
+
+        # Inject preconnect / dns-prefetch hints for the third-party origins
+        # this template loads from (Optimization #10). Disk/legacy-design
+        # dual-path: prefer the placeholder (designs created on/after April
+        # 2026 have it), otherwise insert RIGHT AFTER the opening <head>
+        # tag for backward compat with admin-published designs that were
+        # saved before this placeholder existed.
+        #
+        # Why right-after-<head> and not right-before-</head> like the
+        # theme_vars fallback: preconnect hints are POSITION-SENSITIVE.
+        # The browser only starts handshakes when the parser encounters
+        # the link tag, so a preconnect inserted AFTER a parser-blocking
+        # <script src="https://..."> tag is too late — the script's own
+        # handshake has already started serially. Theme vars are
+        # position-insensitive (CSS variables resolve at compute time
+        # regardless of declaration order in head), so its before-</head>
+        # fallback is fine for theme vars but would be a no-op here.
+        # Pinned by TestServedHomepage::test_preconnect_appears_before_blocking_scripts
+        # and TestLegacyDesignFallback::test_fallback_inserts_right_after_head_open.
+        preconnect_html = _build_preconnect_hints_html()
+        if preconnect_html:
+            if "<!-- PRECONNECT_HINTS_INJECT -->" in html_content:
+                html_content = html_content.replace(
+                    "<!-- PRECONNECT_HINTS_INJECT -->", preconnect_html
+                )
+            else:
+                # Find the opening <head> tag (handles `<head>` and
+                # `<head class="...">` etc.) and inject immediately after.
+                head_open = re.search(r"<head\b[^>]*>", html_content, flags=re.IGNORECASE)
+                if head_open:
+                    insertion = head_open.end()
+                    html_content = (
+                        html_content[:insertion]
+                        + "\n  "
+                        + preconnect_html
+                        + html_content[insertion:]
+                    )
+                else:
+                    # Pathological case: no <head> at all. Drop in before
+                    # </head> as a last resort so the hints exist somewhere.
+                    html_content = html_content.replace(
+                        "</head>", preconnect_html + "\n</head>", 1
+                    )
 
         # Inject :root CSS vars from the active theme so the loading screen
         # and every other themed surface paints the right colors on the
