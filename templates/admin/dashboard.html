@@ -1833,6 +1833,10 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
       Developer
     </button>
+    <button class="tab-btn" onclick="switchTab('stripe', this); loadStripe();" data-testid="tab-stripe">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M2 10h20"/><path d="M7 15h2"/></svg>
+      Stripe
+    </button>
 
     <div class="sidebar-group-label">Layout</div>
     <button class="tab-btn" onclick="switchTab('page-layout', this)" data-testid="tab-page-layout">
@@ -2502,6 +2506,154 @@ TO CUSTOMIZE THIS DASHBOARD:
         Each card shows whether the provider is configured. Press <strong>Test now</strong> to fire a tiny free-tier request and confirm connectivity.
       </p>
       <div id="developer-health" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:0.75rem;" data-testid="grid-developer-health"></div>
+    </div>
+  </div>
+
+  <!--
+    ==================================================================
+    STRIPE ADMIN TAB
+    ==================================================================
+    Five collapsible <details> cards. The HTML is intentionally static
+    structure only — every value (mode badge, key check marks, sync
+    table rows, recent payments, etc) is rendered by loadStripe() in
+    the script section below from /admin/api/stripe/* responses.
+
+    Section order (matters: top sections are the most-used controls):
+      1. Mode & status   — operator's first question: am I in test or live?
+      2. Keys detected   — operator's second question: what env vars are wired?
+      3. Auto-sync       — daily-driver toggle + backfill button
+      4. Sync status     — per-product Stripe IDs + per-row re-sync
+      5. Recent payments — read-only Checkout Sessions feed
+    ==================================================================
+  -->
+  <div id="tab-stripe" class="tab-content">
+    <div class="content-header">
+      <h2>Stripe</h2>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <span id="stripe-updated" style="font-size:0.8125rem; color:var(--admin-text-muted);" data-testid="text-stripe-updated"></span>
+        <button class="btn-secondary" onclick="loadStripe()" data-testid="button-stripe-refresh">Refresh</button>
+      </div>
+    </div>
+    <p style="color:var(--admin-text-muted); margin:0 0 1rem 0; font-size:0.875rem;">
+      Stripe configuration, product sync, and recent checkouts. Keys live in environment variables — they are never stored in the database and never displayed here.
+    </p>
+
+    <div id="stripe-loading" class="empty-state" style="padding:1.5rem;" data-testid="text-stripe-loading">Loading…</div>
+
+    <div id="stripe-content" style="display:none; flex-direction:column; gap:0.75rem;">
+
+      <!-- ========== Section 1: Mode & status ========== -->
+      <details open class="dev-card" data-testid="card-stripe-mode">
+        <summary style="cursor:pointer; padding:1rem; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
+          <span>Mode &amp; status</span>
+          <span id="stripe-mode-badge" data-testid="badge-stripe-mode" style="font-size:0.75rem; padding:0.25rem 0.625rem; border-radius:9999px; font-weight:700;">—</span>
+        </summary>
+        <div style="padding:0 1rem 1rem 1rem;">
+          <div id="stripe-mismatch-warning" style="display:none; background:#fef3c7; border:1px solid #f59e0b; color:#78350f; padding:0.625rem 0.875rem; border-radius:6px; margin-bottom:0.75rem; font-size:0.8125rem;" data-testid="warning-stripe-mismatch">
+            ⚠ Mode is set to <strong>Live</strong> but the resolved API key is a <strong>test</strong> key (sk_test_…). Set <code>STRIPE_SECRET_KEY</code> to a live key, or switch back to Test mode.
+          </div>
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px,1fr)); gap:0.75rem; margin-bottom:0.75rem;">
+            <div style="background:var(--admin-bg-soft, #f8fafc); padding:0.75rem; border-radius:6px;">
+              <div style="font-size:0.75rem; color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:0.05em;">Health</div>
+              <div id="stripe-health-badge" style="margin-top:0.25rem; font-weight:600;" data-testid="text-stripe-health">—</div>
+              <div id="stripe-health-detail" style="margin-top:0.125rem; font-size:0.75rem; color:var(--admin-text-muted);" data-testid="text-stripe-health-detail"></div>
+            </div>
+            <div style="background:var(--admin-bg-soft, #f8fafc); padding:0.75rem; border-radius:6px;">
+              <div style="font-size:0.75rem; color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:0.05em;">Active key kind</div>
+              <div id="stripe-active-kind" style="margin-top:0.25rem; font-weight:600;" data-testid="text-stripe-active-kind">—</div>
+              <div style="margin-top:0.125rem; font-size:0.75rem; color:var(--admin-text-muted);">What sk_… prefix the resolver uses now.</div>
+            </div>
+          </div>
+          <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+            <button class="btn-secondary" onclick="stripeProbe()" data-testid="button-stripe-probe">Test connection</button>
+            <button class="btn-primary" id="stripe-mode-switch-btn" onclick="stripeSwitchMode()" data-testid="button-stripe-switch-mode">Switch mode</button>
+          </div>
+        </div>
+      </details>
+
+      <!-- ========== Section 2: Keys detected ========== -->
+      <details class="dev-card" data-testid="card-stripe-keys">
+        <summary style="cursor:pointer; padding:1rem; font-weight:600;">Keys detected</summary>
+        <div style="padding:0 1rem 1rem 1rem;">
+          <p style="margin:0 0 0.75rem 0; font-size:0.8125rem; color:var(--admin-text-muted);">
+            Which Stripe environment variables are populated. Values are NEVER shown — only ✓ Set / ✗ Not set.
+          </p>
+          <div id="stripe-keys-grid" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px,1fr)); gap:0.5rem;" data-testid="grid-stripe-keys"></div>
+        </div>
+      </details>
+
+      <!-- ========== Section 3: Auto-sync products ========== -->
+      <details class="dev-card" data-testid="card-stripe-autosync">
+        <summary style="cursor:pointer; padding:1rem; font-weight:600;">Auto-sync products</summary>
+        <div style="padding:0 1rem 1rem 1rem;">
+          <p style="margin:0 0 0.75rem 0; font-size:0.8125rem; color:var(--admin-text-muted);">
+            When ON, creating / editing / deleting a product in the Products tab automatically mirrors the change into Stripe (current mode only). When OFF, you can still sync manually below.
+          </p>
+          <label style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.75rem;">
+            <input type="checkbox" id="stripe-autosync-toggle" onchange="stripeSetAutosync(this.checked)" data-testid="toggle-stripe-autosync">
+            <span>Auto-sync products to Stripe</span>
+          </label>
+          <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+            <button class="btn-secondary" onclick="stripeBackfill()" data-testid="button-stripe-backfill">Backfill all products now</button>
+            <span id="stripe-backfill-summary" style="font-size:0.8125rem; color:var(--admin-text-muted);" data-testid="text-stripe-backfill-summary"></span>
+          </div>
+        </div>
+      </details>
+
+      <!-- ========== Section 4: Sync status table ========== -->
+      <details class="dev-card" data-testid="card-stripe-sync-status">
+        <summary style="cursor:pointer; padding:1rem; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
+          <span>Product sync status</span>
+          <span id="stripe-sync-mode-label" style="font-size:0.75rem; color:var(--admin-text-muted); font-weight:400;" data-testid="text-stripe-sync-mode"></span>
+        </summary>
+        <div style="padding:0 1rem 1rem 1rem;">
+          <div style="overflow-x:auto;">
+            <table style="width:100%; border-collapse:collapse; font-size:0.8125rem;">
+              <thead>
+                <tr style="text-align:left; border-bottom:1px solid var(--admin-border, #e5e7eb);">
+                  <th style="padding:0.5rem;">Product</th>
+                  <th style="padding:0.5rem;">Local price</th>
+                  <th style="padding:0.5rem;">Stripe Product</th>
+                  <th style="padding:0.5rem;">Stripe Price</th>
+                  <th style="padding:0.5rem;">Last sync</th>
+                  <th style="padding:0.5rem;"></th>
+                </tr>
+              </thead>
+              <tbody id="stripe-sync-tbody" data-testid="tbody-stripe-sync"></tbody>
+            </table>
+          </div>
+          <div id="stripe-sync-empty" class="empty-state" style="display:none; padding:1rem;" data-testid="text-stripe-sync-empty">No products yet.</div>
+        </div>
+      </details>
+
+      <!-- ========== Section 5: Recent payments ========== -->
+      <details class="dev-card" data-testid="card-stripe-checkouts">
+        <summary style="cursor:pointer; padding:1rem; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
+          <span>Recent Checkout Sessions</span>
+          <button class="btn-secondary" onclick="event.preventDefault(); stripeLoadCheckouts()" data-testid="button-stripe-checkouts-refresh" style="font-size:0.75rem; padding:0.25rem 0.625rem;">Refresh</button>
+        </summary>
+        <div style="padding:0 1rem 1rem 1rem;">
+          <p style="margin:0 0 0.75rem 0; font-size:0.8125rem; color:var(--admin-text-muted);">
+            Last 50 sessions for the current mode. Read-only mirror of <code>stripe.checkout.Session.list</code>.
+          </p>
+          <div id="stripe-checkouts-loading" style="font-size:0.8125rem; color:var(--admin-text-muted);" data-testid="text-stripe-checkouts-loading">Click Refresh to load.</div>
+          <div style="overflow-x:auto;">
+            <table style="width:100%; border-collapse:collapse; font-size:0.8125rem;">
+              <thead>
+                <tr style="text-align:left; border-bottom:1px solid var(--admin-border, #e5e7eb);">
+                  <th style="padding:0.5rem;">When</th>
+                  <th style="padding:0.5rem;">Amount</th>
+                  <th style="padding:0.5rem;">Status</th>
+                  <th style="padding:0.5rem;">Customer</th>
+                  <th style="padding:0.5rem;">Session</th>
+                </tr>
+              </thead>
+              <tbody id="stripe-checkouts-tbody" data-testid="tbody-stripe-checkouts"></tbody>
+            </table>
+          </div>
+        </div>
+      </details>
+
     </div>
   </div>
 
@@ -13458,6 +13610,315 @@ TO CUSTOMIZE THIS DASHBOARD:
         if (updated) updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
       } catch (e) {
         loading.textContent = 'Could not load developer console: ' + e.message;
+      }
+    }
+
+    // ====================================================================
+    // STRIPE TAB
+    // --------------------------------------------------------------------
+    // loadStripe()  — primary load: fetches settings + sync-status, paints
+    //                 mode badge, keys grid, autosync toggle, sync table.
+    //                 Recent checkouts are NOT auto-loaded (they cost a
+    //                 Stripe API call) — operator clicks "Refresh" inside
+    //                 that section.
+    // stripeProbe() — fires Account.retrieve and refreshes the badges.
+    // stripeSwitchMode() — confirm dialog -> POST /mode -> reload.
+    // stripeSetAutosync(checked) — POST /autosync -> small toast.
+    // stripeBackfill() — POST /backfill -> show counts, reload.
+    // stripeResyncProduct(id) — POST /sync-product -> reload sync table.
+    // stripeLoadCheckouts() — populate Section 5.
+    //
+    // Every call goes through _stripeFetch() (the existing helper that
+    // sets the CSRF header and admin auth cookie) and EVERY response is
+    // treated as data: a Stripe SDK exception comes back as
+    // {ok:false, error:"…"} and is surfaced inline with a red row,
+    // never thrown.
+    // ====================================================================
+
+    let _stripeState = { settings: null, status: null };
+
+    // Thin wrapper around the global adminFetch() so every call in the
+    // Stripe tab parses JSON, sets Content-Type on POSTs, and forwards
+    // 401 → /admin/login redirects via adminFetch's existing handling.
+    async function _stripeFetch(url, opts) {
+      const o = Object.assign({}, opts || {});
+      if (o.method && o.method !== 'GET') {
+        o.headers = Object.assign(
+          { 'Content-Type': 'application/json' },
+          o.headers || {}
+        );
+      }
+      const res = await adminFetch(url, o);
+      try { return await res.json(); }
+      catch (_) { return { ok: false, error: 'invalid JSON from ' + url }; }
+    }
+
+    async function loadStripe() {
+      const loading = document.getElementById('stripe-loading');
+      const content = document.getElementById('stripe-content');
+      const updated = document.getElementById('stripe-updated');
+      loading.style.display = 'block';
+      loading.textContent = 'Loading…';
+      content.style.display = 'none';
+      try {
+        const [settings, status] = await Promise.all([
+          _stripeFetch('/admin/api/stripe/settings'),
+          _stripeFetch('/admin/api/stripe/sync-status'),
+        ]);
+        _stripeState = { settings, status };
+        _stripeRenderSettings(settings);
+        _stripeRenderSyncStatus(status);
+        loading.style.display = 'none';
+        content.style.display = 'flex';
+        if (updated) updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      } catch (e) {
+        loading.textContent = 'Could not load Stripe console: ' + (e.message || e);
+      }
+    }
+
+    function _stripeRenderSettings(s) {
+      const isLive = s.mode === 'live';
+      // ---- Mode badge ----
+      const badge = document.getElementById('stripe-mode-badge');
+      badge.textContent = isLive ? 'LIVE' : 'TEST';
+      badge.style.background = isLive ? '#dc2626' : '#0ea5e9';
+      badge.style.color = '#ffffff';
+
+      // ---- Mode-mismatch warning ----
+      document.getElementById('stripe-mismatch-warning').style.display =
+        s.mode_mismatch ? 'block' : 'none';
+
+      // ---- Health badge ----
+      const hb = document.getElementById('stripe-health-badge');
+      const hd = document.getElementById('stripe-health-detail');
+      if (s.health && s.health.ok === true) {
+        hb.textContent = '✓ Connected';
+        hb.style.color = '#16a34a';
+        hd.textContent = 'Last checked ' + _stripeFmtTime(s.health.last_check_at);
+      } else if (s.health && s.health.ok === false) {
+        hb.textContent = '✗ Failed';
+        hb.style.color = '#dc2626';
+        hd.textContent = (s.health.error || '').slice(0, 200);
+      } else {
+        hb.textContent = '— Not checked';
+        hb.style.color = 'var(--admin-text-muted)';
+        hd.textContent = 'Click "Test connection" to probe.';
+      }
+
+      // ---- Active key kind ----
+      const ak = document.getElementById('stripe-active-kind');
+      ak.textContent = s.active_key_kind === 'unknown' ? 'Unknown' :
+                       s.active_key_kind.toUpperCase();
+      ak.style.color = (s.active_key_kind === 'live') ? '#dc2626' :
+                       (s.active_key_kind === 'test') ? '#0ea5e9' :
+                       'var(--admin-text-muted)';
+
+      // ---- Mode-switch button label ----
+      const sw = document.getElementById('stripe-mode-switch-btn');
+      sw.textContent = isLive ? 'Switch to Test' : 'Switch to Live';
+
+      // ---- Keys grid ----
+      const grid = document.getElementById('stripe-keys-grid');
+      const keyRows = [
+        ['STRIPE_SECRET_KEY',           s.keys_present.live_secret,      'Live secret'],
+        ['STRIPE_PUBLISHABLE_KEY',      s.keys_present.live_publishable, 'Live publishable'],
+        ['STRIPE_WEBHOOK_SECRET',       s.keys_present.live_webhook,     'Live webhook'],
+        ['STRIPE_TEST_SECRET_KEY',      s.keys_present.test_secret,      'Test secret'],
+        ['STRIPE_TEST_PUBLISHABLE_KEY', s.keys_present.test_publishable, 'Test publishable'],
+        ['STRIPE_TEST_WEBHOOK_SECRET',  s.keys_present.test_webhook,     'Test webhook'],
+        ['Replit Stripe connector',     s.keys_present.replit_connector, 'Replit-managed connection'],
+      ];
+      grid.innerHTML = keyRows.map(([env, ok, label]) => `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:0.5rem 0.625rem; background:var(--admin-bg-soft, #f8fafc); border-radius:6px;" data-testid="row-stripe-key-${env}">
+          <div>
+            <div style="font-weight:600; font-size:0.8125rem;">${label}</div>
+            <div style="font-size:0.6875rem; color:var(--admin-text-muted); font-family:monospace;">${env}</div>
+          </div>
+          <span style="font-size:0.75rem; padding:0.125rem 0.5rem; border-radius:9999px; font-weight:700; ${ok ? 'background:#dcfce7;color:#166534;' : 'background:#fee2e2;color:#991b1b;'}">${ok ? '✓ Set' : '✗ Not set'}</span>
+        </div>
+      `).join('');
+
+      // ---- Autosync toggle ----
+      document.getElementById('stripe-autosync-toggle').checked = !!s.autosync_products;
+
+      // ---- Backfill summary ----
+      const bf = document.getElementById('stripe-backfill-summary');
+      if (s.last_backfill && s.last_backfill.at) {
+        const sm = s.last_backfill.summary || {};
+        bf.textContent = `Last backfill ${_stripeFmtTime(s.last_backfill.at)}: ${sm.synced || 0} ok, ${sm.failed || 0} failed.`;
+      } else {
+        bf.textContent = 'Never run.';
+      }
+    }
+
+    function _stripeRenderSyncStatus(st) {
+      const tbody = document.getElementById('stripe-sync-tbody');
+      const empty = document.getElementById('stripe-sync-empty');
+      const lbl = document.getElementById('stripe-sync-mode-label');
+      lbl.textContent = 'mode: ' + (st.mode || '?');
+      const rows = (st && st.rows) || [];
+      if (!rows.length) {
+        tbody.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+      }
+      empty.style.display = 'none';
+      tbody.innerHTML = rows.map(r => {
+        const priceFmt = ((r.price_cents || 0) / 100).toFixed(2) + ' ' + (r.currency || '');
+        const stripeProductCell = r.has_mapping
+          ? `<a href="https://dashboard.stripe.com/${st.mode === 'test' ? 'test/' : ''}products/${r.stripe_product_id}" target="_blank" rel="noopener" style="font-family:monospace; font-size:0.75rem;" data-testid="link-stripe-product-${r.local_id}">${(r.stripe_product_id || '').slice(0, 22)}…</a>`
+          : '<span style="color:var(--admin-text-muted); font-size:0.75rem;">— not synced —</span>';
+        const stripePriceCell = r.has_mapping
+          ? `<span style="font-family:monospace; font-size:0.75rem;${r.price_drift ? 'color:#dc2626;font-weight:600;' : ''}" data-testid="text-stripe-price-${r.local_id}">${(r.stripe_price_id || '').slice(0, 22)}…${r.price_drift ? ' ⚠' : ''}</span>`
+          : '—';
+        const lastSync = r.last_synced_at ? _stripeFmtTime(r.last_synced_at) : '—';
+        const errCell = r.last_error
+          ? `<div style="font-size:0.6875rem; color:#dc2626; margin-top:0.125rem;" data-testid="text-stripe-sync-error-${r.local_id}">${_stripeEsc(r.last_error.slice(0, 120))}</div>`
+          : '';
+        return `
+          <tr style="border-bottom:1px solid var(--admin-border, #f1f5f9);" data-testid="row-stripe-sync-${r.local_id}">
+            <td style="padding:0.5rem;">
+              <div style="font-weight:600;">${_stripeEsc(r.name || r.slug)}</div>
+              <div style="font-size:0.6875rem; color:var(--admin-text-muted);">id ${r.local_id} · ${_stripeEsc(r.slug || '')}</div>
+              ${errCell}
+            </td>
+            <td style="padding:0.5rem;">${priceFmt}</td>
+            <td style="padding:0.5rem;">${stripeProductCell}</td>
+            <td style="padding:0.5rem;">${stripePriceCell}</td>
+            <td style="padding:0.5rem; font-size:0.75rem;">${lastSync}</td>
+            <td style="padding:0.5rem; text-align:right;">
+              <button class="btn-secondary" style="font-size:0.75rem; padding:0.25rem 0.5rem;" onclick="stripeResyncProduct(${r.local_id})" data-testid="button-stripe-resync-${r.local_id}">Re-sync</button>
+            </td>
+          </tr>`;
+      }).join('');
+    }
+
+    function _stripeFmtTime(iso) {
+      if (!iso) return 'never';
+      try { return new Date(iso).toLocaleString(); }
+      catch (_) { return iso; }
+    }
+    function _stripeEsc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    async function stripeProbe() {
+      try {
+        const res = await _stripeFetch('/admin/api/stripe/probe', { method: 'POST' });
+        if (res && res.ok) {
+          alert('✓ Connected (' + (res.latency_ms || 0) + ' ms, account ' + (res.account_id || '?') + ')');
+        } else {
+          alert('✗ Probe failed: ' + (res && res.error ? res.error : 'unknown'));
+        }
+        loadStripe();
+      } catch (e) {
+        alert('Probe request failed: ' + (e.message || e));
+      }
+    }
+
+    async function stripeSwitchMode() {
+      const cur = (_stripeState.settings && _stripeState.settings.mode) || 'test';
+      const next = cur === 'live' ? 'test' : 'live';
+      const msg = next === 'live'
+        ? 'Switch to LIVE mode? Real cards will be charged. Are you sure?'
+        : 'Switch to TEST mode? Future checkouts will use test cards.';
+      if (!confirm(msg)) return;
+      try {
+        const res = await _stripeFetch('/admin/api/stripe/mode', {
+          method: 'POST',
+          body: JSON.stringify({ mode: next }),
+        });
+        if (res && res.probe && !res.probe.ok) {
+          alert('Mode switched to ' + next.toUpperCase() + ', but the connection probe failed: ' + (res.probe.error || ''));
+        }
+        loadStripe();
+      } catch (e) {
+        alert('Mode switch failed: ' + (e.message || e));
+      }
+    }
+
+    async function stripeSetAutosync(checked) {
+      try {
+        await _stripeFetch('/admin/api/stripe/autosync', {
+          method: 'POST',
+          body: JSON.stringify({ enabled: !!checked }),
+        });
+      } catch (e) {
+        alert('Could not save autosync toggle: ' + (e.message || e));
+        // Roll back the checkbox if the save failed.
+        document.getElementById('stripe-autosync-toggle').checked = !checked;
+      }
+    }
+
+    async function stripeBackfill() {
+      if (!confirm('Sync every active product to Stripe in the current mode? This may take a moment for large catalogs.')) return;
+      try {
+        const res = await _stripeFetch('/admin/api/stripe/backfill', { method: 'POST' });
+        const synced = res.synced || 0;
+        const failed = res.failed || 0;
+        alert(`Backfill complete: ${synced} synced, ${failed} failed.`);
+        loadStripe();
+      } catch (e) {
+        alert('Backfill failed: ' + (e.message || e));
+      }
+    }
+
+    async function stripeResyncProduct(productId) {
+      try {
+        const res = await _stripeFetch('/admin/api/stripe/sync-product', {
+          method: 'POST',
+          body: JSON.stringify({ product_id: productId }),
+        });
+        if (!res.ok) {
+          alert('Re-sync failed: ' + (res.error || 'unknown'));
+        }
+        // Refresh just the sync-status section, not the whole tab.
+        const status = await _stripeFetch('/admin/api/stripe/sync-status');
+        _stripeState.status = status;
+        _stripeRenderSyncStatus(status);
+      } catch (e) {
+        alert('Re-sync request failed: ' + (e.message || e));
+      }
+    }
+
+    async function stripeLoadCheckouts() {
+      const tbody = document.getElementById('stripe-checkouts-tbody');
+      const loadingEl = document.getElementById('stripe-checkouts-loading');
+      loadingEl.textContent = 'Loading…';
+      tbody.innerHTML = '';
+      try {
+        const res = await _stripeFetch('/admin/api/stripe/recent-checkouts?limit=50');
+        if (!res.ok) {
+          loadingEl.textContent = 'Could not load: ' + (res.error || 'unknown');
+          return;
+        }
+        const sessions = res.sessions || [];
+        if (!sessions.length) {
+          loadingEl.textContent = 'No recent sessions in ' + (res.mode || '?') + ' mode.';
+          return;
+        }
+        loadingEl.textContent = sessions.length + ' sessions in ' + (res.mode || '?') + ' mode.';
+        tbody.innerHTML = sessions.map(sess => {
+          const when = sess.created ? new Date(sess.created * 1000).toLocaleString() : '—';
+          const amt = (sess.amount_total != null)
+            ? ((sess.amount_total / 100).toFixed(2) + ' ' + (sess.currency || ''))
+            : '—';
+          const link = sess.url
+            ? `<a href="${_stripeEsc(sess.url)}" target="_blank" rel="noopener" style="font-family:monospace; font-size:0.75rem;">${_stripeEsc((sess.id || '').slice(0, 22))}…</a>`
+            : `<span style="font-family:monospace; font-size:0.75rem;">${_stripeEsc((sess.id || '').slice(0, 22))}…</span>`;
+          return `
+            <tr style="border-bottom:1px solid var(--admin-border, #f1f5f9);" data-testid="row-stripe-checkout-${_stripeEsc(sess.id || 'x')}">
+              <td style="padding:0.5rem; font-size:0.75rem;">${_stripeEsc(when)}</td>
+              <td style="padding:0.5rem;">${_stripeEsc(amt)}</td>
+              <td style="padding:0.5rem;"><span style="font-size:0.6875rem; padding:0.125rem 0.4rem; border-radius:9999px; background:${sess.payment_status === 'paid' ? '#dcfce7' : '#f1f5f9'}; color:${sess.payment_status === 'paid' ? '#166534' : 'var(--admin-text-muted)'};">${_stripeEsc(sess.payment_status || sess.status || '?')}</span></td>
+              <td style="padding:0.5rem; font-size:0.75rem;">${_stripeEsc(sess.customer_email || '—')}</td>
+              <td style="padding:0.5rem;">${link}</td>
+            </tr>`;
+        }).join('');
+      } catch (e) {
+        loadingEl.textContent = 'Failed to load: ' + (e.message || e);
       }
     }
 

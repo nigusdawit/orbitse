@@ -964,6 +964,43 @@ decrements stock), `payment_intent.payment_failed`, and `charge.refunded`. Admin
 "Products" and "Orders" provide CRUD, inventory adjustments, and one-click refunds.
 Database tables: `products`, `customers`, `orders`, `order_items`.
 
+### Admin Stripe Console
+Sidebar tab **Stripe** (after Developer) gives the operator one place to inspect and
+control how the storefront talks to Stripe. Five collapsible sections:
+1. **Mode & status** — large badge (Test / Live), connection probe (`Account.retrieve()`
+   latency in ms), one-click "Switch to Test"/"Switch to Live" with a confirm dialog.
+2. **Keys detected** — ✓/✗ row for `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`,
+   `STRIPE_WEBHOOK_SECRET`, plus the test triplet, plus the Replit Connector. Values
+   are NEVER rendered.
+3. **Auto-sync products** — toggle + "Backfill all products now" + last-backfill summary.
+4. **Sync status table** — every product with its current-mode Stripe Product ID,
+   Stripe Price ID, last synced, last error, "Re-sync" + "Open in Stripe →".
+5. **Recent payments** — last 50 Checkout Sessions for the current mode (read-only).
+
+Backed by 8 routes under `/admin/api/stripe/*` (`settings`, `mode`, `autosync`, `probe`,
+`backfill`, `sync-product`, `sync-status`, `recent-checkouts`); all `@admin_required`,
+all return `{ok: false, error: "…"}` on Stripe SDK failures rather than 5xx so the UI
+never breaks because Stripe is down.
+
+The mirror is **site → Stripe only** — pulling from Stripe is out of scope. Mode is
+persisted in `stripe_settings` (single-row id=1 config table) and consulted by
+`stripe_client.get_stripe()` to pick the right key pair (live env vars when mode=live,
+test env vars when mode=test, with a soft fallback to the live env var if it itself
+holds a `sk_test_…` key — handles the common single-pair-of-test-keys case during
+initial setup). Mappings live in `stripe_product_sync` keyed by
+`(local_product_id, mode)` so test and live each have independent Stripe IDs;
+switching mode swaps which row is consulted but DOES NOT trigger a re-sync.
+
+Auto-sync defaults **OFF** so a fresh install doesn't fail on first product create
+when Stripe isn't wired yet. When ON, the POST/PUT/DELETE routes for
+`/admin/api/products` call `stripe_sync.sync_product` (or `archive_product`) AROUND
+the local CRUD; Stripe failures are recorded into `stripe_product_sync.last_error`
+and surfaced in the UI but NEVER bubble out as 5xx — the local row always saves.
+Stripe products are **archived (`active=false`), never deleted**, because Stripe
+forbids deleting products that have associated charges. New code lives in
+`stripe_settings.py`, `stripe_sync.py`, and the existing `stripe_client.py` (made
+mode-aware). Tests in `tests/test_admin_stripe.py` (32 tests, all mocked SDK).
+
 ### CDN Dependencies
 - Google Fonts (Playfair Display, DM Sans, plus dynamic fonts via Theme Editor)
 - Lucide Icons

@@ -3251,6 +3251,55 @@ def init_db():
                     ON velo_audit_log (command);
                 """
             )
+
+            # =============================================================
+            # STRIPE ADMIN — mode toggle + product mirror map
+            # =============================================================
+            # `stripe_settings` is a single-row config (id=1) that lets the
+            # admin pick "test" vs "live" mode at runtime without touching
+            # env vars (the keys themselves still live in env / Replit
+            # connectors — we never store secrets in the DB). The row is
+            # seeded lazily by stripe_settings.get_settings() if missing.
+            #
+            # `stripe_product_sync` maps each local products.id to the
+            # Stripe Product ID + Price ID it was last mirrored to, keyed
+            # by mode so test and live each have independent mappings
+            # (a flip between modes does NOT re-create products in the
+            # other mode's catalog — they stay where they are).
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stripe_settings (
+                    id                    INTEGER PRIMARY KEY,
+                    mode                  VARCHAR(10) NOT NULL DEFAULT 'test',
+                    autosync_products     BOOLEAN NOT NULL DEFAULT FALSE,
+                    last_health_check_at  TIMESTAMP,
+                    last_health_ok        BOOLEAN,
+                    last_health_error     TEXT NOT NULL DEFAULT '',
+                    last_backfill_at      TIMESTAMP,
+                    last_backfill_summary JSONB DEFAULT '{}'::jsonb,
+                    updated_at            TIMESTAMP DEFAULT NOW()
+                );
+
+                CREATE TABLE IF NOT EXISTS stripe_product_sync (
+                    id                  SERIAL PRIMARY KEY,
+                    local_product_id    INTEGER NOT NULL
+                        REFERENCES products(id) ON DELETE CASCADE,
+                    mode                VARCHAR(10) NOT NULL,
+                    stripe_product_id   VARCHAR(100) NOT NULL DEFAULT '',
+                    stripe_price_id     VARCHAR(100) NOT NULL DEFAULT '',
+                    synced_price_cents  INTEGER,
+                    synced_currency     VARCHAR(8) NOT NULL DEFAULT '',
+                    last_synced_at      TIMESTAMP,
+                    last_attempt_at     TIMESTAMP DEFAULT NOW(),
+                    last_error          TEXT NOT NULL DEFAULT '',
+                    UNIQUE (local_product_id, mode)
+                );
+                CREATE INDEX IF NOT EXISTS idx_stripe_sync_product
+                    ON stripe_product_sync (local_product_id);
+                CREATE INDEX IF NOT EXISTS idx_stripe_sync_mode
+                    ON stripe_product_sync (mode);
+                """
+            )
     finally:
         conn.close()
 
@@ -20733,6 +20782,244 @@ def admin_devconsole_reregister_velo():
         return jsonify({"ok": False, "error": str(e)}), 502
 
 
+# =============================================================
+# ADMIN: STRIPE CONSOLE
+# =============================================================
+# Routes that back the admin "Stripe" tab. Powers:
+#   GET  /admin/api/stripe/settings        — current config snapshot
+#   POST /admin/api/stripe/mode            — flip test/live, fires probe
+#   POST /admin/api/stripe/autosync        — toggle product autosync
+#   POST /admin/api/stripe/probe           — Stripe Account.retrieve()
+#   POST /admin/api/stripe/backfill        — sync every product
+#   POST /admin/api/stripe/sync-product    — manual single re-sync
+#   GET  /admin/api/stripe/sync-status     — products × mappings table
+#   GET  /admin/api/stripe/recent-checkouts — last N Checkout Sessions
+#
+# All write routes return {ok:bool, ...} and NEVER 5xx on a Stripe SDK
+# error — they capture the error message into the response so the UI
+# can surface it inline. Auth is admin-only via the existing decorator.
+# =============================================================
+
+def _stripe_probe_now():
+    """Run Account.retrieve() against the current-mode key. Returns
+    {ok, latency_ms, account_id, error, key_kind}. Stamps the result
+    into stripe_settings via record_health() as a side-effect."""
+    import stripe_settings as _ss
+    import stripe_client as _sc
+    import time as _time
+    started = _time.time()
+    try:
+        s = _sc.get_stripe()
+        acct = s.Account.retrieve()
+        latency = int((_time.time() - started) * 1000)
+        _ss.record_health(True, "")
+        return {
+            "ok": True,
+            "latency_ms": latency,
+            "account_id": acct.get("id") if isinstance(acct, dict) else getattr(acct, "id", ""),
+            "key_kind": _sc.detect_active_key_kind(),
+        }
+    except Exception as e:
+        latency = int((_time.time() - started) * 1000)
+        msg = f"{type(e).__name__}: {e}"
+        _ss.record_health(False, msg)
+        return {
+            "ok": False,
+            "latency_ms": latency,
+            "error": msg,
+            "key_kind": _sc.detect_active_key_kind(),
+        }
+
+
+@app.route("/admin/api/stripe/settings", methods=["GET"])
+@admin_required
+def admin_stripe_settings():
+    """Returns the full snapshot the Stripe tab needs on first load:
+    mode, autosync flag, which env vars are present (booleans only —
+    never values), last health check result, last backfill summary,
+    and which key the resolver would currently use (test/live/unknown)
+    — used to flag mode mismatches in the UI."""
+    import stripe_settings as _ss
+    import stripe_client as _sc
+    settings = _ss.get_settings()
+    keys_present = _sc.detect_keys_present()
+    active_kind = _sc.detect_active_key_kind()
+    return jsonify({
+        "mode": settings["mode"],
+        "autosync_products": settings["autosync_products"],
+        "keys_present": keys_present,
+        "active_key_kind": active_kind,
+        # Symmetric mismatch: flag BOTH directions. The test→live case is
+        # the dangerous one (real cards charged) but live→test is also
+        # wrong (admin thinks they're charging real customers but the
+        # charges hit Stripe's sandbox), so surface both equally.
+        "mode_mismatch": (
+            active_kind in ("test", "live")
+            and active_kind != settings["mode"]
+        ),
+        "health": {
+            "last_check_at": settings["last_health_check_at"],
+            "ok": settings["last_health_ok"],
+            "error": settings["last_health_error"],
+        },
+        "last_backfill": {
+            "at": settings["last_backfill_at"],
+            "summary": settings["last_backfill_summary"],
+        },
+    })
+
+
+@app.route("/admin/api/stripe/mode", methods=["POST"])
+@admin_required
+def admin_stripe_set_mode():
+    """Flip between test/live. Invalidates the key cache so the very
+    next get_stripe() call uses the new mode's key, then runs an
+    immediate probe so the UI gets a fresh health badge."""
+    import stripe_settings as _ss
+    import stripe_client as _sc
+    data = request.get_json(silent=True) or {}
+    mode = (data.get("mode") or "").lower().strip()
+    if mode not in ("test", "live"):
+        return jsonify({"ok": False, "error": "mode must be 'test' or 'live'"}), 400
+    try:
+        _ss.set_mode(mode)
+        _sc.invalidate_cache()
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({
+        "ok": True,
+        "mode": mode,
+        "probe": _stripe_probe_now(),
+    })
+
+
+@app.route("/admin/api/stripe/autosync", methods=["POST"])
+@admin_required
+def admin_stripe_set_autosync():
+    """Persist the product-autosync flag. When enabled, future
+    POST/PUT /admin/api/products will mirror to Stripe automatically.
+    Existing products are NOT backfilled — admin must hit the
+    'Backfill all products' button to sweep the whole catalog."""
+    import stripe_settings as _ss
+    data = request.get_json(silent=True) or {}
+    enabled = bool(data.get("enabled"))
+    try:
+        _ss.set_autosync(enabled)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, "autosync_products": enabled})
+
+
+@app.route("/admin/api/stripe/probe", methods=["POST"])
+@admin_required
+def admin_stripe_probe():
+    """One-shot Stripe Account.retrieve() against the current mode.
+    Used by the 'Test connection' button in the UI."""
+    return jsonify(_stripe_probe_now())
+
+
+@app.route("/admin/api/stripe/backfill", methods=["POST"])
+@admin_required
+def admin_stripe_backfill():
+    """Sync every active product to Stripe in one shot. Returns counts +
+    a (capped at 20) sample of failures. Records the summary into
+    stripe_settings.last_backfill_summary so the UI can show it on
+    next load without re-running."""
+    try:
+        import stripe_sync as _ssync
+        result = _ssync.backfill_all()
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "synced": 0,
+                        "failed": 0, "errors": []})
+    return jsonify({"ok": True, **result})
+
+
+@app.route("/admin/api/stripe/sync-product", methods=["POST"])
+@admin_required
+def admin_stripe_sync_product():
+    """Manual single-product re-sync. Used by the 'Re-sync' button on
+    each row of the sync-status table. Works regardless of the
+    autosync toggle (the toggle only governs the AUTOMATIC hook from
+    product CRUD; manual re-sync should always be available)."""
+    data = request.get_json(silent=True) or {}
+    try:
+        pid = int(data.get("product_id") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    if pid <= 0:
+        return jsonify({"ok": False, "error": "product_id required"}), 400
+    try:
+        import stripe_sync as _ssync
+        result = _ssync.sync_product(pid)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+    return jsonify(result)
+
+
+@app.route("/admin/api/stripe/sync-status", methods=["GET"])
+@admin_required
+def admin_stripe_sync_status():
+    """Returns products × current-mode mapping, as the table the admin
+    sees. Includes a `price_drift` flag per row so unmatched prices
+    are immediately visible."""
+    try:
+        import stripe_sync as _ssync
+        return jsonify(_ssync.get_sync_status_rows())
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "rows": [],
+                        "count": 0, "mode": "unknown"})
+
+
+@app.route("/admin/api/stripe/recent-checkouts", methods=["GET"])
+@admin_required
+def admin_stripe_recent_checkouts():
+    """Read-only window into the last N Checkout Sessions (current
+    mode). Pure passthrough to stripe.checkout.Session.list — never
+    persisted locally because it changes constantly and would just be
+    a stale cache."""
+    import stripe_client as _sc
+    import stripe_settings as _ss
+    try:
+        limit = max(1, min(int(request.args.get("limit") or 50), 100))
+    except (TypeError, ValueError):
+        limit = 50
+    try:
+        s = _sc.get_stripe()
+        listing = s.checkout.Session.list(limit=limit)
+        out = []
+        for sess in (listing.get("data") if isinstance(listing, dict)
+                     else getattr(listing, "data", []) or []):
+            d = dict(sess) if not isinstance(sess, dict) else sess
+            out.append({
+                "id": d.get("id") or "",
+                "created": d.get("created"),
+                "amount_total": d.get("amount_total"),
+                "currency": (d.get("currency") or "").upper(),
+                "payment_status": d.get("payment_status") or "",
+                "status": d.get("status") or "",
+                "customer_email": (
+                    d.get("customer_email")
+                    or (d.get("customer_details") or {}).get("email")
+                    or ""
+                ),
+                "url": d.get("url") or "",
+            })
+        return jsonify({
+            "ok": True,
+            "mode": _ss.get_mode(),
+            "sessions": out,
+            "count": len(out),
+        })
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "mode": _ss.get_mode(),
+            "error": f"{type(e).__name__}: {e}",
+            "sessions": [],
+            "count": 0,
+        })
+
+
 # --------------- Drag-and-Drop Reorder ---------------
 
 @app.route("/admin/api/reorder/<string:content_type>", methods=["PUT"])
@@ -26270,6 +26557,47 @@ def _slugify(text: str) -> str:
     return s or secrets.token_hex(4)
 
 
+# ---------------------------------------------------------------------------
+# Stripe sync hooks for the admin product CRUD routes below.
+#
+# Two thin wrappers so the route bodies stay readable. Both:
+#  - import stripe_sync / stripe_settings LAZILY (avoids any circular-import
+#    risk with stripe_settings.py / stripe_sync.py which both `import app`)
+#  - swallow ALL exceptions (a broken Stripe layer must NEVER block local
+#    product CRUD — that's an explicit design rule for this feature)
+#  - return a JSON-safe dict so the frontend can show a toast on failure
+# ---------------------------------------------------------------------------
+
+def _maybe_sync_product_to_stripe(local_product_id):
+    """Called from POST/PUT product routes. Returns a status dict that
+    the route attaches to its response under "stripe_sync". Returns
+    `{"skipped": "autosync_off"}` when the toggle is off so the frontend
+    can stay silent in that case."""
+    try:
+        import stripe_settings as _ss
+        if not _ss.get_settings().get("autosync_products"):
+            return {"skipped": "autosync_off"}
+        import stripe_sync as _ssync
+        return _ssync.sync_product(local_product_id)
+    except Exception as e:
+        print(f"[stripe_sync hook] sync failed for product {local_product_id}: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+def _maybe_archive_product_in_stripe(local_product_id):
+    """Called from DELETE product route. Always runs (regardless of the
+    autosync toggle) IFF a mapping exists for either mode — otherwise
+    the Stripe Product would be left active in the catalog after the
+    local row is gone. archive_product itself is a no-op when there's
+    no mapping, so this is cheap."""
+    try:
+        import stripe_sync as _ssync
+        return _ssync.archive_product(local_product_id)
+    except Exception as e:
+        print(f"[stripe_sync hook] archive failed for product {local_product_id}: {e}")
+        return {"ok": False, "error": str(e)}
+
+
 @app.route("/admin/api/products", methods=["GET"])
 @admin_required
 def admin_products_list():
@@ -26320,7 +26648,9 @@ def admin_products_create():
         fetchone=True,
     
     )
-    return jsonify(_product_row_to_dict(row)), 201
+    out = _product_row_to_dict(row)
+    out["stripe_sync"] = _maybe_sync_product_to_stripe(row["id"])
+    return jsonify(out), 201
 
 
 @app.route("/admin/api/products/<int:pid>", methods=["PUT"])
@@ -26364,14 +26694,20 @@ def admin_products_update(pid):
         fetchone=True,
     
     )
-    return jsonify(_product_row_to_dict(row))
+    out = _product_row_to_dict(row)
+    out["stripe_sync"] = _maybe_sync_product_to_stripe(pid)
+    return jsonify(out)
 
 
 @app.route("/admin/api/products/<int:pid>", methods=["DELETE"])
 @admin_required
 def admin_products_delete(pid):
+    # Archive in Stripe BEFORE the local DELETE — once the row is gone
+    # the ON DELETE CASCADE on stripe_product_sync would wipe out the
+    # mappings and we'd lose the Stripe Product IDs we need to archive.
+    archive_result = _maybe_archive_product_in_stripe(pid)
     query_db("DELETE FROM products WHERE id = %s", (pid,))
-    return jsonify({"success": True})
+    return jsonify({"success": True, "stripe_archive": archive_result})
 
 
 @app.route("/admin/api/products/<int:pid>/stock", methods=["PATCH"])
