@@ -1210,10 +1210,14 @@ FONTS:
   </div>
 
 
-  <!-- Main JavaScript — handles all interactivity -->
-  <script src="/script.js"></script>
-  <!-- Proactive AI voice agent: intros, voice input, AI voice replies. -->
-  <!-- Self-initializes; all features are off until enabled in admin panel. -->
-  <script src="/voice.js"></script>
+  <!-- Main JavaScript bundle — script.js + voice.js concatenated and
+       minified, served from a content-fingerprinted URL with a one-year
+       immutable Cache-Control header. The placeholder below is replaced
+       server-side by serve_index() with the actual <script> tag carrying
+       the current sha256[:12] hash. The original /script.js and /voice.js
+       endpoints still work for direct debugging access and for backward
+       compatibility with admin-saved designs in site_designs that inline
+       the original two tags directly. -->
+  <!-- JS_BUNDLE_INJECT -->
 </body>
 </html>

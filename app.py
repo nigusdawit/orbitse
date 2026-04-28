@@ -82,6 +82,7 @@ import automations
 import scraper
 import storage
 import image_optimize
+import asset_bundle
 from flask import (
     Flask, request, jsonify, send_from_directory,
     render_template, session, redirect, url_for, Response, stream_with_context,
@@ -4693,6 +4694,39 @@ def healthz():
 
 
 # =============================================================================
+# JS BUNDLE — fingerprinted, immutably-cached, single-request asset
+# =============================================================================
+# script.js + voice.js concatenated and minified into one in-memory blob,
+# served from a content-fingerprinted URL like /bundle.{sha256[:12]}.min.js.
+# The hash is derived from the minified bytes at first access and stays
+# stable for the lifetime of the worker process — when the source files
+# change at deploy time, the hash changes, the URL changes, and any cached
+# HTML pointing at the old URL naturally 404s and forces a fresh fetch.
+# Lets us serve the bundle with `Cache-Control: max-age=31536000, immutable`
+# (one year, no revalidation) without ever serving stale code.
+#
+# Route order: this is registered above serve_static() so the wildcard SPA
+# fallback can't shadow it. An old-hash request returns 404 (rather than
+# silently serving the current bundle from a wrong-hash URL) so caches
+# stay honest.
+
+@app.route("/bundle.<bundle_hash>.min.js")
+def serve_js_bundle(bundle_hash):
+    state = asset_bundle.get_bundle()
+    if bundle_hash != state["hash"]:
+        # Wrong hash = client cached HTML pointing at a since-redeployed
+        # bundle. 404 forces them to refetch HTML, which carries the new
+        # hash. Safer than serving the current bundle from a wrong-hash
+        # URL (would let the stale URL get cached forever as if valid).
+        return ("Stale bundle hash", 404, {"Content-Type": "text/plain"})
+    response = make_response(state["content_bytes"])
+    response.headers["Content-Type"] = "application/javascript; charset=utf-8"
+    response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    response.headers["Vary"] = "Accept-Encoding"
+    return response
+
+
+# =============================================================================
 # FIRST-RUN WIZARD (Tier 3 — onboarding)
 # =============================================================================
 # A browser-based form that lets a non-technical operator configure a fresh
@@ -5323,6 +5357,47 @@ def serve_index():
                 lambda m: m.group(1) + site_name + m.group(2),
                 html_content, count=1,
             )
+
+        # Inject the minified JS bundle <script> tag in place of the
+        # original two `<script src="/script.js">` and `<script src="/voice.js">`
+        # tags. Same disk/db dual-path as the other inject blocks above:
+        # the disk template carries the explicit placeholder; admin-saved
+        # designs in site_designs predate it and still inline the original
+        # two script tags, so we fall back to a regex rewrite that swaps
+        # the first `<script src="/script.js"></script>` for the bundle
+        # tag and removes any subsequent `<script src="/voice.js"></script>`.
+        # Any failure here is non-fatal — the served HTML still carries
+        # working JS via the original two tags (or in the placeholder
+        # path, the homepage gracefully degrades to no JS, which is
+        # surfaced loudly by tests rather than silently in prod).
+        try:
+            bundle_tag = asset_bundle.bundle_script_tag()
+            if "<!-- JS_BUNDLE_INJECT -->" in html_content:
+                html_content = html_content.replace(
+                    "<!-- JS_BUNDLE_INJECT -->", bundle_tag, 1
+                )
+            else:
+                # Tolerant regex: matches `<script src="/script.js">` AND
+                # `<script defer src="/script.js" type="text/javascript">`
+                # AND single-quote / whitespace-around-= / cache-bust
+                # query-string variants. Admin-saved designs in
+                # site_designs may carry any of these — staying brittle
+                # would silently skip the optimisation for those designs.
+                script_re = re.compile(
+                    r'<script\b[^>]*\bsrc\s*=\s*["\']\/script\.js(?:\?[^"\']*)?["\'][^>]*>\s*</script>',
+                    re.IGNORECASE,
+                )
+                voice_re = re.compile(
+                    r'<script\b[^>]*\bsrc\s*=\s*["\']\/voice\.js(?:\?[^"\']*)?["\'][^>]*>\s*</script>',
+                    re.IGNORECASE,
+                )
+                if script_re.search(html_content):
+                    html_content = script_re.sub(bundle_tag, html_content, count=1)
+                    html_content = voice_re.sub("", html_content, count=1)
+                elif voice_re.search(html_content):
+                    html_content = voice_re.sub(bundle_tag, html_content, count=1)
+        except Exception as e:
+            print(f"[serve_index] JS bundle injection failed: {e}; falling back to source files")
 
         return Response(html_content, mimetype="text/html")
     except Exception:

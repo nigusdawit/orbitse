@@ -25,6 +25,7 @@ dependencies = [
     "pytest>=9.0.3",
     "python-pptx>=1.0.2",
     "requests>=2.33.1",
+    "rjsmin>=1.2.5",
     "sentry-sdk[flask]>=2.53.0",
     "stripe>=15.1.0",
     "werkzeug>=3.1.6",
