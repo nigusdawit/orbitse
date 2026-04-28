@@ -20198,7 +20198,16 @@ def admin_upload_image():
     # Skipped for gif/webp/non-images — see image_optimize for the
     # rules. Best-effort: any failure is logged and swallowed so we
     # never fail an upload over a downstream optimization.
+    #
+    # Defense-first: delete any pre-existing variants whose URLs match
+    # what we're about to generate. Same-name re-uploads are rare with
+    # token_hex(8) names (256-bit space) but happen via snapshot
+    # restore, manual overwrite, or bulk import. Without the cleanup
+    # the variants would carry the OLD bytes for up to 30 days because
+    # they're served `immutable, max-age=2592000`. The delete is a
+    # no-op (~3 exists() probes) when no variants exist.
     try:
+        image_optimize.delete_variants(unique_name)
         image_optimize.generate_webp_variants(unique_name)
     except Exception as e:
         app.logger.exception("variant pre-warm failed for %s: %s", unique_name, e)
@@ -20272,8 +20281,15 @@ def admin_upload_media():
         # so it's safe to call unconditionally for every media type;
         # the explicit guard here just avoids the read_bytes for
         # videos and audio.
+        #
+        # `delete_variants` first sweeps any stale variants left over
+        # from an earlier upload that reused the same filename (e.g.
+        # restore-from-snapshot, manual overwrite). Skipping the
+        # cleanup would leave browsers serving 30-day-cached old bytes
+        # at the same URLs the new variants get. No-op for fresh names.
         if media_type == "image":
             try:
+                image_optimize.delete_variants(unique_name)
                 image_optimize.generate_webp_variants(unique_name)
             except Exception as e:
                 app.logger.exception("variant pre-warm failed for %s: %s", unique_name, e)
@@ -20312,6 +20328,241 @@ def admin_delete_media(media_id):
         pass
     execute_db("DELETE FROM uploaded_images WHERE id = %s", (media_id,))
     return jsonify({"ok": True})
+
+
+# --------------- Performance / Site-Operations Dashboard -------------------
+#
+# Read-only diagnostics + a single bulk action (regenerate WebP variants).
+# Powers the "Performance" tab in the admin UI — gathers the runtime state
+# of the site-perf optimisations into one JSON response so the operator can
+# see what's configured / running / stale at a glance, without grepping
+# logs or env vars. Self-service replacement for "ssh in and check".
+
+@app.route("/admin/api/performance", methods=["GET"])
+@admin_required
+def admin_performance_stats():
+    """GET /admin/api/performance — JSON snapshot of site-perf state.
+
+    Returns six sections, one per optimisation. Any section that errors
+    is returned with an `{"error": "..."}` marker so the UI can render
+    the rest of the page even if one block fails.
+    """
+    return jsonify(_collect_performance_stats())
+
+
+@app.route("/admin/api/performance/regenerate-image-variants", methods=["POST"])
+@admin_required
+def admin_regenerate_image_variants():
+    """POST — Force-refresh ALL WebP variants for the local uploads dir.
+
+    Iterates over every JPEG/PNG file at the uploads root, deletes each
+    file's existing variants, and regenerates them at the current width
+    breakpoints (400 / 800 / 1600). The escape-hatch for the cases the
+    upload-time defense in `delete_variants` can't catch:
+
+      * Sources replaced by shell / snapshot / object-store sync (the
+        write didn't go through the upload route, so the per-upload
+        cleanup never ran)
+      * `_RESPONSIVE_WIDTHS` changed in image_optimize.py (variants at
+        the OLD widths are now orphaned and the NEW widths are missing)
+      * Bulk debugging: WebP encoder upgrade, Pillow upgrade, etc.
+
+    Local-storage backend ONLY. For S3 backends, list the bucket via
+    your CDN tooling and call `delete_variants` + `generate_webp_variants`
+    in a script — we don't enumerate buckets here to keep the operation
+    deterministic and bounded (a bucket of 100k images would time out
+    the request and rack up egress).
+
+    Synchronous: runs in the request handler. Typical small library
+    (~50 images) finishes in 1-3 seconds. Tab UI disables the button
+    and shows a spinner while running.
+    """
+    backend_name = storage.get_storage().name
+    if backend_name != "local":
+        return jsonify({
+            "error": ("Bulk regenerate is local-storage-only. "
+                      "S3 backends should script per-file regeneration."),
+            "backend": backend_name,
+        }), 400
+
+    from pathlib import Path
+    uploads_dir = Path(__file__).resolve().parent / "uploads"
+    if not uploads_dir.exists():
+        return jsonify({
+            "regenerated": 0, "skipped": 0, "errors": 0, "total_scanned": 0,
+        })
+
+    regenerated = 0
+    skipped = 0
+    errors = 0
+    total = 0
+    for p in uploads_dir.iterdir():
+        if not p.is_file():
+            continue
+        # Variants get rewritten as a side-effect of regenerating their
+        # source — don't process them as inputs (would otherwise try to
+        # decode a WebP and emit warnings).
+        if image_optimize.is_variant_filename(p.name):
+            continue
+        ext = p.suffix.lower().lstrip(".")
+        if ext not in {"jpg", "jpeg", "png"}:
+            continue
+        total += 1
+        try:
+            image_optimize.delete_variants(p.name)
+            generated = image_optimize.generate_webp_variants(p.name)
+            if generated:
+                regenerated += 1
+            else:
+                # Source decoded but produced no variants — typically
+                # a sub-400 px thumbnail (no upscaling rule kicks in).
+                skipped += 1
+        except Exception:
+            app.logger.exception("regenerate failed for %s", p.name)
+            errors += 1
+
+    return jsonify({
+        "regenerated": regenerated,
+        "skipped": skipped,
+        "errors": errors,
+        "total_scanned": total,
+    })
+
+
+def _collect_performance_stats():
+    """Gather all stats for the Performance tab. Per-section try/except
+    so one broken backend (e.g. DB unreachable) doesn't 500 the whole
+    page — each section returns its own data or an `{"error": ...}`."""
+    return {
+        "bundle": _stats_bundle(),
+        "images": _stats_images(),
+        "db_pool": _stats_db_pool(),
+        "cdn_uploads": _stats_cdn_uploads(),
+        "api_cache": _stats_api_cache(),
+        "preconnect": _stats_preconnect(),
+    }
+
+
+def _stats_bundle():
+    """JS bundle: hash, size, savings %, source list (Opt #11)."""
+    try:
+        b = asset_bundle.get_bundle()
+        raw = b.get("raw_size") or 0
+        mn = b.get("min_size") or 0
+        return {
+            "url": b.get("url"),
+            "hash": b.get("hash"),
+            "raw_size_bytes": raw,
+            "min_size_bytes": mn,
+            "savings_pct": round((1 - mn / raw) * 100, 1) if raw else 0,
+            "sources": list(b.get("sources") or []),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _stats_images():
+    """Image library: backend, DB row count, on-disk file counts (Opt #4/5)."""
+    try:
+        backend = storage.get_storage().name
+        try:
+            row = query_db(
+                "SELECT COUNT(*) AS c FROM uploaded_images WHERE media_type = 'image'"
+            )
+            uploaded_in_db = (row[0]["c"] if row else 0)
+        except Exception:
+            uploaded_in_db = None
+
+        originals_on_disk = None
+        variants_on_disk = None
+        if backend == "local":
+            from pathlib import Path
+            uploads_dir = Path(__file__).resolve().parent / "uploads"
+            if uploads_dir.exists():
+                try:
+                    originals = 0
+                    variants = 0
+                    for p in uploads_dir.iterdir():
+                        if not p.is_file():
+                            continue
+                        if image_optimize.is_variant_filename(p.name):
+                            variants += 1
+                        elif p.suffix.lower().lstrip(".") in {"jpg", "jpeg", "png"}:
+                            originals += 1
+                    originals_on_disk = originals
+                    variants_on_disk = variants
+                except OSError:
+                    pass
+
+        return {
+            "backend": backend,
+            "uploaded_images_in_db": uploaded_in_db,
+            "originals_on_disk": originals_on_disk,
+            "variants_on_disk": variants_on_disk,
+            "regenerate_supported": (backend == "local"),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _stats_db_pool():
+    """Connection pool: configured min/max + whether overridden by env (Opt #9)."""
+    try:
+        return {
+            "configured_min": _DB_POOL_MIN,
+            "configured_max": _DB_POOL_MAX,
+            "min_via_env": bool((os.environ.get("DB_POOL_MIN") or "").strip()),
+            "max_via_env": bool((os.environ.get("DB_POOL_MAX") or "").strip()),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _stats_cdn_uploads():
+    """CDN for /uploads: configured base URL + whether the strict-mode
+    pull-secret is set (Opt #5)."""
+    try:
+        base = (os.environ.get("UPLOADS_PUBLIC_BASE_URL") or "").strip().rstrip("/")
+        return {
+            "configured": bool(base),
+            "base_url": base,
+            "secret_set": bool((os.environ.get("UPLOADS_CDN_PULL_SECRET") or "").strip()),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _stats_api_cache():
+    """Public API cache headers: which endpoints, what TTL (Opt #3)."""
+    try:
+        return {
+            "endpoint_count": len(_CACHEABLE_API_PATHS),
+            "endpoints": sorted(_CACHEABLE_API_PATHS),
+            "max_age_seconds": 60,
+            "stale_while_revalidate_seconds": 300,
+            "admin_bypass_note": (
+                "Caching is automatically skipped for any request "
+                "carrying a session cookie, so logged-in admins always "
+                "see fresh content."
+            ),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _stats_preconnect():
+    """Third-party origins receiving preconnect+dns-prefetch hints (Opt #10).
+    Parses the same HTML the homepage gets, so this surfaces any drift
+    if `_build_preconnect_hints_html` ever changes."""
+    try:
+        html = _build_preconnect_hints_html()
+        origins = sorted(set(re.findall(r'https://([\w.-]+)', html)))
+        return {
+            "origins": origins,
+            "origin_count": len(origins),
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # --------------- Drag-and-Drop Reorder ---------------

@@ -1825,6 +1825,10 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
       Custom Dashboards
     </button>
+    <button class="tab-btn" onclick="switchTab('performance', this); loadPerformance();" data-testid="tab-performance">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      Performance
+    </button>
 
     <div class="sidebar-group-label">Layout</div>
     <button class="tab-btn" onclick="switchTab('page-layout', this)" data-testid="tab-page-layout">
@@ -2438,6 +2442,33 @@ TO CUSTOMIZE THIS DASHBOARD:
         <button class="btn-primary" onclick="saveNewConnection()" data-testid="button-save-connection">Add Connection</button>
       </div>
     </div>
+  </div>
+
+  <!--
+  ========================================================================
+  PERFORMANCE TAB — runtime status of the site-perf optimisations.
+  Read-mostly: shows bundle stats, image library counts, DB pool config,
+  CDN status, API cache config, preconnect origins. One write action:
+  "Regenerate ALL image variants" force-refreshes WebP files for cases
+  the upload-time auto-cleanup couldn't catch (snapshot restore, manual
+  overwrite, width-breakpoint change).
+  Loaded on demand by loadPerformance() — no auto-poll, this is a
+  diagnostic page not a live dashboard.
+  ========================================================================
+  -->
+  <div id="tab-performance" class="tab-content">
+    <div class="content-header">
+      <h2>Performance</h2>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <span id="performance-updated" style="font-size:0.8125rem; color:var(--admin-text-muted);" data-testid="text-performance-updated"></span>
+        <button class="btn-secondary" onclick="loadPerformance()" data-testid="button-performance-refresh">Refresh</button>
+      </div>
+    </div>
+    <p style="color:var(--admin-text-muted); margin:0 0 1rem 0; font-size:0.875rem;">
+      Status of the site's performance optimisations. Numbers refresh on tab open.
+    </p>
+    <div id="performance-loading" class="empty-state" style="padding:1.5rem;" data-testid="text-performance-loading">Loading…</div>
+    <div id="performance-grid" style="display:none; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:1rem;" data-testid="grid-performance"></div>
   </div>
 
   <div id="tab-page-layout" class="tab-content">
@@ -13191,6 +13222,180 @@ TO CUSTOMIZE THIS DASHBOARD:
     let __dbSchema = null;                // { table_name: [{name, kind}, ...] }
     let __editingWidgetId = null;         // null means creating
     const __widgetCharts = {};            // widget_id -> Chart instance
+
+    // ===== Performance tab — runtime status of site-perf optimisations =====
+    // Single GET fetches all six sections; renders one card per section.
+    // The only write is the "Regenerate all variants" button (POSTs to a
+    // local-storage-only endpoint that returns counts).
+    async function loadPerformance() {
+      const loading = document.getElementById('performance-loading');
+      const grid = document.getElementById('performance-grid');
+      const updated = document.getElementById('performance-updated');
+      if (!grid || !loading) return;
+      loading.style.display = 'block';
+      loading.textContent = 'Loading…';
+      grid.style.display = 'none';
+      try {
+        const res = await fetch('/admin/api/performance', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const stats = await res.json();
+        grid.innerHTML = _perfRenderCards(stats);
+        loading.style.display = 'none';
+        grid.style.display = 'grid';
+        if (updated) updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      } catch (e) {
+        loading.textContent = 'Could not load performance stats: ' + e.message;
+      }
+    }
+
+    function _perfFmtBytes(n) {
+      if (n == null) return '—';
+      if (n < 1024) return n + ' B';
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+      return (n / 1024 / 1024).toFixed(2) + ' MB';
+    }
+
+    function _perfCard(title, bodyHtml, testId) {
+      return `<div data-testid="${testId}" style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:1rem 1.25rem;">
+        <div style="font-weight:600; margin-bottom:0.5rem;">${escapeHTML(title)}</div>
+        ${bodyHtml}
+      </div>`;
+    }
+
+    function _perfRow(label, value) {
+      return `<div style="display:flex; justify-content:space-between; gap:1rem; padding:0.25rem 0; border-bottom:1px solid var(--admin-border, rgba(255,255,255,0.05));">
+        <span style="color:var(--admin-text-muted);">${escapeHTML(label)}</span>
+        <span style="font-family:monospace; font-size:0.875rem; word-break:break-all; text-align:right;">${escapeHTML(String(value))}</span>
+      </div>`;
+    }
+
+    function _perfRenderCards(s) {
+      const cards = [];
+
+      // JS Bundle
+      const b = s.bundle || {};
+      if (b.error) {
+        cards.push(_perfCard('JS Bundle', `<div style="color:var(--admin-text-muted);">Error: ${escapeHTML(b.error)}</div>`, 'card-perf-bundle'));
+      } else {
+        cards.push(_perfCard('JS Bundle (Opt #11)',
+          _perfRow('URL', b.url || '—') +
+          _perfRow('Hash', b.hash || '—') +
+          _perfRow('Raw size', _perfFmtBytes(b.raw_size_bytes)) +
+          _perfRow('Minified', _perfFmtBytes(b.min_size_bytes)) +
+          _perfRow('Savings', (b.savings_pct == null ? 0 : b.savings_pct) + '%') +
+          _perfRow('Sources', (b.sources || []).join(', ') || '—'),
+          'card-perf-bundle'
+        ));
+      }
+
+      // Image variants
+      const im = s.images || {};
+      if (im.error) {
+        cards.push(_perfCard('Images', `<div style="color:var(--admin-text-muted);">Error: ${escapeHTML(im.error)}</div>`, 'card-perf-images'));
+      } else {
+        let body =
+          _perfRow('Storage backend', im.backend || '—') +
+          _perfRow('Uploaded images (DB)', im.uploaded_images_in_db == null ? '—' : im.uploaded_images_in_db) +
+          _perfRow('Originals on disk', im.originals_on_disk == null ? '— (S3 backend)' : im.originals_on_disk) +
+          _perfRow('WebP variants on disk', im.variants_on_disk == null ? '— (S3 backend)' : im.variants_on_disk);
+        if (im.regenerate_supported) {
+          body += `<div style="margin-top:0.75rem;">
+            <button class="btn-secondary" id="regen-variants-btn"
+                    onclick="regenerateImageVariants()"
+                    data-testid="button-regenerate-variants">
+              Regenerate all variants
+            </button>
+            <div style="font-size:0.8125rem; color:var(--admin-text-muted); margin-top:0.5rem;">
+              Force-refresh every WebP variant. Use after replacing source images via shell or snapshot.
+            </div>
+          </div>`;
+        } else {
+          body += `<div style="margin-top:0.5rem; font-size:0.8125rem; color:var(--admin-text-muted);">
+            Bulk regenerate is not available for the S3 backend.
+          </div>`;
+        }
+        cards.push(_perfCard('Image Variants (Opt #4 / #5)', body, 'card-perf-images'));
+      }
+
+      // Database pool
+      const p = s.db_pool || {};
+      if (p.error) {
+        cards.push(_perfCard('Database Pool', `<div style="color:var(--admin-text-muted);">Error: ${escapeHTML(p.error)}</div>`, 'card-perf-db-pool'));
+      } else {
+        cards.push(_perfCard('Database Pool (Opt #9)',
+          _perfRow('Min connections', p.configured_min == null ? '—' : p.configured_min) +
+          _perfRow('Max connections', p.configured_max == null ? '—' : p.configured_max) +
+          _perfRow('Min via env var', p.min_via_env ? 'yes' : 'no (default)') +
+          _perfRow('Max via env var', p.max_via_env ? 'yes' : 'no (default)'),
+          'card-perf-db-pool'
+        ));
+      }
+
+      // Uploads CDN
+      const c = s.cdn_uploads || {};
+      if (c.error) {
+        cards.push(_perfCard('Uploads CDN', `<div style="color:var(--admin-text-muted);">Error: ${escapeHTML(c.error)}</div>`, 'card-perf-cdn'));
+      } else {
+        cards.push(_perfCard('Uploads CDN (Opt #5)',
+          _perfRow('Configured', c.configured ? 'yes' : 'no') +
+          _perfRow('Base URL', c.base_url || '—') +
+          _perfRow('Pull-through secret', c.secret_set ? 'set' : 'not set'),
+          'card-perf-cdn'
+        ));
+      }
+
+      // API cache
+      const a = s.api_cache || {};
+      if (a.error) {
+        cards.push(_perfCard('API Cache', `<div style="color:var(--admin-text-muted);">Error: ${escapeHTML(a.error)}</div>`, 'card-perf-api-cache'));
+      } else {
+        cards.push(_perfCard('Public API Cache (Opt #3)',
+          _perfRow('Cacheable endpoints', a.endpoint_count == null ? '—' : a.endpoint_count) +
+          _perfRow('Browser TTL', (a.max_age_seconds == null ? 0 : a.max_age_seconds) + 's') +
+          _perfRow('Stale-while-revalidate', (a.stale_while_revalidate_seconds == null ? 0 : a.stale_while_revalidate_seconds) + 's') +
+          `<div style="font-size:0.8125rem; color:var(--admin-text-muted); margin-top:0.5rem;">${escapeHTML(a.admin_bypass_note || '')}</div>`,
+          'card-perf-api-cache'
+        ));
+      }
+
+      // Preconnect hints
+      const pc = s.preconnect || {};
+      if (pc.error) {
+        cards.push(_perfCard('Preconnect', `<div style="color:var(--admin-text-muted);">Error: ${escapeHTML(pc.error)}</div>`, 'card-perf-preconnect'));
+      } else {
+        const list = (pc.origins || []).map(o => `<li style="font-family:monospace; font-size:0.8125rem;">${escapeHTML(o)}</li>`).join('');
+        cards.push(_perfCard('Preconnect Hints (Opt #10)',
+          _perfRow('Origin count', pc.origin_count == null ? '—' : pc.origin_count) +
+          `<ul style="margin:0.5rem 0 0; padding-left:1.25rem; color:var(--admin-text-muted);">${list || '<li>none</li>'}</ul>`,
+          'card-perf-preconnect'
+        ));
+      }
+
+      return cards.join('');
+    }
+
+    async function regenerateImageVariants() {
+      const btn = document.getElementById('regen-variants-btn');
+      if (!btn) return;
+      if (!confirm('Regenerate all image variants?\n\nThis sweeps every WebP variant in /uploads and rebuilds them from the originals. May take 10+ seconds for large libraries.')) return;
+      btn.disabled = true;
+      const original = btn.textContent;
+      btn.textContent = 'Regenerating…';
+      try {
+        const res = await fetch('/admin/api/performance/regenerate-image-variants', {
+          method: 'POST', credentials: 'same-origin',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+        alert(`Done.\n\nRegenerated: ${data.regenerated}\nSkipped (too small): ${data.skipped}\nErrors: ${data.errors}\nTotal scanned: ${data.total_scanned}`);
+        loadPerformance();
+      } catch (e) {
+        alert('Regeneration failed: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    }
 
     async function loadDashboards() {
       // Fetch the metrics catalog and connections lazily once.

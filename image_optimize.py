@@ -258,6 +258,62 @@ def generate_webp_variants(
     return generated
 
 
+def delete_variants(
+    original_filename: str,
+    *,
+    widths: Iterable[int] = _RESPONSIVE_WIDTHS,
+) -> int:
+    """Delete every WebP variant file derived from `original_filename`.
+
+    Returns the count of variants actually deleted. Safe to call when no
+    variants exist (returns 0 and never raises).
+
+    USE CASES:
+      * **Upload-time defense** (the headline reason this exists). When
+        a re-upload reuses an existing filename — snapshot restore,
+        manual overwrite via shell / FTP / object-store sync, bulk
+        import, etc. — the OLD variants share the same deterministic
+        URLs as the NEW variants would (`<stem>-{400,800,1600}.webp`).
+        Without this cleanup, browsers and CDNs would keep serving the
+        OLD bytes for up to 30 days because variants are marked
+        `immutable, max-age=2592000`. Calling `delete_variants` BEFORE
+        `generate_webp_variants` in the upload handler forces a clean
+        regeneration with fresh bytes.
+      * **Bulk-regenerate admin action**: the same idea at scale —
+        called once per source image to force-refresh stale caches
+        without changing widths or breakpoints.
+
+    Cheap when nothing exists: at most three storage.exists() probes
+    per call. The dominant case (fresh upload from the admin UI with a
+    `secrets.token_hex(8)` filename) finds nothing and returns 0
+    without writing anything.
+
+    NEVER raises. Storage backend errors on a single width are logged
+    and the loop continues to the next width — partial cleanup is a
+    strictly better outcome than blocking the upload over a transient
+    delete failure.
+    """
+    ext = original_filename.rsplit(".", 1)[-1].lower() if "." in original_filename else ""
+    if ext not in _VARIANT_SOURCE_EXTENSIONS:
+        return 0
+    store = storage.get_storage()
+    deleted = 0
+    for w in widths:
+        variant_name = _variant_key(original_filename, w)
+        try:
+            if store.exists(variant_name):
+                store.delete(variant_name)
+                deleted += 1
+        except Exception:
+            log.warning(
+                "image_optimize: failed to delete %s during cleanup",
+                variant_name,
+                exc_info=True,
+            )
+            continue
+    return deleted
+
+
 def ensure_variant_on_demand(filename: str) -> bool:
     """If `filename` matches the variant pattern AND the variant
     doesn't already exist AND a matching source image is present,
