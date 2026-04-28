@@ -20693,6 +20693,19 @@ def admin_devconsole_test_sms():
             "Self-test from the admin Developer Console. "
             "Twilio is wired up correctly.",
         )
+        # Even though the recipient is fixed to ADMIN_PHONE, this still
+        # bills against Twilio — write a ledger row so the cost dashboard
+        # accounts for it. surface=sms_devconsole_test keeps it visually
+        # distinct from real outbound traffic. record_sms_cost never
+        # raises (it swallows internally) so a ledger failure can't 500
+        # the test-send button.
+        record_sms_cost(
+            surface="sms_devconsole_test",
+            provider="twilio",
+            to_number=to_phone,
+            message_sid=result.get("sid") or "",
+            segments=result.get("num_segments"),
+        )
         return jsonify({
             "ok": True,
             "to": to_phone,

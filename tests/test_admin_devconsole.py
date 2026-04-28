@@ -543,6 +543,35 @@ class TestTestSmsRoute:
         assert "+1999" not in sent["to"]
         assert r.get_json()["to"] == "+15551234567"
 
+    def test_success_path_writes_sms_cost_ledger_row(self, client, monkeypatch):
+        """Even though the recipient is fixed to ADMIN_PHONE, the test
+        send still bills against Twilio — confirm a ledger row is
+        written so the cost dashboard accounts for it. Pinned in
+        response to a code-review comment that admin utility paths
+        bypassing the cost ledger create silent under-counting."""
+        import app as app_module
+        _require_admin_login(client)
+        h = _csrf_headers(client)
+        monkeypatch.setenv("ADMIN_PHONE", "+15551234567")
+
+        def _fake_send_sms(to, body, **kw):
+            return {"sid": "SM_ledger_test", "num_segments": "2"}
+
+        monkeypatch.setattr(messaging, "send_sms", _fake_send_sms)
+        recorded = {}
+
+        def _fake_record_sms_cost(**kw):
+            recorded.update(kw)
+
+        monkeypatch.setattr(app_module, "record_sms_cost", _fake_record_sms_cost)
+        r = client.post("/admin/api/devconsole/test-sms", headers=h)
+        assert r.status_code == 200, r.data
+        assert recorded.get("surface") == "sms_devconsole_test"
+        assert recorded.get("provider") == "twilio"
+        assert recorded.get("to_number") == "+15551234567"
+        assert recorded.get("message_sid") == "SM_ledger_test"
+        assert recorded.get("segments") == "2"
+
 
 class TestReregisterVeloRoute:
     """POST /admin/api/devconsole/reregister-velo — env prerequisite
