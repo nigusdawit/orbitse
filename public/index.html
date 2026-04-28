@@ -77,10 +77,13 @@ FONTS:
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 
   <!-- Three.js — 3D rendering library for the Sphere View immersive experience.
-       Only used when the Sphere View feature is enabled in the admin dashboard. -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  <!-- CSS3DRenderer — renders HTML elements in 3D space (used for section cards in Sections mode) -->
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/renderers/CSS3DRenderer.js"></script>
+       Only used when the Sphere View feature is enabled in the admin dashboard.
+       LAZY-LOADED (Optimization #6, April 2026): three.min.js (~600KB) and
+       CSS3DRenderer.js (~10KB) are no longer fetched at page load. They are
+       fetched on demand by loadSphereLibs() in script.js when (and only
+       when) the visitor clicks the "Immersive View" button. The vast
+       majority of visitors never enter sphere view, so they don't pay the
+       ~610KB JS parse cost. -->
 
   <!-- DOMPurify — Sanitizes AI-generated HTML before rendering into the DOM.
        This prevents XSS (Cross-Site Scripting) attacks from malicious or
@@ -1201,8 +1204,43 @@ FONTS:
 
   <!-- Main JavaScript — handles all interactivity -->
   <script src="/script.js"></script>
-  <!-- Proactive AI voice agent: intros, voice input, AI voice replies. -->
-  <!-- Self-initializes; all features are off until enabled in admin panel. -->
-  <script src="/voice.js"></script>
+
+  <!-- Proactive AI voice agent: intros, voice input, AI voice replies.
+       LAZY-LOADED (Optimization #6, April 2026): voice.js (~50KB) is no
+       longer fetched at page load. The tiny boot script below fetches
+       it on the FIRST of: window.load (after first paint), OR the
+       visitor's first interaction (pointerdown/keydown/scroll). All
+       triggers are {once:true}, and __voiceLoaded acts as a singleton
+       guard so even concurrent triggers result in a single fetch.
+
+       voice.js self-initializes via its own DOMContentLoaded listener;
+       since DOMContentLoaded has already fired by the time we load it,
+       voice.js's branch `document.readyState !== 'loading'` runs the
+       init synchronously. -->
+  <script>
+    (function() {
+      var __voiceLoaded = false;
+      function loadVoiceJs() {
+        if (__voiceLoaded) return;
+        __voiceLoaded = true;
+        var s = document.createElement('script');
+        s.src = '/voice.js';
+        s.async = true;
+        document.body.appendChild(s);
+      }
+      if (document.readyState === 'complete') {
+        // Page already fully loaded — defer one tick to yield to anything
+        // else that might be running, then fetch.
+        setTimeout(loadVoiceJs, 0);
+      } else {
+        window.addEventListener('load', loadVoiceJs, { once: true });
+      }
+      // First-interaction triggers — load eagerly if the visitor engages
+      // before window.load fires (e.g. they tap the chat icon immediately).
+      window.addEventListener('pointerdown', loadVoiceJs, { once: true, passive: true });
+      window.addEventListener('keydown',     loadVoiceJs, { once: true });
+      window.addEventListener('scroll',      loadVoiceJs, { once: true, passive: true });
+    })();
+  </script>
 </body>
 </html>

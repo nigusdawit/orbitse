@@ -86,6 +86,86 @@ let touchStartY = null;
 
 
 /* =============================================================================
+   1b. LAZY-LOADED HEAVY MODULES (Optimization #6 — April 2026)
+   =============================================================================
+   These helpers fetch large below-the-fold JS bundles ON DEMAND instead of
+   in the critical path. Each helper:
+     - Caches its in-flight Promise as a module-private singleton, so
+       concurrent callers share a single fetch (no double-load races).
+     - Returns the cached Promise on subsequent calls (instant resolve).
+     - Resolves once the script(s) have parsed and any required globals
+       (e.g. `THREE`, `window.PresentationPlayer`) are available.
+
+   Adding a fourth lazy module? Follow the same pattern: create a single
+   Promise-cached helper, await it at the function that's the lone entry
+   point into the module, and remove the eager <script> tag from
+   public/index.html. Add a corresponding test in
+   tests/test_lazy_loading.py asserting the eager <script> is gone and
+   the loader function name appears in script.js.
+============================================================================= */
+
+/* loadSphereLibs() — loads three.js (~600KB) + CSS3DRenderer (~10KB) on
+   demand. Used by showSphereView(), the only entry point into THREE.* code.
+   Loads in series (renderer depends on THREE being on window already). */
+let _sphereLibsPromise = null;
+function loadSphereLibs() {
+  if (_sphereLibsPromise) return _sphereLibsPromise;
+  _sphereLibsPromise = new Promise((resolve, reject) => {
+    function loadOne(src) {
+      return new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = src;
+        s.async = false; // preserve in-document order vs other dynamically-injected scripts
+        s.onload = () => res();
+        s.onerror = () => rej(new Error('Failed to load ' + src));
+        document.head.appendChild(s);
+      });
+    }
+    loadOne('https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js')
+      .then(() => loadOne('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/renderers/CSS3DRenderer.js'))
+      .then(resolve)
+      .catch((err) => {
+        // Reset the cached Promise so a future click can retry rather
+        // than be stuck on a permanent failure (e.g. transient CDN blip).
+        _sphereLibsPromise = null;
+        reject(err);
+      });
+  });
+  return _sphereLibsPromise;
+}
+
+/* loadPresentationPlayer() — loads /present.js (~25KB) on demand. The
+   PresentationPlayer block formerly lived inline in this file; it's now
+   in public/present.js and exposes window.PresentationPlayer once parsed.
+   Used by the 'start_presentation' command handler. */
+let _presentPromise = null;
+function loadPresentationPlayer() {
+  if (_presentPromise) return _presentPromise;
+  /* Already loaded in a prior call? (e.g. dev manually loaded it for
+     testing) Skip the fetch. */
+  if (window.PresentationPlayer) {
+    _presentPromise = Promise.resolve();
+    return _presentPromise;
+  }
+  _presentPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = '/present.js';
+    s.async = true;
+    s.onload = () => {
+      if (window.PresentationPlayer) resolve();
+      else reject(new Error('present.js loaded but window.PresentationPlayer missing'));
+    };
+    s.onerror = () => {
+      _presentPromise = null;
+      reject(new Error('Failed to load /present.js'));
+    };
+    document.head.appendChild(s);
+  });
+  return _presentPromise;
+}
+
+
+/* =============================================================================
    2. DATA LOADING — Fetch content from the database via API
    =============================================================================
    These functions call the Flask API endpoints to retrieve content.
@@ -2342,13 +2422,28 @@ function initSphereButton() {
 
 /**
  * Show the Sphere View and initialize the Three.js scene.
+ *
+ * THREE.js + CSS3DRenderer are LAZY-LOADED here (Optimization #6) — this
+ * is the only entry point that touches `THREE.*`, so we await the loader
+ * before doing anything. First click pays the ~610KB fetch cost; later
+ * clicks resolve instantly from the cached Promise.
  */
-function showSphereView() {
+async function showSphereView() {
   if (!sphereSettings || !sphereSettings.enabled) return;
 
   const sphereView = document.getElementById('sphere-view');
   const landingView = document.getElementById('landing-view');
   if (!sphereView) return;
+
+  /* Lazy-fetch three.min.js + CSS3DRenderer.js on demand. If the network
+     fetch fails (offline / CDN blip), bail gracefully — the visitor sees
+     no sphere but the rest of the page keeps working. */
+  try {
+    await loadSphereLibs();
+  } catch (err) {
+    console.warn('Sphere libraries failed to load:', err);
+    return;
+  }
 
   if (landingView) landingView.style.display = 'none';
   document.getElementById('gallery-view').classList.remove('active');
@@ -5966,7 +6061,12 @@ function executeCommand(cmd) {
     case 'start_presentation': {
       const slug = cmd.slug || cmd.target;
       if (!slug) { console.warn('start_presentation: missing slug'); break; }
-      startPresentation(slug);
+      /* PresentationPlayer is in a separately-loaded file (present.js,
+         Optimization #6). Fetch it on first use, then start the deck.
+         The handler isn't async at this scope, so kick off via .then. */
+      loadPresentationPlayer()
+        .then(() => window.PresentationPlayer.start(slug))
+        .catch((err) => console.warn('Presentation player load failed:', err));
       break;
     }
 
