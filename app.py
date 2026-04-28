@@ -26963,22 +26963,35 @@ def admin_overview_stats():
             fetchone=True,
         ) or {"n": 0}
 
-        # Revenue — only meaningful if there are paid orders. Sum of
-        # totals on completed orders in the window. If the orders table
-        # has different column names, this returns 0 silently.
+        # Revenue + order count — sum total_cents on completed orders in the
+        # window, returned in dollars. Wrapped in try/except so a missing
+        # table never breaks the whole overview load.
+        # NOTE: the previous version of this block selected SUM(total_amount)
+        # against a column that does not exist in the orders table (it's
+        # stored in cents as `total_cents`). That meant revenue silently
+        # returned 0 forever and the Revenue KPI never appeared. Fixed.
+        orders_today = 0
+        orders_week = 0
+        avg_order_value = 0.0
         try:
-            revenue_today = query_db(
-                "SELECT COALESCE(SUM(total_amount), 0) AS n FROM orders "
-                "WHERE status IN ('paid','fulfilled','completed') "
+            r = query_db(
+                "SELECT COUNT(*) AS c, COALESCE(SUM(total_cents), 0) AS s "
+                "FROM orders WHERE status IN ('paid','fulfilled','completed') "
                 "AND created_at >= NOW() - INTERVAL '1 day'",
                 fetchone=True,
-            ) or {"n": 0}
-            revenue_week = query_db(
-                "SELECT COALESCE(SUM(total_amount), 0) AS n FROM orders "
-                "WHERE status IN ('paid','fulfilled','completed') "
+            ) or {}
+            orders_today = int(r.get("c") or 0)
+            revenue_today = {"n": float(r.get("s") or 0) / 100.0}
+            r = query_db(
+                "SELECT COUNT(*) AS c, COALESCE(SUM(total_cents), 0) AS s "
+                "FROM orders WHERE status IN ('paid','fulfilled','completed') "
                 "AND created_at >= NOW() - INTERVAL '7 days'",
                 fetchone=True,
-            ) or {"n": 0}
+            ) or {}
+            orders_week = int(r.get("c") or 0)
+            revenue_week = {"n": float(r.get("s") or 0) / 100.0}
+            if orders_week > 0:
+                avg_order_value = float(revenue_week["n"]) / orders_week
         except Exception:
             revenue_today = {"n": 0}
             revenue_week = {"n": 0}
@@ -27152,6 +27165,174 @@ def admin_overview_stats():
         except Exception:
             pass
 
+        # ---- Phase B metrics: bookings, AI cost/usage, automations, outreach,
+        # growth. Each block is wrapped in try/except so a single
+        # missing/empty table never breaks the whole overview load.
+        # All windows are "last 7 days" unless otherwise noted.
+
+        # service_bookings + scheduled-soon. amount_paid_cents is what the
+        # client has actually paid (vs. total_cents which is the quote).
+        bookings_today = 0
+        bookings_week = 0
+        bookings_upcoming = 0
+        booking_revenue_week = 0.0
+        try:
+            r = query_db(
+                "SELECT COUNT(*) AS c FROM service_bookings "
+                "WHERE created_at >= NOW() - INTERVAL '1 day'",
+                fetchone=True,
+            ) or {}
+            bookings_today = int(r.get("c") or 0)
+            r = query_db(
+                "SELECT COUNT(*) AS c, COALESCE(SUM(amount_paid_cents), 0) AS s "
+                "FROM service_bookings "
+                "WHERE created_at >= NOW() - INTERVAL '7 days'",
+                fetchone=True,
+            ) or {}
+            bookings_week = int(r.get("c") or 0)
+            booking_revenue_week = float(r.get("s") or 0) / 100.0
+            r = query_db(
+                "SELECT COUNT(*) AS c FROM service_bookings "
+                "WHERE scheduled_date BETWEEN CURRENT_DATE "
+                "  AND CURRENT_DATE + INTERVAL '7 days' "
+                "AND status IN ('pending','confirmed')",
+                fetchone=True,
+            ) or {}
+            bookings_upcoming = int(r.get("c") or 0)
+        except Exception:
+            pass
+
+        # event_rsvps for ticketed/free events.
+        rsvps_week = 0
+        try:
+            r = query_db(
+                "SELECT COUNT(*) AS c FROM event_rsvps "
+                "WHERE created_at >= NOW() - INTERVAL '7 days'",
+                fetchone=True,
+            ) or {}
+            rsvps_week = int(r.get("c") or 0)
+        except Exception:
+            pass
+
+        # voice_usage_log — every TTS render / STT transcription / sample.
+        voice_events_week = 0
+        try:
+            r = query_db(
+                "SELECT COUNT(*) AS c FROM voice_usage_log "
+                "WHERE created_at >= NOW() - INTERVAL '7 days'",
+                fetchone=True,
+            ) or {}
+            voice_events_week = int(r.get("c") or 0)
+        except Exception:
+            pass
+
+        # Total AI spend = LLM + Voice (TTS+STT) + SMS, in USD. Each
+        # cost_usd is NUMERIC(14,8) so the SUM stays exact.
+        ai_cost_breakdown = {"llm": 0.0, "voice": 0.0, "sms": 0.0}
+        for tbl, key in (
+            ("api_cost_events",  "llm"),
+            ("voice_cost_events","voice"),
+            ("sms_cost_events",  "sms"),
+        ):
+            try:
+                r = query_db(
+                    f"SELECT COALESCE(SUM(cost_usd), 0) AS s FROM {tbl} "
+                    "WHERE created_at >= NOW() - INTERVAL '7 days'",
+                    fetchone=True,
+                ) or {}
+                ai_cost_breakdown[key] = float(r.get("s") or 0)
+            except Exception:
+                pass
+        ai_cost_week = sum(ai_cost_breakdown.values())
+
+        # automation_runs — total queued in window plus how many ended in
+        # 'failed'. Skipped runs that never finished are still counted as
+        # "ran" since the operator queued them.
+        automations_total_week = 0
+        automations_failed_week = 0
+        try:
+            r = query_db(
+                "SELECT COUNT(*) AS total, "
+                "       COUNT(*) FILTER (WHERE status='failed') AS failed "
+                "FROM automation_runs "
+                "WHERE queued_at >= NOW() - INTERVAL '7 days'",
+                fetchone=True,
+            ) or {}
+            automations_total_week = int(r.get("total") or 0)
+            automations_failed_week = int(r.get("failed") or 0)
+        except Exception:
+            pass
+
+        # messaging_log — outbound emails / SMSes that successfully reached
+        # the provider (sent_at NOT NULL, regardless of later delivery).
+        messages_sent_week = 0
+        try:
+            r = query_db(
+                "SELECT COUNT(*) AS c FROM messaging_log "
+                "WHERE sent_at >= NOW() - INTERVAL '7 days'",
+                fetchone=True,
+            ) or {}
+            messages_sent_week = int(r.get("c") or 0)
+        except Exception:
+            pass
+
+        # review_requests — operator-driven Google/Yelp review nudges. We
+        # report sent + clicked counts so the operator sees the funnel.
+        reviews_sent_week = 0
+        reviews_clicked_week = 0
+        try:
+            r = query_db(
+                "SELECT "
+                "  COUNT(*) FILTER (WHERE sent_at    >= NOW() - INTERVAL '7 days') AS sent, "
+                "  COUNT(*) FILTER (WHERE clicked_at >= NOW() - INTERVAL '7 days') AS clicked "
+                "FROM review_requests",
+                fetchone=True,
+            ) or {}
+            reviews_sent_week = int(r.get("sent") or 0)
+            reviews_clicked_week = int(r.get("clicked") or 0)
+        except Exception:
+            pass
+
+        # subscribers — newly added in window AND total currently opted-in.
+        subscribers_week = 0
+        subscribers_total = 0
+        try:
+            r = query_db(
+                "SELECT COUNT(*) AS c FROM subscribers "
+                "WHERE created_at >= NOW() - INTERVAL '7 days' "
+                "AND unsubscribed_at IS NULL",
+                fetchone=True,
+            ) or {}
+            subscribers_week = int(r.get("c") or 0)
+            r = query_db(
+                "SELECT COUNT(*) AS c FROM subscribers "
+                "WHERE unsubscribed_at IS NULL",
+                fetchone=True,
+            ) or {}
+            subscribers_total = int(r.get("c") or 0)
+        except Exception:
+            pass
+
+        # AI-attributed leads — form submissions whose visitor session_id
+        # also opened a chat conversation. Loose attribution (the chat may
+        # have happened before OR after the submission), but it's a useful
+        # proxy for "AI engagement converted to a lead". Only form_submissions
+        # carries a chat session_id today; bookings/orders don't, so they
+        # can't yet be attributed this way.
+        ai_attributed_leads_week = 0
+        try:
+            r = query_db(
+                "SELECT COUNT(DISTINCT s.id) AS c "
+                "FROM form_submissions s "
+                "JOIN chat_conversations c ON c.session_id = s.session_id "
+                "WHERE s.submitted_at >= NOW() - INTERVAL '7 days' "
+                "AND COALESCE(s.session_id, '') <> ''",
+                fetchone=True,
+            ) or {}
+            ai_attributed_leads_week = int(r.get("c") or 0)
+        except Exception:
+            pass
+
         return jsonify({
             "visitors_today": int(visitors_today["n"] or 0),
             "visitors_week":  int(visitors_week["n"]  or 0),
@@ -27177,6 +27358,26 @@ def admin_overview_stats():
             "openai_model": openai_model,
             "claude_model": claude_model,
             "recent_chats": recent_chats,
+            # Phase B additions (sales / bookings / ai cost / automation / growth)
+            "orders_today":             orders_today,
+            "orders_week":              orders_week,
+            "avg_order_value":          float(avg_order_value),
+            "bookings_today":           bookings_today,
+            "bookings_week":            bookings_week,
+            "bookings_upcoming":        bookings_upcoming,
+            "booking_revenue_week":     float(booking_revenue_week),
+            "rsvps_week":               rsvps_week,
+            "voice_events_week":        voice_events_week,
+            "ai_cost_week":             float(ai_cost_week),
+            "ai_cost_breakdown":        {k: float(v) for k, v in ai_cost_breakdown.items()},
+            "automations_total_week":   automations_total_week,
+            "automations_failed_week":  automations_failed_week,
+            "messages_sent_week":       messages_sent_week,
+            "reviews_sent_week":        reviews_sent_week,
+            "reviews_clicked_week":     reviews_clicked_week,
+            "subscribers_week":         subscribers_week,
+            "subscribers_total":        subscribers_total,
+            "ai_attributed_leads_week": ai_attributed_leads_week,
         })
     except Exception as e:
         app.logger.exception("overview stats failed: %s", e)

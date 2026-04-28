@@ -1313,6 +1313,83 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
     .feature-tile a.ft-action:hover { text-decoration: underline; }
 
+    /* Activity Pulse — grouped 7-day metrics across all features.
+       Sits between the feature row and the visitor chart on the
+       Overview tab. Each group is a small panel with a colored dot
+       header and 3-4 label/value rows. Designed to scan quickly. */
+    .overview-pulse-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin: 0.25rem 0 0.5rem 0;
+    }
+    .overview-pulse-head h3 {
+      margin: 0;
+      font-size: 0.95rem;
+      color: var(--admin-text);
+    }
+    .overview-pulse-head .pulse-sub {
+      font-size: 0.78rem;
+      color: var(--admin-text-muted);
+    }
+    .overview-pulse-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .pulse-group {
+      background: var(--admin-surface);
+      border: 1px solid var(--admin-border);
+      border-radius: 12px;
+      padding: 0.875rem 1rem;
+      backdrop-filter: var(--admin-blur);
+      -webkit-backdrop-filter: var(--admin-blur);
+    }
+    .pulse-group h4 {
+      margin: 0 0 0.625rem 0;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--admin-text-muted);
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .pulse-group h4 .pulse-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .pulse-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 0.75rem;
+      padding: 0.4rem 0;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+    .pulse-row:last-child { border-bottom: 0; }
+    .pulse-row .label {
+      color: var(--admin-text-muted);
+      font-size: 0.85rem;
+    }
+    .pulse-row .value {
+      font-weight: 600;
+      font-size: 0.95rem;
+      color: var(--admin-text);
+      text-align: right;
+    }
+    .pulse-row .value .muted {
+      color: var(--admin-text-muted);
+      font-weight: 400;
+      font-size: 0.78rem;
+      margin-left: 0.25rem;
+    }
+    .pulse-row .value.warn { color: #fcd34d; }
+
     /* Dashboards list grid */
     .dashboards-grid {
       display: grid;
@@ -2128,6 +2205,22 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     <div class="overview-feature-row" id="overview-feature-row" data-testid="row-overview-features">
       <!-- Filled by loadOverview() with AI provider, skills, presentations -->
+    </div>
+
+    <!-- Activity Pulse — last-7-days aggregates across every feature
+         area (sales, bookings, AI engagement, automation/outreach,
+         growth). Filled by renderActivityPulse() from /admin/api/overview/stats.
+         Each group is silent-degrading: if a table is missing or empty
+         the values just read 0, the page never breaks. -->
+    <div class="overview-pulse-head">
+      <h3>Activity pulse</h3>
+      <span class="pulse-sub">Last 7 days, across all features</span>
+    </div>
+    <div class="overview-pulse-grid" id="overview-activity-pulse" data-testid="section-activity-pulse">
+      <!-- Filled by loadOverview() -->
+      <div class="pulse-group"><h4>Loading…</h4></div>
+      <div class="pulse-group"><h4>Loading…</h4></div>
+      <div class="pulse-group"><h4>Loading…</h4></div>
     </div>
 
     <div class="overview-row">
@@ -13315,6 +13408,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         const data = await res.json();
         renderOverviewKPIs(data);
         renderOverviewFeatureRow(data);
+        renderActivityPulse(data);
         renderOverviewTrend(data.visitor_trend || []);
         renderOverviewRecent(data.recent_submissions || []);
         renderOverviewTopSkills(data.top_skills || []);
@@ -13383,13 +13477,26 @@ TO CUSTOMIZE THIS DASHBOARD:
     function renderOverviewKPIs(d) {
       const grid = document.getElementById('overview-kpi-grid');
       if (!grid) return;
+      // Top "today snapshot" row. We always show the four foundational
+      // cards (visitors / page views / leads / chats) and conditionally
+      // append commerce + AI cards when there's any activity to report,
+      // so a brand-new install with zero orders doesn't get cluttered
+      // with five "0" cards.
       const cards = [
         { label: 'Visitors today',      value: _fmtNumber(d.visitors_today),  sub: _fmtNumber(d.visitors_week) + ' this week' },
         { label: 'Page views today',    value: _fmtNumber(d.pageviews_today), sub: '' },
         { label: 'New leads today',     value: _fmtNumber(d.leads_today),     sub: _fmtNumber(d.leads_week) + ' this week' },
         { label: 'Chat sessions today', value: _fmtNumber(d.chats_today),     sub: _fmtNumber(d.chats_week) + ' this week' },
-        { label: 'Skill calls today',   value: _fmtNumber(d.skill_calls_today), sub: _fmtNumber(d.skill_calls_week) + ' this week' },
       ];
+      if ((d.skill_calls_week || 0) > 0 || (d.skill_calls_today || 0) > 0) {
+        cards.push({ label: 'Skill calls today', value: _fmtNumber(d.skill_calls_today), sub: _fmtNumber(d.skill_calls_week) + ' this week' });
+      }
+      if ((d.orders_week || 0) > 0 || (d.orders_today || 0) > 0) {
+        cards.push({ label: 'Orders today', value: _fmtNumber(d.orders_today), sub: _fmtNumber(d.orders_week) + ' this week' });
+      }
+      if ((d.bookings_week || 0) > 0 || (d.bookings_today || 0) > 0) {
+        cards.push({ label: 'Bookings today', value: _fmtNumber(d.bookings_today), sub: _fmtNumber(d.bookings_week) + ' this week' });
+      }
       if ((d.revenue_week || 0) > 0 || (d.revenue_today || 0) > 0) {
         cards.push({ label: 'Revenue today', value: _fmtMoney(d.revenue_today), sub: _fmtMoney(d.revenue_week) + ' this week' });
       }
@@ -13398,6 +13505,70 @@ TO CUSTOMIZE THIS DASHBOARD:
           <div class="kpi-label">${escapeHTML(c.label)}</div>
           <div class="kpi-value" data-testid="kpi-value-${i}">${escapeHTML(c.value)}</div>
           <div class="kpi-sub">${escapeHTML(c.sub)}</div>
+        </div>
+      `).join('');
+    }
+
+    // Activity Pulse — grouped 7-day metrics across every feature
+    // area. Each group is one card; each row inside is a label + value.
+    // Values come pre-aggregated from /admin/api/overview/stats and
+    // already default to 0 server-side when the source table is empty
+    // or missing, so this renderer never has to do per-table fallback.
+    function renderActivityPulse(d) {
+      const root = document.getElementById('overview-activity-pulse');
+      if (!root) return;
+      const fmtN = v => _fmtNumber(v || 0);
+      const fmtM = v => _fmtMoney(v || 0);
+      const groups = [
+        { id: 'sales', title: 'Sales', dot: '#34d399', rows: [
+          { label: 'Orders this week',   value: fmtN(d.orders_week),       tid: 'pulse-orders-week' },
+          { label: 'Revenue this week',  value: fmtM(d.revenue_week),      tid: 'pulse-revenue-week' },
+          { label: 'Average order',      value: fmtM(d.avg_order_value),   tid: 'pulse-aov' },
+        ]},
+        { id: 'bookings', title: 'Bookings', dot: '#60a5fa', rows: [
+          { label: 'New bookings',          value: fmtN(d.bookings_week),         tid: 'pulse-bookings-week' },
+          { label: 'Booking revenue',       value: fmtM(d.booking_revenue_week),  tid: 'pulse-booking-revenue' },
+          { label: 'Upcoming (next 7 days)',value: fmtN(d.bookings_upcoming),     tid: 'pulse-bookings-upcoming' },
+          { label: 'Event RSVPs',           value: fmtN(d.rsvps_week),            tid: 'pulse-rsvps-week' },
+        ]},
+        { id: 'ai', title: 'AI engagement', dot: '#a78bfa', rows: [
+          { label: 'Chat sessions',  value: fmtN(d.chats_week),         tid: 'pulse-chats-week' },
+          { label: 'Voice events',   value: fmtN(d.voice_events_week),  tid: 'pulse-voice-events' },
+          { label: 'Skill calls',    value: fmtN(d.skill_calls_week),   tid: 'pulse-skill-calls' },
+          { label: 'AI cost (USD)',  value: fmtM(d.ai_cost_week),       tid: 'pulse-ai-cost' },
+        ]},
+        { id: 'outreach', title: 'Automation & outreach', dot: '#f59e0b', rows: [
+          // Failures get a small inline muted note and the value flips
+          // to amber so an operator notices at a glance.
+          {
+            label: 'Automations ran',
+            value: fmtN(d.automations_total_week)
+              + (Number(d.automations_failed_week) > 0
+                  ? ` <span class="muted">(${fmtN(d.automations_failed_week)} failed)</span>`
+                  : ''),
+            tid: 'pulse-automations-week',
+            html: true,
+            warn: Number(d.automations_failed_week) > 0,
+          },
+          { label: 'Messages sent',         value: fmtN(d.messages_sent_week),     tid: 'pulse-messages-week' },
+          { label: 'Review requests sent',  value: fmtN(d.reviews_sent_week),      tid: 'pulse-reviews-sent' },
+          { label: 'Review links clicked',  value: fmtN(d.reviews_clicked_week),   tid: 'pulse-reviews-clicked' },
+        ]},
+        { id: 'growth', title: 'Growth', dot: '#f472b6', rows: [
+          { label: 'Subscribers added',  value: fmtN(d.subscribers_week),         tid: 'pulse-subscribers-week' },
+          { label: 'Total subscribers',  value: fmtN(d.subscribers_total),        tid: 'pulse-subscribers-total' },
+          { label: 'Leads from AI chats',value: fmtN(d.ai_attributed_leads_week), tid: 'pulse-ai-leads' },
+        ]},
+      ];
+      root.innerHTML = groups.map(g => `
+        <div class="pulse-group" data-testid="pulse-group-${g.id}">
+          <h4><span class="pulse-dot" style="background:${g.dot}"></span>${escapeHTML(g.title)}</h4>
+          ${g.rows.map(r => `
+            <div class="pulse-row" data-testid="${r.tid}">
+              <span class="label">${escapeHTML(r.label)}</span>
+              <span class="value${r.warn ? ' warn' : ''}">${r.html ? r.value : escapeHTML(r.value)}</span>
+            </div>
+          `).join('')}
         </div>
       `).join('');
     }
