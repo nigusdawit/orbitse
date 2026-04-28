@@ -35,6 +35,31 @@ VELO_AGENT_KEY = os.environ.get("VELO_AGENT_KEY", "").strip()
 _command_handlers = {}
 
 
+# Capability-discovery aliases. VELO Master (and any modern tool gateway —
+# LangChain Tools API, MCP servers, OpenAPI tool routers) doesn't necessarily
+# know our capability list ahead of time; on first contact it probes by
+# sending one of these strings as the `command` field, expecting back the
+# tool catalogue. Without this mapping, those probes hit the unknown-command
+# branch and the master's UI shows "no tools discovered" even though we
+# have 30+ registered handlers — exactly the regression that motivated the
+# audit-log entries `cmd=''` and `cmd='list'` returning 400 in late April.
+# Both lower-cased before lookup; an empty string is the most common probe.
+_DISCOVERY_ALIASES = frozenset({
+    "", "list", "list_commands", "list_tools", "tools",
+    "discover", "discovery", "capabilities", "help",
+    "describe", "?", "ls", "show",
+})
+
+
+# Single source of truth for agent IDs. Used by _discovery_payload, by the
+# wildcard 404 hint, and as the default for /chat (POST). Centralised so a
+# future addition (e.g. a third logical agent) only needs to land in one
+# place; previously the same list was duplicated across three response
+# bodies and at least one boot-time registration block, an obvious drift
+# magnet flagged in code review.
+AGENT_IDS = ["admin_ai", "visitor_ai"]
+
+
 def velo_command(name, description="", params_schema=None, requires_confirmation=False):
     """Decorator to register a callable as a VELO command handler.
 
@@ -68,6 +93,58 @@ def get_registered_capabilities():
         }
         for name, info in _command_handlers.items()
     ]
+
+
+def _discovery_payload():
+    """Build the canonical capability-discovery payload that VELO Master
+    (or any tool gateway) uses to learn what this client can do.
+
+    Centralised so every discovery surface — POST /command with an empty
+    or list-style command, GET /command, GET /tools, GET /capabilities,
+    and the wildcard 404 hint — returns the SAME shape. Drift between
+    those surfaces is exactly how clients end up "knowing" about a tool
+    on one endpoint but not another, which is what bit us originally.
+
+    Includes fully-qualified URLs (using request.host_url) for every
+    velo endpoint so the master never has to guess base paths or
+    auto-derive per-agent URLs that don't exist on this app.
+    """
+    base = request.host_url.rstrip("/") if request else ""
+    return {
+        "client_name": "AI Concierge Platform",
+        "agent_ids": list(AGENT_IDS),
+        "command_endpoint": f"{base}/api/velo/command",
+        "chat_endpoint": f"{base}/api/velo/chat",
+        "status_endpoint": f"{base}/api/velo/status",
+        "tools_endpoint": f"{base}/api/velo/tools",
+        "total": len(_command_handlers),
+        "commands": [
+            {
+                "name": name,
+                "description": info.get("description", ""),
+                "requires_confirmation": info.get("requires_confirmation", False),
+                "params_schema": info.get("params_schema", {}),
+            }
+            for name, info in sorted(_command_handlers.items())
+        ],
+        "usage": {
+            "structured_command": (
+                f'POST {base}/api/velo/command with body '
+                '{"command": "<name>", "params": {...}}'
+            ),
+            "free_text_chat": (
+                f'POST {base}/api/velo/chat with body '
+                '{"message": "<text>", "agent_id": "admin_ai" or "visitor_ai"}'
+            ),
+            "discovery": (
+                "Re-fetch this payload anytime via "
+                f"GET {base}/api/velo/tools, GET {base}/api/velo/capabilities, "
+                f"GET {base}/api/velo/command, or POST {base}/api/velo/command "
+                "with an empty/list-style command field. All require the "
+                "same Authorization: Bearer <VELO_AGENT_KEY> header."
+            ),
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -194,22 +271,60 @@ def _audit(command, params, status, result_summary="", error_msg=""):
 # ---------------------------------------------------------------------------
 # Single dynamic command endpoint
 # ---------------------------------------------------------------------------
-@velo_bp.route("/command", methods=["POST"])
+@velo_bp.route("/command", methods=["POST", "GET"])
 def handle_command():
-    """VELO posts a command + params here; we route to a registered handler."""
+    """VELO posts a command + params here; we route to a registered handler.
+
+    GET on this URL returns the same discovery payload as /tools — needed
+    because some master gateways probe with GET to test connectivity, and
+    without this they'd fall through to the homepage catch-all (which would
+    return HTML 200 and look like "no velo here"). The GET branch is auth-
+    gated like the POST branch; nothing leaks that wasn't already in the
+    capability registration payload sent at boot.
+    """
     if not verify_velo_key():
         return jsonify({"error": "unauthorized"}), 401
 
+    if request.method == "GET":
+        return jsonify({"status": "ok", "result": _discovery_payload()}), 200
+
     data = request.get_json(silent=True) or {}
-    command = data.get("command", "")
+    raw_command = data.get("command", "")
+    command = raw_command if isinstance(raw_command, str) else ""
     params = data.get("params", {}) or {}
+
+    # Capability-discovery fast-path. VELO Master probes for tools by
+    # sending command="" or command="list"/"tools"/"capabilities"/etc.
+    # Without this, those probes hit the unknown-command branch and the
+    # master concludes the client has no tools at all — even though we
+    # have 30+ registered handlers. The audit log proved this was the
+    # actual failure mode in production.
+    #
+    # NOT audited: discovery is high-frequency master polling whose
+    # response is fully deterministic from the registry (zero per-call
+    # context), so logging every hit only adds bloat. If a per-poll
+    # audit ever becomes useful (rate-limit triage, master fingerprint
+    # tracking) it can be re-added here under a synthetic command name
+    # so it stays filterable from real-command history.
+    if command.strip().lower() in _DISCOVERY_ALIASES:
+        return jsonify({"status": "ok", "result": _discovery_payload()}), 200
 
     handler_info = _command_handlers.get(command)
     if not handler_info:
         _audit(command, params, "error", error_msg="unknown command")
+        base = request.host_url.rstrip("/")
         return jsonify({
-            "error": f"Unknown command: {command}",
+            "error": f"Unknown command: {command!r}",
+            "hint": (
+                "For free-text or conversational requests, POST "
+                f'{{"message": "...", "agent_id": "admin_ai"}} to {base}/api/velo/chat. '
+                "To list available structured commands, POST "
+                f'{{"command": "list"}} to {base}/api/velo/command, '
+                f"or GET {base}/api/velo/tools."
+            ),
             "available_commands": sorted(_command_handlers.keys()),
+            "command_endpoint": f"{base}/api/velo/command",
+            "chat_endpoint": f"{base}/api/velo/chat",
         }), 400
 
     # Two-step confirmation gate for destructive handlers. The handler is
@@ -258,7 +373,7 @@ def handle_command():
         return jsonify({"status": "error", "error": str(e)}), 500
 
 
-@velo_bp.route("/chat", methods=["POST"])
+@velo_bp.route("/chat", methods=["POST", "GET"])
 def handle_chat():
     """Natural-language channel for VELO Master.
 
@@ -267,9 +382,28 @@ def handle_chat():
     structured /command endpoint is for data-heavy operations; this is
     for conversational queries ("what MCP servers do you have running?")
     where the AI itself decides how to answer using its own context.
+
+    GET returns a usage hint instead of 405, so master gateways probing
+    this URL for connectivity get a self-describing response.
     """
     if not verify_velo_key():
         return jsonify({"error": "unauthorized"}), 401
+
+    if request.method == "GET":
+        base = request.host_url.rstrip("/")
+        return jsonify({
+            "status": "ok",
+            "endpoint": "chat",
+            "method": "POST",
+            "url": f"{base}/api/velo/chat",
+            "body_schema": {
+                "message": "string (required, the user's natural-language text)",
+                "agent_id": "'admin_ai' (default) or 'visitor_ai'",
+                "from": "string (optional, identifier of who is speaking on the master side)",
+            },
+            "agent_ids": list(AGENT_IDS),
+            "discovery_endpoint": f"{base}/api/velo/tools",
+        }), 200
 
     data = request.get_json(silent=True) or {}
     message = (data.get("message") or "").strip()
@@ -413,6 +547,83 @@ def app_status():
         "gated_commands": gated,
         "uptime_seconds": uptime_seconds,
     })
+
+
+@velo_bp.route("/tools", methods=["GET"])
+@velo_bp.route("/capabilities", methods=["GET"])
+def list_tools():
+    """Discovery-by-GET aliases.
+
+    Some master gateways probe with GET /tools or GET /capabilities
+    (the OpenAPI / MCP convention) instead of the POST /command empty-
+    discovery path. Without these routes, those probes fall through
+    to the homepage catch-all which serves HTML 200 — the gateway
+    parses HTML as garbage and reports "no tools at this URL".
+    Returning the canonical discovery payload here lets the gateway
+    self-orient on first contact.
+
+    Auth-gated like /status because the descriptions of confirmation-
+    gated commands (refund, send-to-customers) hint at the destructive
+    surface of the app and shouldn't be enumerable by unauthenticated
+    callers — and the master always carries the bearer token anyway.
+    """
+    if not verify_velo_key():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify({"status": "ok", "result": _discovery_payload()})
+
+
+@velo_bp.route("/", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+@velo_bp.route("/<path:rest>",
+               methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def velo_unmatched(rest=""):
+    """Catch-all for any /api/velo/<unrecognised path>.
+
+    Without this, two annoying failure modes happen on probe traffic:
+      1. GET /api/velo/admin_ai (or any other unknown path) falls
+         through to the homepage catch-all serve_index() and returns
+         HTML 200. The master parses HTML as garbage and reports
+         "no tools at this URL" or similar.
+      2. POST /api/velo/admin_ai (master auto-derives per-agent URLs
+         that don't exist on this app) hits the GET-only homepage
+         catch-all and returns HTTP 405. The master surfaces "405 —
+         that command isn't supported that way" with no hint about
+         what URL it SHOULD be using. This was the literal failure
+         a real master operator saw on April 28.
+
+    Returning a structured 404 JSON with the canonical endpoint URLs
+    and method hints lets the master self-correct on the next probe
+    instead of giving up. NOT auth-gated because the response carries
+    no sensitive info — it's a self-describing routing hint identical
+    in principle to a 404 page on a public website.
+
+    Routing precedence: Flask prefers the more specific route, so
+    exact matches like /command, /chat, /status, /tools, /capabilities,
+    and /refresh-registration still win against this wildcard for
+    every method registered on those routes. The wildcard only fires
+    for paths NONE of the named routes recognise.
+
+    Pinned by TestVeloUnmatchedRoutes in tests/test_velo_master_communication.py.
+    """
+    base = request.host_url.rstrip("/")
+    return jsonify({
+        "error": f"No such VELO endpoint: /api/velo/{rest}",
+        "hint": (
+            "This URL isn't a recognised VELO endpoint on this client. "
+            "The canonical endpoints are listed below — note the methods. "
+            "For tool discovery, GET /tools. For structured commands, "
+            "POST /command with {command, params}. For free-text chat, "
+            "POST /chat with {message, agent_id}."
+        ),
+        "endpoints": {
+            "tools":          {"method": "GET",  "url": f"{base}/api/velo/tools"},
+            "capabilities":   {"method": "GET",  "url": f"{base}/api/velo/capabilities"},
+            "status":         {"method": "GET",  "url": f"{base}/api/velo/status"},
+            "command":        {"method": "POST", "url": f"{base}/api/velo/command"},
+            "chat":           {"method": "POST", "url": f"{base}/api/velo/chat"},
+            "refresh_registration": {"method": "POST", "url": f"{base}/api/velo/refresh-registration"},
+        },
+        "agent_ids": list(AGENT_IDS),
+    }), 404
 
 
 @velo_bp.route("/refresh-registration", methods=["POST"])

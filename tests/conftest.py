@@ -39,3 +39,22 @@ def flask_app():
 def client(flask_app):
     """Fresh test_client per test so cookies / sessions don't leak."""
     return flask_app.test_client()
+
+
+@pytest.fixture(scope="session")
+def velo_auth_headers():
+    """Authorization headers VELO Master would send.
+
+    VELO_AGENT_KEY is exposed as a deployment secret, so it leaks into
+    the pytest env and verify_velo_key() rejects unauthenticated calls
+    with 401. Tests that exercise the velo blueprint must send this
+    bearer header to reach the actual handler logic.
+
+    Returns the literal headers dict expected by Flask test_client; the
+    Content-Type is set so json= keyword still works on POST calls.
+    """
+    key = os.environ.get("VELO_AGENT_KEY", "").strip()
+    return {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
