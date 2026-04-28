@@ -393,6 +393,37 @@ def _login_throttle_clear(ip):
     _LOGIN_ATTEMPTS.pop(ip, None)
 
 
+# Super-admin unlock throttle. Tracks failed POSTs to
+# /admin/api/super-admin/unlock per client IP. Same in-memory dict
+# pattern as _LOGIN_ATTEMPTS — survives until process restart, which
+# is fine for a brute-force speed bump (a real attacker would also
+# need a valid admin session cookie to even reach this endpoint).
+_SUPER_ADMIN_ATTEMPTS = {}
+_SUPER_ADMIN_MAX_FAILS = 5
+_SUPER_ADMIN_WINDOW_SEC = 300        # 5 min lockout window
+_SUPER_ADMIN_UNLOCK_TTL_SEC = 30 * 60  # session stays unlocked for 30 min
+
+
+def _super_admin_throttle_check(ip):
+    """Return (allowed: bool, retry_after_sec: int)."""
+    now = _time.time()
+    cutoff = now - _SUPER_ADMIN_WINDOW_SEC
+    attempts = [t for t in _SUPER_ADMIN_ATTEMPTS.get(ip, []) if t > cutoff]
+    _SUPER_ADMIN_ATTEMPTS[ip] = attempts
+    if len(attempts) >= _SUPER_ADMIN_MAX_FAILS:
+        retry_after = int(_SUPER_ADMIN_WINDOW_SEC - (now - attempts[0])) + 1
+        return False, max(retry_after, 1)
+    return True, 0
+
+
+def _super_admin_throttle_record_failure(ip):
+    _SUPER_ADMIN_ATTEMPTS.setdefault(ip, []).append(_time.time())
+
+
+def _super_admin_throttle_clear(ip):
+    _SUPER_ADMIN_ATTEMPTS.pop(ip, None)
+
+
 def _chat_rate_check(key, throttled=False):
     """Return (allowed: bool, retry_after_sec: int).
 
@@ -4630,7 +4661,173 @@ def admin_logout():
     """Log out of the admin dashboard and redirect to login."""
     session.pop("admin_logged_in", None)
     session.pop("_csrf_token", None)
+    session.pop("super_admin_unlocked_at", None)
     return redirect(url_for("admin_login"))
+
+
+# -----------------------------------------------------------------------------
+# Super-admin lock (Tier 8)
+# -----------------------------------------------------------------------------
+# Optional second-factor for the most dangerous admin tabs:
+#   - Plans & Features  (toggle major features for the whole tenant)
+#   - Performance       (regenerate image variants, etc.)
+#   - Developer console (test SMTP/SMS/Velo, swap LLM provider, …)
+#   - Secrets           (read/write env vars, including API keys)
+#
+# Activated by setting the SUPER_ADMIN_KEY environment variable. When set,
+# a logged-in admin must additionally POST the key to
+# /admin/api/super-admin/unlock before any of the protected endpoints
+# return data. The unlock lasts _SUPER_ADMIN_UNLOCK_TTL_SEC (30 min)
+# and is stored in the Flask session.
+#
+# When SUPER_ADMIN_KEY is NOT set the lock is OFF — the admin password
+# alone is sufficient (so we never silently lock an operator out of
+# their own dashboard).
+_SUPER_ADMIN_PROTECTED_PREFIXES = (
+    "/admin/api/secrets/",       # /status, /set, /unset
+    "/admin/api/performance",    # /performance and /performance/...
+    "/admin/api/devconsole/",    # snapshot, test-provider, test-email, …
+    "/admin/api/tenant/features",# /features and /features/<name>
+    # NOTE: /admin/api/llm-provider is NOT here — it backs a separate
+    # "LLM Provider" tab and is intentionally outside this lock's
+    # scope. Add only when locking that tab is also wired up in the UI.
+)
+
+
+def _super_admin_key():
+    return os.environ.get("SUPER_ADMIN_KEY") or ""
+
+
+def _super_admin_lock_enabled():
+    """The lock is only active when a key is configured. If the env
+    var is unset we fail open (admin password alone is enough)."""
+    return bool(_super_admin_key())
+
+
+def _super_admin_unlocked():
+    """True if the current session has unlocked super-admin within the
+    last _SUPER_ADMIN_UNLOCK_TTL_SEC. When the lock is disabled this
+    always returns True so guarded endpoints behave normally."""
+    if not _super_admin_lock_enabled():
+        return True
+    ts = session.get("super_admin_unlocked_at")
+    if not ts:
+        return False
+    try:
+        return (_time.time() - float(ts)) < _SUPER_ADMIN_UNLOCK_TTL_SEC
+    except (TypeError, ValueError):
+        return False
+
+
+@app.before_request
+def _enforce_super_admin_lock():
+    """Reject API calls into a protected section when the session
+    isn't unlocked. Runs after CSRF + auth checks (which are also
+    before_request hooks) so by the time we reach here the caller is
+    a logged-in admin with a valid CSRF token. Page routes (the HTML
+    shell of /admin) are never blocked — only the API endpoints that
+    return sensitive data."""
+    try:
+        path = request.path or ""
+    except Exception:
+        return None
+    # Only gate API calls from a logged-in admin. Public, anonymous,
+    # and Velo/webhook traffic is unaffected.
+    if not session.get("admin_logged_in"):
+        return None
+    # The status / unlock / lock endpoints themselves must stay
+    # reachable while locked, otherwise the operator could never
+    # unlock or even see whether the lock is active.
+    if path.startswith("/admin/api/super-admin/"):
+        return None
+    for prefix in _SUPER_ADMIN_PROTECTED_PREFIXES:
+        if path.startswith(prefix):
+            if not _super_admin_unlocked():
+                return jsonify({
+                    "error": "super_admin_required",
+                    "message": "This section is locked. Enter the super-admin key to unlock.",
+                }), 401
+            # Sliding TTL: every authenticated access to a protected
+            # endpoint refreshes the unlock window. The session expires
+            # only after _SUPER_ADMIN_UNLOCK_TTL_SEC of *inactivity*.
+            # The /super-admin/status polling endpoint is excluded
+            # above so periodic UI status checks don't keep the
+            # session alive forever.
+            if _super_admin_lock_enabled():
+                session["super_admin_unlocked_at"] = _time.time()
+            break
+    return None
+
+
+@app.route("/admin/api/super-admin/status", methods=["GET"])
+@admin_required
+def super_admin_status():
+    """Return the current lock state so the dashboard can decide
+    whether to show the unlock prompt. Safe to call any time —
+    never returns the key itself, just enabled/unlocked flags."""
+    enabled = _super_admin_lock_enabled()
+    unlocked = _super_admin_unlocked()
+    ts = session.get("super_admin_unlocked_at") or 0
+    return jsonify({
+        "enabled": enabled,
+        "unlocked": unlocked,
+        "expires_at": (float(ts) + _SUPER_ADMIN_UNLOCK_TTL_SEC) if (enabled and unlocked) else None,
+        "ttl_seconds": _SUPER_ADMIN_UNLOCK_TTL_SEC,
+        "protected_prefixes": list(_SUPER_ADMIN_PROTECTED_PREFIXES),
+    })
+
+
+@app.route("/admin/api/super-admin/unlock", methods=["POST"])
+@admin_required
+def super_admin_unlock():
+    """Verify the submitted key against SUPER_ADMIN_KEY and, on
+    success, mark this session unlocked for the next 30 min.
+    Throttled to 5 failures per 5 min per IP. Both successes and
+    failures are logged at WARNING/INFO so they show up in the
+    workflow log alongside other auth events."""
+    if not _super_admin_lock_enabled():
+        # Lock isn't configured; everything is already accessible.
+        return jsonify({"ok": True, "enabled": False, "unlocked": True}), 200
+    ip = _client_ip()
+    allowed, retry_after = _super_admin_throttle_check(ip)
+    if not allowed:
+        mins = max(1, retry_after // 60)
+        return jsonify({
+            "ok": False,
+            "error": "throttled",
+            "retry_after": retry_after,
+            "message": f"Too many failed attempts. Try again in about {mins} minute(s).",
+        }), 429
+    data = request.get_json(silent=True) or {}
+    provided = (data.get("key") or "").strip()
+    expected = _super_admin_key()
+    if not provided or not secrets.compare_digest(provided, expected):
+        _super_admin_throttle_record_failure(ip)
+        app.logger.warning("super-admin unlock FAILED from ip=%s", ip)
+        return jsonify({
+            "ok": False,
+            "error": "invalid_key",
+            "message": "Incorrect super-admin key.",
+        }), 401
+    _super_admin_throttle_clear(ip)
+    now = _time.time()
+    session["super_admin_unlocked_at"] = now
+    app.logger.info("super-admin unlock OK from ip=%s", ip)
+    return jsonify({
+        "ok": True,
+        "enabled": True,
+        "unlocked": True,
+        "expires_at": now + _SUPER_ADMIN_UNLOCK_TTL_SEC,
+    })
+
+
+@app.route("/admin/api/super-admin/lock", methods=["POST"])
+@admin_required
+def super_admin_lock():
+    """Manually re-lock the session (e.g. operator clicks
+    'Lock now' before stepping away). Always returns ok."""
+    session.pop("super_admin_unlocked_at", None)
+    return jsonify({"ok": True, "unlocked": False})
 
 
 # -----------------------------------------------------------------------------

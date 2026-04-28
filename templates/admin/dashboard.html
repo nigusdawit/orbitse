@@ -1390,6 +1390,107 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
     .pulse-row .value.warn { color: #fcd34d; }
 
+    /* Super-admin lock — small padlock badge on protected tab buttons,
+       a centered unlock prompt overlay shown inside the tab content
+       when locked, and a thin "Unlocked · Lock now" banner across the
+       top of each protected tab while unlocked. */
+    .tab-lock-badge {
+      margin-left: auto;
+      font-size: 0.75rem;
+      opacity: 0.75;
+      pointer-events: none;
+    }
+    .super-admin-lock-overlay {
+      max-width: 460px;
+      margin: 4rem auto;
+      padding: 2.25rem 2rem;
+      background: var(--admin-surface);
+      border: 1px solid var(--admin-border);
+      border-radius: 12px;
+      text-align: center;
+      backdrop-filter: var(--admin-blur);
+      -webkit-backdrop-filter: var(--admin-blur);
+    }
+    .super-admin-lock-overlay .lock-icon {
+      font-size: 2.5rem;
+      margin-bottom: 0.5rem;
+      opacity: 0.85;
+    }
+    .super-admin-lock-overlay h2 {
+      margin: 0.25rem 0 0.5rem 0;
+      font-size: 1.25rem;
+      color: var(--admin-text);
+    }
+    .super-admin-lock-overlay p {
+      color: var(--admin-text-muted);
+      margin: 0 0 1.25rem 0;
+      font-size: 0.9rem;
+    }
+    .super-admin-lock-overlay form {
+      display: flex;
+      flex-direction: column;
+      gap: 0.625rem;
+    }
+    .super-admin-lock-overlay input[type="password"] {
+      padding: 0.625rem 0.875rem;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid var(--admin-border);
+      border-radius: 8px;
+      color: var(--admin-text);
+      font-size: 0.95rem;
+      font-family: inherit;
+    }
+    .super-admin-lock-overlay input[type="password"]:focus {
+      outline: none;
+      border-color: var(--admin-text-muted);
+    }
+    .super-admin-lock-overlay button {
+      padding: 0.625rem 1rem;
+      background: var(--admin-text);
+      color: #111;
+      border: 0;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.95rem;
+    }
+    .super-admin-lock-overlay button[disabled] {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .super-admin-lock-overlay .unlock-error {
+      margin-top: 0.75rem;
+      color: #ef4444;
+      font-size: 0.85rem;
+      min-height: 1.2em;
+    }
+    .super-admin-unlocked-banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      margin: 0 0 1rem 0;
+      padding: 0.5rem 0.875rem;
+      background: rgba(34, 197, 94, 0.08);
+      border: 1px solid rgba(34, 197, 94, 0.25);
+      border-radius: 8px;
+      font-size: 0.85rem;
+      color: var(--admin-text);
+    }
+    .super-admin-unlocked-banner button {
+      background: transparent;
+      border: 1px solid rgba(34, 197, 94, 0.4);
+      color: #4ade80;
+      padding: 0.25rem 0.625rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.78rem;
+      font-family: inherit;
+    }
+    .super-admin-unlocked-banner button:hover {
+      background: rgba(34, 197, 94, 0.12);
+    }
+
     /* Dashboards list grid */
     .dashboards-grid {
       display: grid;
@@ -13749,7 +13850,199 @@ TO CUSTOMIZE THIS DASHBOARD:
     // Single GET fetches all six sections; renders one card per section.
     // The only write is the "Regenerate all variants" button (POSTs to a
     // local-storage-only endpoint that returns counts).
+    // ====================================================================
+    // SUPER-ADMIN LOCK
+    // --------------------------------------------------------------------
+    // Optional second factor for the four most sensitive tabs (Plans &
+    // Features, Performance, Developer, Secrets). When the operator
+    // sets SUPER_ADMIN_KEY in the environment, the matching API
+    // endpoints return 401 super_admin_required until this session
+    // POSTs the key to /admin/api/super-admin/unlock. The unlock lasts
+    // 30 minutes (server-enforced).
+    //
+    // When SUPER_ADMIN_KEY is not set the server reports
+    // {enabled:false, unlocked:true} and the guard becomes a no-op so
+    // the tabs work exactly as before.
+    // ====================================================================
+    // _fetched flips to true after the first successful status call;
+    // before that we treat the cached default as "unknown" and play it
+    // safe (synchronously hide protected content until we've checked).
+    let __superAdminStatus = { enabled: false, unlocked: true, expires_at: null, ttl_seconds: 1800, _fetched: false };
+
+    async function refreshSuperAdminStatus() {
+      try {
+        const r = await fetch('/admin/api/super-admin/status', { credentials: 'same-origin' });
+        if (r.ok) {
+          const data = await r.json();
+          __superAdminStatus = Object.assign({ _fetched: true }, data);
+        }
+      } catch (_) { /* network blip — leave previous status */ }
+      // Paint / clear lock badges on the four protected tab buttons.
+      ['plans-features','performance','developer','secrets'].forEach(id => {
+        const btn = document.querySelector(`[data-testid="tab-${id}"]`);
+        if (!btn) return;
+        let badge = btn.querySelector('.tab-lock-badge');
+        if (__superAdminStatus.enabled && !__superAdminStatus.unlocked) {
+          if (!badge) {
+            badge = document.createElement('span');
+            badge.className = 'tab-lock-badge';
+            badge.dataset.testid = `lock-badge-${id}`;
+            badge.textContent = '🔒';
+            btn.appendChild(badge);
+          }
+        } else if (badge) {
+          badge.remove();
+        }
+      });
+      return __superAdminStatus;
+    }
+
+    // Guard wrapper called at the top of every protected loader.
+    // Returns true when the loader should proceed (unlocked / disabled),
+    // or false when it should bail because we showed the unlock prompt
+    // instead. The retryFn is called automatically once the operator
+    // unlocks successfully.
+    async function _superAdminGuard(tabContentId, retryFn) {
+      const tab = document.getElementById(tabContentId);
+      if (!tab) return true;
+      // Drop any stale unlock banner from a previous render.
+      const oldBanner = tab.querySelector('.super-admin-unlocked-banner');
+      if (oldBanner) oldBanner.remove();
+
+      // SYNC PRE-HIDE: if the lock is (or might be) active, hide the
+      // tab's existing children *before* awaiting the status refresh.
+      // This prevents stale data from a prior unlocked view flashing
+      // when the operator re-opens a protected tab after the
+      // server-side TTL has expired. We skip this when we already
+      // know the lock is disabled (no SUPER_ADMIN_KEY set), so the
+      // common case has zero flicker.
+      const mightBeLocked = !__superAdminStatus._fetched || __superAdminStatus.enabled;
+      if (mightBeLocked && !tab.querySelector('.super-admin-lock-overlay')) {
+        Array.from(tab.children).forEach(c => {
+          if (c.classList && c.classList.contains('super-admin-unlocked-banner')) return;
+          if (c._origDisplay === undefined) c._origDisplay = c.style.display;
+          c.style.display = 'none';
+        });
+      }
+
+      // Skip the network call when we know for sure the lock is off.
+      if (mightBeLocked) await refreshSuperAdminStatus();
+      const oldOverlay = tab.querySelector('.super-admin-lock-overlay');
+
+      if (__superAdminStatus.enabled && !__superAdminStatus.unlocked) {
+        if (oldOverlay) return false;
+        // Children are already hidden by the sync pre-hide above; this
+        // pass is a safety net for any newly-added elements.
+        Array.from(tab.children).forEach(c => {
+          if (c.classList && c.classList.contains('super-admin-unlocked-banner')) return;
+          if (c._origDisplay === undefined) c._origDisplay = c.style.display;
+          c.style.display = 'none';
+        });
+        const overlay = document.createElement('div');
+        overlay.className = 'super-admin-lock-overlay';
+        overlay.dataset.testid = 'panel-super-admin-lock';
+        overlay.innerHTML = `
+          <div class="lock-icon">🔒</div>
+          <h2>Super-admin section</h2>
+          <p>This section is locked. Enter the super-admin key to unlock for the next ${Math.round((__superAdminStatus.ttl_seconds||1800)/60)} minutes.</p>
+          <form autocomplete="off">
+            <input type="password" placeholder="Super-admin key" autocomplete="new-password" required
+                   data-testid="input-super-admin-key" />
+            <button type="submit" data-testid="button-super-admin-unlock">Unlock</button>
+          </form>
+          <div class="unlock-error" data-testid="text-super-admin-error"></div>
+        `;
+        tab.appendChild(overlay);
+        const input = overlay.querySelector('input');
+        if (input) input.focus();
+        overlay.querySelector('form').onsubmit = async (e) => {
+          e.preventDefault();
+          const errEl = overlay.querySelector('.unlock-error');
+          const btnEl = overlay.querySelector('button');
+          const key = overlay.querySelector('input').value;
+          errEl.textContent = '';
+          btnEl.disabled = true;
+          btnEl.textContent = 'Unlocking…';
+          try {
+            const r = await fetch('/admin/api/super-admin/unlock', {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ key }),
+            });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok || !data.ok) {
+              errEl.textContent = data.message || 'Unlock failed.';
+              btnEl.disabled = false;
+              btnEl.textContent = 'Unlock';
+              return;
+            }
+            __superAdminStatus = {
+              enabled: true,
+              unlocked: true,
+              expires_at: data.expires_at || null,
+              ttl_seconds: __superAdminStatus.ttl_seconds || 1800,
+              _fetched: true,
+            };
+            overlay.remove();
+            Array.from(tab.children).forEach(c => {
+              c.style.display = c._origDisplay || '';
+            });
+            await refreshSuperAdminStatus();
+            if (typeof retryFn === 'function') retryFn();
+          } catch (err) {
+            errEl.textContent = 'Network error: ' + (err.message || err);
+            btnEl.disabled = false;
+            btnEl.textContent = 'Unlock';
+          }
+        };
+        return false;
+      }
+
+      // Unlocked path. Make sure any leftover overlay is gone and
+      // restore every child to whatever display it had before we
+      // touched it (handles both old overlay restore and our sync
+      // pre-hide restore in one pass).
+      if (oldOverlay) oldOverlay.remove();
+      Array.from(tab.children).forEach(c => {
+        if (c._origDisplay !== undefined) {
+          c.style.display = c._origDisplay;
+          delete c._origDisplay;
+        }
+      });
+
+      // Show the small "Unlocked · Lock now" banner above the content.
+      if (__superAdminStatus.enabled) {
+        const banner = document.createElement('div');
+        banner.className = 'super-admin-unlocked-banner';
+        banner.dataset.testid = 'banner-super-admin-unlocked';
+        const expIn = Math.max(0, Math.round(((__superAdminStatus.expires_at||0)*1000 - Date.now()) / 60000));
+        banner.innerHTML = `
+          <span>🔓 Super-admin unlocked · expires in ${expIn} min</span>
+          <button type="button" data-testid="button-super-admin-lock">Lock now</button>
+        `;
+        tab.insertBefore(banner, tab.firstChild);
+        banner.querySelector('button').onclick = async () => {
+          try {
+            await fetch('/admin/api/super-admin/lock', { method: 'POST', credentials: 'same-origin' });
+          } catch (_) {}
+          __superAdminStatus.unlocked = false;
+          __superAdminStatus.expires_at = null;
+          banner.remove();
+          // Re-run guard so the lock overlay appears immediately.
+          _superAdminGuard(tabContentId, retryFn);
+        };
+      }
+
+      return true;
+    }
+
+    // Initial paint of lock badges so the user sees the 🔒 icon
+    // before clicking into a protected tab.
+    document.addEventListener('DOMContentLoaded', () => { refreshSuperAdminStatus(); });
+
     async function loadPerformance() {
+      if (!await _superAdminGuard('tab-performance', loadPerformance)) return;
       const loading = document.getElementById('performance-loading');
       const grid = document.getElementById('performance-grid');
       const updated = document.getElementById('performance-updated');
@@ -13928,6 +14221,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     let __devSnapshot = null;
 
     async function loadDeveloper() {
+      if (!await _superAdminGuard('tab-developer', loadDeveloper)) return;
       const loading = document.getElementById('developer-loading');
       const content = document.getElementById('developer-content');
       const updated = document.getElementById('developer-updated');
@@ -14300,6 +14594,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     async function loadSecrets() {
+      if (!await _superAdminGuard('tab-secrets', loadSecrets)) return;
       const loading = document.getElementById('secrets-loading');
       const content = document.getElementById('secrets-content');
       const updated = document.getElementById('secrets-updated');
@@ -19740,6 +20035,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     busts the in-process cache so the change is live immediately.
     */
     async function loadPlansFeatures() {
+      if (!await _superAdminGuard('tab-plans-features', loadPlansFeatures)) return;
       const tenantCard = document.getElementById('plans-features-tenant-card');
       const list = document.getElementById('plans-features-list');
       const updated = document.getElementById('plans-features-updated');
