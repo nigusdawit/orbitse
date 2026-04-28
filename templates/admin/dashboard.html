@@ -2076,6 +2076,13 @@ TO CUSTOMIZE THIS DASHBOARD:
       </div>
     </div>
 
+    <!-- First-run / missing-keys banner. Hidden by default; populated
+         by _loadOverviewSecretsBanner() which counts unmet
+         required+recommended env vars and surfaces a single CTA into
+         the Secrets tab. Lets a fresh deploy notice config gaps even
+         if the admin doesn't open the Secrets tab themselves. -->
+    <div id="overview-secrets-banner" data-testid="banner-overview-secrets" style="display:none;"></div>
+
     <div class="kpi-grid" id="overview-kpi-grid">
       <!-- Filled by loadOverview() -->
       <div class="kpi-card kpi-skeleton"></div>
@@ -13263,6 +13270,10 @@ TO CUSTOMIZE THIS DASHBOARD:
       if (grid) {
         grid.innerHTML = '<div class="kpi-card kpi-skeleton"></div>'.repeat(6);
       }
+      // Fire the missing-keys banner check in parallel — independent
+      // of the main overview stats so a 500 on either doesn't break
+      // the other.
+      _loadOverviewSecretsBanner();
       try {
         const res = await fetch('/admin/api/overview/stats', { credentials: 'same-origin' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -13278,6 +13289,59 @@ TO CUSTOMIZE THIS DASHBOARD:
       } catch (e) {
         console.error('overview load failed', e);
         if (grid) grid.innerHTML = '<div class="overview-empty">Could not load overview stats.</div>';
+      }
+    }
+
+    // First-run / config-gap nudge: hits the Secrets status endpoint,
+    // counts unmet *required* and *recommended* keys, and renders an
+    // amber banner with a one-click jump into the Secrets tab. Hidden
+    // when nothing is missing or when the endpoint fails (silent — we
+    // never want this banner to itself become a source of dashboard
+    // breakage). Re-runs every time the Overview tab is re-loaded so
+    // it disappears the moment the admin fills the last missing key.
+    async function _loadOverviewSecretsBanner() {
+      const el = document.getElementById('overview-secrets-banner');
+      if (!el) return;
+      try {
+        const res = await fetch('/admin/api/secrets/status', { credentials: 'same-origin' });
+        if (!res.ok) { el.style.display = 'none'; return; }
+        const body = await res.json();
+        if (!body || !body.ok || !Array.isArray(body.rows)) { el.style.display = 'none'; return; }
+        // Update the global Secrets state so the Secrets tab gets the
+        // platform label right even if the admin never opens it.
+        _secretsState.platform = body.platform || 'other';
+        const missingRequired = body.rows.filter(r => !r.set && r.level === 'required');
+        const missingRecommended = body.rows.filter(r => !r.set && r.level === 'recommended');
+        const total = missingRequired.length + missingRecommended.length;
+        if (total === 0) { el.style.display = 'none'; el.innerHTML = ''; return; }
+        // Pick severity colors: red for any required missing, amber for recommended-only.
+        const isCritical = missingRequired.length > 0;
+        const accent = isCritical
+          ? { bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.4)', fg: '#fca5a5', icon: '⚠' }
+          : { bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.4)', fg: '#fcd34d', icon: '↗' };
+        const summary = isCritical
+          ? `<strong>${missingRequired.length}</strong> required key${missingRequired.length === 1 ? '' : 's'} not yet configured`
+              + (missingRecommended.length > 0
+                  ? ` <span style="opacity:0.75;">(plus ${missingRecommended.length} recommended)</span>`
+                  : '')
+          : `<strong>${missingRecommended.length}</strong> recommended key${missingRecommended.length === 1 ? '' : 's'} not yet configured`;
+        const previewKeys = (isCritical ? missingRequired : missingRecommended)
+          .slice(0, 5).map(r => r.key).join(', ');
+        const morePreview = (isCritical ? missingRequired : missingRecommended).length > 5 ? ', …' : '';
+        el.style.display = 'block';
+        el.innerHTML = `
+          <div style="background:${accent.bg}; border:1px solid ${accent.border}; border-radius:8px; padding:0.875rem 1rem; margin-bottom:1rem; display:flex; gap:0.875rem; align-items:center; flex-wrap:wrap;">
+            <span style="font-size:1.25rem; color:${accent.fg};" aria-hidden="true">${accent.icon}</span>
+            <div style="flex:1; min-width:200px;">
+              <div style="color:${accent.fg}; font-weight:600; margin-bottom:0.125rem;" data-testid="text-secrets-banner-summary">${summary}</div>
+              <div style="font-size:0.8125rem; color:var(--admin-text-muted); font-family:monospace;" data-testid="text-secrets-banner-preview">${escapeHTML(previewKeys)}${morePreview}</div>
+            </div>
+            <button class="btn-secondary" style="background:${accent.fg}; color:#1a1a1a; border:0; font-weight:600;" onclick="(function(){ const btn = document.querySelector('[data-testid=tab-secrets]'); if (btn) { switchTab('secrets', btn); loadSecrets(); } })()" data-testid="button-secrets-banner-go">Configure now →</button>
+          </div>
+        `;
+      } catch (_) {
+        // Silent — the banner is a nudge, never a hard failure.
+        el.style.display = 'none';
       }
     }
 
@@ -13993,8 +14057,23 @@ TO CUSTOMIZE THIS DASHBOARD:
     // /admin/api/secrets/* routes; Replit Secrets always win and
     // are flagged read-only in the UI.
 
-    let _secretsState = { rows: [] };
+    let _secretsState = { rows: [], platform: 'other' };
     let _secretEditTarget = null;     // currently-selected row in the modal
+
+    // The label for a platform-managed env var depends on the host:
+    // "Replit Secret" on Replit, "Environment variable" everywhere
+    // else (Heroku Config Vars, Railway, Fly secrets, Docker -e,
+    // systemd EnvironmentFile=, etc). Detection happens server-side
+    // via env_manager.is_replit_platform() and is forwarded as
+    // _secretsState.platform.
+    function _platformSecretLabel() {
+      return _secretsState.platform === 'replit' ? 'Replit Secret' : 'Environment';
+    }
+    function _platformLockedLabel() {
+      return _secretsState.platform === 'replit'
+        ? 'Managed by Replit Secrets'
+        : 'Managed by your hosting platform';
+    }
 
     // Thin wrapper around the global adminFetch() so every call in the
     // Secrets tab parses JSON, sets Content-Type on POSTs, and forwards
@@ -14028,6 +14107,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           return;
         }
         _secretsState.rows = res.rows || [];
+        _secretsState.platform = res.platform || 'other';
         _renderSecrets(_secretsState.rows);
         loading.style.display = 'none';
         content.style.display = 'flex';
@@ -14085,7 +14165,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       if (!r.set) {
         statusHtml = `<span style="font-size:0.7rem; padding:0.125rem 0.5rem; border-radius:9999px; font-weight:600; background:rgba(255,255,255,0.05); color:var(--admin-text-muted); border:1px solid var(--admin-border);">✗ Not set</span>`;
       } else if (r.source === 'replit_secret') {
-        statusHtml = `<span style="font-size:0.7rem; padding:0.125rem 0.5rem; border-radius:9999px; font-weight:600; background:rgba(34,197,94,0.15); color:#86efac; border:1px solid rgba(34,197,94,0.35);">✓ Replit Secret</span>`;
+        statusHtml = `<span style="font-size:0.7rem; padding:0.125rem 0.5rem; border-radius:9999px; font-weight:600; background:rgba(34,197,94,0.15); color:#86efac; border:1px solid rgba(34,197,94,0.35);">✓ ${_secretsEsc(_platformSecretLabel())}</span>`;
       } else {
         statusHtml = `<span style="font-size:0.7rem; padding:0.125rem 0.5rem; border-radius:9999px; font-weight:600; background:rgba(34,197,94,0.15); color:#86efac; border:1px solid rgba(34,197,94,0.35);">✓ .env</span>`;
       }
@@ -14107,7 +14187,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       const lockedByReplit = r.set && r.source === 'replit_secret';
       let actions;
       if (lockedByReplit) {
-        actions = `<span style="font-size:0.7rem; color:var(--admin-text-muted); font-style:italic;" data-testid="text-secret-locked-${r.key}">Managed by Replit Secrets</span>`;
+        actions = `<span style="font-size:0.7rem; color:var(--admin-text-muted); font-style:italic;" data-testid="text-secret-locked-${r.key}">${_secretsEsc(_platformLockedLabel())}</span>`;
       } else {
         const setBtn = `<button class="btn-secondary" style="font-size:0.75rem; padding:0.25rem 0.625rem;" onclick="openSecretEditModal('${r.key}')" data-testid="button-secret-set-${r.key}">${r.set ? 'Update' : 'Set'}</button>`;
         const unsetBtn = r.set

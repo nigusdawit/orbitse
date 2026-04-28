@@ -340,14 +340,32 @@ def _classify_source(key: str) -> str:
     """Return where the *currently-effective* value comes from:
     'env_file' → from the local .env (admin can edit here),
     'replit_secret' → from os.environ but NOT in the .env file
-                     (admin must edit Replit Secrets to change it),
+                     (admin must edit it through their hosting
+                     platform's secret/env-var mechanism — Replit
+                     Secrets, Heroku Config Vars, Docker -e flags,
+                     systemd EnvironmentFile=, etc),
     'unset'    → not present at all.
+
+    The string ``replit_secret`` is the historical wire-name kept for
+    backward compatibility — see ``is_replit_platform()`` for the
+    actual host-platform detection used to render the right UI label.
     """
     if key in _env_file_keys:
         return "env_file"
     if os.environ.get(key):
         return "replit_secret"
     return "unset"
+
+
+def is_replit_platform() -> bool:
+    """True iff the running process appears to be on a Replit host.
+    Replit injects ``REPL_ID`` (and, for Reserved-VM/Autoscale
+    deployments, ``REPLIT_DEPLOYMENT``) into the environment of every
+    workspace and deployment. This is purely a UX hint so the admin
+    Secrets tab can label a platform-managed var as "Replit Secret"
+    on Replit and "Environment" elsewhere — the underlying behavior
+    (precedence, lock-from-edit) is identical on every host."""
+    return bool(os.environ.get("REPL_ID") or os.environ.get("REPLIT_DEPLOYMENT"))
 
 
 def get_status() -> list[dict]:
@@ -414,10 +432,15 @@ def set_var(key: str, value: str) -> dict:
     # shadowing this key — writing to .env would silently no-op.
     current_source = _classify_source(key)
     if current_source == "replit_secret":
+        # Host-aware wording: only call out "Replit Secrets" when we're
+        # actually running on Replit; otherwise refer generically to
+        # the hosting platform (Heroku Config Vars, Railway, Fly,
+        # Docker -e, systemd EnvironmentFile=, etc).
+        where = "Replit Secrets pane" if is_replit_platform() else "your hosting platform's environment configuration"
         raise EnvManagerError(
-            f"{key} is currently provided by Replit Secrets and cannot be "
-            f"overridden from the .env file. Update or remove it in the "
-            f"Replit Secrets pane first, then set it here."
+            f"{key} is currently provided by the host environment and cannot "
+            f"be overridden from the .env file. Update or remove it in "
+            f"{where} first, then set it here."
         )
 
     # Read current .env, merge, write atomically.
@@ -441,9 +464,10 @@ def unset_var(key: str) -> dict:
         raise EnvManagerError(f"Unknown key: {key!r}.")
     source = _classify_source(key)
     if source == "replit_secret":
+        where = "Replit Secrets pane" if is_replit_platform() else "your hosting platform's environment configuration"
         raise EnvManagerError(
-            f"{key} is provided by Replit Secrets, not the .env file. "
-            f"Remove it from the Replit Secrets pane to unset it."
+            f"{key} is provided by the host environment, not the .env file. "
+            f"Remove it from {where} to unset it."
         )
     if source == "unset":
         # Idempotent: already unset.

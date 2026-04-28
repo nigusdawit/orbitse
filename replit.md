@@ -1009,8 +1009,27 @@ every env var the app cares about — without ever exposing secret values.
 grouped by category (Database, Admin access, AI providers, Email, SMS,
 Stripe live/test, Voice, Reviews, Observability, VELO Master). Each row
 carries a level chip (Required / Recommended / blank=Optional), a status
-chip (`✓ Replit Secret`, `✓ .env`, or `✗ Not set`), and a one-line
-description with an optional "Get key →" link to the provider dashboard.
+chip (`✓ Replit Secret` on Replit / `✓ Environment` everywhere else,
+`✓ .env`, or `✗ Not set`), and a one-line description with an optional
+"Get key →" link to the provider dashboard.
+
+**Host-aware labelling.** The status response carries a top-level
+`platform` field (`replit` | `other`) sourced from
+`env_manager.is_replit_platform()` — which checks for `REPL_ID` /
+`REPLIT_DEPLOYMENT` in the environment. The UI uses this to render
+"Replit Secret" / "Managed by Replit Secrets" on Replit and the
+generic "Environment" / "Managed by your hosting platform" on Heroku
+/ Railway / Fly / Docker / systemd / bare-metal. The underlying
+classification (precedence, lock-from-edit) is host-agnostic.
+
+**First-run nudge on Overview.** The Overview tab loads a small banner
+(`#overview-secrets-banner`) that calls the same `/admin/api/secrets/status`
+endpoint, counts unmet *required* and *recommended* keys, and surfaces
+a one-click jump into the Secrets tab. The banner is amber for
+recommended-only gaps and red when any required key is missing —
+disappears the moment the admin fills the last missing key. Silent on
+endpoint failure (never breaks the dashboard).
+
 **Sensitive values are masked to `••••XXXX`** (last 4 chars only) and
 NEVER returned in clear by any route — non-sensitive config (URLs,
 emails, phone numbers, plain flags) is shown in full so the admin can
@@ -1039,9 +1058,10 @@ look like a bug.
 global CSRF middleware. Module: `env_manager.py` (whitelist + parser +
 atomic writer + status helpers, ~450 lines, no new dependency — rolled
 its own minimal `.env` parser/writer to avoid pulling in `python-dotenv`).
-Tests: `tests/test_env_manager.py` (40 unit tests, tmp-file based) and
-`tests/test_admin_secrets.py` (12 route tests covering auth, CSRF,
-shape, masking guarantee, Replit-Secret rejection).
+Tests: `tests/test_env_manager.py` (43 unit tests, tmp-file based,
+including `TestShadowedReplitSecret`) and `tests/test_admin_secrets.py`
+(14 route tests covering auth, CSRF, shape, masking guarantee,
+Replit-Secret rejection, and platform-field reporting).
 
 ### CDN Dependencies
 - Google Fonts (Playfair Display, DM Sans, plus dynamic fonts via Theme Editor)

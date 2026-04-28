@@ -21049,7 +21049,15 @@ def admin_secrets_status():
     ``••••XXXX`` (last 4 chars). Non-sensitive config (URLs, emails,
     flags) is returned in full so the admin can verify the value."""
     try:
-        return jsonify({"ok": True, "rows": _env_manager.get_status()})
+        return jsonify({
+            "ok": True,
+            "rows": _env_manager.get_status(),
+            # UX hint so the UI labels platform-managed vars accurately
+            # ("Replit Secret" on Replit, "Environment" on Heroku /
+            # Railway / Fly / Docker / etc). Source classification
+            # itself is host-agnostic — see env_manager._classify_source.
+            "platform": "replit" if _env_manager.is_replit_platform() else "other",
+        })
     except Exception as e:
         return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
 

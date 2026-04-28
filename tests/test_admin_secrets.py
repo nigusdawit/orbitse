@@ -151,6 +151,40 @@ class TestStatusRoute:
             assert keys_per_row.issubset(row.keys()), \
                 f"row missing keys: {keys_per_row - row.keys()}"
 
+    def test_platform_field_present_and_valid(self, client, tmp_env):
+        """The status payload includes a top-level ``platform`` field
+        so the UI can label platform-managed env vars correctly across
+        hosts (Replit vs Heroku/Railway/Fly/Docker/etc). Value is one
+        of {'replit', 'other'} — never null, never absent."""
+        _require_admin_login(client)
+        r = client.get("/admin/api/secrets/status")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert "platform" in body, "missing top-level platform field"
+        assert body["platform"] in ("replit", "other"), \
+            f"platform must be 'replit' or 'other', got: {body['platform']!r}"
+
+    def test_platform_reflects_repl_id_env(self, client, tmp_env, monkeypatch):
+        """When REPL_ID is set the platform reports 'replit'; when both
+        Replit env vars are absent it reports 'other'. When only
+        REPLIT_DEPLOYMENT is set (Reserved-VM / Autoscale deploys
+        sometimes ship without REPL_ID), the platform still reports
+        'replit' — the fallback signal exists so deployed instances
+        keep the right label."""
+        _require_admin_login(client)
+        # Signal A: REPL_ID only → 'replit'.
+        monkeypatch.setenv("REPL_ID", "test-repl-id")
+        monkeypatch.delenv("REPLIT_DEPLOYMENT", raising=False)
+        assert client.get("/admin/api/secrets/status").json["platform"] == "replit"
+        # Signal B: REPLIT_DEPLOYMENT only → 'replit'.
+        monkeypatch.delenv("REPL_ID", raising=False)
+        monkeypatch.setenv("REPLIT_DEPLOYMENT", "1")
+        assert client.get("/admin/api/secrets/status").json["platform"] == "replit"
+        # Neither signal → 'other'.
+        monkeypatch.delenv("REPL_ID", raising=False)
+        monkeypatch.delenv("REPLIT_DEPLOYMENT", raising=False)
+        assert client.get("/admin/api/secrets/status").json["platform"] == "other"
+
     def test_sensitive_values_never_returned_in_clear(self, client, tmp_env):
         _require_admin_login(client)
         # Plant a sensitive value in os.environ → it'd be source=replit_secret.
