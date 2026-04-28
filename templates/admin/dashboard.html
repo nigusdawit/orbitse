@@ -54,6 +54,7 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     :root {
       --admin-bg: #060b14;
+      --admin-bg-soft: rgba(255, 255, 255, 0.03);
       --admin-surface: rgba(255, 255, 255, 0.04);
       --admin-surface-hover: rgba(255, 255, 255, 0.07);
       --admin-border: rgba(255, 255, 255, 0.08);
@@ -2549,8 +2550,8 @@ TO CUSTOMIZE THIS DASHBOARD:
           <span id="stripe-mode-badge" data-testid="badge-stripe-mode" style="font-size:0.75rem; padding:0.25rem 0.625rem; border-radius:9999px; font-weight:700;">—</span>
         </summary>
         <div style="padding:0 1rem 1rem 1rem;">
-          <div id="stripe-mismatch-warning" style="display:none; background:#fef3c7; border:1px solid #f59e0b; color:#78350f; padding:0.625rem 0.875rem; border-radius:6px; margin-bottom:0.75rem; font-size:0.8125rem;" data-testid="warning-stripe-mismatch">
-            ⚠ Mode is set to <strong>Live</strong> but the resolved API key is a <strong>test</strong> key (sk_test_…). Set <code>STRIPE_SECRET_KEY</code> to a live key, or switch back to Test mode.
+          <div id="stripe-mismatch-warning" style="display:none; background:rgba(245, 158, 11, 0.12); border:1px solid rgba(245, 158, 11, 0.45); color:#fcd34d; padding:0.625rem 0.875rem; border-radius:6px; margin-bottom:0.75rem; font-size:0.8125rem;" data-testid="warning-stripe-mismatch">
+            <span id="stripe-mismatch-text"></span>
           </div>
           <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px,1fr)); gap:0.75rem; margin-bottom:0.75rem;">
             <div style="background:var(--admin-bg-soft, #f8fafc); padding:0.75rem; border-radius:6px;">
@@ -2575,6 +2576,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       <details class="dev-card" data-testid="card-stripe-keys">
         <summary style="cursor:pointer; padding:1rem; font-weight:600;">Keys detected</summary>
         <div style="padding:0 1rem 1rem 1rem;">
+          <div id="stripe-keys-banner" style="display:none; background:rgba(34,197,94,0.10); border:1px solid rgba(34,197,94,0.35); color:#86efac; padding:0.625rem 0.875rem; border-radius:6px; margin-bottom:0.75rem; font-size:0.8125rem; line-height:1.45;" data-testid="banner-stripe-connector"></div>
           <p style="margin:0 0 0.75rem 0; font-size:0.8125rem; color:var(--admin-text-muted);">
             Which Stripe environment variables are populated. Values are NEVER shown — only ✓ Set / ✗ Not set.
           </p>
@@ -13685,8 +13687,20 @@ TO CUSTOMIZE THIS DASHBOARD:
       badge.style.color = '#ffffff';
 
       // ---- Mode-mismatch warning ----
-      document.getElementById('stripe-mismatch-warning').style.display =
-        s.mode_mismatch ? 'block' : 'none';
+      const mw = document.getElementById('stripe-mismatch-warning');
+      const mt = document.getElementById('stripe-mismatch-text');
+      if (s.mode_mismatch) {
+        mw.style.display = 'block';
+        if (s.mode === 'live' && s.active_key_kind === 'test') {
+          mt.innerHTML = '⚠ Mode is set to <strong>Live</strong> but the resolved API key is a <strong>test</strong> key (sk_test_…). Set <code>STRIPE_SECRET_KEY</code> to a live key, or switch back to Test mode.';
+        } else if (s.mode === 'test' && s.active_key_kind === 'live') {
+          mt.innerHTML = '⚠ Mode is set to <strong>Test</strong> but the resolved API key is a <strong>live</strong> key (sk_live_…). Real cards will be charged. Set <code>STRIPE_TEST_SECRET_KEY</code>, or switch to Live mode.';
+        } else {
+          mt.textContent = '⚠ Mode and resolved key kind do not match.';
+        }
+      } else {
+        mw.style.display = 'none';
+      }
 
       // ---- Health badge ----
       const hb = document.getElementById('stripe-health-badge');
@@ -13718,7 +13732,24 @@ TO CUSTOMIZE THIS DASHBOARD:
       sw.textContent = isLive ? 'Switch to Test' : 'Switch to Live';
 
       // ---- Keys grid ----
+      // Two layouts:
+      //   A) Replit connector is set    → lead with a friendly green banner
+      //      and show env-var rows in muted gray ("optional override") so the
+      //      admin doesn't think anything is broken when the storefront is
+      //      already working via the connector.
+      //   B) Replit connector is NOT set → no banner; env-var rows render in
+      //      red so the admin sees what's missing.
       const grid = document.getElementById('stripe-keys-grid');
+      const banner = document.getElementById('stripe-keys-banner');
+      const usingConnector = !!s.keys_present.replit_connector;
+      if (banner) {
+        if (usingConnector) {
+          banner.style.display = 'block';
+          banner.innerHTML = '<strong>✓ Connected via Replit Stripe</strong> — your keys are managed for you. The environment variables below only matter if you stop using the Replit Stripe integration; you can ignore the “Not set” chips.';
+        } else {
+          banner.style.display = 'none';
+        }
+      }
       const keyRows = [
         ['STRIPE_SECRET_KEY',           s.keys_present.live_secret,      'Live secret'],
         ['STRIPE_PUBLISHABLE_KEY',      s.keys_present.live_publishable, 'Live publishable'],
@@ -13726,15 +13757,21 @@ TO CUSTOMIZE THIS DASHBOARD:
         ['STRIPE_TEST_SECRET_KEY',      s.keys_present.test_secret,      'Test secret'],
         ['STRIPE_TEST_PUBLISHABLE_KEY', s.keys_present.test_publishable, 'Test publishable'],
         ['STRIPE_TEST_WEBHOOK_SECRET',  s.keys_present.test_webhook,     'Test webhook'],
-        ['Replit Stripe connector',     s.keys_present.replit_connector, 'Replit-managed connection'],
       ];
+      const setChip   = 'background:rgba(34,197,94,0.15);color:#86efac;border:1px solid rgba(34,197,94,0.35);';
+      // When the connector is providing keys, "Not set" is informational
+      // (gray), not alarming (red).
+      const unsetChip = usingConnector
+        ? 'background:rgba(255,255,255,0.05);color:var(--admin-text-muted);border:1px solid var(--admin-border);'
+        : 'background:rgba(239,68,68,0.15);color:#fca5a5;border:1px solid rgba(239,68,68,0.35);';
+      const unsetLabel = usingConnector ? '— Not set (using connector)' : '✗ Not set';
       grid.innerHTML = keyRows.map(([env, ok, label]) => `
-        <div style="display:flex; justify-content:space-between; align-items:center; padding:0.5rem 0.625rem; background:var(--admin-bg-soft, #f8fafc); border-radius:6px;" data-testid="row-stripe-key-${env}">
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:0.5rem 0.625rem; background:var(--admin-bg-soft); border:1px solid var(--admin-border); border-radius:6px;" data-testid="row-stripe-key-${env}">
           <div>
             <div style="font-weight:600; font-size:0.8125rem;">${label}</div>
             <div style="font-size:0.6875rem; color:var(--admin-text-muted); font-family:monospace;">${env}</div>
           </div>
-          <span style="font-size:0.75rem; padding:0.125rem 0.5rem; border-radius:9999px; font-weight:700; ${ok ? 'background:#dcfce7;color:#166534;' : 'background:#fee2e2;color:#991b1b;'}">${ok ? '✓ Set' : '✗ Not set'}</span>
+          <span style="font-size:0.75rem; padding:0.125rem 0.5rem; border-radius:9999px; font-weight:600; white-space:nowrap; ${ok ? setChip : unsetChip}">${ok ? '✓ Set' : unsetLabel}</span>
         </div>
       `).join('');
 
