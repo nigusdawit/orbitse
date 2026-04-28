@@ -1838,6 +1838,10 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M2 10h20"/><path d="M7 15h2"/></svg>
       Stripe
     </button>
+    <button class="tab-btn" onclick="switchTab('secrets', this); loadSecrets();" data-testid="tab-secrets">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      Secrets
+    </button>
 
     <div class="sidebar-group-label">Layout</div>
     <button class="tab-btn" onclick="switchTab('page-layout', this)" data-testid="tab-page-layout">
@@ -2656,6 +2660,66 @@ TO CUSTOMIZE THIS DASHBOARD:
         </div>
       </details>
 
+    </div>
+  </div>
+
+  <!-- ============================================================
+       Secrets / .env tab
+       ============================================================
+       Lets the operator see which env vars exist, which are set,
+       and set any that aren't — without ever exposing the value.
+       Sensitive values are masked to ••••XXXX (last 4 chars).
+       Writes go to a local .env file; Replit Secrets always win.
+  -->
+  <div id="tab-secrets" class="tab-content">
+    <div class="content-header">
+      <h2>Secrets</h2>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <span id="secrets-updated" style="font-size:0.8125rem; color:var(--admin-text-muted);" data-testid="text-secrets-updated"></span>
+        <button class="btn-secondary" onclick="loadSecrets()" data-testid="button-secrets-refresh">Refresh</button>
+      </div>
+    </div>
+    <p style="color:var(--admin-text-muted); margin:0 0 1rem 0; font-size:0.875rem;">
+      Environment variables &amp; API keys. Sensitive values are masked
+      to <code>••••XXXX</code> (last 4 chars) and never displayed in full.
+      Writes go to the local <code>.env</code> file — Replit Secrets
+      always take precedence and cannot be overridden here.
+    </p>
+
+    <div id="secrets-loading" class="empty-state" style="padding:1.5rem;" data-testid="text-secrets-loading">Loading…</div>
+
+    <div id="secrets-content" style="display:none; flex-direction:column; gap:0.75rem;">
+      <!-- Summary chips -->
+      <div id="secrets-summary" style="display:flex; gap:0.5rem; flex-wrap:wrap; padding:0.625rem 0.875rem; background:var(--admin-bg-soft); border:1px solid var(--admin-border); border-radius:6px; font-size:0.8125rem;" data-testid="summary-secrets"></div>
+
+      <!-- Per-category accordions populated by JS -->
+      <div id="secrets-categories" style="display:flex; flex-direction:column; gap:0.5rem;" data-testid="container-secrets-categories"></div>
+    </div>
+  </div>
+
+  <!-- Modal for setting / updating a single secret -->
+  <div id="secret-edit-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:9999; align-items:center; justify-content:center; padding:1rem;" data-testid="modal-secret-edit">
+    <div style="background:var(--admin-bg); border:1px solid var(--admin-border-light); border-radius:8px; padding:1.25rem; max-width:520px; width:100%; box-shadow:0 20px 50px rgba(0,0,0,0.5);">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
+        <h3 id="secret-edit-title" style="margin:0; font-size:1rem;">Set secret</h3>
+        <button onclick="closeSecretEditModal()" style="background:transparent; border:none; color:var(--admin-text-muted); font-size:1.25rem; cursor:pointer; padding:0;" data-testid="button-secret-modal-close">×</button>
+      </div>
+      <div id="secret-edit-key" style="font-family:monospace; font-size:0.8125rem; color:var(--admin-text-muted); margin-bottom:0.5rem;" data-testid="text-secret-modal-key"></div>
+      <div id="secret-edit-description" style="font-size:0.8125rem; color:var(--admin-text); margin-bottom:0.75rem; line-height:1.45;" data-testid="text-secret-modal-description"></div>
+      <div id="secret-edit-warning" style="display:none; background:rgba(245,158,11,0.12); border:1px solid rgba(245,158,11,0.45); color:#fcd34d; padding:0.5rem 0.75rem; border-radius:6px; font-size:0.75rem; margin-bottom:0.75rem;" data-testid="warning-secret-modal"></div>
+      <label style="display:block; font-size:0.75rem; color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.25rem;">New value</label>
+      <input type="password" id="secret-edit-input" autocomplete="new-password" spellcheck="false"
+             style="width:100%; background:var(--admin-bg-soft); border:1px solid var(--admin-border); border-radius:6px; padding:0.5rem 0.625rem; color:var(--admin-text); font-family:monospace; font-size:0.875rem;"
+             data-testid="input-secret-modal-value" />
+      <div style="display:flex; gap:0.5rem; align-items:center; margin-top:0.5rem; font-size:0.75rem; color:var(--admin-text-muted);">
+        <input type="checkbox" id="secret-edit-show" onchange="toggleSecretInputVisibility()" data-testid="checkbox-secret-modal-show" />
+        <label for="secret-edit-show" style="cursor:pointer;">Show value while typing</label>
+      </div>
+      <div id="secret-edit-error" style="display:none; color:#fca5a5; font-size:0.75rem; margin-top:0.5rem;" data-testid="text-secret-modal-error"></div>
+      <div style="display:flex; gap:0.5rem; justify-content:flex-end; margin-top:1rem;">
+        <button class="btn-secondary" onclick="closeSecretEditModal()" data-testid="button-secret-modal-cancel">Cancel</button>
+        <button class="btn-primary" onclick="submitSecretEditModal()" data-testid="button-secret-modal-save">Save</button>
+      </div>
     </div>
   </div>
 
@@ -13917,6 +13981,250 @@ TO CUSTOMIZE THIS DASHBOARD:
         _stripeRenderSyncStatus(status);
       } catch (e) {
         alert('Re-sync request failed: ' + (e.message || e));
+      }
+    }
+
+    // ============================================================
+    //   SECRETS / .env tab — render + set/unset
+    // ============================================================
+    // The Secrets tab lets the operator manage API keys and config
+    // without ever seeing the full value (sensitive values are
+    // shown as ••••XXXX). Writes go to a local .env file via the
+    // /admin/api/secrets/* routes; Replit Secrets always win and
+    // are flagged read-only in the UI.
+
+    let _secretsState = { rows: [] };
+    let _secretEditTarget = null;     // currently-selected row in the modal
+
+    // Thin wrapper around the global adminFetch() so every call in the
+    // Secrets tab parses JSON, sets Content-Type on POSTs, and forwards
+    // 401 → /admin/login redirects via adminFetch's existing handling.
+    // adminFetch itself returns a raw Response object, so we MUST .json()
+    // it here — otherwise res.rows / res.error etc. would all be undefined.
+    async function _secretsFetch(url, opts) {
+      const o = Object.assign({}, opts || {});
+      if (o.method && o.method !== 'GET') {
+        o.headers = Object.assign(
+          { 'Content-Type': 'application/json' },
+          o.headers || {}
+        );
+      }
+      const res = await adminFetch(url, o);
+      try { return await res.json(); }
+      catch (_) { return { ok: false, error: 'invalid JSON from ' + url }; }
+    }
+
+    async function loadSecrets() {
+      const loading = document.getElementById('secrets-loading');
+      const content = document.getElementById('secrets-content');
+      const updated = document.getElementById('secrets-updated');
+      loading.style.display = 'block';
+      loading.textContent = 'Loading…';
+      content.style.display = 'none';
+      try {
+        const res = await _secretsFetch('/admin/api/secrets/status');
+        if (!res || !res.ok) {
+          loading.textContent = 'Could not load secrets: ' + ((res && res.error) || 'unknown');
+          return;
+        }
+        _secretsState.rows = res.rows || [];
+        _renderSecrets(_secretsState.rows);
+        loading.style.display = 'none';
+        content.style.display = 'flex';
+        if (updated) updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      } catch (e) {
+        loading.textContent = 'Could not load secrets: ' + (e.message || e);
+      }
+    }
+
+    function _renderSecrets(rows) {
+      // ---- Summary chips: total / set / unset / required-missing ----
+      const total = rows.length;
+      const set = rows.filter(r => r.set).length;
+      const unset = total - set;
+      const missingRequired = rows.filter(
+        r => !r.set && (r.level === 'required' || r.level === 'recommended')
+      ).length;
+      const summary = document.getElementById('secrets-summary');
+      summary.innerHTML = `
+        <span data-testid="chip-secrets-total"><strong>${total}</strong> total</span>
+        <span style="color:#86efac;" data-testid="chip-secrets-set"><strong>${set}</strong> set</span>
+        <span style="color:var(--admin-text-muted);" data-testid="chip-secrets-unset"><strong>${unset}</strong> not set</span>
+        ${missingRequired > 0
+          ? `<span style="color:#fca5a5;" data-testid="chip-secrets-missing-required"><strong>${missingRequired}</strong> required/recommended missing</span>`
+          : ''}
+      `;
+
+      // ---- Group rows by category, render one accordion per group ----
+      const categories = {};
+      for (const r of rows) {
+        if (!categories[r.category]) categories[r.category] = [];
+        categories[r.category].push(r);
+      }
+      const wrap = document.getElementById('secrets-categories');
+      wrap.innerHTML = Object.keys(categories).map(cat => {
+        const catRows = categories[cat];
+        const catSet = catRows.filter(r => r.set).length;
+        return `
+          <details class="dev-card" data-testid="card-secrets-category-${_secretsSlug(cat)}" ${catSet < catRows.length ? 'open' : ''}>
+            <summary style="cursor:pointer; padding:0.875rem 1rem; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
+              <span>${_secretsEsc(cat)}</span>
+              <span style="font-size:0.75rem; color:var(--admin-text-muted); font-weight:500;">${catSet} / ${catRows.length} set</span>
+            </summary>
+            <div style="padding:0 1rem 1rem 1rem; display:flex; flex-direction:column; gap:0.4rem;">
+              ${catRows.map(_renderSecretRow).join('')}
+            </div>
+          </details>
+        `;
+      }).join('');
+    }
+
+    function _renderSecretRow(r) {
+      // status chip ---------------------------------------------------
+      let statusHtml;
+      if (!r.set) {
+        statusHtml = `<span style="font-size:0.7rem; padding:0.125rem 0.5rem; border-radius:9999px; font-weight:600; background:rgba(255,255,255,0.05); color:var(--admin-text-muted); border:1px solid var(--admin-border);">✗ Not set</span>`;
+      } else if (r.source === 'replit_secret') {
+        statusHtml = `<span style="font-size:0.7rem; padding:0.125rem 0.5rem; border-radius:9999px; font-weight:600; background:rgba(34,197,94,0.15); color:#86efac; border:1px solid rgba(34,197,94,0.35);">✓ Replit Secret</span>`;
+      } else {
+        statusHtml = `<span style="font-size:0.7rem; padding:0.125rem 0.5rem; border-radius:9999px; font-weight:600; background:rgba(34,197,94,0.15); color:#86efac; border:1px solid rgba(34,197,94,0.35);">✓ .env</span>`;
+      }
+      // level chip ----------------------------------------------------
+      let levelChip = '';
+      if (r.level === 'required') {
+        levelChip = `<span style="font-size:0.65rem; padding:0.05rem 0.4rem; border-radius:4px; background:rgba(239,68,68,0.15); color:#fca5a5; text-transform:uppercase; letter-spacing:0.05em;">Required</span>`;
+      } else if (r.level === 'recommended') {
+        levelChip = `<span style="font-size:0.65rem; padding:0.05rem 0.4rem; border-radius:4px; background:rgba(245,158,11,0.15); color:#fcd34d; text-transform:uppercase; letter-spacing:0.05em;">Recommended</span>`;
+      }
+      // value display -------------------------------------------------
+      let valueLine = '';
+      if (r.set && r.sensitive && r.masked) {
+        valueLine = `<div style="font-family:monospace; font-size:0.75rem; color:var(--admin-text-muted);" data-testid="text-secret-masked-${r.key}">${_secretsEsc(r.masked)}</div>`;
+      } else if (r.set && !r.sensitive && r.value) {
+        valueLine = `<div style="font-family:monospace; font-size:0.75rem; color:var(--admin-text); word-break:break-all;" data-testid="text-secret-value-${r.key}">${_secretsEsc(r.value)}</div>`;
+      }
+      // action buttons ------------------------------------------------
+      const lockedByReplit = r.set && r.source === 'replit_secret';
+      let actions;
+      if (lockedByReplit) {
+        actions = `<span style="font-size:0.7rem; color:var(--admin-text-muted); font-style:italic;" data-testid="text-secret-locked-${r.key}">Managed by Replit Secrets</span>`;
+      } else {
+        const setBtn = `<button class="btn-secondary" style="font-size:0.75rem; padding:0.25rem 0.625rem;" onclick="openSecretEditModal('${r.key}')" data-testid="button-secret-set-${r.key}">${r.set ? 'Update' : 'Set'}</button>`;
+        const unsetBtn = r.set
+          ? `<button class="btn-secondary" style="font-size:0.75rem; padding:0.25rem 0.625rem; color:#fca5a5;" onclick="unsetSecret('${r.key}')" data-testid="button-secret-unset-${r.key}">Clear</button>`
+          : '';
+        actions = setBtn + ' ' + unsetBtn;
+      }
+      const helpLink = r.url
+        ? ` <a href="${_secretsEsc(r.url)}" target="_blank" rel="noopener" style="font-size:0.7rem; color:#60a5fa; text-decoration:none;" data-testid="link-secret-help-${r.key}">Get key →</a>`
+        : '';
+      return `
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:0.75rem; padding:0.625rem 0.75rem; background:var(--admin-bg-soft); border:1px solid var(--admin-border); border-radius:6px;" data-testid="row-secret-${r.key}">
+          <div style="flex:1; min-width:0;">
+            <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.125rem;">
+              <span style="font-weight:600; font-size:0.8125rem; font-family:monospace;">${_secretsEsc(r.key)}</span>
+              ${levelChip}
+              ${statusHtml}
+            </div>
+            <div style="font-size:0.75rem; color:var(--admin-text-muted); line-height:1.4;">${_secretsEsc(r.description)}${helpLink}</div>
+            ${valueLine}
+          </div>
+          <div style="display:flex; gap:0.25rem; flex-shrink:0; align-items:center;">${actions}</div>
+        </div>
+      `;
+    }
+
+    function _secretsEsc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+    function _secretsSlug(s) {
+      return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    }
+
+    // ---- Edit modal ------------------------------------------------
+    function openSecretEditModal(key) {
+      const row = _secretsState.rows.find(r => r.key === key);
+      if (!row) return;
+      _secretEditTarget = row;
+      document.getElementById('secret-edit-title').textContent = (row.set ? 'Update ' : 'Set ') + row.key;
+      document.getElementById('secret-edit-key').textContent = row.key;
+      document.getElementById('secret-edit-description').textContent = row.description || '';
+      const warning = document.getElementById('secret-edit-warning');
+      if (row.restart) {
+        warning.style.display = 'block';
+        warning.textContent = '⚠ Changes to this variable only take full effect after a workflow restart.';
+      } else {
+        warning.style.display = 'none';
+      }
+      const input = document.getElementById('secret-edit-input');
+      input.value = '';
+      input.type = row.sensitive ? 'password' : 'text';
+      document.getElementById('secret-edit-show').checked = !row.sensitive;
+      document.getElementById('secret-edit-error').style.display = 'none';
+      const modal = document.getElementById('secret-edit-modal');
+      modal.style.display = 'flex';
+      setTimeout(() => input.focus(), 50);
+    }
+
+    function closeSecretEditModal() {
+      _secretEditTarget = null;
+      document.getElementById('secret-edit-modal').style.display = 'none';
+      document.getElementById('secret-edit-input').value = '';
+    }
+
+    function toggleSecretInputVisibility() {
+      const input = document.getElementById('secret-edit-input');
+      const show = document.getElementById('secret-edit-show').checked;
+      input.type = show ? 'text' : 'password';
+    }
+
+    async function submitSecretEditModal() {
+      if (!_secretEditTarget) return;
+      const value = document.getElementById('secret-edit-input').value;
+      const errEl = document.getElementById('secret-edit-error');
+      errEl.style.display = 'none';
+      try {
+        const res = await _secretsFetch('/admin/api/secrets/set', {
+          method: 'POST',
+          body: JSON.stringify({ key: _secretEditTarget.key, value: value }),
+        });
+        if (!res || !res.ok) {
+          errEl.textContent = (res && res.error) ? res.error : 'Could not save.';
+          errEl.style.display = 'block';
+          return;
+        }
+        closeSecretEditModal();
+        if (res.restart_required) {
+          alert('Saved. This variable requires a workflow restart to take full effect.');
+        }
+        loadSecrets();
+      } catch (e) {
+        errEl.textContent = 'Failed: ' + (e.message || e);
+        errEl.style.display = 'block';
+      }
+    }
+
+    async function unsetSecret(key) {
+      const row = _secretsState.rows.find(r => r.key === key);
+      if (!row) return;
+      if (!confirm(`Clear ${key} from the .env file?\n\nThis cannot be undone — you'll need to re-enter the value to restore it.`)) return;
+      try {
+        const res = await _secretsFetch('/admin/api/secrets/unset', {
+          method: 'POST',
+          body: JSON.stringify({ key: key }),
+        });
+        if (!res || !res.ok) {
+          alert('Could not clear: ' + ((res && res.error) || 'unknown'));
+          return;
+        }
+        if (res.restart_required) {
+          alert('Cleared. This variable requires a workflow restart to take full effect.');
+        }
+        loadSecrets();
+      } catch (e) {
+        alert('Failed: ' + (e.message || e));
       }
     }
 

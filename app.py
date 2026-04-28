@@ -47,6 +47,12 @@ import sys
 import json
 import html as html_module
 
+# Load admin-managed .env file into os.environ before anything else
+# reads from the environment. Replit Secrets / shell exports always
+# win — the .env file only fills in values that aren't already set.
+import env_manager as _env_manager
+_env_manager.load_env_file_into_environ()
+
 # Slug shape for AI-generated pages: lowercase alphanumerics + hyphens,
 # 1–200 chars, must start with an alphanumeric. Defined at module scope
 # because it's used in two places: prompt-time validation when listing
@@ -21018,6 +21024,85 @@ def admin_stripe_recent_checkouts():
             "sessions": [],
             "count": 0,
         })
+
+
+# =============================================================
+# ADMIN: SECRETS / .env MANAGER
+# =============================================================
+# Routes that back the admin "Secrets" tab. Lets the operator see
+# which env vars the app cares about, which are populated, and set
+# any that aren't — without ever exposing the value (sensitive vars
+# are masked to •••• + last 4 chars).
+#
+# Source-of-truth precedence: Replit Secrets > local .env file.
+# Writes always go to the .env file. If a Replit Secret is currently
+# providing a key, the route REJECTS the write with an explanatory
+# error — overwriting silently would no-op since the loader doesn't
+# override already-set vars.
+# =============================================================
+
+@app.route("/admin/api/secrets/status", methods=["GET"])
+@admin_required
+def admin_secrets_status():
+    """Return the full list of known env vars + their current state.
+    Sensitive values are NEVER returned in clear — only as
+    ``••••XXXX`` (last 4 chars). Non-sensitive config (URLs, emails,
+    flags) is returned in full so the admin can verify the value."""
+    try:
+        return jsonify({"ok": True, "rows": _env_manager.get_status()})
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
+
+
+@app.route("/admin/api/secrets/set", methods=["POST"])
+@admin_required
+def admin_secrets_set():
+    """Set a single whitelisted env var. Body: {key, value}.
+    Writes to the local .env file and updates os.environ so the
+    running process sees the new value immediately. Some vars
+    (FLASK_SECRET_KEY, SENTRY_DSN, anything with restart=True in the
+    KNOWN_VARS table) won't take full effect until the workflow
+    restarts — the response includes a `restart_required` flag so
+    the UI can warn the admin."""
+    body = request.get_json(silent=True) or {}
+    key = (body.get("key") or "").strip()
+    value = body.get("value", "")
+    if not key:
+        return jsonify({"ok": False, "error": "Missing 'key'."}), 400
+    try:
+        row = _env_manager.set_var(key, value)
+        return jsonify({
+            "ok": True,
+            "row": row,
+            "restart_required": bool(row.get("restart")),
+        })
+    except _env_manager.EnvManagerError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
+
+
+@app.route("/admin/api/secrets/unset", methods=["POST"])
+@admin_required
+def admin_secrets_unset():
+    """Remove a single whitelisted env var from the local .env file
+    and from os.environ. Body: {key}. Cannot unset Replit Secrets
+    (returns 400 with an explanation)."""
+    body = request.get_json(silent=True) or {}
+    key = (body.get("key") or "").strip()
+    if not key:
+        return jsonify({"ok": False, "error": "Missing 'key'."}), 400
+    try:
+        row = _env_manager.unset_var(key)
+        return jsonify({
+            "ok": True,
+            "row": row,
+            "restart_required": bool(row.get("restart")),
+        })
+    except _env_manager.EnvManagerError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
 
 
 # --------------- Drag-and-Drop Reorder ---------------

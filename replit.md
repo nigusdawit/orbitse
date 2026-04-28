@@ -1001,6 +1001,48 @@ forbids deleting products that have associated charges. New code lives in
 `stripe_settings.py`, `stripe_sync.py`, and the existing `stripe_client.py` (made
 mode-aware). Tests in `tests/test_admin_stripe.py` (32 tests, all mocked SDK).
 
+### Admin Secrets Tab (April 2026)
+Sidebar tab **Secrets** (after Stripe) lets the operator inspect and manage
+every env var the app cares about — without ever exposing secret values.
+
+**View.** A curated whitelist of ~29 vars (from `.env.example`) is shown
+grouped by category (Database, Admin access, AI providers, Email, SMS,
+Stripe live/test, Voice, Reviews, Observability, VELO Master). Each row
+carries a level chip (Required / Recommended / blank=Optional), a status
+chip (`✓ Replit Secret`, `✓ .env`, or `✗ Not set`), and a one-line
+description with an optional "Get key →" link to the provider dashboard.
+**Sensitive values are masked to `••••XXXX`** (last 4 chars only) and
+NEVER returned in clear by any route — non-sensitive config (URLs,
+emails, phone numbers, plain flags) is shown in full so the admin can
+verify the value at a glance.
+
+**Set / unset.** Clicking *Set* / *Update* opens a modal with a masked
+password input (toggleable to plaintext while typing) plus a warning
+banner for vars that need a workflow restart to take full effect
+(`FLASK_SECRET_KEY`, `SENTRY_DSN`, `VELO_*`, `DATABASE_URL`,
+`FORCE_SECURE_COOKIES`). Writes go to a local **`.env`** file (gitignored)
+through `env_manager.set_var()` — atomic write via `tempfile` +
+`os.replace` with `0o600` perms — and `os.environ` is updated in-process
+so the running worker sees the new value immediately.
+
+**Replit Secrets always win.** At app startup `env_manager.load_env_file_into_environ()`
+fills `os.environ` from `.env` **only** for keys that are not already set,
+so a Replit Secret (or shell-exported var) shadows the local `.env` value.
+The set/unset routes detect this and refuse with an explanatory error
+("`X` is currently provided by Replit Secrets and cannot be overridden
+from the .env file. Update or remove it in the Replit Secrets pane
+first.") — silently writing to `.env` would otherwise be a no-op and
+look like a bug.
+
+**Backed by 3 routes** under `/admin/api/secrets/*`: `GET status`,
+`POST set`, `POST unset`. All `@admin_required`; POSTs go through the
+global CSRF middleware. Module: `env_manager.py` (whitelist + parser +
+atomic writer + status helpers, ~450 lines, no new dependency — rolled
+its own minimal `.env` parser/writer to avoid pulling in `python-dotenv`).
+Tests: `tests/test_env_manager.py` (40 unit tests, tmp-file based) and
+`tests/test_admin_secrets.py` (12 route tests covering auth, CSRF,
+shape, masking guarantee, Replit-Secret rejection).
+
 ### CDN Dependencies
 - Google Fonts (Playfair Display, DM Sans, plus dynamic fonts via Theme Editor)
 - Lucide Icons
