@@ -1044,24 +1044,53 @@ through `env_manager.set_var()` — atomic write via `tempfile` +
 `os.replace` with `0o600` perms — and `os.environ` is updated in-process
 so the running worker sees the new value immediately.
 
-**Replit Secrets always win.** At app startup `env_manager.load_env_file_into_environ()`
-fills `os.environ` from `.env` **only** for keys that are not already set,
-so a Replit Secret (or shell-exported var) shadows the local `.env` value.
-The set/unset routes detect this and refuse with an explanatory error
-("`X` is currently provided by Replit Secrets and cannot be overridden
-from the .env file. Update or remove it in the Replit Secrets pane
-first.") — silently writing to `.env` would otherwise be a no-op and
-look like a bug.
+**Host environment wins by default.** At app startup
+`env_manager.load_env_file_into_environ()` fills `os.environ` from `.env`
+**only** for keys that are not already set, so a Replit Secret (or
+shell-exported var, Heroku Config Var, etc.) shadows the local `.env`
+value. The set/unset routes detect this and reject with an explanatory
+error ("`X` is currently provided by the host environment. Either remove
+it from the Replit Secrets pane first, or re-submit with
+`force_override=true` to override the host value with one stored in the
+local `.env` file.") — silently writing to `.env` would otherwise be a
+no-op and look like a bug.
+
+**Per-key overrides (April 2026).** When the host owns a value the admin
+needs to change *without* touching the platform's secret pane (e.g.
+trying a different OpenAI key for an experiment, swapping an admin email
+for a staff hand-off), the Secrets row exposes a yellow **Override**
+button. Confirming it sends `force_override=true` to `set_var`, which:
+(a) snapshots the host's current value into an in-memory dict
+(`_host_shadowed_values`) so it can be restored later, (b) records the
+key in a sibling **`.env.overrides`** file (newline-delimited, atomic
+write, `0o600`), and (c) writes the new value into `.env` AND
+`os.environ` immediately. On every subsequent loader call (i.e. every
+restart) the override pass re-snapshots whatever the host currently has
+and forces the `.env` value back into `os.environ`. Clicking the row's
+**Restore host** button calls `unset_var`, which drops the `.env` entry,
+removes the override flag (deleting the file when empty), and puts the
+host's snapshotted value back into `os.environ`. The chip on overridden
+rows turns amber (`⚠ .env (overriding host)`) so an operator skimming
+the tab can immediately see which keys have been quietly diverted from
+the platform's value. Status rows expose two new booleans —
+`override_active` (key is in the persisted override set) and
+`host_shadowed` (a host value is sitting underneath) — for UI use and
+test assertions.
 
 **Backed by 3 routes** under `/admin/api/secrets/*`: `GET status`,
-`POST set`, `POST unset`. All `@admin_required`; POSTs go through the
-global CSRF middleware. Module: `env_manager.py` (whitelist + parser +
-atomic writer + status helpers, ~450 lines, no new dependency — rolled
-its own minimal `.env` parser/writer to avoid pulling in `python-dotenv`).
-Tests: `tests/test_env_manager.py` (43 unit tests, tmp-file based,
-including `TestShadowedReplitSecret`) and `tests/test_admin_secrets.py`
-(14 route tests covering auth, CSRF, shape, masking guarantee,
-Replit-Secret rejection, and platform-field reporting).
+`POST set` (now accepting optional `force_override`), `POST unset`.
+All `@admin_required`; POSTs go through the global CSRF middleware.
+Module: `env_manager.py` (whitelist + parser + atomic writer + override
+store + status helpers, no new dependency — rolled its own minimal
+`.env` parser/writer to avoid pulling in `python-dotenv`). Tests:
+`tests/test_env_manager.py` (43 unit tests, tmp-file based, including
+`TestShadowedReplitSecret`) and `tests/test_admin_secrets.py` (19 route
+tests — adds `TestOverride`'s 5 cases: force-override write succeeds,
+default-false still rejects with the new escape-hatch error, clear
+restores the host value + drops the source back to `replit_secret`,
+override flag survives a simulated restart by re-running the loader,
+and the `.env.overrides` file is removed entirely when the last
+override is cleared).
 
 ### CDN Dependencies
 - Google Fonts (Playfair Display, DM Sans, plus dynamic fonts via Theme Editor)

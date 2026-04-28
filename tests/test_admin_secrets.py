@@ -54,13 +54,20 @@ def _csrf_headers(client):
 
 @pytest.fixture
 def tmp_env(tmp_path, monkeypatch):
-    """Point env_manager at a fresh tmp .env file and clean up the
-    handful of os.environ keys these tests mutate, so a passing test
-    doesn't leave the global env in a weird state for the next one."""
+    """Point env_manager at a fresh tmp .env file (and tmp overrides
+    file) and clean up the handful of os.environ keys these tests
+    mutate, so a passing test doesn't leave the global env in a
+    weird state for the next one."""
     path = tmp_path / ".env"
+    overrides_path = tmp_path / ".env.overrides"
     monkeypatch.setattr(env_manager, "ENV_FILE_PATH", str(path))
+    monkeypatch.setattr(env_manager, "OVERRIDES_PATH", str(overrides_path))
     saved_keys = set(env_manager._env_file_keys)
+    saved_overrides = set(env_manager._overrides)
+    saved_shadowed = dict(env_manager._host_shadowed_values)
     env_manager._env_file_keys = set()
+    env_manager._overrides = set()
+    env_manager._host_shadowed_values = {}
     touched = (
         "PUBLIC_BASE_URL", "ADMIN_EMAIL", "ADMIN_PHONE",
         "RESEND_FROM_EMAIL", "OPENAI_API_KEY", "BRAVE_SEARCH_API_KEY",
@@ -73,6 +80,8 @@ def tmp_env(tmp_path, monkeypatch):
     yield path
 
     env_manager._env_file_keys = saved_keys
+    env_manager._overrides = saved_overrides
+    env_manager._host_shadowed_values = saved_shadowed
     for k, v in saved_env.items():
         if v is None:
             os.environ.pop(k, None)
@@ -327,3 +336,199 @@ class TestSetUnsetRoundTrip:
             assert os.environ["ADMIN_EMAIL"] == "from-replit@example.test"
         finally:
             os.environ.pop("ADMIN_EMAIL", None)
+
+
+# ---------------------------------------------------------------------------
+# Per-key overrides — admin opts in to .env-wins for individual keys.
+# ---------------------------------------------------------------------------
+
+class TestOverride:
+    """The override mechanism lets the admin replace a host-managed
+    value with one from the local .env file. Without the explicit
+    opt-in flag, attempts to write a shadowed key are rejected (see
+    TestSetUnsetRoundTrip.test_set_rejects_replit_secret_shadowed_key)."""
+
+    def test_force_override_allows_writing_shadowed_key(self, client, tmp_env):
+        """With force_override=true, a host-shadowed key can be
+        overwritten — the .env value goes into os.environ
+        immediately and the override flag is persisted."""
+        _require_admin_login(client)
+        os.environ["ADMIN_EMAIL"] = "from-host@example.test"
+        try:
+            headers = _csrf_headers(client)
+            r = client.post(
+                "/admin/api/secrets/set",
+                data=(
+                    '{"key": "ADMIN_EMAIL", "value": "overridden@example.test", '
+                    '"force_override": true}'
+                ),
+                headers=headers,
+            )
+            assert r.status_code == 200, r.get_data(as_text=True)
+            body = r.get_json()
+            assert body["ok"] is True
+            assert body["row"]["override_active"] is True
+            assert body["row"]["host_shadowed"] is True
+            assert body["row"]["source"] == "env_file"
+            # Process now sees the .env value.
+            assert os.environ["ADMIN_EMAIL"] == "overridden@example.test"
+            # Persistence: both the .env file AND the overrides flag file.
+            assert env_manager._parse_env_file(str(tmp_env)) == {"ADMIN_EMAIL": "overridden@example.test"}
+            assert env_manager.is_overridden("ADMIN_EMAIL") is True
+            overrides_path = tmp_env.parent / ".env.overrides"
+            assert overrides_path.exists()
+            assert "ADMIN_EMAIL" in overrides_path.read_text()
+        finally:
+            os.environ.pop("ADMIN_EMAIL", None)
+
+    def test_force_override_default_false_still_rejects(self, client, tmp_env):
+        """Without the flag (or with force_override=false), a
+        host-shadowed write must still be rejected with a 400 — and
+        the error message should now also mention force_override
+        as the escape hatch."""
+        _require_admin_login(client)
+        os.environ["ADMIN_EMAIL"] = "from-host@example.test"
+        try:
+            headers = _csrf_headers(client)
+            r = client.post(
+                "/admin/api/secrets/set",
+                data=(
+                    '{"key": "ADMIN_EMAIL", "value": "x@example.test", '
+                    '"force_override": false}'
+                ),
+                headers=headers,
+            )
+            assert r.status_code == 400
+            body = r.get_json()
+            assert body["ok"] is False
+            # Error mentions the override escape hatch.
+            assert "force_override" in body["error"]
+            # Host value untouched.
+            assert os.environ["ADMIN_EMAIL"] == "from-host@example.test"
+            # Override flag NOT set.
+            assert env_manager.is_overridden("ADMIN_EMAIL") is False
+        finally:
+            os.environ.pop("ADMIN_EMAIL", None)
+
+    def test_unset_overridden_key_restores_host_value(self, client, tmp_env):
+        """Clearing an overridden key removes the .env entry, drops
+        the override flag, and restores the host's original value
+        to os.environ. After clearing, source goes back to
+        ``replit_secret`` (host wins again)."""
+        _require_admin_login(client)
+        os.environ["ADMIN_EMAIL"] = "from-host@example.test"
+        try:
+            headers = _csrf_headers(client)
+            # Step 1: override.
+            r1 = client.post(
+                "/admin/api/secrets/set",
+                data=(
+                    '{"key": "ADMIN_EMAIL", "value": "overridden@example.test", '
+                    '"force_override": true}'
+                ),
+                headers=headers,
+            )
+            assert r1.status_code == 200
+            assert os.environ["ADMIN_EMAIL"] == "overridden@example.test"
+
+            # Step 2: clear.
+            r2 = client.post(
+                "/admin/api/secrets/unset",
+                data='{"key": "ADMIN_EMAIL"}',
+                headers=_csrf_headers(client),
+            )
+            assert r2.status_code == 200, r2.get_data(as_text=True)
+            body = r2.get_json()
+            assert body["ok"] is True
+            # Override gone, host value restored, source back to replit_secret.
+            assert env_manager.is_overridden("ADMIN_EMAIL") is False
+            assert os.environ["ADMIN_EMAIL"] == "from-host@example.test"
+            assert body["row"]["source"] == "replit_secret"
+            assert body["row"]["override_active"] is False
+            # .env file no longer contains the key.
+            assert env_manager._parse_env_file(str(tmp_env)) == {}
+            # Overrides file deleted on empty-set.
+            overrides_path = tmp_env.parent / ".env.overrides"
+            assert not overrides_path.exists()
+        finally:
+            os.environ.pop("ADMIN_EMAIL", None)
+
+    def test_override_persists_across_loader_restart(self, client, tmp_env):
+        """The override flag file survives a process restart: a
+        fresh ``load_env_file_into_environ`` call re-reads the flag
+        and applies the .env value over the host value."""
+        _require_admin_login(client)
+        os.environ["ADMIN_EMAIL"] = "from-host@example.test"
+        try:
+            headers = _csrf_headers(client)
+            r = client.post(
+                "/admin/api/secrets/set",
+                data=(
+                    '{"key": "ADMIN_EMAIL", "value": "overridden@example.test", '
+                    '"force_override": true}'
+                ),
+                headers=headers,
+            )
+            assert r.status_code == 200
+
+            # Simulate restart: blow away the in-memory state, reset
+            # os.environ to whatever the host would inject on startup,
+            # then re-run the loader.
+            env_manager._env_file_keys = set()
+            env_manager._overrides = set()
+            env_manager._host_shadowed_values = {}
+            os.environ["ADMIN_EMAIL"] = "from-host@example.test"
+
+            applied = env_manager.load_env_file_into_environ(str(tmp_env))
+            assert applied >= 1
+            # Override re-applied: .env value wins over host.
+            assert os.environ["ADMIN_EMAIL"] == "overridden@example.test"
+            assert env_manager.is_overridden("ADMIN_EMAIL") is True
+            # Host value snapshot rebuilt from the live host env.
+            assert env_manager._host_shadowed_values["ADMIN_EMAIL"] == "from-host@example.test"
+        finally:
+            os.environ.pop("ADMIN_EMAIL", None)
+
+    def test_unsetting_only_override_deletes_overrides_file(self, client, tmp_env):
+        """When the last override is cleared, the .env.overrides
+        file is removed entirely (rather than left as an empty
+        header-only file). Keeps the on-disk state tidy and means
+        operators can confirm "no overrides" by file absence."""
+        _require_admin_login(client)
+        os.environ["OPENAI_API_KEY"] = "sk-fromhost"
+        os.environ["BRAVE_SEARCH_API_KEY"] = "brave-fromhost"
+        try:
+            headers = _csrf_headers(client)
+            # Override two keys.
+            for k, v in (("OPENAI_API_KEY", "sk-overridden"),
+                         ("BRAVE_SEARCH_API_KEY", "brave-overridden")):
+                r = client.post(
+                    "/admin/api/secrets/set",
+                    json={"key": k, "value": v, "force_override": True},
+                    headers=_csrf_headers(client),
+                )
+                assert r.status_code == 200, r.get_data(as_text=True)
+            overrides_path = tmp_env.parent / ".env.overrides"
+            assert overrides_path.exists()
+
+            # Clear the first — file should still exist (one left).
+            r = client.post(
+                "/admin/api/secrets/unset",
+                json={"key": "OPENAI_API_KEY"},
+                headers=_csrf_headers(client),
+            )
+            assert r.status_code == 200
+            assert overrides_path.exists()
+            assert "BRAVE_SEARCH_API_KEY" in overrides_path.read_text()
+
+            # Clear the last — file gone.
+            r = client.post(
+                "/admin/api/secrets/unset",
+                json={"key": "BRAVE_SEARCH_API_KEY"},
+                headers=_csrf_headers(client),
+            )
+            assert r.status_code == 200
+            assert not overrides_path.exists()
+        finally:
+            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("BRAVE_SEARCH_API_KEY", None)

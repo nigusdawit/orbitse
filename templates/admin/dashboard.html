@@ -14166,6 +14166,10 @@ TO CUSTOMIZE THIS DASHBOARD:
         statusHtml = `<span style="font-size:0.7rem; padding:0.125rem 0.5rem; border-radius:9999px; font-weight:600; background:rgba(255,255,255,0.05); color:var(--admin-text-muted); border:1px solid var(--admin-border);">✗ Not set</span>`;
       } else if (r.source === 'replit_secret') {
         statusHtml = `<span style="font-size:0.7rem; padding:0.125rem 0.5rem; border-radius:9999px; font-weight:600; background:rgba(34,197,94,0.15); color:#86efac; border:1px solid rgba(34,197,94,0.35);">✓ ${_secretsEsc(_platformSecretLabel())}</span>`;
+      } else if (r.override_active) {
+        // Distinct chip so the operator can tell at a glance which
+        // .env-source rows are quietly shadowing a host-managed value.
+        statusHtml = `<span style="font-size:0.7rem; padding:0.125rem 0.5rem; border-radius:9999px; font-weight:600; background:rgba(245,158,11,0.18); color:#fcd34d; border:1px solid rgba(245,158,11,0.45);" data-testid="chip-secret-override-${r.key}">⚠ .env (overriding host)</span>`;
       } else {
         statusHtml = `<span style="font-size:0.7rem; padding:0.125rem 0.5rem; border-radius:9999px; font-weight:600; background:rgba(34,197,94,0.15); color:#86efac; border:1px solid rgba(34,197,94,0.35);">✓ .env</span>`;
       }
@@ -14184,14 +14188,24 @@ TO CUSTOMIZE THIS DASHBOARD:
         valueLine = `<div style="font-family:monospace; font-size:0.75rem; color:var(--admin-text); word-break:break-all;" data-testid="text-secret-value-${r.key}">${_secretsEsc(r.value)}</div>`;
       }
       // action buttons ------------------------------------------------
-      const lockedByReplit = r.set && r.source === 'replit_secret';
+      // Three states for a host-shadowed row:
+      //   1. Pure host shadow (locked) → "Override" button (opens
+      //      modal in override mode, requires explicit confirmation).
+      //   2. Already overridden       → normal Update / Clear buttons,
+      //      where Clear restores the host value.
+      //   3. .env-only                 → normal Update / Clear.
+      const hostShadowed = r.set && r.source === 'replit_secret';
       let actions;
-      if (lockedByReplit) {
-        actions = `<span style="font-size:0.7rem; color:var(--admin-text-muted); font-style:italic;" data-testid="text-secret-locked-${r.key}">${_secretsEsc(_platformLockedLabel())}</span>`;
+      if (hostShadowed) {
+        // Single "Override" button replacing the previous locked label.
+        // Shows a yellow/amber tone so the operator knows this is a
+        // weighty action (changes platform-managed behavior).
+        actions = `<button class="btn-secondary" style="font-size:0.75rem; padding:0.25rem 0.625rem; color:#fcd34d; border-color:rgba(245,158,11,0.35);" onclick="openSecretEditModal('${r.key}', true)" data-testid="button-secret-override-${r.key}">Override</button>`;
       } else {
         const setBtn = `<button class="btn-secondary" style="font-size:0.75rem; padding:0.25rem 0.625rem;" onclick="openSecretEditModal('${r.key}')" data-testid="button-secret-set-${r.key}">${r.set ? 'Update' : 'Set'}</button>`;
+        const clearLabel = r.override_active ? 'Restore host' : 'Clear';
         const unsetBtn = r.set
-          ? `<button class="btn-secondary" style="font-size:0.75rem; padding:0.25rem 0.625rem; color:#fca5a5;" onclick="unsetSecret('${r.key}')" data-testid="button-secret-unset-${r.key}">Clear</button>`
+          ? `<button class="btn-secondary" style="font-size:0.75rem; padding:0.25rem 0.625rem; color:#fca5a5;" onclick="unsetSecret('${r.key}')" data-testid="button-secret-unset-${r.key}">${clearLabel}</button>`
           : '';
         actions = setBtn + ' ' + unsetBtn;
       }
@@ -14224,15 +14238,36 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     // ---- Edit modal ------------------------------------------------
-    function openSecretEditModal(key) {
+    // ``overrideMode`` (optional) is true when the admin is overriding
+    // a host-managed value. We compute it implicitly from the row's
+    // current source if not passed, so callers don't have to.
+    function openSecretEditModal(key, overrideMode) {
       const row = _secretsState.rows.find(r => r.key === key);
       if (!row) return;
       _secretEditTarget = row;
-      document.getElementById('secret-edit-title').textContent = (row.set ? 'Update ' : 'Set ') + row.key;
+      // True iff we'll send force_override=true on submit (i.e. the
+      // value is currently coming from the host, OR the caller
+      // explicitly passed overrideMode=true). Stash on the target so
+      // submitSecretEditModal can read it without re-deriving.
+      _secretEditTarget._forceOverride = !!overrideMode || row.source === 'replit_secret';
+      const titlePrefix = _secretEditTarget._forceOverride
+        ? 'Override '
+        : (row.set ? 'Update ' : 'Set ');
+      document.getElementById('secret-edit-title').textContent = titlePrefix + row.key;
       document.getElementById('secret-edit-key').textContent = row.key;
       document.getElementById('secret-edit-description').textContent = row.description || '';
       const warning = document.getElementById('secret-edit-warning');
-      if (row.restart) {
+      // Override warning takes priority — it's the more important
+      // message ("you're shadowing a host value") and it's easy to
+      // miss the restart hint when you've just been told you're
+      // about to override something serious.
+      if (_secretEditTarget._forceOverride) {
+        const where = _secretsState.platform === 'replit'
+          ? 'Replit Secrets'
+          : "your hosting platform's environment configuration";
+        warning.style.display = 'block';
+        warning.textContent = `⚠ ${row.key} is currently provided by ${where}. Saving here writes a new value to the local .env file and FORCES it to win over the host value on every restart. The host value is preserved — you can restore it later by clicking "Restore host".`;
+      } else if (row.restart) {
         warning.style.display = 'block';
         warning.textContent = '⚠ Changes to this variable only take full effect after a workflow restart.';
       } else {
@@ -14266,9 +14301,13 @@ TO CUSTOMIZE THIS DASHBOARD:
       const errEl = document.getElementById('secret-edit-error');
       errEl.style.display = 'none';
       try {
+        const body = { key: _secretEditTarget.key, value: value };
+        // Only sent when the row is host-shadowed; backend ignores
+        // it on .env-only rows.
+        if (_secretEditTarget._forceOverride) body.force_override = true;
         const res = await _secretsFetch('/admin/api/secrets/set', {
           method: 'POST',
-          body: JSON.stringify({ key: _secretEditTarget.key, value: value }),
+          body: JSON.stringify(body),
         });
         if (!res || !res.ok) {
           errEl.textContent = (res && res.error) ? res.error : 'Could not save.';
@@ -14289,7 +14328,18 @@ TO CUSTOMIZE THIS DASHBOARD:
     async function unsetSecret(key) {
       const row = _secretsState.rows.find(r => r.key === key);
       if (!row) return;
-      if (!confirm(`Clear ${key} from the .env file?\n\nThis cannot be undone — you'll need to re-enter the value to restore it.`)) return;
+      // Different confirmation copy depending on whether we're
+      // clearing a plain .env value or restoring a host-managed one.
+      let confirmMsg;
+      if (row.override_active) {
+        const where = _secretsState.platform === 'replit'
+          ? 'Replit Secrets'
+          : 'your host environment';
+        confirmMsg = `Restore the host value for ${key}?\n\nThis removes your local override. The original value from ${where} will start winning again on the next restart.`;
+      } else {
+        confirmMsg = `Clear ${key} from the .env file?\n\nThis cannot be undone — you'll need to re-enter the value to restore it.`;
+      }
+      if (!confirm(confirmMsg)) return;
       try {
         const res = await _secretsFetch('/admin/api/secrets/unset', {
           method: 'POST',

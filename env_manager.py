@@ -16,6 +16,17 @@ Design
   in-app form is effectively a way to manage *missing* secrets in
   development without ever shadowing a real secret.
 
+* **Per-key overrides** opt out of that "host always wins" rule for
+  individual keys. When the admin saves a value with
+  ``force_override=True``, we (a) snapshot the host's current value
+  in memory so we can restore it on clear, (b) record the key in a
+  sibling ``.env.overrides`` file, and (c) the next loader pass
+  copies the .env value into ``os.environ`` even if the host had its
+  own value. Clearing the override removes the .env entry, drops the
+  flag, and restores the host value. Override flags persist across
+  restarts; the in-memory host snapshot is rebuilt on each loader
+  call from whatever the host currently has.
+
 * We REJECT writes for any key not on a whitelist. The whitelist is
   curated below from ``.env.example`` so the admin can't poke
   arbitrary process-wide variables.
@@ -34,6 +45,12 @@ from typing import Iterable
 # Path to the local .env file. Lives in the project root, beside this
 # module, and is git-ignored (see .gitignore).
 ENV_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
+# Sibling file listing keys (one per line) for which the .env value
+# should win over a host-provided value. Created on first override,
+# removed when empty. Plain text so an operator can audit / hand-edit
+# in an emergency.
+OVERRIDES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env.overrides")
 
 # ---------------------------------------------------------------------------
 # Curated whitelist of env vars the app cares about.
@@ -303,6 +320,89 @@ def _write_env_file_atomic(data: dict[str, str], path: str | None = None) -> Non
 # ``_classify_source`` returning ``replit_secret`` for shadowed keys.
 _env_file_keys: set[str] = set()
 
+# Per-key opt-in: keys in here have their .env value forced INTO
+# os.environ on every loader call, even when the host had its own
+# value. Persisted to disk in ``OVERRIDES_PATH`` so the opt-in
+# survives restarts. Mutated only via ``set_var(force_override=True)``
+# and ``unset_var`` (which clears the flag when called on an
+# overridden key).
+_overrides: set[str] = set()
+
+# In-memory snapshot of the host's value for each currently-overridden
+# key, captured at override time (or rebuilt on each loader call from
+# whatever the host currently has). Lets ``unset_var`` restore the
+# host's value when the admin clears an override. Never persisted to
+# disk — secrets stay in os.environ + .env, never duplicated elsewhere.
+_host_shadowed_values: dict[str, str] = {}
+
+
+def _load_overrides(path: str | None = None) -> set[str]:
+    """Read the override flag file. Returns an empty set if the file
+    doesn't exist or is unreadable. Each non-empty / non-comment line
+    that matches a known key is included; everything else is ignored
+    so a hand-edit typo never crashes startup."""
+    if path is None:
+        path = OVERRIDES_PATH
+    out: set[str] = set()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line in _KNOWN_BY_KEY:
+                    out.add(line)
+    except FileNotFoundError:
+        return set()
+    except OSError:
+        return set()
+    return out
+
+
+def _write_overrides_atomic(keys: set[str], path: str | None = None) -> None:
+    """Write the override flag file atomically. Empty set → delete
+    the file (no point keeping a header for nothing). Sorts keys for
+    stable diffs. Same tempfile + os.replace pattern as the .env
+    writer so a crash mid-write can't corrupt anything."""
+    if path is None:
+        path = OVERRIDES_PATH
+    if not keys:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+        return
+    lines = [
+        "# Per-key overrides for the in-app Secrets editor.",
+        "# Each key listed here has its .env value forced INTO os.environ on",
+        "# startup, even when the host environment also provides the same key.",
+        "# Managed by the admin Secrets tab — hand-edits are picked up on the",
+        "# next process restart.",
+        "",
+    ]
+    for key in sorted(keys):
+        lines.append(key)
+    body = "\n".join(lines) + "\n"
+
+    dirpath = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".env.overrides.", dir=dirpath)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(body)
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
 
 def load_env_file_into_environ(path: str | None = None) -> int:
     """Called once at app startup. Loads each KEY=VALUE from the
@@ -314,13 +414,33 @@ def load_env_file_into_environ(path: str | None = None) -> int:
     Only keys that were actually applied (i.e. were not already in
     ``os.environ``) get tracked in ``_env_file_keys``. Shadowed keys
     deliberately stay out of the set so ``_classify_source`` reports
-    them as ``replit_secret`` — see the ``_env_file_keys`` docstring."""
-    global _env_file_keys
+    them as ``replit_secret`` — see the ``_env_file_keys`` docstring.
+
+    **Override pass:** after the standard "host wins" pass, any key
+    listed in ``OVERRIDES_PATH`` has its .env value FORCED INTO
+    ``os.environ`` even if the host already had a value. The host's
+    pre-override value is snapshotted into ``_host_shadowed_values``
+    so ``unset_var`` can restore it when the admin clears the
+    override."""
+    global _env_file_keys, _overrides, _host_shadowed_values
     parsed = _parse_env_file(path)
+    # Re-read the override flag list on every call so a fresh process
+    # starts with whatever opt-ins the operator persisted last time.
+    _overrides = _load_overrides()
+    # Snapshot the host's current value for every overridden key
+    # BEFORE we overwrite it, so we can restore it on clear-override.
+    _host_shadowed_values = {k: os.environ[k] for k in _overrides if k in os.environ}
+
     applied: set[str] = set()
+    # Pass 1: standard host-wins behavior.
     for k, v in parsed.items():
         if k not in os.environ:
             os.environ[k] = v
+            applied.add(k)
+    # Pass 2: force overridden keys to use the .env value.
+    for k in _overrides:
+        if k in parsed:
+            os.environ[k] = parsed[k]
             applied.add(k)
     _env_file_keys = applied
     return len(applied)
@@ -379,6 +499,13 @@ def get_status() -> list[dict]:
         raw = os.environ.get(key, "")
         is_set = bool(raw)
         source = _classify_source(key)
+        # An override is "active" when the admin has opted this key
+        # in to .env-wins behavior. The chip color in the UI keys off
+        # ``source`` (still env_file vs replit_secret) but the
+        # override flag drives a "currently overriding host value"
+        # warning so the operator never forgets the host still has
+        # its own value sitting underneath.
+        is_override = key in _overrides
         row = {
             "key": key,
             "category": meta["category"],
@@ -393,6 +520,14 @@ def get_status() -> list[dict]:
             # Only show the clear value for explicitly non-sensitive
             # config (URLs, emails, phone numbers, plain flags).
             "value": raw if (is_set and not meta["sensitive"]) else "",
+            # True iff this key is in the persisted override flag set.
+            # When True, the .env value won over a host-provided value
+            # (or would, if the host also has a value for it).
+            "override_active": is_override,
+            # True iff a host-provided value is sitting underneath the
+            # current override. Lets the UI say "your platform also
+            # has a value for this — clear the override to use it".
+            "host_shadowed": is_override and key in _host_shadowed_values,
         }
         rows.append(row)
     rows.sort(key=lambda r: (r["category"], r["key"]))
@@ -404,7 +539,7 @@ class EnvManagerError(Exception):
     should map this to a 4xx response with .args[0] as the message."""
 
 
-def set_var(key: str, value: str) -> dict:
+def set_var(key: str, value: str, force_override: bool = False) -> dict:
     """Write ``key=value`` into the local .env file and refresh
     ``os.environ`` so the running process sees the new value
     immediately.
@@ -412,9 +547,13 @@ def set_var(key: str, value: str) -> dict:
     Validation:
     * ``key`` must be in the curated whitelist.
     * If a *Replit Secret* (or shell export) is currently providing
-      this key, REJECT — writing to .env wouldn't take effect because
-      ``load_env_file_into_environ`` won't override an already-set
-      var. Tell the caller to remove the Replit Secret first.
+      this key, REJECT unless ``force_override=True`` — writing to
+      .env wouldn't take effect on the next restart because the
+      loader's first pass would skip the key (host wins). The admin
+      can pass ``force_override=True`` to opt this key into the
+      override list so the .env value FORCES its way into
+      ``os.environ`` on every loader call. The host's value is
+      snapshotted in memory so ``unset_var`` can restore it later.
     * ``value`` must be a string ≤8KB and contain no NUL bytes.
     * Empty string is allowed (treat as 'set to empty', distinct from
       unset). Useful for FORCE_SECURE_COOKIES="" to disable.
@@ -428,20 +567,35 @@ def set_var(key: str, value: str) -> dict:
         raise EnvManagerError("Value contains NUL bytes.")
     if len(value) > 8192:
         raise EnvManagerError("Value too long (max 8KB).")
-    # Reject if a non-.env source (Replit Secret / shell) is currently
-    # shadowing this key — writing to .env would silently no-op.
+    # If a non-.env source (Replit Secret / shell) is currently
+    # shadowing this key, the caller MUST explicitly consent to
+    # overriding it — silent no-ops here would otherwise look like
+    # the save worked when in fact the host value would keep winning
+    # on the next restart.
     current_source = _classify_source(key)
-    if current_source == "replit_secret":
+    if current_source == "replit_secret" and not force_override:
         # Host-aware wording: only call out "Replit Secrets" when we're
         # actually running on Replit; otherwise refer generically to
         # the hosting platform (Heroku Config Vars, Railway, Fly,
         # Docker -e, systemd EnvironmentFile=, etc).
         where = "Replit Secrets pane" if is_replit_platform() else "your hosting platform's environment configuration"
         raise EnvManagerError(
-            f"{key} is currently provided by the host environment and cannot "
-            f"be overridden from the .env file. Update or remove it in "
-            f"{where} first, then set it here."
+            f"{key} is currently provided by the host environment. "
+            f"Either remove it from {where} first, or re-submit with "
+            f"force_override=true to override the host value with one "
+            f"stored in the local .env file."
         )
+
+    # Force-override path: snapshot the host's current value (only the
+    # FIRST snapshot wins so we keep the original even across
+    # subsequent override updates) and persist the opt-in flag so the
+    # behavior survives a restart.
+    if force_override and current_source == "replit_secret":
+        if key not in _host_shadowed_values:
+            _host_shadowed_values[key] = os.environ.get(key, "")
+        if key not in _overrides:
+            _overrides.add(key)
+            _write_overrides_atomic(_overrides)
 
     # Read current .env, merge, write atomically.
     data = _parse_env_file()
@@ -455,21 +609,33 @@ def set_var(key: str, value: str) -> dict:
 
 def unset_var(key: str) -> dict:
     """Remove ``key`` from the local .env file and from
-    ``os.environ`` (if it came from .env). If the key is currently
-    provided by a Replit Secret, REJECT — we can't delete a Replit
-    Secret from inside the app.
+    ``os.environ`` (if it came from .env).
+
+    Three cases:
+    * Pure host shadow (no override flag) → REJECT, since we can't
+      delete a host-provided value from inside the app. The error
+      message tells the admin to clear it in the platform's secret
+      pane.
+    * Currently overridden (key in ``_overrides``) → drop the .env
+      entry, drop the override flag, and RESTORE the host's
+      pre-override value to ``os.environ`` so the runtime goes back
+      to what a fresh start with no override would see.
+    * From the .env file → drop the .env entry and pop from
+      ``os.environ``.
 
     Returns the updated row from ``get_status()``."""
     if key not in _KNOWN_BY_KEY:
         raise EnvManagerError(f"Unknown key: {key!r}.")
     source = _classify_source(key)
-    if source == "replit_secret":
+    is_override = key in _overrides
+
+    if source == "replit_secret" and not is_override:
         where = "Replit Secrets pane" if is_replit_platform() else "your hosting platform's environment configuration"
         raise EnvManagerError(
             f"{key} is provided by the host environment, not the .env file. "
             f"Remove it from {where} to unset it."
         )
-    if source == "unset":
+    if source == "unset" and not is_override:
         # Idempotent: already unset.
         return _get_one_status(key)
 
@@ -477,8 +643,29 @@ def unset_var(key: str) -> dict:
     data.pop(key, None)
     _write_env_file_atomic(data)
     _env_file_keys.discard(key)
-    os.environ.pop(key, None)
+
+    if is_override:
+        # Drop the override flag and restore the host's value
+        # (if any) so behavior matches a fresh restart without
+        # an override.
+        _overrides.discard(key)
+        _write_overrides_atomic(_overrides)
+        host_val = _host_shadowed_values.pop(key, None)
+        if host_val:
+            os.environ[key] = host_val
+        else:
+            os.environ.pop(key, None)
+    else:
+        os.environ.pop(key, None)
     return _get_one_status(key)
+
+
+def is_overridden(key: str) -> bool:
+    """True iff ``key`` is in the persisted override flag set
+    (.env value forced over the host's). Public accessor for tests
+    and any caller that wants to introspect the flag without paying
+    for a full ``get_status()``."""
+    return key in _overrides
 
 
 def _get_one_status(key: str) -> dict:

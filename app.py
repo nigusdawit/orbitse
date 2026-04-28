@@ -21065,20 +21065,27 @@ def admin_secrets_status():
 @app.route("/admin/api/secrets/set", methods=["POST"])
 @admin_required
 def admin_secrets_set():
-    """Set a single whitelisted env var. Body: {key, value}.
-    Writes to the local .env file and updates os.environ so the
-    running process sees the new value immediately. Some vars
-    (FLASK_SECRET_KEY, SENTRY_DSN, anything with restart=True in the
-    KNOWN_VARS table) won't take full effect until the workflow
-    restarts — the response includes a `restart_required` flag so
-    the UI can warn the admin."""
+    """Set a single whitelisted env var. Body: ``{key, value,
+    force_override?: bool}``. Writes to the local .env file and
+    updates os.environ so the running process sees the new value
+    immediately. Some vars (FLASK_SECRET_KEY, SENTRY_DSN, anything
+    with restart=True in the KNOWN_VARS table) won't take full
+    effect until the workflow restarts — the response includes a
+    ``restart_required`` flag so the UI can warn the admin.
+
+    ``force_override`` (default False) lets the admin explicitly
+    overwrite a key currently provided by the host environment
+    (Replit Secrets / Heroku Config Vars / etc). Without it, the
+    request is rejected with a 400 explaining the host shadow — see
+    ``env_manager.set_var`` for the safety reasoning."""
     body = request.get_json(silent=True) or {}
     key = (body.get("key") or "").strip()
     value = body.get("value", "")
+    force_override = bool(body.get("force_override", False))
     if not key:
         return jsonify({"ok": False, "error": "Missing 'key'."}), 400
     try:
-        row = _env_manager.set_var(key, value)
+        row = _env_manager.set_var(key, value, force_override=force_override)
         return jsonify({
             "ok": True,
             "row": row,
