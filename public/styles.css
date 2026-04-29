@@ -713,18 +713,22 @@ html[data-nav-style="hidden_on_scroll"] .hero-nav.nav-hidden {
 }
 html[data-nav-style="hidden_on_scroll"] .hero-section { padding-top: 4.5rem; }
 
-/* hamburger: hide every nav child except the toggle button + brand mark.
-   The toggle button is added by applyPersonality() and reveals the hidden
-   nav children inside a dropdown (.hero-nav.nav-open exposes them). */
+/* hamburger: hide every nav child EXCEPT (a) the toggle button and (b) any
+   wrapper that contains the brand mark. The brand-mark detection uses
+   :has() because the actual DOM nests .logo-badge / .logo-mark inside a
+   wrapper <div class="flex items-center gap-md"> rather than placing them
+   as direct children of .hero-nav. The toggle button is appended by
+   applyPersonality() and reveals the hidden nav children inside a dropdown
+   (.hero-nav.nav-open exposes them). */
 html[data-nav-style="hamburger"] .hero-nav { position: relative; }
-html[data-nav-style="hamburger"] .hero-nav > *:not(.logo-badge):not(.logo-mark):not(.nav-hamburger-toggle) {
+html[data-nav-style="hamburger"] .hero-nav > *:not(:has(.logo-badge, .logo-mark)):not(.nav-hamburger-toggle) {
   display: none;
 }
 html[data-nav-style="hamburger"] .hero-nav.nav-open > * { display: flex; }
 html[data-nav-style="hamburger"] .hero-nav.nav-open {
   flex-wrap: wrap;
 }
-html[data-nav-style="hamburger"] .hero-nav.nav-open > *:not(.logo-badge):not(.logo-mark):not(.nav-hamburger-toggle) {
+html[data-nav-style="hamburger"] .hero-nav.nav-open > *:not(:has(.logo-badge, .logo-mark)):not(.nav-hamburger-toggle) {
   flex-basis: 100%;
   display: flex;
   justify-content: flex-end;
