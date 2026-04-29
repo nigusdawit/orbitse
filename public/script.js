@@ -4227,7 +4227,7 @@ const PERSONALITY_CHATBOT_PLACEMENTS = ['bottom_center', 'bottom_right', 'side_p
    previous mode's listeners and DOM additions before wiring the new
    mode. Without this every admin save would stack a new pointermove +
    scroll handler on top of the old ones. */
-const _personalityState = { teardowns: [] };
+const _personalityState = { teardowns: [], lastTheme: null };
 
 function _personalityTeardown() {
   while (_personalityState.teardowns.length) {
@@ -4237,6 +4237,11 @@ function _personalityTeardown() {
 
 function applyPersonality(theme) {
   if (!theme) return;
+  // Cache the last applied theme so initChatbot can re-trigger this
+  // function once it knows whether the chatbot is enabled — keeps the
+  // launcher / cmd-K wiring honest when chatSettings loads after
+  // applyPersonality on first paint.
+  _personalityState.lastTheme = theme;
   const html = document.documentElement;
   const pick = (val, allowed, def) => {
     const v = String(val || '').trim().toLowerCase();
@@ -4412,7 +4417,14 @@ function applyPersonality(theme) {
 
   // ---------------- Chatbot placement ----------------------------------
   const chatbot = document.getElementById('chatbot-container');
-  if (chatbot) {
+  // Skip launcher / cmd-K wiring entirely when the chatbot is disabled
+  // in admin → otherwise the visitor sees a "?" button (or hits ⌘K) and
+  // nothing opens. `chatSettings` is the global populated by initChatbot
+  // (~L4848). If it hasn't loaded yet we optimistically assume enabled
+  // and let initChatbot re-tear-down the launcher in its disabled branch.
+  const chatbotEnabled = (typeof chatSettings === 'undefined') ||
+                         (chatSettings && chatSettings.enabled !== false);
+  if (chatbot && chatbotEnabled) {
     chatbot.classList.remove('is-summoned');
     const oldLauncher = document.querySelector('.chatbot-launcher');
     if (oldLauncher) oldLauncher.remove();
@@ -4850,6 +4862,19 @@ async function initChatbot() {
 
     /* If chatbot is disabled, don't show anything — clean site */
     if (!chatSettings || !chatSettings.enabled) {
+      // Re-run applyPersonality now that chatSettings is known so the
+      // launcher / ⌘K handler that was optimistically wired during
+      // first-paint loadAndApplyTheme() gets torn back down. Without
+      // this, hidden_until_button and cmd_k modes would leave a dead
+      // "?" button (or an unresponsive shortcut) on a chat-disabled
+      // site. Safe even when no theme has loaded — applyPersonality
+      // bails on a falsy theme.
+      try {
+        if (_personalityState && _personalityState.lastTheme &&
+            typeof applyPersonality === 'function') {
+          applyPersonality(_personalityState.lastTheme);
+        }
+      } catch (_) { /* silent */ }
       return;
     }
 
