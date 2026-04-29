@@ -5849,6 +5849,41 @@ def _build_theme_vars_style():
         return ""
 
 
+def _build_active_font_link():
+    """Return a single `<link rel="stylesheet">` tag for the active
+    theme's serif+sans Google Fonts pair, so first paint already has
+    the right typefaces and the browser doesn't waste a roundtrip on
+    the previously-hardcoded Playfair+DM Sans @import.
+
+    Falls back to Playfair Display + DM Sans (the original defaults)
+    when the active theme leaves either field blank. Returns an empty
+    string on any failure — the page still renders, just with the
+    browser's default fonts until script.js's loadAndApplyTheme
+    eventually injects the link itself."""
+    try:
+        t = _resolve_active_theme() or {}
+        serif = (t.get("theme_font_serif") or "").strip() or "Playfair Display"
+        sans  = (t.get("theme_font_sans")  or "").strip() or "DM Sans"
+        # De-dup if both happen to be the same family (unusual but
+        # possible with a custom theme — saves one URL parameter).
+        names = [serif] if serif == sans else [serif, sans]
+        # Google Fonts API v2 expects "+" for spaces and accepts a
+        # weight range that covers our typography scale.
+        params = "&".join(
+            f"family={n.replace(' ', '+')}:wght@300;400;500;600;700"
+            for n in names
+        )
+        href = f"https://fonts.googleapis.com/css2?{params}&display=swap"
+        return (
+            '<link rel="preconnect" href="https://fonts.googleapis.com">'
+            '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+            f'<link id="theme-fonts-injected" rel="stylesheet" href="{href}">'
+        )
+    except Exception as e:
+        print(f"[serve_index] font link injection failed: {e}; serving without")
+        return ""
+
+
 def _build_preconnect_hints_html():
     """Return a block of <link rel="preconnect"> + <link rel="dns-prefetch">
     hints for the third-party origins this template loads from. Injected
@@ -6017,14 +6052,21 @@ def serve_index():
         # placeholder, so we fall back to inserting the style block right
         # before </head> (where it still wins over the linked stylesheet).
         theme_style = _build_theme_vars_style()
-        if theme_style:
+        # Build the active-pair font <link> alongside the theme vars so
+        # they're injected together. The link must come BEFORE the style
+        # block (browsers parse <head> top-down and a font-family rule
+        # only resolves once the @font-face declarations from the linked
+        # stylesheet are available).
+        font_link = _build_active_font_link()
+        injection = (font_link + theme_style) if (font_link or theme_style) else ""
+        if injection:
             if "<!-- THEME_VARS_INJECT -->" in html_content:
                 html_content = html_content.replace(
-                    "<!-- THEME_VARS_INJECT -->", theme_style
+                    "<!-- THEME_VARS_INJECT -->", injection
                 )
             else:
                 html_content = html_content.replace(
-                    "</head>", theme_style + "\n</head>", 1
+                    "</head>", injection + "\n</head>", 1
                 )
 
         # ----------------------------------------------------------------

@@ -12612,12 +12612,15 @@ TO CUSTOMIZE THIS DASHBOARD:
       loadChatbotSettings();
       loadChatHistory();
       loadForms();
-      loadTheme();
-      // Brand identity (Task #61): font pairs first so loadTheme() can
-      // sync the picker, then the gallery so it can outline the active
-      // palette. Both are best-effort — failures don't block the rest
-      // of the dashboard.
+      // Brand identity (Task #61): font pairs FIRST so the curated-pair
+      // <option> list is populated before loadTheme() tries to set the
+      // picker's value to the active pair (otherwise the right option
+      // wouldn't exist yet and the picker would fall back to "—"). Then
+      // the gallery so it can outline the freshly-loaded active palette.
+      // All three are best-effort — failures don't block the rest of
+      // the dashboard.
       loadFontPairs();
+      loadTheme();
       loadPaletteGallery();
       loadSeoSettings();
       loadBlogPosts();
