@@ -6501,22 +6501,15 @@ def _render_hero_fragment(mode):
     overlay = '<div class="hero-overlay"></div>'
 
     if mode == "split":
-        # Split mode wraps media + text in a 2-column grid container so
-        # the structure (not just CSS) reflects the side-by-side layout.
-        body = (
-            '<div class="hero-split-grid">'
-            '<div class="hero-split-media">'
-            '<div id="hero-bg" class="hero-bg"></div>'
-            f'{overlay}'
-            '</div>'
-            f'<div class="hero-split-text">{content}</div>'
-            '</div>'
-        )
+        # Split: .hero-section is the grid container (per CSS); children
+        # are direct grid items. Marker class .hero-mode-split lets the
+        # CSS target this variant.
         cls = "snap-section hero-section hero-mode-split"
         return (
             f'<section id="section-hero" class="{cls}" role="banner" '
             f'data-testid="section-hero" data-mode="{mode}">'
-            f'{nav}{body}{scroll}</section>'
+            f'<div id="hero-bg" class="hero-bg"></div>'
+            f'{overlay}{nav}{content}{scroll}</section>'
         )
 
     if mode == "text_mesh":
@@ -6544,8 +6537,9 @@ def _render_hero_fragment(mode):
         )
 
     if mode == "carousel":
-        # Carousel: server-injected pool list lives on #hero-bg as
-        # data-carousel-pool so the JS rotator has content on first paint.
+        # Carousel: pool URLs live on #section-hero as data-carousel-pool;
+        # applyHeroCarousel() reads them from the section so first paint
+        # has content without waiting on /api/gallery-cards.
         pool_rows = query_db(
             "SELECT image_url FROM gallery_cards "
             "WHERE image_url IS NOT NULL AND image_url != '' "
@@ -6560,8 +6554,8 @@ def _render_hero_fragment(mode):
         cls = "snap-section hero-section"
         return (
             f'<section id="section-hero" class="{cls}" role="banner" '
-            f'data-testid="section-hero" data-mode="{mode}">'
-            f'<div id="hero-bg" class="hero-bg"{pool_attr}></div>'
+            f'data-testid="section-hero" data-mode="{mode}"{pool_attr}>'
+            f'<div id="hero-bg" class="hero-bg"></div>'
             f'{overlay}{nav}{content}{scroll}</section>'
         )
 
