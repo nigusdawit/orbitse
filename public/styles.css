@@ -552,6 +552,14 @@ html[data-scroll-mode="smooth"] .snap-section {
   overflow: hidden;
 }
 
+/* Image mode is "uploaded image only" — hide the adjacent .logo-text
+   site name so the brand reads as a clean image-only mark (header,
+   footer, gallery, sphere — every .logo-text instance). Lockup mode
+   keeps both image + text intentionally. */
+.logo-mode-image .logo-text {
+  display: none !important;
+}
+
 /* Wordmark mode: hide the badge entirely; the adjacent .logo-text
    site-name already shows the wordmark. */
 .logo-mode-wordmark .logo-badge {
