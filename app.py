@@ -5903,11 +5903,16 @@ def _build_theme_vars_style():
             frame_inset = 0
         frame_inset = max(0, min(32, frame_inset))
         # Personality (Task #64 / item 11) — admin-picked progress-bar
-        # color. Empty / invalid value collapses to the brand accent so
-        # any rule reading var(--scroll-progress-color) always lands on
-        # a brand-coherent hue without a fallback chain in the CSS.
-        # _resolve_active_theme already validated the hex format.
+        # color. When empty we deliberately OMIT the variable so the
+        # CSS fallback chain (var(--scroll-progress-color, var(--color-
+        # accent))) tracks live accent changes after a save without
+        # needing a full reload. Only emit when the admin set a custom
+        # hex. _resolve_active_theme already validated the format.
         scroll_progress_color = (t.get("theme_scroll_progress_color") or "").strip()
+        progress_color_decl = (
+            f"--scroll-progress-color:{scroll_progress_color};"
+            if scroll_progress_color else ""
+        )
         return (
             "<style id=\"theme-vars-injected\">:root{"
             f"--color-bg:{bg};"
@@ -5931,9 +5936,10 @@ def _build_theme_vars_style():
             f"--space-scale:{density_scale};"
             f"--section-frame-inset:{frame_inset}px;"
             # Personality (Task #64 / item 11) — scroll-progress bar color.
-            # Empty resolver value falls back to the brand accent so the bar
-            # always paints in a brand-coherent hue without an extra picker.
-            f"--scroll-progress-color:{scroll_progress_color or accent};"
+            # Only emitted when admin set a custom hex; otherwise the CSS
+            # rule's var(--scroll-progress-color, var(--color-accent))
+            # fallback tracks live accent updates without a page reload.
+            f"{progress_color_decl}"
             "}</style>"
         )
     except Exception as e:
