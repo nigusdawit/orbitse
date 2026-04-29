@@ -4029,6 +4029,19 @@ async function loadAndApplyTheme() {
        gallery images into the hero bg.
        ---------------------------------------------------------------- */
     applyLayoutRhythm(theme);
+
+    /* ----------------------------------------------------------------
+       Personality controls (Task #64 / items 10, 11, 14, 15).
+       Server already mirrored data-cursor-mode / data-scroll-progress /
+       data-nav-style / data-chatbot-placement onto <html> for first
+       paint. Re-apply here so live admin saves swap cursor, progress
+       bar, nav style, and chatbot placement without a page reload —
+       and so DOM-injected helpers (cursor follower, scroll bar,
+       hamburger toggle, chatbot launcher) get created/destroyed and
+       their listeners (pointermove, scroll, ⌘K) attach/detach on each
+       mode switch instead of stacking up.
+       ---------------------------------------------------------------- */
+    applyPersonality(theme);
   } catch (e) { /* silent */ }
 }
 
@@ -4190,6 +4203,260 @@ function applyHeroCarousel(enabled) {
     if (pool.length) start(pool);
   }, 1500);
 }
+
+/* -----------------------------------------------------------------------
+   Personality helper (Task #64 / items 10, 11, 14, 15)
+   -----------------------------------------------------------------------
+   Owns the four personality knobs (cursor, scroll progress, nav style,
+   chatbot placement). Mirrors them onto data-* attrs on <html> for the
+   CSS variants in styles.css §2f, lazy-creates / removes the supporting
+   DOM (#cursor-follower, #scroll-progress-bar, .nav-hamburger-toggle,
+   .chatbot-launcher), and binds / unbinds the listeners (pointermove,
+   scroll, ⌘K) on every reload so a live admin save can switch modes
+   without leaking handlers.
+
+   Critical: the public site uses .landing-container as its scroll
+   source (height:100vh; overflow:auto), NOT window — so all scroll
+   math here listens on .landing-container with a window fallback for
+   the rare paths (admin embed, error page) that lack the container.
+----------------------------------------------------------------------- */
+const PERSONALITY_CURSOR_MODES   = ['native', 'dot', 'magnetic'];
+const PERSONALITY_NAV_STYLES     = ['floating_glass', 'sticky', 'hamburger', 'hidden_on_scroll', 'side_rail'];
+const PERSONALITY_CHATBOT_PLACEMENTS = ['bottom_center', 'bottom_right', 'side_panel', 'cmd_k', 'hidden_until_button'];
+/* Single shared bag of detach-callbacks so a re-apply tears down the
+   previous mode's listeners and DOM additions before wiring the new
+   mode. Without this every admin save would stack a new pointermove +
+   scroll handler on top of the old ones. */
+const _personalityState = { teardowns: [] };
+
+function _personalityTeardown() {
+  while (_personalityState.teardowns.length) {
+    try { _personalityState.teardowns.pop()(); } catch (e) { /* silent */ }
+  }
+}
+
+function applyPersonality(theme) {
+  if (!theme) return;
+  const html = document.documentElement;
+  const pick = (val, allowed, def) => {
+    const v = String(val || '').trim().toLowerCase();
+    return allowed.includes(v) ? v : def;
+  };
+  const cursorMode  = pick(theme.theme_cursor_mode,       PERSONALITY_CURSOR_MODES,         'native');
+  const navStyle    = pick(theme.theme_nav_style,         PERSONALITY_NAV_STYLES,           'floating_glass');
+  const chatPlace   = pick(theme.theme_chatbot_placement, PERSONALITY_CHATBOT_PLACEMENTS,   'bottom_center');
+  const progressOn  = !!theme.theme_scroll_progress;
+  const progressCol = (theme.theme_scroll_progress_color || '').trim();
+
+  html.setAttribute('data-cursor-mode',       cursorMode);
+  html.setAttribute('data-nav-style',         navStyle);
+  html.setAttribute('data-chatbot-placement', chatPlace);
+  html.setAttribute('data-scroll-progress',   progressOn ? '1' : '0');
+  // Empty value falls back to var(--color-accent) via the CSS var
+  // declaration; we only override --scroll-progress-color when the
+  // admin actually picked a custom color so the brand accent change
+  // propagates automatically when no override is set.
+  if (progressCol) {
+    html.style.setProperty('--scroll-progress-color', progressCol);
+  } else {
+    html.style.removeProperty('--scroll-progress-color');
+  }
+
+  // Drop every previous mode's DOM additions + listeners before we
+  // re-wire. Idempotent: empty teardown bag is a no-op.
+  _personalityTeardown();
+
+  // ---------------- Cursor follower ------------------------------------
+  if (cursorMode === 'dot' || cursorMode === 'magnetic') {
+    let dot = document.getElementById('cursor-follower');
+    if (!dot) {
+      dot = document.createElement('div');
+      dot.id = 'cursor-follower';
+      document.body.appendChild(dot);
+    }
+    const isMagnetic = cursorMode === 'magnetic';
+    const lerp = isMagnetic ? 0.18 : 0.4;
+    let tx = 0, ty = 0, x = 0, y = 0, raf = null;
+    const move = (e) => {
+      tx = e.clientX;
+      ty = e.clientY;
+      if (!raf) raf = requestAnimationFrame(tick);
+    };
+    const tick = () => {
+      raf = null;
+      x += (tx - x) * lerp;
+      y += (ty - y) * lerp;
+      dot.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+      if (Math.abs(tx - x) > 0.5 || Math.abs(ty - y) > 0.5) {
+        raf = requestAnimationFrame(tick);
+      }
+    };
+    document.addEventListener('pointermove', move, { passive: true });
+    // Magnetic mode grows the dot when hovering interactive elements.
+    let hoverEl = null;
+    const overSel = 'a, button, [role="button"], input, textarea, select, [data-interactive]';
+    const onOver = (e) => {
+      const t = e.target.closest && e.target.closest(overSel);
+      if (t && t !== hoverEl) {
+        hoverEl = t;
+        if (isMagnetic) dot.classList.add('is-hover');
+      }
+    };
+    const onOut = (e) => {
+      if (!e.relatedTarget || !e.relatedTarget.closest || !e.relatedTarget.closest(overSel)) {
+        hoverEl = null;
+        dot.classList.remove('is-hover');
+      }
+    };
+    if (isMagnetic) {
+      document.addEventListener('pointerover', onOver, { passive: true });
+      document.addEventListener('pointerout',  onOut,  { passive: true });
+    }
+    _personalityState.teardowns.push(() => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerover', onOver);
+      document.removeEventListener('pointerout',  onOut);
+      if (raf) { cancelAnimationFrame(raf); raf = null; }
+      dot.classList.remove('is-hover');
+      // Park the dot off-screen so it doesn't flash at (0,0) if the
+      // admin flips back to dot/magnetic later.
+      dot.style.transform = 'translate3d(-100px, -100px, 0)';
+    });
+  }
+
+  // ---------------- Scroll-progress bar --------------------------------
+  if (progressOn) {
+    let bar = document.getElementById('scroll-progress-bar');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'scroll-progress-bar';
+      document.body.appendChild(bar);
+    }
+    // The visible scroller is .landing-container (overflow:auto, h:100vh).
+    // window/scrollY only updates on the rare pages without it.
+    const scroller = document.querySelector('.landing-container');
+    const target   = scroller || window;
+    const update = () => {
+      let scrolled, max;
+      if (scroller) {
+        scrolled = scroller.scrollTop;
+        max = Math.max(1, scroller.scrollHeight - scroller.clientHeight);
+      } else {
+        scrolled = window.pageYOffset || document.documentElement.scrollTop || 0;
+        max = Math.max(1, (document.documentElement.scrollHeight || 0) - window.innerHeight);
+      }
+      const pct = Math.max(0, Math.min(100, (scrolled / max) * 100));
+      bar.style.width = pct + '%';
+    };
+    target.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update, { passive: true });
+    update();
+    _personalityState.teardowns.push(() => {
+      target.removeEventListener('scroll', update);
+      window.removeEventListener('resize', update);
+      bar.style.width = '0';
+    });
+  }
+
+  // ---------------- Nav style ------------------------------------------
+  const nav = document.querySelector('.hero-nav');
+  if (nav) {
+    // Always reset transient classes/buttons from prior modes so
+    // cycling through nav styles doesn't leave stale UI.
+    nav.classList.remove('nav-hidden', 'nav-open');
+    const oldToggle = nav.querySelector('.nav-hamburger-toggle');
+    if (oldToggle) oldToggle.remove();
+
+    if (navStyle === 'hamburger') {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'nav-hamburger-toggle';
+      btn.setAttribute('aria-label', 'Toggle navigation');
+      btn.setAttribute('data-testid', 'button-nav-hamburger');
+      btn.innerHTML = '☰';
+      btn.addEventListener('click', () => {
+        nav.classList.toggle('nav-open');
+        btn.innerHTML = nav.classList.contains('nav-open') ? '✕' : '☰';
+      });
+      nav.appendChild(btn);
+      _personalityState.teardowns.push(() => {
+        btn.remove();
+        nav.classList.remove('nav-open');
+      });
+    }
+
+    if (navStyle === 'hidden_on_scroll') {
+      const scroller = document.querySelector('.landing-container');
+      const target = scroller || window;
+      let lastY = scroller ? scroller.scrollTop : (window.pageYOffset || 0);
+      const onScroll = () => {
+        const y = scroller ? scroller.scrollTop : (window.pageYOffset || 0);
+        const dy = y - lastY;
+        // Always show near the top so visitors never lose the brand mark.
+        if (y < 80) {
+          nav.classList.remove('nav-hidden');
+        } else if (dy > 4) {
+          nav.classList.add('nav-hidden');
+        } else if (dy < -4) {
+          nav.classList.remove('nav-hidden');
+        }
+        lastY = y;
+      };
+      target.addEventListener('scroll', onScroll, { passive: true });
+      _personalityState.teardowns.push(() => {
+        target.removeEventListener('scroll', onScroll);
+        nav.classList.remove('nav-hidden');
+      });
+    }
+  }
+
+  // ---------------- Chatbot placement ----------------------------------
+  const chatbot = document.getElementById('chatbot-container');
+  if (chatbot) {
+    chatbot.classList.remove('is-summoned');
+    const oldLauncher = document.querySelector('.chatbot-launcher');
+    if (oldLauncher) oldLauncher.remove();
+
+    if (chatPlace === 'cmd_k') {
+      const onKey = (e) => {
+        const isCmdK = (e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K');
+        if (isCmdK) {
+          e.preventDefault();
+          chatbot.classList.toggle('is-summoned');
+          if (chatbot.classList.contains('is-summoned')) {
+            const input = chatbot.querySelector('.chatbot-bar-input');
+            if (input) try { input.focus(); } catch (_) {}
+          }
+        } else if (e.key === 'Escape' && chatbot.classList.contains('is-summoned')) {
+          chatbot.classList.remove('is-summoned');
+        }
+      };
+      document.addEventListener('keydown', onKey);
+      _personalityState.teardowns.push(() => {
+        document.removeEventListener('keydown', onKey);
+        chatbot.classList.remove('is-summoned');
+      });
+    }
+
+    if (chatPlace === 'hidden_until_button') {
+      const launcher = document.createElement('button');
+      launcher.type = 'button';
+      launcher.className = 'chatbot-launcher';
+      launcher.setAttribute('aria-label', 'Open chat');
+      launcher.setAttribute('data-testid', 'button-chatbot-launcher');
+      launcher.innerHTML = '💬';
+      launcher.addEventListener('click', () => {
+        chatbot.classList.toggle('is-summoned');
+      });
+      document.body.appendChild(launcher);
+      _personalityState.teardowns.push(() => {
+        launcher.remove();
+        chatbot.classList.remove('is-summoned');
+      });
+    }
+  }
+}
+
 
 function loadGoogleFont(fontName) {
   if (!fontName) return;

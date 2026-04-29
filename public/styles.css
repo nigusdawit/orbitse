@@ -579,6 +579,294 @@ html[data-hero-layout="video"] .hero-section .hero-bg {
 
 
 /* =============================================================================
+   2f. PERSONALITY CONTROLS  (Task #64 / items 10, 11, 14, 15)
+   -----------------------------------------------------------------------------
+   Four small admin-controlled knobs that tweak how the public site
+   *feels* without changing colors, fonts, or copy:
+     - cursor mode      : native | dot | magnetic
+     - scroll-progress  : 0/1 (color via --scroll-progress-color)
+     - nav style        : floating_glass | sticky | hamburger
+                          | hidden_on_scroll | side_rail
+     - chatbot placement: bottom_center | bottom_right | side_panel
+                          | cmd_k | hidden_until_button
+   All variants key off data-* attrs on <html> emitted by serve_index +
+   re-applied by applyPersonality() on /api/theme reload, so a save in
+   the admin panel flips the look on every open public-site tab without
+   a reload.
+============================================================================= */
+
+/* ---- Cursor mode -------------------------------------------------------- */
+/* Custom dot follows the pointer. The dot is the same DOM element for both
+   `dot` and `magnetic`; magnetic just gets a slower lerp + grow-on-hover
+   handled in JS. The dot stays out of the layout (pointer-events:none) so
+   it can never block clicks even if z-index math goes sideways. */
+#cursor-follower {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;       /* center on the cursor coords */
+  border-radius: 50%;
+  background: var(--color-accent, #c9a96e);
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0;
+  transform: translate3d(-100px, -100px, 0);
+  transition: opacity 0.2s ease, width 0.18s var(--ease-active, ease),
+              height 0.18s var(--ease-active, ease),
+              margin 0.18s var(--ease-active, ease),
+              background 0.2s ease;
+  mix-blend-mode: difference;  /* stays visible on light + dark surfaces */
+  will-change: transform;
+}
+html[data-cursor-mode="dot"] #cursor-follower,
+html[data-cursor-mode="magnetic"] #cursor-follower { opacity: 1; }
+html[data-cursor-mode="dot"],
+html[data-cursor-mode="dot"]   * ,
+html[data-cursor-mode="magnetic"],
+html[data-cursor-mode="magnetic"] * { cursor: none !important; }
+/* Re-allow native caret in form fields so typing isn't broken. */
+html[data-cursor-mode="dot"] input,
+html[data-cursor-mode="dot"] textarea,
+html[data-cursor-mode="dot"] [contenteditable],
+html[data-cursor-mode="magnetic"] input,
+html[data-cursor-mode="magnetic"] textarea,
+html[data-cursor-mode="magnetic"] [contenteditable] { cursor: text !important; }
+/* Magnetic mode grows the dot when hovering an interactive element
+   (toggled by JS via .is-hover). */
+#cursor-follower.is-hover {
+  width: 36px;
+  height: 36px;
+  margin: -18px 0 0 -18px;
+  background: color-mix(in srgb, var(--color-accent, #c9a96e) 70%, transparent);
+}
+/* Touch / coarse-pointer devices: never show the custom cursor or hide
+   the native one. Mobile tap targets must keep the system cursor logic. */
+@media (hover: none), (pointer: coarse) {
+  #cursor-follower { display: none !important; }
+  html[data-cursor-mode="dot"],
+  html[data-cursor-mode="dot"]   *,
+  html[data-cursor-mode="magnetic"],
+  html[data-cursor-mode="magnetic"] * { cursor: auto !important; }
+}
+
+/* ---- Scroll-progress bar ----------------------------------------------- */
+/* Thin bar pinned to the very top of the viewport. Width is set inline
+   by applyPersonality()'s scroll listener; we never render width here so
+   first paint lands at 0% even before JS attaches. */
+#scroll-progress-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;                                 /* JS updates this */
+  height: 3px;
+  background: var(--scroll-progress-color, var(--color-accent, #c9a96e));
+  z-index: 100;                              /* above hero, below modals */
+  pointer-events: none;
+  transition: width 0.08s linear,
+              background 0.2s ease;
+  display: none;
+}
+html[data-scroll-progress="1"] #scroll-progress-bar { display: block; }
+
+/* ---- Nav style variants ------------------------------------------------- */
+/* floating_glass = default (existing .hero-nav rules apply, no override). */
+
+/* sticky: pin the nav to the top of the viewport with a frosted backdrop
+   so it stays visible while the visitor scrolls .landing-container. */
+html[data-nav-style="sticky"] .hero-nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 80;
+  background: rgba(var(--color-bg-rgb, 6 11 20) / 0.7);
+  backdrop-filter: blur(var(--glass-blur, 16px));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 16px));
+  border-bottom: 1px solid var(--glass-border, rgba(255,255,255,0.08));
+  padding: var(--space-md, 0.75rem) var(--space-xl, 1.5rem);
+  transition: transform var(--transition-medium, 0.35s) var(--ease-active, ease),
+              opacity var(--transition-medium, 0.35s) var(--ease-active, ease);
+}
+/* Push the hero content down so the now-fixed nav doesn't overlap. */
+html[data-nav-style="sticky"] .hero-section { padding-top: 4.5rem; }
+
+/* hidden_on_scroll: behaves like sticky on first paint, but JS adds the
+   .nav-hidden class while scrolling down and removes it while scrolling up. */
+html[data-nav-style="hidden_on_scroll"] .hero-nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 80;
+  background: rgba(var(--color-bg-rgb, 6 11 20) / 0.7);
+  backdrop-filter: blur(var(--glass-blur, 16px));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 16px));
+  border-bottom: 1px solid var(--glass-border, rgba(255,255,255,0.08));
+  padding: var(--space-md, 0.75rem) var(--space-xl, 1.5rem);
+  transform: translateY(0);
+  transition: transform var(--transition-medium, 0.35s) var(--ease-active, ease);
+}
+html[data-nav-style="hidden_on_scroll"] .hero-nav.nav-hidden {
+  transform: translateY(-110%);
+}
+html[data-nav-style="hidden_on_scroll"] .hero-section { padding-top: 4.5rem; }
+
+/* hamburger: hide every nav child except the toggle button + brand mark.
+   The toggle button is added by applyPersonality() and reveals the hidden
+   nav children inside a dropdown (.hero-nav.nav-open exposes them). */
+html[data-nav-style="hamburger"] .hero-nav { position: relative; }
+html[data-nav-style="hamburger"] .hero-nav > *:not(.logo-badge):not(.logo-mark):not(.nav-hamburger-toggle) {
+  display: none;
+}
+html[data-nav-style="hamburger"] .hero-nav.nav-open > * { display: flex; }
+html[data-nav-style="hamburger"] .hero-nav.nav-open {
+  flex-wrap: wrap;
+}
+html[data-nav-style="hamburger"] .hero-nav.nav-open > *:not(.logo-badge):not(.logo-mark):not(.nav-hamburger-toggle) {
+  flex-basis: 100%;
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-sm, 0.5rem);
+}
+.nav-hamburger-toggle {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--glass-border, rgba(255,255,255,0.18));
+  color: var(--color-text, #fff);
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0.5rem;
+  display: none;                             /* shown only in hamburger mode */
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  margin-left: auto;
+}
+.nav-hamburger-toggle:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+html[data-nav-style="hamburger"] .nav-hamburger-toggle { display: flex; }
+
+/* side_rail: vertical column of nav items pinned to the left edge. The
+   .hero-nav becomes a 3rem-wide rail; hero content gets a matching
+   padding-left so nothing slides under it. */
+html[data-nav-style="side_rail"] .hero-nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 80;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: center;
+  width: 3.5rem;
+  padding: var(--space-lg, 1rem) 0.25rem;
+  gap: var(--space-md, 0.75rem);
+  background: rgba(var(--color-bg-rgb, 6 11 20) / 0.85);
+  backdrop-filter: blur(var(--glass-blur, 16px));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 16px));
+  border-right: 1px solid var(--glass-border, rgba(255,255,255,0.08));
+}
+html[data-nav-style="side_rail"] .hero-section,
+html[data-nav-style="side_rail"] .landing-section {
+  padding-left: calc(3.5rem + var(--space-md, 0.75rem)) !important;
+}
+@media (max-width: 768px) {
+  /* Mobile fallback: side_rail collapses back to floating glass so it
+     doesn't eat half the small viewport. */
+  html[data-nav-style="side_rail"] .hero-nav {
+    position: relative;
+    flex-direction: row;
+    width: auto;
+    bottom: auto;
+    border-right: none;
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  html[data-nav-style="side_rail"] .hero-section,
+  html[data-nav-style="side_rail"] .landing-section {
+    padding-left: 0 !important;
+  }
+}
+
+/* ---- Chatbot placement variants ---------------------------------------- */
+/* bottom_center = default (existing .chatbot-container rules apply, no override). */
+
+/* bottom_right: snap to the right corner. */
+html[data-chatbot-placement="bottom_right"] .chatbot-container {
+  left: auto;
+  right: var(--space-lg, 1rem);
+  transform: none;
+  width: auto;
+}
+
+/* side_panel: tall panel docked to the right edge. */
+html[data-chatbot-placement="side_panel"] .chatbot-container {
+  top: 0;
+  bottom: 0;
+  left: auto;
+  right: 0;
+  transform: none;
+  width: 360px;
+  max-width: 90vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  background: rgba(var(--color-bg-rgb, 6 11 20) / 0.92);
+  backdrop-filter: blur(var(--glass-blur, 16px));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 16px));
+  border-left: 1px solid var(--glass-border, rgba(255,255,255,0.08));
+  padding: var(--space-md, 0.75rem);
+}
+html[data-chatbot-placement="side_panel"] .chatbot-bar {
+  border-radius: 0.75rem;
+  margin-bottom: var(--space-sm, 0.5rem);
+}
+
+/* cmd_k + hidden_until_button: fully hide the chatbot until the visitor
+   either presses ⌘K / Ctrl+K (cmd_k) or taps a small launcher button
+   (hidden_until_button). applyPersonality() injects the launcher and
+   the keyboard listener; CSS only owns the visibility. */
+html[data-chatbot-placement="cmd_k"] .chatbot-container,
+html[data-chatbot-placement="hidden_until_button"] .chatbot-container {
+  display: none;
+}
+html[data-chatbot-placement="cmd_k"] .chatbot-container.is-summoned,
+html[data-chatbot-placement="hidden_until_button"] .chatbot-container.is-summoned {
+  display: block;
+}
+
+/* Floating launcher button injected for hidden_until_button mode. */
+.chatbot-launcher {
+  position: fixed;
+  bottom: var(--space-lg, 1rem);
+  right: var(--space-lg, 1rem);
+  width: 3rem;
+  height: 3rem;
+  border-radius: 50%;
+  background: var(--color-accent, #c9a96e);
+  color: var(--color-bg, #060b14);
+  border: none;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  z-index: 71;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.4rem;
+  line-height: 1;
+  transition: transform 0.2s var(--ease-active, ease);
+}
+.chatbot-launcher:hover { transform: translateY(-2px); }
+html[data-chatbot-placement="hidden_until_button"] .chatbot-launcher { display: flex; }
+
+
+/* =============================================================================
    3. BASE / GLOBAL STYLES
 ============================================================================= */
 

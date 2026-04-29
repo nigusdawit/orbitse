@@ -6191,6 +6191,147 @@ TO CUSTOMIZE THIS DASHBOARD:
         </div>
       </div>
 
+      <!-- ====================================================================
+           Personality panel  (Task #64 / items 10, 11, 14, 15)
+           ====================================================================
+           Four small admin knobs that tweak how the public site *feels*:
+           cursor mode, scroll-progress bar (with color), nav style, and
+           chatbot placement. Each picker has a tiny CSS-only preview
+           thumbnail next to it; updateThemePreview() drives the toggles.
+      ==================================================================== -->
+      <style>
+        /* Cursor preview — the dot variant shows a small filled circle in
+           the corner; magnetic adds a faint halo. */
+        .cursor-preview { width: 116px; height: 70px; border-radius: 0.5rem; background: var(--admin-bg-tertiary, rgba(255,255,255,0.04)); border: 1px solid var(--admin-border, rgba(255,255,255,0.08)); position: relative; }
+        .cursor-preview .cp-dot { position: absolute; left: 60%; top: 55%; width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent, #c9a96e); opacity: 0; transition: opacity 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease; }
+        [data-preview-cursor-mode="dot"] .cp-dot      { opacity: 1; }
+        [data-preview-cursor-mode="magnetic"] .cp-dot { opacity: 1; transform: scale(1.6); box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-accent, #c9a96e) 30%, transparent); }
+        /* Scroll-progress preview — a thin bar across the top. */
+        .scroll-preview { width: 116px; height: 70px; border-radius: 0.5rem; background: var(--admin-bg-tertiary, rgba(255,255,255,0.04)); border: 1px solid var(--admin-border, rgba(255,255,255,0.08)); position: relative; overflow: hidden; }
+        .scroll-preview .sp-bar { position: absolute; top: 0; left: 0; height: 4px; width: 60%; background: var(--color-accent, #c9a96e); transition: width 0.2s ease, background 0.2s ease, opacity 0.2s ease; }
+        [data-preview-scroll-progress="0"] .sp-bar { opacity: 0; }
+        /* Nav-style preview — five distinct mini compositions of a top bar. */
+        .nav-preview { width: 116px; height: 70px; border-radius: 0.5rem; background: var(--admin-bg-tertiary, rgba(255,255,255,0.04)); border: 1px solid var(--admin-border, rgba(255,255,255,0.08)); position: relative; overflow: hidden; padding: 6px; }
+        .nav-preview .np-bar { position: absolute; top: 6px; left: 6px; right: 6px; height: 10px; border-radius: 4px; background: rgba(255,255,255,0.18); display: flex; align-items: center; justify-content: space-between; padding: 0 4px; }
+        .nav-preview .np-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--color-accent, #c9a96e); }
+        .nav-preview .np-links { display: flex; gap: 3px; }
+        .nav-preview .np-links span { width: 8px; height: 2px; background: rgba(255,255,255,0.5); border-radius: 1px; }
+        [data-preview-nav-style="sticky"] .np-bar           { background: rgba(255,255,255,0.32); border-bottom: 1px solid rgba(255,255,255,0.18); }
+        [data-preview-nav-style="hidden_on_scroll"] .np-bar { transform: translateY(-110%); }
+        [data-preview-nav-style="hidden_on_scroll"]::after  { content: "↓"; position: absolute; right: 8px; top: 26px; color: rgba(255,255,255,0.6); font-size: 12px; }
+        [data-preview-nav-style="hamburger"] .np-links      { display: none; }
+        [data-preview-nav-style="hamburger"] .np-bar::after { content: "☰"; color: rgba(255,255,255,0.7); font-size: 9px; line-height: 1; }
+        [data-preview-nav-style="side_rail"] .np-bar        { top: 6px; left: 6px; bottom: 6px; right: auto; width: 14px; height: auto; flex-direction: column; padding: 4px 0; gap: 6px; align-items: center; justify-content: flex-start; }
+        [data-preview-nav-style="side_rail"] .np-links      { flex-direction: column; gap: 4px; }
+        [data-preview-nav-style="side_rail"] .np-links span { width: 6px; height: 2px; }
+        /* Chatbot-placement preview — a screen with the chatbot pill in
+           five different positions. */
+        .chatbot-preview { width: 116px; height: 70px; border-radius: 0.5rem; background: var(--admin-bg-tertiary, rgba(255,255,255,0.04)); border: 1px solid var(--admin-border, rgba(255,255,255,0.08)); position: relative; overflow: hidden; }
+        .chatbot-preview .cbp-pill { position: absolute; height: 8px; width: 30px; border-radius: 4px; background: var(--color-accent, #c9a96e); }
+        [data-preview-chatbot-placement="bottom_center"] .cbp-pill { left: 50%; bottom: 8px; transform: translateX(-50%); }
+        [data-preview-chatbot-placement="bottom_right"]  .cbp-pill { right: 8px; bottom: 8px; }
+        [data-preview-chatbot-placement="side_panel"]    .cbp-pill { right: 0; top: 0; bottom: 0; width: 18px; height: auto; border-radius: 0; }
+        [data-preview-chatbot-placement="cmd_k"]         .cbp-pill { display: none; }
+        [data-preview-chatbot-placement="cmd_k"]::after  { content: "⌘K"; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); color: rgba(255,255,255,0.7); font-size: 11px; font-weight: 600; }
+        [data-preview-chatbot-placement="hidden_until_button"] .cbp-pill { right: 6px; bottom: 6px; width: 14px; height: 14px; border-radius: 50%; }
+      </style>
+
+      <h3 style="margin-top:2rem;margin-bottom:0.25rem;">Personality</h3>
+      <p style="font-size:0.8rem;color:var(--admin-text-muted);margin-top:0;margin-bottom:1rem;">
+        Small interaction details that tweak how the public site <em>feels</em>.
+        Each picker shows a live preview — changes apply on save without a page reload.
+      </p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="theme-cursor-mode">Cursor mode</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Visitor pointer style on desktop (touch devices always use native)</span>
+          <select id="theme-cursor-mode" data-testid="select-theme-cursor-mode"
+                  onchange="updateThemePreview()">
+            <option value="native">Native — system cursor (default)</option>
+            <option value="dot">Dot — small accent-colored follower</option>
+            <option value="magnetic">Magnetic — dot grows on hover targets</option>
+          </select>
+          <div class="surface-preview-row">
+            <div id="personality-preview-cursor" class="cursor-preview"
+                 data-preview-cursor-mode="native" data-testid="preview-cursor-mode">
+              <div class="cp-dot"></div>
+            </div>
+            <div class="surface-preview-caption">Mini cursor demo per mode</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-scroll-progress" style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+            <input type="checkbox" id="theme-scroll-progress" data-testid="checkbox-theme-scroll-progress"
+                   onchange="updateThemePreview()" style="margin:0;">
+            Scroll-progress bar
+          </label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:0.35rem;margin-bottom:0.35rem;">Thin bar at the top of the viewport that grows as the visitor scrolls</span>
+          <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.35rem;">
+            <span style="font-size:0.75rem;color:var(--admin-text-muted);">Color override:</span>
+            <input type="color" id="theme-scroll-progress-color-picker"
+                   onchange="document.getElementById('theme-scroll-progress-color').value=this.value;updateThemePreview()"
+                   data-testid="picker-theme-scroll-progress-color"
+                   style="width:32px;height:32px;border:1px solid var(--admin-border);border-radius:0.35rem;background:transparent;cursor:pointer;padding:0;">
+            <input type="text" id="theme-scroll-progress-color" placeholder="(uses brand accent)"
+                   oninput="syncProgressColorPicker();updateThemePreview()"
+                   data-testid="input-theme-scroll-progress-color"
+                   style="flex:1;font-family:monospace;font-size:0.8rem;">
+            <button type="button" class="btn btn-secondary btn-sm"
+                    onclick="document.getElementById('theme-scroll-progress-color').value='';syncProgressColorPicker();updateThemePreview()"
+                    data-testid="button-clear-scroll-progress-color"
+                    style="padding:0.25rem 0.5rem;font-size:0.75rem;">Clear</button>
+          </div>
+          <div class="surface-preview-row">
+            <div id="personality-preview-scroll" class="scroll-preview"
+                 data-preview-scroll-progress="0" data-testid="preview-scroll-progress">
+              <div class="sp-bar"></div>
+            </div>
+            <div class="surface-preview-caption">Bar appears only when toggled on</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-nav-style">Nav style</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">How the top navigation behaves on the public site</span>
+          <select id="theme-nav-style" data-testid="select-theme-nav-style"
+                  onchange="updateThemePreview()">
+            <option value="floating_glass">Floating glass — default</option>
+            <option value="sticky">Sticky — pinned to top with backdrop</option>
+            <option value="hamburger">Hamburger — collapsed menu toggle</option>
+            <option value="hidden_on_scroll">Hidden on scroll — re-appears on scroll up</option>
+            <option value="side_rail">Side rail — vertical bar on the left</option>
+          </select>
+          <div class="surface-preview-row">
+            <div id="personality-preview-nav" class="nav-preview"
+                 data-preview-nav-style="floating_glass" data-testid="preview-nav-style">
+              <div class="np-bar">
+                <div class="np-dot"></div>
+                <div class="np-links"><span></span><span></span><span></span></div>
+              </div>
+            </div>
+            <div class="surface-preview-caption">Mini composition for each variant</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-chatbot-placement">Chatbot placement</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Where the AI chatbot widget docks (or how it's summoned)</span>
+          <select id="theme-chatbot-placement" data-testid="select-theme-chatbot-placement"
+                  onchange="updateThemePreview()">
+            <option value="bottom_center">Bottom center — default floating pill</option>
+            <option value="bottom_right">Bottom right — corner pill</option>
+            <option value="side_panel">Side panel — full-height right column</option>
+            <option value="cmd_k">⌘K only — summon via keyboard shortcut</option>
+            <option value="hidden_until_button">Hidden — small launcher button only</option>
+          </select>
+          <div class="surface-preview-row">
+            <div id="personality-preview-chatbot" class="chatbot-preview"
+                 data-preview-chatbot-placement="bottom_center" data-testid="preview-chatbot-placement">
+              <div class="cbp-pill"></div>
+            </div>
+            <div class="surface-preview-caption">Mini placement preview per variant</div>
+          </div>
+        </div>
+      </div>
+
       <div class="form-actions">
         <button class="btn btn-primary" onclick="saveTheme()" data-testid="button-save-theme">Save Theme</button>
       </div>
@@ -10135,6 +10276,20 @@ TO CUSTOMIZE THIS DASHBOARD:
       fontSerif: 'Playfair Display, Georgia, serif', fontSans: 'DM Sans, sans-serif'
     };
 
+    /* Personality helper (Task #64). Keeps the native <input type="color">
+       widget in sync with the free-text hex field so admins can either
+       drag the picker or paste/clear a hex value. The text field is the
+       source of truth (it allows the empty value that means "use the
+       brand accent"); the color widget needs a real hex, so we fall
+       back to a neutral placeholder when the text input is empty. */
+    function syncProgressColorPicker() {
+      const txt = document.getElementById('theme-scroll-progress-color');
+      const pkr = document.getElementById('theme-scroll-progress-color-picker');
+      if (!txt || !pkr) return;
+      const v = (txt.value || '').trim();
+      pkr.value = /^#[0-9a-fA-F]{6}$/.test(v) ? v : '#c9a96e';
+    }
+
     function updateThemePreview() {
       const bg = document.getElementById('theme-bg').value || themeDefaults.bg;
       const s1 = document.getElementById('theme-section1').value || themeDefaults.section1;
@@ -10315,6 +10470,34 @@ TO CUSTOMIZE THIS DASHBOARD:
         heroPrev.setAttribute('data-preview-hero-layout', heroLayoutEl.value);
       }
 
+      // ----------------------------------------------------------------
+      // Personality preview thumbnails (Task #64 / items 10, 11, 14, 15).
+      // Mirror each picker into its dedicated mini preview tile so the
+      // admin can compare modes without saving. The CSS-only thumbnails
+      // live in the inline <style> block above the Personality panel.
+      // ----------------------------------------------------------------
+      const cursorModeEl    = $('theme-cursor-mode');
+      const navStyleEl      = $('theme-nav-style');
+      const chatbotPlaceEl  = $('theme-chatbot-placement');
+      const scrollProgEl    = $('theme-scroll-progress');
+      const scrollProgColEl = $('theme-scroll-progress-color');
+      const cursorPrev   = document.getElementById('personality-preview-cursor');
+      const navPrev      = document.getElementById('personality-preview-nav');
+      const chatbotPrev  = document.getElementById('personality-preview-chatbot');
+      const scrollPrev   = document.getElementById('personality-preview-scroll');
+      if (cursorPrev  && cursorModeEl)   cursorPrev.setAttribute('data-preview-cursor-mode',         cursorModeEl.value);
+      if (navPrev     && navStyleEl)     navPrev.setAttribute('data-preview-nav-style',              navStyleEl.value);
+      if (chatbotPrev && chatbotPlaceEl) chatbotPrev.setAttribute('data-preview-chatbot-placement',  chatbotPlaceEl.value);
+      if (scrollPrev  && scrollProgEl)   scrollPrev.setAttribute('data-preview-scroll-progress',     scrollProgEl.checked ? '1' : '0');
+      if (scrollPrev  && scrollProgColEl) {
+        // Override the bar color only when a value is set; otherwise let
+        // the preview inherit var(--color-accent) so it tracks the brand
+        // accent picker live.
+        const c = (scrollProgColEl.value || '').trim();
+        const bar = scrollPrev.querySelector('.sp-bar');
+        if (bar) bar.style.background = c || '';
+      }
+
       // Derive --color-bg-rgb from the chosen bg hex so any rgba() that
       // reads it (loading screen tint) re-tints in real time.
       try {
@@ -10400,6 +10583,19 @@ TO CUSTOMIZE THIS DASHBOARD:
         setSelect('theme-density',      data.theme_density,      'comfortable');
         setSelect('theme-header-align', data.theme_header_align, 'centered');
         setSelect('hero-layout-mode',   data.hero_layout_mode,   'full_bleed');
+
+        // Personality pickers (Task #64 / items 10, 11, 14, 15). The
+        // checkbox + free-text color input don't fit the setSelect
+        // shape, so they're populated inline. The hex picker is kept
+        // in lockstep with the text input via syncProgressColorPicker.
+        setSelect('theme-cursor-mode',       data.theme_cursor_mode,       'native');
+        setSelect('theme-nav-style',         data.theme_nav_style,         'floating_glass');
+        setSelect('theme-chatbot-placement', data.theme_chatbot_placement, 'bottom_center');
+        const spEl = document.getElementById('theme-scroll-progress');
+        if (spEl) spEl.checked = !!data.theme_scroll_progress;
+        const spcEl = document.getElementById('theme-scroll-progress-color');
+        if (spcEl) spcEl.value = data.theme_scroll_progress_color || '';
+        if (typeof syncProgressColorPicker === 'function') syncProgressColorPicker();
         // The frame inset is a slider (range input) so it needs the
         // same setSlider helper used by the universal-token sliders;
         // px label updates in lockstep.
@@ -10447,6 +10643,14 @@ TO CUSTOMIZE THIS DASHBOARD:
         theme_section_frame_inset:   document.getElementById('theme-section-frame-inset').value,
         theme_header_align:          document.getElementById('theme-header-align').value,
         hero_layout_mode:            document.getElementById('hero-layout-mode').value,
+        // Personality payload (Task #64 / items 10, 11, 14, 15). Server
+        // whitelists the three enums + validates the hex color so we
+        // ship the raw form values; checkbox lands as a real boolean.
+        theme_cursor_mode:           document.getElementById('theme-cursor-mode').value,
+        theme_scroll_progress:       document.getElementById('theme-scroll-progress').checked,
+        theme_scroll_progress_color: document.getElementById('theme-scroll-progress-color').value,
+        theme_nav_style:             document.getElementById('theme-nav-style').value,
+        theme_chatbot_placement:     document.getElementById('theme-chatbot-placement').value,
       };
 
       try {
@@ -10499,6 +10703,15 @@ TO CUSTOMIZE THIS DASHBOARD:
         theme_section_frame_inset: 0,
         theme_header_align: 'centered',
         hero_layout_mode: 'full_bleed',
+        // Personality defaults (Task #64 / items 10, 11, 14, 15). Reset
+        // returns the public site to native cursor, no progress bar,
+        // floating-glass nav, and bottom-center chatbot — i.e. how a
+        // fresh install looks.
+        theme_cursor_mode: 'native',
+        theme_scroll_progress: false,
+        theme_scroll_progress_color: '',
+        theme_nav_style: 'floating_glass',
+        theme_chatbot_placement: 'bottom_center',
       };
 
       try {

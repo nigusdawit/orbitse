@@ -2291,6 +2291,19 @@ def init_db():
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_section_frame_inset INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_header_align TEXT NOT NULL DEFAULT 'centered'",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS hero_layout_mode TEXT NOT NULL DEFAULT 'full_bleed'",
+                # Personality controls (Task #64 / items 10, 11, 14, 15):
+                # cursor mode (native/dot/magnetic), scroll-progress bar
+                # (on/off + accent color), nav style (floating_glass/sticky/
+                # hamburger/hidden_on_scroll/side_rail), chatbot placement
+                # (bottom_center/bottom_right/side_panel/cmd_k/hidden_until_button).
+                # All five are additive, IF NOT EXISTS, with documented defaults
+                # so older installs land on the legacy behavior without a
+                # migration step.
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_cursor_mode TEXT NOT NULL DEFAULT 'native'",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_scroll_progress BOOLEAN NOT NULL DEFAULT FALSE",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_scroll_progress_color TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_nav_style TEXT NOT NULL DEFAULT 'floating_glass'",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_chatbot_placement TEXT NOT NULL DEFAULT 'bottom_center'",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS view_mode TEXT NOT NULL DEFAULT 'sections'",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_scale REAL NOT NULL DEFAULT 1.0",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_gap REAL NOT NULL DEFAULT 2.5",
@@ -5889,6 +5902,12 @@ def _build_theme_vars_style():
         except (TypeError, ValueError):
             frame_inset = 0
         frame_inset = max(0, min(32, frame_inset))
+        # Personality (Task #64 / item 11) — admin-picked progress-bar
+        # color. Empty / invalid value collapses to the brand accent so
+        # any rule reading var(--scroll-progress-color) always lands on
+        # a brand-coherent hue without a fallback chain in the CSS.
+        # _resolve_active_theme already validated the hex format.
+        scroll_progress_color = (t.get("theme_scroll_progress_color") or "").strip()
         return (
             "<style id=\"theme-vars-injected\">:root{"
             f"--color-bg:{bg};"
@@ -5911,6 +5930,10 @@ def _build_theme_vars_style():
             f"--ease-active:{ease_active};"
             f"--space-scale:{density_scale};"
             f"--section-frame-inset:{frame_inset}px;"
+            # Personality (Task #64 / item 11) — scroll-progress bar color.
+            # Empty resolver value falls back to the brand accent so the bar
+            # always paints in a brand-coherent hue without an extra picker.
+            f"--scroll-progress-color:{scroll_progress_color or accent};"
             "}</style>"
         )
     except Exception as e:
@@ -6209,6 +6232,16 @@ def serve_index():
             dn = (tt.get("theme_density")      or "comfortable").strip().lower() or "comfortable"
             ha = (tt.get("theme_header_align") or "centered").strip().lower()    or "centered"
             hl = (tt.get("hero_layout_mode")   or "full_bleed").strip().lower()  or "full_bleed"
+            # Personality data-* attrs (Task #64 / items 10, 11, 14, 15).
+            # Same first-paint pattern: CSS variants + applyPersonality
+            # both key off these attrs on <html>, so the cursor mode,
+            # progress-bar visibility, nav style, and chatbot placement
+            # all paint correctly on frame 1 instead of flashing the
+            # baseline before script.js runs.
+            cum  = (tt.get("theme_cursor_mode")       or "native").strip().lower()         or "native"
+            sp   = "1" if tt.get("theme_scroll_progress") else "0"
+            nvs  = (tt.get("theme_nav_style")         or "floating_glass").strip().lower() or "floating_glass"
+            cbp  = (tt.get("theme_chatbot_placement") or "bottom_center").strip().lower() or "bottom_center"
             html_attrs = (
                 f' data-card-style="{cs}"'
                 f' data-easing="{ez}"'
@@ -6217,15 +6250,20 @@ def serve_index():
                 f' data-density="{dn}"'
                 f' data-header-align="{ha}"'
                 f' data-hero-layout="{hl}"'
+                f' data-cursor-mode="{cum}"'
+                f' data-scroll-progress="{sp}"'
+                f' data-nav-style="{nvs}"'
+                f' data-chatbot-placement="{cbp}"'
             )
 
             def _merge_html_attrs(m):
                 attrs = m.group(1) or ""
                 # Strip any pre-existing surface-treatment + layout/rhythm
-                # data-* attrs so re-renders don't accumulate duplicates if
-                # the placeholder file ever ships with these attributes.
+                # + personality data-* attrs so re-renders don't accumulate
+                # duplicates if the placeholder file ever ships with these
+                # attributes.
                 attrs = re.sub(
-                    r'\s+data-(card-style|easing|photo-filter|loading-mode|density|header-align|hero-layout)\s*=\s*"[^"]*"',
+                    r'\s+data-(card-style|easing|photo-filter|loading-mode|density|header-align|hero-layout|cursor-mode|scroll-progress|nav-style|chatbot-placement)\s*=\s*"[^"]*"',
                     "",
                     attrs,
                 )
@@ -22262,6 +22300,9 @@ def _resolve_active_theme():
                theme_photo_filter, theme_loading_mode,
                theme_density, theme_section_frame_inset,
                theme_header_align, hero_layout_mode,
+               theme_cursor_mode, theme_scroll_progress,
+               theme_scroll_progress_color, theme_nav_style,
+               theme_chatbot_placement,
                active_theme_id
         FROM site_settings WHERE id = 1
     """, fetchone=True) or {}
@@ -22310,6 +22351,29 @@ def _resolve_active_theme():
     except (TypeError, ValueError):
         fi = 0
     settings["theme_section_frame_inset"] = max(0, min(32, fi))
+    # Personality enums (Task #64 / items 10, 11, 14, 15). Same defensive
+    # whitelist pattern as the layout/rhythm block above — invalid values
+    # from a hand-crafted POST collapse to the documented default so the
+    # public site never receives an unrecognized data-* attr or string
+    # the JS applier has no branch for.
+    _CURSOR_MODES        = ("native", "dot", "magnetic")
+    _NAV_STYLES          = ("floating_glass", "sticky", "hamburger", "hidden_on_scroll", "side_rail")
+    _CHATBOT_PLACEMENTS  = ("bottom_center", "bottom_right", "side_panel", "cmd_k", "hidden_until_button")
+    cm = (settings.get("theme_cursor_mode")        or "native").strip().lower()         or "native"
+    ns = (settings.get("theme_nav_style")          or "floating_glass").strip().lower() or "floating_glass"
+    cp = (settings.get("theme_chatbot_placement")  or "bottom_center").strip().lower() or "bottom_center"
+    settings["theme_cursor_mode"]       = cm if cm in _CURSOR_MODES       else "native"
+    settings["theme_nav_style"]         = ns if ns in _NAV_STYLES         else "floating_glass"
+    settings["theme_chatbot_placement"] = cp if cp in _CHATBOT_PLACEMENTS else "bottom_center"
+    # Scroll progress: bool toggle + optional hex color override. Empty
+    # string means "use --color-accent" (resolved client-side and in
+    # _build_theme_vars_style); a non-hex value is rejected the same
+    # way theme_accent_secondary is.
+    settings["theme_scroll_progress"] = bool(settings.get("theme_scroll_progress"))
+    spc = (settings.get("theme_scroll_progress_color") or "").strip()
+    if spc and not re.match(r"^#[0-9a-fA-F]{3,8}$", spc):
+        spc = ""
+    settings["theme_scroll_progress_color"] = spc
     # NUMERIC columns come back as Decimal — coerce to float so JSON
     # serialization works and the frontend can do math on them directly.
     for k in ("theme_loading_bg_alpha", "theme_radius_rem",
@@ -22468,6 +22532,28 @@ def admin_update_theme():
     # so a stray POST can't blow up section padding to a useless extreme.
     frame_inset   = _num("theme_section_frame_inset", 0, 0, 32, int)
 
+    # Personality enums (Task #64 / items 10, 11, 14, 15). Same
+    # whitelist-or-default pattern as the layout/rhythm block above so
+    # an unknown enum value collapses to the documented default rather
+    # than persisting a string the public-site CSS / applyPersonality()
+    # JS branch has no rule for.
+    _CURSOR_MODES_W       = ("native", "dot", "magnetic")
+    _NAV_STYLES_W         = ("floating_glass", "sticky", "hamburger", "hidden_on_scroll", "side_rail")
+    _CHATBOT_PLACEMENTS_W = ("bottom_center", "bottom_right", "side_panel", "cmd_k", "hidden_until_button")
+    cursor_mode       = (data.get("theme_cursor_mode")       or "native").strip().lower()         or "native"
+    nav_style         = (data.get("theme_nav_style")         or "floating_glass").strip().lower() or "floating_glass"
+    chatbot_placement = (data.get("theme_chatbot_placement") or "bottom_center").strip().lower() or "bottom_center"
+    if cursor_mode       not in _CURSOR_MODES_W:       cursor_mode       = "native"
+    if nav_style         not in _NAV_STYLES_W:         nav_style         = "floating_glass"
+    if chatbot_placement not in _CHATBOT_PLACEMENTS_W: chatbot_placement = "bottom_center"
+    scroll_progress = bool(data.get("theme_scroll_progress"))
+    # Optional hex color override for the scroll-progress bar; same
+    # validation pattern as theme_accent_secondary so a malformed value
+    # collapses to "" (= "use --color-accent" in the resolver/CSS).
+    scroll_progress_color = (data.get("theme_scroll_progress_color") or "").strip()
+    if scroll_progress_color and not re.match(r"^#[0-9a-fA-F]{3,8}$", scroll_progress_color):
+        scroll_progress_color = ""
+
     result = execute_db(
         """UPDATE site_settings SET
              theme_bg = %s, theme_section1 = %s, theme_section2 = %s,
@@ -22481,6 +22567,9 @@ def admin_update_theme():
              theme_photo_filter = %s, theme_loading_mode = %s,
              theme_density = %s, theme_section_frame_inset = %s,
              theme_header_align = %s, hero_layout_mode = %s,
+             theme_cursor_mode = %s, theme_scroll_progress = %s,
+             theme_scroll_progress_color = %s, theme_nav_style = %s,
+             theme_chatbot_placement = %s,
              updated_at = NOW()
            WHERE id = 1 RETURNING *""",
         (
@@ -22497,6 +22586,8 @@ def admin_update_theme():
             accent_secondary, accent_gradient, logo_mode, logo_image,
             card_style, easing, photo_filter, loading_mode,
             density, frame_inset, header_align, hero_layout,
+            cursor_mode, scroll_progress, scroll_progress_color,
+            nav_style, chatbot_placement,
         )
     )
 
