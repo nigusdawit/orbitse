@@ -6056,6 +6056,141 @@ TO CUSTOMIZE THIS DASHBOARD:
         </div>
       </div>
 
+      <!-- ====================================================================
+           Layout & Rhythm panel  (Task #63 / items 6, 7, 9, 16)
+           ====================================================================
+           Four admin-controlled knobs that shape the public site's spacing,
+           section framing, header alignment, and hero structure. Each picker
+           updates a small thumbnail in-place via updateThemePreview() and
+           persists in site_settings on Save Theme — no full reload required.
+           The companion CSS below renders the thumbnails purely with CSS so
+           they require no extra JS to redraw.
+      ==================================================================== -->
+      <style>
+        /* Density preview — three stacked bars whose vertical gap shrinks
+           or grows so the admin sees the chosen rhythm at a glance. */
+        .layout-preview { width: 116px; height: 70px; border-radius: 0.5rem; background: var(--admin-bg-tertiary, rgba(255,255,255,0.04)); border: 1px solid var(--admin-border, rgba(255,255,255,0.08)); padding: 8px; display: flex; flex-direction: column; align-items: stretch; justify-content: center; }
+        .layout-preview .lp-bar { height: 6px; background: var(--admin-text-muted, rgba(255,255,255,0.35)); border-radius: 2px; }
+        [data-preview-density="compact"]     .lp-bar + .lp-bar { margin-top: 3px; }
+        [data-preview-density="comfortable"] .lp-bar + .lp-bar { margin-top: 7px; }
+        [data-preview-density="spacious"]    .lp-bar + .lp-bar { margin-top: 12px; }
+        /* Frame-inset preview — outer page bg + inner painted card whose
+           horizontal margin grows with the slider, mirroring how the public
+           landing-section's painted area shrinks with --section-frame-inset. */
+        .frame-preview { width: 116px; height: 70px; border-radius: 0.5rem; background: var(--admin-bg-secondary, rgba(255,255,255,0.06)); padding: 6px; display: flex; align-items: stretch; justify-content: stretch; transition: padding 0.2s ease; }
+        .frame-preview .fp-card { flex: 1; background: var(--color-accent, #c9a96e); opacity: 0.55; border-radius: 0.25rem; }
+        /* Header-align preview — three lines representing eyebrow/title/intro
+           re-justified per variant. */
+        .align-preview { width: 116px; height: 70px; border-radius: 0.5rem; background: var(--admin-bg-tertiary, rgba(255,255,255,0.04)); border: 1px solid var(--admin-border, rgba(255,255,255,0.08)); padding: 10px; display: flex; flex-direction: column; gap: 5px; }
+        .align-preview .ap-eyebrow { height: 4px; width: 30%; background: var(--color-accent, #c9a96e); border-radius: 2px; align-self: center; }
+        .align-preview .ap-title   { height: 8px; width: 70%; background: var(--admin-text-muted, rgba(255,255,255,0.5)); border-radius: 2px; align-self: center; }
+        .align-preview .ap-intro   { height: 4px; width: 50%; background: var(--admin-text-muted, rgba(255,255,255,0.3)); border-radius: 2px; align-self: center; }
+        [data-preview-header-align="left"] .ap-eyebrow,
+        [data-preview-header-align="left"] .ap-title,
+        [data-preview-header-align="left"] .ap-intro,
+        [data-preview-header-align="numbered"] .ap-eyebrow,
+        [data-preview-header-align="numbered"] .ap-title,
+        [data-preview-header-align="numbered"] .ap-intro { align-self: flex-start; }
+        [data-preview-header-align="numbered"] .ap-eyebrow::before { content: "01·"; font-size: 6px; color: var(--color-accent, #c9a96e); font-weight: 700; margin-right: 3px; }
+        [data-preview-header-align="split"] { display: grid; grid-template-columns: 1fr 2fr; gap: 4px; padding: 10px; align-items: start; }
+        [data-preview-header-align="split"] .ap-eyebrow { grid-column: 1; align-self: start; width: 90%; }
+        [data-preview-header-align="split"] .ap-title,
+        [data-preview-header-align="split"] .ap-intro { grid-column: 2; align-self: start; width: 100%; }
+        /* Hero-layout preview — five distinct mini compositions. */
+        .hero-preview { width: 116px; height: 70px; border-radius: 0.5rem; background: var(--admin-bg-tertiary, rgba(255,255,255,0.04)); border: 1px solid var(--admin-border, rgba(255,255,255,0.08)); position: relative; overflow: hidden; }
+        .hero-preview .hp-img { position: absolute; inset: 0; background: linear-gradient(135deg, #f59e0b, #ec4899 60%, #3b82f6); }
+        .hero-preview .hp-text { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); width: 60%; height: 6px; background: rgba(255,255,255,0.85); border-radius: 2px; box-shadow: 0 -10px 0 rgba(255,255,255,0.55); }
+        [data-preview-hero-layout="split"] .hp-img { right: 50%; }
+        [data-preview-hero-layout="split"] .hp-text { left: 75%; bottom: 30px; transform: translateX(-50%); width: 35%; }
+        [data-preview-hero-layout="text_mesh"] .hp-img { background: radial-gradient(ellipse at 20% 10%, rgba(255,255,255,0.15), transparent 60%), radial-gradient(ellipse at 80% 30%, var(--color-accent, #c9a96e) 0%, transparent 60%), linear-gradient(135deg, var(--color-bg, #060b14), var(--color-section-2, #0a0f1a)); }
+        [data-preview-hero-layout="carousel"] .hp-img::after { content: ""; position: absolute; right: 6px; bottom: 6px; width: 18px; height: 4px; background: rgba(255,255,255,0.7); border-radius: 2px; box-shadow: -7px 0 0 rgba(255,255,255,0.35), -14px 0 0 rgba(255,255,255,0.35); }
+        [data-preview-hero-layout="video"] .hp-img::after { content: "▶"; position: absolute; left: 50%; top: 35%; transform: translate(-50%, -50%); color: rgba(255,255,255,0.9); font-size: 18px; }
+      </style>
+
+      <h3 style="margin-top:2rem;margin-bottom:0.25rem;">Layout &amp; Rhythm</h3>
+      <p style="font-size:0.8rem;color:var(--admin-text-muted);margin-top:0;margin-bottom:1rem;">
+        Set the spacing density, section frame, header alignment, and hero structure for the public site.
+        Each picker shows a live preview — changes apply on save without a page reload.
+      </p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="theme-density">Density</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Multiplies every spacing token site-wide</span>
+          <select id="theme-density" data-testid="select-theme-density"
+                  onchange="updateThemePreview()">
+            <option value="compact">Compact — 0.75x (tight, business)</option>
+            <option value="comfortable">Comfortable — 1.0x (default)</option>
+            <option value="spacious">Spacious — 1.25x (editorial / venue)</option>
+          </select>
+          <div class="surface-preview-row">
+            <div id="layout-preview-density" class="layout-preview"
+                 data-preview-density="comfortable" data-testid="preview-density">
+              <div class="lp-bar"></div>
+              <div class="lp-bar"></div>
+              <div class="lp-bar"></div>
+            </div>
+            <div class="surface-preview-caption">Bar gap mirrors the section rhythm</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-section-frame-inset">Section frame inset
+            <span id="theme-section-frame-inset-val" style="float:right;color:var(--admin-text-muted);font-weight:normal;font-size:0.85em;">0px</span>
+          </label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Page-bg gutter on either side of every section (0–32 px)</span>
+          <input type="range" id="theme-section-frame-inset" min="0" max="32" step="1" value="0"
+                 data-testid="input-theme-section-frame-inset"
+                 oninput="document.getElementById('theme-section-frame-inset-val').textContent=this.value+'px';updateThemePreview()"
+                 onchange="updateThemePreview()"
+                 style="width:100%;">
+          <div class="surface-preview-row">
+            <div id="layout-preview-frame" class="frame-preview" data-testid="preview-frame-inset">
+              <div class="fp-card"></div>
+            </div>
+            <div class="surface-preview-caption">Inner card shrinks as inset grows</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-header-align">Header alignment</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">How every section header is justified</span>
+          <select id="theme-header-align" data-testid="select-theme-header-align"
+                  onchange="updateThemePreview()">
+            <option value="centered">Centered (default)</option>
+            <option value="left">Left aligned</option>
+            <option value="numbered">Numbered — auto "01." prefix</option>
+            <option value="split">Split — eyebrow left, title right</option>
+          </select>
+          <div class="surface-preview-row">
+            <div id="layout-preview-align" class="align-preview"
+                 data-preview-header-align="centered" data-testid="preview-header-align">
+              <div class="ap-eyebrow"></div>
+              <div class="ap-title"></div>
+              <div class="ap-intro"></div>
+            </div>
+            <div class="surface-preview-caption">Eyebrow / title / intro lines re-flow per variant</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="hero-layout-mode">Hero layout</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Visual structure of the hero section</span>
+          <select id="hero-layout-mode" data-testid="select-hero-layout-mode"
+                  onchange="updateThemePreview()">
+            <option value="full_bleed">Full bleed — image bg + centered text (default)</option>
+            <option value="split">Split — 50/50 image + text grid</option>
+            <option value="text_mesh">Text on mesh — text only on a CSS gradient</option>
+            <option value="carousel">Carousel — image bg cycles gallery photos</option>
+            <option value="video">Video — force-show the hero video</option>
+          </select>
+          <div class="surface-preview-row">
+            <div id="layout-preview-hero" class="hero-preview"
+                 data-preview-hero-layout="full_bleed" data-testid="preview-hero-layout">
+              <div class="hp-img"></div>
+              <div class="hp-text"></div>
+            </div>
+            <div class="surface-preview-caption">Mini hero composition for each layout</div>
+          </div>
+        </div>
+      </div>
+
       <div class="form-actions">
         <button class="btn btn-primary" onclick="saveTheme()" data-testid="button-save-theme">Save Theme</button>
       </div>
@@ -10126,6 +10261,60 @@ TO CUSTOMIZE THIS DASHBOARD:
         loadingPrev.setAttribute('data-preview-loading-mode', loadingModeEl.value);
       }
 
+      // ----------------------------------------------------------------
+      // Layout & rhythm live preview (Task #63 / items 6, 7, 9, 16).
+      // Mirror the four pickers onto the admin <html> element so the
+      // [data-density|data-header-align|data-hero-layout] CSS variants
+      // would react in any embedded public-site preview, push the
+      // density's --space-scale + the inset slider's px value into
+      // :root so the spacing tokens recalc live, and toggle the four
+      // mini thumbnails next to each picker via data-preview-* attrs.
+      // ----------------------------------------------------------------
+      const densityEl     = $('theme-density');
+      const frameInsetEl  = $('theme-section-frame-inset');
+      const headerAlignEl = $('theme-header-align');
+      const heroLayoutEl  = $('hero-layout-mode');
+      const densityScale  = { compact: 0.75, comfortable: 1, spacious: 1.25 };
+      if (densityEl) {
+        const dn = densityEl.value;
+        root.setAttribute('data-density', dn);
+        root.style.setProperty('--space-scale', String(densityScale[dn] || 1));
+      }
+      if (frameInsetEl) {
+        // parseInt + clamp to 0..32 mirrors the server validation
+        // exactly; any out-of-range slider state is normalized before
+        // the var is set so the thumbnail can never overshoot.
+        let fi = parseInt(frameInsetEl.value, 10);
+        if (!Number.isFinite(fi)) fi = 0;
+        fi = Math.max(0, Math.min(32, fi));
+        root.style.setProperty('--section-frame-inset', fi + 'px');
+      }
+      if (headerAlignEl) root.setAttribute('data-header-align', headerAlignEl.value);
+      if (heroLayoutEl)  root.setAttribute('data-hero-layout',  heroLayoutEl.value);
+
+      const densityPrev = document.getElementById('layout-preview-density');
+      const framePrev   = document.getElementById('layout-preview-frame');
+      const alignPrev   = document.getElementById('layout-preview-align');
+      const heroPrev    = document.getElementById('layout-preview-hero');
+      if (densityPrev && densityEl) {
+        densityPrev.setAttribute('data-preview-density', densityEl.value);
+      }
+      if (framePrev && frameInsetEl) {
+        // Thumbnail is 116px wide; scaling the slider's 0..32 px down
+        // to 0..18 px keeps the inner card visible at max inset while
+        // still reading as a clear gutter change.
+        let fi = parseInt(frameInsetEl.value, 10);
+        if (!Number.isFinite(fi)) fi = 0;
+        const innerPad = Math.max(0, Math.min(32, fi)) * (18 / 32);
+        framePrev.style.padding = `6px ${(6 + innerPad).toFixed(1)}px`;
+      }
+      if (alignPrev && headerAlignEl) {
+        alignPrev.setAttribute('data-preview-header-align', headerAlignEl.value);
+      }
+      if (heroPrev && heroLayoutEl) {
+        heroPrev.setAttribute('data-preview-hero-layout', heroLayoutEl.value);
+      }
+
       // Derive --color-bg-rgb from the chosen bg hex so any rgba() that
       // reads it (loading screen tint) re-tints in real time.
       try {
@@ -10204,6 +10393,19 @@ TO CUSTOMIZE THIS DASHBOARD:
         setSelect('theme-photo-filter', data.theme_photo_filter, 'none');
         setSelect('theme-loading-mode', data.theme_loading_mode, 'logo_name');
 
+        // Layout & rhythm pickers (Task #63 / items 6, 7, 9, 16). Same
+        // tolerant defaults as the surface-treatment block above so an
+        // older install with NULL columns lands on the documented
+        // baseline instead of leaving the form blank.
+        setSelect('theme-density',      data.theme_density,      'comfortable');
+        setSelect('theme-header-align', data.theme_header_align, 'centered');
+        setSelect('hero-layout-mode',   data.hero_layout_mode,   'full_bleed');
+        // The frame inset is a slider (range input) so it needs the
+        // same setSlider helper used by the universal-token sliders;
+        // px label updates in lockstep.
+        setSlider('theme-section-frame-inset', data.theme_section_frame_inset,
+                  v => v + 'px');
+
         updateThemePreview();
       } catch (err) {
         showToast('Failed to load theme', 'error');
@@ -10238,6 +10440,13 @@ TO CUSTOMIZE THIS DASHBOARD:
         theme_easing:           document.getElementById('theme-easing').value,
         theme_photo_filter:     document.getElementById('theme-photo-filter').value,
         theme_loading_mode:     document.getElementById('theme-loading-mode').value,
+        // Layout & rhythm payload (Task #63 / items 6, 7, 9, 16). The
+        // server validates each enum + clamps the inset to 0..32 px so
+        // we send the raw form values without pre-validating client-side.
+        theme_density:               document.getElementById('theme-density').value,
+        theme_section_frame_inset:   document.getElementById('theme-section-frame-inset').value,
+        theme_header_align:          document.getElementById('theme-header-align').value,
+        hero_layout_mode:            document.getElementById('hero-layout-mode').value,
       };
 
       try {
@@ -10281,6 +10490,15 @@ TO CUSTOMIZE THIS DASHBOARD:
         theme_easing: 'gentle',
         theme_photo_filter: 'none',
         theme_loading_mode: 'logo_name',
+        // Layout & rhythm defaults (Task #63 / items 6, 7, 9, 16).
+        // Reset snaps the public site back to the legacy spacing
+        // scale, edge-to-edge sections, centered headers, and the
+        // full-bleed hero so the visitor experience matches a fresh
+        // install.
+        theme_density: 'comfortable',
+        theme_section_frame_inset: 0,
+        theme_header_align: 'centered',
+        hero_layout_mode: 'full_bleed',
       };
 
       try {

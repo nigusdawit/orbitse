@@ -4016,6 +4016,18 @@ async function loadAndApplyTheme() {
        in styles.css all key off these data-* attrs on <html>.
        ---------------------------------------------------------------- */
     applySurfaceTreatment(theme);
+
+    /* ----------------------------------------------------------------
+       Layout & rhythm controls (Task #63 / items 6, 7, 9, 16).
+       Server already mirrored data-density / data-header-align /
+       data-hero-layout onto <html> for first paint, and emitted the
+       --space-scale / --section-frame-inset CSS vars in the head
+       <style>. Re-apply here so live admin saves swap density,
+       section frame, header alignment, and hero layout without a
+       page reload. The carousel mode also needs a JS hook to cycle
+       gallery images into the hero bg.
+       ---------------------------------------------------------------- */
+    applyLayoutRhythm(theme);
   } catch (e) { /* silent */ }
 }
 
@@ -4052,6 +4064,135 @@ function applySurfaceTreatment(theme) {
   html.setAttribute('data-photo-filter', pf);
   html.setAttribute('data-loading-mode', lm);
   html.style.setProperty('--ease-active', SURFACE_EASE_CURVES[ez] || SURFACE_EASE_CURVES.gentle);
+}
+
+/* -----------------------------------------------------------------------
+   Layout & rhythm helper (Task #63 / items 6, 7, 9, 16). Same defensive
+   whitelist pattern as applySurfaceTreatment so an unexpected payload
+   value can't write garbage data-* attrs. Updates --space-scale and
+   --section-frame-inset CSS vars too so live admin saves repaint
+   spacing without the server emitting a fresh <style> block.
+
+   The carousel hero mode requires a JS-driven background swap (since
+   it cycles through gallery card images); applyHeroCarousel() owns
+   that timer and is started/stopped here based on the active layout.
+----------------------------------------------------------------------- */
+const LAYOUT_DENSITIES      = ['compact', 'comfortable', 'spacious'];
+const LAYOUT_HEADER_ALIGNS  = ['centered', 'left', 'numbered', 'split'];
+const LAYOUT_HERO_LAYOUTS   = ['full_bleed', 'split', 'text_mesh', 'carousel', 'video'];
+const LAYOUT_DENSITY_SCALE  = { compact: 0.75, comfortable: 1, spacious: 1.25 };
+function applyLayoutRhythm(theme) {
+  if (!theme) return;
+  const html = document.documentElement;
+  const pick = (val, allowed, def) => {
+    const v = String(val || '').trim().toLowerCase();
+    return allowed.includes(v) ? v : def;
+  };
+  const dn = pick(theme.theme_density,      LAYOUT_DENSITIES,     'comfortable');
+  const ha = pick(theme.theme_header_align, LAYOUT_HEADER_ALIGNS, 'centered');
+  const hl = pick(theme.hero_layout_mode,   LAYOUT_HERO_LAYOUTS,  'full_bleed');
+  // Section frame inset: clamp to 0..32 px so a stray payload value
+  // can't blow up section padding to a useless extreme. Falls back to 0
+  // (current edge-to-edge default) when the column is absent or NaN.
+  let fi = parseInt(theme.theme_section_frame_inset, 10);
+  if (!Number.isFinite(fi)) fi = 0;
+  fi = Math.max(0, Math.min(32, fi));
+
+  html.setAttribute('data-density',      dn);
+  html.setAttribute('data-header-align', ha);
+  html.setAttribute('data-hero-layout',  hl);
+  html.style.setProperty('--space-scale',          String(LAYOUT_DENSITY_SCALE[dn] || 1));
+  html.style.setProperty('--section-frame-inset',  fi + 'px');
+
+  // Hero carousel timer is owned by applyHeroCarousel; start/stop based
+  // on the chosen layout so switching away from "carousel" cleanly halts
+  // the interval and restores the normal hero bg image.
+  applyHeroCarousel(hl === 'carousel');
+}
+
+/* -----------------------------------------------------------------------
+   Hero carousel hook (Task #63 / item 16). When the admin picks the
+   "carousel" hero layout, cycle the hero section's background-image
+   through the property's gallery card images on a slow timer. The
+   CSS rule `[data-hero-layout="carousel"] .hero-section` already
+   adds the cross-fade transition so the swap reads as intentional.
+   Calling with `enabled=false` clears the timer and restores the
+   original bg.
+----------------------------------------------------------------------- */
+let _heroCarouselTimer = null;
+let _heroCarouselRetryTimer = null;
+let _heroCarouselOriginalBg = null;
+function applyHeroCarousel(enabled) {
+  // The image carrier is #hero-bg (a child div that holds
+  // background-image), NOT .hero-section itself. Targeting #hero-bg
+  // keeps the existing renderHero() pipeline as the source of truth
+  // for the hero image and lets the cross-fade transition declared
+  // on `[data-hero-layout="carousel"] .hero-section .hero-bg` apply
+  // cleanly to each swap.
+  const heroBg = document.getElementById('hero-bg');
+  if (!heroBg) return;
+  // Always tear down any prior timer + pending retry so toggling
+  // between layouts is safe and never leaks an orphan interval.
+  if (_heroCarouselTimer) {
+    clearInterval(_heroCarouselTimer);
+    _heroCarouselTimer = null;
+  }
+  if (_heroCarouselRetryTimer) {
+    clearTimeout(_heroCarouselRetryTimer);
+    _heroCarouselRetryTimer = null;
+  }
+  if (!enabled) {
+    if (_heroCarouselOriginalBg !== null) {
+      heroBg.style.backgroundImage = _heroCarouselOriginalBg;
+      _heroCarouselOriginalBg = null;
+    }
+    return;
+  }
+  // Capture the current bg so we can restore it when the mode is
+  // disabled. Done BEFORE the first swap so the user gets back exactly
+  // what renderHero() last set.
+  if (_heroCarouselOriginalBg === null) {
+    _heroCarouselOriginalBg = heroBg.style.backgroundImage || '';
+  }
+  // Build the rotation pool from gallery cards' background-image values
+  // (the gallery is the closest existing source of curated property
+  // photos). Gallery cards render asynchronously after their /api fetch
+  // resolves, so on first call the pool may legitimately be empty —
+  // we re-try on a short delay rather than silently no-op'ing forever.
+  const buildPool = () => Array.from(document.querySelectorAll('.gallery-card'))
+    .map(el => {
+      const inline = el.style.backgroundImage;
+      if (inline && inline !== 'none') return inline;
+      const computed = getComputedStyle(el).backgroundImage;
+      return (computed && computed !== 'none') ? computed : null;
+    })
+    .filter(Boolean);
+  let pool = buildPool();
+  if (!pool.length) {
+    // Schedule one retry — by 1500 ms the gallery API call has
+    // typically resolved and rendered. Capped at one retry so a site
+    // with no gallery cards never enters an infinite poll.
+    _heroCarouselRetryTimer = setTimeout(() => {
+      _heroCarouselRetryTimer = null;
+      pool = buildPool();
+      if (!pool.length) return;
+      let idx = 0;
+      heroBg.style.backgroundImage = pool[0];
+      _heroCarouselTimer = setInterval(() => {
+        idx = (idx + 1) % pool.length;
+        heroBg.style.backgroundImage = pool[idx];
+      }, 5000);
+    }, 1500);
+    return;
+  }
+  let idx = 0;
+  // Show the first pool image immediately so the carousel kicks in
+  // visibly even if the visitor never scrolls past the hero.
+  heroBg.style.backgroundImage = pool[0];
+  _heroCarouselTimer = setInterval(() => {
+    idx = (idx + 1) % pool.length;
+    heroBg.style.backgroundImage = pool[idx];
+  }, 5000);
 }
 
 function loadGoogleFont(fontName) {

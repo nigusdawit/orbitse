@@ -2283,6 +2283,30 @@ def init_db():
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_easing TEXT NOT NULL DEFAULT 'gentle'",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_photo_filter TEXT NOT NULL DEFAULT 'none'",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_loading_mode TEXT NOT NULL DEFAULT 'logo_name'",
+                # --- Layout & rhythm controls (Task #63 / items 6, 7, 9, 16) ---
+                #     theme_density swaps the public --space-* scale used
+                #     site-wide for vertical/horizontal rhythm:
+                #       'compact'      (0.75x — tight, business-y),
+                #       'comfortable'  (1.0x — current/default),
+                #       'spacious'     (1.25x — editorial / venue feel).
+                #     theme_section_frame_inset adds horizontal page-bg
+                #     padding around every .landing-section so the section
+                #     paint shrinks from edge-to-edge (0px) toward a
+                #     floating-card look (32px) — the existing
+                #     background-clip:content-box rule from Task #60
+                #     translates the inset directly into a visible frame.
+                #     theme_header_align picks how every section header
+                #     aligns ('centered' default, 'left', 'numbered', 'split').
+                #     hero_layout_mode picks the hero region's structure:
+                #       'full_bleed'  (default — image bg + centered content),
+                #       'split'       (50/50 image + text grid),
+                #       'text_mesh'   (text only on a CSS mesh gradient),
+                #       'carousel'    (image bg cycles through gallery cards),
+                #       'video'       (forces hero-video on, hides bg image).
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_density TEXT NOT NULL DEFAULT 'comfortable'",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_section_frame_inset INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_header_align TEXT NOT NULL DEFAULT 'centered'",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS hero_layout_mode TEXT NOT NULL DEFAULT 'full_bleed'",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS view_mode TEXT NOT NULL DEFAULT 'sections'",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_scale REAL NOT NULL DEFAULT 1.0",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_gap REAL NOT NULL DEFAULT 2.5",
@@ -5859,6 +5883,28 @@ def _build_theme_vars_style():
             "editorial": "cubic-bezier(0.65, 0, 0.35, 1)",
         }
         ease_active = ease_curves.get(easing_name, ease_curves["gentle"])
+
+        # Layout & rhythm tokens (Task #63 / items 6, 7, 9, 16). The
+        # density multiplier scales every --space-* value via a single
+        # --space-scale var that styles.css multiplies into the spacing
+        # scale, so changing density resizes section padding, gaps and
+        # header rhythm site-wide without touching individual rules.
+        # The frame inset becomes a px var that .landing-section's
+        # horizontal padding adds to its base --space-xl, exposing more
+        # of the page bg through the existing background-clip:content-box
+        # rule (Task #60). Both default to no-op so installs that pre-
+        # date the columns paint identically to before.
+        density_name = (t.get("theme_density") or "comfortable").strip().lower()
+        density_scale = {
+            "compact":     0.75,
+            "comfortable": 1.0,
+            "spacious":    1.25,
+        }.get(density_name, 1.0)
+        try:
+            frame_inset = int(t.get("theme_section_frame_inset") or 0)
+        except (TypeError, ValueError):
+            frame_inset = 0
+        frame_inset = max(0, min(32, frame_inset))
         return (
             "<style id=\"theme-vars-injected\">:root{"
             f"--color-bg:{bg};"
@@ -5879,6 +5925,8 @@ def _build_theme_vars_style():
             f"--font-sans:'{font_sans}',-apple-system,BlinkMacSystemFont,sans-serif;"
             f"--logo-image:{logo_image_css};"
             f"--ease-active:{ease_active};"
+            f"--space-scale:{density_scale};"
+            f"--section-frame-inset:{frame_inset}px;"
             "}</style>"
         )
     except Exception as e:
@@ -6165,21 +6213,35 @@ def serve_index():
             ez = (tt.get("theme_easing")       or "gentle").strip().lower()    or "gentle"
             pf = (tt.get("theme_photo_filter") or "none").strip().lower()      or "none"
             lm = (tt.get("theme_loading_mode") or "logo_name").strip().lower() or "logo_name"
+            # Layout & rhythm data-* attrs (Task #63 / items 6, 7, 9, 16).
+            # Same first-paint pattern as the surface-treatment block —
+            # CSS variants in styles.css ([data-density], [data-header-align],
+            # [data-hero-layout]) all key off <html> so the right rhythm,
+            # header alignment and hero structure paint on frame 1 instead
+            # of flashing the defaults before script.js's loadAndApplyTheme
+            # runs. _resolve_active_theme already whitelists every value
+            # so the strings we emit here are guaranteed to be one of the
+            # documented enum members.
+            dn = (tt.get("theme_density")      or "comfortable").strip().lower() or "comfortable"
+            ha = (tt.get("theme_header_align") or "centered").strip().lower()    or "centered"
+            hl = (tt.get("hero_layout_mode")   or "full_bleed").strip().lower()  or "full_bleed"
             html_attrs = (
                 f' data-card-style="{cs}"'
                 f' data-easing="{ez}"'
                 f' data-photo-filter="{pf}"'
                 f' data-loading-mode="{lm}"'
+                f' data-density="{dn}"'
+                f' data-header-align="{ha}"'
+                f' data-hero-layout="{hl}"'
             )
 
             def _merge_html_attrs(m):
                 attrs = m.group(1) or ""
-                # Strip any pre-existing data-card-style/data-easing/
-                # data-photo-filter/data-loading-mode so re-renders
-                # don't accumulate duplicates if the placeholder file
-                # ever ships with these attributes.
+                # Strip any pre-existing surface-treatment + layout/rhythm
+                # data-* attrs so re-renders don't accumulate duplicates if
+                # the placeholder file ever ships with these attributes.
                 attrs = re.sub(
-                    r'\s+data-(card-style|easing|photo-filter|loading-mode)\s*=\s*"[^"]*"',
+                    r'\s+data-(card-style|easing|photo-filter|loading-mode|density|header-align|hero-layout)\s*=\s*"[^"]*"',
                     "",
                     attrs,
                 )
@@ -22064,6 +22126,8 @@ def _resolve_active_theme():
                theme_logo_mode, theme_logo_image,
                theme_card_style, theme_easing,
                theme_photo_filter, theme_loading_mode,
+               theme_density, theme_section_frame_inset,
+               theme_header_align, hero_layout_mode,
                active_theme_id
         FROM site_settings WHERE id = 1
     """, fetchone=True) or {}
@@ -22092,6 +22156,26 @@ def _resolve_active_theme():
     settings["theme_easing"]       = ez if ez in _EASINGS       else "gentle"
     settings["theme_photo_filter"] = pf if pf in _PHOTO_FILTERS else "none"
     settings["theme_loading_mode"] = lm if lm in _LOADING_MODES else "logo_name"
+    # Layout & rhythm enums (Task #63 / items 6, 7, 9, 16). Same defensive
+    # normalization pattern as the surface-treatment block above — invalid
+    # values from a hand-crafted POST collapse to the documented default
+    # so the public site never receives an unrecognized data-* attr.
+    _DENSITIES        = ("compact", "comfortable", "spacious")
+    _HEADER_ALIGNS    = ("centered", "left", "numbered", "split")
+    _HERO_LAYOUTS     = ("full_bleed", "split", "text_mesh", "carousel", "video")
+    dn = (settings.get("theme_density")      or "comfortable").strip().lower() or "comfortable"
+    ha = (settings.get("theme_header_align") or "centered").strip().lower()    or "centered"
+    hl = (settings.get("hero_layout_mode")   or "full_bleed").strip().lower()  or "full_bleed"
+    settings["theme_density"]      = dn if dn in _DENSITIES     else "comfortable"
+    settings["theme_header_align"] = ha if ha in _HEADER_ALIGNS else "centered"
+    settings["hero_layout_mode"]   = hl if hl in _HERO_LAYOUTS  else "full_bleed"
+    # Frame inset is a clamped integer (0-32 px). 0 is the legitimate
+    # "edge-to-edge" default so we accept None / blank / 0 the same way.
+    try:
+        fi = int(settings.get("theme_section_frame_inset") or 0)
+    except (TypeError, ValueError):
+        fi = 0
+    settings["theme_section_frame_inset"] = max(0, min(32, fi))
     # NUMERIC columns come back as Decimal — coerce to float so JSON
     # serialization works and the frontend can do math on them directly.
     for k in ("theme_loading_bg_alpha", "theme_radius_rem",
@@ -22234,6 +22318,22 @@ def admin_update_theme():
     if photo_filter not in _PHOTO_FILTERS_W: photo_filter = "none"
     if loading_mode not in _LOADING_MODES_W: loading_mode = "logo_name"
 
+    # Layout & rhythm enums (Task #63 / items 6, 7, 9, 16). Same
+    # whitelist-or-default pattern as the surface-treatment block above.
+    _DENSITIES_W       = ("compact", "comfortable", "spacious")
+    _HEADER_ALIGNS_W   = ("centered", "left", "numbered", "split")
+    _HERO_LAYOUTS_W    = ("full_bleed", "split", "text_mesh", "carousel", "video")
+    density       = (data.get("theme_density")      or "comfortable").strip().lower() or "comfortable"
+    header_align  = (data.get("theme_header_align") or "centered").strip().lower()    or "centered"
+    hero_layout   = (data.get("hero_layout_mode")   or "full_bleed").strip().lower()  or "full_bleed"
+    if density      not in _DENSITIES_W:     density      = "comfortable"
+    if header_align not in _HEADER_ALIGNS_W: header_align = "centered"
+    if hero_layout  not in _HERO_LAYOUTS_W:  hero_layout  = "full_bleed"
+    # Section frame inset is a clamped integer (px). The slider exposes
+    # 0-32; values outside that range collapse to the closer endpoint
+    # so a stray POST can't blow up section padding to a useless extreme.
+    frame_inset   = _num("theme_section_frame_inset", 0, 0, 32, int)
+
     result = execute_db(
         """UPDATE site_settings SET
              theme_bg = %s, theme_section1 = %s, theme_section2 = %s,
@@ -22245,6 +22345,8 @@ def admin_update_theme():
              theme_logo_mode = %s, theme_logo_image = %s,
              theme_card_style = %s, theme_easing = %s,
              theme_photo_filter = %s, theme_loading_mode = %s,
+             theme_density = %s, theme_section_frame_inset = %s,
+             theme_header_align = %s, hero_layout_mode = %s,
              updated_at = NOW()
            WHERE id = 1 RETURNING *""",
         (
@@ -22260,6 +22362,7 @@ def admin_update_theme():
             loading_alpha, glass_blur, radius_rem, transition_s,
             accent_secondary, accent_gradient, logo_mode, logo_image,
             card_style, easing, photo_filter, loading_mode,
+            density, frame_inset, header_align, hero_layout,
         )
     )
 

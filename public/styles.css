@@ -119,14 +119,28 @@ SECTIONS:
   /* Scroll cooldown for wheel navigation (managed in JS, but CSS transition matches) */
   --ken-burns-duration: 12s;
 
-  /* Spacing scale */
-  --space-xs: 0.25rem;
-  --space-sm: 0.5rem;
-  --space-md: 1rem;
-  --space-lg: 1.5rem;
-  --space-xl: 2rem;
-  --space-2xl: 3rem;
-  --space-3xl: 5rem;
+  /* Spacing scale.
+     Each token multiplies its base rem by --space-scale so admin → Themes
+     → Density (compact 0.75x / comfortable 1.0x / spacious 1.25x) resizes
+     every section padding, gap, and rhythm value site-wide via a single
+     CSS var change — no per-rule overrides required. The fallback `1`
+     keeps installs that pre-date the density column painting identically
+     to before. (Task #63 / item 6) */
+  --space-scale: 1;
+  --space-xs:  calc(0.25rem * var(--space-scale, 1));
+  --space-sm:  calc(0.5rem  * var(--space-scale, 1));
+  --space-md:  calc(1rem    * var(--space-scale, 1));
+  --space-lg:  calc(1.5rem  * var(--space-scale, 1));
+  --space-xl:  calc(2rem    * var(--space-scale, 1));
+  --space-2xl: calc(3rem    * var(--space-scale, 1));
+  --space-3xl: calc(5rem    * var(--space-scale, 1));
+
+  /* Section frame inset — horizontal padding added on top of --space-xl
+     so the painted background-clip:content-box rule (set on
+     .landing-section below) leaves more page-bg visible on either edge.
+     0 = current edge-to-edge default; 32 = floating-card framing. The
+     server clamps this to 0..32 px before injection. (Task #63 / item 7) */
+  --section-frame-inset: 0px;
 }
 
 
@@ -435,6 +449,194 @@ html[data-loading-mode="fade_only"] .loading-panel {
 html[data-loading-mode="fade_only"] .loading-logo-badge,
 html[data-loading-mode="fade_only"] .loading-site-name,
 html[data-loading-mode="fade_only"] .loading-shimmer { display: none; }
+
+
+/* =============================================================================
+   2d. LAYOUT & RHYTHM CONTROLS  (Task #63 / items 6, 7, 9, 16)
+   =============================================================================
+   Four admin-controlled knobs on the public site, all driven off data-*
+   attrs the server emits on <html> (so the right rhythm/header/hero paint
+   on first frame) and via the --space-scale + --section-frame-inset CSS
+   vars in the injected <style>:
+
+     • Density       — compact (0.75x), comfortable (1.0x), spacious (1.25x).
+                        Multiplies the base spacing scale defined in :root.
+     • Frame Inset   — 0..32 px gutter added to .landing-section padding-x,
+                        widening the painted page-bg around each section.
+     • Header Align  — centered (default), left, numbered ("01." prefix), split.
+     • Hero Layout   — full_bleed (default), split (50/50 grid), text_mesh
+                        (text-only on a CSS mesh gradient), carousel (image bg
+                        cycles through gallery images via JS), video (forces
+                        the existing hero <video> on, hides the bg image).
+============================================================================= */
+
+/* ---------- Density: belt-and-suspenders override.
+   The :root scale already keys off --space-scale, but server-side var
+   injection runs slightly *after* the parsed CSS sets --space-scale: 1.
+   These [data-density] selectors re-set the var so the very first paint
+   already has the chosen scale even before the injected <style> arrives. */
+html[data-density="compact"]     :root,
+html[data-density="compact"]     { --space-scale: 0.75; }
+html[data-density="comfortable"] :root,
+html[data-density="comfortable"] { --space-scale: 1; }
+html[data-density="spacious"]    :root,
+html[data-density="spacious"]    { --space-scale: 1.25; }
+
+/* ---------- Header alignment.
+   Every section header in this codebase shares the .section-header class
+   (eyebrow + h2 + intro). The default is centered text (already set by
+   existing rules). The variants below re-align the block and, for
+   "numbered", add a CSS counter so the eyebrow gains an "01." prefix
+   that auto-increments per section without any markup edits. */
+
+/* Left-aligned: pull the header to the start, narrow the intro so it
+   stays readable, and align inner text. */
+html[data-header-align="left"] .section-header {
+  text-align: left;
+  align-items: flex-start;
+  margin-left: 0;
+  margin-right: auto;
+}
+html[data-header-align="left"] .section-header > * {
+  text-align: left;
+}
+
+/* Numbered: same left alignment plus a CSS counter prefix on the eyebrow.
+   We scope the counter to .landing-section because those are the ones
+   the visitor sees in scroll order; hero is excluded so the count starts
+   at the first content section. */
+html[data-header-align="numbered"] {
+  counter-reset: landing-section;
+}
+html[data-header-align="numbered"] .landing-section {
+  counter-increment: landing-section;
+}
+html[data-header-align="numbered"] .section-header {
+  text-align: left;
+  align-items: flex-start;
+}
+html[data-header-align="numbered"] .section-header > * {
+  text-align: left;
+}
+html[data-header-align="numbered"] .landing-section .section-eyebrow::before {
+  /* %02d-style zero pad via a CSS counter style. The accent color hooks
+     into the existing palette so the prefix recolors with the theme. */
+  content: counter(landing-section, decimal-leading-zero) " — ";
+  color: var(--color-accent, currentColor);
+  font-weight: 600;
+  margin-right: 0.15em;
+}
+
+/* Split: eyebrow on the left, title + intro on the right, inside a
+   responsive grid. Falls back to a stacked block layout under 720 px so
+   small screens never end up with a one-word column. */
+@media (min-width: 720px) {
+  html[data-header-align="split"] .section-header {
+    display: grid;
+    grid-template-columns: minmax(140px, 1fr) minmax(0, 3fr);
+    gap: var(--space-lg);
+    align-items: start;
+    text-align: left;
+  }
+  html[data-header-align="split"] .section-header .section-eyebrow {
+    grid-column: 1;
+    text-align: left;
+  }
+  html[data-header-align="split"] .section-header .section-title,
+  html[data-header-align="split"] .section-header .section-intro {
+    grid-column: 2;
+    text-align: left;
+  }
+}
+
+/* ---------- Hero layout variants.
+   The hero markup in index.html is fixed (image bg + content panel +
+   optional <video>). We morph its visual structure entirely in CSS so
+   no template branching is required. Each variant only touches the hero
+   region (#hero-section / .hero-section) — all other sections stay on
+   their default layout. */
+
+/* "split" — 50/50 grid: existing #hero-bg (which already carries the
+   uploaded image as `background-image`) sits in column 1, and the
+   .hero-content panel sits in column 2. We grid-place both children
+   directly so no extra markup is needed. The .hero-overlay scrim is
+   constrained to column 1 so the right (text) column reads against
+   the section's solid bg color. Below 720 px we revert to the default
+   stacked layout so a mobile column doesn't squeeze the title. */
+@media (min-width: 720px) {
+  html[data-hero-layout="split"] .hero-section {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr;
+    align-items: stretch;
+  }
+  html[data-hero-layout="split"] .hero-section .hero-bg,
+  html[data-hero-layout="split"] .hero-section .hero-overlay {
+    position: relative !important;
+    inset: auto !important;
+    grid-column: 1;
+    grid-row: 1;
+    align-self: stretch;
+    width: 100%;
+    height: 100%;
+    min-height: 60vh;
+  }
+  html[data-hero-layout="split"] .hero-section .hero-overlay {
+    pointer-events: none;
+  }
+  html[data-hero-layout="split"] .hero-content {
+    grid-column: 2;
+    grid-row: 1;
+    text-align: left;
+    align-items: flex-start;
+    padding: var(--space-3xl) var(--space-xl);
+    max-width: none;
+    align-self: center;
+  }
+  html[data-hero-layout="split"] .hero-content > * {
+    text-align: left;
+  }
+  /* Hero nav still needs to span the full width above the grid so the
+     logo and CTA buttons don't get pushed into the right column. */
+  html[data-hero-layout="split"] .hero-section .hero-nav {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    z-index: 5;
+  }
+}
+
+/* "text_mesh" — strip the photo entirely and paint a CSS mesh gradient
+   built from the active theme palette directly on .hero-section. The
+   image carrier (#hero-bg) is hidden; .hero-section paints the mesh
+   instead. Body text stays centered for an "editorial cover" feel. */
+html[data-hero-layout="text_mesh"] .hero-section {
+  background-image:
+    radial-gradient(ellipse at 20% 10%, rgba(var(--color-bg-rgb, 6 11 20) / 0.4), transparent 60%),
+    radial-gradient(ellipse at 80% 30%, color-mix(in srgb, var(--color-accent) 35%, transparent), transparent 65%),
+    radial-gradient(ellipse at 50% 90%, color-mix(in srgb, var(--color-section-1) 70%, transparent), transparent 70%),
+    linear-gradient(135deg, var(--color-bg), var(--color-section-2)) !important;
+}
+html[data-hero-layout="text_mesh"] .hero-section .hero-bg {
+  display: none !important;
+}
+
+/* "carousel" — image bg cycles through gallery photos via JS
+   (applyHeroCarousel targets #hero-bg directly). The CSS adds a smooth
+   cross-fade on #hero-bg's background-image so the swap doesn't snap. */
+html[data-hero-layout="carousel"] .hero-section .hero-bg {
+  transition: background-image var(--transition-slow, 0.8s) var(--ease-active, ease) !important;
+}
+
+/* "video" — force-show the existing hero <video class="hero-video"> and
+   hide the bg image carrier so the video reads as the primary surface.
+   If no video has been uploaded the section gracefully falls back to
+   the theme bg color via the existing inline style. */
+html[data-hero-layout="video"] .hero-section .hero-video {
+  display: block !important;
+  opacity: 1 !important;
+}
+html[data-hero-layout="video"] .hero-section .hero-bg {
+  display: none !important;
+}
 
 
 /* =============================================================================
@@ -931,7 +1133,12 @@ body.theme-accent-gradient .section-divider {
   position: relative;
   min-height: 100vh;
   min-height: 100dvh;
-  padding: var(--space-3xl) var(--space-xl);
+  /* Horizontal padding adds --section-frame-inset on top of --space-xl so
+     the admin's "Section Frame Inset" slider (Task #63 / item 7) widens
+     the visible page-bg gutter on either edge of every section without
+     losing the existing comfortable text margin. Vertical padding stays
+     on the spacing scale so density alone controls top/bottom rhythm. */
+  padding: var(--space-3xl) calc(var(--space-xl) + var(--section-frame-inset, 0px));
   /* Frame the section: clip the painted background to the content box so the
      existing padding becomes a visible border of the page background (body's
      --color-bg) instead of the section color extending edge-to-edge. The
