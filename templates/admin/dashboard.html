@@ -483,6 +483,22 @@ TO CUSTOMIZE THIS DASHBOARD:
       white-space: nowrap;
     }
 
+    /* Super-admin audit panel (Developer tab).
+       Desktop: bounded scrollable area so it doesn't dominate the
+       page. Mobile: drop the bounded scroll entirely so a finger
+       drag inside the panel scrolls the page instead of getting
+       trapped in a 360px tall island. The wide table inside still
+       scrolls horizontally on phones via overflow-x:auto. */
+    .audit-panel {
+      background: var(--admin-bg-soft, rgba(127,127,127,0.06));
+      border: 1px solid var(--admin-border, rgba(127,127,127,0.18));
+      border-radius: 8px;
+      padding: 0.5rem;
+      max-height: 360px;
+      overflow: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
     .form-panel {
       background: var(--admin-surface);
       backdrop-filter: var(--admin-blur);
@@ -798,6 +814,17 @@ TO CUSTOMIZE THIS DASHBOARD:
       .data-table { font-size: 0.8125rem; }
       .admin-header { padding: 1rem; }
       .tab-content { padding: 1rem; }
+
+      /* Mobile override for the audit panel — see desktop rule
+         above for rationale. Letting overflow-y go visible means
+         the panel grows with its content and a normal page scroll
+         passes right through it; overflow-x stays auto so the wide
+         6-column table can still scroll sideways. */
+      .audit-panel {
+        max-height: none;
+        overflow-x: auto;
+        overflow-y: visible;
+      }
 
       /* Prevent iOS auto-zoom: inputs below 16px trigger Safari's zoom-on-focus */
       .form-group input,
@@ -2752,8 +2779,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       <p style="margin:0 0 0.75rem 0; font-size:0.8125rem; color:var(--admin-text-muted);">
         The 50 most recent lock events: unlocks (success / wrong key / throttled), manual locks, and auto-locks when the 30-min TTL expires or you log out. Useful for spotting unauthorized attempts.
       </p>
-      <div id="developer-audit" data-testid="list-developer-audit"
-           style="background:var(--admin-bg-soft, rgba(127,127,127,0.06)); border:1px solid var(--admin-border, rgba(127,127,127,0.18)); border-radius:8px; padding:0.5rem; max-height:360px; overflow-y:auto;">
+      <div id="developer-audit" class="audit-panel" data-testid="list-developer-audit">
         <div class="empty-state" style="padding:0.75rem;" data-testid="text-developer-audit-loading">Loading…</div>
       </div>
     </div>
