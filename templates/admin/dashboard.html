@@ -5841,14 +5841,136 @@ TO CUSTOMIZE THIS DASHBOARD:
            SURFACE TREATMENT PRESETS (Task #62 — items 3, 5, 12, 13)
            Four named pickers that swap the personality of every card,
            the motion curve, the photo treatment, and the boot overlay.
-           Each picker is a <select> populated from a hard-coded preset
-           list (no API needed — these names are frozen by CSS rules in
-           styles.css and the validator in app.py).
+           Each picker has a small live preview thumbnail next to it
+           (driven by updateThemePreview()) so the admin can see what
+           the preset looks like BEFORE saving. Preset names are frozen
+           by the CSS rules in public/styles.css and the validator in
+           app.py — keep the option values in sync with both.
            ============================================================ -->
+      <style>
+        /* Self-contained styles for the 4 mini preview thumbnails.
+           Admin pages don't load public/styles.css so we can't rely on
+           its [data-card-style]/[data-photo-filter] selectors here.
+           Each thumbnail re-implements just enough of the public-site
+           look to be recognisable in a 64–72px tall box.            */
+        .surface-preview-row {
+          display: flex; align-items: center; gap: 0.75rem;
+          margin-top: 0.5rem;
+        }
+        .surface-preview-row .surface-preview {
+          flex: 0 0 auto; width: 116px; height: 70px;
+          border-radius: 0.45rem; position: relative; overflow: hidden;
+          background: #1a1d22;
+          border: 1px solid rgba(255,255,255,0.08);
+        }
+        .surface-preview-row .surface-preview-caption {
+          font-size: 0.7rem; color: var(--admin-text-muted); line-height: 1.25;
+        }
+        /* Card-style thumbnail variants ------------------------------ */
+        .surface-preview-card { padding: 10px; }
+        .surface-preview-card .mini-card {
+          width: 100%; height: 100%;
+          display: flex; align-items: flex-end; padding: 6px;
+          font-size: 0.6rem; color: rgba(255,255,255,0.85);
+          transition: all 0.2s ease;
+        }
+        [data-preview-card-style="editorial"] .mini-card {
+          background: rgba(255,255,255,0.08); backdrop-filter: blur(6px);
+          border: 1px solid rgba(255,255,255,0.14);
+          border-radius: 0.5rem;
+          box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        }
+        [data-preview-card-style="glass"] .mini-card {
+          background: rgba(255,255,255,0.14); backdrop-filter: blur(12px);
+          border: 1px solid rgba(255,255,255,0.22);
+          border-radius: 0.5rem;
+          box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+        }
+        [data-preview-card-style="brutal"] .mini-card {
+          background: #2a2d33; border: 2px solid #fff; border-radius: 0;
+          box-shadow: 4px 4px 0 0 var(--admin-accent, #fb923c);
+        }
+        [data-preview-card-style="minimal"] .mini-card {
+          background: transparent; border: 1px solid rgba(255,255,255,0.18);
+          border-radius: 0.2rem; box-shadow: none;
+        }
+        /* Motion thumbnail — animates a dot across the box on each
+           preview update. Triggered by toggling .play.            */
+        .surface-preview-motion .mini-track {
+          position: absolute; left: 8px; right: 8px; top: 50%;
+          height: 2px; background: rgba(255,255,255,0.12);
+          transform: translateY(-50%);
+        }
+        .surface-preview-motion .mini-dot {
+          position: absolute; left: 8px; top: 50%;
+          width: 14px; height: 14px; border-radius: 50%;
+          background: var(--admin-accent, #fb923c);
+          transform: translate(0, -50%);
+          transition: transform 0.9s var(--mini-ease, cubic-bezier(0.22, 1, 0.36, 1));
+        }
+        .surface-preview-motion.play .mini-dot {
+          transform: translate(80px, -50%);
+        }
+        /* Photo thumbnail — real <img> so the photo-filter CSS we set
+           on the parent (via inline `filter:`) takes effect.        */
+        .surface-preview-photo .mini-img {
+          width: 100%; height: 100%; object-fit: cover; display: block;
+          transition: filter 0.2s ease;
+        }
+        .surface-preview-photo .mini-grain {
+          position: absolute; inset: 0; pointer-events: none;
+          background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.4'/></svg>");
+          mix-blend-mode: overlay; opacity: 0; transition: opacity 0.2s ease;
+        }
+        .surface-preview-photo[data-preview-photo-filter="grain"] .mini-grain { opacity: 0.5; }
+        /* Loading-mode thumbnail — mini reproduction of the boot
+           overlay markup. Each preset hides/shows different parts.  */
+        .surface-preview-loading {
+          background: rgba(0,0,0,0.55); display: flex;
+          align-items: center; justify-content: center;
+        }
+        .surface-preview-loading .mini-panel {
+          display: flex; flex-direction: column; align-items: center; gap: 4px;
+          padding: 6px 10px; border-radius: 6px;
+          background: rgba(255,255,255,0.06);
+          border: 1px solid rgba(255,255,255,0.1);
+        }
+        .surface-preview-loading .mini-logo {
+          width: 18px; height: 18px; border-radius: 50%;
+          background: var(--admin-accent, #fb923c);
+        }
+        .surface-preview-loading .mini-name {
+          font-size: 0.55rem; color: rgba(255,255,255,0.85); letter-spacing: 0.05em;
+        }
+        .surface-preview-loading .mini-shimmer {
+          width: 60px; height: 3px; border-radius: 2px;
+          background: linear-gradient(90deg,
+            rgba(255,255,255,0.05) 0%,
+            rgba(255,255,255,0.35) 50%,
+            rgba(255,255,255,0.05) 100%);
+          background-size: 200% 100%;
+          animation: mini-shimmer 1.6s linear infinite;
+        }
+        @keyframes mini-shimmer {
+          0% { background-position: -100% 0; }
+          100% { background-position: 100% 0; }
+        }
+        [data-preview-loading-mode="logo_only"] .mini-name,
+        [data-preview-loading-mode="logo_only"] .mini-shimmer { display: none; }
+        [data-preview-loading-mode="spinner_only"] .mini-logo,
+        [data-preview-loading-mode="spinner_only"] .mini-name { display: none; }
+        [data-preview-loading-mode="fade_only"] .mini-panel {
+          background: transparent; border: none;
+        }
+        [data-preview-loading-mode="fade_only"] .mini-logo,
+        [data-preview-loading-mode="fade_only"] .mini-name,
+        [data-preview-loading-mode="fade_only"] .mini-shimmer { display: none; }
+      </style>
+
       <h3 style="margin-top:2rem;margin-bottom:0.25rem;">Surface Treatment</h3>
       <p style="font-size:0.8rem;color:var(--admin-text-muted);margin-top:0;margin-bottom:1rem;">
         Pick a card style, motion personality, photo filter, and loading mode.
-        Changes apply on save without a page reload.
+        Each picker shows a live preview — changes apply on save without a page reload.
       </p>
       <div class="form-grid">
         <div class="form-group">
@@ -5861,6 +5983,13 @@ TO CUSTOMIZE THIS DASHBOARD:
             <option value="brutal">Brutal — square corners, hard accent shadow</option>
             <option value="minimal">Minimal — hairline border, no shadow</option>
           </select>
+          <div class="surface-preview-row">
+            <div id="surface-preview-card" class="surface-preview surface-preview-card"
+                 data-preview-card-style="editorial" data-testid="preview-card-style">
+              <div class="mini-card">Card</div>
+            </div>
+            <div class="surface-preview-caption">Live preview of the chosen card style</div>
+          </div>
         </div>
         <div class="form-group">
           <label for="theme-easing">Motion personality</label>
@@ -5872,10 +6001,19 @@ TO CUSTOMIZE THIS DASHBOARD:
             <option value="bouncy">Bouncy — slight overshoot</option>
             <option value="editorial">Editorial — slow in-out</option>
           </select>
+          <div class="surface-preview-row">
+            <div id="surface-preview-motion" class="surface-preview surface-preview-motion"
+                 data-testid="preview-motion" style="cursor:pointer;"
+                 onclick="this.classList.remove('play'); void this.offsetWidth; this.classList.add('play');">
+              <div class="mini-track"></div>
+              <div class="mini-dot"></div>
+            </div>
+            <div class="surface-preview-caption">Click the box to replay the easing</div>
+          </div>
         </div>
         <div class="form-group">
           <label for="theme-photo-filter">Photo filter</label>
-          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Global filter on hero background and card cover images</span>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Global filter on every public-site image and background</span>
           <select id="theme-photo-filter" data-testid="select-theme-photo-filter"
                   onchange="updateThemePreview()">
             <option value="none">None (default)</option>
@@ -5884,6 +6022,15 @@ TO CUSTOMIZE THIS DASHBOARD:
             <option value="bw">Black &amp; white</option>
             <option value="grain">Grain — subtle film overlay</option>
           </select>
+          <div class="surface-preview-row">
+            <div id="surface-preview-photo" class="surface-preview surface-preview-photo"
+                 data-preview-photo-filter="none" data-testid="preview-photo-filter">
+              <img class="mini-img" alt="" aria-hidden="true"
+                   src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 116 70'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%23f59e0b'/><stop offset='0.5' stop-color='%23ec4899'/><stop offset='1' stop-color='%233b82f6'/></linearGradient></defs><rect width='116' height='70' fill='url(%23g)'/><circle cx='25' cy='22' r='10' fill='%23fde68a' opacity='0.85'/><path d='M0 55 L40 35 L70 50 L116 28 L116 70 L0 70 Z' fill='%23064e3b' opacity='0.7'/></svg>">
+              <div class="mini-grain"></div>
+            </div>
+            <div class="surface-preview-caption">Sample image with the chosen filter</div>
+          </div>
         </div>
         <div class="form-group">
           <label for="theme-loading-mode">Loading mode</label>
@@ -5895,6 +6042,17 @@ TO CUSTOMIZE THIS DASHBOARD:
             <option value="spinner_only">Spinner only</option>
             <option value="fade_only">Fade only — bare backdrop</option>
           </select>
+          <div class="surface-preview-row">
+            <div id="surface-preview-loading" class="surface-preview surface-preview-loading"
+                 data-preview-loading-mode="logo_name" data-testid="preview-loading-mode">
+              <div class="mini-panel">
+                <div class="mini-logo"></div>
+                <div class="mini-name">SITE NAME</div>
+                <div class="mini-shimmer"></div>
+              </div>
+            </div>
+            <div class="surface-preview-caption">Mini boot overlay reproduction</div>
+          </div>
         </div>
       </div>
 
@@ -9926,6 +10084,47 @@ TO CUSTOMIZE THIS DASHBOARD:
       }
       if (photoFilterEl) root.setAttribute('data-photo-filter', photoFilterEl.value);
       if (loadingModeEl) root.setAttribute('data-loading-mode', loadingModeEl.value);
+
+      // ----------------------------------------------------------------
+      // Drive the 4 mini preview thumbnails next to each picker. Each
+      // thumbnail has its own self-contained styles (block above the
+      // pickers) so we just toggle data-preview-* attrs and inline
+      // styles. The motion preview replays its dot animation on every
+      // call so the admin can see the easing change immediately.
+      // ----------------------------------------------------------------
+      const cardPrev    = document.getElementById('surface-preview-card');
+      const motionPrev  = document.getElementById('surface-preview-motion');
+      const photoPrev   = document.getElementById('surface-preview-photo');
+      const loadingPrev = document.getElementById('surface-preview-loading');
+      if (cardPrev && cardStyleEl) {
+        cardPrev.setAttribute('data-preview-card-style', cardStyleEl.value);
+      }
+      if (motionPrev && easingEl) {
+        motionPrev.style.setProperty('--mini-ease', easeCurves[easingEl.value] || easeCurves.gentle);
+        // Replay the dot: drop the .play class, force layout, re-add.
+        motionPrev.classList.remove('play');
+        // eslint-disable-next-line no-unused-expressions
+        motionPrev.offsetWidth;
+        motionPrev.classList.add('play');
+      }
+      if (photoPrev && photoFilterEl) {
+        photoPrev.setAttribute('data-preview-photo-filter', photoFilterEl.value);
+        const img = photoPrev.querySelector('.mini-img');
+        if (img) {
+          // Mirror the same filters as the public-site CSS rules.
+          const filterMap = {
+            none: 'none',
+            warm: 'saturate(1.15) hue-rotate(-8deg) brightness(1.04)',
+            cool: 'saturate(0.92) hue-rotate(12deg) brightness(0.98)',
+            bw:   'grayscale(1) contrast(1.08)',
+            grain:'contrast(1.1) saturate(0.95) brightness(0.96)',
+          };
+          img.style.filter = filterMap[photoFilterEl.value] || 'none';
+        }
+      }
+      if (loadingPrev && loadingModeEl) {
+        loadingPrev.setAttribute('data-preview-loading-mode', loadingModeEl.value);
+      }
 
       // Derive --color-bg-rgb from the chosen bg hex so any rgba() that
       // reads it (loading screen tint) re-tints in real time.

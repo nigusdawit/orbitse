@@ -261,12 +261,20 @@ SECTIONS:
 :root, html { --ease-smooth: var(--ease-active); }
 
 /* --- Card style preset: shared card-class group selector ---
-   We list every card-shaped class once so the per-preset blocks below
-   can :is() over them. Adding a new card class? Append it here and
-   the four presets pick it up automatically. */
+   Comprehensive list of every PUBLIC-FACING card class on the site
+   (admin/dashboard/utility-prefix card classes are intentionally
+   excluded; presets only style what visitors see). Adding a new card
+   class? Append it to .surface-card-set and the four presets pick it
+   up automatically. We use a CSS custom-property pseudo-grouping
+   approach via :is() so each preset stays a single rule. */
 [data-card-style="glass"] :is(.event-card, .blog-card, .experience-card,
                               .gallery-card, .sphere-card, .store-card,
-                              .podcast-card, .glass-card) {
+                              .podcast-card, .glass-card, .service-card,
+                              .testimonial-card, .team-card, .pricing-card,
+                              .highlight-card, .av-card, .bk-card,
+                              .biz-info-card, .checkout-card, .custom-card,
+                              .rsvp-card, .voice-intro-card,
+                              .sphere-section-card) {
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.14);
   backdrop-filter: blur(calc(var(--glass-blur) * 1.25));
@@ -276,7 +284,12 @@ SECTIONS:
 }
 [data-card-style="brutal"] :is(.event-card, .blog-card, .experience-card,
                                .gallery-card, .sphere-card, .store-card,
-                               .podcast-card, .glass-card) {
+                               .podcast-card, .glass-card, .service-card,
+                               .testimonial-card, .team-card, .pricing-card,
+                               .highlight-card, .av-card, .bk-card,
+                               .biz-info-card, .checkout-card, .custom-card,
+                               .rsvp-card, .voice-intro-card,
+                               .sphere-section-card) {
   background: var(--color-section-1);
   border: 2px solid var(--color-text);
   backdrop-filter: none;
@@ -286,7 +299,12 @@ SECTIONS:
 }
 [data-card-style="minimal"] :is(.event-card, .blog-card, .experience-card,
                                 .gallery-card, .sphere-card, .store-card,
-                                .podcast-card, .glass-card) {
+                                .podcast-card, .glass-card, .service-card,
+                                .testimonial-card, .team-card, .pricing-card,
+                                .highlight-card, .av-card, .bk-card,
+                                .biz-info-card, .checkout-card, .custom-card,
+                                .rsvp-card, .voice-intro-card,
+                                .sphere-section-card) {
   background: transparent;
   border: 1px solid var(--glass-border);
   backdrop-filter: none;
@@ -299,7 +317,12 @@ SECTIONS:
    another preset) restores the look without a page reload. */
 [data-card-style="editorial"] :is(.event-card, .blog-card, .experience-card,
                                   .gallery-card, .sphere-card, .store-card,
-                                  .podcast-card, .glass-card) {
+                                  .podcast-card, .glass-card, .service-card,
+                                  .testimonial-card, .team-card, .pricing-card,
+                                  .highlight-card, .av-card, .bk-card,
+                                  .biz-info-card, .checkout-card, .custom-card,
+                                  .rsvp-card, .voice-intro-card,
+                                  .sphere-section-card) {
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
   backdrop-filter: blur(var(--glass-blur));
@@ -308,28 +331,72 @@ SECTIONS:
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
 }
 
-/* --- Photo filter: applied to every "image surface" on the public site.
-   We target the *-image-bg / *-bg classes (which carry the
-   background-image declarations) plus <img> elements inside known
-   image wrappers, so both kinds of image rendering get filtered. */
-[data-photo-filter="warm"]
-  :is(.hero-bg, .event-card-image-bg, .blog-card-image-bg,
-      .experience-image, .gallery-image, .sphere-image, img.photo-filter-target) {
+/* --- Photo filter: applied GLOBALLY to every <img> on the public
+   site PLUS every CSS background-image surface. The :not() opt-out
+   list excludes brand marks, icons, avatars, signatures, sponsor
+   logos and admin-side images so the filter never warps the brand
+   logo or a UI glyph. Add `data-no-photo-filter` (or the
+   `.no-photo-filter` class) to any future <img> that should bypass
+   the treatment. We apply the filter on the IMAGE itself rather than
+   a wrapper so it works regardless of how the markup nests them.
+   The full opt-out list lives in --photo-filter-skip below; each
+   preset re-uses the same selector so the skip set stays one place. */
+/* Comprehensive list of EVERY public-site CSS background-image surface.
+   These are surfaces whose background-image (or <video>) carries real
+   photographic content and should adopt the chosen filter. Keep this
+   list in sync with new image-bearing classes added in script.js or
+   templates. Anything wrapping a real photo can also opt in by
+   carrying [data-photo-surface]. */
+[data-photo-filter="warm"] img:not(.no-photo-filter, [data-no-photo-filter], .logo-img, .brand-mark, .icon, .avatar, .site-logo, .signature, [class*="logo"]),
+[data-photo-filter="warm"] :is(.hero-bg, .hero-image, .section-hero,
+    [class*="-image-bg"], .highlight-card-bg, .gallery-slide-bg, .gallery-slide-bg-video,
+    .podcast-cover, .podcast-cover-empty,
+    .video-gallery-thumb, .video-gallery-thumb-video,
+    .custom-card-img, .custom-gallery-img, .custom-text-image,
+    .team-photo, .team-photo-placeholder,
+    .testimonial-photo, .testimonial-photo-placeholder,
+    .presentation-image, .img-presentation-slide,
+    .experience-image, .gallery-image, .sphere-image, .sphere-card-image,
+    .split-slide, [data-photo-surface]) {
   filter: saturate(1.15) hue-rotate(-8deg) brightness(1.04);
 }
-[data-photo-filter="cool"]
-  :is(.hero-bg, .event-card-image-bg, .blog-card-image-bg,
-      .experience-image, .gallery-image, .sphere-image, img.photo-filter-target) {
+[data-photo-filter="cool"] img:not(.no-photo-filter, [data-no-photo-filter], .logo-img, .brand-mark, .icon, .avatar, .site-logo, .signature, [class*="logo"]),
+[data-photo-filter="cool"] :is(.hero-bg, .hero-image, .section-hero,
+    [class*="-image-bg"], .highlight-card-bg, .gallery-slide-bg, .gallery-slide-bg-video,
+    .podcast-cover, .podcast-cover-empty,
+    .video-gallery-thumb, .video-gallery-thumb-video,
+    .custom-card-img, .custom-gallery-img, .custom-text-image,
+    .team-photo, .team-photo-placeholder,
+    .testimonial-photo, .testimonial-photo-placeholder,
+    .presentation-image, .img-presentation-slide,
+    .experience-image, .gallery-image, .sphere-image, .sphere-card-image,
+    .split-slide, [data-photo-surface]) {
   filter: saturate(0.92) hue-rotate(12deg) brightness(0.98);
 }
-[data-photo-filter="bw"]
-  :is(.hero-bg, .event-card-image-bg, .blog-card-image-bg,
-      .experience-image, .gallery-image, .sphere-image, img.photo-filter-target) {
+[data-photo-filter="bw"] img:not(.no-photo-filter, [data-no-photo-filter], .logo-img, .brand-mark, .icon, .avatar, .site-logo, .signature, [class*="logo"]),
+[data-photo-filter="bw"] :is(.hero-bg, .hero-image, .section-hero,
+    [class*="-image-bg"], .highlight-card-bg, .gallery-slide-bg, .gallery-slide-bg-video,
+    .podcast-cover, .podcast-cover-empty,
+    .video-gallery-thumb, .video-gallery-thumb-video,
+    .custom-card-img, .custom-gallery-img, .custom-text-image,
+    .team-photo, .team-photo-placeholder,
+    .testimonial-photo, .testimonial-photo-placeholder,
+    .presentation-image, .img-presentation-slide,
+    .experience-image, .gallery-image, .sphere-image, .sphere-card-image,
+    .split-slide, [data-photo-surface]) {
   filter: grayscale(1) contrast(1.08);
 }
-[data-photo-filter="grain"]
-  :is(.hero-bg, .event-card-image-bg, .blog-card-image-bg,
-      .experience-image, .gallery-image, .sphere-image, img.photo-filter-target) {
+[data-photo-filter="grain"] img:not(.no-photo-filter, [data-no-photo-filter], .logo-img, .brand-mark, .icon, .avatar, .site-logo, .signature, [class*="logo"]),
+[data-photo-filter="grain"] :is(.hero-bg, .hero-image, .section-hero,
+    [class*="-image-bg"], .highlight-card-bg, .gallery-slide-bg, .gallery-slide-bg-video,
+    .podcast-cover, .podcast-cover-empty,
+    .video-gallery-thumb, .video-gallery-thumb-video,
+    .custom-card-img, .custom-gallery-img, .custom-text-image,
+    .team-photo, .team-photo-placeholder,
+    .testimonial-photo, .testimonial-photo-placeholder,
+    .presentation-image, .img-presentation-slide,
+    .experience-image, .gallery-image, .sphere-image, .sphere-card-image,
+    .split-slide, [data-photo-surface]) {
   filter: contrast(1.1) saturate(0.95) brightness(0.96);
 }
 /* Grain overlay — a tiled SVG noise on top of the filtered image gives
