@@ -246,11 +246,24 @@ function renderHero() {
   if (!siteSettings) return;
   applyScrollMode();
 
-  /* Set hero background image or video */
+  /* Set hero background image or video.
+     The choice of media is keyed off `hero_layout_mode` (Task #63 /
+     item 16) so the new hero-layout picker is the single source of
+     truth for which media element is visible:
+       - 'video'    → show <video> (only if hero_video_url is set,
+                       otherwise gracefully fall back to image so the
+                       hero is never blank)
+       - any other  → show #hero-bg image, regardless of whether
+                       hero_video_url is configured
+     This prevents a stale hero_video_url from overriding the picker
+     for non-video layouts (full_bleed/split/text_mesh/carousel). */
   const heroBg = document.getElementById('hero-bg');
   const heroVideo = document.getElementById('hero-video');
-  if (siteSettings.hero_video_url) {
-    /* Prefer video when provided: hide image bg and show muted/looping video */
+  const layoutMode = String(siteSettings.hero_layout_mode || 'full_bleed').trim().toLowerCase();
+  const wantsVideo = (layoutMode === 'video') && !!siteSettings.hero_video_url;
+  if (wantsVideo) {
+    /* Show muted/looping video; image bg is hidden by CSS rule
+       html[data-hero-layout="video"] .hero-section .hero-bg{display:none} */
     if (heroBg) heroBg.style.backgroundImage = '';
     if (heroVideo) {
       heroVideo.src = siteSettings.hero_video_url;
@@ -4103,6 +4116,26 @@ function applyLayoutRhythm(theme) {
   html.setAttribute('data-hero-layout',  hl);
   html.style.setProperty('--space-scale',          String(LAYOUT_DENSITY_SCALE[dn] || 1));
   html.style.setProperty('--section-frame-inset',  fi + 'px');
+
+  // Sync the live siteSettings cache + reconcile hero media (video vs
+  // image) so a layout switch via live theme update is deterministic:
+  //   - mode='video'  AND hero_video_url present → show <video>, hide #hero-bg
+  //   - any other mode                            → show #hero-bg, hide <video>
+  // renderHero() is the single source of truth for that decision; we
+  // re-run it here only when the mode actually changes (cheap diff)
+  // so we don't thrash the video element on every save. siteSettings
+  // may be undefined on the very first call (theme loads before the
+  // /api/site-settings round-trip completes) — that path is safe
+  // because renderHero() bails when !siteSettings, and the eventual
+  // first renderHero() call will read the now-updated cache.
+  if (typeof siteSettings === 'object' && siteSettings) {
+    if (siteSettings.hero_layout_mode !== hl) {
+      siteSettings.hero_layout_mode = hl;
+      try { renderHero(); } catch (e) { /* hero re-render is best-effort */ }
+    } else {
+      siteSettings.hero_layout_mode = hl;
+    }
+  }
 
   // Hero carousel timer is owned by applyHeroCarousel; start/stop based
   // on the chosen layout so switching away from "carousel" cleanly halts
