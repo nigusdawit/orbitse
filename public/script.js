@@ -30,7 +30,8 @@ HOW TO CUSTOMIZE:
   - TO CHANGE ANIMATIONS: Modify the CSS classes in styles.css or change
     the transition timing in the gallery navigation functions below.
   - TO CHANGE NAVIGATION BEHAVIOR: See the "GALLERY NAVIGATION" section.
-    The scroll cooldown (800ms) prevents too-rapid slide changes.
+    The scroll cooldown (350ms, matched to the CSS slide transition)
+    prevents too-rapid slide changes while still feeling responsive.
 
 SECTIONS:
   1. Global State
@@ -3136,7 +3137,7 @@ function createSectionsScene(cfg) {
    Controls how users move between slides in the Gallery view.
 
    SUPPORTED INPUT METHODS:
-   - Mouse wheel (with 800ms cooldown to prevent rapid-fire)
+   - Mouse wheel (with 350ms cooldown to prevent rapid-fire)
    - Touch swipe (50px minimum distance)
    - Keyboard arrows (up/down/left/right)
    - Click on dot navigation
@@ -3149,37 +3150,44 @@ function createSectionsScene(cfg) {
    4. CSS transitions handle the opacity and transform animation
 
    TO CHANGE TRANSITION SPEED:
-   - Modify --slide-transition in styles.css (currently 0.8s)
+   - Modify --slide-transition in styles.css (currently 0.35s)
 
    TO CHANGE SCROLL SENSITIVITY:
-   - Modify SCROLL_COOLDOWN_MS below (currently 800ms)
+   - Modify SCROLL_COOLDOWN_MS below (currently 350ms; keep aligned
+     with --slide-transition in styles.css to avoid mid-animation churn)
    - Modify WHEEL_THRESHOLD below (minimum deltaY to trigger, currently 30)
    - Modify SWIPE_THRESHOLD below (minimum touch distance, currently 50px)
 ============================================================================= */
 
-const SCROLL_COOLDOWN_MS = 800;  /* Milliseconds between allowed scroll events */
+const SCROLL_COOLDOWN_MS = 350;  /* Milliseconds between allowed scroll events.
+                                    Matches the slide CSS transition so navigation
+                                    feels responsive instead of "stuck waiting". */
 const WHEEL_THRESHOLD = 30;      /* Minimum wheel delta to trigger navigation */
 const SWIPE_THRESHOLD = 50;      /* Minimum swipe distance (pixels) to trigger */
 
 
 /**
  * Navigate to the next slide (scroll down).
- * Does nothing if already on the last slide.
+ * Wraps around to the first slide after the last.
+ * Forces the 'down' enter animation so the wrap from last→first
+ * still feels like "moving forward" instead of jumping backward.
  */
 function galleryNext() {
-  if (currentSlideIndex < galleryCards.length - 1) {
-    goToSlide(currentSlideIndex + 1);
-  }
+  if (!galleryCards.length) return;
+  const next = (currentSlideIndex + 1) % galleryCards.length;
+  goToSlide(next, 'down');
 }
 
 /**
  * Navigate to the previous slide (scroll up).
- * Does nothing if already on the first slide.
+ * Wraps around to the last slide before the first.
+ * Forces the 'up' enter animation so the wrap from first→last
+ * still feels like "moving backward" instead of jumping forward.
  */
 function galleryPrev() {
-  if (currentSlideIndex > 0) {
-    goToSlide(currentSlideIndex - 1);
-  }
+  if (!galleryCards.length) return;
+  const prev = (currentSlideIndex - 1 + galleryCards.length) % galleryCards.length;
+  goToSlide(prev, 'up');
 }
 
 /**
@@ -3187,16 +3195,24 @@ function galleryPrev() {
  * Handles the CSS transition between old and new slides.
  *
  * @param {number} newIndex - The target slide index (0-based)
+ * @param {'down'|'up'} [explicitDirection] - Optional explicit enter-animation
+ *   direction. Required when wrapping around the deck (last→first or first→last)
+ *   so the motion cue matches user intent instead of the numeric jump. When
+ *   omitted (e.g. dot-nav clicks, deep-link jumps), direction is inferred from
+ *   the index delta — the original behavior.
  */
-function goToSlide(newIndex) {
+function goToSlide(newIndex, explicitDirection) {
   if (newIndex === currentSlideIndex) return;
   if (newIndex < 0 || newIndex >= galleryCards.length) return;
 
   const slides = document.querySelectorAll('.gallery-slide');
   if (!slides.length) return;
 
-  /* Determine direction for the enter animation */
-  const direction = newIndex > currentSlideIndex ? 'down' : 'up';
+  /* Determine direction for the enter animation. Caller-supplied direction
+     wins (used by next/prev so wrap motion matches intent); otherwise infer
+     from the index delta (used by dot-nav and deep-link jumps). */
+  const direction = explicitDirection
+    || (newIndex > currentSlideIndex ? 'down' : 'up');
 
   /* Remove active state from current slide */
   slides[currentSlideIndex].classList.remove('slide-active');
@@ -3245,14 +3261,17 @@ function updateDotNav() {
 }
 
 /**
- * Enable/disable the up/down arrow buttons based on current position.
- * Disables "up" on the first slide, "down" on the last slide.
+ * Enable/disable the up/down arrow buttons.
+ * Both buttons stay enabled because navigation wraps around the
+ * deck — pressing "down" on the last slide returns to the first,
+ * and pressing "up" on the first slide jumps to the last.
  */
 function updateNavButtons() {
   const btnPrev = document.getElementById('btn-prev');
   const btnNext = document.getElementById('btn-next');
-  if (btnPrev) btnPrev.disabled = (currentSlideIndex === 0);
-  if (btnNext) btnNext.disabled = (currentSlideIndex === galleryCards.length - 1);
+  const hasSlides = galleryCards.length > 1;
+  if (btnPrev) btnPrev.disabled = !hasSlides;
+  if (btnNext) btnNext.disabled = !hasSlides;
 }
 
 

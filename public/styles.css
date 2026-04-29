@@ -107,7 +107,9 @@ SECTIONS:
   --ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
 
   /* Gallery slide transition duration */
-  --slide-transition: 0.8s;
+  --slide-transition: 0.35s;  /* Aligned with JS SCROLL_COOLDOWN_MS so the slide
+                                  animation completes by the time the next wheel/swipe
+                                  is accepted, preventing mid-animation flicker. */
 
   /* Scroll cooldown for wheel navigation (managed in JS, but CSS transition matches) */
   --ken-burns-duration: 12s;
@@ -980,8 +982,12 @@ html[data-scroll-mode="smooth"] .snap-section {
   z-index: 10;
   opacity: 0;
   transform: translateY(20px);
-  transition: opacity var(--slide-transition) var(--ease-smooth) 0.3s,
-              transform var(--slide-transition) var(--ease-smooth) 0.3s;
+  /* Small delay so text appears just after the slide settles. Tuned to ~1/3
+     of --slide-transition so it stays in proportion if the transition is
+     re-tuned (was 0.3s when the transition was 0.8s — too late for a 0.35s
+     transition, where text would have popped in at the very end). */
+  transition: opacity var(--slide-transition) var(--ease-smooth) 0.1s,
+              transform var(--slide-transition) var(--ease-smooth) 0.1s;
 }
 
 .slide-active .slide-content {
