@@ -1572,6 +1572,10 @@ function applySectionOrder() {
       /* For other built-in sections: check if they have data, show/hide, and reorder */
       const hasData = checkBuiltinHasData(slug);
       el.style.display = (enabled && hasData) ? '' : 'none';
+      /* Per-section background image (Task #60). Hero is excluded — its
+         background is owned by /api/site-settings (hero_image / hero_video_url)
+         and renderHero() already paints it. */
+      if (slug !== 'hero') applySectionBackground(el, section);
       /* Re-append to move it to the correct position in the container */
       landingContainer.appendChild(el);
 
@@ -1580,6 +1584,7 @@ function applySectionOrder() {
       const customEl = document.getElementById('section-custom-' + section.id);
       if (customEl) {
         customEl.style.display = enabled ? '' : 'none';
+        applySectionBackground(customEl, section);
         landingContainer.appendChild(customEl);
       }
     }
@@ -1593,6 +1598,58 @@ function applySectionOrder() {
 
   /* Update footer quick links based on which sections are enabled */
   updateFooterQuickLinks();
+}
+
+/**
+ * Apply a per-section background image (Task #60).
+ *
+ * When an admin uploads a photo on the Page Layout tab, the section row
+ * gets a `bg_image` URL plus a `bg_overlay_alpha` (0.0–1.0) controlling
+ * how dark the readability overlay sits on top of the photo.
+ *
+ * We layer two backgrounds:
+ *   1. A linear-gradient (rgba(0,0,0,alpha) → same) — the readability scrim
+ *   2. The photo itself, sized cover/center/no-repeat
+ *
+ * The fallback theme color (var(--bg-section-N)) is left in the inline
+ * `style` attribute on the section in index.html and remains the
+ * background-color underneath, so it shows through if the photo fails to
+ * load. We toggle a `has-bg-image` class so styles.css can adjust text
+ * color and the existing `background-clip: content-box` framing without
+ * fighting our inline backgroundImage rule.
+ */
+function applySectionBackground(el, section) {
+  if (!el) return;
+  const url = (section && section.bg_image) || '';
+  if (url) {
+    /* Clamp the overlay alpha defensively — server already does this on
+       PUT, but a stale page-bundle response from before the column
+       existed would yield undefined → 0.45 default. */
+    let alpha = parseFloat(section.bg_overlay_alpha);
+    if (!Number.isFinite(alpha)) alpha = 0.45;
+    alpha = Math.max(0, Math.min(1, alpha));
+    const scrim = `rgba(0,0,0,${alpha})`;
+    /* Escape any quotes in the URL just in case — uploaded filenames are
+       hex tokens but defense-in-depth keeps a future filename rename
+       (e.g. 'beach (1).jpg') from breaking the inline style. */
+    const safeUrl = String(url).replace(/"/g, '%22');
+    el.style.backgroundImage =
+      `linear-gradient(${scrim}, ${scrim}), url("${safeUrl}")`;
+    el.style.backgroundSize = 'cover, cover';
+    el.style.backgroundPosition = 'center, center';
+    el.style.backgroundRepeat = 'no-repeat, no-repeat';
+    el.classList.add('has-bg-image');
+  } else {
+    /* Reset to whatever the inline `style="background: var(--bg-section-X)"`
+       attribute paints — clearing the JS-set properties hands control back
+       to the static stylesheet without us having to remember which CSS
+       variable belongs to this section. */
+    el.style.backgroundImage = '';
+    el.style.backgroundSize = '';
+    el.style.backgroundPosition = '';
+    el.style.backgroundRepeat = '';
+    el.classList.remove('has-bg-image');
+  }
 }
 
 function checkBuiltinHasData(slug) {

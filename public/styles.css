@@ -645,6 +645,42 @@ html[data-scroll-mode="smooth"] .snap-section {
   background-clip: content-box !important;
 }
 
+/* ---------------------------------------------------------------------------
+   Per-section background image (Task #60)
+   ---------------------------------------------------------------------------
+   When the admin uploads a photo for a section on the Page Layout tab,
+   public/script.js's applySectionBackground() sets the inline backgroundImage
+   to a layered `linear-gradient(scrim) , url(photo)` AND adds the
+   .has-bg-image class to the <section>. The rules below adjust the framing,
+   text contrast, and per-image-card surface treatment so the photo reads as
+   intentional rather than as a leaky background.
+
+   We deliberately keep the inline `style="background: var(--bg-section-X)"`
+   attribute on each section in index.html — that becomes the fallback color
+   under the photo (and the visible color when bg_image is empty), while the
+   JS-set backgroundImage layers the scrim + photo on top.
+   --------------------------------------------------------------------------- */
+
+/* Sections with photos shouldn't be clipped to the content box — the photo
+   is the framing, so let it bleed edge-to-edge inside the section. The
+   inline backgroundImage from applySectionBackground() already covers the
+   full padding box. */
+.landing-section.has-bg-image {
+  background-clip: border-box !important;
+  background-attachment: scroll;
+  /* Force eyebrow / title / subtitle text to white so they stay legible
+     over the scrim regardless of the active theme's --color-text. The
+     inner card surfaces (testimonials, team, etc.) keep their own colors. */
+  color: #fff;
+}
+
+.landing-section.has-bg-image .section-eyebrow,
+.landing-section.has-bg-image .section-title,
+.landing-section.has-bg-image .section-subtitle {
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
 .section-header {
   text-align: center;
   margin-bottom: var(--space-3xl);

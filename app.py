@@ -1192,6 +1192,8 @@ def init_db():
                     sort_order    INTEGER NOT NULL DEFAULT 0,
                     enabled       BOOLEAN DEFAULT true,
                     settings      JSONB DEFAULT '{}'::jsonb,
+                    bg_image      TEXT NOT NULL DEFAULT '',
+                    bg_overlay_alpha NUMERIC NOT NULL DEFAULT 0.45,
                     created_at    TIMESTAMP DEFAULT NOW()
                 );
                 CREATE INDEX IF NOT EXISTS idx_page_sections_sort ON page_sections (sort_order);
@@ -2042,6 +2044,17 @@ def init_db():
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS hero_video_url TEXT NOT NULL DEFAULT ''",
                 # --- Gallery card video (alternative to image) ---
                 "ALTER TABLE gallery_cards ADD COLUMN IF NOT EXISTS video_url TEXT NOT NULL DEFAULT ''",
+                # --- Per-section background images (Task #60 / item 1).
+                #     bg_image is a path returned by /admin/api/upload-image
+                #     (typically '/uploads/<hex>.jpg'). Empty string means
+                #     "use the default theme color" (--bg-section-N) — the
+                #     existing inline `style="background: var(--bg-section-X)"`
+                #     in index.html keeps providing the fallback paint.
+                #     bg_overlay_alpha (0.0-1.0) controls a dark gradient
+                #     applied above the photo so titles stay legible — 0.45
+                #     is the default; admin can dial it per section.
+                "ALTER TABLE page_sections ADD COLUMN IF NOT EXISTS bg_image TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE page_sections ADD COLUMN IF NOT EXISTS bg_overlay_alpha NUMERIC NOT NULL DEFAULT 0.45",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS view_mode TEXT NOT NULL DEFAULT 'sections'",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_scale REAL NOT NULL DEFAULT 1.0",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_gap REAL NOT NULL DEFAULT 2.5",
@@ -19906,7 +19919,8 @@ def admin_update_page_section(section_id):
     data = request.get_json() or {}
 
     existing = query_db(
-        "SELECT title, subtitle, enabled, settings FROM page_sections WHERE id = %s",
+        "SELECT title, subtitle, enabled, settings, bg_image, bg_overlay_alpha "
+        "FROM page_sections WHERE id = %s",
         (section_id,), fetchone=True
     )
     if not existing:
@@ -19916,12 +19930,24 @@ def admin_update_page_section(section_id):
     subtitle = data["subtitle"] if "subtitle" in data else (existing.get("subtitle") or "")
     enabled  = data["enabled"]  if "enabled"  in data else bool(existing.get("enabled"))
     settings = data["settings"] if "settings" in data else (existing.get("settings") or {})
+    bg_image = data["bg_image"] if "bg_image" in data else (existing.get("bg_image") or "")
+    # Clamp overlay alpha to a sane range — a stray slider value at 1.0
+    # blacks the photo out entirely; <0 produces an invalid CSS color.
+    if "bg_overlay_alpha" in data:
+        try:
+            bg_overlay_alpha = max(0.0, min(1.0, float(data["bg_overlay_alpha"])))
+        except (TypeError, ValueError):
+            bg_overlay_alpha = float(existing.get("bg_overlay_alpha") or 0.45)
+    else:
+        bg_overlay_alpha = float(existing.get("bg_overlay_alpha") or 0.45)
 
     item = execute_db(
         """UPDATE page_sections SET
-             title = %s, subtitle = %s, enabled = %s, settings = %s::jsonb
+             title = %s, subtitle = %s, enabled = %s, settings = %s::jsonb,
+             bg_image = %s, bg_overlay_alpha = %s
            WHERE id = %s RETURNING *""",
-        (title, subtitle, enabled, json.dumps(settings), section_id)
+        (title, subtitle, enabled, json.dumps(settings),
+         bg_image, bg_overlay_alpha, section_id)
     )
     if not item:
         return jsonify({"error": "Section not found"}), 404

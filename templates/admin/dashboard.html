@@ -3050,14 +3050,23 @@ TO CUSTOMIZE THIS DASHBOARD:
           <th style="width:30px;"></th>
           <th>Section</th>
           <th>Type</th>
+          <th>Background</th>
           <th>Enabled</th>
           <th>Actions</th>
         </tr>
       </thead>
       <tbody id="page-sections-tbody">
-        <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+        <tr><td colspan="6" class="empty-state">Loading...</td></tr>
       </tbody>
     </table>
+
+    <!-- Hidden file input shared by every "Upload" button in the table.
+         A single input keeps the DOM small and avoids one input per row;
+         we stash the target section id on the input via dataset.sectionId
+         right before clicking. -->
+    <input type="file" id="page-section-bg-file" accept="image/*"
+           style="display:none;" onchange="handleSectionBgFile(this)"
+           data-testid="input-section-bg-file">
 
     <div id="section-items-panel" class="form-panel" style="display:none; margin-top: 1.5rem;">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
@@ -10808,7 +10817,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         const tbody = document.getElementById('page-sections-tbody');
 
         if (!sections.length) {
-          tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No sections found.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No sections found.</td></tr>';
           return;
         }
 
@@ -10819,6 +10828,30 @@ TO CUSTOMIZE THIS DASHBOARD:
             : `<span class="badge" style="background:rgba(139,92,246,0.15); color:#c4b5fd; border-color:rgba(139,92,246,0.3);">${esc(TEMPLATE_LABELS[s.template] || s.template)}</span>`;
 
           const toggleChecked = s.enabled ? 'checked' : '';
+
+          // Background cell: thumbnail (or empty placeholder) + Upload + Clear.
+          // The hero section is special — its background image is managed on
+          // the Settings tab via hero_image / hero_video_url, so a per-section
+          // upload here would be confusing. We disable the controls but leave
+          // the row visible so the order is consistent with the public site.
+          let bgCell;
+          if (s.slug === 'hero') {
+            bgCell = `<span style="color:var(--admin-text-muted); font-size:0.78rem;" data-testid="bg-hero-na-${s.id}">Set on Settings tab</span>`;
+          } else {
+            const thumb = s.bg_image
+              ? `<img src="${esc(s.bg_image)}" alt="" class="section-bg-thumb" data-testid="img-section-bg-${s.id}"
+                       style="width:60px; height:36px; object-fit:cover; border-radius:4px; border:1px solid var(--admin-border); vertical-align:middle;">`
+              : `<span class="section-bg-empty" data-testid="bg-empty-${s.id}"
+                       style="display:inline-block; width:60px; height:36px; background:var(--admin-bg); border:1px dashed var(--admin-border); border-radius:4px; vertical-align:middle;"></span>`;
+            const clearBtn = s.bg_image
+              ? `<button class="btn btn-secondary btn-sm" onclick="clearSectionBg(${s.id})" data-testid="button-clear-section-bg-${s.id}" style="margin-left:0.25rem;">Clear</button>`
+              : '';
+            bgCell = `
+              ${thumb}
+              <button class="btn btn-secondary btn-sm" onclick="pickSectionBg(${s.id})" data-testid="button-upload-section-bg-${s.id}" style="margin-left:0.5rem;">${s.bg_image ? 'Replace' : 'Upload'}</button>
+              ${clearBtn}
+            `;
+          }
 
           let actions = '';
           if (!isBuiltIn) {
@@ -10836,6 +10869,7 @@ TO CUSTOMIZE THIS DASHBOARD:
               <td><span class="drag-handle" title="Drag to reorder">&#x2630;</span></td>
               <td><strong>${esc(s.title)}</strong> <span style="color:var(--admin-text-muted); font-size:0.75rem; margin-left:0.5rem;">${esc(s.slug)}</span></td>
               <td>${typeBadge}</td>
+              <td class="cell-section-bg">${bgCell}</td>
               <td>
                 <label class="toggle-switch" data-testid="toggle-section-${s.id}">
                   <input type="checkbox" ${toggleChecked} onchange="togglePageSection(${s.id}, this.checked)">
@@ -10949,6 +10983,79 @@ TO CUSTOMIZE THIS DASHBOARD:
         }
       } catch (err) {
         showToast('Failed to update section', 'error');
+      }
+    }
+
+    /* ---- Per-section background image (Task #60) ----
+       The "Upload" button calls pickSectionBg(id) which stashes the target
+       section id on the shared hidden file input and triggers its file picker.
+       handleSectionBgFile() is the input's onchange — it reads the stashed id,
+       uploads the file via /admin/api/upload-image, then PUTs the returned URL
+       into /admin/api/page-sections/<id>. Reusing the existing upload endpoint
+       means we get the same WebP variant pre-warming that powers the rest of
+       the media library — no per-section media plumbing needed. */
+    function pickSectionBg(sectionId) {
+      const input = document.getElementById('page-section-bg-file');
+      if (!input) return;
+      input.dataset.sectionId = String(sectionId);
+      // Reset .value so re-picking the *same* file still fires onchange
+      // (otherwise the browser silently no-ops a same-name reselection).
+      input.value = '';
+      input.click();
+    }
+
+    async function handleSectionBgFile(input) {
+      const sectionId = parseInt(input.dataset.sectionId || '0', 10);
+      if (!sectionId) return;
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const fd = new FormData();
+      fd.append('file', file);
+      try {
+        const upRes = await fetch('/admin/api/upload-image', { method: 'POST', body: fd });
+        const upData = await upRes.json();
+        if (!upRes.ok) {
+          showToast(upData.error || 'Upload failed', 'error');
+          return;
+        }
+        const putRes = await fetch(`/admin/api/page-sections/${sectionId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bg_image: upData.url })
+        });
+        if (!putRes.ok) {
+          const err = await putRes.json().catch(() => ({}));
+          showToast(err.error || 'Could not save background', 'error');
+          return;
+        }
+        showToast('Background updated');
+        loadPageSections();
+      } catch (err) {
+        showToast('Upload failed', 'error');
+      } finally {
+        // Always clear the stashed id + file selection so a future picker
+        // starts from a clean slate even if the request errored mid-flight.
+        input.value = '';
+        delete input.dataset.sectionId;
+      }
+    }
+
+    async function clearSectionBg(sectionId) {
+      if (!confirm('Remove the background image for this section?')) return;
+      try {
+        const res = await fetch(`/admin/api/page-sections/${sectionId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bg_image: '' })
+        });
+        if (res.ok) {
+          showToast('Background removed');
+          loadPageSections();
+        } else {
+          showToast('Could not remove background', 'error');
+        }
+      } catch (err) {
+        showToast('Could not remove background', 'error');
       }
     }
 
