@@ -661,12 +661,15 @@ html[data-scroll-mode="smooth"] .snap-section {
    JS-set backgroundImage layers the scrim + photo on top.
    --------------------------------------------------------------------------- */
 
-/* Sections with photos shouldn't be clipped to the content box — the photo
-   is the framing, so let it bleed edge-to-edge inside the section. The
-   inline backgroundImage from applySectionBackground() already covers the
-   full padding box. */
+/* Image-backed sections preserve the same content-box framing the rest
+   of the site uses (per Task #60 step 4) — the photo is clipped to the
+   inner padding box so the page's --color-bg shows around the edges,
+   visually matching every other section instead of bleeding edge-to-edge.
+   The base .landing-section rule above already sets
+   `background-clip: content-box !important;`, so we don't restate it
+   here — keeping it in one place avoids future drift. We only adjust
+   text contrast for legibility over the scrim. */
 .landing-section.has-bg-image {
-  background-clip: border-box !important;
   background-attachment: scroll;
   /* Force eyebrow / title / subtitle text to white so they stay legible
      over the scrim regardless of the active theme's --color-text. The
