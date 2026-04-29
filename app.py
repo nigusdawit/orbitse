@@ -919,6 +919,179 @@ def decrypt_secret(token):
 # init_db owns (every revision starts from the post-init_db state).
 
 
+# =============================================================================
+# CURATED BRAND IDENTITY PRESETS (Task #61 — items 2, 4, 17, 18)
+# =============================================================================
+# Two opinionated lists the admin Brand Identity panel surfaces:
+#   - CURATED_FONT_PAIRS — Google Font pairings (serif + sans). Picking one
+#     writes through to site_settings.theme_font_serif + theme_font_sans.
+#     The font names are EXACT Google Fonts family names so loadGoogleFont()
+#     in script.js can fetch them with no name-mapping table.
+#   - CURATED_PALETTES — Full palettes seeded into the existing site_themes
+#     table on first boot. Each one bundles 7 colors plus a font pairing
+#     so applying a palette feels like a one-click rebrand.
+# Both lists are kept here (not in the DB) so they ship with code review,
+# version with the codebase, and stay consistent across installs. Admins
+# can still rename / edit / delete the seeded site_themes rows after they
+# land — the seeder is idempotent on `name`.
+# -----------------------------------------------------------------------------
+CURATED_FONT_PAIRS = [
+    {"id": "playfair_dmsans",       "label": "Playfair Display + DM Sans (Editorial)",        "serif": "Playfair Display",   "sans": "DM Sans"},
+    {"id": "cormorant_inter",       "label": "Cormorant Garamond + Inter (Refined)",          "serif": "Cormorant Garamond", "sans": "Inter"},
+    {"id": "fraunces_outfit",       "label": "Fraunces + Outfit (Modern Statement)",          "serif": "Fraunces",           "sans": "Outfit"},
+    {"id": "bodoni_montserrat",     "label": "Bodoni Moda + Montserrat (High Fashion)",       "serif": "Bodoni Moda",        "sans": "Montserrat"},
+    {"id": "lora_nunito",           "label": "Lora + Nunito Sans (Friendly Editorial)",       "serif": "Lora",               "sans": "Nunito Sans"},
+    {"id": "merriweather_worksans", "label": "Merriweather + Work Sans (Trustworthy)",        "serif": "Merriweather",       "sans": "Work Sans"},
+    {"id": "dmserif_dmsans",        "label": "DM Serif Display + DM Sans (Bold Display)",     "serif": "DM Serif Display",   "sans": "DM Sans"},
+    {"id": "librebask_raleway",     "label": "Libre Baskerville + Raleway (Classic)",         "serif": "Libre Baskerville",  "sans": "Raleway"},
+    {"id": "crimson_jakarta",       "label": "Crimson Text + Plus Jakarta Sans (Warm Tech)",  "serif": "Crimson Text",       "sans": "Plus Jakarta Sans"},
+    {"id": "ebgaramond_figtree",    "label": "EB Garamond + Figtree (Old World Meets New)",   "serif": "EB Garamond",        "sans": "Figtree"},
+]
+
+CURATED_PALETTES = [
+    {
+        "name": "Tuscan Warm",
+        "notes": "Terracotta, cream, and olive — warm Mediterranean restaurant feel.",
+        "palette": {
+            "bg":           "#1a0f0a",
+            "section1":     "#2a1810",
+            "section2":     "#1a0f0a",
+            "accent":       "#d97706",
+            "text":         "#fef3c7",
+            "glass_border": "rgba(217,119,6,0.15)",
+            "glass_bg":     "rgba(254,243,199,0.04)",
+        },
+        "fonts": {"serif": "Cormorant Garamond", "sans": "Inter"},
+    },
+    {
+        "name": "Coastal Blue",
+        "notes": "Deep navy, sand, and seafoam — beachfront hospitality.",
+        "palette": {
+            "bg":           "#0a1929",
+            "section1":     "#0f2540",
+            "section2":     "#0a1929",
+            "accent":       "#5eead4",
+            "text":         "#e0f2fe",
+            "glass_border": "rgba(94,234,212,0.18)",
+            "glass_bg":     "rgba(255,255,255,0.04)",
+        },
+        "fonts": {"serif": "Lora", "sans": "Nunito Sans"},
+    },
+    {
+        "name": "Brooklyn Mono",
+        "notes": "Black, white, neon yellow — bold modern editorial.",
+        "palette": {
+            "bg":           "#0a0a0a",
+            "section1":     "#141414",
+            "section2":     "#0a0a0a",
+            "accent":       "#facc15",
+            "text":         "#f5f5f5",
+            "glass_border": "rgba(255,255,255,0.12)",
+            "glass_bg":     "rgba(255,255,255,0.03)",
+        },
+        "fonts": {"serif": "DM Serif Display", "sans": "DM Sans"},
+    },
+    {
+        "name": "Forest Lodge",
+        "notes": "Deep green, cream, amber — rustic-cabin warmth.",
+        "palette": {
+            "bg":           "#0f1410",
+            "section1":     "#162018",
+            "section2":     "#0f1410",
+            "accent":       "#d4a574",
+            "text":         "#f4ead4",
+            "glass_border": "rgba(212,165,116,0.18)",
+            "glass_bg":     "rgba(244,234,212,0.04)",
+        },
+        "fonts": {"serif": "Merriweather", "sans": "Work Sans"},
+    },
+    {
+        "name": "Desert Sunset",
+        "notes": "Clay, apricot, dusty pink — soft southwestern feel.",
+        "palette": {
+            "bg":           "#1f1410",
+            "section1":     "#2b1d18",
+            "section2":     "#1f1410",
+            "accent":       "#f97316",
+            "text":         "#fef3e2",
+            "glass_border": "rgba(249,115,22,0.18)",
+            "glass_bg":     "rgba(254,243,226,0.04)",
+        },
+        "fonts": {"serif": "Fraunces", "sans": "Outfit"},
+    },
+    {
+        "name": "Nordic Light",
+        "notes": "Ice white, slate, muted blue — Scandinavian minimal.",
+        "palette": {
+            "bg":           "#f8fafc",
+            "section1":     "#eef2f7",
+            "section2":     "#f8fafc",
+            "accent":       "#3b82f6",
+            "text":         "#0f172a",
+            "glass_border": "rgba(15,23,42,0.10)",
+            "glass_bg":     "rgba(15,23,42,0.03)",
+        },
+        "fonts": {"serif": "Libre Baskerville", "sans": "Raleway"},
+    },
+    {
+        "name": "Vineyard",
+        "notes": "Burgundy, parchment, sage — old-world wine cellar.",
+        "palette": {
+            "bg":           "#1a0a0e",
+            "section1":     "#26121a",
+            "section2":     "#1a0a0e",
+            "accent":       "#a3b18a",
+            "text":         "#f5e6c8",
+            "glass_border": "rgba(163,177,138,0.20)",
+            "glass_bg":     "rgba(245,230,200,0.04)",
+        },
+        "fonts": {"serif": "EB Garamond", "sans": "Figtree"},
+    },
+    {
+        "name": "Midnight Lounge",
+        "notes": "Charcoal, gold, dusty rose — late-night cocktail bar.",
+        "palette": {
+            "bg":           "#060b14",
+            "section1":     "#0a0f1a",
+            "section2":     "#060b14",
+            "accent":       "#c9a96e",
+            "text":         "#e4e4e7",
+            "glass_border": "rgba(201,169,110,0.18)",
+            "glass_bg":     "rgba(255,255,255,0.03)",
+        },
+        "fonts": {"serif": "Playfair Display", "sans": "DM Sans"},
+    },
+    {
+        "name": "Pastel Garden",
+        "notes": "Mint, lavender, peach — soft daytime café.",
+        "palette": {
+            "bg":           "#fef7f2",
+            "section1":     "#f4e8e0",
+            "section2":     "#fef7f2",
+            "accent":       "#ec4899",
+            "text":         "#3f3a3a",
+            "glass_border": "rgba(63,58,58,0.10)",
+            "glass_bg":     "rgba(255,255,255,0.5)",
+        },
+        "fonts": {"serif": "Crimson Text", "sans": "Plus Jakarta Sans"},
+    },
+    {
+        "name": "Industrial Steel",
+        "notes": "Graphite, steel blue, safety orange — modern workshop.",
+        "palette": {
+            "bg":           "#1a1a1d",
+            "section1":     "#222226",
+            "section2":     "#1a1a1d",
+            "accent":       "#fb923c",
+            "text":         "#e5e5e5",
+            "glass_border": "rgba(251,146,60,0.20)",
+            "glass_bg":     "rgba(255,255,255,0.03)",
+        },
+        "fonts": {"serif": "Bodoni Moda", "sans": "Montserrat"},
+    },
+]
+
+
 def init_db():
     """
     Create all required tables if they don't already exist.
@@ -2055,6 +2228,23 @@ def init_db():
                 #     is the default; admin can dial it per section.
                 "ALTER TABLE page_sections ADD COLUMN IF NOT EXISTS bg_image TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE page_sections ADD COLUMN IF NOT EXISTS bg_overlay_alpha NUMERIC NOT NULL DEFAULT 0.45",
+                # --- Brand identity (Task #61 / items 2,4,17,18).
+                #     theme_accent_secondary is the second stop of the
+                #     accent gradient (only used when theme_accent_gradient
+                #     is true). Empty string = solid accent only.
+                #     theme_logo_mode is one of: 'monogram' (default
+                #     letters-in-circle), 'image' (uploaded logo only),
+                #     'wordmark' (site name as wordmark, no badge),
+                #     'lockup' (uploaded image + site name side-by-side).
+                #     theme_logo_image is a path returned by
+                #     /admin/api/upload-image (typically /uploads/<hex>.png).
+                #     The "font pair" picker writes through to the existing
+                #     theme_font_serif + theme_font_sans columns — no new
+                #     column needed.
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_accent_secondary TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_accent_gradient BOOLEAN NOT NULL DEFAULT FALSE",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_logo_mode TEXT NOT NULL DEFAULT 'monogram'",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_logo_image TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS view_mode TEXT NOT NULL DEFAULT 'sections'",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_scale REAL NOT NULL DEFAULT 1.0",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_gap REAL NOT NULL DEFAULT 2.5",
@@ -2216,6 +2406,34 @@ def init_db():
                         "WHERE id = 1 AND active_theme_id IS NULL",
                         (_seed_theme_row[0],),
                     )
+
+            # Seed curated brand-identity palettes (Task #61 / item 4).
+            # Each one is an opinionated full-stack visual: 7 colors plus
+            # a font pairing the admin can apply with one click from the
+            # Brand Identity panel. Idempotent — only inserts a name we
+            # don't already have, so an admin who renames or edits a
+            # seeded palette won't get it re-created on every restart.
+            for _p in CURATED_PALETTES:
+                cur.execute(
+                    "SELECT 1 FROM site_themes WHERE name = %s LIMIT 1",
+                    (_p["name"],),
+                )
+                if cur.fetchone():
+                    continue
+                cur.execute(
+                    "INSERT INTO site_themes ("
+                    "  name, palette_json, fonts_json, "
+                    "  source, notes, status"
+                    ") VALUES (%s, %s::jsonb, %s::jsonb, %s, %s, %s)",
+                    (
+                        _p["name"],
+                        json.dumps(_p["palette"]),
+                        json.dumps(_p["fonts"]),
+                        "curated",
+                        _p.get("notes", ""),
+                        "draft",
+                    ),
+                )
 
             # Seed the first "Default" design from public/index.html —
             # only if site_designs is empty. This makes the active
@@ -5561,6 +5779,17 @@ def _build_theme_vars_style():
         radius_rem  = _f("theme_radius_rem",       1.0)
         trans_sec   = _f("theme_transition_sec",   0.6)
         bg_rgb      = _hex_to_rgb_triple(bg)
+        # Brand-identity tokens (Task #61). The gradient var is ALWAYS
+        # emitted — when the toggle is off OR no secondary color is set
+        # we just emit the solid accent, so any rule that uses
+        # --accent-gradient gets a safe color fallback instead of
+        # `none` (which `background:` interprets as transparent).
+        accent_2    = (t.get("theme_accent_secondary") or "").strip()
+        gradient_on = bool(t.get("theme_accent_gradient")) and bool(accent_2)
+        if gradient_on:
+            accent_grad = f"linear-gradient(135deg,{accent},{accent_2})"
+        else:
+            accent_grad = accent
         return (
             "<style id=\"theme-vars-injected\">:root{"
             f"--color-bg:{bg};"
@@ -5568,6 +5797,8 @@ def _build_theme_vars_style():
             f"--color-section-1:{section1};"
             f"--color-section-2:{section2};"
             f"--color-accent:{accent};"
+            f"--color-accent-secondary:{accent_2 or accent};"
+            f"--accent-gradient:{accent_grad};"
             f"--color-text:{text_color};"
             f"--glass-bg:{glass_bg};"
             f"--glass-border:{glass_brd};"
@@ -21628,10 +21859,20 @@ def _resolve_active_theme():
                theme_font_serif, theme_font_sans,
                theme_loading_bg_alpha, theme_glass_blur_px,
                theme_radius_rem, theme_transition_sec,
+               theme_accent_secondary, theme_accent_gradient,
+               theme_logo_mode, theme_logo_image,
                active_theme_id
         FROM site_settings WHERE id = 1
     """, fetchone=True) or {}
     active_id = settings.pop("active_theme_id", None)
+    # Normalize the brand-identity fields so the JSON shape is stable
+    # for the frontend regardless of NULL columns from older installs.
+    settings["theme_accent_gradient"] = bool(settings.get("theme_accent_gradient"))
+    settings["theme_logo_mode"] = (settings.get("theme_logo_mode") or "monogram").strip() or "monogram"
+    if settings["theme_logo_mode"] not in ("monogram", "image", "wordmark", "lockup"):
+        settings["theme_logo_mode"] = "monogram"
+    settings["theme_accent_secondary"] = settings.get("theme_accent_secondary") or ""
+    settings["theme_logo_image"]       = settings.get("theme_logo_image") or ""
     # NUMERIC columns come back as Decimal — coerce to float so JSON
     # serialization works and the frontend can do math on them directly.
     for k in ("theme_loading_bg_alpha", "theme_radius_rem",
@@ -21652,21 +21893,29 @@ def _resolve_active_theme():
             fonts   = active.get("fonts_json")   or {}
             # Map JSON keys -> legacy column names so the frontend keeps working.
             overlay = {
-                "theme_bg":           palette.get("bg"),
-                "theme_section1":     palette.get("section1"),
-                "theme_section2":     palette.get("section2"),
-                "theme_accent":       palette.get("accent"),
-                "theme_text":         palette.get("text"),
-                "theme_glass_border": palette.get("glass_border"),
-                "theme_glass_bg":     palette.get("glass_bg"),
-                "theme_font_serif":   fonts.get("serif"),
-                "theme_font_sans":    fonts.get("sans"),
+                "theme_bg":               palette.get("bg"),
+                "theme_section1":         palette.get("section1"),
+                "theme_section2":         palette.get("section2"),
+                "theme_accent":           palette.get("accent"),
+                "theme_accent_secondary": palette.get("accent_secondary"),
+                "theme_text":             palette.get("text"),
+                "theme_glass_border":     palette.get("glass_border"),
+                "theme_glass_bg":         palette.get("glass_bg"),
+                "theme_font_serif":       fonts.get("serif"),
+                "theme_font_sans":        fonts.get("sans"),
             }
             for k, v in overlay.items():
                 # Only override when the active theme actually provided a value;
                 # blank/None means "fall back to legacy column".
                 if v is not None and v != "":
                     settings[k] = v
+            # Boolean overlay: gradient toggle. False is a legitimate
+            # override (admin explicitly disabled the gradient on this
+            # palette), so we accept any present bool/0/1 — only `None`
+            # / missing key falls back to the legacy column.
+            grad = palette.get("accent_gradient")
+            if grad is not None:
+                settings["theme_accent_gradient"] = bool(grad)
             # Numeric visual-token overlays: 0 is a legitimate override
             # (e.g. radius=0 for a flat brutalist look), so we accept any
             # non-None numeric value and skip blanks.
@@ -21724,6 +21973,17 @@ def admin_update_theme():
     radius_rem    = _num("theme_radius_rem",       1.0,  0.0, 3.0, float)
     transition_s  = _num("theme_transition_sec",   0.6,  0.0, 3.0, float)
 
+    # Brand-identity fields (Task #61 / items 2,4,17,18). Logo mode is
+    # restricted to a known enum so a malformed payload can't break the
+    # public site's <header>; image + secondary-color are passed through
+    # unchanged (they're already validated by the admin form pickers).
+    accent_secondary = (data.get("theme_accent_secondary") or "").strip()
+    accent_gradient  = bool(data.get("theme_accent_gradient"))
+    logo_mode        = (data.get("theme_logo_mode") or "monogram").strip() or "monogram"
+    if logo_mode not in ("monogram", "image", "wordmark", "lockup"):
+        logo_mode = "monogram"
+    logo_image = (data.get("theme_logo_image") or "").strip()
+
     result = execute_db(
         """UPDATE site_settings SET
              theme_bg = %s, theme_section1 = %s, theme_section2 = %s,
@@ -21731,6 +21991,8 @@ def admin_update_theme():
              theme_glass_bg = %s, theme_font_serif = %s, theme_font_sans = %s,
              theme_loading_bg_alpha = %s, theme_glass_blur_px = %s,
              theme_radius_rem = %s, theme_transition_sec = %s,
+             theme_accent_secondary = %s, theme_accent_gradient = %s,
+             theme_logo_mode = %s, theme_logo_image = %s,
              updated_at = NOW()
            WHERE id = 1 RETURNING *""",
         (
@@ -21744,6 +22006,7 @@ def admin_update_theme():
             data.get("theme_font_serif", ""),
             data.get("theme_font_sans", ""),
             loading_alpha, glass_blur, radius_rem, transition_s,
+            accent_secondary, accent_gradient, logo_mode, logo_image,
         )
     )
 
@@ -21776,13 +22039,20 @@ def admin_update_theme():
     active_id = active_id_row.get("active_theme_id")
     if active_id:
         palette_overlay = {
-            "bg":           data.get("theme_bg", "") or "",
-            "section1":     data.get("theme_section1", "") or "",
-            "section2":     data.get("theme_section2", "") or "",
-            "accent":       data.get("theme_accent", "") or "",
-            "text":         data.get("theme_text", "") or "",
-            "glass_border": data.get("theme_glass_border", "") or "",
-            "glass_bg":     data.get("theme_glass_bg", "") or "",
+            "bg":               data.get("theme_bg", "") or "",
+            "section1":         data.get("theme_section1", "") or "",
+            "section2":         data.get("theme_section2", "") or "",
+            "accent":           data.get("theme_accent", "") or "",
+            "text":             data.get("theme_text", "") or "",
+            "glass_border":     data.get("theme_glass_border", "") or "",
+            "glass_bg":         data.get("theme_glass_bg", "") or "",
+            # Brand-identity overlays (Task #61): the secondary accent +
+            # gradient toggle live in palette_json so a "publish this
+            # palette" action restores the full brand look in one shot.
+            # Logo mode/image are intentionally NOT here — they're
+            # per-installation, not per-palette.
+            "accent_secondary": accent_secondary,
+            "accent_gradient":  accent_gradient,
         }
         fonts_overlay = {
             "serif": data.get("theme_font_serif", "") or "",
@@ -21799,6 +22069,16 @@ def admin_update_theme():
         )
 
     return jsonify(result)
+
+
+@app.route("/admin/api/curated-font-pairs", methods=["GET"])
+@admin_required
+def admin_get_curated_font_pairs():
+    """GET /admin/api/curated-font-pairs — Return the hardcoded list of
+    Google Font pairings the admin Brand Identity panel renders as a
+    one-click "font pair" picker. Hardcoded in Python (CURATED_FONT_PAIRS)
+    so adding/removing a pair is a code review, not a DB migration."""
+    return jsonify(CURATED_FONT_PAIRS)
 
 
 # =============================================================================

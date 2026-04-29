@@ -510,7 +510,7 @@ html[data-scroll-mode="smooth"] .snap-section {
   padding: var(--space-lg) var(--space-xl);
 }
 
-/* Logo badge — circular with initials */
+/* Logo badge — circular with initials (default "monogram" mode) */
 .logo-badge {
   width: 2.5rem;
   height: 2.5rem;
@@ -525,6 +525,55 @@ html[data-scroll-mode="smooth"] .snap-section {
   font-weight: 700;
   font-size: 1.1rem;
   color: #fff;
+}
+
+/* ----------------------------------------------------------------------
+   Brand-identity logo variants (Task #61). The body class
+   .logo-mode-{monogram|image|wordmark|lockup} is set by script.js
+   applyLogoTreatment() based on the active theme. Each variant simply
+   restyles the existing #logo-badge / #footer-logo-badge elements so
+   the public HTML doesn't need to change.
+   ---------------------------------------------------------------------- */
+
+/* Image mode: badge becomes a transparent square holding the uploaded
+   logo image (rendered as a CSS background so we can swap via a CSS var
+   without touching textContent). */
+.logo-mode-image .logo-badge,
+.logo-mode-lockup .logo-badge {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 0.35rem;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: var(--logo-image, transparent) center / contain no-repeat;
+  backdrop-filter: none;
+  color: transparent;       /* hide initials behind the image */
+  font-size: 0;
+  text-indent: -9999px;
+  overflow: hidden;
+}
+
+/* Wordmark mode: hide the badge entirely; the adjacent .logo-text
+   site-name already shows the wordmark. */
+.logo-mode-wordmark .logo-badge {
+  display: none !important;
+}
+
+/* Lockup mode: image badge + sitename together. We just upsize the
+   image badge slightly so it reads as the dominant element. */
+.logo-mode-lockup .logo-badge {
+  width: 2.75rem;
+  height: 2.75rem;
+}
+
+/* Accent gradient (Task #61). When the theme defines an accent
+   secondary AND the gradient toggle is on, --accent-gradient is set
+   to a linear-gradient() string by the server / loadAndApplyTheme().
+   Buttons and primary CTAs that read .accent-gradient pick it up. */
+.accent-gradient,
+body.theme-accent-gradient .btn-primary,
+body.theme-accent-gradient .nav-cta {
+  background: var(--accent-gradient, var(--color-accent)) !important;
+  border-color: transparent !important;
 }
 
 .logo-text .site-name {

@@ -3949,7 +3949,8 @@ async function loadAndApplyTheme() {
       theme_accent: '--color-accent',
       theme_text: '--color-text',
       theme_glass_border: '--glass-border',
-      theme_glass_bg: '--glass-bg'
+      theme_glass_bg: '--glass-bg',
+      theme_accent_secondary: '--color-accent-secondary'
     };
 
     Object.entries(cssMap).forEach(([key, prop]) => {
@@ -3957,6 +3958,14 @@ async function loadAndApplyTheme() {
         document.documentElement.style.setProperty(prop, theme[key]);
       }
     });
+
+    /* ----------------------------------------------------------------
+       Brand identity (Task #61) — accent gradient + logo treatment.
+       The server's first-paint CSS already covers most of this; we
+       re-apply here so live admin saves reflect without a full reload.
+       ---------------------------------------------------------------- */
+    applyAccentGradient(theme);
+    applyLogoTreatment(theme);
 
     if (theme.theme_font_serif) {
       document.documentElement.style.setProperty('--font-serif', `'${theme.theme_font_serif}', Georgia, serif`);
@@ -4010,6 +4019,49 @@ function loadGoogleFont(fontName) {
   link.dataset.font = fontName;
   link.href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(fontName)}:wght@300;400;500;600;700&display=swap`;
   document.head.appendChild(link);
+}
+
+/* -----------------------------------------------------------------------
+   Brand-identity helpers (Task #61)
+   -----------------------------------------------------------------------
+   These run after /api/theme returns. The matching CSS lives in
+   styles.css under "Brand-identity logo variants" and "Accent gradient".
+----------------------------------------------------------------------- */
+function applyAccentGradient(theme) {
+  const root = document.documentElement;
+  const body = document.body;
+  if (!body) return;
+  const accent = theme.theme_accent;
+  const accent2 = theme.theme_accent_secondary;
+  const on = !!theme.theme_accent_gradient && !!accent && !!accent2;
+  if (on) {
+    root.style.setProperty('--accent-gradient', `linear-gradient(135deg, ${accent}, ${accent2})`);
+    body.classList.add('theme-accent-gradient');
+  } else {
+    root.style.removeProperty('--accent-gradient');
+    body.classList.remove('theme-accent-gradient');
+  }
+}
+
+function applyLogoTreatment(theme) {
+  const root = document.documentElement;
+  const body = document.body;
+  if (!body) return;
+  // Whitelist of supported modes — anything else falls back to monogram
+  // so a typo in the DB can't blank out the logo entirely.
+  const modes = ['monogram', 'image', 'wordmark', 'lockup'];
+  const mode = modes.indexOf(theme.theme_logo_mode) >= 0 ? theme.theme_logo_mode : 'monogram';
+  // Swap the body class so .logo-mode-* CSS rules take effect.
+  modes.forEach(m => body.classList.toggle('logo-mode-' + m, m === mode));
+  // Expose the uploaded image URL as a CSS var so the .logo-badge
+  // background-image picks it up. Wrap in url() and quote to handle
+  // paths with parentheses or spaces safely.
+  if (theme.theme_logo_image && (mode === 'image' || mode === 'lockup')) {
+    const safe = String(theme.theme_logo_image).replace(/"/g, '%22');
+    root.style.setProperty('--logo-image', `url("${safe}")`);
+  } else {
+    root.style.removeProperty('--logo-image');
+  }
 }
 
 

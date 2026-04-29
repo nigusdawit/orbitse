@@ -5560,6 +5560,111 @@ TO CUSTOMIZE THIS DASHBOARD:
         </div>
       </div>
 
+      <!-- ============================================================
+           BRAND IDENTITY (Task #61 — items 2, 4, 17, 18)
+           One-click palette gallery, curated font-pair picker,
+           accent-gradient toggle, and logo treatment selector. Each
+           control writes through to the existing theme_* fields below
+           so the form's Save button keeps being the single source of
+           truth — no separate "save brand" action required.
+           ============================================================ -->
+      <h3 style="margin-top:0;">Brand Identity</h3>
+      <p style="font-size:0.8rem;color:var(--admin-text-muted);margin-top:0;margin-bottom:1rem;">
+        Pick a curated palette to instantly rebrand the site, choose a
+        Google Font pairing, switch to a gradient accent, or change how
+        your logo is presented.
+      </p>
+
+      <!-- PALETTE GALLERY -->
+      <h4 style="margin-bottom:0.35rem;">Palette Gallery</h4>
+      <p style="font-size:0.75rem;color:var(--admin-text-muted);margin-top:0;margin-bottom:0.75rem;">
+        Click any palette to publish it — the colors and fonts below update
+        immediately and the public site picks them up on next page load.
+      </p>
+      <div id="brand-palette-gallery"
+           style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:0.75rem;margin-bottom:1.5rem;"
+           data-testid="grid-brand-palettes">
+        <div style="grid-column:1/-1;color:var(--admin-text-muted);font-size:0.8rem;">Loading palettes…</div>
+      </div>
+
+      <!-- FONT PAIR PICKER -->
+      <div class="form-row">
+        <div class="form-group" style="grid-column:1/-1;">
+          <label for="brand-font-pair">Font Pairing</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">
+            Picks both a heading serif and a body sans at once. Sets the two font dropdowns below.
+          </span>
+          <select id="brand-font-pair" data-testid="select-brand-font-pair"
+                  onchange="applyBrandFontPair(this.value)">
+            <option value="">— Custom (use the dropdowns below) —</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- ACCENT GRADIENT -->
+      <div class="form-row">
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+            <input type="checkbox" id="theme-accent-gradient"
+                   data-testid="checkbox-theme-accent-gradient"
+                   onchange="updateThemePreview()">
+            <span>Use accent gradient</span>
+          </label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:0.25rem;">
+            Buttons and accent surfaces blend from the accent into the secondary color.
+          </span>
+        </div>
+        <div class="form-group">
+          <label for="theme-accent-secondary">Accent Secondary Color</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">
+            Second stop of the gradient (only used when the toggle is on).
+          </span>
+          <div class="theme-color-input">
+            <div class="theme-swatch" id="swatch-theme-accent-secondary"
+                 onclick="document.getElementById('theme-accent-secondary-picker').click()"></div>
+            <input type="color" id="theme-accent-secondary-picker" class="theme-picker-hidden"
+                   onchange="document.getElementById('theme-accent-secondary').value=this.value;syncPickerSwatch('theme-accent-secondary');updateThemePreview()"
+                   data-testid="picker-theme-accent-secondary">
+            <input type="text" id="theme-accent-secondary" placeholder="#e0c896"
+                   oninput="syncPickerSwatch('theme-accent-secondary');updateThemePreview()"
+                   data-testid="input-theme-accent-secondary">
+          </div>
+        </div>
+      </div>
+
+      <!-- LOGO TREATMENT -->
+      <div class="form-row">
+        <div class="form-group">
+          <label for="theme-logo-mode">Logo Treatment</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">
+            How the logo renders in the header, footer, and lockup.
+          </span>
+          <select id="theme-logo-mode" data-testid="select-theme-logo-mode" onchange="onLogoModeChange()">
+            <option value="monogram">Monogram (initials in a circle)</option>
+            <option value="image">Image (uploaded logo only)</option>
+            <option value="wordmark">Wordmark (site name as text)</option>
+            <option value="lockup">Lockup (image + site name)</option>
+          </select>
+        </div>
+        <div class="form-group" id="theme-logo-image-group">
+          <label for="theme-logo-image">Logo Image</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">
+            Used by Image and Lockup modes. Square PNGs work best.
+          </span>
+          <div style="display:flex;gap:0.5rem;align-items:center;">
+            <input type="text" id="theme-logo-image" placeholder="/uploads/logo.png"
+                   data-testid="input-theme-logo-image" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm"
+                    onclick="openMediaPicker({targetInputId:'theme-logo-image', mediaType:'image'})"
+                    data-testid="button-pick-theme-logo-image">Pick</button>
+            <button type="button" class="btn btn-secondary btn-sm"
+                    onclick="uploadImageFor('theme-logo-image')"
+                    data-testid="button-upload-theme-logo-image">Upload</button>
+          </div>
+          <div id="theme-logo-image-preview" style="margin-top:0.5rem;"></div>
+        </div>
+      </div>
+
       <h3>Colors</h3>
       <div class="form-row">
         <div class="form-group">
@@ -9680,7 +9785,15 @@ TO CUSTOMIZE THIS DASHBOARD:
       $('tp-glass-heading').style.fontFamily = serif;
       $('tp-glass-body').style.color = text;
       $('tp-glass-body').style.fontFamily = sans;
-      $('tp-btn').style.background = accent;
+      // Brand-identity preview: when the gradient toggle is on AND a
+      // secondary color is set, the button + link reflect the gradient
+      // so the admin sees the brand surface treatment without saving.
+      const accent2El = $('theme-accent-secondary');
+      const gradOnEl  = $('theme-accent-gradient');
+      const accent2   = (accent2El && accent2El.value) || '';
+      const gradOn    = !!(gradOnEl && gradOnEl.checked) && !!accent2;
+      const accentBg  = gradOn ? `linear-gradient(135deg, ${accent}, ${accent2})` : accent;
+      $('tp-btn').style.background = accentBg;
       $('tp-btn').style.color = bg;
       $('tp-link').style.color = accent;
 
@@ -9719,7 +9832,8 @@ TO CUSTOMIZE THIS DASHBOARD:
         const res = await fetch('/admin/api/theme');
         const data = await res.json();
         const fields = ['theme-bg', 'theme-section1', 'theme-section2', 'theme-accent',
-                        'theme-text', 'theme-glass-border', 'theme-glass-bg'];
+                        'theme-text', 'theme-glass-border', 'theme-glass-bg',
+                        'theme-accent-secondary'];
         fields.forEach(f => {
           const key = f.replace(/-/g, '_');
           const val = data[key] || '';
@@ -9728,6 +9842,22 @@ TO CUSTOMIZE THIS DASHBOARD:
         });
         document.getElementById('theme-font-serif').value = data.theme_font_serif || '';
         document.getElementById('theme-font-sans').value = data.theme_font_sans || '';
+
+        // Brand-identity fields (Task #61). Logo image preview is
+        // re-rendered after the input is set so the admin sees the
+        // current uploaded logo without clicking the field.
+        const gradEl = document.getElementById('theme-accent-gradient');
+        if (gradEl) gradEl.checked = !!data.theme_accent_gradient;
+        const logoModeEl = document.getElementById('theme-logo-mode');
+        if (logoModeEl) logoModeEl.value = data.theme_logo_mode || 'monogram';
+        const logoImgEl = document.getElementById('theme-logo-image');
+        if (logoImgEl) logoImgEl.value = data.theme_logo_image || '';
+        renderLogoImagePreview();
+        onLogoModeChange();
+        // Sync the curated font-pair selector to whatever serif+sans
+        // combo the active theme is currently using (matches by exact
+        // name pair; falls back to "Custom" if no curated pair matches).
+        syncBrandFontPairSelection();
 
         // Universal visual tokens — pull saved values into the sliders
         // and refresh their right-aligned numeric labels so the form
@@ -9770,6 +9900,11 @@ TO CUSTOMIZE THIS DASHBOARD:
         theme_glass_blur_px:    parseInt(document.getElementById('theme-glass-blur-px').value, 10),
         theme_radius_rem:       parseFloat(document.getElementById('theme-radius-rem').value),
         theme_transition_sec:   parseFloat(document.getElementById('theme-transition-sec').value),
+        // Brand-identity fields (Task #61).
+        theme_accent_secondary: document.getElementById('theme-accent-secondary').value,
+        theme_accent_gradient:  document.getElementById('theme-accent-gradient').checked,
+        theme_logo_mode:        document.getElementById('theme-logo-mode').value,
+        theme_logo_image:       document.getElementById('theme-logo-image').value,
       };
 
       try {
@@ -9800,6 +9935,13 @@ TO CUSTOMIZE THIS DASHBOARD:
         theme_glass_blur_px: 24,
         theme_radius_rem: 1.0,
         theme_transition_sec: 0.6,
+        // Clear brand-identity overrides too (Task #61). Logo image
+        // is intentionally cleared — admin can re-pick from the media
+        // library if they want to keep the same one.
+        theme_accent_secondary: '',
+        theme_accent_gradient: false,
+        theme_logo_mode: 'monogram',
+        theme_logo_image: '',
       };
 
       try {
@@ -9819,6 +9961,174 @@ TO CUSTOMIZE THIS DASHBOARD:
       }
     }
 
+    /* =====================================================================
+       BRAND IDENTITY HELPERS (Task #61)
+       =====================================================================
+       Powers the palette gallery, font-pair picker, gradient toggle and
+       logo-treatment selector. Designed to coexist with the existing
+       form: applying a palette or font pair simply mutates the relevant
+       form inputs and calls updateThemePreview(); the admin still has
+       to click "Save Theme" for changes to persist (except for the
+       palette gallery, which uses the existing /publish endpoint that
+       atomically swaps the active theme on the server side).
+       ===================================================================== */
+
+    let _brandFontPairsCache = null; // [{ name, serif, sans }]
+
+    async function loadPaletteGallery() {
+      const grid = document.getElementById('brand-palette-gallery');
+      if (!grid) return;
+      try {
+        const res = await fetch('/admin/api/site-themes');
+        if (!res.ok) throw new Error('palette fetch failed');
+        const data = await res.json();
+        // The endpoint returns a raw array, but accept both shapes so a
+        // future wrapper-object refactor doesn't silently break the UI.
+        const list = Array.isArray(data) ? data : (data.themes || []);
+        const themes = list.filter(t =>
+          // Show curated palettes + the user's own saved ones; hide
+          // legacy/system rows that don't have a usable palette_json.
+          t && t.palette_json && (t.source === 'curated' || t.source === 'user' || !t.source)
+        );
+        if (!themes.length) {
+          grid.innerHTML = '<div style="grid-column:1/-1;color:var(--admin-text-muted);font-size:0.8rem;">No palettes available.</div>';
+          return;
+        }
+        grid.innerHTML = themes.map(t => {
+          const p = t.palette_json || {};
+          // Five swatches give an at-a-glance read of the palette's
+          // bg/section/accent feel without taking too much room.
+          const swatches = [p.bg, p.section1, p.section2, p.accent, p.text]
+            .filter(Boolean)
+            .map(c => `<span style="flex:1;height:1.5rem;background:${c};display:block;"></span>`)
+            .join('');
+          const isActive = t.is_active ? ' style="outline:2px solid var(--admin-accent);outline-offset:-2px;"' : '';
+          const activeBadge = t.is_active
+            ? '<span style="position:absolute;top:0.25rem;right:0.25rem;background:var(--admin-accent);color:#fff;font-size:0.55rem;padding:0.1rem 0.35rem;border-radius:0.25rem;text-transform:uppercase;letter-spacing:0.05em;">Active</span>'
+            : '';
+          return `
+            <div class="palette-card" data-testid="card-palette-${t.id}"
+                 onclick="applyPalette(${t.id})"
+                 title="Click to publish this palette"
+                 style="position:relative;border:1px solid var(--admin-border);border-radius:0.5rem;overflow:hidden;cursor:pointer;background:var(--admin-bg-elevated);transition:transform 0.15s ease, box-shadow 0.15s ease;"${isActive}>
+              ${activeBadge}
+              <div style="display:flex;">${swatches}</div>
+              <div style="padding:0.5rem 0.6rem;">
+                <div style="font-weight:600;font-size:0.8rem;color:var(--admin-text);">${escapeHtml(t.name || 'Untitled')}</div>
+                <div style="font-size:0.65rem;color:var(--admin-text-muted);text-transform:uppercase;letter-spacing:0.05em;margin-top:0.15rem;">${escapeHtml(t.source || 'user')}</div>
+              </div>
+            </div>`;
+        }).join('');
+      } catch (err) {
+        grid.innerHTML = '<div style="grid-column:1/-1;color:var(--admin-text-muted);font-size:0.8rem;">Failed to load palettes.</div>';
+      }
+    }
+
+    // Tiny HTML-escape so palette names from the DB can't break the
+    // gallery markup. Used only for display, never for attributes.
+    function escapeHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
+
+    async function applyPalette(themeId) {
+      if (!themeId) return;
+      if (!confirm('Publish this palette as the active site theme? Your color & font selections below will be replaced.')) return;
+      try {
+        const res = await fetch(`/admin/api/site-themes/${themeId}/publish`, { method: 'POST' });
+        if (!res.ok) {
+          showToast('Failed to publish palette', 'error');
+          return;
+        }
+        showToast('Palette published! Refreshing form…');
+        // Re-pull /admin/api/theme so the color pickers, font dropdowns
+        // and brand-identity controls all reflect the freshly-published
+        // palette without a page reload.
+        await loadTheme();
+        await loadPaletteGallery();
+        updateThemePreview();
+      } catch (err) {
+        showToast('Failed to publish palette', 'error');
+      }
+    }
+
+    async function loadFontPairs() {
+      const sel = document.getElementById('brand-font-pair');
+      if (!sel) return;
+      try {
+        const res = await fetch('/admin/api/curated-font-pairs');
+        if (!res.ok) throw new Error('font pairs fetch failed');
+        const data = await res.json();
+        // Endpoint returns a raw array of { id, label, serif, sans }.
+        // Accept the wrapped shape too for forward-compat.
+        const list = Array.isArray(data) ? data : (data.pairs || []);
+        _brandFontPairsCache = list;
+        // Rebuild the <option> list while preserving the empty/custom row.
+        const customOpt = '<option value="">— Custom (use the dropdowns below) —</option>';
+        const opts = _brandFontPairsCache.map((p, i) =>
+          `<option value="${i}">${escapeHtml(p.label || (p.serif + ' + ' + p.sans))}</option>`
+        ).join('');
+        sel.innerHTML = customOpt + opts;
+        syncBrandFontPairSelection();
+      } catch (err) {
+        // Leave the placeholder option in place; admin can still use the
+        // raw font dropdowns below.
+      }
+    }
+
+    function applyBrandFontPair(idx) {
+      if (idx === '' || idx == null) return;
+      const i = parseInt(idx, 10);
+      if (!_brandFontPairsCache || isNaN(i) || !_brandFontPairsCache[i]) return;
+      const pair = _brandFontPairsCache[i];
+      // Write through to the existing serif + sans dropdowns so the
+      // form's Save button sends the right values; if the chosen font
+      // isn't already in the dropdown options, append it on the fly.
+      const setSelectValue = (id, value) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const exists = Array.from(el.options).some(o => o.value === value);
+        if (!exists) {
+          const opt = document.createElement('option');
+          opt.value = value;
+          opt.textContent = value;
+          el.appendChild(opt);
+        }
+        el.value = value;
+      };
+      setSelectValue('theme-font-serif', pair.serif);
+      setSelectValue('theme-font-sans', pair.sans);
+      updateThemePreview();
+    }
+
+    function syncBrandFontPairSelection() {
+      const sel = document.getElementById('brand-font-pair');
+      if (!sel || !_brandFontPairsCache) return;
+      const serif = (document.getElementById('theme-font-serif') || {}).value || '';
+      const sans = (document.getElementById('theme-font-sans') || {}).value || '';
+      const idx = _brandFontPairsCache.findIndex(p => p.serif === serif && p.sans === sans);
+      sel.value = idx >= 0 ? String(idx) : '';
+    }
+
+    function onLogoModeChange() {
+      // Image field is only meaningful for image + lockup modes.
+      // Hide it (but don't clear the value) for monogram + wordmark so
+      // the admin can flip back without losing their upload.
+      const mode = (document.getElementById('theme-logo-mode') || {}).value || 'monogram';
+      const group = document.getElementById('theme-logo-image-group');
+      if (group) group.style.display = (mode === 'image' || mode === 'lockup') ? '' : 'none';
+      renderLogoImagePreview();
+    }
+
+    function renderLogoImagePreview() {
+      const preview = document.getElementById('theme-logo-image-preview');
+      const inputEl = document.getElementById('theme-logo-image');
+      if (!preview || !inputEl) return;
+      const url = (inputEl.value || '').trim();
+      if (!url) { preview.innerHTML = ''; return; }
+      preview.innerHTML = `<img src="${escapeHtml(url)}" alt="Logo preview" style="max-height:3rem;max-width:8rem;border:1px solid var(--admin-border);border-radius:0.25rem;padding:0.25rem;background:#fff;" data-testid="img-theme-logo-preview">`;
+    }
 
     /*
     ========================================================================
@@ -12274,6 +12584,12 @@ TO CUSTOMIZE THIS DASHBOARD:
       loadChatHistory();
       loadForms();
       loadTheme();
+      // Brand identity (Task #61): font pairs first so loadTheme() can
+      // sync the picker, then the gallery so it can outline the active
+      // palette. Both are best-effort — failures don't block the rest
+      // of the dashboard.
+      loadFontPairs();
+      loadPaletteGallery();
       loadSeoSettings();
       loadBlogPosts();
       loadPages();
