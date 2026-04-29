@@ -2283,26 +2283,10 @@ def init_db():
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_easing TEXT NOT NULL DEFAULT 'gentle'",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_photo_filter TEXT NOT NULL DEFAULT 'none'",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_loading_mode TEXT NOT NULL DEFAULT 'logo_name'",
-                # --- Layout & rhythm controls (Task #63 / items 6, 7, 9, 16) ---
-                #     theme_density swaps the public --space-* scale used
-                #     site-wide for vertical/horizontal rhythm:
-                #       'compact'      (0.75x — tight, business-y),
-                #       'comfortable'  (1.0x — current/default),
-                #       'spacious'     (1.25x — editorial / venue feel).
-                #     theme_section_frame_inset adds horizontal page-bg
-                #     padding around every .landing-section so the section
-                #     paint shrinks from edge-to-edge (0px) toward a
-                #     floating-card look (32px) — the existing
-                #     background-clip:content-box rule from Task #60
-                #     translates the inset directly into a visible frame.
-                #     theme_header_align picks how every section header
-                #     aligns ('centered' default, 'left', 'numbered', 'split').
-                #     hero_layout_mode picks the hero region's structure:
-                #       'full_bleed'  (default — image bg + centered content),
-                #       'split'       (50/50 image + text grid),
-                #       'text_mesh'   (text only on a CSS mesh gradient),
-                #       'carousel'    (image bg cycles through gallery cards),
-                #       'video'       (forces hero-video on, hides bg image).
+                # Layout & rhythm controls (Task #63 / items 6, 7, 9, 16):
+                # density (compact/comfortable/spacious), frame inset (0..32px),
+                # header alignment (centered/left/numbered/split), hero mode
+                # (full_bleed/split/text_mesh/carousel/video).
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_density TEXT NOT NULL DEFAULT 'comfortable'",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_section_frame_inset INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_header_align TEXT NOT NULL DEFAULT 'centered'",
@@ -6254,66 +6238,24 @@ def serve_index():
                 count=1,
             )
 
-            # ----------------------------------------------------------
-            # Server-side hero-region branching (Task #63 / item 16).
-            # ----------------------------------------------------------
-            # Some hero modes need information that ONLY the server can
-            # provide on first paint:
-            #
-            #   - 'carousel'  : the rotation pool (gallery_cards.image_url
-            #                   list) so the carousel can begin cycling
-            #                   immediately, without waiting for the
-            #                   /api/gallery-cards round-trip and the
-            #                   subsequent .highlight-card-bg render.
-            #
-            # We also stamp `data-mode="<hl>"` directly on the .hero-section
-            # element. While [data-hero-layout] on <html> already drives
-            # the CSS variants, scoping a per-section attribute lets
-            # future per-section CSS rules and the JS pool-builder key
-            # off the section directly (cheaper selector, less coupling
-            # to the html cascade).
+            # Server-side hero branching for first paint (Task #63 / item 16):
+            # swap the entire <section id="section-hero">…</section> in the
+            # static index.html with the per-mode fragment so the right DOM
+            # ships from the very first byte. Live mode changes use
+            # /api/hero-fragment + outerHTML swap (see applyLayoutRhythm).
             try:
-                hero_attrs = f' data-mode="{hl}"'
-                if hl == "carousel":
-                    pool_rows = query_db(
-                        "SELECT image_url FROM gallery_cards "
-                        "WHERE image_url IS NOT NULL AND image_url != '' "
-                        "ORDER BY sort_order ASC LIMIT 24"
-                    ) or []
-                    # `|`-separated keeps the attribute small + parse-cheap
-                    # (URLs are already %-encoded, so `|` is collision-free).
-                    # Strip any stray `|` defensively, escape `"` for HTML.
-                    urls = [
-                        (r["image_url"] or "").replace("|", "").replace('"', "%22").strip()
-                        for r in pool_rows
-                    ]
-                    urls = [u for u in urls if u]
-                    if urls:
-                        hero_attrs += f' data-carousel-pool="{"|".join(urls)}"'
-
-                def _merge_hero_attrs(m):
-                    attrs = m.group(1) or ""
-                    # Strip any pre-existing hero data-* attrs so re-renders
-                    # don't accumulate duplicates if the placeholder file
-                    # ever ships with these attributes.
-                    attrs = re.sub(
-                        r'\s+data-(mode|carousel-pool)\s*=\s*"[^"]*"',
-                        "",
-                        attrs,
-                    )
-                    return f"<section{attrs}{hero_attrs}>"
-
-                # Match the specific .hero-section element by id (it's
-                # unique on the landing page). We only rewrite the OPENING
-                # tag, never the closing tag.
-                html_content = re.sub(
-                    r'<section([^>]*\bid="section-hero"[^>]*)>',
-                    _merge_hero_attrs,
+                fragment = _render_hero_fragment(hl)
+                new_html, n = re.subn(
+                    r'<section\b[^>]*\bid="section-hero"[^>]*>.*?</section>',
+                    lambda m: fragment,
                     html_content,
                     count=1,
+                    flags=re.DOTALL,
                 )
+                if n:
+                    html_content = new_html
             except Exception as e:
-                print(f"[serve_index] hero-region attr injection failed: {e}; continuing")
+                print(f"[serve_index] hero fragment swap failed: {e}; continuing")
         except Exception as e:
             print(f"[serve_index] body brand-class injection failed: {e}; serving without")
 
@@ -6505,6 +6447,143 @@ def api_site_settings():
     if not settings:
         return jsonify({"error": "No site settings found"}), 404
     return jsonify(settings)
+
+
+# Hero layout modes (Task #63 / item 16). Kept in sync with the front-end
+# whitelist in public/script.js (LAYOUT_HERO_LAYOUTS) and the server-side
+# normalization in _resolve_active_theme.
+HERO_LAYOUT_MODES = ("full_bleed", "split", "text_mesh", "carousel", "video")
+
+
+def _render_hero_fragment(mode):
+    """Return the hero <section> markup for one of the 5 layout modes.
+
+    Each mode emits structurally distinct DOM (different child elements,
+    wrappers, classes) — not just a different attribute on a shared
+    template — so a layout switch is a real DOM swap, not CSS morphing.
+    Text content is intentionally placeholder (renderHero() in script.js
+    repopulates it from siteSettings after the swap).
+    """
+    if mode not in HERO_LAYOUT_MODES:
+        mode = "full_bleed"
+
+    nav = (
+        '<div class="hero-nav">'
+        '<div class="flex items-center gap-md">'
+        '<div id="logo-badge" class="logo-badge" data-testid="logo-badge">CS</div>'
+        '<div class="logo-text">'
+        '<p id="nav-site-name" class="site-name" data-testid="text-site-name">My Site</p>'
+        '<p id="nav-site-subtitle" class="site-subtitle" data-testid="text-site-subtitle">Your Tagline Here</p>'
+        '</div></div>'
+        '<div class="flex items-center gap-md">'
+        '<button id="btn-reserve-hero" class="btn-reserve" onclick="openModal()" '
+        'aria-label="Get started — open inquiry form" data-testid="button-reserve-hero">'
+        '&#x1f4c5; Get Started</button>'
+        '</div></div>'
+    )
+    content = (
+        '<div class="hero-content" aria-live="polite">'
+        '<div class="fade-in-view visible" style="max-width: 48rem;">'
+        '<p id="hero-tagline" class="hero-tagline" data-testid="text-hero-tagline">Welcome to Our Website</p>'
+        '<h1 id="hero-title" class="hero-title" data-testid="text-hero-title">My Site</h1>'
+        '<p id="hero-description" class="hero-description" data-testid="text-hero-description">Loading...</p>'
+        '<div class="hero-buttons">'
+        '<button class="btn-secondary" onclick="showGallery()" '
+        'aria-label="Explore the gallery" data-testid="button-explore-gallery">Explore Gallery</button>'
+        '<button id="btn-sphere-view" class="btn-secondary" onclick="showSphereView()" '
+        'aria-label="Open immersive sphere view" data-testid="button-explore-sphere" style="display:none;">'
+        '&#x2728; Immersive View</button>'
+        '<button class="btn-primary" onclick="openModal()" '
+        'aria-label="Get started — open inquiry form" data-testid="button-get-started">Get Started</button>'
+        '</div></div></div>'
+    )
+    scroll = '<div class="scroll-indicator"><i data-lucide="chevron-down" style="width:24px;height:24px;"></i></div>'
+    overlay = '<div class="hero-overlay"></div>'
+
+    if mode == "split":
+        # Split mode wraps media + text in a 2-column grid container so
+        # the structure (not just CSS) reflects the side-by-side layout.
+        body = (
+            '<div class="hero-split-grid">'
+            '<div class="hero-split-media">'
+            '<div id="hero-bg" class="hero-bg"></div>'
+            f'{overlay}'
+            '</div>'
+            f'<div class="hero-split-text">{content}</div>'
+            '</div>'
+        )
+        cls = "snap-section hero-section hero-mode-split"
+        return (
+            f'<section id="section-hero" class="{cls}" role="banner" '
+            f'data-testid="section-hero" data-mode="{mode}">'
+            f'{nav}{body}{scroll}</section>'
+        )
+
+    if mode == "text_mesh":
+        # No image carrier — the section paints its own mesh gradient
+        # (see [data-hero-layout="text_mesh"] in styles.css).
+        cls = "snap-section hero-section hero-mode-mesh"
+        return (
+            f'<section id="section-hero" class="{cls}" role="banner" '
+            f'data-testid="section-hero" data-mode="{mode}">'
+            f'{overlay}{nav}{content}{scroll}</section>'
+        )
+
+    if mode == "video":
+        # Video-first markup: <video> is the primary media element,
+        # rendered before the overlay so the scrim sits on top of it.
+        cls = "snap-section hero-section hero-mode-video"
+        media = (
+            '<video id="hero-video" class="hero-video" muted loop '
+            'playsinline autoplay style="display:block;"></video>'
+        )
+        return (
+            f'<section id="section-hero" class="{cls}" role="banner" '
+            f'data-testid="section-hero" data-mode="{mode}">'
+            f'{media}{overlay}{nav}{content}{scroll}</section>'
+        )
+
+    if mode == "carousel":
+        # Carousel: server-injected pool list lives on #hero-bg as
+        # data-carousel-pool so the JS rotator has content on first paint.
+        pool_rows = query_db(
+            "SELECT image_url FROM gallery_cards "
+            "WHERE image_url IS NOT NULL AND image_url != '' "
+            "ORDER BY sort_order ASC LIMIT 24"
+        ) or []
+        urls = [
+            (r["image_url"] or "").replace("|", "").replace('"', "%22").strip()
+            for r in pool_rows
+        ]
+        urls = [u for u in urls if u]
+        pool_attr = f' data-carousel-pool="{"|".join(urls)}"' if urls else ""
+        cls = "snap-section hero-section"
+        return (
+            f'<section id="section-hero" class="{cls}" role="banner" '
+            f'data-testid="section-hero" data-mode="{mode}">'
+            f'<div id="hero-bg" class="hero-bg"{pool_attr}></div>'
+            f'{overlay}{nav}{content}{scroll}</section>'
+        )
+
+    # full_bleed (default): standard image-bg + overlay + centered content.
+    cls = "snap-section hero-section"
+    return (
+        f'<section id="section-hero" class="{cls}" role="banner" '
+        f'data-testid="section-hero" data-mode="{mode}">'
+        f'<div id="hero-bg" class="hero-bg"></div>'
+        f'{overlay}{nav}{content}{scroll}</section>'
+    )
+
+
+@app.route("/api/hero-fragment")
+def api_hero_fragment():
+    """GET /api/hero-fragment?mode=X — return distinct hero markup per mode.
+    Used by applyLayoutRhythm() to swap the hero region without a full reload.
+    """
+    mode = (request.args.get("mode") or "full_bleed").strip().lower()
+    if mode not in HERO_LAYOUT_MODES:
+        mode = "full_bleed"
+    return Response(_render_hero_fragment(mode), mimetype="text/html")
 
 
 @app.route("/api/gallery-cards")

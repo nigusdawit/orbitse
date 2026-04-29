@@ -246,24 +246,14 @@ function renderHero() {
   if (!siteSettings) return;
   applyScrollMode();
 
-  /* Set hero background image or video.
-     The choice of media is keyed off `hero_layout_mode` (Task #63 /
-     item 16) so the new hero-layout picker is the single source of
-     truth for which media element is visible:
-       - 'video'    → show <video> (only if hero_video_url is set,
-                       otherwise gracefully fall back to image so the
-                       hero is never blank)
-       - any other  → show #hero-bg image, regardless of whether
-                       hero_video_url is configured
-     This prevents a stale hero_video_url from overriding the picker
-     for non-video layouts (full_bleed/split/text_mesh/carousel). */
+  /* Hero media is keyed off hero_layout_mode (Task #63 / item 16):
+     'video' shows <video> (when hero_video_url set), all other modes
+     show #hero-bg. */
   const heroBg = document.getElementById('hero-bg');
   const heroVideo = document.getElementById('hero-video');
   const layoutMode = String(siteSettings.hero_layout_mode || 'full_bleed').trim().toLowerCase();
   const wantsVideo = (layoutMode === 'video') && !!siteSettings.hero_video_url;
   if (wantsVideo) {
-    /* Show muted/looping video; image bg is hidden by CSS rule
-       html[data-hero-layout="video"] .hero-section .hero-bg{display:none} */
     if (heroBg) heroBg.style.backgroundImage = '';
     if (heroVideo) {
       heroVideo.src = siteSettings.hero_video_url;
@@ -276,15 +266,13 @@ function renderHero() {
       if (p && typeof p.catch === 'function') p.catch(() => {});
     }
   } else {
-    /* Properly tear down the video element so the browser doesn't fire a
-       MEDIA_ERR_SRC_NOT_SUPPORTED error on the empty src. We pause first,
-       remove the autoplay attribute (so it won't re-trigger on next load),
-       remove the src, and call load() to abort any pending media request. */
+    // Tear down <video> cleanly so the browser doesn't raise
+    // MEDIA_ERR_SRC_NOT_SUPPORTED on an empty src.
     if (heroVideo) {
-      try { heroVideo.pause(); } catch (e) { /* ignore */ }
+      try { heroVideo.pause(); } catch (e) {}
       heroVideo.removeAttribute('autoplay');
       heroVideo.removeAttribute('src');
-      try { heroVideo.load(); } catch (e) { /* ignore */ }
+      try { heroVideo.load(); } catch (e) {}
       heroVideo.style.display = 'none';
     }
     if (heroBg) {
@@ -4079,17 +4067,9 @@ function applySurfaceTreatment(theme) {
   html.style.setProperty('--ease-active', SURFACE_EASE_CURVES[ez] || SURFACE_EASE_CURVES.gentle);
 }
 
-/* -----------------------------------------------------------------------
-   Layout & rhythm helper (Task #63 / items 6, 7, 9, 16). Same defensive
-   whitelist pattern as applySurfaceTreatment so an unexpected payload
-   value can't write garbage data-* attrs. Updates --space-scale and
-   --section-frame-inset CSS vars too so live admin saves repaint
-   spacing without the server emitting a fresh <style> block.
-
-   The carousel hero mode requires a JS-driven background swap (since
-   it cycles through gallery card images); applyHeroCarousel() owns
-   that timer and is started/stopped here based on the active layout.
------------------------------------------------------------------------ */
+/* Layout & rhythm helper (Task #63 / items 6, 7, 9, 16). Whitelisted
+   data-* attrs + --space-scale / --section-frame-inset CSS vars; mode
+   changes trigger a hero fragment swap (see swapHeroFragment). */
 const LAYOUT_DENSITIES      = ['compact', 'comfortable', 'spacious'];
 const LAYOUT_HEADER_ALIGNS  = ['centered', 'left', 'numbered', 'split'];
 const LAYOUT_HERO_LAYOUTS   = ['full_bleed', 'split', 'text_mesh', 'carousel', 'video'];
@@ -4104,9 +4084,7 @@ function applyLayoutRhythm(theme) {
   const dn = pick(theme.theme_density,      LAYOUT_DENSITIES,     'comfortable');
   const ha = pick(theme.theme_header_align, LAYOUT_HEADER_ALIGNS, 'centered');
   const hl = pick(theme.hero_layout_mode,   LAYOUT_HERO_LAYOUTS,  'full_bleed');
-  // Section frame inset: clamp to 0..32 px so a stray payload value
-  // can't blow up section padding to a useless extreme. Falls back to 0
-  // (current edge-to-edge default) when the column is absent or NaN.
+  // Clamp 0..32px (edge-to-edge default = 0).
   let fi = parseInt(theme.theme_section_frame_inset, 10);
   if (!Number.isFinite(fi)) fi = 0;
   fi = Math.max(0, Math.min(32, fi));
@@ -4117,63 +4095,57 @@ function applyLayoutRhythm(theme) {
   html.style.setProperty('--space-scale',          String(LAYOUT_DENSITY_SCALE[dn] || 1));
   html.style.setProperty('--section-frame-inset',  fi + 'px');
 
-  // Sync the live siteSettings cache + reconcile hero media (video vs
-  // image) so a layout switch via live theme update is deterministic:
-  //   - mode='video'  AND hero_video_url present → show <video>, hide #hero-bg
-  //   - any other mode                            → show #hero-bg, hide <video>
-  // renderHero() is the single source of truth for that decision; we
-  // re-run it here only when the mode actually changes (cheap diff)
-  // so we don't thrash the video element on every save. siteSettings
-  // may be undefined on the very first call (theme loads before the
-  // /api/site-settings round-trip completes) — that path is safe
-  // because renderHero() bails when !siteSettings, and the eventual
-  // first renderHero() call will read the now-updated cache.
+  // Sync hero_layout_mode into the live siteSettings cache and, when
+  // the mode actually changes, fetch the per-mode hero fragment from
+  // the server and swap #section-hero's outerHTML. This makes mode
+  // switches a real DOM swap (matching first-paint), not CSS morphing.
+  const prevMode = (siteSettings && siteSettings.hero_layout_mode) || null;
   if (typeof siteSettings === 'object' && siteSettings) {
-    if (siteSettings.hero_layout_mode !== hl) {
-      siteSettings.hero_layout_mode = hl;
-      try { renderHero(); } catch (e) { /* hero re-render is best-effort */ }
-    } else {
-      siteSettings.hero_layout_mode = hl;
-    }
+    siteSettings.hero_layout_mode = hl;
   }
-
-  // Hero carousel timer is owned by applyHeroCarousel; start/stop based
-  // on the chosen layout so switching away from "carousel" cleanly halts
-  // the interval and restores the normal hero bg image.
-  applyHeroCarousel(hl === 'carousel');
+  if (prevMode && prevMode !== hl) {
+    swapHeroFragment(hl);
+  } else {
+    // No mode change — just keep the carousel timer in sync.
+    applyHeroCarousel(hl === 'carousel');
+  }
 }
 
-/* -----------------------------------------------------------------------
-   Hero carousel hook (Task #63 / item 16). When the admin picks the
-   "carousel" hero layout, cycle the hero section's background-image
-   through the property's gallery card images on a slow timer. The
-   CSS rule `[data-hero-layout="carousel"] .hero-section` already
-   adds the cross-fade transition so the swap reads as intentional.
-   Calling with `enabled=false` clears the timer and restores the
-   original bg.
------------------------------------------------------------------------ */
+/* Fetch /api/hero-fragment?mode=X and replace #section-hero in place. */
+async function swapHeroFragment(mode) {
+  const current = document.getElementById('section-hero');
+  if (!current) return;
+  try {
+    const r = await fetch('/api/hero-fragment?mode=' + encodeURIComponent(mode), { credentials: 'same-origin' });
+    if (!r.ok) throw new Error('hero-fragment HTTP ' + r.status);
+    const html = await r.text();
+    const wrap = document.createElement('div');
+    wrap.innerHTML = html.trim();
+    const next = wrap.firstElementChild;
+    if (!next) return;
+    current.replaceWith(next);
+    if (window.lucide && typeof window.lucide.createIcons === 'function') {
+      try { window.lucide.createIcons(); } catch (e) {}
+    }
+    try { renderHero(); } catch (e) {}
+    applyHeroCarousel(mode === 'carousel');
+  } catch (e) {
+    console.warn('[hero-fragment] swap failed:', e);
+    try { renderHero(); } catch (_) {}
+    applyHeroCarousel(mode === 'carousel');
+  }
+}
+
+/* Hero carousel rotator (Task #63 / item 16). Cycles #hero-bg through
+   the gallery card image pool on a 5s timer; cross-fade comes from CSS. */
 let _heroCarouselTimer = null;
 let _heroCarouselRetryTimer = null;
 let _heroCarouselOriginalBg = null;
 function applyHeroCarousel(enabled) {
-  // The image carrier is #hero-bg (a child div that holds
-  // background-image), NOT .hero-section itself. Targeting #hero-bg
-  // keeps the existing renderHero() pipeline as the source of truth
-  // for the hero image and lets the cross-fade transition declared
-  // on `[data-hero-layout="carousel"] .hero-section .hero-bg` apply
-  // cleanly to each swap.
   const heroBg = document.getElementById('hero-bg');
   if (!heroBg) return;
-  // Always tear down any prior timer + pending retry so toggling
-  // between layouts is safe and never leaks an orphan interval.
-  if (_heroCarouselTimer) {
-    clearInterval(_heroCarouselTimer);
-    _heroCarouselTimer = null;
-  }
-  if (_heroCarouselRetryTimer) {
-    clearTimeout(_heroCarouselRetryTimer);
-    _heroCarouselRetryTimer = null;
-  }
+  if (_heroCarouselTimer)      { clearInterval(_heroCarouselTimer);    _heroCarouselTimer = null; }
+  if (_heroCarouselRetryTimer) { clearTimeout(_heroCarouselRetryTimer); _heroCarouselRetryTimer = null; }
   if (!enabled) {
     if (_heroCarouselOriginalBg !== null) {
       heroBg.style.backgroundImage = _heroCarouselOriginalBg;
@@ -4181,34 +4153,17 @@ function applyHeroCarousel(enabled) {
     }
     return;
   }
-  // Capture the current bg so we can restore it when the mode is
-  // disabled. Done BEFORE the first swap so the user gets back exactly
-  // what renderHero() last set.
   if (_heroCarouselOriginalBg === null) {
     _heroCarouselOriginalBg = heroBg.style.backgroundImage || '';
   }
-  // Build the rotation pool. PRIMARY source is the server-injected
-  // `data-carousel-pool` attribute on .hero-section — serve_index in
-  // app.py SELECTs gallery_cards.image_url whenever hero_layout_mode
-  // == 'carousel' and emits a `|`-separated list, so the carousel has
-  // content from the very first byte of HTML (no waiting on async
-  // gallery render). FALLBACK: scrape rendered card surfaces from
-  // .highlight-card-bg (the highlights row on the landing page) and
-  // .gallery-slide-bg (the in-page Gallery view). Cards render after
-  // their /api/gallery-cards fetch resolves, so on first call the
-  // DOM-scrape pool may legitimately be empty — we re-try on a short
-  // delay rather than silently no-op'ing forever.
+  // Pool: prefer server-injected data-carousel-pool, fall back to
+  // scraping rendered card backgrounds.
   const heroSection = document.querySelector('.hero-section, #section-hero');
   const buildPool = () => {
-    // 1) Prefer the server-injected pool — present from first paint.
     const serverPool = (heroSection && heroSection.getAttribute('data-carousel-pool')) || '';
     if (serverPool.trim()) {
-      return serverPool.split('|')
-        .map(u => u.trim())
-        .filter(Boolean)
-        .map(u => `url("${u}")`);
+      return serverPool.split('|').map(u => u.trim()).filter(Boolean).map(u => `url("${u}")`);
     }
-    // 2) Fallback: scrape rendered card backgrounds.
     return Array.from(document.querySelectorAll('.highlight-card-bg, .gallery-slide-bg'))
       .map(el => {
         const inline = el.style.backgroundImage;
@@ -4218,32 +4173,22 @@ function applyHeroCarousel(enabled) {
       })
       .filter(Boolean);
   };
+  const start = (pool) => {
+    let idx = 0;
+    heroBg.style.backgroundImage = pool[0];
+    _heroCarouselTimer = setInterval(() => {
+      idx = (idx + 1) % pool.length;
+      heroBg.style.backgroundImage = pool[idx];
+    }, 5000);
+  };
   let pool = buildPool();
-  if (!pool.length) {
-    // Schedule one retry — by 1500 ms the gallery API call has
-    // typically resolved and rendered. Capped at one retry so a site
-    // with no gallery cards never enters an infinite poll.
-    _heroCarouselRetryTimer = setTimeout(() => {
-      _heroCarouselRetryTimer = null;
-      pool = buildPool();
-      if (!pool.length) return;
-      let idx = 0;
-      heroBg.style.backgroundImage = pool[0];
-      _heroCarouselTimer = setInterval(() => {
-        idx = (idx + 1) % pool.length;
-        heroBg.style.backgroundImage = pool[idx];
-      }, 5000);
-    }, 1500);
-    return;
-  }
-  let idx = 0;
-  // Show the first pool image immediately so the carousel kicks in
-  // visibly even if the visitor never scrolls past the hero.
-  heroBg.style.backgroundImage = pool[0];
-  _heroCarouselTimer = setInterval(() => {
-    idx = (idx + 1) % pool.length;
-    heroBg.style.backgroundImage = pool[idx];
-  }, 5000);
+  if (pool.length) { start(pool); return; }
+  // One bounded retry — gallery cards may not have rendered yet.
+  _heroCarouselRetryTimer = setTimeout(() => {
+    _heroCarouselRetryTimer = null;
+    pool = buildPool();
+    if (pool.length) start(pool);
+  }, 1500);
 }
 
 function loadGoogleFont(fontName) {
