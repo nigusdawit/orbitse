@@ -9914,7 +9914,24 @@ TO CUSTOMIZE THIS DASHBOARD:
           body: JSON.stringify(data)
         });
         if (res.ok) {
-          showToast('Theme saved! Reload the public site to see changes.');
+          showToast('Theme saved — public pages updating live.');
+          // Live-propagate (Task #61): broadcast to any open public-site
+          // tabs in the same browser so they re-pull /api/theme without
+          // a manual refresh. The receiving side (script.js) re-runs
+          // loadAndApplyTheme() which re-applies colors, fonts, the
+          // accent gradient, and the logo treatment. Falls back to the
+          // localStorage `storage` event for browsers without BC.
+          try {
+            if ('BroadcastChannel' in window) {
+              const bc = new BroadcastChannel('theme-updates');
+              bc.postMessage({ type: 'theme-saved', ts: Date.now() });
+              bc.close();
+            }
+            // storage events fire on OTHER tabs of the same origin even
+            // when BC isn't available — bumping a tiny epoch counter is
+            // enough to trigger the listener.
+            localStorage.setItem('theme-updated-at', String(Date.now()));
+          } catch (_) { /* live-update is best-effort */ }
         } else {
           showToast('Failed to save theme', 'error');
         }

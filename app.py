@@ -946,6 +946,21 @@ CURATED_FONT_PAIRS = [
     {"id": "librebask_raleway",     "label": "Libre Baskerville + Raleway (Classic)",         "serif": "Libre Baskerville",  "sans": "Raleway"},
     {"id": "crimson_jakarta",       "label": "Crimson Text + Plus Jakarta Sans (Warm Tech)",  "serif": "Crimson Text",       "sans": "Plus Jakarta Sans"},
     {"id": "ebgaramond_figtree",    "label": "EB Garamond + Figtree (Old World Meets New)",   "serif": "EB Garamond",        "sans": "Figtree"},
+    # --- Second wave of 10 pairs to satisfy the ~20 target. Each one
+    #     is a deliberate point in the style space (luxury, geometric,
+    #     monospace, brutalist, friendly, agency, magazine, minimal,
+    #     literary, hospitality) so the set covers most client briefs
+    #     without overlapping the first batch. ---
+    {"id": "didone_archivo",        "label": "Prata + Archivo (Luxury Print)",                "serif": "Prata",              "sans": "Archivo"},
+    {"id": "spectral_jost",         "label": "Spectral + Jost (Geometric Editorial)",         "serif": "Spectral",           "sans": "Jost"},
+    {"id": "ibm_plex",              "label": "IBM Plex Serif + IBM Plex Sans (Technical)",    "serif": "IBM Plex Serif",     "sans": "IBM Plex Sans"},
+    {"id": "spacegrotesk_mono",     "label": "Space Grotesk + Space Mono (Brutalist Tech)",   "serif": "Space Mono",         "sans": "Space Grotesk"},
+    {"id": "abril_poppins",         "label": "Abril Fatface + Poppins (Display Friendly)",    "serif": "Abril Fatface",      "sans": "Poppins"},
+    {"id": "marcellus_manrope",     "label": "Marcellus + Manrope (Boutique Agency)",         "serif": "Marcellus",          "sans": "Manrope"},
+    {"id": "tenor_lato",            "label": "Tenor Sans + Lato (Magazine Minimal)",          "serif": "Tenor Sans",         "sans": "Lato"},
+    {"id": "syne_sourcesans",       "label": "Syne + Source Sans 3 (Modern Studio)",          "serif": "Syne",               "sans": "Source Sans 3"},
+    {"id": "ptserif_ptsans",        "label": "PT Serif + PT Sans (Literary)",                 "serif": "PT Serif",           "sans": "PT Sans"},
+    {"id": "italiana_questrial",    "label": "Italiana + Questrial (Hospitality Elegance)",   "serif": "Italiana",           "sans": "Questrial"},
 ]
 
 CURATED_PALETTES = [
@@ -5790,6 +5805,24 @@ def _build_theme_vars_style():
             accent_grad = f"linear-gradient(135deg,{accent},{accent_2})"
         else:
             accent_grad = accent
+        # Logo image becomes a CSS var so the .logo-mode-image badge can
+        # render the uploaded image as a background-image on first paint
+        # (no JS required). Only emit when the active mode actually uses
+        # an image; otherwise emit `none` so any stray rule that reads
+        # the var degrades safely.
+        logo_mode  = (t.get("theme_logo_mode") or "monogram").strip().lower()
+        logo_image = (t.get("theme_logo_image") or "").strip()
+        if logo_mode in ("image", "lockup") and logo_image:
+            # Sanitize the URL: only allow protocol-relative, absolute
+            # paths (/uploads/...) and http(s) URLs, and quote-escape
+            # double quotes. Anything else falls back to no image.
+            safe = logo_image.replace('"', "%22")
+            if safe.startswith(("/", "http://", "https://", "//")):
+                logo_image_css = f'url("{safe}")'
+            else:
+                logo_image_css = "none"
+        else:
+            logo_image_css = "none"
         return (
             "<style id=\"theme-vars-injected\">:root{"
             f"--color-bg:{bg};"
@@ -5808,6 +5841,7 @@ def _build_theme_vars_style():
             f"--transition-medium:{trans_sec}s;"
             f"--font-serif:'{font_serif}',Georgia,serif;"
             f"--font-sans:'{font_sans}',-apple-system,BlinkMacSystemFont,sans-serif;"
+            f"--logo-image:{logo_image_css};"
             "}</style>"
         )
     except Exception as e:
@@ -5992,6 +6026,48 @@ def serve_index():
                 html_content = html_content.replace(
                     "</head>", theme_style + "\n</head>", 1
                 )
+
+        # ----------------------------------------------------------------
+        # First-paint logo treatment + accent-gradient body class injection
+        # (Task #61). The CSS variants in styles.css and the hidden-image
+        # rendering BOTH key off `<body class="logo-mode-X">`, so without
+        # this server-side step the page would flash the default monogram
+        # before script.js applies the right class. Same goes for the
+        # accent-gradient surface treatment.
+        #
+        # We rewrite the FIRST `<body ...>` tag to merge our brand classes
+        # into any existing class attribute (some admin-published designs
+        # already set body classes for layout/scroll behavior).
+        # ----------------------------------------------------------------
+        try:
+            tt = _resolve_active_theme() or {}
+            mode_raw = (tt.get("theme_logo_mode") or "monogram").strip().lower()
+            mode = mode_raw if mode_raw in ("monogram", "image", "wordmark", "lockup") else "monogram"
+            brand_classes = ["logo-mode-" + mode]
+            if tt.get("theme_accent_gradient") and (tt.get("theme_accent_secondary") or "").strip():
+                brand_classes.append("theme-accent-gradient")
+            extra = " ".join(brand_classes)
+
+            def _merge_body_class(m):
+                # Group 1 = full attribute string between `<body` and `>`,
+                # which may already contain class="..." plus other attrs.
+                attrs = m.group(1) or ""
+                cls_match = re.search(r'\bclass\s*=\s*"([^"]*)"', attrs)
+                if cls_match:
+                    merged = (cls_match.group(1) + " " + extra).strip()
+                    new_attrs = attrs[:cls_match.start()] + f'class="{merged}"' + attrs[cls_match.end():]
+                else:
+                    new_attrs = attrs + f' class="{extra}"'
+                return f"<body{new_attrs}>"
+
+            html_content = re.sub(
+                r'<body([^>]*)>',
+                _merge_body_class,
+                html_content,
+                count=1,
+            )
+        except Exception as e:
+            print(f"[serve_index] body brand-class injection failed: {e}; serving without")
 
         # Inject loading-screen initials + site name so the boot overlay
         # never shows the literal placeholders "CS" / "Loading" before the

@@ -4075,6 +4075,37 @@ document.addEventListener('DOMContentLoaded', () => {
   /* Load theme customizations first (fast, non-blocking) */
   loadAndApplyTheme();
 
+  /* ----------------------------------------------------------------------
+     Live theme propagation (Task #61). When the admin saves a theme in
+     another tab, this open public page re-pulls /api/theme and re-applies
+     colors / fonts / accent gradient / logo treatment without a refresh.
+     We listen on BOTH transports so coverage is broad:
+       - BroadcastChannel: same-origin tabs in modern browsers
+       - storage event:    fallback for browsers without BC, AND a backup
+                           in case BC fails to deliver
+     A small in-flight guard prevents two parallel reloads when both
+     channels fire for the same save.
+     ---------------------------------------------------------------------- */
+  let _themeReloadInFlight = false;
+  const reloadTheme = () => {
+    if (_themeReloadInFlight) return;
+    _themeReloadInFlight = true;
+    Promise.resolve(loadAndApplyTheme()).finally(() => {
+      _themeReloadInFlight = false;
+    });
+  };
+  try {
+    if ('BroadcastChannel' in window) {
+      const bc = new BroadcastChannel('theme-updates');
+      bc.onmessage = (e) => {
+        if (e && e.data && e.data.type === 'theme-saved') reloadTheme();
+      };
+    }
+  } catch (_) { /* BC unavailable */ }
+  window.addEventListener('storage', (e) => {
+    if (e && e.key === 'theme-updated-at') reloadTheme();
+  });
+
   /* Load all content from the database */
   loadAllData();
 

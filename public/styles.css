@@ -568,12 +568,39 @@ html[data-scroll-mode="smooth"] .snap-section {
 /* Accent gradient (Task #61). When the theme defines an accent
    secondary AND the gradient toggle is on, --accent-gradient is set
    to a linear-gradient() string by the server / loadAndApplyTheme().
-   Buttons and primary CTAs that read .accent-gradient pick it up. */
+   Buttons and primary CTAs that read --accent-gradient pick it up.
+
+   Coverage rationale (responding to code-review note that surfaces
+   beyond buttons should also reflect the gradient):
+     - Buttons / CTAs   -> background-image gradient (paint surface)
+     - Eyebrows         -> background-clip:text gradient (text fill)
+     - Dividers / <hr>  -> linear-gradient bar (decorative line)
+   Eyebrow + divider rules use `background-clip:text` with transparent
+   text color so the gradient flows through the typeface without
+   needing extra wrapping markup. */
 .accent-gradient,
 body.theme-accent-gradient .btn-primary,
 body.theme-accent-gradient .nav-cta {
   background: var(--accent-gradient, var(--color-accent)) !important;
   border-color: transparent !important;
+}
+
+body.theme-accent-gradient .section-eyebrow,
+body.theme-accent-gradient .split-slide-eyebrow,
+body.theme-accent-gradient .sphere-card-eyebrow {
+  background: var(--accent-gradient, var(--color-accent));
+  -webkit-background-clip: text;
+          background-clip: text;
+  -webkit-text-fill-color: transparent;
+          color: transparent;
+}
+
+body.theme-accent-gradient hr,
+body.theme-accent-gradient .divider,
+body.theme-accent-gradient .section-divider {
+  background: var(--accent-gradient, var(--color-accent));
+  border: 0;
+  height: 2px;
 }
 
 .logo-text .site-name {
