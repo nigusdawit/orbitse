@@ -5874,11 +5874,10 @@ def _build_active_font_link():
             for n in names
         )
         href = f"https://fonts.googleapis.com/css2?{params}&display=swap"
-        return (
-            '<link rel="preconnect" href="https://fonts.googleapis.com">'
-            '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
-            f'<link id="theme-fonts-injected" rel="stylesheet" href="{href}">'
-        )
+        # Preconnect hints are already injected globally by
+        # _build_preconnect_hints_html() — don't emit them again here
+        # or the browser sees redundant hints in <head>.
+        return f'<link id="theme-fonts-injected" rel="stylesheet" href="{href}">'
     except Exception as e:
         print(f"[serve_index] font link injection failed: {e}; serving without")
         return ""
