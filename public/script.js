@@ -4421,6 +4421,18 @@ function applyPersonality(theme) {
       const onKey = (e) => {
         const isCmdK = (e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K');
         if (isCmdK) {
+          // Skip when the visitor is editing text — ⌘K may be a native
+          // browser/text-editor shortcut (e.g. add-link in some editors)
+          // and we don't want to steal it. The chatbot's own bar input
+          // is the one place we *do* want ⌘K to keep summoning, since
+          // it's the only way to dismiss without reaching for the mouse.
+          const ae = document.activeElement;
+          if (ae && ae !== chatbot.querySelector('.chatbot-bar-input')) {
+            const tag = (ae.tagName || '').toLowerCase();
+            if (tag === 'input' || tag === 'textarea' || tag === 'select' || ae.isContentEditable) {
+              return;
+            }
+          }
           e.preventDefault();
           chatbot.classList.toggle('is-summoned');
           if (chatbot.classList.contains('is-summoned')) {
@@ -4444,7 +4456,9 @@ function applyPersonality(theme) {
       launcher.className = 'chatbot-launcher';
       launcher.setAttribute('aria-label', 'Open chat');
       launcher.setAttribute('data-testid', 'button-chatbot-launcher');
-      launcher.innerHTML = '💬';
+      // Spec wording is "Hidden until '?' button" — using a literal
+      // question mark keeps the cue minimal and matches the docs.
+      launcher.textContent = '?';
       launcher.addEventListener('click', () => {
         chatbot.classList.toggle('is-summoned');
       });
