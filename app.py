@@ -6090,6 +6090,21 @@ def serve_index():
             with open(index_path, "r", encoding="utf-8") as f:
                 html_content = f.read()
 
+        # Cache-bust the linked stylesheet so visitors on Mobile Safari /
+        # other aggressive caches always pick up the latest styles.css
+        # without having to clear their cache. Applied here (not just on
+        # disk) so admin-published designs in site_designs — which still
+        # carry the original unversioned <link rel="stylesheet"
+        # href="/styles.css"> snapshot — also get the fresh marker. Bump
+        # _STYLES_CSS_VERSION whenever public/styles.css ships a visible
+        # change that needs to invalidate cached copies.
+        _STYLES_CSS_VERSION = "20260429b"
+        html_content = re.sub(
+            r'href="/styles\.css(?:\?[^"]*)?"',
+            f'href="/styles.css?v={_STYLES_CSS_VERSION}"',
+            html_content,
+        )
+
         # Inject SEO meta tags (replaces the <!-- SEO_META_INJECT --> placeholder in <head>)
         seo_html = _build_seo_meta_html()
         html_content = html_content.replace("<!-- SEO_META_INJECT -->", seo_html)
