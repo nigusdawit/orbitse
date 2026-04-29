@@ -229,6 +229,148 @@ SECTIONS:
 
 
 /* =============================================================================
+   2c. SURFACE TREATMENT PRESETS  (Task #62 — items 3, 5, 12, 13)
+   =============================================================================
+   Four owner-controlled surface treatments swap the personality of the
+   public site without touching individual component styles:
+
+     [data-card-style]    — radius / border / shadow / blur on every card.
+     [data-easing]        — named cubic-bezier exposed as --ease-active.
+     [data-photo-filter]  — global filter applied to background-image
+                            surfaces (hero bg, card cover images).
+     [data-loading-mode]  — what's visible inside the boot overlay.
+
+   The data-* attributes are set on <html> by the server (serve_index)
+   for first paint and re-applied live by script.js on theme save (so the
+   admin doesn't need a reload). Each preset only OVERRIDES the
+   properties it needs to change — anything not listed inherits from the
+   per-component rules below, so adding new card types stays cheap.
+============================================================================= */
+
+/* --- Motion personality (via the existing transition timing tokens) ---
+   styles.css currently uses `var(--ease-smooth)` in dozens of places.
+   The server now also injects `--ease-active` on :root from theme_easing,
+   so we just point --ease-smooth at it here. Falling back to the
+   original gentle out-cubic keeps every existing rule working when the
+   active theme leaves theme_easing at its default. */
+:root {
+  --ease-active: cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* Override the legacy alias so every var(--ease-smooth) in the file
+   automatically picks up the active easing on first paint. */
+:root, html { --ease-smooth: var(--ease-active); }
+
+/* --- Card style preset: shared card-class group selector ---
+   We list every card-shaped class once so the per-preset blocks below
+   can :is() over them. Adding a new card class? Append it here and
+   the four presets pick it up automatically. */
+[data-card-style="glass"] :is(.event-card, .blog-card, .experience-card,
+                              .gallery-card, .sphere-card, .store-card,
+                              .podcast-card, .glass-card) {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(calc(var(--glass-blur) * 1.25));
+  -webkit-backdrop-filter: blur(calc(var(--glass-blur) * 1.25));
+  border-radius: var(--radius);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+}
+[data-card-style="brutal"] :is(.event-card, .blog-card, .experience-card,
+                               .gallery-card, .sphere-card, .store-card,
+                               .podcast-card, .glass-card) {
+  background: var(--color-section-1);
+  border: 2px solid var(--color-text);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-radius: 0;
+  box-shadow: 6px 6px 0 0 var(--color-accent);
+}
+[data-card-style="minimal"] :is(.event-card, .blog-card, .experience-card,
+                                .gallery-card, .sphere-card, .store-card,
+                                .podcast-card, .glass-card) {
+  background: transparent;
+  border: 1px solid var(--glass-border);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-radius: calc(var(--radius) * 0.4);
+  box-shadow: none;
+}
+/* "editorial" is the documented default — explicitly emit the rule too
+   so re-saving the same preset (or live-switching back to it from
+   another preset) restores the look without a page reload. */
+[data-card-style="editorial"] :is(.event-card, .blog-card, .experience-card,
+                                  .gallery-card, .sphere-card, .store-card,
+                                  .podcast-card, .glass-card) {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border-radius: var(--radius);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+}
+
+/* --- Photo filter: applied to every "image surface" on the public site.
+   We target the *-image-bg / *-bg classes (which carry the
+   background-image declarations) plus <img> elements inside known
+   image wrappers, so both kinds of image rendering get filtered. */
+[data-photo-filter="warm"]
+  :is(.hero-bg, .event-card-image-bg, .blog-card-image-bg,
+      .experience-image, .gallery-image, .sphere-image, img.photo-filter-target) {
+  filter: saturate(1.15) hue-rotate(-8deg) brightness(1.04);
+}
+[data-photo-filter="cool"]
+  :is(.hero-bg, .event-card-image-bg, .blog-card-image-bg,
+      .experience-image, .gallery-image, .sphere-image, img.photo-filter-target) {
+  filter: saturate(0.92) hue-rotate(12deg) brightness(0.98);
+}
+[data-photo-filter="bw"]
+  :is(.hero-bg, .event-card-image-bg, .blog-card-image-bg,
+      .experience-image, .gallery-image, .sphere-image, img.photo-filter-target) {
+  filter: grayscale(1) contrast(1.08);
+}
+[data-photo-filter="grain"]
+  :is(.hero-bg, .event-card-image-bg, .blog-card-image-bg,
+      .experience-image, .gallery-image, .sphere-image, img.photo-filter-target) {
+  filter: contrast(1.1) saturate(0.95) brightness(0.96);
+}
+/* Grain overlay — a tiled SVG noise on top of the filtered image gives
+   the look its texture without needing a real image asset. The
+   ::after sits on the image wrapper because the *-bg layer itself is
+   often `position:absolute; inset:0` and can't host its own pseudo. */
+[data-photo-filter="grain"]
+  :is(.event-card-image, .blog-card-image, .gallery-card,
+      .sphere-card, .experience-card, .hero-section)::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.18;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/></svg>");
+}
+
+/* --- Loading mode: hide parts of the boot overlay per preset. The
+   shimmer counts as the "spinner" because it is the only animated
+   bar the loading panel ships with. The fade-only mode keeps just
+   the overall tinted backdrop and removes the inner panel entirely. */
+html[data-loading-mode="logo_only"] .loading-site-name,
+html[data-loading-mode="logo_only"] .loading-shimmer { display: none; }
+
+html[data-loading-mode="spinner_only"] .loading-logo-badge,
+html[data-loading-mode="spinner_only"] .loading-site-name { display: none; }
+
+html[data-loading-mode="fade_only"] .loading-panel {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+html[data-loading-mode="fade_only"] .loading-logo-badge,
+html[data-loading-mode="fade_only"] .loading-site-name,
+html[data-loading-mode="fade_only"] .loading-shimmer { display: none; }
+
+
+/* =============================================================================
    3. BASE / GLOBAL STYLES
 ============================================================================= */
 

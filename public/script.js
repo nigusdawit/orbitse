@@ -4007,7 +4007,51 @@ async function loadAndApplyTheme() {
         root.style.setProperty('--color-bg-rgb', `${r} ${g} ${b}`);
       }
     }
+
+    /* ----------------------------------------------------------------
+       Surface-treatment presets (Task #62 / items 3, 5, 12, 13).
+       Server already mirrored these onto <html> for first paint; we
+       re-apply here so live admin saves swap card style / motion /
+       photo filter / loading mode without a reload. The CSS variants
+       in styles.css all key off these data-* attrs on <html>.
+       ---------------------------------------------------------------- */
+    applySurfaceTreatment(theme);
   } catch (e) { /* silent */ }
+}
+
+/* -----------------------------------------------------------------------
+   Surface-treatment helper (Task #62). Whitelists each enum so an
+   unexpected payload value can't write garbage data-* attrs (the CSS
+   would silently no-op anyway, but a clean attribute keeps DOM
+   inspector output readable). Also flips --ease-active so the named
+   easing curve takes effect immediately.
+----------------------------------------------------------------------- */
+const SURFACE_CARD_STYLES   = ['editorial', 'glass', 'brutal', 'minimal'];
+const SURFACE_EASINGS       = ['snappy', 'gentle', 'bouncy', 'editorial'];
+const SURFACE_PHOTO_FILTERS = ['none', 'warm', 'cool', 'bw', 'grain'];
+const SURFACE_LOADING_MODES = ['logo_name', 'logo_only', 'spinner_only', 'fade_only'];
+const SURFACE_EASE_CURVES = {
+  snappy:    'cubic-bezier(0.4, 0, 0.2, 1)',
+  gentle:    'cubic-bezier(0.22, 1, 0.36, 1)',
+  bouncy:    'cubic-bezier(0.34, 1.56, 0.64, 1)',
+  editorial: 'cubic-bezier(0.65, 0, 0.35, 1)',
+};
+function applySurfaceTreatment(theme) {
+  if (!theme) return;
+  const html = document.documentElement;
+  const pick = (val, allowed, def) => {
+    const v = String(val || '').trim().toLowerCase();
+    return allowed.includes(v) ? v : def;
+  };
+  const cs = pick(theme.theme_card_style,   SURFACE_CARD_STYLES,   'editorial');
+  const ez = pick(theme.theme_easing,       SURFACE_EASINGS,       'gentle');
+  const pf = pick(theme.theme_photo_filter, SURFACE_PHOTO_FILTERS, 'none');
+  const lm = pick(theme.theme_loading_mode, SURFACE_LOADING_MODES, 'logo_name');
+  html.setAttribute('data-card-style',   cs);
+  html.setAttribute('data-easing',       ez);
+  html.setAttribute('data-photo-filter', pf);
+  html.setAttribute('data-loading-mode', lm);
+  html.style.setProperty('--ease-active', SURFACE_EASE_CURVES[ez] || SURFACE_EASE_CURVES.gentle);
 }
 
 function loadGoogleFont(fontName) {

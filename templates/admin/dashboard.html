@@ -5837,6 +5837,67 @@ TO CUSTOMIZE THIS DASHBOARD:
         </div>
       </div>
 
+      <!-- ============================================================
+           SURFACE TREATMENT PRESETS (Task #62 — items 3, 5, 12, 13)
+           Four named pickers that swap the personality of every card,
+           the motion curve, the photo treatment, and the boot overlay.
+           Each picker is a <select> populated from a hard-coded preset
+           list (no API needed — these names are frozen by CSS rules in
+           styles.css and the validator in app.py).
+           ============================================================ -->
+      <h3 style="margin-top:2rem;margin-bottom:0.25rem;">Surface Treatment</h3>
+      <p style="font-size:0.8rem;color:var(--admin-text-muted);margin-top:0;margin-bottom:1rem;">
+        Pick a card style, motion personality, photo filter, and loading mode.
+        Changes apply on save without a page reload.
+      </p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="theme-card-style">Card style</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Visual treatment shared by every card on the public site</span>
+          <select id="theme-card-style" data-testid="select-theme-card-style"
+                  onchange="updateThemePreview()">
+            <option value="editorial">Editorial — soft glass, generous radius (default)</option>
+            <option value="glass">Glass — heavy backdrop blur</option>
+            <option value="brutal">Brutal — square corners, hard accent shadow</option>
+            <option value="minimal">Minimal — hairline border, no shadow</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="theme-easing">Motion personality</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Named easing curve every transition uses</span>
+          <select id="theme-easing" data-testid="select-theme-easing"
+                  onchange="updateThemePreview()">
+            <option value="snappy">Snappy — quick out-cubic</option>
+            <option value="gentle">Gentle — smooth out-cubic (default)</option>
+            <option value="bouncy">Bouncy — slight overshoot</option>
+            <option value="editorial">Editorial — slow in-out</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="theme-photo-filter">Photo filter</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Global filter on hero background and card cover images</span>
+          <select id="theme-photo-filter" data-testid="select-theme-photo-filter"
+                  onchange="updateThemePreview()">
+            <option value="none">None (default)</option>
+            <option value="warm">Warm — saturated, hue shift toward gold</option>
+            <option value="cool">Cool — desaturated, hue shift toward blue</option>
+            <option value="bw">Black &amp; white</option>
+            <option value="grain">Grain — subtle film overlay</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="theme-loading-mode">Loading mode</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">What's visible inside the boot overlay before the page paints</span>
+          <select id="theme-loading-mode" data-testid="select-theme-loading-mode"
+                  onchange="updateThemePreview()">
+            <option value="logo_name">Logo + site name (default)</option>
+            <option value="logo_only">Logo only</option>
+            <option value="spinner_only">Spinner only</option>
+            <option value="fade_only">Fade only — bare backdrop</option>
+          </select>
+        </div>
+      </div>
+
       <div class="form-actions">
         <button class="btn btn-primary" onclick="saveTheme()" data-testid="button-save-theme">Save Theme</button>
       </div>
@@ -9747,6 +9808,30 @@ TO CUSTOMIZE THIS DASHBOARD:
       }
     }
 
+    /* -----------------------------------------------------------------
+       Live-propagate theme changes to any open public-site tabs.
+       Called from saveTheme(), resetTheme() and applyPalette() so every
+       admin save path lights up the public site without a reload. The
+       receiver is in public/script.js (BroadcastChannel listener +
+       storage event listener) which re-runs loadAndApplyTheme().
+       Best-effort — wrapped in try/catch so a missing API never breaks
+       the save flow itself. (Task #62 — replaces three inlined copies
+       of this block to prevent drift between save paths.)
+       ----------------------------------------------------------------- */
+    function emitThemeUpdated(source) {
+      try {
+        if ('BroadcastChannel' in window) {
+          const bc = new BroadcastChannel('theme-updates');
+          bc.postMessage({ type: 'theme-saved', source: source || 'admin', ts: Date.now() });
+          bc.close();
+        }
+        // storage events fire on OTHER tabs of the same origin even
+        // when BroadcastChannel isn't available — bumping a tiny epoch
+        // counter is enough to trigger the listener.
+        localStorage.setItem('theme-updated-at', String(Date.now()));
+      } catch (_) { /* live-update is best-effort */ }
+    }
+
     /* Keep old name as alias for any existing calls */
     function syncPicker(fieldId) { syncPickerSwatch(fieldId); }
 
@@ -9814,6 +9899,34 @@ TO CUSTOMIZE THIS DASHBOARD:
       if (radiusRemEl)    root.style.setProperty('--radius', radiusRemEl.value + 'rem');
       if (transitionEl)   root.style.setProperty('--transition-medium', transitionEl.value + 's');
 
+      // ----------------------------------------------------------------
+      // Surface-treatment live preview (Task #62 / items 3, 5, 12, 13).
+      // Mirror the picker values onto the admin <html> element so the
+      // attribute selectors in styles.css would react if the admin tab
+      // ever embeds a public-site preview iframe; also flips the
+      // --ease-active CSS var so any admin transition that reads it
+      // updates without a save. The save itself broadcasts to open
+      // public-site tabs (see saveTheme()) so they re-pull /api/theme
+      // and re-apply via applySurfaceTreatment().
+      // ----------------------------------------------------------------
+      const cardStyleEl    = $('theme-card-style');
+      const easingEl       = $('theme-easing');
+      const photoFilterEl  = $('theme-photo-filter');
+      const loadingModeEl  = $('theme-loading-mode');
+      const easeCurves = {
+        snappy:    'cubic-bezier(0.4, 0, 0.2, 1)',
+        gentle:    'cubic-bezier(0.22, 1, 0.36, 1)',
+        bouncy:    'cubic-bezier(0.34, 1.56, 0.64, 1)',
+        editorial: 'cubic-bezier(0.65, 0, 0.35, 1)',
+      };
+      if (cardStyleEl)   root.setAttribute('data-card-style',   cardStyleEl.value);
+      if (easingEl) {
+        root.setAttribute('data-easing', easingEl.value);
+        root.style.setProperty('--ease-active', easeCurves[easingEl.value] || easeCurves.gentle);
+      }
+      if (photoFilterEl) root.setAttribute('data-photo-filter', photoFilterEl.value);
+      if (loadingModeEl) root.setAttribute('data-loading-mode', loadingModeEl.value);
+
       // Derive --color-bg-rgb from the chosen bg hex so any rgba() that
       // reads it (loading screen tint) re-tints in real time.
       try {
@@ -9879,6 +9992,19 @@ TO CUSTOMIZE THIS DASHBOARD:
         setSlider('theme-transition-sec', data.theme_transition_sec,
                   v => parseFloat(v).toFixed(2) + 's');
 
+        // Surface-treatment pickers (Task #62 / items 3, 5, 12, 13).
+        // Each defaults to its documented value when the column is
+        // empty (older installs that pre-date this column will still
+        // load cleanly because _resolve_active_theme() also defaults).
+        const setSelect = (id, val, def) => {
+          const el = document.getElementById(id);
+          if (el) el.value = val || def;
+        };
+        setSelect('theme-card-style',   data.theme_card_style,   'editorial');
+        setSelect('theme-easing',       data.theme_easing,       'gentle');
+        setSelect('theme-photo-filter', data.theme_photo_filter, 'none');
+        setSelect('theme-loading-mode', data.theme_loading_mode, 'logo_name');
+
         updateThemePreview();
       } catch (err) {
         showToast('Failed to load theme', 'error');
@@ -9906,6 +10032,13 @@ TO CUSTOMIZE THIS DASHBOARD:
         theme_accent_gradient:  document.getElementById('theme-accent-gradient').checked,
         theme_logo_mode:        document.getElementById('theme-logo-mode').value,
         theme_logo_image:       document.getElementById('theme-logo-image').value,
+        // Surface-treatment presets (Task #62 / items 3, 5, 12, 13).
+        // Backend whitelists each value; an unknown enum collapses to
+        // its documented default rather than persisting garbage.
+        theme_card_style:       document.getElementById('theme-card-style').value,
+        theme_easing:           document.getElementById('theme-easing').value,
+        theme_photo_filter:     document.getElementById('theme-photo-filter').value,
+        theme_loading_mode:     document.getElementById('theme-loading-mode').value,
       };
 
       try {
@@ -9916,23 +10049,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         });
         if (res.ok) {
           showToast('Theme saved — public pages updating live.');
-          // Live-propagate (Task #61): broadcast to any open public-site
-          // tabs in the same browser so they re-pull /api/theme without
-          // a manual refresh. The receiving side (script.js) re-runs
-          // loadAndApplyTheme() which re-applies colors, fonts, the
-          // accent gradient, and the logo treatment. Falls back to the
-          // localStorage `storage` event for browsers without BC.
-          try {
-            if ('BroadcastChannel' in window) {
-              const bc = new BroadcastChannel('theme-updates');
-              bc.postMessage({ type: 'theme-saved', ts: Date.now() });
-              bc.close();
-            }
-            // storage events fire on OTHER tabs of the same origin even
-            // when BC isn't available — bumping a tiny epoch counter is
-            // enough to trigger the listener.
-            localStorage.setItem('theme-updated-at', String(Date.now()));
-          } catch (_) { /* live-update is best-effort */ }
+          emitThemeUpdated('save');
         } else {
           showToast('Failed to save theme', 'error');
         }
@@ -9960,6 +10077,11 @@ TO CUSTOMIZE THIS DASHBOARD:
         theme_accent_gradient: false,
         theme_logo_mode: 'monogram',
         theme_logo_image: '',
+        // Surface-treatment defaults (Task #62 / items 3, 5, 12, 13).
+        theme_card_style: 'editorial',
+        theme_easing: 'gentle',
+        theme_photo_filter: 'none',
+        theme_loading_mode: 'logo_name',
       };
 
       try {
@@ -9969,8 +10091,12 @@ TO CUSTOMIZE THIS DASHBOARD:
           body: JSON.stringify(data)
         });
         if (res.ok) {
-          showToast('Theme reset to defaults!');
+          showToast('Theme reset to defaults — public pages updating live.');
           loadTheme();
+          // Live-propagate the reset so any open public-site tabs snap
+          // back to defaults too. Without this, only the admin tab and
+          // any future page loads would see the reset (Task #62 fix).
+          emitThemeUpdated('reset');
         } else {
           showToast('Failed to reset theme', 'error');
         }
@@ -10066,18 +10192,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         await loadTheme();
         await loadPaletteGallery();
         updateThemePreview();
-        // Live-propagate to any open public-site tabs (Task #61). Same
-        // dual-channel pattern as saveTheme: BroadcastChannel for modern
-        // browsers, localStorage `storage` event for the rest. Receiver
-        // is in public/script.js which re-runs loadAndApplyTheme().
-        try {
-          if ('BroadcastChannel' in window) {
-            const bc = new BroadcastChannel('theme-updates');
-            bc.postMessage({ type: 'theme-saved', source: 'palette', ts: Date.now() });
-            bc.close();
-          }
-          localStorage.setItem('theme-updated-at', String(Date.now()));
-        } catch (_) { /* live-update is best-effort */ }
+        emitThemeUpdated('palette');
       } catch (err) {
         showToast('Failed to publish palette', 'error');
       }

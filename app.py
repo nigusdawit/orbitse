@@ -2260,6 +2260,29 @@ def init_db():
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_accent_gradient BOOLEAN NOT NULL DEFAULT FALSE",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_logo_mode TEXT NOT NULL DEFAULT 'monogram'",
                 "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_logo_image TEXT NOT NULL DEFAULT ''",
+                # --- Surface treatment presets (Task #62 / items 3, 5, 12, 13) ---
+                #     theme_card_style picks the visual treatment applied to
+                #     every card-shaped surface on the public site:
+                #       'editorial' (default — large radius, soft shadow),
+                #       'glass'     (heavier glass blur + subtle border),
+                #       'brutal'    (square corners, hard shadow, thick border),
+                #       'minimal'   (no shadow, hairline border).
+                #     theme_easing picks the named cubic-bezier the public
+                #     site uses for transitions:
+                #       'snappy'    (quick out-cubic, default replacement),
+                #       'gentle'    (the existing smooth-out, current default),
+                #       'bouncy'    (an elastic-ish overshoot),
+                #       'editorial' (slow in-out for an unhurried feel).
+                #     theme_photo_filter applies a global filter to image
+                #     surfaces (hero bg, card images): 'none' (default),
+                #     'warm', 'cool', 'bw', 'grain'.
+                #     theme_loading_mode controls what shows on the boot
+                #     overlay: 'logo_name' (default — current behavior),
+                #     'logo_only', 'spinner_only', 'fade_only'.
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_card_style TEXT NOT NULL DEFAULT 'editorial'",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_easing TEXT NOT NULL DEFAULT 'gentle'",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_photo_filter TEXT NOT NULL DEFAULT 'none'",
+                "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS theme_loading_mode TEXT NOT NULL DEFAULT 'logo_name'",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS view_mode TEXT NOT NULL DEFAULT 'sections'",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_scale REAL NOT NULL DEFAULT 1.0",
                 "ALTER TABLE sphere_settings ADD COLUMN IF NOT EXISTS card_gap REAL NOT NULL DEFAULT 2.5",
@@ -5823,6 +5846,19 @@ def _build_theme_vars_style():
                 logo_image_css = "none"
         else:
             logo_image_css = "none"
+        # Motion-personality token (Task #62). The named easing curves
+        # below are the source of truth; styles.css consumes them via
+        # var(--ease-active) which we set here based on theme_easing.
+        # Falling back to the existing --ease-smooth value keeps the
+        # default install identical to before this token was added.
+        easing_name = (t.get("theme_easing") or "gentle").strip().lower()
+        ease_curves = {
+            "snappy":    "cubic-bezier(0.4, 0, 0.2, 1)",
+            "gentle":    "cubic-bezier(0.22, 1, 0.36, 1)",
+            "bouncy":    "cubic-bezier(0.34, 1.56, 0.64, 1)",
+            "editorial": "cubic-bezier(0.65, 0, 0.35, 1)",
+        }
+        ease_active = ease_curves.get(easing_name, ease_curves["gentle"])
         return (
             "<style id=\"theme-vars-injected\">:root{"
             f"--color-bg:{bg};"
@@ -5842,6 +5878,7 @@ def _build_theme_vars_style():
             f"--font-serif:'{font_serif}',Georgia,serif;"
             f"--font-sans:'{font_sans}',-apple-system,BlinkMacSystemFont,sans-serif;"
             f"--logo-image:{logo_image_css};"
+            f"--ease-active:{ease_active};"
             "}</style>"
         )
     except Exception as e:
@@ -6104,6 +6141,53 @@ def serve_index():
             html_content = re.sub(
                 r'<body([^>]*)>',
                 _merge_body_class,
+                html_content,
+                count=1,
+            )
+
+            # ----------------------------------------------------------
+            # Surface-treatment data-* attrs on the root <html> element
+            # (Task #62 / items 3, 5, 12, 13). The CSS variants in
+            # styles.css ([data-card-style], [data-loading-mode],
+            # [data-photo-filter]) all key off the <html> element so
+            # the rules apply to BOTH the loading screen (which lives
+            # outside <main>) and the rest of the page. Setting them
+            # here ensures first paint already has the right surface
+            # treatment instead of flashing the defaults before
+            # script.js's loadAndApplyTheme runs.
+            #
+            # `theme_card_style`, `theme_easing`, `theme_photo_filter`,
+            # and `theme_loading_mode` were already whitelisted in
+            # _resolve_active_theme(), so the values we read here are
+            # guaranteed to be one of the documented enum members.
+            # ----------------------------------------------------------
+            cs = (tt.get("theme_card_style")   or "editorial").strip().lower() or "editorial"
+            ez = (tt.get("theme_easing")       or "gentle").strip().lower()    or "gentle"
+            pf = (tt.get("theme_photo_filter") or "none").strip().lower()      or "none"
+            lm = (tt.get("theme_loading_mode") or "logo_name").strip().lower() or "logo_name"
+            html_attrs = (
+                f' data-card-style="{cs}"'
+                f' data-easing="{ez}"'
+                f' data-photo-filter="{pf}"'
+                f' data-loading-mode="{lm}"'
+            )
+
+            def _merge_html_attrs(m):
+                attrs = m.group(1) or ""
+                # Strip any pre-existing data-card-style/data-easing/
+                # data-photo-filter/data-loading-mode so re-renders
+                # don't accumulate duplicates if the placeholder file
+                # ever ships with these attributes.
+                attrs = re.sub(
+                    r'\s+data-(card-style|easing|photo-filter|loading-mode)\s*=\s*"[^"]*"',
+                    "",
+                    attrs,
+                )
+                return f"<html{attrs}{html_attrs}>"
+
+            html_content = re.sub(
+                r'<html([^>]*)>',
+                _merge_html_attrs,
                 html_content,
                 count=1,
             )
@@ -21978,6 +22062,8 @@ def _resolve_active_theme():
                theme_radius_rem, theme_transition_sec,
                theme_accent_secondary, theme_accent_gradient,
                theme_logo_mode, theme_logo_image,
+               theme_card_style, theme_easing,
+               theme_photo_filter, theme_loading_mode,
                active_theme_id
         FROM site_settings WHERE id = 1
     """, fetchone=True) or {}
@@ -21990,6 +22076,22 @@ def _resolve_active_theme():
         settings["theme_logo_mode"] = "monogram"
     settings["theme_accent_secondary"] = settings.get("theme_accent_secondary") or ""
     settings["theme_logo_image"]       = settings.get("theme_logo_image") or ""
+    # Surface-treatment enums (Task #62). Same defensive normalization
+    # pattern as theme_logo_mode above — invalid values from a hand-
+    # crafted POST collapse to the documented default so the public
+    # site never receives an unrecognized data-* attr or filter class.
+    _CARD_STYLES    = ("editorial", "glass", "brutal", "minimal")
+    _EASINGS        = ("snappy", "gentle", "bouncy", "editorial")
+    _PHOTO_FILTERS  = ("none", "warm", "cool", "bw", "grain")
+    _LOADING_MODES  = ("logo_name", "logo_only", "spinner_only", "fade_only")
+    cs = (settings.get("theme_card_style")   or "editorial").strip().lower() or "editorial"
+    ez = (settings.get("theme_easing")       or "gentle").strip().lower()    or "gentle"
+    pf = (settings.get("theme_photo_filter") or "none").strip().lower()      or "none"
+    lm = (settings.get("theme_loading_mode") or "logo_name").strip().lower() or "logo_name"
+    settings["theme_card_style"]   = cs if cs in _CARD_STYLES   else "editorial"
+    settings["theme_easing"]       = ez if ez in _EASINGS       else "gentle"
+    settings["theme_photo_filter"] = pf if pf in _PHOTO_FILTERS else "none"
+    settings["theme_loading_mode"] = lm if lm in _LOADING_MODES else "logo_name"
     # NUMERIC columns come back as Decimal — coerce to float so JSON
     # serialization works and the frontend can do math on them directly.
     for k in ("theme_loading_bg_alpha", "theme_radius_rem",
@@ -22115,6 +22217,23 @@ def admin_update_theme():
         # break out of the url("...") wrapper in --logo-image.
         logo_image = ""
 
+    # Surface-treatment enums (Task #62 / items 3, 5, 12, 13). Same
+    # whitelist-or-default pattern as logo_mode above so a malformed
+    # POST falls back to the documented default instead of writing an
+    # unknown value that the public stylesheet has no rule for.
+    _CARD_STYLES_W   = ("editorial", "glass", "brutal", "minimal")
+    _EASINGS_W       = ("snappy", "gentle", "bouncy", "editorial")
+    _PHOTO_FILTERS_W = ("none", "warm", "cool", "bw", "grain")
+    _LOADING_MODES_W = ("logo_name", "logo_only", "spinner_only", "fade_only")
+    card_style    = (data.get("theme_card_style")   or "editorial").strip().lower() or "editorial"
+    easing        = (data.get("theme_easing")       or "gentle").strip().lower()    or "gentle"
+    photo_filter  = (data.get("theme_photo_filter") or "none").strip().lower()      or "none"
+    loading_mode  = (data.get("theme_loading_mode") or "logo_name").strip().lower() or "logo_name"
+    if card_style   not in _CARD_STYLES_W:   card_style   = "editorial"
+    if easing       not in _EASINGS_W:       easing       = "gentle"
+    if photo_filter not in _PHOTO_FILTERS_W: photo_filter = "none"
+    if loading_mode not in _LOADING_MODES_W: loading_mode = "logo_name"
+
     result = execute_db(
         """UPDATE site_settings SET
              theme_bg = %s, theme_section1 = %s, theme_section2 = %s,
@@ -22124,6 +22243,8 @@ def admin_update_theme():
              theme_radius_rem = %s, theme_transition_sec = %s,
              theme_accent_secondary = %s, theme_accent_gradient = %s,
              theme_logo_mode = %s, theme_logo_image = %s,
+             theme_card_style = %s, theme_easing = %s,
+             theme_photo_filter = %s, theme_loading_mode = %s,
              updated_at = NOW()
            WHERE id = 1 RETURNING *""",
         (
@@ -22138,6 +22259,7 @@ def admin_update_theme():
             data.get("theme_font_sans", ""),
             loading_alpha, glass_blur, radius_rem, transition_s,
             accent_secondary, accent_gradient, logo_mode, logo_image,
+            card_style, easing, photo_filter, loading_mode,
         )
     )
 
