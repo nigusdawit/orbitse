@@ -6098,7 +6098,7 @@ def serve_index():
         # href="/styles.css"> snapshot — also get the fresh marker. Bump
         # _STYLES_CSS_VERSION whenever public/styles.css ships a visible
         # change that needs to invalidate cached copies.
-        _STYLES_CSS_VERSION = "20260429b"
+        _STYLES_CSS_VERSION = "20260429c"
         html_content = re.sub(
             r'href="/styles\.css(?:\?[^"]*)?"',
             f'href="/styles.css?v={_STYLES_CSS_VERSION}"',
