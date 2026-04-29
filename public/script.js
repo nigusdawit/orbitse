@@ -2313,8 +2313,12 @@ function showLanding() {
   document.getElementById('landing-view').style.display = '';
   document.getElementById('gallery-view').classList.remove('active');
 
-  /* Reset scroll position to the top of the landing page */
+  /* Reset scroll position to the top of the landing page.
+     Reset both the inner container (desktop scroll source) and the
+     window (mobile scroll source — see styles.css mobile media query
+     where html/body becomes the scroll source instead of .landing-container). */
   document.getElementById('landing-view').scrollTop = 0;
+  window.scrollTo(0, 0);
 }
 
 
@@ -2423,6 +2427,9 @@ function hideSphereView() {
   if (landingView) {
     landingView.style.display = '';
     landingView.scrollTop = 0;
+    /* On mobile, body is the scroll source (see styles.css mobile @media), so
+       also reset the window scroll. Harmless on desktop where window doesn't scroll. */
+    window.scrollTo(0, 0);
   }
 
   if (sphereInstance) sphereInstance.pause();

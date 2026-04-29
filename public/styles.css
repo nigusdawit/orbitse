@@ -356,10 +356,28 @@ html[data-scroll-mode="smooth"] .snap-section {
    on mobile is unreliable across browsers no matter what mode is selected.
    Desktop keeps the original page-by-page snap experience untouched.        */
 @media (max-width: 768px), (hover: none) and (pointer: coarse) {
+  /* Drop the inner scroll-container trap. On phones — especially
+     iOS Safari, where the dynamic URL bar resizes 100dvh on every
+     scroll — making `.landing-container` the only scroll source
+     (with html/body overflow:hidden) is fragile and frequently
+     locks scroll entirely. Letting the body scroll naturally is
+     the standard mobile-first behavior and what every visitor
+     expects from a phone browser. Sections still feel full-screen
+     because each `.landing-section` already has `min-height: 100dvh`. */
+  html, body {
+    height: auto;
+    min-height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+    /* Prevent rubber-band overscroll from chaining to the URL bar */
+    overscroll-behavior-y: contain;
+  }
   .landing-container {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
     scroll-snap-type: none;
     scroll-snap-stop: normal;
-    overscroll-behavior-y: contain;
   }
   .snap-section {
     scroll-snap-align: none;
