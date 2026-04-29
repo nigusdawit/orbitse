@@ -22051,14 +22051,28 @@ def admin_update_theme():
 
     # Brand-identity fields (Task #61 / items 2,4,17,18). Logo mode is
     # restricted to a known enum so a malformed payload can't break the
-    # public site's <header>; image + secondary-color are passed through
-    # unchanged (they're already validated by the admin form pickers).
+    # public site's <header>. Accent-secondary and logo-image are
+    # defensively validated server-side (matching the existing pattern
+    # for theme tokens) so a hand-crafted POST can't inject arbitrary
+    # CSS values or off-origin URLs into the inline <style> block we
+    # render on every page load.
     accent_secondary = (data.get("theme_accent_secondary") or "").strip()
+    if accent_secondary and not re.match(r"^#[0-9a-fA-F]{3,8}$", accent_secondary):
+        # Reject anything that isn't a valid hex color — empty string is
+        # the documented "no secondary color" sentinel and disables the
+        # gradient regardless of the toggle.
+        accent_secondary = ""
     accent_gradient  = bool(data.get("theme_accent_gradient"))
     logo_mode        = (data.get("theme_logo_mode") or "monogram").strip() or "monogram"
     if logo_mode not in ("monogram", "image", "wordmark", "lockup"):
         logo_mode = "monogram"
     logo_image = (data.get("theme_logo_image") or "").strip()
+    if logo_image and not re.match(r'^(/|https?://|//)[^"\s<>]+$', logo_image):
+        # Only allow absolute paths (/uploads/...), protocol-relative
+        # URLs (//cdn.example/...), and http(s) URLs. Reject anything
+        # with embedded quotes/whitespace/angle brackets that could
+        # break out of the url("...") wrapper in --logo-image.
+        logo_image = ""
 
     result = execute_db(
         """UPDATE site_settings SET

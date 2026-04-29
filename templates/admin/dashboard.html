@@ -5579,7 +5579,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       <h4 style="margin-bottom:0.35rem;">Palette Gallery</h4>
       <p style="font-size:0.75rem;color:var(--admin-text-muted);margin-top:0;margin-bottom:0.75rem;">
         Click any palette to publish it — the colors and fonts below update
-        immediately and the public site picks them up on next page load.
+        immediately, and any open public-site tabs refresh their styling live.
       </p>
       <div id="brand-palette-gallery"
            style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:0.75rem;margin-bottom:1.5rem;"
@@ -10058,13 +10058,25 @@ TO CUSTOMIZE THIS DASHBOARD:
           showToast('Failed to publish palette', 'error');
           return;
         }
-        showToast('Palette published! Refreshing form…');
+        showToast('Palette published — public pages updating live.');
         // Re-pull /admin/api/theme so the color pickers, font dropdowns
         // and brand-identity controls all reflect the freshly-published
         // palette without a page reload.
         await loadTheme();
         await loadPaletteGallery();
         updateThemePreview();
+        // Live-propagate to any open public-site tabs (Task #61). Same
+        // dual-channel pattern as saveTheme: BroadcastChannel for modern
+        // browsers, localStorage `storage` event for the rest. Receiver
+        // is in public/script.js which re-runs loadAndApplyTheme().
+        try {
+          if ('BroadcastChannel' in window) {
+            const bc = new BroadcastChannel('theme-updates');
+            bc.postMessage({ type: 'theme-saved', source: 'palette', ts: Date.now() });
+            bc.close();
+          }
+          localStorage.setItem('theme-updated-at', String(Date.now()));
+        } catch (_) { /* live-update is best-effort */ }
       } catch (err) {
         showToast('Failed to publish palette', 'error');
       }
