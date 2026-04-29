@@ -634,6 +634,15 @@ html[data-scroll-mode="smooth"] .snap-section {
   min-height: 100vh;
   min-height: 100dvh;
   padding: var(--space-3xl) var(--space-xl);
+  /* Frame the section: clip the painted background to the content box so the
+     existing padding becomes a visible border of the page background (body's
+     --color-bg) instead of the section color extending edge-to-edge. The
+     section still fills 100dvh so scroll-snap continues to lock one section
+     per viewport — only the *painted* area shrinks, exposing the page bg
+     around it. !important is required because each <section> carries an
+     inline `style="background: var(--bg-section-X)"` shorthand which would
+     otherwise reset background-clip back to its initial border-box value. */
+  background-clip: content-box !important;
 }
 
 .section-header {
