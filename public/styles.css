@@ -543,7 +543,7 @@ html[data-header-align="numbered"] .landing-section .section-eyebrow::before {
     text-align: left;
   }
   html[data-header-align="split"] .section-header .section-title,
-  html[data-header-align="split"] .section-header .section-intro {
+  html[data-header-align="split"] .section-header .section-subtitle {
     grid-column: 2;
     text-align: left;
   }

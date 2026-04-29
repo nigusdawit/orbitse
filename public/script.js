@@ -4154,19 +4154,37 @@ function applyHeroCarousel(enabled) {
   if (_heroCarouselOriginalBg === null) {
     _heroCarouselOriginalBg = heroBg.style.backgroundImage || '';
   }
-  // Build the rotation pool from gallery cards' background-image values
-  // (the gallery is the closest existing source of curated property
-  // photos). Gallery cards render asynchronously after their /api fetch
-  // resolves, so on first call the pool may legitimately be empty —
-  // we re-try on a short delay rather than silently no-op'ing forever.
-  const buildPool = () => Array.from(document.querySelectorAll('.gallery-card'))
-    .map(el => {
-      const inline = el.style.backgroundImage;
-      if (inline && inline !== 'none') return inline;
-      const computed = getComputedStyle(el).backgroundImage;
-      return (computed && computed !== 'none') ? computed : null;
-    })
-    .filter(Boolean);
+  // Build the rotation pool. PRIMARY source is the server-injected
+  // `data-carousel-pool` attribute on .hero-section — serve_index in
+  // app.py SELECTs gallery_cards.image_url whenever hero_layout_mode
+  // == 'carousel' and emits a `|`-separated list, so the carousel has
+  // content from the very first byte of HTML (no waiting on async
+  // gallery render). FALLBACK: scrape rendered card surfaces from
+  // .highlight-card-bg (the highlights row on the landing page) and
+  // .gallery-slide-bg (the in-page Gallery view). Cards render after
+  // their /api/gallery-cards fetch resolves, so on first call the
+  // DOM-scrape pool may legitimately be empty — we re-try on a short
+  // delay rather than silently no-op'ing forever.
+  const heroSection = document.querySelector('.hero-section, #section-hero');
+  const buildPool = () => {
+    // 1) Prefer the server-injected pool — present from first paint.
+    const serverPool = (heroSection && heroSection.getAttribute('data-carousel-pool')) || '';
+    if (serverPool.trim()) {
+      return serverPool.split('|')
+        .map(u => u.trim())
+        .filter(Boolean)
+        .map(u => `url("${u}")`);
+    }
+    // 2) Fallback: scrape rendered card backgrounds.
+    return Array.from(document.querySelectorAll('.highlight-card-bg, .gallery-slide-bg'))
+      .map(el => {
+        const inline = el.style.backgroundImage;
+        if (inline && inline !== 'none') return inline;
+        const computed = getComputedStyle(el).backgroundImage;
+        return (computed && computed !== 'none') ? computed : null;
+      })
+      .filter(Boolean);
+  };
   let pool = buildPool();
   if (!pool.length) {
     // Schedule one retry — by 1500 ms the gallery API call has

@@ -6253,6 +6253,67 @@ def serve_index():
                 html_content,
                 count=1,
             )
+
+            # ----------------------------------------------------------
+            # Server-side hero-region branching (Task #63 / item 16).
+            # ----------------------------------------------------------
+            # Some hero modes need information that ONLY the server can
+            # provide on first paint:
+            #
+            #   - 'carousel'  : the rotation pool (gallery_cards.image_url
+            #                   list) so the carousel can begin cycling
+            #                   immediately, without waiting for the
+            #                   /api/gallery-cards round-trip and the
+            #                   subsequent .highlight-card-bg render.
+            #
+            # We also stamp `data-mode="<hl>"` directly on the .hero-section
+            # element. While [data-hero-layout] on <html> already drives
+            # the CSS variants, scoping a per-section attribute lets
+            # future per-section CSS rules and the JS pool-builder key
+            # off the section directly (cheaper selector, less coupling
+            # to the html cascade).
+            try:
+                hero_attrs = f' data-mode="{hl}"'
+                if hl == "carousel":
+                    pool_rows = query_db(
+                        "SELECT image_url FROM gallery_cards "
+                        "WHERE image_url IS NOT NULL AND image_url != '' "
+                        "ORDER BY sort_order ASC LIMIT 24"
+                    ) or []
+                    # `|`-separated keeps the attribute small + parse-cheap
+                    # (URLs are already %-encoded, so `|` is collision-free).
+                    # Strip any stray `|` defensively, escape `"` for HTML.
+                    urls = [
+                        (r["image_url"] or "").replace("|", "").replace('"', "%22").strip()
+                        for r in pool_rows
+                    ]
+                    urls = [u for u in urls if u]
+                    if urls:
+                        hero_attrs += f' data-carousel-pool="{"|".join(urls)}"'
+
+                def _merge_hero_attrs(m):
+                    attrs = m.group(1) or ""
+                    # Strip any pre-existing hero data-* attrs so re-renders
+                    # don't accumulate duplicates if the placeholder file
+                    # ever ships with these attributes.
+                    attrs = re.sub(
+                        r'\s+data-(mode|carousel-pool)\s*=\s*"[^"]*"',
+                        "",
+                        attrs,
+                    )
+                    return f"<section{attrs}{hero_attrs}>"
+
+                # Match the specific .hero-section element by id (it's
+                # unique on the landing page). We only rewrite the OPENING
+                # tag, never the closing tag.
+                html_content = re.sub(
+                    r'<section([^>]*\bid="section-hero"[^>]*)>',
+                    _merge_hero_attrs,
+                    html_content,
+                    count=1,
+                )
+            except Exception as e:
+                print(f"[serve_index] hero-region attr injection failed: {e}; continuing")
         except Exception as e:
             print(f"[serve_index] body brand-class injection failed: {e}; serving without")
 
