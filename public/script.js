@@ -1544,9 +1544,25 @@ function applySectionOrder() {
   const landingContainer = document.getElementById('landing-view');
   if (!landingContainer) return;
 
+  /* Standalone-page mode (Task #71). The server bakes
+     <html data-page-mode="standalone" data-page-section-ids="3,1,7">
+     into the response for /p/<slug>. We honour those by filtering
+     pageSections to ONLY the assigned IDs (in the listed order), and
+     pre-hiding every other section — built-ins were already hidden
+     server-side to prevent FOUC; this hides the custom sections that
+     renderCustomSections() just injected into the DOM. */
+  const isStandalone =
+    (document.documentElement.dataset.pageMode || '') === 'standalone';
+  const standaloneIds = isStandalone
+    ? (document.documentElement.dataset.pageSectionIds || '')
+        .split(',')
+        .map(s => parseInt(s, 10))
+        .filter(n => Number.isFinite(n))
+    : null;
+
   /* Fall back to old toggle system if page_sections API returned nothing */
   if (pageSections.length === 0) {
-    applySectionVisibilityFallback();
+    if (!isStandalone) applySectionVisibilityFallback();
     /* Still call the nav menu builder — with no pageSections it will
        hide the toggle entirely so we don't leave a dead control in the
        hero nav. */
@@ -1554,8 +1570,28 @@ function applySectionOrder() {
     return;
   }
 
+  let workingSections = pageSections;
+  if (isStandalone && Array.isArray(standaloneIds)) {
+    const allowed = new Set(standaloneIds);
+    pageSections.forEach(section => {
+      if (allowed.has(section.id)) return;
+      let el = null;
+      if (section.section_type === 'built_in') {
+        const elId = BUILTIN_SECTION_MAP[section.slug];
+        el = elId ? document.getElementById(elId) : null;
+      } else {
+        el = document.getElementById('section-custom-' + section.id);
+      }
+      if (el) el.style.display = 'none';
+    });
+    const byId = new Map(pageSections.map(s => [s.id, s]));
+    workingSections = standaloneIds
+      .map(id => byId.get(id))
+      .filter(Boolean);
+  }
+
   /* Walk through ALL sections (enabled + disabled) in sort_order */
-  pageSections.forEach(section => {
+  workingSections.forEach(section => {
     const slug = section.slug;
     const enabled = section.enabled;
 
@@ -1821,6 +1857,21 @@ function renderSectionNavMenu() {
        - built-in slugs without supporting data are skipped (matches
          applySectionOrder's display:none rule so we never link to a
          hidden anchor) */
+  /* Standalone-page mode (Task #71) — same detection as
+     applySectionOrder; used to convert default same-page anchors into
+     cross-page anchors back to "/" so menu links remain functional
+     when the visitor is on /p/<slug>. */
+  const isStandalone =
+    (document.documentElement.dataset.pageMode || '') === 'standalone';
+  const standaloneIdSet = isStandalone
+    ? new Set(
+        (document.documentElement.dataset.pageSectionIds || '')
+          .split(',')
+          .map(s => parseInt(s, 10))
+          .filter(n => Number.isFinite(n))
+      )
+    : null;
+
   const items = [];
   (Array.isArray(pageSections) ? pageSections : []).forEach(section => {
     if (!section || !section.enabled) return;
@@ -1838,8 +1889,27 @@ function renderSectionNavMenu() {
       iconKey = 'custom';
     }
     if (!document.getElementById(elId)) return;
+    /* Per-section nav link override (Task #71). Resolution order:
+         1. Explicit `nav_link_target` from admin → use verbatim.
+         2. Standalone page where this section is NOT assigned →
+            cross-page anchor back to "/#elId".
+         3. Default → same-page anchor "#elId" with smooth-scroll. */
+    const override = (section.nav_link_target || '').trim();
+    let href, samePage;
+    if (override) {
+      href = override;
+      samePage = false;
+    } else if (isStandalone && standaloneIdSet && !standaloneIdSet.has(section.id)) {
+      href = '/#' + elId;
+      samePage = false;
+    } else {
+      href = '#' + elId;
+      samePage = true;
+    }
     items.push({
       id: elId,
+      href,
+      samePage,
       title,
       slug: section.slug || ('custom-' + section.id),
       icon: SECTION_NAV_ICONS[iconKey] || 'square'
@@ -1854,8 +1924,9 @@ function renderSectionNavMenu() {
   toggle.style.display = '';
 
   panel.innerHTML = items.map(it => (
-    '<a href="#' + it.id + '" class="nav-section-menu-item" ' +
+    '<a href="' + _sectionNavEscape(it.href) + '" class="nav-section-menu-item" ' +
     'data-section-id="' + it.id + '" ' +
+    'data-same-page="' + (it.samePage ? '1' : '0') + '" ' +
     'data-testid="link-section-nav-' + _sectionNavEscape(it.slug) + '">' +
     '<i data-lucide="' + it.icon + '" class="nav-section-menu-item-icon"></i>' +
     '<span class="nav-section-menu-item-label">' + _sectionNavEscape(it.title) + '</span>' +
@@ -1864,6 +1935,13 @@ function renderSectionNavMenu() {
 
   panel.querySelectorAll('.nav-section-menu-item').forEach(a => {
     a.addEventListener('click', (e) => {
+      /* Cross-page or external links — let the browser navigate
+         normally. We only intercept same-page anchors so we can run
+         the smooth-scroll behaviour. */
+      if (a.getAttribute('data-same-page') !== '1') {
+        _setSectionNavOpen(false);
+        return;
+      }
       e.preventDefault();
       const id = a.getAttribute('data-section-id');
       const target = document.getElementById(id);

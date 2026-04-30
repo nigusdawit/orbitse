@@ -2078,7 +2078,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
       Business Info
     </button>
-    <button class="tab-btn" onclick="switchTab('pages', this)" data-testid="tab-pages">
+    <button class="tab-btn" onclick="switchTab('pages', this); loadPages();" data-testid="tab-pages">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
       Saved Pages
     </button>
@@ -2993,6 +2993,83 @@ TO CUSTOMIZE THIS DASHBOARD:
       </div>
     </div>
   </div>
+
+  <!--
+  ========================================================================
+  TAB: SAVED PAGES (Task #71)
+  ========================================================================
+  Admin-authored standalone pages reachable at /p/<slug>. Each page
+  reuses one or more existing page_sections (from the Page Layout tab)
+  via a per-page assignment list. Pages don't appear in any nav menu by
+  themselves — admins surface them by setting a section's "Menu link
+  target" to /p/<slug> on the Page Layout tab.
+  -->
+  <div id="tab-pages" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Saved Pages</h2>
+        <p>Create extra pages reachable at <code>/p/&lt;slug&gt;</code>. Each page reuses the sections you've already set up on the Page Layout tab. Use the per-section "Menu link target" field there to surface a page in the in-page Section Menu.</p>
+      </div>
+      <button class="btn btn-primary" onclick="showAddPageForm()" data-testid="button-add-page">+ New Page</button>
+    </div>
+
+    <div id="add-page-form-panel" class="form-panel" style="display:none;">
+      <h3>New Page</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="new-page-title">Title</label>
+          <input type="text" id="new-page-title" placeholder="About Us" oninput="autoGeneratePageSlug()" data-testid="input-page-title">
+        </div>
+        <div class="form-group">
+          <label for="new-page-slug">URL slug</label>
+          <input type="text" id="new-page-slug" placeholder="about-us" data-testid="input-page-slug">
+          <p style="color:var(--admin-text-muted); font-size:0.78rem; margin-top:0.25rem;">Public URL will be <code>/p/&lt;slug&gt;</code>. Lowercase letters, numbers and hyphens only.</p>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="new-page-meta">Meta description (SEO)</label>
+        <textarea id="new-page-meta" rows="2" placeholder="Short summary used in search engine results & social shares." data-testid="input-page-meta"></textarea>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="hideAddPageForm()" data-testid="button-cancel-page">Cancel</button>
+        <button class="btn btn-primary" onclick="createPage()" data-testid="button-create-page">Create Page</button>
+      </div>
+    </div>
+
+    <table class="data-table" id="pages-table">
+      <thead>
+        <tr>
+          <th>Title</th>
+          <th>URL</th>
+          <th>Sections</th>
+          <th>Enabled</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="pages-tbody">
+        <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+
+    <!-- Per-page section-assignment editor. Hidden until the admin
+         clicks "Sections" on a row. The list is built from the same
+         /admin/api/page-sections feed as the Page Layout tab — admins
+         tick the sections they want, drag to reorder, then Save which
+         PUTs the new list to /admin/api/pages/<id>/sections. -->
+    <div id="page-sections-editor" class="form-panel" style="display:none; margin-top:1.5rem;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+        <h3 id="page-sections-editor-title">Page Sections</h3>
+        <div style="display:flex; gap:0.5rem;">
+          <button class="btn btn-primary btn-sm" onclick="savePageSections()" data-testid="button-save-page-sections">Save Order</button>
+          <button class="btn btn-secondary btn-sm" onclick="closePageSectionsEditor()" data-testid="button-close-page-sections">Close</button>
+        </div>
+      </div>
+      <p style="color:var(--admin-text-muted); font-size:0.85rem; margin-bottom:0.75rem;">Tick the sections you want on this page. Drag the handles to reorder. The page renders with the same nav and footer as your homepage.</p>
+      <input type="hidden" id="page-sections-editor-page-id">
+      <ul id="page-sections-editor-list" class="data-table" style="list-style:none; padding:0; margin:0;"></ul>
+    </div>
+  </div>
+
 
   <div id="tab-page-layout" class="tab-content">
     <div class="section-header-admin">
@@ -12055,6 +12132,22 @@ TO CUSTOMIZE THIS DASHBOARD:
           payload.subtitle = slug.trim();
         }
 
+        // Section Menu link override (Task #71). The default behaviour is
+        // a same-page anchor that smooth-scrolls to this section. Setting
+        // it to e.g. "/p/about" makes the menu entry navigate to that
+        // standalone page instead — handy for surfacing a Saved Page
+        // without auto-listing every page in the menu.
+        const navTarget = prompt(
+          'Menu link target (optional):\n\n' +
+          'Leave blank to use the default same-page anchor that scrolls to this section. ' +
+          'Set to "/p/<slug>" to make the Section Menu entry open a Saved Page instead. ' +
+          'Any URL is accepted (e.g. https://example.com).',
+          section.nav_link_target || ''
+        );
+        if (navTarget !== null) {
+          payload.nav_link_target = navTarget.trim();
+        }
+
         const updateRes = await fetch(`/admin/api/page-sections/${id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -12068,6 +12161,261 @@ TO CUSTOMIZE THIS DASHBOARD:
         }
       } catch (err) {
         showToast('Failed to update section', 'error');
+      }
+    }
+
+
+    /* =====================================================================
+       SAVED PAGES (Task #71) — admin CRUD for /p/<slug> standalone pages.
+       Each page reuses one or more rows from page_sections via a separate
+       per-page assignment list (PUT /admin/api/pages/<id>/sections).
+       ===================================================================== */
+
+    let _pagesCache = [];
+    let _pageSectionsCache = [];  // Snapshot of all sections for the picker.
+
+    async function loadPages() {
+      try {
+        const [pagesRes, sectionsRes] = await Promise.all([
+          fetch('/admin/api/pages'),
+          fetch('/admin/api/page-sections'),
+        ]);
+        const pages = await pagesRes.json();
+        const sections = await sectionsRes.json();
+        _pagesCache = Array.isArray(pages) ? pages : [];
+        _pageSectionsCache = Array.isArray(sections) ? sections : [];
+
+        const tbody = document.getElementById('pages-tbody');
+        if (!tbody) return;
+        if (!_pagesCache.length) {
+          tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No saved pages yet. Click "+ New Page" to create one.</td></tr>';
+          return;
+        }
+        // Render each page row. The "Sections" cell shows a count + the
+        // list of titles (truncated) so the admin can see at a glance
+        // which sections each page contains without opening the editor.
+        const sectionTitleById = new Map(_pageSectionsCache.map(s => [s.id, s.title || s.slug]));
+        tbody.innerHTML = _pagesCache.map(p => {
+          const ids = p.section_ids || [];
+          const titles = ids.map(id => sectionTitleById.get(id)).filter(Boolean);
+          const titleSummary = titles.length
+            ? titles.slice(0, 3).map(esc).join(', ') + (titles.length > 3 ? `, +${titles.length - 3} more` : '')
+            : '<span style="color:var(--admin-text-muted);">none</span>';
+          const url = '/p/' + p.slug;
+          return `
+            <tr data-id="${p.id}">
+              <td>
+                <strong data-testid="text-page-title-${p.id}">${esc(p.title || p.slug)}</strong>
+                ${p.meta_description ? `<div style="color:var(--admin-text-muted); font-size:0.78rem; margin-top:0.25rem;">${esc(p.meta_description)}</div>` : ''}
+              </td>
+              <td><a href="${esc(url)}" target="_blank" rel="noopener" data-testid="link-page-${p.id}" style="color:var(--admin-link);">${esc(url)}</a></td>
+              <td>
+                <span data-testid="text-page-sections-${p.id}">${ids.length} section${ids.length === 1 ? '' : 's'}</span>
+                <div style="color:var(--admin-text-muted); font-size:0.78rem; margin-top:0.25rem;">${titleSummary}</div>
+              </td>
+              <td>
+                <label class="toggle-switch" data-testid="toggle-page-${p.id}">
+                  <input type="checkbox" ${p.enabled ? 'checked' : ''} onchange="togglePage(${p.id}, this.checked)">
+                  <span class="toggle-slider"></span>
+                </label>
+              </td>
+              <td class="cell-actions">
+                <button class="btn btn-secondary btn-sm" onclick="editPageSections(${p.id})" data-testid="button-edit-page-sections-${p.id}">Sections</button>
+                <button class="btn btn-secondary btn-sm" onclick="editPage(${p.id})" data-testid="button-edit-page-${p.id}">Edit</button>
+                <button class="btn btn-danger btn-sm" onclick="deletePage(${p.id})" data-testid="button-delete-page-${p.id}">Delete</button>
+              </td>
+            </tr>
+          `;
+        }).join('');
+      } catch (err) {
+        showToast('Failed to load pages', 'error');
+      }
+    }
+
+    function autoGeneratePageSlug() {
+      const title = document.getElementById('new-page-title').value;
+      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      document.getElementById('new-page-slug').value = slug;
+    }
+
+    function showAddPageForm() {
+      document.getElementById('add-page-form-panel').style.display = 'block';
+      document.getElementById('new-page-title').value = '';
+      document.getElementById('new-page-slug').value = '';
+      document.getElementById('new-page-meta').value = '';
+    }
+
+    function hideAddPageForm() {
+      document.getElementById('add-page-form-panel').style.display = 'none';
+    }
+
+    async function createPage() {
+      const title = document.getElementById('new-page-title').value.trim();
+      const slug = document.getElementById('new-page-slug').value.trim();
+      const meta = document.getElementById('new-page-meta').value.trim();
+      if (!slug) { showToast('Slug is required', 'error'); return; }
+      try {
+        const res = await fetch('/admin/api/pages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, slug, meta_description: meta, enabled: true })
+        });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || 'Failed to create page', 'error'); return; }
+        showToast('Page created!');
+        hideAddPageForm();
+        loadPages();
+      } catch (err) {
+        showToast('Failed to create page', 'error');
+      }
+    }
+
+    async function togglePage(id, enabled) {
+      try {
+        const res = await fetch(`/admin/api/pages/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled })
+        });
+        if (res.ok) {
+          showToast('Page visibility updated');
+          // Update cache so subsequent renders reflect the new state
+          // without a round trip.
+          const cached = _pagesCache.find(p => p.id === id);
+          if (cached) cached.enabled = enabled;
+        } else {
+          showToast('Failed to update page', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to update page', 'error');
+      }
+    }
+
+    async function editPage(id) {
+      const page = _pagesCache.find(p => p.id === id);
+      if (!page) { showToast('Page not found', 'error'); return; }
+      // Lightweight edit via prompts — matches the existing
+      // editPageSection() pattern so the admin tooling stays consistent.
+      const title = prompt('Page title:', page.title || '');
+      if (title === null) return;
+      const slug = prompt('URL slug (used as /p/<slug>):', page.slug || '');
+      if (slug === null) return;
+      const meta = prompt('Meta description (SEO summary):', page.meta_description || '');
+      if (meta === null) return;
+      try {
+        const res = await fetch(`/admin/api/pages/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: title.trim(),
+            slug: slug.trim(),
+            meta_description: meta.trim(),
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || 'Failed to update page', 'error'); return; }
+        showToast('Page updated!');
+        loadPages();
+      } catch (err) {
+        showToast('Failed to update page', 'error');
+      }
+    }
+
+    async function deletePage(id) {
+      const page = _pagesCache.find(p => p.id === id);
+      const label = page ? `"${page.title || page.slug}"` : 'this page';
+      if (!confirm(`Delete ${label}? This cannot be undone. The sections themselves are NOT deleted (they're shared with the homepage).`)) return;
+      try {
+        const res = await fetch(`/admin/api/pages/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('Page deleted');
+          loadPages();
+        } else {
+          showToast('Failed to delete page', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to delete page', 'error');
+      }
+    }
+
+    /* ---- Per-page section assignment editor ---- */
+
+    function editPageSections(id) {
+      const page = _pagesCache.find(p => p.id === id);
+      if (!page) { showToast('Page not found', 'error'); return; }
+      document.getElementById('page-sections-editor-page-id').value = String(id);
+      document.getElementById('page-sections-editor-title').textContent =
+        'Sections on "' + (page.title || page.slug) + '"';
+      // Build the picker: assigned sections first (in their saved
+      // order), then the remaining sections so admins can scroll once
+      // and tick whatever else they want without reordering everything.
+      const assigned = page.section_ids || [];
+      const assignedSet = new Set(assigned);
+      const ordered = [];
+      assigned.forEach(sid => {
+        const s = _pageSectionsCache.find(x => x.id === sid);
+        if (s) ordered.push(s);
+      });
+      _pageSectionsCache.forEach(s => {
+        if (!assignedSet.has(s.id)) ordered.push(s);
+      });
+      const ul = document.getElementById('page-sections-editor-list');
+      ul.innerHTML = ordered.map(s => {
+        const checked = assignedSet.has(s.id) ? 'checked' : '';
+        const typeLabel = s.section_type === 'built_in' ? 'Built-in' : (s.template || 'custom');
+        const disabledNote = s.enabled ? '' : ' <span style="color:#f59e0b; font-size:0.75rem;">(disabled — enable on Page Layout to render)</span>';
+        return `
+          <li data-section-id="${s.id}" style="display:flex; align-items:center; gap:0.75rem; padding:0.6rem 0.75rem; border-bottom:1px solid var(--admin-border);">
+            <span class="drag-handle" title="Drag to reorder" style="cursor:grab; color:var(--admin-text-muted);">&#x2630;</span>
+            <label style="display:flex; align-items:center; gap:0.5rem; flex:1; cursor:pointer; margin:0;">
+              <input type="checkbox" ${checked} data-section-id="${s.id}" data-testid="check-page-section-${id}-${s.id}">
+              <span><strong>${esc(s.title || s.slug)}</strong> <span style="color:var(--admin-text-muted); font-size:0.78rem;">(${esc(s.slug)} · ${esc(typeLabel)})</span>${disabledNote}</span>
+            </label>
+          </li>
+        `;
+      }).join('');
+      // Reuse the same Sortable helper used by the Page Layout tab so
+      // the drag handles work identically (no extra setup required).
+      if (typeof initSortable === 'function') {
+        try { initSortable('page-sections-editor-list', null); } catch (_) {}
+      }
+      document.getElementById('page-sections-editor').style.display = 'block';
+      // Scroll the editor into view so the admin doesn't miss it on a
+      // long page.
+      document.getElementById('page-sections-editor').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function closePageSectionsEditor() {
+      document.getElementById('page-sections-editor').style.display = 'none';
+    }
+
+    async function savePageSections() {
+      const pageId = parseInt(document.getElementById('page-sections-editor-page-id').value || '0', 10);
+      if (!pageId) return;
+      // Walk the list in DOM order (which reflects any drag-reordering)
+      // and collect the IDs of every TICKED checkbox.
+      const ul = document.getElementById('page-sections-editor-list');
+      const ids = Array.from(ul.querySelectorAll('li')).map(li => {
+        const cb = li.querySelector('input[type="checkbox"]');
+        if (!cb || !cb.checked) return null;
+        return parseInt(cb.getAttribute('data-section-id') || '0', 10);
+      }).filter(Boolean);
+      try {
+        const res = await fetch(`/admin/api/pages/${pageId}/sections`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ section_ids: ids })
+        });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || 'Failed to save sections', 'error'); return; }
+        showToast('Sections saved!');
+        // Refresh the cache (so the row count updates) but keep the
+        // editor open so the admin can keep tweaking.
+        const cached = _pagesCache.find(p => p.id === pageId);
+        if (cached) cached.section_ids = data.section_ids || [];
+        loadPages();
+      } catch (err) {
+        showToast('Failed to save sections', 'error');
       }
     }
 

@@ -1394,6 +1394,40 @@ def init_db():
                   ADD COLUMN IF NOT EXISTS subtitle TEXT NOT NULL DEFAULT '';
 
                 -- =============================================================
+                -- STANDALONE PAGES (Task #71) — admin-authored extra pages
+                -- =============================================================
+                -- The site has always been a single-page app at "/". This
+                -- table backs admin-authored extra pages reachable at
+                -- /p/<slug>, each composed of one or more existing
+                -- page_sections (many-to-many via page_section_assignments).
+                -- The same section can live on the homepage AND on a
+                -- standalone page — content is reused, not duplicated.
+                CREATE TABLE IF NOT EXISTS pages (
+                    id               SERIAL PRIMARY KEY,
+                    slug             TEXT UNIQUE NOT NULL,
+                    title            TEXT NOT NULL DEFAULT '',
+                    meta_description TEXT NOT NULL DEFAULT '',
+                    sort_order       INTEGER NOT NULL DEFAULT 0,
+                    enabled          BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at       TIMESTAMP DEFAULT NOW(),
+                    updated_at       TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_pages_sort ON pages (sort_order);
+
+                -- Section <-> page assignment join table. sort_order is
+                -- per-page (not global) so the same section can appear at
+                -- different positions on different pages.
+                CREATE TABLE IF NOT EXISTS page_section_assignments (
+                    id          SERIAL PRIMARY KEY,
+                    page_id     INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+                    section_id  INTEGER NOT NULL REFERENCES page_sections(id) ON DELETE CASCADE,
+                    sort_order  INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE (page_id, section_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_psa_page_sort
+                    ON page_section_assignments (page_id, sort_order);
+
+                -- =============================================================
                 -- CUSTOM SECTION ITEMS
                 -- =============================================================
                 -- Content items for custom sections. Each item belongs to a
@@ -2243,6 +2277,15 @@ def init_db():
                 #     is the default; admin can dial it per section.
                 "ALTER TABLE page_sections ADD COLUMN IF NOT EXISTS bg_image TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE page_sections ADD COLUMN IF NOT EXISTS bg_overlay_alpha NUMERIC NOT NULL DEFAULT 0.45",
+                # --- Section Menu link override (Task #71 / standalone pages).
+                #     Empty string (default) means the in-hero Section Menu
+                #     link for this section behaves as before: a same-page
+                #     anchor that smooth-scrolls to #section-<slug>. A non-
+                #     empty value (typically "/p/<slug>") makes the menu
+                #     entry a normal cross-page link — used to surface a
+                #     standalone page from the menu without auto-listing
+                #     every page there.
+                "ALTER TABLE page_sections ADD COLUMN IF NOT EXISTS nav_link_target TEXT NOT NULL DEFAULT ''",
                 # --- Brand identity (Task #61 / items 2,4,17,18).
                 #     theme_accent_secondary is the second stop of the
                 #     accent gradient (only used when theme_accent_gradient
@@ -5658,27 +5701,41 @@ def _esc(s):
     return html_module.escape(str(s), quote=True)
 
 
-def _build_seo_meta_html():
+def _build_seo_meta_html(overrides=None):
     """
     Build the complete SEO meta tags HTML block from database settings.
     Returns an HTML string containing: title, meta description, keywords,
     robots directive, canonical URL, Open Graph tags, Twitter Card tags,
     and favicon links. Falls back to site_settings values if SEO-specific
     fields are empty.
+
+    overrides: optional dict used by standalone-page rendering at /p/<slug>.
+      Recognised keys: "title", "description". Non-empty overrides win over
+      the site_settings cascade. Page-level title is also suffixed with
+      "| <site_name>" so search results stay attributable to the brand.
     """
     settings = query_db("SELECT * FROM site_settings WHERE id = 1", fetchone=True)
     if not settings:
         settings = {}
+    overrides = overrides or {}
 
     # Determine SEO values with cascading fallbacks
-    title = (settings.get("seo_meta_title") or "").strip()
+    site_name = settings.get("site_name", "My Site")
+    title = (overrides.get("title") or "").strip()
+    if title:
+        # Suffix the brand so /p/<slug> tabs are still recognisable
+        if site_name and site_name not in title:
+            title = f"{title} | {site_name}"
+    else:
+        title = (settings.get("seo_meta_title") or "").strip()
     if not title:
         # Fall back to site name + subtitle for the page title
-        site_name = settings.get("site_name", "My Site")
         subtitle = settings.get("site_subtitle", "")
         title = f"{site_name} — {subtitle}" if subtitle else site_name
 
-    description = (settings.get("seo_meta_description") or "").strip()
+    description = (overrides.get("description") or "").strip()
+    if not description:
+        description = (settings.get("seo_meta_description") or "").strip()
     if not description:
         # Fall back to the hero description text
         description = settings.get("hero_description", "")
@@ -6054,8 +6111,46 @@ def _build_loading_initials_and_name():
 
 @app.route("/")
 def serve_index():
+    """Serve the main public homepage."""
+    return _render_app_shell_response()
+
+
+@app.route("/p/<string:slug>")
+def serve_standalone_page(slug):
     """
-    Serve the main public website with SEO meta tags injected server-side.
+    GET /p/<slug>
+    Render an admin-authored standalone page using the same shell, top
+    nav, footer, theme, and JS bundle as the homepage. The page's
+    assigned page_sections (joined via page_section_assignments) are
+    the only ones rendered — every other built-in section is hidden
+    server-side via inline display:none to avoid first-paint flash;
+    custom sections are filtered the same way client-side.
+
+    404 for unknown or disabled slugs. The /p/ namespace prefix avoids
+    any collision with the public catch-all "/<path:filename>" that
+    serves static files out of public/.
+    """
+    page = query_db(
+        "SELECT id, slug, title, meta_description "
+        "FROM pages WHERE slug = %s AND enabled = TRUE",
+        (slug,), fetchone=True,
+    )
+    if not page:
+        abort(404)
+    rows = query_db(
+        "SELECT section_id FROM page_section_assignments "
+        "WHERE page_id = %s ORDER BY sort_order ASC, id ASC",
+        (page["id"],),
+    ) or []
+    section_ids = [r["section_id"] for r in rows]
+    return _render_app_shell_response(page=page, section_ids=section_ids)
+
+
+def _render_app_shell_response(page=None, section_ids=None):
+    """
+    Serve the public site HTML shell with SEO meta tags injected
+    server-side. Used by both the homepage at "/" (page=None) and
+    admin-authored standalone pages at "/p/<slug>" (page set).
 
     Source preference order:
       1. The active design row in site_designs (if site_settings.active_design_id
@@ -6065,6 +6160,14 @@ def serve_index():
 
     Either source then has SEO + JSON-LD placeholders replaced so crawlers
     see proper meta tags without needing JavaScript execution.
+
+    page / section_ids: when set, the response is rendered as a
+    standalone page — the SEO title and description are overridden to
+    match the page row, the <html> element gains data-page-mode,
+    data-page-id, data-page-slug and data-page-section-ids attributes,
+    and built-in sections that aren't assigned are hidden inline so
+    the user never sees them flash before script.js applies the
+    standalone-mode filter.
     """
     try:
         html_content = None
@@ -6106,7 +6209,16 @@ def serve_index():
         )
 
         # Inject SEO meta tags (replaces the <!-- SEO_META_INJECT --> placeholder in <head>)
-        seo_html = _build_seo_meta_html()
+        # On standalone pages, the page row's title/meta_description win
+        # over the homepage SEO cascade so each /p/<slug> tab has its
+        # own search-result title and social-share description.
+        seo_overrides = None
+        if page is not None:
+            seo_overrides = {
+                "title": (page.get("title") or "").strip(),
+                "description": (page.get("meta_description") or "").strip(),
+            }
+        seo_html = _build_seo_meta_html(seo_overrides)
         html_content = html_content.replace("<!-- SEO_META_INJECT -->", seo_html)
 
         # Inject JSON-LD structured data (replaces the <!-- JSON_LD_INJECT --> placeholder before </head>)
@@ -6276,15 +6388,28 @@ def serve_index():
                 f' data-nav-style="{nvs}"'
                 f' data-chatbot-placement="{cbp}"'
             )
+            # Standalone-page markers (Task #71). When set, script.js's
+            # applySectionOrder() filters and reorders sections to the
+            # page's assignment list, and renderSectionNavMenu() builds
+            # cross-page anchor URLs (e.g. "/#section-faq") so the
+            # in-hero menu still navigates back to the homepage.
+            if page is not None:
+                ids_csv = ",".join(str(int(x)) for x in (section_ids or []))
+                html_attrs += (
+                    ' data-page-mode="standalone"'
+                    f' data-page-id="{int(page["id"])}"'
+                    f' data-page-slug="{_esc(page["slug"])}"'
+                    f' data-page-section-ids="{ids_csv}"'
+                )
 
             def _merge_html_attrs(m):
                 attrs = m.group(1) or ""
                 # Strip any pre-existing surface-treatment + layout/rhythm
-                # + personality data-* attrs so re-renders don't accumulate
-                # duplicates if the placeholder file ever ships with these
-                # attributes.
+                # + personality + standalone-page data-* attrs so re-renders
+                # don't accumulate duplicates if the placeholder file ever
+                # ships with these attributes.
                 attrs = re.sub(
-                    r'\s+data-(card-style|easing|photo-filter|loading-mode|density|header-align|hero-layout|cursor-mode|scroll-progress|nav-style|chatbot-placement)\s*=\s*"[^"]*"',
+                    r'\s+data-(card-style|easing|photo-filter|loading-mode|density|header-align|hero-layout|cursor-mode|scroll-progress|nav-style|chatbot-placement|page-mode|page-id|page-slug|page-section-ids)\s*=\s*"[^"]*"',
                     "",
                     attrs,
                 )
@@ -6385,6 +6510,62 @@ def serve_index():
                     html_content = voice_re.sub(bundle_tag, html_content, count=1)
         except Exception as e:
             print(f"[serve_index] JS bundle injection failed: {e}; falling back to source files")
+
+        # Standalone-page section filter (Task #71). For /p/<slug>, every
+        # built-in section that ISN'T in the page's assignment list gets
+        # an inline `display: none` baked into its <section> tag so the
+        # user never sees those sections flash before script.js runs its
+        # standalone-mode filter. Custom sections aren't in this HTML
+        # at all (they're rendered by JS into a container) so the
+        # client-side filter handles them.
+        if page is not None:
+            try:
+                assigned = set(int(x) for x in (section_ids or []))
+                builtins = query_db(
+                    "SELECT id, slug FROM page_sections WHERE section_type = 'built_in'"
+                ) or []
+                for s in builtins:
+                    if s["id"] in assigned:
+                        continue
+                    # The footer is the only built-in whose DOM id breaks
+                    # the section-<slug> convention (it's #site-footer, an
+                    # historical artefact). Map it explicitly so it gets
+                    # pre-hidden too — otherwise standalone pages flash a
+                    # full footer before the JS filter runs.
+                    if s["slug"] == "footer":
+                        sid = "site-footer"
+                        tag_name = "footer"
+                    else:
+                        sid = f'section-{s["slug"]}'
+                        tag_name = "section"
+                    # Tag every <section ... id="section-<slug>" ...> with
+                    # display:none. Two regexes cover both cases: an
+                    # existing style="..." attribute we prepend into, and
+                    # a section with no style attribute at all (we add
+                    # one). The pattern intentionally tolerates other
+                    # attributes between id="..." and style="...". For
+                    # the footer the tag is <footer> instead of
+                    # <section> — handled by the tag_name set above.
+                    pattern_with_style = re.compile(
+                        r'(<' + tag_name + r'\b[^>]*\bid="' + re.escape(sid) + r'"[^>]*\bstyle=")',
+                        re.IGNORECASE,
+                    )
+                    if pattern_with_style.search(html_content):
+                        html_content = pattern_with_style.sub(
+                            r'\1display: none !important; ',
+                            html_content, count=1,
+                        )
+                    else:
+                        pattern_no_style = re.compile(
+                            r'(<' + tag_name + r'\b[^>]*\bid="' + re.escape(sid) + r'")',
+                            re.IGNORECASE,
+                        )
+                        html_content = pattern_no_style.sub(
+                            r'\1 style="display: none !important;"',
+                            html_content, count=1,
+                        )
+            except Exception as e:
+                print(f"[_render_app_shell_response] standalone-page pre-hide failed: {e}; continuing")
 
         return Response(html_content, mimetype="text/html")
     except Exception:
@@ -20618,7 +20799,8 @@ def admin_update_page_section(section_id):
     data = request.get_json() or {}
 
     existing = query_db(
-        "SELECT title, subtitle, enabled, settings, bg_image, bg_overlay_alpha "
+        "SELECT title, subtitle, enabled, settings, bg_image, bg_overlay_alpha, "
+        "nav_link_target "
         "FROM page_sections WHERE id = %s",
         (section_id,), fetchone=True
     )
@@ -20630,6 +20812,19 @@ def admin_update_page_section(section_id):
     enabled  = data["enabled"]  if "enabled"  in data else bool(existing.get("enabled"))
     settings = data["settings"] if "settings" in data else (existing.get("settings") or {})
     bg_image = data["bg_image"] if "bg_image" in data else (existing.get("bg_image") or "")
+    # Section Menu link override — empty = same-page anchor (default
+    # behaviour); any non-empty value is used verbatim as the menu
+    # entry's href, typically "/p/<slug>" to send the menu at a
+    # standalone page. We restrict to safe schemes (no `javascript:`
+    # / `data:`) to avoid stored XSS via an admin-supplied link
+    # clicked by every visitor.
+    if "nav_link_target" in data:
+        try:
+            nav_link_target = _validate_nav_link_target(data["nav_link_target"])
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    else:
+        nav_link_target = (existing.get("nav_link_target") or "")
     # Clamp overlay alpha to a sane range — a stray slider value at 1.0
     # blacks the photo out entirely; <0 produces an invalid CSS color.
     if "bg_overlay_alpha" in data:
@@ -20643,10 +20838,10 @@ def admin_update_page_section(section_id):
     item = execute_db(
         """UPDATE page_sections SET
              title = %s, subtitle = %s, enabled = %s, settings = %s::jsonb,
-             bg_image = %s, bg_overlay_alpha = %s
+             bg_image = %s, bg_overlay_alpha = %s, nav_link_target = %s
            WHERE id = %s RETURNING *""",
         (title, subtitle, enabled, json.dumps(settings),
-         bg_image, bg_overlay_alpha, section_id)
+         bg_image, bg_overlay_alpha, nav_link_target, section_id)
     )
     if not item:
         return jsonify({"error": "Section not found"}), 404
@@ -20697,6 +20892,270 @@ def admin_toggle_page_section(section_id):
             )
 
     return jsonify(item)
+
+
+# =============================================================
+# ADMIN CRUD — STANDALONE PAGES (Task #71)
+# =============================================================
+# Manages admin-authored extra pages reachable at /p/<slug>.  Each
+# page reuses one or more existing page_sections via the join table
+# page_section_assignments (many-to-many; per-page sort_order).
+#
+# A page row by itself is invisible — it's only navigable from a
+# Section Menu entry whose nav_link_target points at "/p/<slug>", so
+# admins decide explicitly which pages surface in the menu (no
+# auto-listing).
+
+def _slugify(raw):
+    """Conservative slug normaliser shared by section and page CRUD —
+    lowercase, hyphen-separated, [a-z0-9-] only, no leading/trailing dashes.
+    Returns "" for empty input so callers can 400 cleanly."""
+    s = (raw or "").strip().lower()
+    s = re.sub(r'[^a-z0-9-]', '-', s)
+    s = re.sub(r'-+', '-', s).strip('-')
+    return s
+
+
+# Allowlist of URL schemes acceptable as a `page_sections.nav_link_target`.
+# Anything else (notably `javascript:` and `data:`) is rejected to prevent
+# stored XSS via an admin-supplied menu link clicked by every visitor.
+_NAV_LINK_TARGET_ALLOWED_SCHEMES = ("http://", "https://", "mailto:", "tel:")
+
+
+def _validate_nav_link_target(raw):
+    """Return a sanitised `nav_link_target` value, or raise ValueError.
+
+    Empty string is the disabled state and always passes through.
+    Otherwise we only accept:
+      - relative paths starting with "/" (e.g. "/p/about")
+      - same-page anchors starting with "#"
+      - absolute URLs using an allowlisted scheme above
+    Dangerous schemes (`javascript:`, `data:`, `vbscript:`, etc.) are
+    rejected so the value can be safely written verbatim into an <a>
+    tag's href attribute by the admin UI / public renderer.
+    """
+    if raw is None:
+        return ""
+    val = str(raw).strip()
+    if not val:
+        return ""
+    # Protocol-relative URLs ("//evil.example/x") and Windows-style
+    # backslash paths ("\\evil.example") are treated as cross-origin
+    # navigations by browsers — reject them so a "/"-prefixed value
+    # is guaranteed to be a same-origin internal path.
+    if val.startswith("//") or val.startswith("\\"):
+        raise ValueError(
+            "Menu link target must not start with '//' or '\\' "
+            "(use a full https:// URL instead)."
+        )
+    if val[0] in ("/", "#"):
+        return val
+    lowered = val.lower()
+    for scheme in _NAV_LINK_TARGET_ALLOWED_SCHEMES:
+        if lowered.startswith(scheme):
+            return val
+    raise ValueError(
+        "Menu link target must be a relative path (/...), an anchor (#...), "
+        "or an http(s)://, mailto:, or tel: URL."
+    )
+
+
+def _serialize_page(page_row):
+    """Hydrate a pages row with its assigned section_ids (in render
+    order) so the admin UI can show + reorder them in a single round
+    trip. Used by every endpoint that returns a page object."""
+    if not page_row:
+        return None
+    out = dict(page_row)
+    rows = query_db(
+        "SELECT section_id FROM page_section_assignments "
+        "WHERE page_id = %s ORDER BY sort_order ASC, id ASC",
+        (page_row["id"],),
+    ) or []
+    out["section_ids"] = [r["section_id"] for r in rows]
+    return out
+
+
+@app.route("/admin/api/pages", methods=["GET"])
+@admin_required
+def admin_list_pages():
+    """GET all standalone pages with their assigned section_ids."""
+    rows = query_db("SELECT * FROM pages ORDER BY sort_order ASC, id ASC") or []
+    return jsonify([_serialize_page(r) for r in rows])
+
+
+@app.route("/admin/api/pages", methods=["POST"])
+@admin_required
+def admin_create_page():
+    """POST /admin/api/pages — Create a standalone page."""
+    data = request.get_json() or {}
+    slug = _slugify(data.get("slug", ""))
+    if not slug:
+        return jsonify({"error": "Slug is required"}), 400
+    title = (data.get("title") or "").strip() or slug.replace("-", " ").title()
+    meta = (data.get("meta_description") or "").strip()
+    enabled = bool(data.get("enabled", True))
+    # Reject duplicates with a friendly 409 instead of leaking the
+    # underlying psycopg2 UNIQUE-constraint exception.
+    existing = query_db(
+        "SELECT id FROM pages WHERE slug = %s", (slug,), fetchone=True
+    )
+    if existing:
+        return jsonify({"error": "A page with that slug already exists."}), 409
+    next_order = (query_db(
+        "SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM pages",
+        fetchone=True,
+    ) or {}).get("n", 0)
+    page = execute_db(
+        """INSERT INTO pages (slug, title, meta_description, sort_order, enabled)
+           VALUES (%s, %s, %s, %s, %s) RETURNING *""",
+        (slug, title, meta, next_order, enabled),
+    )
+    return jsonify(_serialize_page(page)), 201
+
+
+@app.route("/admin/api/pages/<int:page_id>", methods=["GET"])
+@admin_required
+def admin_get_page(page_id):
+    """GET /admin/api/pages/<id> — single page with its section_ids."""
+    page = query_db("SELECT * FROM pages WHERE id = %s", (page_id,), fetchone=True)
+    if not page:
+        return jsonify({"error": "Page not found"}), 404
+    return jsonify(_serialize_page(page))
+
+
+@app.route("/admin/api/pages/<int:page_id>", methods=["PUT", "PATCH"])
+@admin_required
+def admin_update_page(page_id):
+    """PUT/PATCH /admin/api/pages/<id> — Update slug, title, meta,
+    enabled. Only fields actually sent in the body are updated; section
+    assignment is managed by the dedicated /sections endpoint below."""
+    data = request.get_json() or {}
+    existing = query_db(
+        "SELECT slug, title, meta_description, sort_order, enabled "
+        "FROM pages WHERE id = %s", (page_id,), fetchone=True,
+    )
+    if not existing:
+        return jsonify({"error": "Page not found"}), 404
+    slug = existing["slug"]
+    if "slug" in data:
+        new_slug = _slugify(data["slug"])
+        if not new_slug:
+            return jsonify({"error": "Slug cannot be empty"}), 400
+        if new_slug != slug:
+            clash = query_db(
+                "SELECT id FROM pages WHERE slug = %s AND id <> %s",
+                (new_slug, page_id), fetchone=True,
+            )
+            if clash:
+                return jsonify({"error": "A page with that slug already exists."}), 409
+            slug = new_slug
+    title    = (data["title"] if "title" in data else existing.get("title")) or ""
+    meta     = (data["meta_description"] if "meta_description" in data
+                else existing.get("meta_description")) or ""
+    enabled  = bool(data["enabled"]) if "enabled" in data else bool(existing.get("enabled"))
+    sort_ord = int(data["sort_order"]) if "sort_order" in data else int(existing.get("sort_order") or 0)
+    page = execute_db(
+        """UPDATE pages SET
+             slug = %s, title = %s, meta_description = %s,
+             sort_order = %s, enabled = %s, updated_at = NOW()
+           WHERE id = %s RETURNING *""",
+        (slug, title, meta, sort_ord, enabled, page_id),
+    )
+    if not page:
+        return jsonify({"error": "Page not found"}), 404
+    return jsonify(_serialize_page(page))
+
+
+@app.route("/admin/api/pages/<int:page_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_page(page_id):
+    """DELETE /admin/api/pages/<id>. Cascade on the join table drops
+    every section assignment automatically — sections themselves are
+    not touched (they're shared with the homepage)."""
+    count = execute_db("DELETE FROM pages WHERE id = %s", (page_id,))
+    if count == 0:
+        return jsonify({"error": "Page not found"}), 404
+    return jsonify({"success": True})
+
+
+@app.route("/admin/api/pages/<int:page_id>/sections", methods=["PUT"])
+@admin_required
+def admin_set_page_sections(page_id):
+    """PUT /admin/api/pages/<id>/sections — Replace the page's section
+    assignment list in one shot. Body: {"section_ids": [3, 1, 7]}.
+    Order in the array IS the render order (sort_order is assigned
+    sequentially). Replaces atomically (delete-all-then-insert) so the
+    admin UI doesn't have to do per-row diffing."""
+    page = query_db("SELECT id FROM pages WHERE id = %s", (page_id,), fetchone=True)
+    if not page:
+        return jsonify({"error": "Page not found"}), 404
+    data = request.get_json() or {}
+    raw_ids = data.get("section_ids") or []
+    if not isinstance(raw_ids, list):
+        return jsonify({"error": "section_ids must be an array"}), 400
+    # Validate every section exists, dedupe while preserving order so
+    # the admin can't accidentally double-render a section by clicking
+    # twice in the picker.
+    seen, section_ids = set(), []
+    for sid in raw_ids:
+        try:
+            sid_i = int(sid)
+        except (TypeError, ValueError):
+            return jsonify({"error": f"Invalid section id: {sid!r}"}), 400
+        if sid_i in seen:
+            continue
+        seen.add(sid_i)
+        section_ids.append(sid_i)
+    if section_ids:
+        existing_rows = query_db(
+            "SELECT id FROM page_sections WHERE id = ANY(%s)", (section_ids,)
+        ) or []
+        existing_ids = {r["id"] for r in existing_rows}
+        unknown = [sid for sid in section_ids if sid not in existing_ids]
+        if unknown:
+            return jsonify({"error": f"Unknown section ids: {unknown}"}), 400
+    # Atomic replace — borrow a single pooled connection, flip out of
+    # autocommit so the DELETE + N INSERTs land together, COMMIT on
+    # success, ROLLBACK on any failure. Without this a crash mid-loop
+    # (or a concurrent writer) could leave the page with partial /
+    # empty assignments and a confused admin UI.
+    conn = get_db()
+    try:
+        try:
+            conn.autocommit = False
+        except Exception:
+            pass
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM page_section_assignments WHERE page_id = %s",
+                (page_id,),
+            )
+            if section_ids:
+                # executemany is fine here — N is bounded by the number
+                # of page_sections rows the admin has, typically <30.
+                cur.executemany(
+                    "INSERT INTO page_section_assignments "
+                    "(page_id, section_id, sort_order) VALUES (%s, %s, %s)",
+                    [(page_id, sid, idx) for idx, sid in enumerate(section_ids)],
+                )
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"[admin_set_page_sections] failed for page {page_id}: {e}",
+              file=sys.stderr)
+        return jsonify({"error": "Failed to save section assignments"}), 500
+    finally:
+        try:
+            conn.autocommit = True
+        except Exception:
+            pass
+        conn.close()
+    page_full = query_db("SELECT * FROM pages WHERE id = %s", (page_id,), fetchone=True)
+    return jsonify(_serialize_page(page_full))
 
 
 # =============================================================
