@@ -162,14 +162,18 @@ FONTS:
            menu, so don't move .nav-section-menu back inside the action
            group without updating that insertion logic too. -->
       <div class="hero-nav">
-        <!-- Logo / Brand -->
-        <div class="flex items-center gap-md">
+        <!-- Logo / Brand — clickable home link. The href="/" navigates
+             back to the homepage from standalone pages (/p/<slug>);
+             on the homepage itself, a click handler in script.js
+             intercepts the click and smooth-scrolls to #section-hero
+             instead of triggering a full reload. -->
+        <a href="/" class="logo-link flex items-center gap-md" data-testid="link-logo-home" aria-label="Go to home">
           <div id="logo-badge" class="logo-badge" data-testid="logo-badge">CS</div>
           <div class="logo-text">
             <p id="nav-site-name" class="site-name" data-testid="text-site-name">My Site</p>
             <p id="nav-site-subtitle" class="site-subtitle" data-testid="text-site-subtitle">Your Tagline Here</p>
           </div>
-        </div>
+        </a>
 
         <!-- Section nav menu (Task #65). Progressive-disclosure menu
              that reveals every enabled landing section (built-in + custom).

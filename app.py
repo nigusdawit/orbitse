@@ -6251,7 +6251,7 @@ def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_
         # href="/styles.css"> snapshot — also get the fresh marker. Bump
         # _STYLES_CSS_VERSION whenever public/styles.css ships a visible
         # change that needs to invalidate cached copies.
-        _STYLES_CSS_VERSION = "20260430h"
+        _STYLES_CSS_VERSION = "20260430i"
         html_content = re.sub(
             r'href="/styles\.css(?:\?[^"]*)?"',
             f'href="/styles.css?v={_STYLES_CSS_VERSION}"',
@@ -6933,15 +6933,28 @@ def _render_hero_fragment(mode):
     # carousel / full_bleed) all carry the menu trigger. The dropdown
     # panel itself is created lazily by renderSectionNavMenu() in
     # script.js after /api/page-bundle resolves.
+    # 3-child structure (must match public/index.html):
+    #   1. .logo-link  — anchor wrapping logo badge + text. Pinned to
+    #      the LEFT by .hero-nav's flex `justify-content: space-between`.
+    #      Clicking on the homepage smooth-scrolls to #section-hero
+    #      (handler in script.js); on /p/<slug> it navigates to /.
+    #   2. .nav-section-menu — middle child. On desktop a CSS rule
+    #      pulls it out of flex flow with `position: absolute; left: 50%`
+    #      so it stays geometrically centred regardless of how wide the
+    #      logo or CTAs grow.
+    #   3. Right action group — pinned to the RIGHT by space-between.
+    #      Holds the Get Started CTA; renderCartButton() in script.js
+    #      inserts the cart pill before #btn-reserve-hero inside this
+    #      same group.
     nav = (
         '<div class="hero-nav">'
-        '<div class="flex items-center gap-md">'
+        '<a href="/" class="logo-link flex items-center gap-md" '
+        'data-testid="link-logo-home" aria-label="Go to home">'
         '<div id="logo-badge" class="logo-badge" data-testid="logo-badge">CS</div>'
         '<div class="logo-text">'
         '<p id="nav-site-name" class="site-name" data-testid="text-site-name">My Site</p>'
         '<p id="nav-site-subtitle" class="site-subtitle" data-testid="text-site-subtitle">Your Tagline Here</p>'
-        '</div></div>'
-        '<div class="flex items-center gap-md">'
+        '</div></a>'
         '<div class="nav-section-menu" data-testid="nav-section-menu">'
         '<button type="button" id="btn-section-nav" class="nav-section-menu-toggle" '
         'aria-haspopup="true" aria-expanded="false" aria-controls="nav-section-panel" '
@@ -6949,6 +6962,7 @@ def _render_hero_fragment(mode):
         '<i data-lucide="menu" style="width:18px;height:18px;"></i>'
         '<span class="nav-section-menu-toggle-label">Menu</span>'
         '</button></div>'
+        '<div class="flex items-center gap-md">'
         '<button id="btn-reserve-hero" class="btn-reserve" onclick="openModal()" '
         'aria-label="Get started — open inquiry form" data-testid="button-reserve-hero">'
         '&#x1f4c5; Get Started</button>'

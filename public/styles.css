@@ -720,21 +720,7 @@ html[data-nav-style="hidden_on_scroll"] .hero-section { padding-top: 4.5rem; }
    as direct children of .hero-nav. The toggle button is appended by
    applyPersonality() and reveals the hidden nav children inside a dropdown
    (.hero-nav.nav-open exposes them). */
-/* Hamburger overrides the default 3-column grid back to a simple flex
-   row so flex-wrap (when nav-open) and the auto margin on the toggle
-   button (margin-left: auto) work as intended. Without this override
-   the .hero-nav grid would force the hamburger toggle into the centred
-   middle column instead of the right edge. */
-html[data-nav-style="hamburger"] .hero-nav {
-  position: relative;
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  grid-template-columns: none;
-}
-html[data-nav-style="hamburger"] .hero-nav > * {
-  justify-self: auto;
-}
+html[data-nav-style="hamburger"] .hero-nav { position: relative; }
 html[data-nav-style="hamburger"] .hero-nav > *:not(:has(.logo-badge, .logo-mark)):not(.nav-hamburger-toggle) {
   display: none;
 }
@@ -1082,10 +1068,6 @@ html[data-nav-style="side_rail"] .hero-nav {
   left: 0;
   bottom: 0;
   z-index: 80;
-  /* Override the default 3-column grid back to a vertical flex column
-     so logo / section menu / CTAs stack down the rail. */
-  display: flex;
-  grid-template-columns: none;
   flex-direction: column;
   justify-content: flex-start;
   align-items: center;
@@ -1096,9 +1078,6 @@ html[data-nav-style="side_rail"] .hero-nav {
   backdrop-filter: blur(var(--glass-blur, 16px));
   -webkit-backdrop-filter: blur(var(--glass-blur, 16px));
   border-right: 1px solid var(--glass-border, rgba(255,255,255,0.08));
-}
-html[data-nav-style="side_rail"] .hero-nav > * {
-  justify-self: auto;
 }
 html[data-nav-style="side_rail"] .hero-section,
 html[data-nav-style="side_rail"] .landing-section {
@@ -1480,22 +1459,49 @@ html[data-scroll-mode="smooth"] .snap-section {
      never painted under the hero title and always receive pointer
      events. Stays well below modals (60+) and chat (5345+). */
   z-index: 60;
-  /* 3-column grid: logo | section menu | CTAs. The middle column
-     auto-sizes to the section menu's natural width and is centred in
-     the row (justify-self: center on the child). The 1fr side columns
-     use minmax(0, 1fr) so they can shrink below their content size if
-     the centred menu would otherwise force horizontal overflow on
-     narrow viewports — that prevents the layout from blowing wider
-     than the viewport without sacrificing the visual centring. */
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  /* Flex with space-between pins the logo (first child) to the far
+     left edge and the action group (last child) to the far right
+     edge. The .nav-section-menu sits between them; on desktop it is
+     pulled out of flex flow with `position: absolute; left: 50%`
+     (rule below) so it's perfectly centred regardless of how wide the
+     logo or CTAs grow. With the menu absolutely positioned, flex sees
+     only 2 in-flow children and reliably pushes them to opposite
+     edges. */
+  display: flex;
+  justify-content: space-between;
   align-items: center;
   gap: var(--space-md);
   padding: var(--space-lg) var(--space-xl);
 }
-.hero-nav > :nth-child(1) { justify-self: start; }
-.hero-nav > :nth-child(2) { justify-self: center; }
-.hero-nav > :nth-child(3) { justify-self: end; }
+/* Centre the section menu on desktop for the inline nav styles
+   (floating_glass / sticky / hidden_on_scroll). Absolute positioning
+   removes it from flex flow so logo + CTAs can hug the edges. Skip
+   side_rail (vertical column nav has no horizontal centring) and
+   hamburger (whole nav collapses behind one toggle). */
+@media (min-width: 769px) {
+  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .hero-nav > .nav-section-menu {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* Logo home link — wraps the badge + text. Strips default anchor
+   styling (underline / blue colour) so the badge and site name keep
+   their existing typography. Inherits cursor: pointer from <a> so the
+   user gets the standard click affordance. */
+.logo-link {
+  text-decoration: none;
+  color: inherit;
+  border-radius: 0.6rem;
+  transition: opacity 0.15s ease;
+}
+.logo-link:hover { opacity: 0.85; }
+.logo-link:focus-visible {
+  outline: 2px solid var(--color-accent, #c9a96e);
+  outline-offset: 4px;
+}
 
 /* Logo badge — circular with initials (default "monogram" mode) */
 .logo-badge {

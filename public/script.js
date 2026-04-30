@@ -5421,6 +5421,40 @@ document.addEventListener('DOMContentLoaded', () => {
   loadAndApplyTheme();
 
   /* ----------------------------------------------------------------------
+     Logo home-link behaviour. The .logo-link <a href="/"> in the hero
+     nav navigates to the homepage from anywhere. When the user is
+     ALREADY on the homepage (path "/" with no extra route), a full
+     reload would be jarring — intercept the click and smooth-scroll
+     to the top of the hero section instead. On standalone /p/<slug>
+     pages we let the default navigation happen.
+
+     Uses event DELEGATION on document so the handler survives hero
+     layout-mode swaps (swapHeroFragment in script.js replaces the
+     entire #section-hero element, including the logo, when the admin
+     changes hero layout — element-bound listeners would be lost).
+     ---------------------------------------------------------------------- */
+  document.addEventListener('click', (ev) => {
+    const link = ev.target && ev.target.closest && ev.target.closest('a.logo-link');
+    if (!link) return;
+    /* Modifier-click / middle-click should always open in a new tab,
+       so don't intercept those — let the browser handle them. */
+    if (ev.defaultPrevented || ev.button !== 0
+        || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) {
+      return;
+    }
+    const path = window.location.pathname || '/';
+    const onHome = path === '/' || path === '/index.html';
+    if (!onHome) return;  /* let <a href="/"> navigate normally */
+    ev.preventDefault();
+    const hero = document.getElementById('section-hero');
+    if (hero && typeof hero.scrollIntoView === 'function') {
+      hero.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  });
+
+  /* ----------------------------------------------------------------------
      Live theme propagation (Task #61). When the admin saves a theme in
      another tab, this open public page re-pulls /api/theme and re-applies
      colors / fonts / accent gradient / logo treatment without a refresh.
