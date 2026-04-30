@@ -6098,7 +6098,7 @@ def serve_index():
         # href="/styles.css"> snapshot — also get the fresh marker. Bump
         # _STYLES_CSS_VERSION whenever public/styles.css ships a visible
         # change that needs to invalidate cached copies.
-        _STYLES_CSS_VERSION = "20260430a"
+        _STYLES_CSS_VERSION = "20260430c"
         html_content = re.sub(
             r'href="/styles\.css(?:\?[^"]*)?"',
             f'href="/styles.css?v={_STYLES_CSS_VERSION}"',
@@ -6526,6 +6526,11 @@ def _render_hero_fragment(mode):
     if mode not in HERO_LAYOUT_MODES:
         mode = "full_bleed"
 
+    # Section nav menu (Task #65) — kept identical to the snapshot in
+    # public/index.html so layout-mode swaps (split / mesh / video /
+    # carousel / full_bleed) all carry the menu trigger. The dropdown
+    # panel itself is created lazily by renderSectionNavMenu() in
+    # script.js after /api/page-bundle resolves.
     nav = (
         '<div class="hero-nav">'
         '<div class="flex items-center gap-md">'
@@ -6535,6 +6540,13 @@ def _render_hero_fragment(mode):
         '<p id="nav-site-subtitle" class="site-subtitle" data-testid="text-site-subtitle">Your Tagline Here</p>'
         '</div></div>'
         '<div class="flex items-center gap-md">'
+        '<div class="nav-section-menu" data-testid="nav-section-menu">'
+        '<button type="button" id="btn-section-nav" class="nav-section-menu-toggle" '
+        'aria-haspopup="true" aria-expanded="false" aria-controls="nav-section-panel" '
+        'aria-label="Open section menu" data-testid="button-section-nav-toggle">'
+        '<i data-lucide="menu" style="width:18px;height:18px;"></i>'
+        '<span class="nav-section-menu-toggle-label">Menu</span>'
+        '</button></div>'
         '<button id="btn-reserve-hero" class="btn-reserve" onclick="openModal()" '
         'aria-label="Get started — open inquiry form" data-testid="button-reserve-hero">'
         '&#x1f4c5; Get Started</button>'

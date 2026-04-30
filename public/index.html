@@ -167,6 +167,26 @@ FONTS:
 
         <!-- Action Buttons -->
         <div class="flex items-center gap-md">
+          <!-- Section nav menu (Task #65). Progressive-disclosure menu
+               that reveals every enabled landing section (built-in + custom).
+               Items are populated dynamically by renderSectionNavMenu()
+               in script.js after /api/page-bundle resolves; the panel
+               markup is created lazily so first paint stays light. -->
+          <div class="nav-section-menu" data-testid="nav-section-menu">
+            <button
+              type="button"
+              id="btn-section-nav"
+              class="nav-section-menu-toggle"
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-controls="nav-section-panel"
+              aria-label="Open section menu"
+              data-testid="button-section-nav-toggle"
+            >
+              <i data-lucide="menu" style="width:18px;height:18px;"></i>
+              <span class="nav-section-menu-toggle-label">Menu</span>
+            </button>
+          </div>
           <button id="btn-reserve-hero" class="btn-reserve" onclick="openModal()" aria-label="Get started — open inquiry form" data-testid="button-reserve-hero">
             &#x1f4c5; Get Started
           </button>

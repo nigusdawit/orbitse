@@ -1547,6 +1547,10 @@ function applySectionOrder() {
   /* Fall back to old toggle system if page_sections API returned nothing */
   if (pageSections.length === 0) {
     applySectionVisibilityFallback();
+    /* Still call the nav menu builder — with no pageSections it will
+       hide the toggle entirely so we don't leave a dead control in the
+       hero nav. */
+    renderSectionNavMenu();
     return;
   }
 
@@ -1599,6 +1603,11 @@ function applySectionOrder() {
 
   /* Update footer quick links based on which sections are enabled */
   updateFooterQuickLinks();
+
+  /* Rebuild the in-nav section menu so it always reflects the latest
+     enabled / ordered list (Task #65). Cheap to re-run — only touches
+     the panel inside .hero-nav and re-uses the same toggle button. */
+  renderSectionNavMenu();
 }
 
 /**
@@ -1691,6 +1700,224 @@ function updateFooterQuickLinks() {
   /* Business Info / Contact footer link */
   const footerLinkBizInfo = document.getElementById('footer-link-business-info');
   if (footerLinkBizInfo) footerLinkBizInfo.style.display = enabledSlugs.has('business-info') ? '' : 'none';
+}
+
+/**
+ * Section nav menu (Task #65).
+ *
+ * Renders a progressive-disclosure dropdown attached to the in-hero
+ * .hero-nav, listing every ENABLED + has-data section in their current
+ * sort order. Each row is an anchor link to the section's DOM id, so
+ * clicking smooth-scrolls the .landing-view container AND updates the
+ * URL hash — which means a refresh on /#section-podcast lands the
+ * visitor back on the podcast section instead of jumping to the hero.
+ *
+ * Re-run by applySectionOrder() so toggling a section in admin or
+ * adding a custom section reflects immediately on the next bundle
+ * fetch.
+ */
+const SECTION_NAV_ICONS = {
+  'hero': 'home',
+  'highlights': 'sparkles',
+  'experiences': 'compass',
+  'testimonials': 'message-square-quote',
+  'team': 'users',
+  'faq': 'help-circle',
+  'blog': 'book-open',
+  'events': 'calendar',
+  'business-info': 'map-pin',
+  'video-gallery': 'video',
+  'podcast': 'mic',
+  'store': 'shopping-bag',
+  'services': 'briefcase'
+};
+
+function _sectionNavEscape(str) {
+  return String(str == null ? '' : str).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function _setSectionNavOpen(open) {
+  const panel = document.getElementById('nav-section-panel');
+  const toggle = document.getElementById('btn-section-nav');
+  if (!panel || !toggle) return;
+  panel.classList.toggle('is-open', !!open);
+  toggle.classList.toggle('is-active', !!open);
+  toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+/* True after we've attached the document-level click + Escape handlers
+   ONCE for the lifetime of the page. Those handlers always look up the
+   panel/toggle by id, so they keep working across hero-fragment swaps
+   without re-binding. */
+let _sectionNavGlobalHandlersAttached = false;
+
+function renderSectionNavMenu() {
+  const toggle = document.getElementById('btn-section-nav');
+  if (!toggle) return;
+
+  /* Detect a fresh toggle: after swapHeroFragment() replaces the entire
+     #section-hero, the previous toggle and its sibling panel are gone,
+     but a stale #nav-section-panel may also have been left behind if it
+     was attached anywhere outside the swapped subtree. Track wiring on
+     the toggle itself with a data-attribute so we know whether to (re)
+     create the panel and re-attach the per-toggle click listener. */
+  const isWired = toggle.dataset.sectionNavWired === '1';
+  let panel = isWired ? document.getElementById('nav-section-panel') : null;
+  let firstBuild = false;
+  if (!panel) {
+    firstBuild = true;
+
+    /* Drop any orphaned panel from a previous render so we don't end up
+       with two #nav-section-panel nodes after a hero swap. */
+    const orphan = document.getElementById('nav-section-panel');
+    if (orphan && orphan.parentNode) orphan.parentNode.removeChild(orphan);
+
+    panel = document.createElement('div');
+    panel.id = 'nav-section-panel';
+    panel.className = 'nav-section-menu-panel';
+    /* Intentionally NOT using role="menu"/"menuitem". The full menu
+       ARIA pattern requires arrow-key roving focus which we don't
+       implement; native <a> link semantics inside a labelled region
+       give better a11y for free. */
+    panel.setAttribute('aria-labelledby', 'btn-section-nav');
+    toggle.parentNode.appendChild(panel);
+
+    toggle.dataset.sectionNavWired = '1';
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const p = document.getElementById('nav-section-panel');
+      if (!p) return;
+      _setSectionNavOpen(!p.classList.contains('is-open'));
+    });
+
+    if (!_sectionNavGlobalHandlersAttached) {
+      _sectionNavGlobalHandlersAttached = true;
+      document.addEventListener('click', (e) => {
+        const p = document.getElementById('nav-section-panel');
+        const t = document.getElementById('btn-section-nav');
+        if (!p || !t || !p.classList.contains('is-open')) return;
+        if (t.parentNode && t.parentNode.contains(e.target)) return;
+        _setSectionNavOpen(false);
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        const p = document.getElementById('nav-section-panel');
+        if (p && p.classList.contains('is-open')) {
+          _setSectionNavOpen(false);
+          const t = document.getElementById('btn-section-nav');
+          if (t) t.focus();
+        }
+      });
+    }
+  }
+
+  /* Build the item list from pageSections in their current sort order.
+     Filter rules:
+       - enabled flag must be true
+       - footer is excluded (it lives outside the scroll container and
+         is reachable by simply scrolling to the bottom)
+       - hero is included (lets visitors jump back to the top quickly)
+       - built-in slugs without supporting data are skipped (matches
+         applySectionOrder's display:none rule so we never link to a
+         hidden anchor) */
+  const items = [];
+  (Array.isArray(pageSections) ? pageSections : []).forEach(section => {
+    if (!section || !section.enabled) return;
+    let elId, title, iconKey;
+    if (section.section_type === 'built_in') {
+      if (section.slug === 'footer') return;
+      elId = BUILTIN_SECTION_MAP[section.slug];
+      if (!elId) return;
+      if (!checkBuiltinHasData(section.slug)) return;
+      title = section.title || section.slug;
+      iconKey = section.slug;
+    } else {
+      elId = 'section-custom-' + section.id;
+      title = section.title || 'Section';
+      iconKey = 'custom';
+    }
+    if (!document.getElementById(elId)) return;
+    items.push({
+      id: elId,
+      title,
+      slug: section.slug || ('custom-' + section.id),
+      icon: SECTION_NAV_ICONS[iconKey] || 'square'
+    });
+  });
+
+  if (!items.length) {
+    panel.innerHTML = '';
+    toggle.style.display = 'none';
+    return;
+  }
+  toggle.style.display = '';
+
+  panel.innerHTML = items.map(it => (
+    '<a href="#' + it.id + '" class="nav-section-menu-item" ' +
+    'data-section-id="' + it.id + '" ' +
+    'data-testid="link-section-nav-' + _sectionNavEscape(it.slug) + '">' +
+    '<i data-lucide="' + it.icon + '" class="nav-section-menu-item-icon"></i>' +
+    '<span class="nav-section-menu-item-label">' + _sectionNavEscape(it.title) + '</span>' +
+    '</a>'
+  )).join('');
+
+  panel.querySelectorAll('.nav-section-menu-item').forEach(a => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      const id = a.getAttribute('data-section-id');
+      const target = document.getElementById(id);
+      if (target) {
+        try {
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } catch (_) {
+          target.scrollIntoView();
+        }
+        /* Keep the URL hash in sync so a refresh lands the visitor on
+           the same section. replaceState avoids polluting history with
+           every menu pick. */
+        try { history.replaceState(null, '', '#' + id); } catch (_) {}
+      }
+      _setSectionNavOpen(false);
+    });
+  });
+
+  if (window.lucide && typeof window.lucide.createIcons === 'function') {
+    try { window.lucide.createIcons(); } catch (_) {}
+  }
+
+  /* On the very first build, honour any incoming URL hash so a deep
+     link (or a refresh after the visitor scrolled to a section) lands
+     them where they expect instead of snapping back to hero. */
+  if (firstBuild) {
+    _scrollToHashOnLoad();
+  }
+}
+
+/**
+ * Honour location.hash on initial load — if the URL points at a known
+ * section id we scroll the .landing-view container to it. We do this
+ * AFTER applySectionOrder() runs so the target section is already in
+ * its final position; otherwise the browser's native anchor jump fires
+ * before reordering and lands on the wrong offset.
+ */
+function _scrollToHashOnLoad() {
+  if (!location.hash) return;
+  const id = location.hash.replace(/^#/, '');
+  if (!id) return;
+  const target = document.getElementById(id);
+  if (!target) return;
+  /* Two RAFs — first to let layout settle after applySectionOrder's
+     appendChild() reflows, second to actually issue the scroll. */
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      try {
+        target.scrollIntoView({ behavior: 'auto', block: 'start' });
+      } catch (_) {
+        target.scrollIntoView();
+      }
+    });
+  });
 }
 
 function applySectionVisibilityFallback() {
@@ -4142,6 +4369,10 @@ async function swapHeroFragment(mode) {
     }
     try { renderHero(); } catch (e) {}
     applyHeroCarousel(mode === 'carousel');
+    /* The new hero fragment carries a fresh #btn-section-nav with no
+       wired panel/listener — re-render the section nav menu so the
+       toggle works after a hero layout swap (Task #65). */
+    try { renderSectionNavMenu(); } catch (e) {}
   } catch (e) {
     console.warn('[hero-fragment] swap failed:', e);
     try { renderHero(); } catch (_) {}
