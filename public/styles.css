@@ -891,6 +891,67 @@ html[data-nav-style="side_rail"] .hero-nav > .flex:has(.nav-section-menu) {
   width: 100%;
 }
 
+/* Desktop (>= 769px) — for the inline nav styles (floating_glass,
+   sticky, hidden_on_scroll), expand the section nav into an always-
+   visible horizontal pill bar styled to match the rest of the glass
+   nav. The MENU toggle becomes redundant and hides itself. We
+   intentionally skip side_rail (vertical column nav has no room for
+   inline pills) and hamburger (whole point is to keep everything
+   collapsed behind one button). */
+@media (min-width: 769px) {
+  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-toggle {
+    display: none;
+  }
+  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-panel {
+    position: relative;
+    top: auto;
+    right: auto;
+    left: auto;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+    overflow-x: auto;
+    overflow-y: hidden;
+    max-width: min(56vw, 44rem);
+    max-height: none;
+    min-width: 0;
+    padding: 0.3rem 0.45rem;
+    background: rgb(var(--color-bg-rgb, 6 11 20) / 0.55);
+    border-radius: 9999px;
+    gap: 0.1rem;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+    /* Always visible — no open/close transition on desktop. */
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+    transition: none;
+    scrollbar-width: thin;
+  }
+  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-panel::-webkit-scrollbar {
+    height: 4px;
+  }
+  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-panel::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 4px;
+  }
+  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-item {
+    padding: 0.4rem 0.7rem;
+    font-size: 0.78rem;
+    border-radius: 9999px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-item-icon {
+    width: 14px;
+    height: 14px;
+  }
+  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-item-label {
+    overflow: visible;
+    text-overflow: unset;
+    white-space: nowrap;
+  }
+}
+
 /* Mobile — collapse the toggle to icon-only so it fits beside the CTA
    without wrapping. The panel keeps its dropdown-from-toggle position
    but widens slightly so labels don't truncate awkwardly. We also
@@ -1321,7 +1382,10 @@ html[data-scroll-mode="smooth"] .snap-section {
 /* Top navigation bar (logo + buttons) */
 .hero-nav {
   position: relative;
-  z-index: 10;
+  /* Sits above .hero-content (z:10) so the section-nav panel/pills are
+     never painted under the hero title and always receive pointer
+     events. Stays well below modals (60+) and chat (5345+). */
+  z-index: 60;
   display: flex;
   align-items: center;
   justify-content: space-between;
