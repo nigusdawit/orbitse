@@ -552,14 +552,19 @@ FONTS:
       <div class="footer-column" data-testid="footer-links">
         <h3 class="footer-heading">Quick Links</h3>
         <ul class="footer-links">
-          <li><a href="#section-hero" onclick="scrollToSection('section-hero')" data-testid="link-footer-home">Home</a></li>
-          <li><a href="#section-highlights" onclick="scrollToSection('section-highlights')" data-testid="link-footer-highlights">Gallery</a></li>
-          <li><a href="#section-experiences" onclick="scrollToSection('section-experiences')" data-testid="link-footer-experiences">Experiences</a></li>
-          <li id="footer-link-testimonials" style="display:none;"><a href="#section-testimonials" onclick="scrollToSection('section-testimonials')" data-testid="link-footer-testimonials">Testimonials</a></li>
-          <li id="footer-link-team" style="display:none;"><a href="#section-team" onclick="scrollToSection('section-team')" data-testid="link-footer-team">Team</a></li>
-          <li id="footer-link-faq" style="display:none;"><a href="#section-faq" onclick="scrollToSection('section-faq')" data-testid="link-footer-faq">FAQ</a></li>
-          <li id="footer-link-blog" style="display:none;"><a href="#section-blog" onclick="scrollToSection('section-blog')" data-testid="link-footer-blog">Blog</a></li>
-          <li id="footer-link-business-info" style="display:none;"><a href="#section-business-info" onclick="scrollToSection('section-business-info')" data-testid="link-footer-business-info">Contact</a></li>
+          <!-- Pretty per-section URLs (Task #67). href is the shareable
+               form (e.g. "/podcast"); the inline onclick keeps the
+               existing smooth-scroll behavior when the visitor is
+               already on the homepage and prevents the full reload
+               that the href would otherwise trigger. -->
+          <li><a href="/" onclick="scrollToSection('section-hero'); return false;" data-testid="link-footer-home">Home</a></li>
+          <li><a href="/highlights" onclick="scrollToSection('section-highlights'); return false;" data-testid="link-footer-highlights">Gallery</a></li>
+          <li><a href="/experiences" onclick="scrollToSection('section-experiences'); return false;" data-testid="link-footer-experiences">Experiences</a></li>
+          <li id="footer-link-testimonials" style="display:none;"><a href="/testimonials" onclick="scrollToSection('section-testimonials'); return false;" data-testid="link-footer-testimonials">Testimonials</a></li>
+          <li id="footer-link-team" style="display:none;"><a href="/team" onclick="scrollToSection('section-team'); return false;" data-testid="link-footer-team">Team</a></li>
+          <li id="footer-link-faq" style="display:none;"><a href="/faq" onclick="scrollToSection('section-faq'); return false;" data-testid="link-footer-faq">FAQ</a></li>
+          <li id="footer-link-blog" style="display:none;"><a href="/blog" onclick="scrollToSection('section-blog'); return false;" data-testid="link-footer-blog">Blog</a></li>
+          <li id="footer-link-business-info" style="display:none;"><a href="/business-info" onclick="scrollToSection('section-business-info'); return false;" data-testid="link-footer-business-info">Contact</a></li>
         </ul>
       </div>
 

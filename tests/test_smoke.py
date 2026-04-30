@@ -330,6 +330,168 @@ def test_detail_page_bogus_slug_returns_not_found(client, path):
 
 
 # =============================================================================
+# Per-section pretty URLs (Task #67) — /<slug> deep-links to a homepage anchor
+# =============================================================================
+#
+# serve_section() routes /<section_slug> to the homepage shell with
+# data-initial-section pinned on <html>. Disabled rows redirect to "/",
+# unknown slugs fall through to the static-file SPA path. We verify the
+# happy path against an always-enabled built-in slug ("hero" is seeded
+# enabled in init_db) and the redirect path against a slug we know is
+# disabled by default ("podcast").
+
+def test_section_route_serves_homepage_with_initial_section(client):
+    """A valid enabled section slug must serve the homepage HTML and
+    pin <html data-initial-section="..."> so script.js deep-links."""
+    r = client.get("/hero")
+    assert r.status_code == 200, f"/hero returned {r.status_code}"
+    body = r.data.decode("utf-8", errors="replace")
+    assert 'data-initial-section="section-hero"' in body, (
+        "expected data-initial-section attr on <html> tag, got body that "
+        "starts with: " + body[:200]
+    )
+
+
+def test_section_route_disabled_slug_redirects_to_root(client):
+    """A known section that's disabled must NOT serve the homepage —
+    redirect to '/' so visitors don't see a broken hidden anchor.
+
+    We don't rely on whichever built-in slugs happen to be disabled in
+    the smoke DB (they may have been toggled on by previous test runs
+    or local admin work). Instead we insert a deliberately-disabled
+    custom section, assert the redirect, then clean up — gives the
+    test a fully deterministic input regardless of seeded state.
+    """
+    import secrets as _s
+    from app import get_db
+
+    test_slug = f"__smoke_disabled_{_s.token_hex(4)}"
+    inserted_id = None
+    try:
+        # Insert disabled custom section directly so we don't depend on
+        # any admin endpoint for setup. RETURNING id keeps cleanup
+        # bulletproof even if the slug column gains a unique-collision
+        # we didn't anticipate. get_db() returns a pooled connection
+        # already in autocommit mode — close() returns it to the pool.
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO page_sections "
+                    "  (slug, title, section_type, template, sort_order, enabled) "
+                    "VALUES (%s, 'Smoke Test Disabled', 'custom', 'cards_grid', 9999, false) "
+                    "RETURNING id",
+                    (test_slug,),
+                )
+                inserted_id = cur.fetchone()[0]
+        finally:
+            conn.close()
+
+        r = client.get(f"/{test_slug}", follow_redirects=False)
+        assert r.status_code == 302, (
+            f"/{test_slug} (disabled) must redirect, got {r.status_code}"
+        )
+        assert r.headers.get("Location", "").endswith("/"), (
+            f"disabled section must redirect to '/', got "
+            f"Location={r.headers.get('Location')!r}"
+        )
+    finally:
+        if inserted_id is not None:
+            try:
+                conn = get_db()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "DELETE FROM page_sections WHERE id = %s",
+                            (inserted_id,),
+                        )
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+
+
+def test_section_route_custom_section_resolves_to_section_custom_id(client):
+    """Custom-section rows must resolve to '#section-custom-<id>' so
+    the deep-link matches the DOM id pattern applySectionOrder() emits
+    in public/script.js. Locks in the parity between server-side DOM
+    id resolution and client-side rendering — if either side renames,
+    this test catches it."""
+    import secrets as _s
+    from app import get_db
+
+    test_slug = f"__smoke_custom_{_s.token_hex(4)}"
+    inserted_id = None
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO page_sections "
+                    "  (slug, title, section_type, template, sort_order, enabled) "
+                    "VALUES (%s, 'Smoke Test Custom', 'custom', 'cards_grid', 9998, true) "
+                    "RETURNING id",
+                    (test_slug,),
+                )
+                inserted_id = cur.fetchone()[0]
+        finally:
+            conn.close()
+
+        r = client.get(f"/{test_slug}")
+        assert r.status_code == 200, (
+            f"/{test_slug} (enabled custom) returned {r.status_code}"
+        )
+        body = r.data.decode("utf-8", errors="replace")
+        expected = f'data-initial-section="section-custom-{inserted_id}"'
+        assert expected in body, (
+            f"expected {expected!r} in served HTML, got body that "
+            f"starts with: {body[:200]}"
+        )
+    finally:
+        if inserted_id is not None:
+            try:
+                conn = get_db()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "DELETE FROM page_sections WHERE id = %s",
+                            (inserted_id,),
+                        )
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+
+
+def test_section_route_falls_back_for_static_assets(client):
+    """Slug-with-dot must NOT be treated as a section — must reach the
+    static-file handler so /styles.css, /favicon.ico etc still serve."""
+    r = client.get("/styles.css")
+    # Either 200 (file exists) or 304 (cached) is fine; what matters is
+    # that we DIDN'T 302→/ or 500 — both of which would mean the new
+    # serve_section route ate the request.
+    assert r.status_code in (200, 304), (
+        f"/styles.css must reach serve_static, got {r.status_code}"
+    )
+
+
+def test_sitemap_includes_enabled_section_urls(client):
+    """The sitemap must list enabled sections so search engines can
+    discover them. We don't pin the exact slug list (it depends on
+    what's seeded) — just assert the sitemap mentions at least one
+    /<slug> entry beyond the canonical "/" entry."""
+    r = client.get("/sitemap.xml")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="replace")
+    # 'highlights' is seeded enabled by init_db and survives every
+    # default install, so it's a safe canary for this assertion.
+    assert "/highlights" in body, (
+        "sitemap.xml is missing per-section URLs (Task #67). Body "
+        "preview: " + body[:400]
+    )
+
+
+# =============================================================================
 # Setup wizard — state-dependent, both responses are valid in their own context
 # =============================================================================
 

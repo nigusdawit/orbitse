@@ -6110,9 +6110,17 @@ def _build_loading_initials_and_name():
 
 
 @app.route("/")
-def serve_index():
-    """Serve the main public homepage."""
-    return _render_app_shell_response()
+def serve_index(initial_section_dom_id=None):
+    """Serve the main public homepage.
+
+    `initial_section_dom_id` is forwarded by serve_section() (Task #67)
+    when the homepage is reached via a pretty per-section URL like
+    /podcast or /events. It ends up as `data-initial-section="<id>"`
+    on <html> so script.js's _scrollToHashOnLoad can deep-link to that
+    section on first paint without polluting the URL with a #hash.
+    Defaults to None on the canonical "/" path so the homepage isn't
+    pinned to any specific section."""
+    return _render_app_shell_response(initial_section_dom_id=initial_section_dom_id)
 
 
 @app.route("/p/<string:slug>")
@@ -6146,7 +6154,7 @@ def serve_standalone_page(slug):
     return _render_app_shell_response(page=page, section_ids=section_ids)
 
 
-def _render_app_shell_response(page=None, section_ids=None):
+def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_id=None):
     """
     Serve the public site HTML shell with SEO meta tags injected
     server-side. Used by both the homepage at "/" (page=None) and
@@ -6168,6 +6176,16 @@ def _render_app_shell_response(page=None, section_ids=None):
     and built-in sections that aren't assigned are hidden inline so
     the user never sees them flash before script.js applies the
     standalone-mode filter.
+
+    `initial_section_dom_id` is set when this function is invoked from
+    the pretty-URL section route (`/<section_slug>`, see serve_section,
+    Task #67). The DOM id ends up as `data-initial-section="<id>"` on
+    the <html> element so public/script.js's _scrollToHashOnLoad can
+    scroll the visitor to that section on first paint without needing
+    a URL hash. Defaults to None on the canonical "/" path so the
+    regular homepage isn't pinned to any specific section. Mutually
+    exclusive with the standalone-page mode (serve_section never
+    targets /p/<slug>).
     """
     try:
         html_content = None
@@ -6402,14 +6420,28 @@ def _render_app_shell_response(page=None, section_ids=None):
                     f' data-page-section-ids="{ids_csv}"'
                 )
 
+            # Pretty-URL initial section (Task #67). When the homepage is
+            # reached via /<section_slug> instead of "/", we pin a
+            # data-initial-section attr on <html> so script.js's
+            # _scrollToHashOnLoad can deep-link to that section on first
+            # paint without polluting the URL with a #hash. Quoted via a
+            # tight regex elsewhere; the value is a DOM id we resolved
+            # ourselves (built-in map or section-custom-<int>) so it is
+            # safe to interpolate directly. Mutually exclusive with the
+            # standalone-page block above (serve_section only ever
+            # targets the homepage shell).
+            if initial_section_dom_id:
+                html_attrs += f' data-initial-section="{initial_section_dom_id}"'
+
             def _merge_html_attrs(m):
                 attrs = m.group(1) or ""
                 # Strip any pre-existing surface-treatment + layout/rhythm
-                # + personality + standalone-page data-* attrs so re-renders
-                # don't accumulate duplicates if the placeholder file ever
-                # ships with these attributes.
+                # + personality + standalone-page + initial-section
+                # data-* attrs so re-renders don't accumulate duplicates
+                # if the placeholder file ever ships with these
+                # attributes.
                 attrs = re.sub(
-                    r'\s+data-(card-style|easing|photo-filter|loading-mode|density|header-align|hero-layout|cursor-mode|scroll-progress|nav-style|chatbot-placement|page-mode|page-id|page-slug|page-section-ids)\s*=\s*"[^"]*"',
+                    r'\s+data-(card-style|easing|photo-filter|loading-mode|density|header-align|hero-layout|cursor-mode|scroll-progress|nav-style|chatbot-placement|page-mode|page-id|page-slug|page-section-ids|initial-section)\s*=\s*"[^"]*"',
                     "",
                     attrs,
                 )
@@ -6657,6 +6689,144 @@ def serve_event_page(slug):
         settings=settings,
         theme=theme_colors
     )
+
+
+# =============================================================
+# PUBLIC PRETTY-URL SECTION ROUTES (Task #67)
+# =============================================================
+#
+# Mirrors the JS BUILTIN_SECTION_MAP in public/script.js (~L1513).
+# Mapping must stay in sync — the section route below uses these to
+# translate the URL slug into the DOM id that script.js scrolls to.
+# Keys are the `slug` column values seeded in init_db (~L2972 onward);
+# values are the corresponding `<section id="...">` ids in
+# public/index.html. Custom sections (section_type == 'custom') don't
+# appear here — they always resolve to "section-custom-<id>".
+BUILTIN_SECTION_DOM_ID = {
+    "hero":           "section-hero",
+    "highlights":     "section-highlights",
+    "experiences":    "section-experiences",
+    "testimonials":   "section-testimonials",
+    "team":           "section-team",
+    "faq":            "section-faq",
+    "blog":           "section-blog",
+    "events":         "section-events",
+    "business-info":  "section-business-info",
+    "video-gallery":  "section-video-gallery",
+    "podcast":        "section-podcast",
+    "store":          "section-store",
+    "services":       "section-services",
+    # Footer is intentionally excluded — it isn't a navigable section,
+    # it's the page chrome at the bottom. /footer should 404.
+}
+
+
+def _resolve_section_dom_id(section_row):
+    """Translate a page_sections row into the DOM id script.js will scroll to.
+
+    Returns None for rows that have no scrollable target (footer, or a
+    built-in slug we don't have a DOM mapping for). Custom sections
+    always resolve to `section-custom-<id>` to match the id naming used
+    by applySectionOrder() in public/script.js.
+    """
+    if not section_row:
+        return None
+    stype = (section_row.get("section_type") or "").strip()
+    slug = (section_row.get("slug") or "").strip()
+    if stype == "built_in":
+        return BUILTIN_SECTION_DOM_ID.get(slug)
+    if stype == "custom":
+        sid = section_row.get("id")
+        if sid is None:
+            return None
+        return f"section-custom-{int(sid)}"
+    return None
+
+
+@app.route("/<section_slug>")
+def serve_section(section_slug):
+    """
+    GET /<section_slug>
+
+    Pretty per-section URL that serves the homepage shell with a deep
+    link to the matching section anchor.
+
+    Behaviour matrix:
+      - slug exists + enabled + has DOM mapping → 200 homepage with
+        data-initial-section pinned on <html>
+      - slug exists + DISABLED → 302 redirect to "/" (visitors don't
+        see a broken hidden anchor)
+      - slug exists but isn't navigable (footer) → 404
+      - slug is UNKNOWN → falls through to serve_static, which tries
+        the file on disk and (per the existing SPA convention in
+        serve_static) returns the homepage HTML 200 if no file
+        matches. This is intentional so existing legitimate asset
+        requests like /styles.css and /favicon.ico keep resolving and
+        random URLs get the same SPA fallback they always did.
+
+    Why fall through instead of an immediate 404: Flask's URL converter
+    ranking puts our `string` slug rule ahead of the catch-all
+    `<path:filename>` for single-segment requests, so /styles.css would
+    otherwise hit this handler before serve_static gets a chance.
+
+    On match we call serve_index(initial_section_dom_id=<dom id>) so
+    public/script.js's _scrollToHashOnLoad sees the
+    `data-initial-section` attribute on <html> and snaps the viewport
+    to the right section on first paint without polluting the URL with
+    a #hash.
+    """
+    # Cheap pre-filter: a slug never contains a dot. Anything dotted is
+    # either a static asset (foo.css) or a robots.txt-style probe — let
+    # serve_static handle it so this route stays focused on real slugs.
+    if "." in section_slug or "/" in section_slug:
+        return serve_static(section_slug)
+
+    # Reserved single-segment routes that already exist on this app —
+    # these are registered with their own @app.route decorators
+    # elsewhere, so Werkzeug routes them directly and they never hit
+    # serve_section. Listed here purely as documentation: /admin,
+    # /setup, /healthz, /robots.txt, /sitemap.xml.
+
+    try:
+        row = query_db(
+            "SELECT id, slug, section_type, enabled FROM page_sections "
+            "WHERE slug = %s",
+            (section_slug,),
+            fetchone=True,
+        )
+    except Exception as e:
+        # Brand-new install or migration in flight — treat as no-match
+        # rather than 500ing on the visitor. The static fallback then
+        # takes over so /styles.css etc still works.
+        print(f"[serve_section] page_sections lookup failed for {section_slug!r}: {e}")
+        return serve_static(section_slug)
+
+    if not row:
+        # Slug isn't a known section — could legitimately be a static
+        # asset request (e.g. /favicon.ico) or just an unknown URL.
+        # Fall through to serve_static so existing SPA-style behaviour
+        # (asset → file, anything else → homepage) is preserved.
+        return serve_static(section_slug)
+
+    if not row.get("enabled"):
+        # The section exists but the admin turned it off. We can't deep
+        # link to a hidden anchor (script.js would try to scroll to a
+        # display:none element), so redirect to "/" — search engines
+        # see the 302 and visitors land on the homepage instead of
+        # staring at a broken section. Per Task #67 spec the alternate
+        # acceptable behaviour is a 404; redirect was chosen because
+        # the section IS still part of the site (just hidden) so a 404
+        # is misleading.
+        return redirect("/", code=302)
+
+    dom_id = _resolve_section_dom_id(row)
+    if not dom_id:
+        # Section exists and is enabled but isn't navigable (footer
+        # is the only built-in slug that hits this branch). 404 is
+        # the right answer — there's nothing to deep-link TO.
+        return ("Section not found", 404)
+
+    return serve_index(initial_section_dom_id=dom_id)
 
 
 @app.route("/<path:filename>")
@@ -7298,6 +7468,35 @@ def sitemap():
         "priority": "1.0",
         "changefreq": "daily"
     })
+
+    # Per-section pretty URLs (Task #67). Each enabled, navigable
+    # section gets its own /<slug> entry so search engines can index
+    # them individually. Hero is skipped — it's the same destination
+    # as "/" and we don't want duplicate-content signals. Footer is
+    # naturally skipped because _resolve_section_dom_id returns None
+    # for it. Disabled rows are filtered out so a section the admin
+    # turned off doesn't keep appearing in search results.
+    try:
+        section_rows = query_db(
+            "SELECT id, slug, section_type, enabled FROM page_sections "
+            "WHERE enabled = true ORDER BY sort_order ASC"
+        ) or []
+        for srow in section_rows:
+            slug = (srow.get("slug") or "").strip()
+            if not slug or slug == "hero":
+                continue
+            if not _resolve_section_dom_id(srow):
+                continue
+            urls.append({
+                "loc": f"{base_url}/{slug}",
+                "priority": "0.6",
+                "changefreq": "weekly"
+            })
+    except Exception as e:
+        # Brand-new install or migration in flight — sitemap still works
+        # without the section entries; we just lose the per-section
+        # discovery boost until the table is ready.
+        print(f"[sitemap] section enumeration failed, skipping section URLs: {e}")
 
     # Published blog posts — medium-high priority
     posts = query_db(

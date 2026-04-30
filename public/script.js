@@ -1923,9 +1923,27 @@ function renderSectionNavMenu() {
   }
   toggle.style.display = '';
 
+  /* Use pretty per-section URLs (Task #67) in href so right-click → copy
+     link returns "/podcast" instead of "#section-podcast". The click
+     handler still does a smooth in-page scroll (no full page navigation)
+     and replaceState to the pretty URL — that way refresh / share-this-
+     page hits the server's serve_section() route which deep-links via
+     <html data-initial-section>. */
   panel.innerHTML = items.map(it => (
-    '<a href="' + _sectionNavEscape(it.href) + '" class="nav-section-menu-item" ' +
+    /* Same-page items: emit pretty per-section URL `/podcast` (Task #67)
+       so right-click → copy link / refresh / share-this-page hits the
+       server's serve_section() route which deep-links via
+       <html data-initial-section>. Cross-page items (e.g. nav from a
+       standalone /p/<slug> page back to a homepage section, or to
+       another standalone page): use the pre-computed `it.href` from
+       the items.push() above (`/`, `/#section-foo`, `/p/<slug>`) so
+       the browser actually navigates instead of trying to scroll to a
+       non-existent local anchor (Task #71). */
+    '<a href="' + (it.samePage
+        ? '/' + _sectionNavEscape(it.slug)
+        : _sectionNavEscape(it.href)) + '" class="nav-section-menu-item" ' +
     'data-section-id="' + it.id + '" ' +
+    'data-section-slug="' + _sectionNavEscape(it.slug) + '" ' +
     'data-same-page="' + (it.samePage ? '1' : '0') + '" ' +
     'data-testid="link-section-nav-' + _sectionNavEscape(it.slug) + '">' +
     '<i data-lucide="' + it.icon + '" class="nav-section-menu-item-icon"></i>' +
@@ -1944,6 +1962,7 @@ function renderSectionNavMenu() {
       }
       e.preventDefault();
       const id = a.getAttribute('data-section-id');
+      const slug = a.getAttribute('data-section-slug') || '';
       const target = document.getElementById(id);
       if (target) {
         try {
@@ -1951,10 +1970,17 @@ function renderSectionNavMenu() {
         } catch (_) {
           target.scrollIntoView();
         }
-        /* Keep the URL hash in sync so a refresh lands the visitor on
-           the same section. replaceState avoids polluting history with
-           every menu pick. */
-        try { history.replaceState(null, '', '#' + id); } catch (_) {}
+        /* Keep the URL in sync with the section the visitor is now
+           viewing so a refresh lands them in the same place AND the
+           URL bar shows the shareable pretty form. replaceState avoids
+           polluting history with every menu pick. */
+        try {
+          if (slug) {
+            history.replaceState(null, '', '/' + slug);
+          } else {
+            history.replaceState(null, '', '#' + id);
+          }
+        } catch (_) {}
       }
       _setSectionNavOpen(false);
     });
@@ -1978,10 +2004,30 @@ function renderSectionNavMenu() {
  * AFTER applySectionOrder() runs so the target section is already in
  * its final position; otherwise the browser's native anchor jump fires
  * before reordering and lands on the wrong offset.
+ *
+ * Also honours `<html data-initial-section="...">`, set server-side by
+ * serve_section() in app.py when the visitor reached the homepage via
+ * a pretty per-section URL (e.g. /podcast → data-initial-section=
+ * "section-podcast"). The data attribute takes precedence over the
+ * URL hash because pretty URLs are how Task #67 expects deep linking
+ * to work; the hash branch stays as a backstop for legacy links and
+ * admin-saved menu picks.
  */
 function _scrollToHashOnLoad() {
-  if (!location.hash) return;
-  const id = location.hash.replace(/^#/, '');
+  let id = '';
+  /* Pretty-URL branch (Task #67). Read once, then clear so a later
+     re-render of the section nav (which calls _scrollToHashOnLoad on
+     first build) doesn't snap the visitor BACK to the original
+     section after they've manually scrolled away. */
+  const initialFromAttr = (document.documentElement &&
+    document.documentElement.dataset &&
+    document.documentElement.dataset.initialSection) || '';
+  if (initialFromAttr) {
+    id = initialFromAttr;
+    try { delete document.documentElement.dataset.initialSection; } catch (_) {}
+  } else if (location.hash) {
+    id = location.hash.replace(/^#/, '');
+  }
   if (!id) return;
   const target = document.getElementById(id);
   if (!target) return;
