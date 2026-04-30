@@ -12173,13 +12173,13 @@ TO CUSTOMIZE THIS DASHBOARD:
         if (seoDesc === null) return;
         payload.seo_description = seoDesc.trim();
 
-        const seoImage = prompt(
-          'Social-share image URL for this section (optional):\n\n' +
-          'Used as the og:image / twitter:image when this section URL is shared. ' +
-          'Accepts an internal path like /uploads/abc.jpg or an absolute https:// URL. ' +
-          'Leave blank to inherit the site-wide social-share image.',
-          section.seo_image || ''
-        );
+        // Task #73: replaced the old free-text prompt() with a proper modal
+        // that exposes a "Pick image" button (opens the Media Library picker)
+        // alongside the URL input — matches the bg_image admin UX. The text
+        // input is preserved so admins can still paste an absolute https://
+        // URL (e.g. a CDN-hosted asset) when they have one handy. Resolves
+        // null when the admin cancels (same contract as prompt()).
+        const seoImage = await openSeoImageModal(section.seo_image || '');
         if (seoImage === null) return;
         payload.seo_image = seoImage.trim();
 
@@ -14954,6 +14954,90 @@ TO CUSTOMIZE THIS DASHBOARD:
     document.getElementById('media-picker-modal')?.addEventListener('click', (e) => {
       if (e.target.id === 'media-picker-modal') closeMediaPicker();
     });
+
+    /* =====================================================================
+       SEO IMAGE PICKER MODAL (Task #73)
+       =====================================================================
+       Used by editPageSection() to populate the per-section seo_image
+       override. Exposes both:
+         - a free-text input (so an admin can paste an absolute https:// URL
+           pointing at a CDN-hosted asset), AND
+         - a "Pick image" button that opens the shared Media Library picker
+           (openMediaPicker) and writes the chosen file's /uploads/<hex>
+           path back into the input.
+       openSeoImageModal() returns a Promise that resolves to the trimmed
+       URL string when the admin clicks Save, or null if they cancel —
+       matching the prompt() contract the editor previously relied on. */
+    let _seoImageResolver = null;
+
+    function openSeoImageModal(currentValue) {
+      return new Promise((resolve) => {
+        _seoImageResolver = resolve;
+        const input = document.getElementById('seo-image-url-input');
+        if (input) input.value = currentValue || '';
+        updateSeoImagePreview();
+        const modal = document.getElementById('seo-image-modal');
+        if (modal) modal.style.display = 'flex';
+      });
+    }
+
+    function closeSeoImageModal(save) {
+      const modal = document.getElementById('seo-image-modal');
+      if (modal) modal.style.display = 'none';
+      const input = document.getElementById('seo-image-url-input');
+      const value = save && input ? input.value.trim() : null;
+      const resolver = _seoImageResolver;
+      _seoImageResolver = null;
+      if (typeof resolver === 'function') resolver(save ? value : null);
+    }
+
+    function pickSeoImageFromLibrary() {
+      // Defer to the shared media picker. onSelect writes the chosen
+      // /uploads/... path back into the SEO image input and refreshes
+      // the inline preview. Our SEO modal stays open underneath the
+      // picker — once the picker closes, the admin sees the updated
+      // value and can hit Save (or pick a different file).
+      openMediaPicker({
+        mediaType: 'image',
+        title: 'Pick social-share image',
+        subtitle: 'Choose an image from the Media Library, or upload a new one.',
+        onSelect: (item) => {
+          const input = document.getElementById('seo-image-url-input');
+          if (input) {
+            input.value = item.url;
+            updateSeoImagePreview();
+          }
+        }
+      });
+    }
+
+    function clearSeoImageInput() {
+      const input = document.getElementById('seo-image-url-input');
+      if (input) input.value = '';
+      updateSeoImagePreview();
+    }
+
+    function updateSeoImagePreview() {
+      const input = document.getElementById('seo-image-url-input');
+      const wrap = document.getElementById('seo-image-preview');
+      const img = document.getElementById('seo-image-preview-img');
+      if (!input || !wrap || !img) return;
+      const v = input.value.trim();
+      if (v) {
+        img.src = v;
+        wrap.style.display = 'block';
+      } else {
+        img.removeAttribute('src');
+        wrap.style.display = 'none';
+      }
+    }
+
+    /* Click outside the SEO modal panel to cancel; live-update the
+       preview as the admin types or pastes a URL. */
+    document.getElementById('seo-image-modal')?.addEventListener('click', (e) => {
+      if (e.target.id === 'seo-image-modal') closeSeoImageModal(false);
+    });
+    document.getElementById('seo-image-url-input')?.addEventListener('input', updateSeoImagePreview);
 
     /* =====================================================================
        OVERVIEW TAB
@@ -22981,6 +23065,53 @@ TO CUSTOMIZE THIS DASHBOARD:
       </div>
       <div id="media-picker-grid" style="overflow-y:auto; padding:1rem; display:grid; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:0.75rem; flex:1;" data-testid="grid-media-picker">
         <div style="grid-column:1/-1; text-align:center; color:var(--admin-text-muted); padding:2rem;">Loading…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       Modal: SEO / social-share image picker (Task #73)
+       ========================================================================
+       Replaces the old prompt('Social-share image URL…') used by
+       editPageSection() so admins can pick from the Media Library (or
+       upload a new file) instead of having to copy/paste a URL. The
+       free-text input is preserved for admins who already have an
+       absolute https:// URL handy. Driven by openSeoImageModal() /
+       closeSeoImageModal() in the script section above.
+  -->
+  <!-- z-index:9990 (intentionally below the shared #media-picker-modal at
+       9999) so that when an admin clicks "Pick image" the Media Library
+       picker layers on top of this modal. The picker's own overlay fully
+       covers the SEO modal underneath; once the picker closes, the SEO
+       modal is visible again with the chosen URL pre-filled. -->
+  <div id="seo-image-modal" style="display:none; position:fixed; inset:0; z-index:9990; background:rgba(0,0,0,0.7); align-items:center; justify-content:center; padding:1rem;">
+    <div style="background:#0f1320; border:1px solid var(--admin-border); border-radius:12px; max-width:540px; width:100%; max-height:90vh; display:flex; flex-direction:column; overflow:hidden;">
+      <div style="padding:1rem 1.25rem; border-bottom:1px solid var(--admin-border); display:flex; align-items:flex-start; justify-content:space-between; gap:1rem;">
+        <div>
+          <h3 style="margin:0; color:var(--admin-text);">Social-share image</h3>
+          <p style="margin:0.25rem 0 0; color:var(--admin-text-muted); font-size:0.8125rem;">
+            Used as the og:image / twitter:image when this section URL is shared.
+            Leave blank to inherit the site-wide social-share image.
+          </p>
+        </div>
+        <button class="btn btn-secondary" onclick="closeSeoImageModal(false)" data-testid="button-seo-image-close">✕</button>
+      </div>
+      <div style="overflow-y:auto; padding:1rem 1.25rem; display:flex; flex-direction:column; gap:0.75rem;">
+        <label for="seo-image-url-input" style="color:var(--admin-text); font-size:0.8125rem;">Image URL or path</label>
+        <input type="text" id="seo-image-url-input" placeholder="/uploads/abc.jpg or https://…"
+               style="padding:0.55rem 0.65rem; border:1px solid var(--admin-border); border-radius:6px; background:var(--admin-bg); color:var(--admin-text);"
+               data-testid="input-seo-image-url">
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="pickSeoImageFromLibrary()" data-testid="button-seo-image-pick">Pick image</button>
+          <button class="btn btn-secondary btn-sm" onclick="clearSeoImageInput()" data-testid="button-seo-image-clear">Clear</button>
+        </div>
+        <div id="seo-image-preview" style="display:none; padding:0.5rem; border:1px solid var(--admin-border); border-radius:6px; background:var(--admin-bg);">
+          <img id="seo-image-preview-img" alt="" style="max-width:100%; max-height:180px; object-fit:contain; display:block; margin:0 auto;" data-testid="img-seo-image-preview">
+        </div>
+      </div>
+      <div style="padding:0.75rem 1.25rem; border-top:1px solid var(--admin-border); display:flex; justify-content:flex-end; gap:0.5rem;">
+        <button class="btn btn-secondary" onclick="closeSeoImageModal(false)" data-testid="button-seo-image-cancel">Cancel</button>
+        <button class="btn btn-primary" onclick="closeSeoImageModal(true)" data-testid="button-seo-image-save">Save</button>
       </div>
     </div>
   </div>
