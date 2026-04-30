@@ -1998,7 +1998,7 @@ function renderSectionNavMenu() {
   }
 }
 
-/* ── Task #68: persist & restore exact scroll offset across refresh ────────
+/* ── Task #68 / Task #71: persist & restore exact scroll offset across refresh
    Visitors on long custom sections (FAQ, Events, Blog) used to get snapped
    back to the top of the section on refresh because Task #65 only restored
    to the section anchor, not the exact pixel offset. We now also save the
@@ -2007,11 +2007,23 @@ function renderSectionNavMenu() {
    pretty-URL `data-initial-section` (deep link) still wins over the saved
    offset so shared links keep working. sessionStorage is naturally per-tab,
    so a fresh tab has no prior session and restoration is silently skipped.
-   Saved offsets older than ~30 minutes are also discarded. */
-const _SCROLL_RESTORE_KEY = 'landingScrollPos';
+   Saved offsets older than ~30 minutes are also discarded.
+
+   Task #71 extension: standalone admin-authored pages at /p/<slug> share
+   the same `#landing-view` scroll container as the homepage shell, so a
+   single shared sessionStorage key meant visiting `/` and then `/p/menu`
+   would overwrite each other's saved offsets and a refresh would snap to
+   the top. The key is now scoped per-pathname so `/`, `/p/about`, and
+   `/p/menu` each remember their own offset independently. */
+const _SCROLL_RESTORE_KEY_PREFIX = 'landingScrollPos:';
+const _SCROLL_RESTORE_LEGACY_KEY = 'landingScrollPos';
 const _SCROLL_RESTORE_MAX_AGE_MS = 30 * 60 * 1000;
 let _scrollRestoreSaveTimer = null;
 let _scrollRestorePersistInitialized = false;
+
+function _scrollRestoreKeyForCurrentPath() {
+  return _SCROLL_RESTORE_KEY_PREFIX + (location.pathname || '/');
+}
 
 function _saveLandingScrollPosition() {
   try {
@@ -2031,10 +2043,12 @@ function _saveLandingScrollPosition() {
     const payload = {
       offset: lv.scrollTop,
       windowOffset: window.scrollY || window.pageYOffset || 0,
-      ts: Date.now(),
-      path: location.pathname || '/'
+      ts: Date.now()
     };
-    sessionStorage.setItem(_SCROLL_RESTORE_KEY, JSON.stringify(payload));
+    sessionStorage.setItem(
+      _scrollRestoreKeyForCurrentPath(),
+      JSON.stringify(payload)
+    );
   } catch (_) {}
 }
 
@@ -2063,24 +2077,25 @@ function _initLandingScrollPersistence() {
 }
 
 function _restoreLandingScrollPosition() {
+  /* Drop any leftover entry written under the pre-Task-#71 singular key
+     so it can never accidentally restore on the wrong path now that we
+     scope by pathname. Cheap one-time cleanup per page load. */
+  try { sessionStorage.removeItem(_SCROLL_RESTORE_LEGACY_KEY); } catch (_) {}
+  const key = _scrollRestoreKeyForCurrentPath();
   let raw;
-  try { raw = sessionStorage.getItem(_SCROLL_RESTORE_KEY); } catch (_) { return false; }
+  try { raw = sessionStorage.getItem(key); } catch (_) { return false; }
   if (!raw) return false;
   let data;
   try { data = JSON.parse(raw); } catch (_) {
-    try { sessionStorage.removeItem(_SCROLL_RESTORE_KEY); } catch (_) {}
+    try { sessionStorage.removeItem(key); } catch (_) {}
     return false;
   }
   if (!data || typeof data.offset !== 'number' || typeof data.ts !== 'number') {
-    try { sessionStorage.removeItem(_SCROLL_RESTORE_KEY); } catch (_) {}
+    try { sessionStorage.removeItem(key); } catch (_) {}
     return false;
   }
-  /* Only restore on the same path the offset was captured on — a saved
-     scroll from `/` shouldn't apply after navigating to `/p/<slug>` or
-     `/podcast`. */
-  if (data.path && data.path !== (location.pathname || '/')) return false;
   if ((Date.now() - data.ts) > _SCROLL_RESTORE_MAX_AGE_MS) {
-    try { sessionStorage.removeItem(_SCROLL_RESTORE_KEY); } catch (_) {}
+    try { sessionStorage.removeItem(key); } catch (_) {}
     return false;
   }
   const lv = document.getElementById('landing-view');
