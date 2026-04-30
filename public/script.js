@@ -1998,6 +1998,118 @@ function renderSectionNavMenu() {
   }
 }
 
+/* ── Task #68: persist & restore exact scroll offset across refresh ────────
+   Visitors on long custom sections (FAQ, Events, Blog) used to get snapped
+   back to the top of the section on refresh because Task #65 only restored
+   to the section anchor, not the exact pixel offset. We now also save the
+   `#landing-view` scrollTop into sessionStorage (debounced ~500ms) and, on
+   load, restore it after applySectionOrder() reflows. A URL hash or
+   pretty-URL `data-initial-section` (deep link) still wins over the saved
+   offset so shared links keep working. sessionStorage is naturally per-tab,
+   so a fresh tab has no prior session and restoration is silently skipped.
+   Saved offsets older than ~30 minutes are also discarded. */
+const _SCROLL_RESTORE_KEY = 'landingScrollPos';
+const _SCROLL_RESTORE_MAX_AGE_MS = 30 * 60 * 1000;
+let _scrollRestoreSaveTimer = null;
+let _scrollRestorePersistInitialized = false;
+
+function _saveLandingScrollPosition() {
+  try {
+    const lv = document.getElementById('landing-view');
+    if (!lv) return;
+    /* Skip while the landing view is hidden (e.g. gallery / sphere view
+       is showing). Otherwise scrolling inside one of those overlays
+       would clobber the visitor's last landing-view position with 0
+       when they returned. */
+    if (lv.style.display === 'none') return;
+    /* On desktop, `#landing-view` is the scroll source (overflow-y:auto)
+       and window.scrollY stays at 0. On mobile, the styles.css media
+       query at L1178 reverses this — html/body becomes the scroll
+       source and landing-view's overflow goes back to visible. Capture
+       both so restoration works on either form factor regardless of
+       which source the browser ended up using. */
+    const payload = {
+      offset: lv.scrollTop,
+      windowOffset: window.scrollY || window.pageYOffset || 0,
+      ts: Date.now(),
+      path: location.pathname || '/'
+    };
+    sessionStorage.setItem(_SCROLL_RESTORE_KEY, JSON.stringify(payload));
+  } catch (_) {}
+}
+
+function _scheduleLandingScrollSave() {
+  if (_scrollRestoreSaveTimer) return;
+  _scrollRestoreSaveTimer = setTimeout(() => {
+    _scrollRestoreSaveTimer = null;
+    _saveLandingScrollPosition();
+  }, 500);
+}
+
+function _initLandingScrollPersistence() {
+  if (_scrollRestorePersistInitialized) return;
+  const lv = document.getElementById('landing-view');
+  if (!lv) return;
+  _scrollRestorePersistInitialized = true;
+  lv.addEventListener('scroll', _scheduleLandingScrollSave, { passive: true });
+  /* Mobile scrolls the window, not landing-view (see styles.css L1178). */
+  window.addEventListener('scroll', _scheduleLandingScrollSave, { passive: true });
+  /* Flush any pending save when the tab is hidden / closed so a quick
+     refresh after a small scroll still captures the most recent position. */
+  window.addEventListener('pagehide', _saveLandingScrollPosition);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') _saveLandingScrollPosition();
+  });
+}
+
+function _restoreLandingScrollPosition() {
+  let raw;
+  try { raw = sessionStorage.getItem(_SCROLL_RESTORE_KEY); } catch (_) { return false; }
+  if (!raw) return false;
+  let data;
+  try { data = JSON.parse(raw); } catch (_) {
+    try { sessionStorage.removeItem(_SCROLL_RESTORE_KEY); } catch (_) {}
+    return false;
+  }
+  if (!data || typeof data.offset !== 'number' || typeof data.ts !== 'number') {
+    try { sessionStorage.removeItem(_SCROLL_RESTORE_KEY); } catch (_) {}
+    return false;
+  }
+  /* Only restore on the same path the offset was captured on — a saved
+     scroll from `/` shouldn't apply after navigating to `/p/<slug>` or
+     `/podcast`. */
+  if (data.path && data.path !== (location.pathname || '/')) return false;
+  if ((Date.now() - data.ts) > _SCROLL_RESTORE_MAX_AGE_MS) {
+    try { sessionStorage.removeItem(_SCROLL_RESTORE_KEY); } catch (_) {}
+    return false;
+  }
+  const lv = document.getElementById('landing-view');
+  if (!lv) return false;
+  const winOffset = (typeof data.windowOffset === 'number') ? data.windowOffset : 0;
+  /* Same double-RAF the hash branch uses, so layout has settled after
+     applySectionOrder()'s appendChild() reflows before we issue the scroll.
+     Restore both the inner container (desktop scroll source) and the
+     window (mobile scroll source). One of the two will be a no-op
+     depending on which form factor we're on. */
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      try {
+        lv.scrollTo({ top: data.offset, left: 0, behavior: 'auto' });
+      } catch (_) {
+        lv.scrollTop = data.offset;
+      }
+      if (winOffset > 0) {
+        try {
+          window.scrollTo({ top: winOffset, left: 0, behavior: 'auto' });
+        } catch (_) {
+          window.scrollTo(0, winOffset);
+        }
+      }
+    });
+  });
+  return true;
+}
+
 /**
  * Honour location.hash on initial load — if the URL points at a known
  * section id we scroll the .landing-view container to it. We do this
@@ -2012,8 +2124,17 @@ function renderSectionNavMenu() {
  * URL hash because pretty URLs are how Task #67 expects deep linking
  * to work; the hash branch stays as a backstop for legacy links and
  * admin-saved menu picks.
+ *
+ * If no hash / pretty-URL section is present we fall through to
+ * _restoreLandingScrollPosition() (Task #68) so a refresh in the
+ * middle of a long section lands the visitor exactly where they were.
  */
 function _scrollToHashOnLoad() {
+  /* Wire up the debounced scroll listener once, regardless of whether
+     this load needs to restore anything — every subsequent scroll on
+     `#landing-view` should now be persisted. */
+  _initLandingScrollPersistence();
+
   let id = '';
   /* Pretty-URL branch (Task #67). Read once, then clear so a later
      re-render of the section nav (which calls _scrollToHashOnLoad on
@@ -2028,9 +2149,16 @@ function _scrollToHashOnLoad() {
   } else if (location.hash) {
     id = location.hash.replace(/^#/, '');
   }
-  if (!id) return;
+  if (!id) {
+    /* No deep-link target — try to restore the saved scroll offset. */
+    _restoreLandingScrollPosition();
+    return;
+  }
   const target = document.getElementById(id);
-  if (!target) return;
+  if (!target) {
+    _restoreLandingScrollPosition();
+    return;
+  }
   /* Two RAFs — first to let layout settle after applySectionOrder's
      appendChild() reflows, second to actually issue the scroll. */
   requestAnimationFrame(() => {
