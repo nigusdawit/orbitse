@@ -374,6 +374,28 @@ The chatbot connects to OpenAI GPT-4o-mini via Replit AI Integrations. Single un
 
 The AI uses `generateVisual` for simple data displays and `generateHTML` for rich, creative content (comparisons, itineraries, schedules, multi-section layouts). Theme colors, fonts, and glass styling are injected into the system prompt so all generated HTML matches the brand automatically. The command parser handles multiple JSON block formats (standard fenced blocks, backtick-adjacent format, bare JSON fallback) to maximize reliability.
 
+### Semantic Response Cache (April 2026)
+Repeat / near-duplicate visitor questions to `/api/chat` are served from a global cache instead of re-paying for an LLM completion AND an ElevenLabs TTS render. Lives in `semantic_cache.py` and the `ai_response_cache` table (migrations `0003_ai_response_cache` + `0004_ai_cache_unique_index`).
+
+How it works:
+- Each user question is embedded with OpenAI `text-embedding-3-small` (1536-dim, process-local LRU on hash).
+- Lookup uses pgvector cosine distance (`<=>`) on an IVFFlat index, filtered to `content_version = current` and gated on a configurable similarity threshold (default `0.93`, range `0.80–0.99`).
+- On a hit the existing TTS hash-cache reuses the cached MP3 for free (TTS is keyed by `sha256(text)` already), so a hit saves both the completion AND the voice render.
+- WRITE path is gated by `should_cache_response`: skip if any tool was called, a UI command was attached, a presentation was active, the reply is shorter than 60 chars, or the response contains PII (regex over emails / phones / 4+ digit IDs / first-and-second-person possessives like "your booking" / "my reservation"). PII rules ALSO refuse storage at write time as a belt-and-braces check.
+- `cache_content_version` on `chatbot_settings` is auto-incremented when the system prompt changes (PUT `/admin/api/chatbot-settings`); existing rows stay in the table but are no longer served until `Backfill from Chat History` repopulates under the new version.
+- Concurrent writes are race-safe via the `(query_text, content_version)` unique index + `ON CONFLICT DO NOTHING` in `save_to_cache`.
+
+Admin UI: **Knowledge Cache** tab in the dashboard sidebar with stats banner (entries, lifetime hits, est. tokens + TTS chars saved, current version), enable toggle, threshold slider, top-entries table, and Backfill / Invalidate All / Purge Stale / Purge ALL maintenance actions.
+
+Admin endpoints (all `@admin_required`):
+- `GET /admin/api/ai-cache/stats` — counters for the banner
+- `GET` + `PUT /admin/api/ai-cache/settings` — enable + threshold (clamped 0.80–0.99, strict bool coercion)
+- `GET /admin/api/ai-cache/entries?limit=&sort=hits|recent|stale` — top entries with truncated excerpts
+- `DELETE /admin/api/ai-cache/<id>` — drop a single row
+- `POST /admin/api/ai-cache/purge` — `{scope:"stale"|"all"}`
+- `POST /admin/api/ai-cache/backfill?limit=500` — walks recent `chat_messages` user→assistant pairs, embeds + inserts current-version rows
+- `POST /admin/api/ai-cache/bump-version` — manual invalidation when the AI's source data changes without touching the prompt
+
 ## Admin Features
 
 ### Admin Chat (in-dashboard AI assistant)

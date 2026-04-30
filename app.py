@@ -554,6 +554,15 @@ openai_client = OpenAI(
     base_url=os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL", "https://api.openai.com/v1"),
 )
 
+# Semantic response cache (front-loads /api/chat with embedded-similarity
+# lookup against past Q&A so identical-or-near visitor questions reuse the
+# cached text — and therefore the existing TTS hash-cached MP3 — instead
+# of paying for another LLM completion AND another ElevenLabs render).
+# Wired up after openai_client + DB helpers exist; init_module just stashes
+# references to avoid a circular import. See semantic_cache.py for the
+# PII heuristic + embedding caching + admin helpers.
+import semantic_cache  # noqa: E402 — must come after openai_client
+
 # Separate direct OpenAI client for endpoints the Replit AI proxy doesn't
 # support yet — specifically /audio/speech (TTS) and /audio/transcriptions
 # (Whisper STT). Falls back to None if no direct key is configured; voice
@@ -849,6 +858,13 @@ def execute_db(sql, params=None):
             return cur.rowcount
     finally:
         conn.close()
+
+
+# Hand the semantic-cache module its dependencies now that openai_client +
+# query_db + execute_db are all in scope. Late-binding via init_module()
+# avoids the circular import that would happen if semantic_cache.py tried
+# to `from app import …` (app.py imports it at line 567).
+semantic_cache.init_module(openai_client, query_db, execute_db)
 
 
 # =============================================================================
@@ -17653,6 +17669,158 @@ def api_chat():
                 return
             active_tools = get_active_chat_tools()
 
+            # =========================================================
+            # SEMANTIC RESPONSE CACHE — READ HOOK
+            # =========================================================
+            # Embed the visitor's question and look up the nearest past
+            # Q&A by cosine similarity.  On a hit we stream the cached
+            # text immediately as ONE token chunk + the standard text
+            # event + done — and skip the whole streaming-LLM loop
+            # below, saving an Anthropic/OpenAI completion AND (because
+            # the existing TTS hash-cache keys MP3s by sha256(text))
+            # an ElevenLabs render.
+            #
+            # Eligibility — bypass the cache when:
+            #   * the visitor is mid-deck (presentation_active) — answers
+            #     are heavily contextual to the slide on screen
+            #   * message is < 4 chars — too short to embed meaningfully
+            #     and almost always a typo / ack
+            #   * len(history) > 2 — multi-turn conversations carry
+            #     prior context the cached answer wouldn't know about
+            #     (greeting + first user msg = len 2, still cacheable)
+            #
+            # Every failure path is swallowed so a sick cache (DB down,
+            # embedding API down, pgvector glitch) NEVER breaks chat.
+            try:
+                _cache_eligible = (
+                    not presentation_active
+                    and len(message or "") >= 4
+                    and len(history or []) <= 2
+                )
+                if _cache_eligible:
+                    _hit = semantic_cache.find_cached_response(message)
+                    if _hit:
+                        _cached_text = _hit["response_text"]
+                        _sim = float(_hit["similarity"])
+                        _cid = int(_hit["id"])
+                        print(
+                            f"[chat] CACHE HIT id={_cid} sim={_sim:.3f} "
+                            f"q={message[:60]!r}"
+                        )
+                        # Mirror the streaming output the LLM path emits
+                        # so the frontend's TypewriterStreamer + voice
+                        # pipeline behave identically to a fresh answer.
+                        yield (
+                            f"data: "
+                            f"{json.dumps({'type': 'token', 'content': _cached_text})}"
+                            f"\n\n"
+                        )
+                        yield (
+                            f"data: "
+                            f"{json.dumps({'type': 'text', 'content': _cached_text})}"
+                            f"\n\n"
+                        )
+                        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+                        # Bump per-row + lifetime counters (best-effort).
+                        try:
+                            semantic_cache.record_hit(_cid, _cached_text)
+                        except Exception:
+                            pass
+
+                        # Persist messages to chat_history so the admin
+                        # still sees the conversation in Chat History.
+                        # Mirror the standard persistence block below;
+                        # tag the assistant row's tool_calls_json with
+                        # cache_hit metadata so the admin can tell at a
+                        # glance which replies were cached.  Skipped
+                        # entirely when there's no session_id (anonymous
+                        # health-check / curl probe) — same as the live
+                        # path.
+                        if session_id:
+                            try:
+                                ua = request.headers.get("User-Agent", "")
+                                device = (
+                                    "mobile"
+                                    if any(m in ua.lower() for m in
+                                           ["mobile", "android", "iphone"])
+                                    else "desktop"
+                                )
+                                ip = request.headers.get(
+                                    "X-Forwarded-For",
+                                    request.remote_addr or "",
+                                )
+                                conv = query_db(
+                                    "SELECT id FROM chat_conversations "
+                                    "WHERE session_id = %s "
+                                    "ORDER BY id DESC LIMIT 1",
+                                    (session_id,), fetchone=True,
+                                )
+                                is_new_conv = not conv
+                                if not conv:
+                                    conv = execute_db(
+                                        "INSERT INTO chat_conversations "
+                                        "(session_id, visitor_id, visitor_ip, "
+                                        " device_type, user_agent) "
+                                        "VALUES (%s, %s, %s, %s, %s) "
+                                        "RETURNING id",
+                                        (session_id, visitor_id, ip,
+                                         device, ua[:500]),
+                                    )
+                                conv_id = conv["id"]
+                                if is_new_conv:
+                                    try:
+                                        automations.dispatch_event(
+                                            "new_chat", {
+                                                "conversation_id": conv_id,
+                                                "session_id": session_id,
+                                                "visitor_id": visitor_id,
+                                                "device_type": device,
+                                                "first_message": message,
+                                            },
+                                        )
+                                    except Exception:
+                                        pass
+                                execute_db(
+                                    "UPDATE chat_conversations "
+                                    "SET updated_at = NOW() "
+                                    "WHERE id = %s RETURNING id",
+                                    (conv_id,),
+                                )
+                                execute_db(
+                                    "INSERT INTO chat_messages "
+                                    "(conversation_id, role, content) "
+                                    "VALUES (%s, 'user', %s) RETURNING id",
+                                    (conv_id, message),
+                                )
+                                execute_db(
+                                    "INSERT INTO chat_messages "
+                                    "(conversation_id, role, content, "
+                                    " command_json, tool_calls_json) "
+                                    "VALUES (%s, 'assistant', %s, %s, %s) "
+                                    "RETURNING id",
+                                    (
+                                        conv_id, _cached_text, None,
+                                        json.dumps({
+                                            "cache_hit": True,
+                                            "similarity": round(_sim, 4),
+                                            "cache_id": _cid,
+                                        }),
+                                    ),
+                                )
+                            except Exception as _persist_e:
+                                print(
+                                    f"[chat] cache-hit persist failed: "
+                                    f"{_persist_e}"
+                                )
+                        # Note: deliberately skip record_chat_cost — a
+                        # cache hit cost zero LLM tokens, so writing a
+                        # cost row would inflate the spend dashboard.
+                        return
+            except Exception as _cache_read_e:
+                # Never block the live path because the cache misbehaved.
+                print(f"[chat] cache read error (falling through): {_cache_read_e}")
+
             for _round_idx in range(max_rounds):
                 round_text = ""
                 tcs = []   # completed tool calls this round
@@ -17941,8 +18109,11 @@ def api_chat():
                     )
                     # Persist tool_logs alongside the assistant turn so the
                     # admin can see in chat history exactly which lookup_*
-                    # tools the AI called and with what filters.
-                    execute_db(
+                    # tools the AI called and with what filters.  Capture
+                    # the returned id so the cache write hook below can
+                    # link cache rows back to the message that produced
+                    # them (lets the admin "show source" from the cache UI).
+                    _asst_row = execute_db(
                         "INSERT INTO chat_messages (conversation_id, role, content, command_json, tool_calls_json) VALUES (%s, 'assistant', %s, %s, %s) RETURNING id",
                         (
                             conv_id,
@@ -17952,7 +18123,59 @@ def api_chat():
                         )
                     )
                 except Exception:
-                    pass
+                    _asst_row = None
+
+            # =================================================================
+            # SEMANTIC RESPONSE CACHE — WRITE HOOK
+            # =================================================================
+            # If the live LLM produced a clean text-only answer that doesn't
+            # quote anything visitor-specific, store (question, embedding,
+            # answer) so the next near-duplicate question can be served from
+            # cache.  Same eligibility rules as the read hook so the two
+            # halves stay symmetrical: skip tool-driven answers, skip
+            # command-bearing answers, skip presentation context, skip
+            # short / multi-turn questions, skip anything that contains PII.
+            # All errors swallowed — failing here must NEVER break the chat
+            # response the visitor already received.
+            try:
+                _cache_write_eligible = (
+                    not presentation_active
+                    and len(message or "") >= 4
+                    and len(history or []) <= 2
+                )
+                if _cache_write_eligible:
+                    _final_reply = (reply or full_text or "").strip()
+                    _ok, _why = semantic_cache.should_cache_response(
+                        _final_reply,
+                        bool(tool_logs),
+                        bool(cmd),
+                        presentation_active,
+                    )
+                    if _ok:
+                        _src_msg_id = None
+                        try:
+                            if _asst_row and isinstance(_asst_row, dict):
+                                _src_msg_id = _asst_row.get("id")
+                        except Exception:
+                            _src_msg_id = None
+                        _new_cache_id = semantic_cache.save_to_cache(
+                            message,
+                            _final_reply,
+                            source_message_id=_src_msg_id,
+                        )
+                        if _new_cache_id:
+                            print(
+                                f"[chat] CACHED row={_new_cache_id} "
+                                f"q={message[:60]!r} "
+                                f"len={len(_final_reply)}"
+                            )
+                    else:
+                        # Useful for tuning the eligibility heuristic — the
+                        # admin can grep for "cache skip" in logs to see
+                        # which answers fell through and why.
+                        print(f"[chat] cache skip ({_why}) q={message[:60]!r}")
+            except Exception as _cache_write_e:
+                print(f"[chat] cache write error: {_cache_write_e}")
 
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
@@ -21842,6 +22065,20 @@ def admin_update_chatbot():
     scope_in = (data.get("agent_scope_tightness") or "balanced").strip().lower()
     if scope_in not in _AGENT_SCOPE_VALUES:
         scope_in = "balanced"
+    # Capture the previous system_prompt so we can detect a real edit and
+    # bump the semantic-cache content_version (which mass-invalidates all
+    # cache rows tied to the old prompt — they may now be wrong).  Only
+    # the prompt matters here; agent_name / greeting / mode don't change
+    # what the AI should answer with.
+    _prev_prompt = ""
+    try:
+        _prev_row = query_db(
+            "SELECT system_prompt FROM chatbot_settings WHERE id = 1",
+            fetchone=True,
+        ) or {}
+        _prev_prompt = (_prev_row.get("system_prompt") or "").strip()
+    except Exception:
+        _prev_prompt = ""
     settings = execute_db(
         """UPDATE chatbot_settings SET
              enabled = %s, mode = %s, agent_name = %s, agent_role = %s,
@@ -21864,6 +22101,19 @@ def admin_update_chatbot():
             scope_in,
         )
     )
+    # Bump the cache content_version when the system_prompt actually
+    # changed so old cache rows (generated under the OLD prompt) stop
+    # being served.  Best-effort — never block the settings save on it.
+    try:
+        _new_prompt = (data.get("system_prompt") or "").strip()
+        if _new_prompt != _prev_prompt:
+            _v = semantic_cache.bump_content_version()
+            print(
+                f"[chatbot-settings] system_prompt changed → "
+                f"semantic cache content_version → {_v}"
+            )
+    except Exception as _bv_e:
+        print(f"[chatbot-settings] cache bump failed: {_bv_e}")
     return jsonify(settings)
 
 
@@ -21874,6 +22124,171 @@ def admin_update_chatbot():
 def admin_get_default_prompt():
     """GET the hardcoded default system prompt so the admin can pre-fill."""
     return jsonify({"system_prompt": SYSTEM_PROMPT})
+
+
+# --------------- AI Knowledge Cache (semantic response cache) ---------------
+#
+# These endpoints power the "Knowledge Cache" tab in the admin dashboard
+# (templates/admin/dashboard.html).  The core logic lives in
+# semantic_cache.py — these routes are thin wrappers that handle auth,
+# input validation, and JSON shaping.
+#
+# What the admin sees in this tab:
+#   * Stats banner   — # entries, hit count, est tokens & TTS chars saved
+#   * Settings       — enable toggle + similarity threshold slider
+#   * Top entries    — table of cached Q&A rows w/ delete buttons
+#   * Backfill       — walk old chat_messages → seed the cache
+#   * Purge stale    — delete rows tied to a prior content_version
+#   * Purge ALL      — nuke the whole table (asks for confirmation in UI)
+
+
+@app.route("/admin/api/ai-cache/stats", methods=["GET"])
+@admin_required
+def admin_ai_cache_stats():
+    """Aggregate counters for the dashboard banner."""
+    return jsonify(semantic_cache.get_stats())
+
+
+@app.route("/admin/api/ai-cache/settings", methods=["GET", "PUT"])
+@admin_required
+def admin_ai_cache_settings():
+    """GET or update the enable flag + similarity threshold."""
+    if request.method == "GET":
+        return jsonify(semantic_cache.get_cache_settings(force_refresh=True))
+    data = request.get_json(silent=True) or {}
+    enabled = data.get("cache_enabled")
+    threshold = data.get("cache_threshold")
+    # Coerce threshold defensively — sliders sometimes send strings.
+    if threshold is not None:
+        try:
+            threshold = float(threshold)
+        except (TypeError, ValueError):
+            return jsonify({"error": "cache_threshold must be a number"}), 400
+        if threshold < 0.80 or threshold > 0.99:
+            return jsonify(
+                {"error": "cache_threshold must be between 0.80 and 0.99"}
+            ), 400
+    if enabled is not None:
+        # Coerce explicitly — a naive bool() would treat the string
+        # "false" as truthy, silently flipping the cache on.  Accept
+        # actual booleans + the obvious truthy/falsy string forms,
+        # reject anything else loudly.
+        if isinstance(enabled, bool):
+            pass
+        elif isinstance(enabled, (int, float)):
+            enabled = bool(enabled)
+        elif isinstance(enabled, str):
+            v = enabled.strip().lower()
+            if v in ("true", "1", "yes", "on"):
+                enabled = True
+            elif v in ("false", "0", "no", "off", ""):
+                enabled = False
+            else:
+                return jsonify(
+                    {"error": "cache_enabled must be a boolean"}
+                ), 400
+        else:
+            return jsonify(
+                {"error": "cache_enabled must be a boolean"}
+            ), 400
+    out = semantic_cache.set_settings(enabled=enabled, threshold=threshold)
+    return jsonify(out)
+
+
+@app.route("/admin/api/ai-cache/entries", methods=["GET"])
+@admin_required
+def admin_ai_cache_entries():
+    """List cache entries for the admin table.
+
+    Query params:
+        limit (int, 1..500) — default 100
+        sort  (hits | recent | stale) — default hits
+    """
+    try:
+        limit = int(request.args.get("limit", 100))
+    except (TypeError, ValueError):
+        limit = 100
+    sort = (request.args.get("sort") or "hits").strip().lower()
+    rows = semantic_cache.list_entries(limit=limit, sort=sort)
+    # Truncate long bodies before sending — the UI shows excerpts and
+    # offers a "view full" expand-on-click, but the JSON over the wire
+    # stays small.  300 chars is enough to spot what kind of answer it
+    # is without dumping a 4KB blob per row.
+    for r in rows:
+        q = r.get("query_text") or ""
+        a = r.get("response_text") or ""
+        r["query_excerpt"] = q if len(q) <= 300 else (q[:300] + "…")
+        r["response_excerpt"] = a if len(a) <= 300 else (a[:300] + "…")
+        r["response_length"] = len(a)
+        # ISO timestamps so the JS can format with toLocaleString().
+        for k in ("last_hit_at", "created_at"):
+            if r.get(k) is not None:
+                try:
+                    r[k] = r[k].isoformat()
+                except Exception:
+                    r[k] = str(r[k])
+    return jsonify({"entries": rows, "count": len(rows)})
+
+
+@app.route("/admin/api/ai-cache/<int:cache_id>", methods=["DELETE"])
+@admin_required
+def admin_ai_cache_delete(cache_id):
+    """Delete a single cache row (admin saw bad data and wants it gone)."""
+    ok = semantic_cache.delete_entry(cache_id)
+    if not ok:
+        return jsonify({"error": "Entry not found"}), 404
+    return jsonify({"ok": True, "id": cache_id})
+
+
+@app.route("/admin/api/ai-cache/purge", methods=["POST"])
+@admin_required
+def admin_ai_cache_purge():
+    """Bulk delete.  body: {"scope": "stale"|"all"}.
+
+    "stale" — drop rows whose content_version is below the current one
+              (i.e. answers generated under a prior system_prompt).
+    "all"   — drop EVERY row.  UI must confirm before calling.
+    """
+    data = request.get_json(silent=True) or {}
+    scope = (data.get("scope") or "stale").strip().lower()
+    if scope not in ("stale", "all"):
+        return jsonify({"error": "scope must be 'stale' or 'all'"}), 400
+    deleted = semantic_cache.purge(scope=scope)
+    return jsonify({"ok": True, "scope": scope, "deleted": deleted})
+
+
+@app.route("/admin/api/ai-cache/backfill", methods=["POST"])
+@admin_required
+def admin_ai_cache_backfill():
+    """Walk recent chat_messages user→assistant pairs and seed the cache.
+
+    Useful right after the feature ships (when the table is empty) or
+    after a content_version bump (when most entries became stale).
+    Honours should_cache_response, so PII / tool-driven / command-bearing
+    answers are skipped.
+
+    Query/body param: limit (1..2000) — number of conversations to scan.
+    """
+    try:
+        limit = int(request.args.get("limit") or
+                    (request.get_json(silent=True) or {}).get("limit") or 200)
+    except (TypeError, ValueError):
+        limit = 200
+    out = semantic_cache.backfill_from_history(limit=limit)
+    return jsonify(out)
+
+
+@app.route("/admin/api/ai-cache/bump-version", methods=["POST"])
+@admin_required
+def admin_ai_cache_bump_version():
+    """Manually invalidate every existing cache row.
+
+    Use after editing site content (hours, prices, services) without
+    touching the system_prompt — the prompt-edit path bumps automatically,
+    everything else needs a manual click.
+    """
+    new_v = semantic_cache.bump_content_version()
+    return jsonify({"ok": True, "content_version": new_v})
 
 
 # --------------- Image Upload ---------------

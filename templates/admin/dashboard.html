@@ -2158,6 +2158,10 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
       Chat History
     </button>
+    <button class="tab-btn" onclick="switchTab('knowledge-cache', this); loadKnowledgeCache();" data-testid="tab-knowledge-cache">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      Knowledge Cache
+    </button>
     <button class="tab-btn" onclick="switchTab('voice', this)" data-testid="tab-voice">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
       Voice Agent
@@ -4816,6 +4820,114 @@ TO CUSTOMIZE THIS DASHBOARD:
         <button class="btn btn-secondary btn-sm" onclick="document.getElementById('chat-detail-panel').style.display='none'" data-testid="button-close-chat-detail">Close</button>
       </div>
       <div id="chat-detail-messages" style="max-height: 400px; overflow-y: auto;"></div>
+    </div>
+  </div>
+
+
+  <!--
+  ========================================================================
+  TAB: KNOWLEDGE CACHE
+  ========================================================================
+  Semantic response cache for the visitor concierge.  When a visitor
+  asks a question, we embed it and look for a near-duplicate past Q&A.
+  On a hit we serve the cached text — and because the existing TTS
+  pipeline keys MP3s by sha256(text), the voice clip is reused for free
+  too.  This panel lets the operator monitor savings, tune the
+  similarity threshold, seed the cache from past chat history, and
+  drop entries that have gone stale.
+  -->
+  <div id="tab-knowledge-cache" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Knowledge Cache</h2>
+        <p>Reuse past concierge answers for repeat questions — saves an LLM completion AND an ElevenLabs voice render every time it hits.</p>
+      </div>
+    </div>
+
+    <!-- Stats banner — counters refreshed every time the tab opens. -->
+    <div id="kc-stats" class="form-panel" style="display: flex; gap: 2rem; flex-wrap: wrap;">
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Cached Entries</div>
+        <div id="kc-stat-entries" data-testid="text-kc-entries" style="font-size: 1.5rem; font-weight: 600; color: #fff;">—</div>
+        <div id="kc-stat-entries-detail" style="color: var(--admin-text-muted); font-size: 0.75rem;">&nbsp;</div>
+      </div>
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Lifetime Hits</div>
+        <div id="kc-stat-hits" data-testid="text-kc-hits" style="font-size: 1.5rem; font-weight: 600; color: #fff;">—</div>
+      </div>
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Tokens Saved (est.)</div>
+        <div id="kc-stat-tokens" data-testid="text-kc-tokens" style="font-size: 1.5rem; font-weight: 600; color: #fff;">—</div>
+      </div>
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">TTS Chars Saved</div>
+        <div id="kc-stat-tts" data-testid="text-kc-tts" style="font-size: 1.5rem; font-weight: 600; color: #fff;">—</div>
+      </div>
+      <div>
+        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Content Version</div>
+        <div id="kc-stat-version" data-testid="text-kc-version" style="font-size: 1.5rem; font-weight: 600; color: #fff;">—</div>
+      </div>
+    </div>
+
+    <!-- Settings: enable + similarity threshold. -->
+    <div class="form-panel" style="margin-top: 1.5rem;">
+      <h3 style="margin: 0 0 1rem 0;">Cache Settings</h3>
+      <div style="display: flex; gap: 2rem; align-items: center; flex-wrap: wrap;">
+        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+          <input type="checkbox" id="kc-enabled" data-testid="checkbox-kc-enabled" onchange="saveKnowledgeCacheSettings()" />
+          <span>Enable semantic cache</span>
+        </label>
+        <div style="display: flex; align-items: center; gap: 0.75rem; min-width: 320px;">
+          <label for="kc-threshold" style="white-space: nowrap;">Similarity threshold</label>
+          <input type="range" id="kc-threshold" min="0.80" max="0.99" step="0.01" value="0.93" data-testid="input-kc-threshold" oninput="document.getElementById('kc-threshold-val').textContent = parseFloat(this.value).toFixed(2)" onchange="saveKnowledgeCacheSettings()" style="flex: 1;" />
+          <span id="kc-threshold-val" data-testid="text-kc-threshold-val" style="min-width: 3em; font-variant-numeric: tabular-nums;">0.93</span>
+        </div>
+      </div>
+      <p style="color: var(--admin-text-muted); font-size: 0.85rem; margin: 0.75rem 0 0 0;">
+        Higher threshold = stricter match, fewer hits but safer answers. 0.93 is a sane default. Below 0.85 risks serving an unrelated answer.
+      </p>
+    </div>
+
+    <!-- Bulk actions row. -->
+    <div class="form-panel" style="margin-top: 1.5rem;">
+      <h3 style="margin: 0 0 1rem 0;">Maintenance</h3>
+      <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+        <button class="btn btn-secondary" onclick="kcBackfill()" data-testid="button-kc-backfill">Backfill from Chat History</button>
+        <button class="btn btn-secondary" onclick="kcBumpVersion()" data-testid="button-kc-bump-version">Invalidate All (bump version)</button>
+        <button class="btn btn-secondary" onclick="kcPurge('stale')" data-testid="button-kc-purge-stale">Purge Stale Entries</button>
+        <button class="btn btn-danger" onclick="kcPurge('all')" data-testid="button-kc-purge-all">Purge ALL Entries</button>
+        <button class="btn btn-secondary" onclick="loadKnowledgeCache()" data-testid="button-kc-refresh" style="margin-left: auto;">Refresh</button>
+      </div>
+      <p style="color: var(--admin-text-muted); font-size: 0.85rem; margin: 0.75rem 0 0 0;">
+        Backfill walks recent conversations and seeds the cache with clean Q&A pairs. Stale = entries older than the current content version (auto-bumped when you edit the system prompt). Purge ALL is destructive — use after major business changes.
+      </p>
+    </div>
+
+    <!-- Top entries table. -->
+    <div class="form-panel" style="margin-top: 1.5rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <h3 style="margin: 0;">Top Cached Q&amp;A</h3>
+        <select id="kc-sort" onchange="loadKnowledgeCacheEntries()" data-testid="select-kc-sort" style="padding: 0.4rem;">
+          <option value="hits">Most hits</option>
+          <option value="recent">Most recent</option>
+          <option value="stale">Oldest hits first</option>
+        </select>
+      </div>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Question</th>
+            <th>Response excerpt</th>
+            <th>Hits</th>
+            <th>Last hit</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="kc-entries-tbody">
+          <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
     </div>
   </div>
 
@@ -9784,6 +9896,207 @@ TO CUSTOMIZE THIS DASHBOARD:
         panel.scrollIntoView({ behavior: 'smooth' });
       } catch (err) {
         showToast('Failed to load conversation', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
+    KNOWLEDGE CACHE — semantic response cache for the visitor concierge
+    ========================================================================
+    Backed by /admin/api/ai-cache/* in app.py (which delegates to
+    semantic_cache.py).  loadKnowledgeCache() is the single entry
+    point invoked by the sidebar button; it fans out to a stats fetch,
+    a settings fetch, and an entries fetch in parallel.
+    */
+    async function loadKnowledgeCache() {
+      try {
+        await Promise.all([
+          loadKnowledgeCacheStats(),
+          loadKnowledgeCacheSettings(),
+          loadKnowledgeCacheEntries(),
+        ]);
+      } catch (err) {
+        console.warn('[knowledge-cache] load failed', err);
+      }
+    }
+
+    async function loadKnowledgeCacheStats() {
+      try {
+        const res = await fetch('/admin/api/ai-cache/stats');
+        const s = await res.json();
+        // Big numbers get comma separators; small ones stay short.
+        const fmt = (n) => Number(n || 0).toLocaleString();
+        document.getElementById('kc-stat-entries').textContent =
+          fmt(s.entries_total);
+        document.getElementById('kc-stat-entries-detail').textContent =
+          `${fmt(s.entries_current)} current · ${fmt(s.entries_stale)} stale`;
+        document.getElementById('kc-stat-hits').textContent =
+          fmt(s.lifetime_hits);
+        document.getElementById('kc-stat-tokens').textContent =
+          fmt(s.lifetime_tokens_saved);
+        document.getElementById('kc-stat-tts').textContent =
+          fmt(s.lifetime_tts_chars_saved);
+        document.getElementById('kc-stat-version').textContent =
+          'v' + (s.content_version || 1);
+      } catch (err) {
+        console.warn('[knowledge-cache] stats failed', err);
+      }
+    }
+
+    async function loadKnowledgeCacheSettings() {
+      try {
+        const res = await fetch('/admin/api/ai-cache/settings');
+        const s = await res.json();
+        document.getElementById('kc-enabled').checked =
+          !!s.cache_enabled;
+        const t = parseFloat(s.cache_threshold || 0.93);
+        document.getElementById('kc-threshold').value = t.toFixed(2);
+        document.getElementById('kc-threshold-val').textContent = t.toFixed(2);
+      } catch (err) {
+        console.warn('[knowledge-cache] settings failed', err);
+      }
+    }
+
+    /* Sliders fire onchange after every drag — debounce to avoid a PUT
+       per pixel.  300ms is the same wait used by the SEO tab elsewhere. */
+    let _kcSettingsTimer = null;
+    function saveKnowledgeCacheSettings() {
+      clearTimeout(_kcSettingsTimer);
+      _kcSettingsTimer = setTimeout(async () => {
+        try {
+          const enabled = document.getElementById('kc-enabled').checked;
+          const threshold = parseFloat(
+            document.getElementById('kc-threshold').value
+          );
+          const res = await fetch('/admin/api/ai-cache/settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              cache_enabled: enabled,
+              cache_threshold: threshold,
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            showToast(err.error || 'Failed to save cache settings', 'error');
+            return;
+          }
+          showToast('Cache settings saved', 'success');
+        } catch (err) {
+          showToast('Failed to save cache settings', 'error');
+        }
+      }, 300);
+    }
+
+    async function loadKnowledgeCacheEntries() {
+      try {
+        const sort = document.getElementById('kc-sort').value || 'hits';
+        const res = await fetch(
+          `/admin/api/ai-cache/entries?limit=100&sort=${encodeURIComponent(sort)}`
+        );
+        const data = await res.json();
+        const tbody = document.getElementById('kc-entries-tbody');
+        const rows = data.entries || [];
+        if (!rows.length) {
+          tbody.innerHTML =
+            '<tr><td colspan="6" class="empty-state">' +
+            'No cached answers yet. They\'ll appear here automatically as ' +
+            'visitors chat, or use Backfill to seed from past history.' +
+            '</td></tr>';
+          return;
+        }
+        tbody.innerHTML = rows.map(r => {
+          const lastHit = r.last_hit_at
+            ? new Date(r.last_hit_at).toLocaleString()
+            : '—';
+          const status = r.is_current
+            ? '<span class="badge" style="background:#16a34a;color:#fff;">current</span>'
+            : '<span class="badge" style="background:#dc2626;color:#fff;">stale</span>';
+          return `
+            <tr>
+              <td class="cell-truncate" title="${esc(r.query_text || '')}">${esc(r.query_excerpt || '')}</td>
+              <td class="cell-truncate" title="${esc(r.response_text || '')}">${esc(r.response_excerpt || '')}</td>
+              <td>${Number(r.hit_count || 0).toLocaleString()}</td>
+              <td>${esc(lastHit)}</td>
+              <td>${status}</td>
+              <td>
+                <button class="btn btn-danger btn-sm" onclick="kcDeleteEntry(${r.id})" data-testid="button-kc-delete-${r.id}">Delete</button>
+              </td>
+            </tr>
+          `;
+        }).join('');
+      } catch (err) {
+        console.warn('[knowledge-cache] entries failed', err);
+      }
+    }
+
+    async function kcDeleteEntry(id) {
+      if (!confirm('Delete this cached answer? Future near-duplicate questions will hit the live LLM again.')) return;
+      try {
+        const res = await fetch(`/admin/api/ai-cache/${id}`, { method: 'DELETE' });
+        if (!res.ok) {
+          showToast('Delete failed', 'error');
+          return;
+        }
+        showToast('Entry deleted', 'success');
+        loadKnowledgeCache();
+      } catch (err) {
+        showToast('Delete failed', 'error');
+      }
+    }
+
+    async function kcBackfill() {
+      if (!confirm('Walk recent chat history and seed the cache? This embeds each unique question via OpenAI (small cost) but pays itself back the first time those questions repeat.')) return;
+      try {
+        showToast('Backfilling… this can take a minute.', 'info');
+        const res = await fetch('/admin/api/ai-cache/backfill?limit=500', {
+          method: 'POST',
+        });
+        const data = await res.json();
+        showToast(
+          `Backfill done — inserted ${data.inserted || 0}, skipped ${data.skipped || 0}.`,
+          'success'
+        );
+        loadKnowledgeCache();
+      } catch (err) {
+        showToast('Backfill failed', 'error');
+      }
+    }
+
+    async function kcBumpVersion() {
+      if (!confirm('Invalidate ALL cache entries? They stay in the table (marked stale) but no longer get served. The cache will rebuild as visitors ask questions again.')) return;
+      try {
+        const res = await fetch('/admin/api/ai-cache/bump-version', {
+          method: 'POST',
+        });
+        const data = await res.json();
+        showToast(
+          `Cache invalidated — now on content version ${data.content_version}.`,
+          'success'
+        );
+        loadKnowledgeCache();
+      } catch (err) {
+        showToast('Invalidation failed', 'error');
+      }
+    }
+
+    async function kcPurge(scope) {
+      const msg = scope === 'all'
+        ? 'PERMANENTLY DELETE every cached answer? This cannot be undone. The cache will rebuild from scratch as visitors chat.'
+        : 'Delete all stale cache entries (those marked stale because the system prompt changed)?';
+      if (!confirm(msg)) return;
+      try {
+        const res = await fetch('/admin/api/ai-cache/purge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scope: scope }),
+        });
+        const data = await res.json();
+        showToast(`Deleted ${data.deleted || 0} entries.`, 'success');
+        loadKnowledgeCache();
+      } catch (err) {
+        showToast('Purge failed', 'error');
       }
     }
 
