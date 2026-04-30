@@ -902,6 +902,12 @@ html[data-nav-style="side_rail"] .hero-nav > .flex:has(.nav-section-menu) {
   html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-toggle {
     display: none;
   }
+  /* Pill bar: inline, single row, NO scrollbar. JS
+     (_applySectionNavDesktopOverflow in script.js) measures available
+     width and folds excess pills behind a "More ▾" button rendered
+     inside this same panel. overflow:visible lets the dropdown popup
+     (which is appended as a sibling of this panel inside the
+     .nav-section-menu wrapper) escape the pill bar bounds. */
   html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-panel {
     position: relative;
     top: auto;
@@ -910,8 +916,7 @@ html[data-nav-style="side_rail"] .hero-nav > .flex:has(.nav-section-menu) {
     flex-direction: row;
     flex-wrap: nowrap;
     align-items: center;
-    overflow-x: auto;
-    overflow-y: hidden;
+    overflow: visible;
     max-width: min(56vw, 44rem);
     max-height: none;
     min-width: 0;
@@ -925,14 +930,6 @@ html[data-nav-style="side_rail"] .hero-nav > .flex:has(.nav-section-menu) {
     transform: none;
     pointer-events: auto;
     transition: none;
-    scrollbar-width: thin;
-  }
-  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-panel::-webkit-scrollbar {
-    height: 4px;
-  }
-  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-panel::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.18);
-    border-radius: 4px;
   }
   html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-item {
     padding: 0.4rem 0.7rem;
@@ -949,6 +946,84 @@ html[data-nav-style="side_rail"] .hero-nav > .flex:has(.nav-section-menu) {
     overflow: visible;
     text-overflow: unset;
     white-space: nowrap;
+  }
+
+  /* "More ▾" overflow trigger — styled as a pill that visually matches
+     the bar's items so the bar reads as one consistent strip. Sits at
+     the right end of the pill bar; appended/removed dynamically. */
+  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-more {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.4rem 0.7rem;
+    font-size: 0.78rem;
+    line-height: 1;
+    border-radius: 9999px;
+    border: 0;
+    background: transparent;
+    color: var(--color-text, #fff);
+    font-family: var(--font-sans);
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: background 0.14s ease, color 0.14s ease;
+  }
+  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-more:hover,
+  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-more:focus-visible {
+    background: rgba(255, 255, 255, 0.12);
+    outline: none;
+  }
+  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-more[aria-expanded="true"] {
+    background: rgba(255, 255, 255, 0.18);
+  }
+  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-more-icon {
+    width: 14px;
+    height: 14px;
+    color: var(--color-accent, #c9a96e);
+  }
+  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-more[aria-expanded="true"] .nav-section-menu-more-icon {
+    transform: rotate(180deg);
+    transition: transform 0.18s ease;
+  }
+
+  /* Overflow popup — vertical dropdown of the pills that didn't fit.
+     Sibling of .nav-section-menu-panel inside .nav-section-menu (which
+     is position:relative), so right:0 anchors it to the right edge of
+     the pill bar (where the More button sits). */
+  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-overflow {
+    position: absolute;
+    top: calc(100% + 0.55rem);
+    right: 0;
+    min-width: 14rem;
+    max-height: min(70vh, 32rem);
+    overflow-y: auto;
+    padding: 0.5rem;
+    background: rgb(var(--color-bg-rgb, 6 11 20) / 0.94);
+    backdrop-filter: blur(var(--glass-blur, 16px));
+    -webkit-backdrop-filter: blur(var(--glass-blur, 16px));
+    border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.14));
+    border-radius: 0.75rem;
+    box-shadow: 0 18px 38px rgba(0, 0, 0, 0.45);
+    display: none;
+    flex-direction: column;
+    gap: 0.15rem;
+    z-index: 90;
+  }
+  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-overflow.is-open {
+    display: flex;
+  }
+  /* Pills inside the dropdown use the larger "panel" pill style, NOT
+     the small bar pill style — they need to feel clickable in a list,
+     not pinched as in the bar. */
+  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-overflow .nav-section-menu-item {
+    padding: 0.55rem 0.7rem;
+    font-size: 0.92rem;
+    border-radius: 0.45rem;
+    flex-shrink: 0;
+  }
+  html:not([data-nav-style="side_rail"]):not([data-nav-style="hamburger"]) .nav-section-menu-overflow .nav-section-menu-item-icon {
+    width: 16px;
+    height: 16px;
   }
 }
 

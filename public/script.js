@@ -86,6 +86,143 @@ let scrollCooldown = false;
 let touchStartY = null;
 
 
+/* ISO 3166-1 alpha-2 country codes for the checkout form's <select>.
+   Stripe's PaymentMethod billing_details.address.country REQUIRES the
+   2-letter ISO code — sending free text like "USA" or "United States"
+   triggers a 400 from Stripe (which is exactly the error visitors hit
+   before this list existed). Sorted alphabetically by display name so
+   the picker scans naturally. List is intentionally complete (every
+   territory ISO 3166-1 recognises) so a visitor from anywhere can
+   complete checkout. Keep entries one-per-line for diff-friendliness. */
+const COUNTRIES = [
+  { code: 'AF', name: 'Afghanistan' }, { code: 'AX', name: 'Åland Islands' },
+  { code: 'AL', name: 'Albania' }, { code: 'DZ', name: 'Algeria' },
+  { code: 'AS', name: 'American Samoa' }, { code: 'AD', name: 'Andorra' },
+  { code: 'AO', name: 'Angola' }, { code: 'AI', name: 'Anguilla' },
+  { code: 'AQ', name: 'Antarctica' }, { code: 'AG', name: 'Antigua and Barbuda' },
+  { code: 'AR', name: 'Argentina' }, { code: 'AM', name: 'Armenia' },
+  { code: 'AW', name: 'Aruba' }, { code: 'AU', name: 'Australia' },
+  { code: 'AT', name: 'Austria' }, { code: 'AZ', name: 'Azerbaijan' },
+  { code: 'BS', name: 'Bahamas' }, { code: 'BH', name: 'Bahrain' },
+  { code: 'BD', name: 'Bangladesh' }, { code: 'BB', name: 'Barbados' },
+  { code: 'BY', name: 'Belarus' }, { code: 'BE', name: 'Belgium' },
+  { code: 'BZ', name: 'Belize' }, { code: 'BJ', name: 'Benin' },
+  { code: 'BM', name: 'Bermuda' }, { code: 'BT', name: 'Bhutan' },
+  { code: 'BO', name: 'Bolivia' }, { code: 'BQ', name: 'Bonaire, Sint Eustatius and Saba' },
+  { code: 'BA', name: 'Bosnia and Herzegovina' }, { code: 'BW', name: 'Botswana' },
+  { code: 'BV', name: 'Bouvet Island' }, { code: 'BR', name: 'Brazil' },
+  { code: 'IO', name: 'British Indian Ocean Territory' }, { code: 'BN', name: 'Brunei Darussalam' },
+  { code: 'BG', name: 'Bulgaria' }, { code: 'BF', name: 'Burkina Faso' },
+  { code: 'BI', name: 'Burundi' }, { code: 'CV', name: 'Cabo Verde' },
+  { code: 'KH', name: 'Cambodia' }, { code: 'CM', name: 'Cameroon' },
+  { code: 'CA', name: 'Canada' }, { code: 'KY', name: 'Cayman Islands' },
+  { code: 'CF', name: 'Central African Republic' }, { code: 'TD', name: 'Chad' },
+  { code: 'CL', name: 'Chile' }, { code: 'CN', name: 'China' },
+  { code: 'CX', name: 'Christmas Island' }, { code: 'CC', name: 'Cocos (Keeling) Islands' },
+  { code: 'CO', name: 'Colombia' }, { code: 'KM', name: 'Comoros' },
+  { code: 'CG', name: 'Congo' }, { code: 'CD', name: 'Congo, Democratic Republic of the' },
+  { code: 'CK', name: 'Cook Islands' }, { code: 'CR', name: 'Costa Rica' },
+  { code: 'CI', name: "Côte d'Ivoire" }, { code: 'HR', name: 'Croatia' },
+  { code: 'CU', name: 'Cuba' }, { code: 'CW', name: 'Curaçao' },
+  { code: 'CY', name: 'Cyprus' }, { code: 'CZ', name: 'Czechia' },
+  { code: 'DK', name: 'Denmark' }, { code: 'DJ', name: 'Djibouti' },
+  { code: 'DM', name: 'Dominica' }, { code: 'DO', name: 'Dominican Republic' },
+  { code: 'EC', name: 'Ecuador' }, { code: 'EG', name: 'Egypt' },
+  { code: 'SV', name: 'El Salvador' }, { code: 'GQ', name: 'Equatorial Guinea' },
+  { code: 'ER', name: 'Eritrea' }, { code: 'EE', name: 'Estonia' },
+  { code: 'SZ', name: 'Eswatini' }, { code: 'ET', name: 'Ethiopia' },
+  { code: 'FK', name: 'Falkland Islands' }, { code: 'FO', name: 'Faroe Islands' },
+  { code: 'FJ', name: 'Fiji' }, { code: 'FI', name: 'Finland' },
+  { code: 'FR', name: 'France' }, { code: 'GF', name: 'French Guiana' },
+  { code: 'PF', name: 'French Polynesia' }, { code: 'TF', name: 'French Southern Territories' },
+  { code: 'GA', name: 'Gabon' }, { code: 'GM', name: 'Gambia' },
+  { code: 'GE', name: 'Georgia' }, { code: 'DE', name: 'Germany' },
+  { code: 'GH', name: 'Ghana' }, { code: 'GI', name: 'Gibraltar' },
+  { code: 'GR', name: 'Greece' }, { code: 'GL', name: 'Greenland' },
+  { code: 'GD', name: 'Grenada' }, { code: 'GP', name: 'Guadeloupe' },
+  { code: 'GU', name: 'Guam' }, { code: 'GT', name: 'Guatemala' },
+  { code: 'GG', name: 'Guernsey' }, { code: 'GN', name: 'Guinea' },
+  { code: 'GW', name: 'Guinea-Bissau' }, { code: 'GY', name: 'Guyana' },
+  { code: 'HT', name: 'Haiti' }, { code: 'HM', name: 'Heard Island and McDonald Islands' },
+  { code: 'VA', name: 'Holy See' }, { code: 'HN', name: 'Honduras' },
+  { code: 'HK', name: 'Hong Kong' }, { code: 'HU', name: 'Hungary' },
+  { code: 'IS', name: 'Iceland' }, { code: 'IN', name: 'India' },
+  { code: 'ID', name: 'Indonesia' }, { code: 'IR', name: 'Iran' },
+  { code: 'IQ', name: 'Iraq' }, { code: 'IE', name: 'Ireland' },
+  { code: 'IM', name: 'Isle of Man' }, { code: 'IL', name: 'Israel' },
+  { code: 'IT', name: 'Italy' }, { code: 'JM', name: 'Jamaica' },
+  { code: 'JP', name: 'Japan' }, { code: 'JE', name: 'Jersey' },
+  { code: 'JO', name: 'Jordan' }, { code: 'KZ', name: 'Kazakhstan' },
+  { code: 'KE', name: 'Kenya' }, { code: 'KI', name: 'Kiribati' },
+  { code: 'KP', name: "Korea, Democratic People's Republic of" },
+  { code: 'KR', name: 'Korea, Republic of' }, { code: 'KW', name: 'Kuwait' },
+  { code: 'KG', name: 'Kyrgyzstan' }, { code: 'LA', name: "Lao People's Democratic Republic" },
+  { code: 'LV', name: 'Latvia' }, { code: 'LB', name: 'Lebanon' },
+  { code: 'LS', name: 'Lesotho' }, { code: 'LR', name: 'Liberia' },
+  { code: 'LY', name: 'Libya' }, { code: 'LI', name: 'Liechtenstein' },
+  { code: 'LT', name: 'Lithuania' }, { code: 'LU', name: 'Luxembourg' },
+  { code: 'MO', name: 'Macao' }, { code: 'MG', name: 'Madagascar' },
+  { code: 'MW', name: 'Malawi' }, { code: 'MY', name: 'Malaysia' },
+  { code: 'MV', name: 'Maldives' }, { code: 'ML', name: 'Mali' },
+  { code: 'MT', name: 'Malta' }, { code: 'MH', name: 'Marshall Islands' },
+  { code: 'MQ', name: 'Martinique' }, { code: 'MR', name: 'Mauritania' },
+  { code: 'MU', name: 'Mauritius' }, { code: 'YT', name: 'Mayotte' },
+  { code: 'MX', name: 'Mexico' }, { code: 'FM', name: 'Micronesia' },
+  { code: 'MD', name: 'Moldova' }, { code: 'MC', name: 'Monaco' },
+  { code: 'MN', name: 'Mongolia' }, { code: 'ME', name: 'Montenegro' },
+  { code: 'MS', name: 'Montserrat' }, { code: 'MA', name: 'Morocco' },
+  { code: 'MZ', name: 'Mozambique' }, { code: 'MM', name: 'Myanmar' },
+  { code: 'NA', name: 'Namibia' }, { code: 'NR', name: 'Nauru' },
+  { code: 'NP', name: 'Nepal' }, { code: 'NL', name: 'Netherlands' },
+  { code: 'NC', name: 'New Caledonia' }, { code: 'NZ', name: 'New Zealand' },
+  { code: 'NI', name: 'Nicaragua' }, { code: 'NE', name: 'Niger' },
+  { code: 'NG', name: 'Nigeria' }, { code: 'NU', name: 'Niue' },
+  { code: 'NF', name: 'Norfolk Island' }, { code: 'MK', name: 'North Macedonia' },
+  { code: 'MP', name: 'Northern Mariana Islands' }, { code: 'NO', name: 'Norway' },
+  { code: 'OM', name: 'Oman' }, { code: 'PK', name: 'Pakistan' },
+  { code: 'PW', name: 'Palau' }, { code: 'PS', name: 'Palestine, State of' },
+  { code: 'PA', name: 'Panama' }, { code: 'PG', name: 'Papua New Guinea' },
+  { code: 'PY', name: 'Paraguay' }, { code: 'PE', name: 'Peru' },
+  { code: 'PH', name: 'Philippines' }, { code: 'PN', name: 'Pitcairn' },
+  { code: 'PL', name: 'Poland' }, { code: 'PT', name: 'Portugal' },
+  { code: 'PR', name: 'Puerto Rico' }, { code: 'QA', name: 'Qatar' },
+  { code: 'RE', name: 'Réunion' }, { code: 'RO', name: 'Romania' },
+  { code: 'RU', name: 'Russian Federation' }, { code: 'RW', name: 'Rwanda' },
+  { code: 'BL', name: 'Saint Barthélemy' }, { code: 'SH', name: 'Saint Helena' },
+  { code: 'KN', name: 'Saint Kitts and Nevis' }, { code: 'LC', name: 'Saint Lucia' },
+  { code: 'MF', name: 'Saint Martin (French part)' }, { code: 'PM', name: 'Saint Pierre and Miquelon' },
+  { code: 'VC', name: 'Saint Vincent and the Grenadines' }, { code: 'WS', name: 'Samoa' },
+  { code: 'SM', name: 'San Marino' }, { code: 'ST', name: 'Sao Tome and Principe' },
+  { code: 'SA', name: 'Saudi Arabia' }, { code: 'SN', name: 'Senegal' },
+  { code: 'RS', name: 'Serbia' }, { code: 'SC', name: 'Seychelles' },
+  { code: 'SL', name: 'Sierra Leone' }, { code: 'SG', name: 'Singapore' },
+  { code: 'SX', name: 'Sint Maarten (Dutch part)' }, { code: 'SK', name: 'Slovakia' },
+  { code: 'SI', name: 'Slovenia' }, { code: 'SB', name: 'Solomon Islands' },
+  { code: 'SO', name: 'Somalia' }, { code: 'ZA', name: 'South Africa' },
+  { code: 'GS', name: 'South Georgia and the South Sandwich Islands' },
+  { code: 'SS', name: 'South Sudan' }, { code: 'ES', name: 'Spain' },
+  { code: 'LK', name: 'Sri Lanka' }, { code: 'SD', name: 'Sudan' },
+  { code: 'SR', name: 'Suriname' }, { code: 'SJ', name: 'Svalbard and Jan Mayen' },
+  { code: 'SE', name: 'Sweden' }, { code: 'CH', name: 'Switzerland' },
+  { code: 'SY', name: 'Syrian Arab Republic' }, { code: 'TW', name: 'Taiwan' },
+  { code: 'TJ', name: 'Tajikistan' }, { code: 'TZ', name: 'Tanzania' },
+  { code: 'TH', name: 'Thailand' }, { code: 'TL', name: 'Timor-Leste' },
+  { code: 'TG', name: 'Togo' }, { code: 'TK', name: 'Tokelau' },
+  { code: 'TO', name: 'Tonga' }, { code: 'TT', name: 'Trinidad and Tobago' },
+  { code: 'TN', name: 'Tunisia' }, { code: 'TR', name: 'Türkiye' },
+  { code: 'TM', name: 'Turkmenistan' }, { code: 'TC', name: 'Turks and Caicos Islands' },
+  { code: 'TV', name: 'Tuvalu' }, { code: 'UG', name: 'Uganda' },
+  { code: 'UA', name: 'Ukraine' }, { code: 'AE', name: 'United Arab Emirates' },
+  { code: 'GB', name: 'United Kingdom' }, { code: 'US', name: 'United States' },
+  { code: 'UM', name: 'United States Minor Outlying Islands' }, { code: 'UY', name: 'Uruguay' },
+  { code: 'UZ', name: 'Uzbekistan' }, { code: 'VU', name: 'Vanuatu' },
+  { code: 'VE', name: 'Venezuela' }, { code: 'VN', name: 'Viet Nam' },
+  { code: 'VG', name: 'Virgin Islands (British)' }, { code: 'VI', name: 'Virgin Islands (U.S.)' },
+  { code: 'WF', name: 'Wallis and Futuna' }, { code: 'EH', name: 'Western Sahara' },
+  { code: 'YE', name: 'Yemen' }, { code: 'ZM', name: 'Zambia' }, { code: 'ZW', name: 'Zimbabwe' }
+];
+
+
 /* =============================================================================
    2. DATA LOADING — Fetch content from the database via API
    =============================================================================
@@ -1033,7 +1170,10 @@ function ensureCheckoutModal() {
             <label>City<input type="text" name="city" autocomplete="address-level2" data-testid="input-checkout-city"></label>
             <label>Postal code<input type="text" name="postal_code" autocomplete="postal-code" data-testid="input-checkout-postal"></label>
           </div>
-          <label>Country<input type="text" name="country" autocomplete="country" data-testid="input-checkout-country"></label>
+          <label>Country<select name="country" required autocomplete="country" data-testid="select-checkout-country">
+            <option value="" disabled selected>Select country…</option>
+            ${COUNTRIES.map(c => '<option value="' + c.code + '">' + c.name + '</option>').join('')}
+          </select></label>
           <fieldset class="checkout-card">
             <legend>Card details</legend>
             <div id="checkout-card-element" class="checkout-card-element" data-testid="checkout-card-element"></div>
@@ -1788,6 +1928,262 @@ function _setSectionNavOpen(open) {
    without re-binding. */
 let _sectionNavGlobalHandlersAttached = false;
 
+/* One-time guards for the desktop "More ▾" overflow popup (the dropdown
+   that appears when the in-hero pill bar can't fit every section).
+   _MoreGlobalAttached gates the document click+Esc listeners that close
+   the popup; _ResizeAttached gates the window resize listener that
+   recomputes which pills fit; _ResizeTimer debounces the recompute so a
+   user dragging the window edge doesn't trash CPU. */
+let _sectionNavMoreGlobalAttached = false;
+let _sectionNavResizeAttached = false;
+let _sectionNavResizeTimer = null;
+
+/* Per-item click handler factored out of renderSectionNavMenu so it can
+   be attached to BOTH the original pills in the bar AND their clones
+   inside the overflow dropdown. Cloning a node copies attributes but
+   NOT its event listeners, so the popup needs a fresh attach pass. */
+function _handleSectionNavItemClick(a, e) {
+  /* Cross-page or external links — let the browser navigate normally.
+     We only intercept same-page anchors so we can run the smooth-scroll
+     behaviour. */
+  if (a.getAttribute('data-same-page') !== '1') {
+    _setSectionNavOpen(false);
+    _closeSectionNavMore();
+    return;
+  }
+  e.preventDefault();
+  const id = a.getAttribute('data-section-id');
+  const slug = a.getAttribute('data-section-slug') || '';
+  const target = document.getElementById(id);
+  if (target) {
+    try {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (_) {
+      target.scrollIntoView();
+    }
+    /* Keep the URL in sync with the section the visitor is now viewing
+       so a refresh lands them in the same place AND the URL bar shows
+       the shareable pretty form. replaceState avoids polluting history
+       with every menu pick. */
+    try {
+      if (slug) {
+        history.replaceState(null, '', '/' + slug);
+      } else {
+        history.replaceState(null, '', '#' + id);
+      }
+    } catch (_) {}
+  }
+  _setSectionNavOpen(false);
+  _closeSectionNavMore();
+}
+
+/* Idempotently wire _handleSectionNavItemClick onto every
+   .nav-section-menu-item under `scope`. The data-nav-item-wired guard
+   means a second pass over the same node is a no-op, so we can safely
+   call this on both the bar and the overflow popup without double-
+   firing handlers if a clone happens to land back in the bar later. */
+function _attachSectionNavItemHandlers(scope) {
+  scope.querySelectorAll('.nav-section-menu-item').forEach(a => {
+    if (a.dataset.navItemWired === '1') return;
+    a.dataset.navItemWired = '1';
+    a.addEventListener('click', (e) => _handleSectionNavItemClick(a, e));
+  });
+}
+
+/* Close any currently-open desktop "More" overflow dropdown. Safe to
+   call when nothing is open (no-ops). */
+function _closeSectionNavMore() {
+  document.querySelectorAll('.nav-section-menu-overflow.is-open')
+    .forEach(p => p.classList.remove('is-open'));
+  document.querySelectorAll('.nav-section-menu-more[aria-expanded="true"]')
+    .forEach(b => b.setAttribute('aria-expanded', 'false'));
+}
+
+/* Desktop in-hero pill bar overflow handling.
+
+   Replaces the old `overflow-x: auto` horizontal-scroll behaviour:
+   measures available width, fits as many pills as will naturally
+   display, hides the rest, and appends a "More ▾" button that opens
+   the overflow into a dropdown popup. Reruns on every render and on
+   debounced window resize so adding sections, renaming sections (which
+   changes pill width), or dragging the viewport edge all reflow
+   correctly.
+
+   Idempotent: starts by removing any prior More button + popup and
+   restoring display on every pill, so calling it twice in a row is
+   safe and so is calling it after the section list has changed.
+
+   Skipped on:
+     - mobile (<769px)        — the dropdown panel is the experience
+     - side_rail nav style    — vertical column has no inline pills
+     - hamburger nav style    — everything is collapsed by design
+     - empty / single pill    — no overflow possible */
+function _applySectionNavDesktopOverflow() {
+  const panel = document.getElementById('nav-section-panel');
+  if (!panel) return;
+  const wrap = panel.parentNode;
+  if (!wrap) return;
+
+  /* Always start from a clean slate. The popup lives as a sibling of
+     the panel (under the .nav-section-menu wrapper) so it can absolute-
+     position freely without being clipped by the pill bar's bounds. */
+  const oldMore = wrap.querySelector('.nav-section-menu-more');
+  if (oldMore) oldMore.remove();
+  const oldOverflow = wrap.querySelector('.nav-section-menu-overflow');
+  if (oldOverflow) oldOverflow.remove();
+  panel.querySelectorAll('.nav-section-menu-item').forEach(a => {
+    a.style.removeProperty('display');
+    delete a.dataset.overflow;
+  });
+
+  /* Wire the one-time resize listener now (regardless of whether this
+     run actually folds anything). A later resize that REQUIRES folding
+     will still trigger correctly. */
+  if (!_sectionNavResizeAttached) {
+    _sectionNavResizeAttached = true;
+    window.addEventListener('resize', () => {
+      if (_sectionNavResizeTimer) clearTimeout(_sectionNavResizeTimer);
+      _sectionNavResizeTimer = setTimeout(_applySectionNavDesktopOverflow, 150);
+    });
+  }
+
+  const isDesktop = window.matchMedia('(min-width: 769px)').matches;
+  const navStyle = document.documentElement.dataset.navStyle || '';
+  if (!isDesktop || navStyle === 'side_rail' || navStyle === 'hamburger') return;
+
+  const items = Array.from(panel.querySelectorAll('.nav-section-menu-item'));
+  if (items.length < 2) return;
+
+  /* During a hero-fragment swap the panel may briefly have width 0
+     before layout settles. Defer one frame and retry — the next frame
+     will have a real width and the early-return won't be hit again.
+     Cap retries so a permanently-hidden parent (e.g. tab in background,
+     CSS that hides the bar entirely) can't burn frames forever. After
+     the budget runs out we silently give up; a later real render
+     (renderSectionNavMenu) or resize will restart the loop with a
+     fresh budget. */
+  if (panel.clientWidth <= 0) {
+    const tries = parseInt(panel.dataset.overflowZeroTries || '0', 10) + 1;
+    if (tries > 10) {
+      delete panel.dataset.overflowZeroTries;
+      return;
+    }
+    panel.dataset.overflowZeroTries = String(tries);
+    requestAnimationFrame(_applySectionNavDesktopOverflow);
+    return;
+  }
+  delete panel.dataset.overflowZeroTries;
+
+  const cs = window.getComputedStyle(panel);
+  const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+  const gap = parseFloat(cs.gap || cs.columnGap) || 0;
+  const available = panel.clientWidth - padX;
+
+  /* Build the More button FIRST so we can measure its real rendered
+     width. Reserving a hard-coded estimate would either waste space
+     (over-reserve) or hide a pill behind a button that's narrower
+     than the pill it replaced (under-reserve). */
+  const moreBtn = document.createElement('button');
+  moreBtn.type = 'button';
+  moreBtn.className = 'nav-section-menu-more';
+  moreBtn.setAttribute('aria-haspopup', 'true');
+  moreBtn.setAttribute('aria-expanded', 'false');
+  moreBtn.setAttribute('aria-label', 'More sections');
+  moreBtn.setAttribute('data-testid', 'button-section-nav-more');
+  moreBtn.innerHTML =
+    '<span class="nav-section-menu-more-label">More</span>' +
+    '<i data-lucide="chevron-down" class="nav-section-menu-more-icon"></i>';
+  panel.appendChild(moreBtn);
+  if (window.lucide && typeof window.lucide.createIcons === 'function') {
+    try { window.lucide.createIcons(); } catch (_) {}
+  }
+  const moreWidth = moreBtn.offsetWidth + gap;
+
+  /* Walk left-to-right, accumulating used width. The first item that
+     would push us past `available` (counting the More-button reserve
+     for every position EXCEPT the literal last item — if only one
+     pill remains and it fits without the button, we don't need the
+     button at all) marks the fold. */
+  let used = 0;
+  let firstOverflowIdx = -1;
+  for (let i = 0; i < items.length; i++) {
+    const w = items[i].offsetWidth + (i > 0 ? gap : 0);
+    const isLast = i === items.length - 1;
+    const reserve = isLast ? 0 : moreWidth;
+    if (used + w + reserve > available) {
+      firstOverflowIdx = i;
+      break;
+    }
+    used += w;
+  }
+
+  if (firstOverflowIdx === -1) {
+    /* Everything fits — no More button needed. */
+    moreBtn.remove();
+    return;
+  }
+
+  /* Hide the overflow items in the bar (originals stay in the DOM so
+     a viewport-widen on the next resize can re-show them instantly
+     without re-cloning). */
+  const overflowItems = items.slice(firstOverflowIdx);
+  overflowItems.forEach(a => {
+    a.style.display = 'none';
+    a.dataset.overflow = '1';
+  });
+
+  /* Build the popup with CLONES of the overflow items so each one has
+     a node visible in exactly one place at a time. Click handlers go
+     onto the clones via _attachSectionNavItemHandlers. Suffix the
+     clone's data-testid with "-overflow" so test selectors that target
+     the bar version don't ambiguously match the popup version
+     (otherwise the same data-testid would identify two nodes). */
+  const popup = document.createElement('div');
+  popup.className = 'nav-section-menu-overflow';
+  popup.setAttribute('role', 'menu');
+  popup.setAttribute('aria-label', 'More sections');
+  overflowItems.forEach(orig => {
+    const clone = orig.cloneNode(true);
+    clone.style.removeProperty('display');
+    delete clone.dataset.overflow;
+    delete clone.dataset.navItemWired;
+    const tid = clone.getAttribute('data-testid');
+    if (tid) clone.setAttribute('data-testid', tid + '-overflow');
+    popup.appendChild(clone);
+  });
+  wrap.appendChild(popup);
+
+  moreBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const opening = !popup.classList.contains('is-open');
+    _closeSectionNavMore();
+    if (opening) {
+      popup.classList.add('is-open');
+      moreBtn.setAttribute('aria-expanded', 'true');
+    }
+  });
+
+  _attachSectionNavItemHandlers(popup);
+  if (window.lucide && typeof window.lucide.createIcons === 'function') {
+    try { window.lucide.createIcons(); } catch (_) {}
+  }
+
+  if (!_sectionNavMoreGlobalAttached) {
+    _sectionNavMoreGlobalAttached = true;
+    document.addEventListener('click', (e) => {
+      const op = document.querySelector('.nav-section-menu-overflow.is-open');
+      if (!op) return;
+      if (op.contains(e.target)) return;
+      const trigger = document.querySelector('.nav-section-menu-more[aria-expanded="true"]');
+      if (trigger && trigger.contains(e.target)) return;
+      _closeSectionNavMore();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') _closeSectionNavMore();
+    });
+  }
+}
+
 function renderSectionNavMenu() {
   const toggle = document.getElementById('btn-section-nav');
   if (!toggle) return;
@@ -1951,44 +2347,21 @@ function renderSectionNavMenu() {
     '</a>'
   )).join('');
 
-  panel.querySelectorAll('.nav-section-menu-item').forEach(a => {
-    a.addEventListener('click', (e) => {
-      /* Cross-page or external links — let the browser navigate
-         normally. We only intercept same-page anchors so we can run
-         the smooth-scroll behaviour. */
-      if (a.getAttribute('data-same-page') !== '1') {
-        _setSectionNavOpen(false);
-        return;
-      }
-      e.preventDefault();
-      const id = a.getAttribute('data-section-id');
-      const slug = a.getAttribute('data-section-slug') || '';
-      const target = document.getElementById(id);
-      if (target) {
-        try {
-          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        } catch (_) {
-          target.scrollIntoView();
-        }
-        /* Keep the URL in sync with the section the visitor is now
-           viewing so a refresh lands them in the same place AND the
-           URL bar shows the shareable pretty form. replaceState avoids
-           polluting history with every menu pick. */
-        try {
-          if (slug) {
-            history.replaceState(null, '', '/' + slug);
-          } else {
-            history.replaceState(null, '', '#' + id);
-          }
-        } catch (_) {}
-      }
-      _setSectionNavOpen(false);
-    });
-  });
+  /* Wire per-pill click handlers via the shared helper so the same
+     logic also fires on overflow-popup clones (see
+     _applySectionNavDesktopOverflow). */
+  _attachSectionNavItemHandlers(panel);
 
   if (window.lucide && typeof window.lucide.createIcons === 'function') {
     try { window.lucide.createIcons(); } catch (_) {}
   }
+
+  /* Desktop pill bar overflow: fit as many pills as the bar can show
+     and fold the rest behind a "More ▾" button. Runs after the panel
+     HTML is in place AND lucide icons are rendered (so offsetWidth
+     reflects the actual painted pill width including its icon). On
+     mobile / side_rail / hamburger this is a no-op. */
+  _applySectionNavDesktopOverflow();
 
   /* On the very first build, honour any incoming URL hash so a deep
      link (or a refresh after the visitor scrolled to a section) lands
