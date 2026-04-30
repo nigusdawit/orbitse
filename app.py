@@ -2286,6 +2286,19 @@ def init_db():
                 #     standalone page from the menu without auto-listing
                 #     every page there.
                 "ALTER TABLE page_sections ADD COLUMN IF NOT EXISTS nav_link_target TEXT NOT NULL DEFAULT ''",
+                # --- Per-section SEO overrides (Task #69).
+                #     Each pretty per-section URL (/podcast, /events, etc.,
+                #     served by serve_section) inherits the homepage's SEO
+                #     <title>, meta description, and og:image by default,
+                #     which means every section URL produces an identical
+                #     social-share preview card. These three nullable-by-
+                #     default columns let the admin override that on a
+                #     per-section basis. Empty string = fall back to the
+                #     site-wide cascade in _build_seo_meta_html (preserves
+                #     existing behaviour for unconfigured sections).
+                "ALTER TABLE page_sections ADD COLUMN IF NOT EXISTS seo_title TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE page_sections ADD COLUMN IF NOT EXISTS seo_description TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE page_sections ADD COLUMN IF NOT EXISTS seo_image TEXT NOT NULL DEFAULT ''",
                 # --- Brand identity (Task #61 / items 2,4,17,18).
                 #     theme_accent_secondary is the second stop of the
                 #     accent gradient (only used when theme_accent_gradient
@@ -5709,10 +5722,12 @@ def _build_seo_meta_html(overrides=None):
     and favicon links. Falls back to site_settings values if SEO-specific
     fields are empty.
 
-    overrides: optional dict used by standalone-page rendering at /p/<slug>.
-      Recognised keys: "title", "description". Non-empty overrides win over
-      the site_settings cascade. Page-level title is also suffixed with
-      "| <site_name>" so search results stay attributable to the brand.
+    overrides: optional dict used by standalone-page rendering at /p/<slug>
+      AND per-section pretty URLs at /<section_slug> (Task #69).
+      Recognised keys: "title", "description", "og_image". Non-empty
+      overrides win over the site_settings cascade. The override title
+      is also suffixed with "| <site_name>" so search results stay
+      attributable to the brand.
     """
     settings = query_db("SELECT * FROM site_settings WHERE id = 1", fetchone=True)
     if not settings:
@@ -5741,7 +5756,13 @@ def _build_seo_meta_html(overrides=None):
         description = settings.get("hero_description", "")
 
     keywords = (settings.get("seo_keywords") or "").strip()
-    og_image = (settings.get("seo_og_image") or "").strip() or "/ai_concierge.png"
+    # og:image cascades override → site-wide → packaged default. Same
+    # pattern as title/description so per-section pretty URLs (Task #69)
+    # can ship a custom social-share preview card without each admin
+    # having to re-set the site-wide image first.
+    og_image = (overrides.get("og_image") or "").strip()
+    if not og_image:
+        og_image = (settings.get("seo_og_image") or "").strip() or "/ai_concierge.png"
     twitter_handle = (settings.get("seo_twitter_handle") or "").strip()
     canonical_url = (settings.get("seo_canonical_url") or "").strip()
     robots = (settings.get("seo_robots") or "").strip() or "index, follow"
@@ -6110,7 +6131,7 @@ def _build_loading_initials_and_name():
 
 
 @app.route("/")
-def serve_index(initial_section_dom_id=None):
+def serve_index(initial_section_dom_id=None, seo_overrides=None):
     """Serve the main public homepage.
 
     `initial_section_dom_id` is forwarded by serve_section() (Task #67)
@@ -6119,8 +6140,19 @@ def serve_index(initial_section_dom_id=None):
     on <html> so script.js's _scrollToHashOnLoad can deep-link to that
     section on first paint without polluting the URL with a #hash.
     Defaults to None on the canonical "/" path so the homepage isn't
-    pinned to any specific section."""
-    return _render_app_shell_response(initial_section_dom_id=initial_section_dom_id)
+    pinned to any specific section.
+
+    `seo_overrides` is forwarded by serve_section() (Task #69) when the
+    matched page_sections row carries non-empty seo_title /
+    seo_description / seo_image — these win over the homepage's
+    site-wide cascade in _build_seo_meta_html so each /<section_slug>
+    URL gets its own search-result snippet and social-share preview.
+    Defaults to None on the canonical "/" path so the homepage keeps
+    using the site-wide SEO settings as before."""
+    return _render_app_shell_response(
+        initial_section_dom_id=initial_section_dom_id,
+        seo_overrides=seo_overrides,
+    )
 
 
 @app.route("/p/<string:slug>")
@@ -6154,7 +6186,7 @@ def serve_standalone_page(slug):
     return _render_app_shell_response(page=page, section_ids=section_ids)
 
 
-def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_id=None):
+def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_id=None, seo_overrides=None):
     """
     Serve the public site HTML shell with SEO meta tags injected
     server-side. Used by both the homepage at "/" (page=None) and
@@ -6229,8 +6261,13 @@ def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_
         # Inject SEO meta tags (replaces the <!-- SEO_META_INJECT --> placeholder in <head>)
         # On standalone pages, the page row's title/meta_description win
         # over the homepage SEO cascade so each /p/<slug> tab has its
-        # own search-result title and social-share description.
-        seo_overrides = None
+        # own search-result title and social-share description. Per-
+        # section pretty URLs (Task #69) pass their own seo_overrides
+        # in via serve_section so /<section_slug> URLs get their own
+        # title, description, and og:image too. Standalone-page mode
+        # always wins over a caller-supplied override (the two are
+        # mutually exclusive in practice — serve_section never targets
+        # /p/<slug>).
         if page is not None:
             seo_overrides = {
                 "title": (page.get("title") or "").strip(),
@@ -6789,7 +6826,9 @@ def serve_section(section_slug):
 
     try:
         row = query_db(
-            "SELECT id, slug, section_type, enabled FROM page_sections "
+            "SELECT id, slug, section_type, enabled, "
+            "seo_title, seo_description, seo_image "
+            "FROM page_sections "
             "WHERE slug = %s",
             (section_slug,),
             fetchone=True,
@@ -6826,7 +6865,19 @@ def serve_section(section_slug):
         # the right answer — there's nothing to deep-link TO.
         return ("Section not found", 404)
 
-    return serve_index(initial_section_dom_id=dom_id)
+    # Per-section SEO overrides (Task #69). Pull the three nullable
+    # columns off the row and pass them to serve_index — _build_seo_meta_html
+    # cascades each one to the site-wide settings when empty so unconfigured
+    # sections behave exactly as before. We keep the dict around even when
+    # every value is empty; that way a partially-configured section
+    # (e.g. only seo_title set) still benefits from the override path
+    # without us re-doing the per-key emptiness check downstream.
+    seo_overrides = {
+        "title":       (row.get("seo_title") or "").strip(),
+        "description": (row.get("seo_description") or "").strip(),
+        "og_image":    (row.get("seo_image") or "").strip(),
+    }
+    return serve_index(initial_section_dom_id=dom_id, seo_overrides=seo_overrides)
 
 
 @app.route("/<path:filename>")
@@ -20999,7 +21050,7 @@ def admin_update_page_section(section_id):
 
     existing = query_db(
         "SELECT title, subtitle, enabled, settings, bg_image, bg_overlay_alpha, "
-        "nav_link_target "
+        "nav_link_target, seo_title, seo_description, seo_image "
         "FROM page_sections WHERE id = %s",
         (section_id,), fetchone=True
     )
@@ -21011,6 +21062,19 @@ def admin_update_page_section(section_id):
     enabled  = data["enabled"]  if "enabled"  in data else bool(existing.get("enabled"))
     settings = data["settings"] if "settings" in data else (existing.get("settings") or {})
     bg_image = data["bg_image"] if "bg_image" in data else (existing.get("bg_image") or "")
+    # Per-section SEO overrides (Task #69). Trim and coerce to string;
+    # empty strings are allowed and explicitly mean "fall back to the
+    # site-wide cascade in _build_seo_meta_html". We don't validate
+    # that seo_image is a real URL — admins paste both /uploads/<hex>.jpg
+    # internal paths and absolute https:// URLs (e.g. CDN-hosted assets)
+    # here, both of which are legitimate as og:image values.
+    def _seo_field(key):
+        if key in data:
+            return str(data.get(key) or "").strip()
+        return str(existing.get(key) or "").strip()
+    seo_title       = _seo_field("seo_title")
+    seo_description = _seo_field("seo_description")
+    seo_image       = _seo_field("seo_image")
     # Section Menu link override — empty = same-page anchor (default
     # behaviour); any non-empty value is used verbatim as the menu
     # entry's href, typically "/p/<slug>" to send the menu at a
@@ -21037,10 +21101,12 @@ def admin_update_page_section(section_id):
     item = execute_db(
         """UPDATE page_sections SET
              title = %s, subtitle = %s, enabled = %s, settings = %s::jsonb,
-             bg_image = %s, bg_overlay_alpha = %s, nav_link_target = %s
+             bg_image = %s, bg_overlay_alpha = %s, nav_link_target = %s,
+             seo_title = %s, seo_description = %s, seo_image = %s
            WHERE id = %s RETURNING *""",
         (title, subtitle, enabled, json.dumps(settings),
-         bg_image, bg_overlay_alpha, nav_link_target, section_id)
+         bg_image, bg_overlay_alpha, nav_link_target,
+         seo_title, seo_description, seo_image, section_id)
     )
     if not item:
         return jsonify({"error": "Section not found"}), 404

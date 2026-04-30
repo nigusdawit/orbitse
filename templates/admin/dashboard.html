@@ -12148,6 +12148,41 @@ TO CUSTOMIZE THIS DASHBOARD:
           payload.nav_link_target = navTarget.trim();
         }
 
+        // Per-section SEO overrides (Task #69). The pretty per-section
+        // URLs (/podcast, /events, ...) all serve the homepage shell
+        // and so by default inherit the homepage's <title>, meta
+        // description, and og:image. Leaving any field blank keeps
+        // that fallback; setting one overrides just that one tag for
+        // this section URL — search-result snippets and social-share
+        // preview cards become section-specific.
+        const seoTitle = prompt(
+          'SEO title for this section URL (optional):\n\n' +
+          'Shown as the <title> tag and the social-share card title when somebody shares ' +
+          '/' + (section.slug || '') + '. Leave blank to inherit the site-wide SEO title.',
+          section.seo_title || ''
+        );
+        if (seoTitle === null) return;
+        payload.seo_title = seoTitle.trim();
+
+        const seoDesc = prompt(
+          'SEO description for this section URL (optional):\n\n' +
+          'Shown as the meta description and the social-share card description. ' +
+          'Leave blank to inherit the site-wide SEO description.',
+          section.seo_description || ''
+        );
+        if (seoDesc === null) return;
+        payload.seo_description = seoDesc.trim();
+
+        const seoImage = prompt(
+          'Social-share image URL for this section (optional):\n\n' +
+          'Used as the og:image / twitter:image when this section URL is shared. ' +
+          'Accepts an internal path like /uploads/abc.jpg or an absolute https:// URL. ' +
+          'Leave blank to inherit the site-wide social-share image.',
+          section.seo_image || ''
+        );
+        if (seoImage === null) return;
+        payload.seo_image = seoImage.trim();
+
         const updateRes = await fetch(`/admin/api/page-sections/${id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
