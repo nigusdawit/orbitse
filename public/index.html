@@ -154,7 +154,13 @@ FONTS:
       <!-- Gradient overlay — makes text readable over the image -->
       <div class="hero-overlay"></div>
 
-      <!-- Top Navigation Bar -->
+      <!-- Top Navigation Bar — 3-column grid: logo | section menu | CTAs.
+           Grid layout keeps the section menu visually centred regardless
+           of how wide the logo or right-side CTAs grow. The cart button
+           is inserted by renderCartButton() into the right action group
+           (right before #btn-reserve-hero), NOT into the centred section
+           menu, so don't move .nav-section-menu back inside the action
+           group without updating that insertion logic too. -->
       <div class="hero-nav">
         <!-- Logo / Brand -->
         <div class="flex items-center gap-md">
@@ -165,28 +171,33 @@ FONTS:
           </div>
         </div>
 
-        <!-- Action Buttons -->
+        <!-- Section nav menu (Task #65). Progressive-disclosure menu
+             that reveals every enabled landing section (built-in + custom).
+             Items are populated dynamically by renderSectionNavMenu()
+             in script.js after /api/page-bundle resolves; the panel
+             markup is created lazily so first paint stays light. On
+             desktop with inline nav styles (floating_glass / sticky /
+             hidden_on_scroll) this expands into a horizontal pill bar
+             that the grid keeps centred between logo and CTAs. -->
+        <div class="nav-section-menu" data-testid="nav-section-menu">
+          <button
+            type="button"
+            id="btn-section-nav"
+            class="nav-section-menu-toggle"
+            aria-haspopup="true"
+            aria-expanded="false"
+            aria-controls="nav-section-panel"
+            aria-label="Open section menu"
+            data-testid="button-section-nav-toggle"
+          >
+            <i data-lucide="menu" style="width:18px;height:18px;"></i>
+            <span class="nav-section-menu-toggle-label">Menu</span>
+          </button>
+        </div>
+
+        <!-- Action Buttons (right). renderCartButton() inserts #cart-fab
+             before #btn-reserve-hero inside this same group. -->
         <div class="flex items-center gap-md">
-          <!-- Section nav menu (Task #65). Progressive-disclosure menu
-               that reveals every enabled landing section (built-in + custom).
-               Items are populated dynamically by renderSectionNavMenu()
-               in script.js after /api/page-bundle resolves; the panel
-               markup is created lazily so first paint stays light. -->
-          <div class="nav-section-menu" data-testid="nav-section-menu">
-            <button
-              type="button"
-              id="btn-section-nav"
-              class="nav-section-menu-toggle"
-              aria-haspopup="true"
-              aria-expanded="false"
-              aria-controls="nav-section-panel"
-              aria-label="Open section menu"
-              data-testid="button-section-nav-toggle"
-            >
-              <i data-lucide="menu" style="width:18px;height:18px;"></i>
-              <span class="nav-section-menu-toggle-label">Menu</span>
-            </button>
-          </div>
           <button id="btn-reserve-hero" class="btn-reserve" onclick="openModal()" aria-label="Get started — open inquiry form" data-testid="button-reserve-hero">
             &#x1f4c5; Get Started
           </button>

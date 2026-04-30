@@ -720,7 +720,21 @@ html[data-nav-style="hidden_on_scroll"] .hero-section { padding-top: 4.5rem; }
    as direct children of .hero-nav. The toggle button is appended by
    applyPersonality() and reveals the hidden nav children inside a dropdown
    (.hero-nav.nav-open exposes them). */
-html[data-nav-style="hamburger"] .hero-nav { position: relative; }
+/* Hamburger overrides the default 3-column grid back to a simple flex
+   row so flex-wrap (when nav-open) and the auto margin on the toggle
+   button (margin-left: auto) work as intended. Without this override
+   the .hero-nav grid would force the hamburger toggle into the centred
+   middle column instead of the right edge. */
+html[data-nav-style="hamburger"] .hero-nav {
+  position: relative;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  grid-template-columns: none;
+}
+html[data-nav-style="hamburger"] .hero-nav > * {
+  justify-self: auto;
+}
 html[data-nav-style="hamburger"] .hero-nav > *:not(:has(.logo-badge, .logo-mark)):not(.nav-hamburger-toggle) {
   display: none;
 }
@@ -884,12 +898,12 @@ html[data-nav-style="side_rail"] .nav-section-menu-panel {
   left: calc(100% + 0.6rem);
   transform-origin: top left;
 }
-html[data-nav-style="side_rail"] .hero-nav > .flex:has(.nav-section-menu) {
-  flex-direction: column;
-  gap: 0.5rem;
-  align-items: stretch;
-  width: 100%;
-}
+/* (Was: side_rail forced the OLD action-group flex wrapper into a
+   vertical column. Since the section menu was hoisted out of that
+   wrapper into its own .hero-nav child, this selector no longer
+   matches. The vertical column is now handled by the .hero-nav rule
+   below at L~1067 which sets flex-direction: column on the rail
+   itself, so all 3 children stack naturally.) */
 
 /* Desktop (>= 769px) — for the inline nav styles (floating_glass,
    sticky, hidden_on_scroll), expand the section nav into an always-
@@ -1053,11 +1067,9 @@ html[data-nav-style="side_rail"] .hero-nav > .flex:has(.nav-section-menu) {
     right: 0;
     transform-origin: top right;
   }
-  html[data-nav-style="side_rail"] .hero-nav > .flex:has(.nav-section-menu) {
-    flex-direction: row;
-    align-items: center;
-    width: auto;
-  }
+  /* (Was: side_rail forced the OLD action-group flex wrapper into a
+     row on mobile. No longer needed — section menu is now a top-level
+     .hero-nav child handled by the mobile fallback below.) */
 }
 
 
@@ -1070,6 +1082,10 @@ html[data-nav-style="side_rail"] .hero-nav {
   left: 0;
   bottom: 0;
   z-index: 80;
+  /* Override the default 3-column grid back to a vertical flex column
+     so logo / section menu / CTAs stack down the rail. */
+  display: flex;
+  grid-template-columns: none;
   flex-direction: column;
   justify-content: flex-start;
   align-items: center;
@@ -1080,6 +1096,9 @@ html[data-nav-style="side_rail"] .hero-nav {
   backdrop-filter: blur(var(--glass-blur, 16px));
   -webkit-backdrop-filter: blur(var(--glass-blur, 16px));
   border-right: 1px solid var(--glass-border, rgba(255,255,255,0.08));
+}
+html[data-nav-style="side_rail"] .hero-nav > * {
+  justify-self: auto;
 }
 html[data-nav-style="side_rail"] .hero-section,
 html[data-nav-style="side_rail"] .landing-section {
@@ -1461,11 +1480,22 @@ html[data-scroll-mode="smooth"] .snap-section {
      never painted under the hero title and always receive pointer
      events. Stays well below modals (60+) and chat (5345+). */
   z-index: 60;
-  display: flex;
+  /* 3-column grid: logo | section menu | CTAs. The middle column
+     auto-sizes to the section menu's natural width and is centred in
+     the row (justify-self: center on the child). The 1fr side columns
+     use minmax(0, 1fr) so they can shrink below their content size if
+     the centred menu would otherwise force horizontal overflow on
+     narrow viewports — that prevents the layout from blowing wider
+     than the viewport without sacrificing the visual centring. */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
+  gap: var(--space-md);
   padding: var(--space-lg) var(--space-xl);
 }
+.hero-nav > :nth-child(1) { justify-self: start; }
+.hero-nav > :nth-child(2) { justify-self: center; }
+.hero-nav > :nth-child(3) { justify-self: end; }
 
 /* Logo badge — circular with initials (default "monogram" mode) */
 .logo-badge {
