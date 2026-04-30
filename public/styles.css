@@ -1372,13 +1372,15 @@ body.theme-accent-gradient .section-divider {
   padding: var(--space-3xl) calc(var(--space-xl) + var(--section-frame-inset, 0px));
   /* Extra vertical breathing room so the painted card edge never crowds
      the section eyebrow at the top or the trailing CTA button at the
-     bottom. The 2.2× multiplier scales with the admin's density slider
-     (--space-scale) so the rhythm tightens / loosens together with the
-     rest of the spacing system. Pushed past the earlier 1.3× / 1.6×
-     attempts because a subtler bump still let the eyebrow feel pinched
-     against the painted card edge — visitors expect the top gap to
-     read at least as large as the eyebrow→title rhythm below it. */
-  padding-block: calc(var(--space-3xl) * 2.2);
+     bottom. We deliberately decouple this from --space-scale (the
+     admin density slider) and set an absolute floor — earlier
+     multiplier-based attempts (1.3× → 2.2× of --space-3xl) still
+     collapsed when the density slider was turned down, leaving the
+     eyebrow visually pinched against the painted card edge. clamp()
+     with viewport-height middle term lets the gap grow on tall
+     monitors without ever shrinking below the comfortable 8rem floor.
+     !important guards against narrower section-specific overrides. */
+  padding-block: clamp(8rem, 14vh, 14rem) !important;
   /* Frame the section: clip the painted background to the content box so the
      existing padding becomes a visible border of the page background (body's
      --color-bg) instead of the section color extending edge-to-edge. The
@@ -2526,13 +2528,13 @@ body.theme-accent-gradient .section-divider {
 
   .landing-section {
     padding: var(--space-2xl) var(--space-md);
-    /* Mirror the desktop breathing-room boost on mobile so the painted
-       card edge keeps a comfortable gap above the eyebrow and below the
-       trailing CTA. The 3× multiplier sits well above desktop because
-       the smaller viewport amplifies any crowding — earlier 1.4× / 2×
-       attempts still let the eyebrow sit too close to the painted edge
-       on phones. */
-    padding-block: calc(var(--space-2xl) * 3);
+    /* Mirror the desktop breathing-room boost on mobile, but pin the
+       gap with absolute units so it stays comfortable even when the
+       admin density slider (--space-scale) is dialed down. clamp()
+       with a 6rem floor guarantees the painted card edge never
+       crowds the eyebrow / trailing CTA on phones. !important keeps
+       any narrower section-level overrides from collapsing it. */
+    padding-block: clamp(6rem, 18vw, 10rem) !important;
   }
 
   .highlights-grid {
@@ -6049,9 +6051,9 @@ body.theme-accent-gradient .section-divider {
     /* Carry the breathing-room boost down to ultra-small phones too —
        without this re-declaration, the shorthand above resets the
        block padding set higher up and the eyebrow / trailing CTA crowd
-       the painted card edge again at <380px. 2.6× keeps parity with
-       the 3× standard-mobile boost. */
-    padding-block: calc(var(--space-xl) * 2.6);
+       the painted card edge again at <380px. Absolute floor in rem
+       keeps the gap from collapsing when the density slider is low. */
+    padding-block: clamp(4.5rem, 16vw, 7rem) !important;
   }
 
   .chatbot-container {
