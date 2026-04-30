@@ -152,7 +152,7 @@ SECTIONS:
   /* Tinted with the active theme background + admin-configurable alpha
      so the boot overlay always matches the site palette instead of
      flashing the default navy. */
-  background: rgba(var(--color-bg-rgb), var(--loading-bg-alpha));
+  background: rgb(var(--color-bg-rgb) / var(--loading-bg-alpha));
   transition: opacity var(--transition-medium) var(--ease-smooth),
               transform var(--transition-medium) var(--ease-smooth);
 }
@@ -554,7 +554,7 @@ html[data-header-align="numbered"] .landing-section .section-eyebrow::before {
 /* text_mesh — palette-driven mesh gradient, no photo. */
 html[data-hero-layout="text_mesh"] .hero-section {
   background-image:
-    radial-gradient(ellipse at 20% 10%, rgba(var(--color-bg-rgb, 6 11 20) / 0.4), transparent 60%),
+    radial-gradient(ellipse at 20% 10%, rgb(var(--color-bg-rgb, 6 11 20) / 0.4), transparent 60%),
     radial-gradient(ellipse at 80% 30%, color-mix(in srgb, var(--color-accent) 35%, transparent), transparent 65%),
     radial-gradient(ellipse at 50% 90%, color-mix(in srgb, var(--color-section-1) 70%, transparent), transparent 70%),
     linear-gradient(135deg, var(--color-bg), var(--color-section-2)) !important;
@@ -681,7 +681,7 @@ html[data-nav-style="sticky"] .hero-nav {
   left: 0;
   right: 0;
   z-index: 80;
-  background: rgba(var(--color-bg-rgb, 6 11 20) / 0.7);
+  background: rgb(var(--color-bg-rgb, 6 11 20) / 0.7);
   backdrop-filter: blur(var(--glass-blur, 16px));
   -webkit-backdrop-filter: blur(var(--glass-blur, 16px));
   border-bottom: 1px solid var(--glass-border, rgba(255,255,255,0.08));
@@ -700,7 +700,7 @@ html[data-nav-style="hidden_on_scroll"] .hero-nav {
   left: 0;
   right: 0;
   z-index: 80;
-  background: rgba(var(--color-bg-rgb, 6 11 20) / 0.7);
+  background: rgb(var(--color-bg-rgb, 6 11 20) / 0.7);
   backdrop-filter: blur(var(--glass-blur, 16px));
   -webkit-backdrop-filter: blur(var(--glass-blur, 16px));
   border-bottom: 1px solid var(--glass-border, rgba(255,255,255,0.08));
@@ -809,7 +809,7 @@ html[data-nav-style="hamburger"] .nav-hamburger-toggle { display: flex; }
   max-height: min(70vh, 32rem);
   overflow-y: auto;
   padding: 0.5rem;
-  background: rgba(var(--color-bg-rgb, 6 11 20) / 0.94);
+  background: rgb(var(--color-bg-rgb, 6 11 20) / 0.94);
   backdrop-filter: blur(var(--glass-blur, 16px));
   -webkit-backdrop-filter: blur(var(--glass-blur, 16px));
   border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.14));
@@ -940,7 +940,7 @@ html[data-nav-style="side_rail"] .hero-nav {
   width: 3.5rem;
   padding: var(--space-lg, 1rem) 0.25rem;
   gap: var(--space-md, 0.75rem);
-  background: rgba(var(--color-bg-rgb, 6 11 20) / 0.85);
+  background: rgb(var(--color-bg-rgb, 6 11 20) / 0.85);
   backdrop-filter: blur(var(--glass-blur, 16px));
   -webkit-backdrop-filter: blur(var(--glass-blur, 16px));
   border-right: 1px solid var(--glass-border, rgba(255,255,255,0.08));
@@ -992,7 +992,7 @@ html[data-chatbot-placement="side_panel"] .chatbot-container {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  background: rgba(var(--color-bg-rgb, 6 11 20) / 0.92);
+  background: rgb(var(--color-bg-rgb, 6 11 20) / 0.92);
   backdrop-filter: blur(var(--glass-blur, 16px));
   -webkit-backdrop-filter: blur(var(--glass-blur, 16px));
   border-left: 1px solid var(--glass-border, rgba(255,255,255,0.08));
