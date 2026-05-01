@@ -2292,6 +2292,10 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
       Secrets
     </button>
+    <button class="tab-btn" onclick="switchTab('snapshot', this); loadOnboardingSnapshot();" data-testid="tab-snapshot">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Clone &amp; Snapshot
+    </button>
   </nav>
 
   <main class="admin-main">
@@ -2995,6 +2999,86 @@ TO CUSTOMIZE THIS DASHBOARD:
         <button class="btn-secondary" onclick="closeSecretEditModal()" data-testid="button-secret-modal-cancel">Cancel</button>
         <button class="btn-primary" onclick="submitSecretEditModal()" data-testid="button-secret-modal-save">Save</button>
       </div>
+    </div>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: CLONE & SNAPSHOT (Tier 10 — admin UI for the snapshot/clone engine)
+  ========================================================================
+  Snapshot this configured install as a JSON template another fresh
+  install can apply with bootstrap_install. Inverse of the /setup
+  wizard. Backed by /admin/api/onboarding/snapshot in app.py.
+
+  Default options bias toward "safe to share with another operator":
+    - admin_records included (skills, MCPs, dashboards, automations,
+      messaging templates, model prices)
+    - content NOT included (would create duplicates on a non-empty
+      target — opt-in for full clones)
+    - secrets NOT included (auth tokens, webhook secrets redacted —
+      opt-in only when the destination is YOUR own sibling install)
+    - admin_user is always replaced with a placeholder; the source
+      install's actual admin email is never exported.
+  -->
+  <div id="tab-snapshot" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Clone &amp; Snapshot</h2>
+        <p>Export this install's settings, features, FAQs (and optionally content + admin tooling) as a JSON template that can be applied to a fresh install in one shot. Inverse of the first-run wizard.</p>
+      </div>
+    </div>
+
+    <div class="form-panel" style="margin-top: 1rem;">
+      <h3 style="margin: 0 0 0.5rem 0;">What's included</h3>
+      <p style="color: var(--admin-text-muted); font-size: 0.85rem; margin: 0 0 1rem 0;">
+        Pick what to carry into the snapshot. Defaults are safe for sharing with other operators (no secrets, no content rows).
+      </p>
+      <div style="display: flex; flex-direction: column; gap: 0.625rem;">
+        <label style="display: flex; align-items: flex-start; gap: 0.5rem; cursor: pointer;">
+          <input type="checkbox" id="snap-admin-records" checked data-testid="checkbox-snap-admin-records" onchange="loadOnboardingSnapshot()" />
+          <span>
+            <strong>Admin records</strong> — skills, MCP servers, dashboards &amp; widgets, automations, messaging templates, model prices.
+            <span style="color: var(--admin-text-muted); font-size: 0.8125rem; display: block;">Recommended ON. Sensitive columns (auth tokens, webhook secrets) are redacted unless you also tick the secrets box below.</span>
+          </span>
+        </label>
+        <label style="display: flex; align-items: flex-start; gap: 0.5rem; cursor: pointer;">
+          <input type="checkbox" id="snap-content" data-testid="checkbox-snap-content" onchange="loadOnboardingSnapshot()" />
+          <span>
+            <strong>Content rows</strong> — exports the default subset (services + team only).
+            <span style="color: var(--admin-text-muted); font-size: 0.8125rem; display: block;">Off by default — content is INSERT-only on the receiving install, so re-running on a non-empty target creates duplicates. To export blog posts, products, testimonials, etc. as well, run the snapshot CLI with <code>--include-all-content</code>.</span>
+          </span>
+        </label>
+        <label style="display: flex; align-items: flex-start; gap: 0.5rem; cursor: pointer;">
+          <input type="checkbox" id="snap-secrets" data-testid="checkbox-snap-secrets" onchange="loadOnboardingSnapshot()" />
+          <span>
+            <strong>Include sensitive columns</strong> — MCP auth tokens, automation webhook tokens.
+            <span style="color: #fcd34d; font-size: 0.8125rem; display: block;">⚠ Only enable when cloning to YOUR own sibling install. Treat the resulting JSON as a secret.</span>
+          </span>
+        </label>
+      </div>
+
+      <div style="display: flex; gap: 0.625rem; margin-top: 1.25rem; flex-wrap: wrap;">
+        <button class="btn-primary" onclick="downloadOnboardingSnapshot()" data-testid="button-snap-download">Download JSON</button>
+        <button class="btn-secondary" onclick="copyOnboardingSnapshot()" data-testid="button-snap-copy">Copy to clipboard</button>
+        <button class="btn-secondary" onclick="loadOnboardingSnapshot()" data-testid="button-snap-refresh" style="margin-left: auto;">Refresh preview</button>
+      </div>
+    </div>
+
+    <div class="form-panel" style="margin-top: 1.5rem;">
+      <h3 style="margin: 0 0 1rem 0;">Snapshot preview</h3>
+      <div id="snap-preview" data-testid="container-snap-preview" style="font-size: 0.875rem;">
+        <div style="color: var(--admin-text-muted);">Loading preview…</div>
+      </div>
+    </div>
+
+    <div class="form-panel" style="margin-top: 1.5rem;">
+      <h3 style="margin: 0 0 0.5rem 0;">How to apply this on a fresh install</h3>
+      <ol style="color: var(--admin-text-muted); font-size: 0.875rem; padding-left: 1.25rem; line-height: 1.6;">
+        <li>Download the JSON above.</li>
+        <li>Open the new install's <code>/setup</code> wizard, or POST the JSON to its <code>/api/velo/command</code> endpoint with command <code>bootstrap_install</code> (template = the JSON contents).</li>
+        <li>Edit <code>admin_user.email</code> + any business-specific text (site name, contact info, FAQs) before applying — every clone needs its own owner email.</li>
+        <li>Re-runs are idempotent for settings, features, FAQs (deduped on canonical question), and admin records (UPSERT by natural key). Content rows are INSERT-only and will duplicate on re-run.</li>
+      </ol>
     </div>
   </div>
 
@@ -10097,6 +10181,127 @@ TO CUSTOMIZE THIS DASHBOARD:
         loadKnowledgeCache();
       } catch (err) {
         showToast('Purge failed', 'error');
+      }
+    }
+
+
+    /*
+    ========================================================================
+    CLONE & SNAPSHOT (Tier 10 — admin UI for the snapshot/clone engine)
+    ========================================================================
+    Backed by /admin/api/onboarding/snapshot[?download=1] +
+    /admin/api/onboarding/snapshot/summary in app.py. The summary
+    endpoint returns row counts only (cheap, ~kb); the main endpoint
+    returns the full template payload (can be 100+ kb on a configured
+    install). We only fetch summary for the inline preview.
+    */
+    function _snapOpts() {
+      const p = new URLSearchParams();
+      p.set('include_admin_records', document.getElementById('snap-admin-records').checked ? '1' : '0');
+      p.set('include_content', document.getElementById('snap-content').checked ? '1' : '0');
+      p.set('include_admin_secrets', document.getElementById('snap-secrets').checked ? '1' : '0');
+      return p.toString();
+    }
+
+    async function loadOnboardingSnapshot() {
+      const host = document.getElementById('snap-preview');
+      if (!host) return;
+      host.innerHTML = '<div style="color: var(--admin-text-muted);">Loading preview…</div>';
+      try {
+        const res = await fetch('/admin/api/onboarding/snapshot/summary?' + _snapOpts());
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const s = await res.json();
+        host.innerHTML = _renderSnapPreview(s);
+      } catch (err) {
+        host.innerHTML = '<div style="color:#fca5a5;">Failed to load preview: ' + (err.message || err) + '</div>';
+      }
+    }
+
+    function _renderSnapPreview(s) {
+      // Summary shape comes from scripts.snapshot.summarize() — fields:
+      //   settings_keys[], features.{mode,plan,count}, faqs_count,
+      //   content_counts{}, admin_record_counts{}, exported_at, warnings[]
+      const featMode = (s.features && s.features.mode) || 'unknown';
+      const plan = (s.features && s.features.plan) || null;
+      const featCount = (s.features && typeof s.features.count === 'number') ? s.features.count : 0;
+      const settings = s.settings_keys || [];
+      const faqs = (typeof s.faqs_count === 'number') ? s.faqs_count : 0;
+      const content = s.content_counts || {};
+      const records = s.admin_record_counts || {};
+      const warnings = s.warnings || [];
+      const fmt = (n) => (typeof n === 'number' ? n.toLocaleString() : n);
+      const li = (k, v) => `<li><strong>${k}:</strong> <span style="color: var(--admin-text-muted);">${v}</span></li>`;
+      let html = '';
+      if (warnings.length) {
+        html += '<div style="background:rgba(245,158,11,0.12); border:1px solid rgba(245,158,11,0.45); color:#fcd34d; padding:0.625rem 0.875rem; border-radius:6px; margin-bottom:0.875rem; font-size:0.8125rem;" data-testid="text-snap-warnings">';
+        html += '<strong>Notices:</strong><ul style="margin:0.375rem 0 0 1rem; padding:0;">';
+        warnings.forEach(w => { html += '<li>' + w + '</li>'; });
+        html += '</ul></div>';
+      }
+      html += '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:1rem;">';
+      // Settings
+      html += '<div><h4 style="margin:0 0 0.375rem 0; font-size:0.8125rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--admin-text-muted);">Settings (' + settings.length + ')</h4>';
+      html += '<ul style="margin:0; padding-left:1rem; line-height:1.55;" data-testid="list-snap-settings">' + settings.map(k => '<li>' + k + '</li>').join('') + '</ul></div>';
+      // Features + FAQs
+      html += '<div><h4 style="margin:0 0 0.375rem 0; font-size:0.8125rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--admin-text-muted);">Features &amp; FAQs</h4>';
+      html += '<ul style="margin:0; padding-left:1rem; line-height:1.55;" data-testid="list-snap-features">';
+      if (featMode === 'set') {
+        html += li('features', fmt(featCount) + ' enabled');
+      } else if (featMode === 'plan' && plan) {
+        html += li('plan', plan);
+      } else {
+        html += li('features', 'none');
+      }
+      html += li('faqs', fmt(faqs));
+      html += '</ul></div>';
+      // Content
+      const contentKeys = Object.keys(content);
+      if (contentKeys.length) {
+        html += '<div><h4 style="margin:0 0 0.375rem 0; font-size:0.8125rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--admin-text-muted);">Content rows</h4>';
+        html += '<ul style="margin:0; padding-left:1rem; line-height:1.55;" data-testid="list-snap-content">';
+        contentKeys.sort().forEach(k => { html += li(k, fmt(content[k])); });
+        html += '</ul></div>';
+      }
+      // Admin records
+      const recordKeys = Object.keys(records);
+      if (recordKeys.length) {
+        html += '<div><h4 style="margin:0 0 0.375rem 0; font-size:0.8125rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--admin-text-muted);">Admin records</h4>';
+        html += '<ul style="margin:0; padding-left:1rem; line-height:1.55;" data-testid="list-snap-records">';
+        recordKeys.sort().forEach(k => {
+          const counts = records[k] || {};
+          const parts = [];
+          Object.keys(counts).forEach(sub => parts.push(sub + ': ' + fmt(counts[sub])));
+          html += li(k, parts.join(', '));
+        });
+        html += '</ul></div>';
+      }
+      html += '</div>';
+      // Footer line
+      html += '<p style="margin:1rem 0 0 0; color:var(--admin-text-muted); font-size:0.75rem;" data-testid="text-snap-exported-at">Exported at ' + (s.exported_at || '—') + '.</p>';
+      return html;
+    }
+
+    function downloadOnboardingSnapshot() {
+      // Browser-driven download via the attachment endpoint — nothing
+      // to JS-handle; the response sets Content-Disposition.
+      const url = '/admin/api/onboarding/snapshot?download=1&' + _snapOpts();
+      window.location.href = url;
+    }
+
+    async function copyOnboardingSnapshot() {
+      const btn = document.querySelector('[data-testid="button-snap-copy"]');
+      const orig = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = 'Building…'; }
+      try {
+        const res = await fetch('/admin/api/onboarding/snapshot?' + _snapOpts());
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const text = await res.text();
+        await navigator.clipboard.writeText(text);
+        showToast('Snapshot JSON copied to clipboard (' + text.length.toLocaleString() + ' chars).', 'success');
+      } catch (err) {
+        showToast('Copy failed: ' + (err.message || err), 'error');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = orig || 'Copy to clipboard'; }
       }
     }
 

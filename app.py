@@ -68,6 +68,7 @@ import uuid as _uuid
 # correctly under both `python app.py` and gunicorn workers.
 VELO_APP_START_TIME = _time.time()
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 try:
     from zoneinfo import ZoneInfo  # py3.9+ stdlib
 except Exception:  # pragma: no cover - extremely old runtime fallback
@@ -22289,6 +22290,141 @@ def admin_ai_cache_bump_version():
     """
     new_v = semantic_cache.bump_content_version()
     return jsonify({"ok": True, "content_version": new_v})
+
+
+# ---------------------------------------------------------------------------
+# Tier 10 — admin UI for snapshot / clone (HTTP wrapper around scripts/snapshot.py).
+#
+# Tier 5 shipped the snapshot engine as a CLI (`python scripts/snapshot.py`)
+# and Tier 6 extended it to admin records. Tier 10 makes the same machinery
+# reachable from the Clone & Snapshot tab in the admin dashboard for
+# operators who don't have shell access on the server.
+#
+# Three surfaces, all delegating to scripts.snapshot.build_snapshot so the
+# CLI and the UI can never drift out of agreement on what gets exported,
+# what's redacted, and how the JSON is shaped:
+#   GET  /admin/api/onboarding/snapshot          — full JSON, optional ?download=1
+#   GET  /admin/api/onboarding/snapshot/summary  — counters only (cheap)
+# Plus a VELO command `export_install_snapshot` (read-only, no confirmation)
+# defined in velo_handlers.py — same payload, fetched by the master agent.
+#
+# All three are GET-only so the Tier 7 CSRF middleware is a no-op for them
+# (CSRF only validates POST/PUT/PATCH/DELETE). Auth is the @admin_required
+# decorator (session cookie) on the routes; the VELO command is gated by
+# Bearer token in the VELO surface.
+# ---------------------------------------------------------------------------
+
+def _parse_snapshot_args():
+    """Translate the dashboard's checkbox query-string into the argparse-
+    Namespace shape that scripts.snapshot.build_snapshot expects.
+
+    UI semantics differ slightly from the CLI defaults — the CLI biases
+    toward minimal output (safe for piping to stdout); the UI defaults to
+    the agency-clone use case (admin records ON, content OFF, secrets OFF
+    — operator can change any of these via the form):
+
+      include_admin_records=1 → args.include_admin = True
+      include_content=1       → args.include_content = ""  (CLI sentinel
+                                for "default content set" = services + team)
+      include_content=1 with
+        content_types=blog,services
+                              → args.include_content = "blog,services"
+      include_admin_secrets=1 → args.include_admin_secrets = True
+
+    Strict bool parsing: "0" / "false" / "no" / "" all resolve to False
+    so a typo in the query string can't accidentally export secrets."""
+    def _bool(name, default=False):
+        v = (request.args.get(name) or "").strip().lower()
+        if not v:
+            return default
+        return v in ("1", "true", "yes", "on")
+
+    include_content = _bool("include_content", False)
+    raw_types = (request.args.get("content_types") or "").strip()
+    if include_content:
+        # Empty string is a sentinel in the CLI for "use default set"
+        # (services + team). Honor a comma list when supplied.
+        content_arg = raw_types if raw_types else ""
+    else:
+        content_arg = None  # CLI sentinel for "no content"
+
+    return SimpleNamespace(
+        tenant_id=int(request.args.get("tenant_id") or 1),
+        include_admin=_bool("include_admin_records", True),
+        include_admin_secrets=_bool("include_admin_secrets", False),
+        # Receivers fill in their own admin email by editing the JSON
+        # before applying — the source install's admin identity should
+        # not be carried into a clone.
+        include_admin_user=False,
+        include_content=content_arg,
+        include_all_content=False,
+        no_content=(not include_content),
+    )
+
+
+@app.route("/admin/api/onboarding/snapshot", methods=["GET"])
+@admin_required
+def admin_onboarding_snapshot():
+    """Return a snapshot of this install in bootstrap_install template
+    shape. With ?download=1 returns it as a file attachment named
+    snapshot-<site-slug>-<YYYYMMDD>.json so the operator can drop it
+    into onboarding_templates/ on a sibling install."""
+    from scripts import snapshot as _snap
+    args = _parse_snapshot_args()
+    snap, errors = _snap.build_snapshot(args)
+    if errors:
+        # Surface section-level read errors as a non-fatal warnings
+        # block on the snapshot itself, mirroring the CLI's exit-code-2
+        # "partial snapshot still written" behaviour.
+        snap.setdefault("$warnings", []).extend(errors)
+
+    if (request.args.get("download") or "").strip().lower() in ("1", "true", "yes"):
+        body = _snap.json.dumps(
+            snap, indent=2, ensure_ascii=False, default=_snap._json_default,
+        ).encode("utf-8")
+        # Build a slug from the site name (if available) so multiple
+        # downloads are easy to tell apart in the operator's Downloads folder.
+        site_name = (
+            (snap.get("settings") or {}).get("site_settings") or {}
+        ).get("site_name") or "install"
+        slug = re.sub(r"[^a-z0-9]+", "-", site_name.lower()).strip("-") or "install"
+        stamp = datetime.utcnow().strftime("%Y%m%d")
+        resp = app.response_class(body, mimetype="application/json")
+        resp.headers["Content-Disposition"] = (
+            f'attachment; filename="snapshot-{slug}-{stamp}.json"'
+        )
+        # Block intermediaries from caching a snapshot — even without
+        # admin secrets it carries the operator's full business config.
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    # Inline JSON path — Flask's jsonify can't handle Decimal/datetime,
+    # so re-use the same _json_default fallback as the download path.
+    # Same install-private content as the download path → same no-store
+    # so a CDN or shared-cache can never serve another viewer's snapshot.
+    body = _snap.json.dumps(snap, ensure_ascii=False, default=_snap._json_default)
+    resp = app.response_class(body, mimetype="application/json")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.route("/admin/api/onboarding/snapshot/summary", methods=["GET"])
+@admin_required
+def admin_onboarding_snapshot_summary():
+    """Cheap counters / preview for a snapshot without re-rendering the
+    full JSON in the browser. Same opts as the full endpoint."""
+    from scripts import snapshot as _snap
+    args = _parse_snapshot_args()
+    snap, errors = _snap.build_snapshot(args)
+    summary = _snap.summarize(snap)
+    if errors:
+        summary["warnings"] = errors
+    # Counters reveal install-private metadata (settings keys, per-table
+    # row counts, enabled feature flags) — match the full-snapshot path
+    # and forbid intermediate caching.
+    resp = jsonify(summary)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 # --------------- Image Upload ---------------

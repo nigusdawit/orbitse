@@ -2115,3 +2115,108 @@ def bootstrap_install(params):
         )
     )
     return summary
+
+
+# ---------------------------------------------------------------------------
+# export_install_snapshot — Tier 10 (VELO surface for the Tier 5/6 engine)
+# ---------------------------------------------------------------------------
+# Read-only mirror of /admin/api/onboarding/snapshot for the VELO master.
+# Lets a master agent pull a template from one configured install and
+# feed it straight into bootstrap_install on another install — no human
+# in the loop, no file transfer through a browser. Same engine as the
+# CLI (`python scripts/snapshot.py`) and the admin dashboard tab; all
+# three call scripts.snapshot.build_snapshot so they can never drift on
+# what's exported, what's redacted, or how the JSON is shaped.
+@velo_command(
+    "export_install_snapshot",
+    description=(
+        "Export this install's settings/features/FAQs (and optionally content + "
+        "admin records) as a JSON template another install can apply with "
+        "bootstrap_install. Read-only; no confirmation required."
+    ),
+    params_schema={
+        "type": "object",
+        "properties": {
+            "include_content":         {"type": "boolean",
+                                        "description": "Include content rows (blog/services/team/etc). Default false — content is INSERT-style on the receiving side and 6 of 10 content tables UNIQUE-on-slug, so re-applying may error rather than silently dupe."},
+            "content_types":           {"type": "array", "items": {"type": "string"},
+                                        "description": "Whitelist of content type keys to include when include_content=true. Empty / omitted = the CLI default set (services + team)."},
+            "include_admin_records":   {"type": "boolean",
+                                        "description": "Include Tier 6 admin records (skills/MCPs/dashboards+widgets/automations/templates/model_prices) and admin singletons. Default true."},
+            "include_admin_secrets":   {"type": "boolean",
+                                        "description": "Include sensitive_cols (auth tokens / webhook secrets) verbatim. Default false — only enable when cloning to your own sibling install."},
+            "include_admin_user":      {"type": "boolean",
+                                        "description": "Include the source install's first customer as the admin proxy. Default false — receivers should add their own admin email."},
+            "tenant_id":               {"type": "integer",
+                                        "description": "Which tenant_id to snapshot features for (default 1)."},
+            "summary_only":            {"type": "boolean",
+                                        "description": "Return only the counters dict, not the full snapshot. Useful for previews before pulling a 100+ KB payload."},
+        },
+    },
+)
+def export_install_snapshot(params):
+    """Read-only export. Delegates to scripts.snapshot.build_snapshot so
+    the VELO surface, the admin dashboard panel, and the CLI all share
+    one engine — there's nothing here to drift."""
+    from types import SimpleNamespace
+    from scripts import snapshot as _snap
+
+    p = params or {}
+    _SENTINEL = object()
+
+    def _strict_bool(name, default=False):
+        """Strict boolean coercion — must use the same truth table as
+        app.py:_parse_snapshot_args. The previous bool(p.get(...)) was
+        unsafe: bool("false") is True, so a master agent passing
+        include_admin_secrets="false" would unintentionally export
+        secrets. Real booleans pass through; strings are matched
+        against the known-truthy set; everything else falls back to
+        the default (so a typo can never accidentally enable a
+        sensitive flag)."""
+        v = p.get(name, _SENTINEL)
+        if v is _SENTINEL:
+            return default
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return bool(v)
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if not s:
+                return default
+            return s in ("1", "true", "yes", "on")
+        return default
+
+    include_content = _strict_bool("include_content", False)
+    content_types = p.get("content_types") or None
+
+    if include_content:
+        # CLI sentinel: empty string means "use the default set"
+        # (services + team); a comma list narrows; None means no content.
+        if isinstance(content_types, str):
+            # VELO master may pass content_types as a comma string already.
+            content_arg = content_types
+        elif content_types:
+            content_arg = ",".join(content_types)
+        else:
+            content_arg = ""
+    else:
+        content_arg = None
+
+    args = SimpleNamespace(
+        tenant_id=int(p.get("tenant_id") or 1),
+        include_admin=_strict_bool("include_admin_records", True),
+        include_admin_secrets=_strict_bool("include_admin_secrets", False),
+        include_admin_user=_strict_bool("include_admin_user", False),
+        include_content=content_arg,
+        include_all_content=False,
+        no_content=(not include_content),
+    )
+    snap, errors = _snap.build_snapshot(args)
+    summary = _snap.summarize(snap)
+    if errors:
+        summary["warnings"] = errors
+
+    if _strict_bool("summary_only", False):
+        return {"summary": summary}
+    return {"snapshot": snap, "summary": summary}

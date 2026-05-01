@@ -39,6 +39,7 @@ import argparse
 import json
 import os
 import sys
+import uuid
 from datetime import datetime, date
 from decimal import Decimal
 from typing import Any
@@ -73,13 +74,20 @@ _ADMIN_SINGLETON_KEYS = ("agent_provider_settings", "automation_settings")
 
 def _json_default(obj: Any) -> Any:
     """JSON encoder fallback for psycopg2 row values that don't natively
-    serialize: datetimes, dates, Decimals, memoryviews."""
+    serialize: datetimes, dates, Decimals, memoryviews, UUIDs."""
     if isinstance(obj, (datetime, date)):
         return obj.isoformat()
     if isinstance(obj, Decimal):
         # Use float for portability; bootstrap_install applies via update_*
         # which casts back to numeric/jsonb as needed.
         return float(obj)
+    if isinstance(obj, uuid.UUID):
+        # Postgres uuid columns come back as uuid.UUID via psycopg2 — must
+        # be serialized as their canonical hex string. (No current admin
+        # table uses uuid columns, but several content tables do, e.g.
+        # site_visitors.id; safer to handle here than to find out at
+        # download-time when content export is enabled.)
+        return str(obj)
     if isinstance(obj, (bytes, bytearray, memoryview)):
         return bytes(obj).decode("utf-8", errors="replace")
     raise TypeError(f"unserializable type: {type(obj).__name__}")
@@ -464,6 +472,58 @@ def build_snapshot(args) -> tuple[dict, list[str]]:
         return snapshot, errors
     finally:
         conn.close()
+
+
+def summarize(snapshot: dict) -> dict:
+    """Reduce a built snapshot to row counts only — used by the admin UI
+    preview pane and the `summary_only` mode of the VELO export command.
+
+    Cheap to compute (no extra DB hits) since the snapshot dict already
+    has every row in memory. Mirrors the structure the Tier 10 dashboard
+    panel expects: settings_keys[], features.{mode,plan,count},
+    faqs_count, content_counts{}, admin_record_counts{}, exported_at."""
+    summary: dict = {
+        "exported_at": datetime.utcnow().isoformat() + "Z",
+        "settings_keys": sorted((snapshot.get("settings") or {}).keys()),
+        "faqs_count": len(snapshot.get("faqs") or []),
+        "content_counts": {},
+        "admin_record_counts": {},
+    }
+
+    feats = snapshot.get("features") or {}
+    if "set" in feats:
+        s = feats["set"] or {}
+        summary["features"] = {
+            "mode": "set",
+            "count": sum(1 for v in s.values() if v),
+        }
+    elif "plan" in feats:
+        summary["features"] = {"mode": "plan", "plan": feats["plan"], "count": 0}
+    else:
+        summary["features"] = {"mode": "none", "count": 0}
+
+    for k, rows in (snapshot.get("content") or {}).items():
+        if isinstance(rows, list):
+            summary["content_counts"][k] = len(rows)
+
+    for k, rows in (snapshot.get("admin_records") or {}).items():
+        if not isinstance(rows, list):
+            continue
+        counts: dict = {"rows": len(rows)}
+        # Detect nested children (Tier 6 — only `dashboards.widgets` today
+        # but the structure generalises). Sum across all parent rows so
+        # the operator sees the total widget count, not per-parent.
+        child_totals: dict = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            for ck, cv in row.items():
+                if isinstance(cv, list):
+                    child_totals[ck] = child_totals.get(ck, 0) + len(cv)
+        counts.update(child_totals)
+        summary["admin_record_counts"][k] = counts
+
+    return summary
 
 
 def main(argv: list[str] | None = None) -> int:
