@@ -1,0 +1,41 @@
+Build a Skills Catalog for this codebase
+
+I want you to extract every reusable "skill" (a self-contained, transferable feature pattern) from this app and save them as portable blueprints I can drop into other projects.
+
+Goal
+A folder .local/notes/skills-catalog/ containing one Markdown file per skill, plus an INDEX.md at the root that lists all skills grouped by category. The catalog should be detailed enough that a fresh agent on a fresh codebase could rebuild each feature from the blueprint alone.
+
+What counts as a skill
+Any feature, system, or pattern that:
+
+Solves a generalizable problem (auth, payments, AI pipelines, caching, gamification, push notifications, admin tooling, audio mixing, sync, etc.)
+Could plausibly be reused in a different app
+Has enough surface area to be worth documenting (skip one-liners)
+Walk the codebase end-to-end — frontend, backend, schema, infra, scripts, docs — and find them all. Don't artificially cap the count; aim for completeness.
+
+Each skill file must include
+
+Title + one-line description
+Category (e.g. Auth, AI, Payments, Audio, Community, Gamification, Notifications, Sync, Admin, Health, Analytics, B2B, UI, Infra)
+When to use it — the problem it solves
+Architecture — the moving pieces and how they talk
+Data model — schema/tables/types
+API surface — routes, request/response shapes
+Key files in this codebase — paths so a future agent can read the real implementation
+External dependencies — services, libraries, env vars/secrets needed
+Pitfalls and gotchas — things we learned the hard way
+Adaptation notes — what to change when porting to another app
+Process
+
+First do a sweep and produce a flat list of every skill you find, grouped by category. Show me that list before writing files.
+Then split the writing into batches of ~10 skills per task so each batch is reviewable.
+After all batches merge, write INDEX.md and a README.md explaining how to use the catalog in a new project.
+Make sure nothing in the catalog leaks production secrets, real user data, or internal-only URLs — keep it portable.
+Constraints
+
+Plain language, no emojis
+Don't modify any application code — this is documentation only
+If something is partially built or has known bugs, say so in the skill file
+Cross-reference related skills (e.g. "Push Notifications depends on Auth + Device Tokens")
+Start by exploring the codebase and giving me the categorized list of every skill you found. Then we'll proceed batch by batch.
+
