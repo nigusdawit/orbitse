@@ -4361,6 +4361,7 @@ TO CUSTOMIZE THIS DASHBOARD:
   let _adminChatSessionsDebounce = null;
   let _adminChatBranchMsgId = null;     // staged branch target
   let _adminChatSkillRowSeq = 0;        // monotonic id for skills modal rows
+  const _adminChatBranchTextById = {};  // message_id -> raw text (no HTML transit)
 
   // Visitor session id: kept on the old localStorage key, no server row.
   function adminChatGetVisitorSession() {
@@ -4985,19 +4986,19 @@ TO CUSTOMIZE THIS DASHBOARD:
   // pass to up_to_message_id; freshly-sent ones don't (we only get the
   // id back on the next page reload), so we no-op when id is null.
   function adminChatUserBubble(messageId, text) {
-    const safe = adminChatEscape(text || '');
-    const idAttr = messageId != null ? messageId : '';
-    // Stash the raw text on the bubble's dataset so the delegated
-    // click handler (adminChatBindBranchClicks) can recover it without
-    // ever interpolating user text into an HTML attribute — which is
-    // both XSS-prone and breaks on quotes in the message body.
-    const dataAttrs = idAttr !== ''
-      ? ` data-branch-id="${idAttr}" data-branch-text="${safe}"`
-      : '';
+    const safeText = adminChatEscape(text || '');           // visible bubble text
+    const idAttr   = messageId != null ? messageId : '';
+    // The branch button only carries data-branch-id in the HTML. We
+    // resolve the original text from an in-memory map keyed by id at
+    // click time (see adminChatBindBranchClicks below), so user
+    // message content — which can contain quotes, backticks, angle
+    // brackets, anything — is NEVER interpolated into an HTML
+    // attribute. No attribute-escape edge cases to worry about.
+    if (idAttr !== '') _adminChatBranchTextById[idAttr] = String(text || '');
     return `<div class="admin-chat-bubble-user" style="display:flex; flex-direction:column; align-items:flex-end; gap:.25rem; position:relative;" data-testid="bubble-admin-chat-user${idAttr ? '-' + idAttr : ''}">
       <div style="max-width:80%; background:rgba(59,130,246,0.18); color:#dbeafe; padding:.75rem 1rem; border-radius:.75rem; border:1px solid rgba(59,130,246,0.35); white-space:pre-wrap; word-wrap:break-word; position:relative;">
-        ${safe}
-        ${idAttr !== '' ? `<div class="acu-actions"><button type="button" class="admin-chat-branch-btn"${dataAttrs} data-testid="button-edit-rerun-${idAttr}" title="Edit &amp; re-run">✎</button></div>` : ''}
+        ${safeText}
+        ${idAttr !== '' ? `<div class="acu-actions"><button type="button" class="admin-chat-branch-btn" data-branch-id="${idAttr}" data-testid="button-edit-rerun-${idAttr}" title="Edit &amp; re-run">✎</button></div>` : ''}
       </div>
     </div>`;
   }
@@ -5015,11 +5016,21 @@ TO CUSTOMIZE THIS DASHBOARD:
       const btn = ev.target.closest && ev.target.closest('.admin-chat-branch-btn');
       if (!btn) return;
       const id = parseInt(btn.getAttribute('data-branch-id') || '', 10);
-      // data-branch-text is the HTML-escaped string we wrote in
-      // adminChatUserBubble; the browser auto-decodes entities when
-      // reading the attribute, so we get the original text back here.
-      const txt = btn.getAttribute('data-branch-text') || '';
-      if (!isNaN(id)) adminChatOpenBranchModal(id, txt);
+      if (isNaN(id)) return;
+      // Original text comes from the in-memory map that
+      // adminChatUserBubble populated at render time. Never read from
+      // an HTML attribute — keeps quote/backtick/angle-bracket
+      // content safe (no attribute-context escape edge cases).
+      let txt = _adminChatBranchTextById[id];
+      if (txt == null) {
+        // Fallback: bubble pre-rendered before the map existed.
+        // Use textContent (auto-decoded by the browser, never parsed
+        // as HTML), strip the trailing pencil glyph.
+        const bubble = btn.closest('.admin-chat-bubble-user');
+        const body = bubble ? bubble.querySelector('div') : null;
+        txt = body ? body.textContent.replace(/\s*✎\s*$/, '').trim() : '';
+      }
+      adminChatOpenBranchModal(id, txt);
     });
   }
 
