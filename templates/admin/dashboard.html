@@ -4166,32 +4166,124 @@ TO CUSTOMIZE THIS DASHBOARD:
         <h2>Admin Chat</h2>
         <p>Talk to your visitor agent as if you were a customer, or hand off to the admin assistant to manage the site by chat.</p>
       </div>
-      <div style="display:flex; gap:.5rem;">
-        <button class="btn btn-secondary" onclick="adminChatNewSession()" data-testid="button-admin-chat-new">New conversation</button>
-        <button class="btn btn-secondary" onclick="adminChatClear()" data-testid="button-admin-chat-clear">Clear thread</button>
+    </div>
+
+    <div role="tablist" aria-label="Admin chat mode" style="display:inline-flex; padding:.25rem; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:.75rem; margin-bottom:.75rem;">
+      <button id="admin-chat-mode-admin" role="tab" aria-selected="true" class="btn" onclick="adminChatSetMode('admin')" style="border:0; background:var(--admin-card); padding:.5rem 1rem; border-radius:.5rem; font-weight:600;" data-testid="button-admin-chat-mode-admin">Admin assistant</button>
+      <button id="admin-chat-mode-visitor" role="tab" aria-selected="false" class="btn" onclick="adminChatSetMode('visitor')" style="border:0; background:transparent; padding:.5rem 1rem; border-radius:.5rem; color:var(--admin-text-muted);" data-testid="button-admin-chat-mode-visitor">Preview as visitor</button>
+    </div>
+
+    <p id="admin-chat-mode-help" style="margin:0 0 .75rem 0; color:var(--admin-text-muted); font-size:.9rem;">
+      The admin assistant can run read-only SQL, manage AI skills, edit narrow content (FAQ, business info, blog drafts), and surface recent activity.
+    </p>
+
+    <div class="admin-chat-shell" id="admin-chat-shell">
+
+      <!-- Sessions sidebar (admin mode only — hidden in visitor preview) -->
+      <aside class="admin-chat-side" id="admin-chat-sidebar" data-testid="admin-chat-sidebar">
+        <div style="display:flex; gap:.4rem;">
+          <button class="btn btn-primary" style="flex:1; padding:.4rem .6rem; font-size:.85rem;"
+                  onclick="adminChatNewSession()" data-testid="button-admin-chat-new">+ New chat</button>
+        </div>
+        <input id="admin-chat-search" type="search" placeholder="Search conversations…"
+               oninput="adminChatRenderSessionsDebounced()"
+               style="width:100%; padding:.4rem .55rem; border:1px solid var(--admin-border); border-radius:.4rem; background:var(--admin-card); color:var(--admin-text); font-size:.85rem;"
+               data-testid="input-admin-chat-search">
+        <div id="admin-chat-sessions-list" style="overflow-y:auto; flex:1; display:flex; flex-direction:column; gap:.25rem;"
+             data-testid="admin-chat-sessions-list">
+          <div style="color:var(--admin-text-muted); font-size:.85rem; padding:.5rem;">Loading…</div>
+        </div>
+      </aside>
+
+      <!-- Main chat pane -->
+      <div style="display:flex; flex-direction:column; gap:.5rem; min-width:0;">
+
+        <!-- Header: title + model picker + per-session config buttons + export -->
+        <div class="admin-chat-header" id="admin-chat-mainheader">
+          <input id="admin-chat-title" type="text" placeholder="Untitled conversation"
+                 onchange="adminChatSaveTitle()" 
+                 style="flex:1; min-width:160px; background:transparent; border:0; outline:none; font-size:1rem; font-weight:600; color:var(--admin-text);"
+                 data-testid="input-admin-chat-title">
+          <select id="admin-chat-model" onchange="adminChatSaveModel()" data-testid="select-admin-chat-model">
+            <option value="">Default model</option>
+            <option value="gpt-4o-mini">gpt-4o-mini</option>
+            <option value="gpt-4o">gpt-4o</option>
+            <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+            <option value="gpt-4.1">gpt-4.1</option>
+            <option value="o3-mini">o3-mini</option>
+          </select>
+          <button class="acm-btn" onclick="adminChatOpenPromptEditor()" title="System prompt for this conversation"
+                  data-testid="button-admin-chat-prompt">⚙ Prompt</button>
+          <button class="acm-btn" onclick="adminChatOpenSkills()" title="Tools available to this conversation"
+                  data-testid="button-admin-chat-skills">🧰 Skills</button>
+          <button class="acm-btn" onclick="adminChatExport('md')" title="Download Markdown"
+                  data-testid="button-admin-chat-export-md">↓ .md</button>
+          <button class="acm-btn" onclick="adminChatExport('json')" title="Download JSON"
+                  data-testid="button-admin-chat-export-json">↓ .json</button>
+          <button class="acm-btn" onclick="adminChatClear()" title="Delete saved transcript"
+                  data-testid="button-admin-chat-clear">🗑</button>
+        </div>
+
+        <div id="admin-chat-messages" data-testid="admin-chat-messages" style="flex:1; min-height:400px; max-height:60vh; overflow-y:auto; padding:1rem; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:.75rem; display:flex; flex-direction:column; gap:.75rem;">
+          <div style="color:var(--admin-text-muted); font-size:.9rem;">Start a conversation below.</div>
+        </div>
+
+        <form onsubmit="event.preventDefault(); adminChatSend();" style="display:flex; gap:.5rem;">
+          <textarea id="admin-chat-input" rows="2" placeholder="Ask the admin assistant anything about your site, or talk to your visitor agent..." style="flex:1; padding:.75rem; border:1px solid var(--admin-border); border-radius:.5rem; font-family:inherit; resize:vertical;" onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault(); adminChatSend();}" data-testid="input-admin-chat"></textarea>
+          <button type="submit" id="admin-chat-send-btn" class="btn btn-primary" style="align-self:stretch; padding:0 1.25rem;" data-testid="button-admin-chat-send">Send</button>
+        </form>
+
       </div>
     </div>
 
-    <div class="form-panel" style="display:flex; flex-direction:column; gap:1rem; min-height:600px;">
-
-      <div role="tablist" aria-label="Admin chat mode" style="display:inline-flex; align-self:flex-start; padding:.25rem; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:.75rem;">
-        <button id="admin-chat-mode-admin" role="tab" aria-selected="true" class="btn" onclick="adminChatSetMode('admin')" style="border:0; background:var(--admin-card); padding:.5rem 1rem; border-radius:.5rem; font-weight:600;" data-testid="button-admin-chat-mode-admin">Admin assistant</button>
-        <button id="admin-chat-mode-visitor" role="tab" aria-selected="false" class="btn" onclick="adminChatSetMode('visitor')" style="border:0; background:transparent; padding:.5rem 1rem; border-radius:.5rem; color:var(--admin-text-muted);" data-testid="button-admin-chat-mode-visitor">Preview as visitor</button>
+    <!-- System prompt editor modal -->
+    <div class="admin-chat-modal-backdrop" id="admin-chat-prompt-modal" onclick="if(event.target===this) adminChatCloseModal('prompt')">
+      <div class="admin-chat-modal" data-testid="modal-admin-chat-prompt">
+        <h3 style="margin-top:0;">System prompt for this conversation</h3>
+        <p style="color:var(--admin-text-muted); font-size:.85rem; margin-top:0;">Leave empty to use the default admin assistant prompt. An override here applies ONLY to this conversation and is stored with the session, so other threads keep using the default.</p>
+        <textarea id="admin-chat-prompt-textarea" rows="14"
+                  style="width:100%; padding:.6rem; font-family:ui-monospace,monospace; font-size:.8rem; border:1px solid var(--admin-border); border-radius:.4rem; background:var(--admin-card); color:var(--admin-text); resize:vertical;"
+                  data-testid="textarea-admin-chat-prompt"></textarea>
+        <details style="margin-top:.5rem;">
+          <summary style="cursor:pointer; color:var(--admin-text-muted); font-size:.85rem;">View default prompt</summary>
+          <pre id="admin-chat-prompt-default" style="white-space:pre-wrap; background:var(--admin-card); padding:.5rem; border-radius:.4rem; font-size:.78rem; max-height:240px; overflow:auto;"></pre>
+        </details>
+        <div style="display:flex; gap:.5rem; justify-content:flex-end; margin-top:.75rem;">
+          <button class="btn btn-secondary" onclick="adminChatCloseModal('prompt')" data-testid="button-admin-chat-prompt-cancel">Cancel</button>
+          <button class="btn btn-secondary" onclick="adminChatPromptUseDefault()" data-testid="button-admin-chat-prompt-default">Reset to default</button>
+          <button class="btn btn-primary" onclick="adminChatPromptSave()" data-testid="button-admin-chat-prompt-save">Save</button>
+        </div>
       </div>
+    </div>
 
-      <p id="admin-chat-mode-help" style="margin:0; color:var(--admin-text-muted); font-size:.9rem;">
-        The admin assistant can run read-only SQL, manage AI skills, edit narrow content (FAQ, business info, blog drafts), and surface recent activity.
-      </p>
-
-      <div id="admin-chat-messages" data-testid="admin-chat-messages" style="flex:1; min-height:400px; max-height:60vh; overflow-y:auto; padding:1rem; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:.75rem; display:flex; flex-direction:column; gap:.75rem;">
-        <div style="color:var(--admin-text-muted); font-size:.9rem;">Start a conversation below.</div>
+    <!-- Skills (per-conversation tools) modal -->
+    <div class="admin-chat-modal-backdrop" id="admin-chat-skills-modal" onclick="if(event.target===this) adminChatCloseModal('skills')">
+      <div class="admin-chat-modal" data-testid="modal-admin-chat-skills">
+        <h3 style="margin-top:0;">Skills available in this conversation</h3>
+        <p style="color:var(--admin-text-muted); font-size:.85rem; margin-top:0;">Uncheck a skill to hide it from the assistant for this conversation only. Other conversations are unaffected. Changes apply on your next message.</p>
+        <div id="admin-chat-skills-body" style="max-height:55vh; overflow:auto;">
+          <div style="color:var(--admin-text-muted); padding:1rem;">Loading…</div>
+        </div>
+        <div style="display:flex; gap:.5rem; justify-content:flex-end; margin-top:.75rem;">
+          <button class="btn btn-secondary" onclick="adminChatCloseModal('skills')" data-testid="button-admin-chat-skills-close">Close</button>
+          <button class="btn btn-primary" onclick="adminChatSkillsSave()" data-testid="button-admin-chat-skills-save">Save</button>
+        </div>
       </div>
+    </div>
 
-      <form onsubmit="event.preventDefault(); adminChatSend();" style="display:flex; gap:.5rem;">
-        <textarea id="admin-chat-input" rows="2" placeholder="Ask the admin assistant anything about your site, or talk to your visitor agent..." style="flex:1; padding:.75rem; border:1px solid var(--admin-border); border-radius:.5rem; font-family:inherit; resize:vertical;" onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault(); adminChatSend();}" data-testid="input-admin-chat"></textarea>
-        <button type="submit" id="admin-chat-send-btn" class="btn btn-primary" style="align-self:stretch; padding:0 1.25rem;" data-testid="button-admin-chat-send">Send</button>
-      </form>
-
+    <!-- Edit-and-rerun (branch) modal -->
+    <div class="admin-chat-modal-backdrop" id="admin-chat-branch-modal" onclick="if(event.target===this) adminChatCloseModal('branch')">
+      <div class="admin-chat-modal" data-testid="modal-admin-chat-branch">
+        <h3 style="margin-top:0;">Edit message &amp; re-run</h3>
+        <p style="color:var(--admin-text-muted); font-size:.85rem; margin-top:0;">This will fork the conversation up to (but not including) this message into a brand-new chat, then send your edited version. The original conversation stays untouched.</p>
+        <textarea id="admin-chat-branch-textarea" rows="6"
+                  style="width:100%; padding:.6rem; border:1px solid var(--admin-border); border-radius:.4rem; background:var(--admin-card); color:var(--admin-text); resize:vertical; font-family:inherit;"
+                  data-testid="textarea-admin-chat-branch"></textarea>
+        <div style="display:flex; gap:.5rem; justify-content:flex-end; margin-top:.75rem;">
+          <button class="btn btn-secondary" onclick="adminChatCloseModal('branch')" data-testid="button-admin-chat-branch-cancel">Cancel</button>
+          <button class="btn btn-primary" onclick="adminChatBranchSubmit()" data-testid="button-admin-chat-branch-submit">Fork &amp; send</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -4249,22 +4341,72 @@ TO CUSTOMIZE THIS DASHBOARD:
   })();
 
   // ===== Admin Chat (in-dashboard) =====
-  // Two separate session ids, one per mode, persisted in localStorage so
-  // each mode keeps its own thread across reloads.
+  // Per-mode active session ids live in localStorage; visitor mode keeps
+  // the old single-session behaviour (no sidebar), while admin mode now
+  // syncs against /admin/api/chat/sessions for a full sidebar list with
+  // per-conversation model/system-prompt/skills overrides + branching.
   const ADMIN_CHAT_KEYS = {
-    admin:   'admin_chat_session_admin',
-    visitor: 'admin_chat_session_visitor',
+    admin:   'admin_chat_active_sid',     // active session id in admin mode
+    visitor: 'admin_chat_session_visitor', // legacy single-session key (unchanged)
   };
-  function adminChatGetSession(mode) {
-    let sid = localStorage.getItem(ADMIN_CHAT_KEYS[mode] || ADMIN_CHAT_KEYS.admin);
+  let adminChatMode = 'admin';
+  let adminChatSessions = [];           // cached sidebar rows
+  let adminChatActiveCfg = null;        // full config of the active session
+  let _adminChatSessionsDebounce = null;
+  let _adminChatBranchMsgId = null;     // staged branch target
+
+  // Visitor session id: kept on the old localStorage key, no server row.
+  function adminChatGetVisitorSession() {
+    let sid = localStorage.getItem(ADMIN_CHAT_KEYS.visitor);
     if (!sid) {
-      sid = (mode === 'visitor' ? 'admin_preview_' : 'admin_') +
-            Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
-      localStorage.setItem(ADMIN_CHAT_KEYS[mode], sid);
+      sid = 'admin_preview_' + Math.random().toString(36).slice(2, 12) +
+            Date.now().toString(36);
+      localStorage.setItem(ADMIN_CHAT_KEYS.visitor, sid);
     }
     return sid;
   }
-  let adminChatMode = 'admin';
+
+  // Admin mode session id: prefer localStorage, fall back to the first
+  // server-side session, else mint a brand-new one via POST /sessions.
+  async function adminChatEnsureActiveSession() {
+    let sid = localStorage.getItem(ADMIN_CHAT_KEYS.admin);
+    if (sid) return sid;
+    // Try to adopt the most recent server-side session before minting.
+    try {
+      const r = await fetch('/admin/api/chat/sessions?mode=admin');
+      const data = await r.json();
+      if (data && Array.isArray(data.sessions) && data.sessions.length) {
+        sid = data.sessions[0].session_id;
+        localStorage.setItem(ADMIN_CHAT_KEYS.admin, sid);
+        return sid;
+      }
+    } catch(_) {}
+    // Mint a fresh one.
+    try {
+      const r = await fetch('/admin/api/chat/sessions', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({mode: 'admin'}),
+      });
+      const data = await r.json();
+      if (data && data.session_id) {
+        sid = data.session_id;
+        localStorage.setItem(ADMIN_CHAT_KEYS.admin, sid);
+        return sid;
+      }
+    } catch(_) {}
+    // Last-resort client-side mint (server will lazy-create on first use).
+    sid = 'admin_' + Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+    localStorage.setItem(ADMIN_CHAT_KEYS.admin, sid);
+    return sid;
+  }
+
+  // Back-compat shim — older code paths in this file (and the chat-history
+  // tab) still call adminChatGetSession(mode) synchronously.
+  function adminChatGetSession(mode) {
+    if (mode === 'visitor') return adminChatGetVisitorSession();
+    return localStorage.getItem(ADMIN_CHAT_KEYS.admin) || '';
+  }
 
   function adminChatSetMode(mode) {
     adminChatMode = mode;
@@ -4283,43 +4425,371 @@ TO CUSTOMIZE THIS DASHBOARD:
     help.textContent = mode === 'visitor'
       ? 'You are talking to the public visitor agent exactly as a customer would. Replies come from the same /api/chat the chatbot uses.'
       : 'The admin assistant can run read-only SQL, manage AI skills, edit narrow content (FAQ, business info, blog drafts), and surface recent activity.';
+    // Sidebar + header are admin-only — visitor mode hides them entirely.
+    const sidebar = document.getElementById('admin-chat-sidebar');
+    const header  = document.getElementById('admin-chat-mainheader');
+    const shell   = document.getElementById('admin-chat-shell');
+    if (mode === 'visitor') {
+      if (sidebar) sidebar.style.display = 'none';
+      if (header)  header.style.display  = 'none';
+      if (shell)   shell.style.gridTemplateColumns = '1fr';
+    } else {
+      if (sidebar) sidebar.style.display = '';
+      if (header)  header.style.display  = '';
+      if (shell)   shell.style.gridTemplateColumns = '';
+      adminChatLoadSessions();
+    }
     loadAdminChat();
   }
 
-  function adminChatNewSession() {
-    localStorage.removeItem(ADMIN_CHAT_KEYS[adminChatMode]);
-    adminChatGetSession(adminChatMode); // mint a fresh one
-    document.getElementById('admin-chat-messages').innerHTML =
-      '<div style="color:var(--admin-text-muted); font-size:.9rem;">Started a new conversation.</div>';
+  // ---- Sessions sidebar -------------------------------------------------
+
+  async function adminChatLoadSessions() {
+    try {
+      const r = await fetch('/admin/api/chat/sessions?mode=admin');
+      const data = await r.json();
+      adminChatSessions = (data && data.sessions) || [];
+      adminChatRenderSessions();
+    } catch (e) {
+      console.error('sessions load failed', e);
+    }
+  }
+  function adminChatRenderSessionsDebounced() {
+    clearTimeout(_adminChatSessionsDebounce);
+    _adminChatSessionsDebounce = setTimeout(adminChatRenderSessions, 150);
+  }
+  function adminChatRenderSessions() {
+    const box = document.getElementById('admin-chat-sessions-list');
+    if (!box) return;
+    const activeSid = localStorage.getItem(ADMIN_CHAT_KEYS.admin) || '';
+    const q = (document.getElementById('admin-chat-search')?.value || '').trim().toLowerCase();
+    const filtered = q
+      ? adminChatSessions.filter(s => {
+          const blob = ((s.title||'') + ' ' + (s.last_preview||'')).toLowerCase();
+          return blob.includes(q);
+        })
+      : adminChatSessions;
+    if (!filtered.length) {
+      box.innerHTML = '<div style="color:var(--admin-text-muted); font-size:.85rem; padding:.5rem;">No conversations yet.</div>';
+      return;
+    }
+    box.innerHTML = filtered.map(s => {
+      const isActive = s.session_id === activeSid;
+      const title = s.title || 'Untitled';
+      const preview = s.last_preview || 'No messages yet';
+      const meta = [];
+      if (s.msg_count) meta.push(s.msg_count + ' msg');
+      if (s.model) meta.push(s.model);
+      if (s.has_prompt_override) meta.push('custom prompt');
+      if (s.disabled_count) meta.push(s.disabled_count + ' skills off');
+      const pin = s.pinned ? '📌 ' : '';
+      const sidEsc = adminChatEscape(s.session_id);
+      return `<div class="admin-chat-session-item${isActive?' active':''}" data-testid="session-item-${sidEsc}" onclick="adminChatSelectSession('${sidEsc}')">
+        <div class="acs-title">${pin}${adminChatEscape(title)}</div>
+        <div class="acs-preview">${adminChatEscape(preview)}</div>
+        <div class="acs-meta">
+          <span>${adminChatEscape(meta.join(' · ') || 'new')}</span>
+          <span style="flex:1;"></span>
+          <span class="acs-actions" onclick="event.stopPropagation();">
+            <button title="Pin" onclick="adminChatTogglePin('${sidEsc}', ${s.pinned ? 'false' : 'true'})" data-testid="button-session-pin-${sidEsc}">${s.pinned ? 'Unpin' : 'Pin'}</button>
+            <button title="Fork" onclick="adminChatForkSession('${sidEsc}')" data-testid="button-session-fork-${sidEsc}">Fork</button>
+            <button title="Delete" onclick="adminChatDeleteSession('${sidEsc}')" data-testid="button-session-delete-${sidEsc}">Del</button>
+          </span>
+        </div>
+      </div>`;
+    }).join('');
+  }
+  async function adminChatSelectSession(sid) {
+    if (!sid) return;
+    localStorage.setItem(ADMIN_CHAT_KEYS.admin, sid);
+    adminChatRenderSessions();
+    await loadAdminChat();
+  }
+  async function adminChatNewSession() {
+    if (adminChatMode === 'visitor') {
+      localStorage.removeItem(ADMIN_CHAT_KEYS.visitor);
+      adminChatGetVisitorSession();
+      document.getElementById('admin-chat-messages').innerHTML =
+        '<div style="color:var(--admin-text-muted); font-size:.9rem;">Started a new conversation.</div>';
+      return;
+    }
+    try {
+      const r = await fetch('/admin/api/chat/sessions', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({mode: 'admin'}),
+      });
+      const data = await r.json();
+      if (data && data.session_id) {
+        localStorage.setItem(ADMIN_CHAT_KEYS.admin, data.session_id);
+      }
+    } catch(e) { console.error('new session failed', e); }
+    await adminChatLoadSessions();
+    await loadAdminChat();
+  }
+  async function adminChatTogglePin(sid, pinNext) {
+    await fetch('/admin/api/chat/sessions/' + encodeURIComponent(sid), {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({pinned: (pinNext === true || pinNext === 'true')}),
+    });
+    await adminChatLoadSessions();
+  }
+  async function adminChatDeleteSession(sid) {
+    if (!confirm('Delete this conversation and its transcript?')) return;
+    await fetch('/admin/api/chat/sessions/' + encodeURIComponent(sid),
+                {method: 'DELETE'});
+    // If we just deleted the active session, drop the localStorage pointer
+    // so the next load mints/adopts a fresh one.
+    if (localStorage.getItem(ADMIN_CHAT_KEYS.admin) === sid) {
+      localStorage.removeItem(ADMIN_CHAT_KEYS.admin);
+    }
+    await adminChatLoadSessions();
+    await loadAdminChat();
+  }
+  async function adminChatForkSession(sid) {
+    // Pure fork = copy entire conversation into a new session (no message
+    // edit). The "Edit & re-run" pencil on user bubbles is a different
+    // flow that passes up_to_message_id + sends a replacement message.
+    try {
+      const r = await fetch('/admin/api/chat/sessions/' + encodeURIComponent(sid) + '/branch', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({}),
+      });
+      const data = await r.json();
+      if (data && data.session_id) {
+        localStorage.setItem(ADMIN_CHAT_KEYS.admin, data.session_id);
+        await adminChatLoadSessions();
+        await loadAdminChat();
+      }
+    } catch(e) { console.error('fork failed', e); }
   }
 
+  // ---- Header (title / model / config) ---------------------------------
+
+  function adminChatRefreshHeader() {
+    const titleEl = document.getElementById('admin-chat-title');
+    const modelEl = document.getElementById('admin-chat-model');
+    if (!adminChatActiveCfg) return;
+    if (titleEl && document.activeElement !== titleEl) {
+      titleEl.value = adminChatActiveCfg.title || '';
+    }
+    if (modelEl) modelEl.value = adminChatActiveCfg.model || '';
+  }
+  async function adminChatSaveTitle() {
+    const sid = localStorage.getItem(ADMIN_CHAT_KEYS.admin);
+    if (!sid) return;
+    const title = (document.getElementById('admin-chat-title').value || '').trim();
+    await fetch('/admin/api/chat/sessions/' + encodeURIComponent(sid), {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({title}),
+    });
+    if (adminChatActiveCfg) adminChatActiveCfg.title = title;
+    await adminChatLoadSessions();
+  }
+  async function adminChatSaveModel() {
+    const sid = localStorage.getItem(ADMIN_CHAT_KEYS.admin);
+    if (!sid) return;
+    const model = document.getElementById('admin-chat-model').value;
+    await fetch('/admin/api/chat/sessions/' + encodeURIComponent(sid), {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model}),
+    });
+    if (adminChatActiveCfg) adminChatActiveCfg.model = model;
+    await adminChatLoadSessions();
+  }
   async function adminChatClear() {
-    if (!confirm('Clear this conversation? This deletes the saved transcript.')) return;
-    const sid = adminChatGetSession(adminChatMode);
-    if (adminChatMode === 'admin') {
-      try {
-        await fetch('/admin/api/chat/clear', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({session_id: sid, mode: 'admin'}),
-        });
-      } catch (e) { console.error('clear failed', e); }
+    if (adminChatMode !== 'admin') {
+      if (!confirm('Clear this conversation?')) return;
+      document.getElementById('admin-chat-messages').innerHTML =
+        '<div style="color:var(--admin-text-muted); font-size:.9rem;">Conversation cleared.</div>';
+      return;
+    }
+    if (!confirm('Delete the saved transcript for this conversation?')) return;
+    const sid = localStorage.getItem(ADMIN_CHAT_KEYS.admin);
+    if (sid) {
+      await fetch('/admin/api/chat/clear', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({session_id: sid, mode: 'admin'}),
+      });
     }
     document.getElementById('admin-chat-messages').innerHTML =
       '<div style="color:var(--admin-text-muted); font-size:.9rem;">Conversation cleared.</div>';
+    await adminChatLoadSessions();
   }
+
+  // ---- System prompt editor -------------------------------------------
+
+  function adminChatOpenModal(name) {
+    const el = document.getElementById('admin-chat-' + name + '-modal');
+    if (el) el.classList.add('open');
+  }
+  function adminChatCloseModal(name) {
+    const el = document.getElementById('admin-chat-' + name + '-modal');
+    if (el) el.classList.remove('open');
+  }
+  async function adminChatOpenPromptEditor() {
+    const sid = localStorage.getItem(ADMIN_CHAT_KEYS.admin);
+    if (!sid) { alert('Select a conversation first.'); return; }
+    const r = await fetch('/admin/api/chat/sessions/' + encodeURIComponent(sid));
+    const cfg = await r.json();
+    adminChatActiveCfg = cfg;
+    document.getElementById('admin-chat-prompt-textarea').value = cfg.system_prompt_override || '';
+    document.getElementById('admin-chat-prompt-default').textContent =
+      cfg.default_system_prompt || '';
+    adminChatOpenModal('prompt');
+  }
+  function adminChatPromptUseDefault() {
+    document.getElementById('admin-chat-prompt-textarea').value = '';
+  }
+  async function adminChatPromptSave() {
+    const sid = localStorage.getItem(ADMIN_CHAT_KEYS.admin);
+    const val = document.getElementById('admin-chat-prompt-textarea').value;
+    await fetch('/admin/api/chat/sessions/' + encodeURIComponent(sid), {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({system_prompt_override: val}),
+    });
+    if (adminChatActiveCfg) adminChatActiveCfg.system_prompt_override = val;
+    adminChatCloseModal('prompt');
+    await adminChatLoadSessions();
+  }
+
+  // ---- Skills (per-conversation tools) panel --------------------------
+
+  async function adminChatOpenSkills() {
+    const sid = localStorage.getItem(ADMIN_CHAT_KEYS.admin);
+    if (!sid) { alert('Select a conversation first.'); return; }
+    adminChatOpenModal('skills');
+    const body = document.getElementById('admin-chat-skills-body');
+    body.innerHTML = '<div style="color:var(--admin-text-muted); padding:1rem;">Loading…</div>';
+    try {
+      const r = await fetch('/admin/api/chat/skills?session_id=' + encodeURIComponent(sid));
+      const data = await r.json();
+      const groups = [
+        {key: 'static', heading: 'Built-in admin skills', items: (data.static||[])},
+        {key: 'dynamic', heading: 'Dynamic skills (lookups, custom, MCP)', items: (data.dynamic||[])},
+      ];
+      let html = '';
+      for (const g of groups) {
+        if (!g.items.length) continue;
+        html += '<h4 style="margin:.75rem 0 .25rem;">' + adminChatEscape(g.heading) + '</h4>';
+        for (const it of g.items) {
+          const name = adminChatEscape(it.name);
+          const desc = adminChatEscape(it.description || '');
+          const cat  = adminChatEscape(it.category || '');
+          const checked = it.disabled ? '' : 'checked';
+          html += `<div class="admin-chat-skill-row">
+            <input type="checkbox" id="skill-${name}" data-skill-name="${name}" ${checked} data-testid="checkbox-skill-${name}">
+            <div style="flex:1;">
+              <label for="skill-${name}">${name} <span style="font-weight:400; font-size:.7rem; color:var(--admin-text-muted); margin-left:.3rem;">${cat}</span></label>
+              <p>${desc}</p>
+            </div>
+          </div>`;
+        }
+      }
+      body.innerHTML = html || '<div style="color:var(--admin-text-muted); padding:1rem;">No skills available.</div>';
+    } catch(e) {
+      body.innerHTML = '<div style="color:#b91c1c; padding:1rem;">Failed to load skills.</div>';
+    }
+  }
+  async function adminChatSkillsSave() {
+    const sid = localStorage.getItem(ADMIN_CHAT_KEYS.admin);
+    const body = document.getElementById('admin-chat-skills-body');
+    const disabled = [];
+    body.querySelectorAll('input[data-skill-name]').forEach(cb => {
+      if (!cb.checked) disabled.push(cb.dataset.skillName);
+    });
+    await fetch('/admin/api/chat/sessions/' + encodeURIComponent(sid), {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({disabled_tools: disabled}),
+    });
+    adminChatCloseModal('skills');
+    await adminChatLoadSessions();
+  }
+
+  // ---- Export ---------------------------------------------------------
+
+  function adminChatExport(fmt) {
+    const sid = localStorage.getItem(ADMIN_CHAT_KEYS.admin);
+    if (!sid) { alert('Select a conversation first.'); return; }
+    const url = '/admin/api/chat/sessions/' + encodeURIComponent(sid) +
+                '/export?format=' + encodeURIComponent(fmt || 'md');
+    window.open(url, '_blank');
+  }
+
+  // ---- Branch / Edit & re-run ----------------------------------------
+
+  function adminChatOpenBranchModal(messageId, originalText) {
+    _adminChatBranchMsgId = messageId;
+    document.getElementById('admin-chat-branch-textarea').value = originalText || '';
+    adminChatOpenModal('branch');
+  }
+  async function adminChatBranchSubmit() {
+    const sid = localStorage.getItem(ADMIN_CHAT_KEYS.admin);
+    const msgId = _adminChatBranchMsgId;
+    const newText = (document.getElementById('admin-chat-branch-textarea').value || '').trim();
+    if (!sid || !msgId || !newText) { adminChatCloseModal('branch'); return; }
+    try {
+      // Branch UP TO (but not including) the target user message so the
+      // edited message replaces it cleanly. We pass msgId - 1 — server
+      // copies messages WHERE id <= up_to_message_id.
+      const r = await fetch('/admin/api/chat/sessions/' + encodeURIComponent(sid) + '/branch', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({up_to_message_id: msgId - 1}),
+      });
+      const data = await r.json();
+      if (!data || !data.session_id) throw new Error('branch failed');
+      localStorage.setItem(ADMIN_CHAT_KEYS.admin, data.session_id);
+      adminChatCloseModal('branch');
+      await adminChatLoadSessions();
+      await loadAdminChat();
+      // Send the edited message into the newly-active branch.
+      document.getElementById('admin-chat-input').value = newText;
+      await adminChatSend();
+    } catch(e) {
+      alert('Could not fork: ' + (e.message || e));
+    }
+  }
+
+  // ---- Rendering helpers ---------------------------------------------
 
   function adminChatEscape(s) {
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
   function adminChatRenderMd(text) {
-    // Tiny markdown: paragraphs, **bold**, `code`, line breaks.
-    let html = adminChatEscape(text);
-    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/`([^`]+)`/g, '<code style="background:var(--admin-bg); padding:.1rem .3rem; border-radius:.25rem; font-size:.9em;">$1</code>');
-    html = html.replace(/\n/g, '<br>');
-    return html;
+    // Rich markdown via marked + DOMPurify + highlight.js. Falls back to
+    // the old escape-then-tiny-replace if any of those libs aren't loaded
+    // (e.g. CDN blocked), so the panel never goes blank on a load error.
+    const raw = String(text == null ? '' : text);
+    if (!window.marked || !window.DOMPurify) {
+      let html = adminChatEscape(raw);
+      html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+      html = html.replace(/\n/g, '<br>');
+      return html;
+    }
+    try {
+      window.marked.setOptions({ breaks: true, gfm: true });
+      const dirty = window.marked.parse(raw);
+      const clean = window.DOMPurify.sanitize(dirty, {ADD_ATTR: ['target']});
+      return clean;
+    } catch(e) {
+      return adminChatEscape(raw);
+    }
+  }
+  function adminChatHighlightWithin(rootEl) {
+    if (!window.hljs || !rootEl) return;
+    rootEl.querySelectorAll('pre code').forEach(blk => {
+      try { window.hljs.highlightElement(blk); } catch(_) {}
+    });
   }
   function adminChatBubble(role, contentHtml, extraHtml) {
     const isUser = role === 'user';
@@ -4462,6 +4932,61 @@ TO CUSTOMIZE THIS DASHBOARD:
     if (box) box.scrollTop = box.scrollHeight;
   }
 
+  // Wrap a user-role bubble with an "Edit & re-run" pencil that opens
+  // the branch modal. Persisted user messages have a numeric id we can
+  // pass to up_to_message_id; freshly-sent ones don't (we only get the
+  // id back on the next page reload), so we no-op when id is null.
+  function adminChatUserBubble(messageId, text) {
+    const safe = adminChatEscape(text || '');
+    const idAttr = messageId != null ? messageId : '';
+    // Stash the raw text on the bubble's dataset so the delegated
+    // click handler (adminChatBindBranchClicks) can recover it without
+    // ever interpolating user text into an HTML attribute — which is
+    // both XSS-prone and breaks on quotes in the message body.
+    const dataAttrs = idAttr !== ''
+      ? ` data-branch-id="${idAttr}" data-branch-text="${safe}"`
+      : '';
+    return `<div class="admin-chat-bubble-user" style="display:flex; flex-direction:column; align-items:flex-end; gap:.25rem; position:relative;" data-testid="bubble-admin-chat-user${idAttr ? '-' + idAttr : ''}">
+      <div style="max-width:80%; background:rgba(59,130,246,0.18); color:#dbeafe; padding:.75rem 1rem; border-radius:.75rem; border:1px solid rgba(59,130,246,0.35); white-space:pre-wrap; word-wrap:break-word; position:relative;">
+        ${safe}
+        ${idAttr !== '' ? `<div class="acu-actions"><button type="button" class="admin-chat-branch-btn"${dataAttrs} data-testid="button-edit-rerun-${idAttr}" title="Edit &amp; re-run">✎</button></div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  // One-time delegated click handler for every "Edit & re-run" pencil.
+  // We bind on the messages container (which is rebuilt on each
+  // history load) so the listener has to be reattached after each
+  // render. adminChatBindBranchClicks is idempotent — it tags the
+  // container with a data-flag so repeat calls are no-ops.
+  function adminChatBindBranchClicks() {
+    const box = document.getElementById('admin-chat-messages');
+    if (!box || box.dataset.branchBound === '1') return;
+    box.dataset.branchBound = '1';
+    box.addEventListener('click', (ev) => {
+      const btn = ev.target.closest && ev.target.closest('.admin-chat-branch-btn');
+      if (!btn) return;
+      const id = parseInt(btn.getAttribute('data-branch-id') || '', 10);
+      // data-branch-text is the HTML-escaped string we wrote in
+      // adminChatUserBubble; the browser auto-decodes entities when
+      // reading the attribute, so we get the original text back here.
+      const txt = btn.getAttribute('data-branch-text') || '';
+      if (!isNaN(id)) adminChatOpenBranchModal(id, txt);
+    });
+  }
+
+  // Per-assistant-message usage badge ("1.2k tokens · $0.0034").
+  function adminChatUsageBadgeHtml(usage) {
+    if (!usage) return '';
+    const tot = usage.total_tokens || (usage.prompt_tokens||0)+(usage.completion_tokens||0);
+    if (!tot) return '';
+    const tokens = tot >= 1000 ? (tot/1000).toFixed(1) + 'k' : String(tot);
+    const cost = (typeof usage.cost_usd === 'number' && usage.cost_usd > 0)
+      ? ' · $' + usage.cost_usd.toFixed(4) : '';
+    const model = usage.model ? ' · ' + adminChatEscape(usage.model) : '';
+    return `<div class="admin-chat-usage-badge" data-testid="usage-badge">${tokens} tokens${cost}${model}</div>`;
+  }
+
   async function loadAdminChat() {
     const box = document.getElementById('admin-chat-messages');
     if (!box) return;
@@ -4469,18 +4994,27 @@ TO CUSTOMIZE THIS DASHBOARD:
       box.innerHTML = '<div style="color:var(--admin-text-muted); font-size:.9rem;">Visitor preview — your messages go straight to the public agent.</div>';
       return;
     }
-    const sid = adminChatGetSession('admin');
+    // Kick off (or refresh) the sessions sidebar in parallel with the
+    // history load so opening the tab populates both halves at once.
+    adminChatLoadSessions();
+    const sid = await adminChatEnsureActiveSession();
     box.innerHTML = '<div style="color:var(--admin-text-muted); font-size:.9rem;">Loading…</div>';
+    // Pull the full per-session config in parallel so the header (title,
+    // model, custom-prompt indicator) reflects the active conversation.
     try {
-      const r = await fetch(`/admin/api/chat/history?session_id=${encodeURIComponent(sid)}&mode=admin`);
-      const data = await r.json();
+      const cfgReq = fetch('/admin/api/chat/sessions/' + encodeURIComponent(sid))
+                       .then(r => r.json()).catch(() => null);
+      const histReq = fetch(`/admin/api/chat/history?session_id=${encodeURIComponent(sid)}&mode=admin`)
+                       .then(r => r.json());
+      const [cfg, data] = await Promise.all([cfgReq, histReq]);
+      if (cfg) { adminChatActiveCfg = cfg; adminChatRefreshHeader(); }
       const msgs = data.messages || [];
       if (!msgs.length) {
         box.innerHTML = '<div style="color:var(--admin-text-muted); font-size:.9rem;">Ask me anything about your site. Try: "Give me a 7-day overview" or "List the AI skills".</div>';
         return;
       }
-      // Render: pair each assistant message that has tool_calls with the
-      // tool result(s) that follow it, into a single bubble + cards block.
+      // Pair each assistant message that has tool_calls with the tool
+      // result(s) that follow it, into a single bubble + cards block.
       let html = '';
       const toolResultsById = {};
       for (const m of msgs) {
@@ -4490,7 +5024,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       }
       for (const m of msgs) {
         if (m.role === 'user') {
-          html += adminChatBubble('user', adminChatEscape(m.content || ''));
+          html += adminChatUserBubble(m.id, m.content || '');
         } else if (m.role === 'assistant') {
           let toolHtml = '';
           let tcs = m.tool_calls_json;
@@ -4515,13 +5049,21 @@ TO CUSTOMIZE THIS DASHBOARD:
             }
           }
           if ((m.content || '').trim() || !toolHtml) {
-            html += adminChatBubble('assistant', adminChatRenderMd(m.content || ''), toolHtml);
+            // Render the assistant bubble with admin-chat-md-body so the
+            // shared CSS rules (code/pre/table) apply to its contents.
+            const md = adminChatRenderMd(m.content || '');
+            html += `<div style="display:flex; flex-direction:column; align-items:flex-start; gap:.25rem;" data-testid="bubble-admin-chat-assistant${m.id ? '-' + m.id : ''}">
+              <div class="admin-chat-md-body" style="max-width:80%; background:var(--admin-surface); color:var(--admin-text); padding:.75rem 1rem; border-radius:.75rem; border:1px solid var(--admin-border); word-wrap:break-word;">${md}</div>
+              ${toolHtml}
+            </div>`;
           } else if (toolHtml) {
             html += `<div style="display:flex; flex-direction:column; align-items:flex-start; gap:.25rem;">${toolHtml}</div>`;
           }
         }
       }
       box.innerHTML = html;
+      adminChatHighlightWithin(box);
+      adminChatBindBranchClicks();
       adminChatScrollDown();
     } catch (e) {
       box.innerHTML = '<div style="color:var(--admin-text-muted);">Could not load history.</div>';
@@ -4535,14 +5077,16 @@ TO CUSTOMIZE THIS DASHBOARD:
     const message = (input.value || '').trim();
     if (!message) return;
     const mode = adminChatMode;
-    const sid = adminChatGetSession(mode);
+    const sid = (mode === 'admin')
+      ? await adminChatEnsureActiveSession()
+      : adminChatGetVisitorSession();
 
     // Clear placeholder if present
     if (box.children.length === 1 && box.children[0].tagName === 'DIV' &&
         !box.children[0].dataset.testid) {
       box.innerHTML = '';
     }
-    box.insertAdjacentHTML('beforeend', adminChatBubble('user', adminChatEscape(message)));
+    box.insertAdjacentHTML('beforeend', adminChatUserBubble(null, message));
     box.insertAdjacentHTML('beforeend',
       `<div id="admin-chat-thinking" style="color:var(--admin-text-muted); font-size:.9rem; align-self:flex-start;">Thinking…</div>`);
     input.value = '';
@@ -4574,13 +5118,16 @@ TO CUSTOMIZE THIS DASHBOARD:
           const turnTs = Date.now();
           const bubbleId = 'admin-chat-sbubble-' + turnTs;
           const toolsId  = 'admin-chat-stools-'  + turnTs;
+          const usageId  = 'admin-chat-susage-'  + turnTs;
           box.insertAdjacentHTML('beforeend',
             `<div style="display:flex; flex-direction:column; align-items:flex-start; gap:.25rem;" data-testid="bubble-admin-chat-assistant">
-              <div id="${bubbleId}" style="max-width:80%; background:var(--admin-surface); color:var(--admin-text); padding:.75rem 1rem; border-radius:.75rem; border:1px solid var(--admin-border); white-space:pre-wrap; word-wrap:break-word;"></div>
+              <div id="${bubbleId}" class="admin-chat-md-body" style="max-width:80%; background:var(--admin-surface); color:var(--admin-text); padding:.75rem 1rem; border-radius:.75rem; border:1px solid var(--admin-border); word-wrap:break-word;"></div>
               <div id="${toolsId}" style="display:flex; flex-direction:column; gap:.25rem; width:100%;"></div>
+              <div id="${usageId}" style="display:flex; flex-direction:column; gap:.15rem;"></div>
             </div>`);
-          const target  = document.getElementById(bubbleId);
-          const toolBox = document.getElementById(toolsId);
+          const target   = document.getElementById(bubbleId);
+          const toolBox  = document.getElementById(toolsId);
+          const usageBox = document.getElementById(usageId);
           const reader  = r.body.getReader();
           const decoder = new TextDecoder();
           let acc = '';
@@ -4627,17 +5174,25 @@ TO CUSTOMIZE THIS DASHBOARD:
                     adminChatActionCard(proposal.action_id, proposal.preview));
                 }
                 adminChatScrollDown();
+              } else if (evt.type === 'usage' && evt.usage) {
+                // Per-round token + cost badge appended under bubble.
+                usageBox.insertAdjacentHTML('beforeend',
+                  adminChatUsageBadgeHtml(evt.usage));
               } else if (evt.type === 'done') {
                 if (!acc && evt.content) {
                   acc = evt.content;
                   target.innerHTML = adminChatRenderMd(acc);
                 }
+                adminChatHighlightWithin(target);
               } else if (evt.type === 'error') {
                 acc += '\n[error] ' + (evt.content || '');
                 target.innerHTML = adminChatRenderMd(acc);
               }
             }
           }
+          // Refresh the sidebar so the new last-message preview, msg
+          // count, and last_at timestamp on this conversation appear.
+          adminChatLoadSessions();
         }
       } else {
         // Visitor mode: hit the same SSE chat endpoint visitors use.
@@ -9180,6 +9735,97 @@ TO CUSTOMIZE THIS DASHBOARD:
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.3/Sortable.min.js"></script>
   <!-- Chart.js — used by the Overview and Custom Dashboards tabs -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <!-- Admin Chat: rich markdown (marked) + sanitization (DOMPurify) +
+       syntax highlighting (highlight.js). All three are loaded with
+       integrity-less pinned versions, intentionally — they ship to
+       the admin dashboard only, never to public visitors. -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.11/dist/purify.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/common.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css">
+  <style>
+    /* Admin chat extra styling — kept here (rather than in styles.css) so
+       a future split-out of dashboard.html doesn't drop these rules. */
+    .admin-chat-shell { display:grid; grid-template-columns:280px 1fr; gap:1rem; min-height:600px; }
+    @media (max-width: 900px) { .admin-chat-shell { grid-template-columns:1fr; } }
+    .admin-chat-side {
+      display:flex; flex-direction:column; gap:.5rem;
+      background:var(--admin-bg); border:1px solid var(--admin-border);
+      border-radius:.75rem; padding:.75rem; max-height:75vh; overflow:hidden;
+    }
+    .admin-chat-session-item {
+      padding:.5rem .6rem; border-radius:.5rem; cursor:pointer;
+      border:1px solid transparent; display:flex; flex-direction:column;
+      gap:.15rem; transition:background .12s;
+    }
+    .admin-chat-session-item:hover { background:var(--admin-card); }
+    .admin-chat-session-item.active {
+      background:var(--admin-card); border-color:var(--admin-border);
+    }
+    .admin-chat-session-item .acs-title { font-weight:600; font-size:.9rem; color:var(--admin-text); line-height:1.2; }
+    .admin-chat-session-item .acs-preview { font-size:.78rem; color:var(--admin-text-muted); line-height:1.25; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .admin-chat-session-item .acs-meta { font-size:.7rem; color:var(--admin-text-muted); display:flex; gap:.4rem; align-items:center; }
+    .admin-chat-session-item .acs-actions { display:none; gap:.25rem; }
+    .admin-chat-session-item:hover .acs-actions,
+    .admin-chat-session-item.active .acs-actions { display:flex; }
+    .admin-chat-session-item .acs-actions button {
+      background:transparent; border:0; cursor:pointer; padding:.15rem .3rem;
+      font-size:.75rem; color:var(--admin-text-muted); border-radius:.25rem;
+    }
+    .admin-chat-session-item .acs-actions button:hover { background:var(--admin-bg); color:var(--admin-text); }
+    .admin-chat-header {
+      display:flex; align-items:center; gap:.5rem; padding:.5rem .75rem;
+      background:var(--admin-card); border:1px solid var(--admin-border);
+      border-radius:.5rem; flex-wrap:wrap;
+    }
+    .admin-chat-header select,
+    .admin-chat-header button.acm-btn {
+      background:var(--admin-bg); color:var(--admin-text);
+      border:1px solid var(--admin-border); border-radius:.4rem;
+      padding:.3rem .55rem; font-size:.85rem; cursor:pointer;
+    }
+    .admin-chat-header button.acm-btn.active { background:var(--admin-card); }
+    .admin-chat-usage-badge {
+      align-self:flex-start; font-size:.7rem; color:var(--admin-text-muted);
+      background:var(--admin-bg); border:1px solid var(--admin-border);
+      padding:.1rem .4rem; border-radius:.3rem; margin-top:.15rem;
+    }
+    .admin-chat-bubble-user { position:relative; }
+    .admin-chat-bubble-user .acu-actions {
+      position:absolute; top:.25rem; right:-2.2rem; display:none;
+      flex-direction:column; gap:.15rem;
+    }
+    .admin-chat-bubble-user:hover .acu-actions { display:flex; }
+    .admin-chat-bubble-user .acu-actions button {
+      background:var(--admin-bg); border:1px solid var(--admin-border);
+      cursor:pointer; padding:.15rem .35rem; border-radius:.3rem;
+      font-size:.75rem; color:var(--admin-text-muted);
+    }
+    .admin-chat-modal-backdrop {
+      position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:9999;
+      display:none; align-items:center; justify-content:center;
+    }
+    .admin-chat-modal-backdrop.open { display:flex; }
+    .admin-chat-modal {
+      background:var(--admin-bg); border:1px solid var(--admin-border);
+      border-radius:.75rem; padding:1rem 1.25rem; max-width:760px;
+      width:90%; max-height:85vh; overflow:auto;
+      box-shadow:0 20px 60px rgba(0,0,0,.5);
+    }
+    .admin-chat-skill-row {
+      display:flex; align-items:flex-start; gap:.5rem; padding:.4rem .5rem;
+      border-radius:.35rem;
+    }
+    .admin-chat-skill-row:hover { background:var(--admin-card); }
+    .admin-chat-skill-row label { font-weight:600; font-size:.85rem; cursor:pointer; }
+    .admin-chat-skill-row p { margin:.1rem 0 0; font-size:.78rem; color:var(--admin-text-muted); line-height:1.3; }
+    .admin-chat-md-body code:not(pre code) { background:var(--admin-bg); padding:.1rem .35rem; border-radius:.25rem; font-size:.92em; }
+    .admin-chat-md-body pre { background:#0d1117; color:#c9d1d9; padding:.75rem; border-radius:.5rem; overflow:auto; font-size:.8rem; }
+    .admin-chat-md-body table { border-collapse:collapse; margin:.5rem 0; }
+    .admin-chat-md-body th, .admin-chat-md-body td { border:1px solid var(--admin-border); padding:.25rem .5rem; font-size:.85rem; }
+    .admin-chat-md-body h1, .admin-chat-md-body h2, .admin-chat-md-body h3 { margin:.5rem 0 .25rem; }
+    .admin-chat-md-body ul, .admin-chat-md-body ol { margin:.25rem 0 .25rem 1.25rem; }
+  </style>
 
   <script>
     /*

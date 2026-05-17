@@ -1925,6 +1925,33 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_admin_chat_session
                     ON admin_chat_messages (session_id, mode, created_at);
 
+                -- One row per admin-chat conversation. The session_id used
+                -- to be only a localStorage value with no server-side
+                -- record beyond the message rows it produced; this table
+                -- now holds per-session metadata (title, pinned) AND per-
+                -- session config overrides (model, system prompt,
+                -- disabled tools) that the stream loop reads on each
+                -- turn. Created lazily by _admin_chat_get_or_create_session
+                -- so any pre-existing session_id in admin_chat_messages
+                -- self-heals on its next message; a startup backfill (see
+                -- _backfill_admin_chat_sessions below) also seeds rows
+                -- for historical sessions so the sidebar shows them.
+                CREATE TABLE IF NOT EXISTS admin_chat_sessions (
+                    id                     SERIAL PRIMARY KEY,
+                    session_id             VARCHAR(100) NOT NULL UNIQUE,
+                    mode                   VARCHAR(20)  NOT NULL DEFAULT 'admin',
+                    title                  TEXT         NOT NULL DEFAULT '',
+                    pinned                 BOOLEAN      NOT NULL DEFAULT false,
+                    model                  TEXT         NOT NULL DEFAULT '',
+                    system_prompt_override TEXT         NOT NULL DEFAULT '',
+                    disabled_tools_json    JSONB        NOT NULL DEFAULT '[]'::jsonb,
+                    created_at             TIMESTAMP    DEFAULT NOW(),
+                    updated_at             TIMESTAMP    DEFAULT NOW(),
+                    last_message_at        TIMESTAMP    DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_admin_chat_sessions_recent
+                    ON admin_chat_sessions (mode, pinned DESC, last_message_at DESC);
+
                 -- Admin assistant: every WRITE the assistant wants to make
                 -- is parked here as a pending action with a preview, and
                 -- only runs after the owner clicks Approve in the chat UI.
@@ -16328,6 +16355,123 @@ ADMIN_CHAT_SYSTEM_PROMPT = (
 )
 
 
+def _admin_chat_get_or_create_session(session_id, mode="admin"):
+    """Return the admin_chat_sessions row for this session_id, creating
+    it lazily if missing. Never raises — on DB error returns an empty
+    defaults dict so the chat loop degrades gracefully to "no overrides"."""
+    sid = (session_id or "")[:100]
+    if not sid:
+        return {"session_id": "", "mode": mode, "title": "", "pinned": False,
+                "model": "", "system_prompt_override": "",
+                "disabled_tools": []}
+    try:
+        row = query_db(
+            "SELECT session_id, mode, title, pinned, model, "
+            "       system_prompt_override, disabled_tools_json "
+            "FROM admin_chat_sessions WHERE session_id=%s",
+            (sid,), fetchone=True)
+        if not row:
+            execute_db(
+                "INSERT INTO admin_chat_sessions "
+                "  (session_id, mode) VALUES (%s, %s) "
+                "ON CONFLICT (session_id) DO NOTHING",
+                (sid, (mode or "admin")[:20]))
+            row = query_db(
+                "SELECT session_id, mode, title, pinned, model, "
+                "       system_prompt_override, disabled_tools_json "
+                "FROM admin_chat_sessions WHERE session_id=%s",
+                (sid,), fetchone=True) or {}
+        dt = row.get("disabled_tools_json") or []
+        if isinstance(dt, str):
+            try: dt = json.loads(dt)
+            except Exception: dt = []
+        return {
+            "session_id": row.get("session_id") or sid,
+            "mode": row.get("mode") or mode,
+            "title": row.get("title") or "",
+            "pinned": bool(row.get("pinned")),
+            "model": row.get("model") or "",
+            "system_prompt_override": row.get("system_prompt_override") or "",
+            "disabled_tools": list(dt) if isinstance(dt, (list, tuple)) else [],
+        }
+    except Exception as e:
+        print(f"[admin_chat] get_or_create_session failed: {e}")
+        return {"session_id": sid, "mode": mode, "title": "", "pinned": False,
+                "model": "", "system_prompt_override": "",
+                "disabled_tools": []}
+
+
+def _admin_chat_touch_session(session_id, *, first_user_message=None):
+    """Update last_message_at; if title is empty AND we have the first user
+    message, derive a short title (first 60 chars on a word boundary).
+    Best-effort, never raises."""
+    sid = (session_id or "")[:100]
+    if not sid:
+        return
+    try:
+        if first_user_message:
+            t = (first_user_message or "").strip().split("\n", 1)[0]
+            if len(t) > 60:
+                t = t[:57].rsplit(" ", 1)[0] + "…"
+            execute_db(
+                "UPDATE admin_chat_sessions "
+                "SET last_message_at=NOW(), updated_at=NOW(), "
+                "    title=CASE WHEN COALESCE(title,'')='' "
+                "               THEN %s ELSE title END "
+                "WHERE session_id=%s",
+                (t, sid))
+        else:
+            execute_db(
+                "UPDATE admin_chat_sessions "
+                "SET last_message_at=NOW(), updated_at=NOW() "
+                "WHERE session_id=%s",
+                (sid,))
+    except Exception as e:
+        print(f"[admin_chat] touch_session failed: {e}")
+
+
+def _backfill_admin_chat_sessions():
+    """Seed admin_chat_sessions rows for any historical session_id that
+    only lives in admin_chat_messages. Called once at startup so the new
+    sidebar shows pre-existing conversations on first boot after upgrade.
+    Idempotent; cheap (one INSERT … SELECT)."""
+    try:
+        execute_db(
+            "INSERT INTO admin_chat_sessions (session_id, mode, "
+            "                                 last_message_at, created_at) "
+            "SELECT m.session_id, MAX(m.mode), "
+            "       MAX(m.created_at), MIN(m.created_at) "
+            "FROM admin_chat_messages m "
+            "LEFT JOIN admin_chat_sessions s ON s.session_id = m.session_id "
+            "WHERE s.session_id IS NULL AND m.session_id <> '' "
+            "GROUP BY m.session_id "
+            "ON CONFLICT (session_id) DO NOTHING")
+    except Exception as e:
+        print(f"[admin_chat] backfill_sessions failed: {e}")
+
+
+def _admin_chat_estimate_cost_usd(provider, model, prompt_tokens,
+                                  completion_tokens):
+    """Mirror what record_chat_cost stamps so the SSE 'usage' event can
+    show a per-message cost in the UI without a second DB round-trip.
+    Returns float USD or None when no price row exists (matches the
+    'uncosted call' branch in record_chat_cost)."""
+    try:
+        price = get_model_price(provider or "openai", model or "", "chat")
+        if not price:
+            return None
+        unit_in = price.get("input_price_per_million_tokens")
+        unit_out = price.get("output_price_per_million_tokens")
+        if unit_in is None or unit_out is None:
+            return None
+        p = int(prompt_tokens or 0); c = int(completion_tokens or 0)
+        if p <= 0 and c <= 0:
+            return None
+        return (p * _to_float(unit_in) + c * _to_float(unit_out)) / 1_000_000.0
+    except Exception:
+        return None
+
+
 def _admin_chat_persist(session_id, mode, role, content,
                         tool_calls=None, tool_call_id=None, tool_name=None):
     try:
@@ -16366,7 +16510,14 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
     wrapper that drains this generator into (final_text, tool_trace)
     so /admin/api/chat/send keeps working unchanged for non-SSE callers.
     """
-    # Pull the active openai model from agent_provider_settings.
+    # Per-session config (model / system prompt / disabled tools) layered
+    # on top of the global default. Created lazily if missing — historical
+    # sessions self-heal on their next turn.
+    session_cfg = _admin_chat_get_or_create_session(session_id, "admin")
+    disabled_tools = set(session_cfg.get("disabled_tools") or [])
+
+    # Pull the active openai model from agent_provider_settings, then
+    # apply the per-session override if one is set.
     model = "gpt-4o-mini"
     try:
         row = query_db(
@@ -16376,6 +16527,8 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
             model = row["openai_model"]
     except Exception:
         pass
+    if session_cfg.get("model"):
+        model = session_cfg["model"]
 
     # Build the messages array from persisted history (admin mode only).
     # Fetch the LATEST 60 turns (DESC subquery) then reverse to chronological
@@ -16408,14 +16561,17 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
         while history and history[0].get("role") == "tool":
             history.pop(0)
 
-    # Append scope-tightness paragraph to the admin system prompt the same
-    # way we do for the visitor agent. Returns "" when the agent_scope_slider
-    # feature is off so the admin prompt stays unchanged for those tenants.
-    _admin_sys = ADMIN_CHAT_SYSTEM_PROMPT
-    try:
-        _admin_sys = _admin_sys + _compose_scope_paragraph()
-    except Exception as _e:
-        print(f"[scope] admin prompt compose failed: {_e}")
+    # System prompt: per-session override wins outright (admin authored
+    # it for this conversation specifically), else fall back to the
+    # default + scope-tightness paragraph used by the visitor agent.
+    if session_cfg.get("system_prompt_override"):
+        _admin_sys = session_cfg["system_prompt_override"]
+    else:
+        _admin_sys = ADMIN_CHAT_SYSTEM_PROMPT
+        try:
+            _admin_sys = _admin_sys + _compose_scope_paragraph()
+        except Exception as _e:
+            print(f"[scope] admin prompt compose failed: {_e}")
     messages = [{"role": "system", "content": _admin_sys}]
     for h in history:
         r = h.get("role")
@@ -16439,16 +16595,27 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
             messages.append({"role": r or "user",
                              "content": h.get("content") or ""})
 
-    # Append the new user message + persist it.
+    # Append the new user message + persist it. Touching the session
+    # bumps last_message_at and (on a brand-new thread) derives a short
+    # title from the first user message so the sidebar isn't all
+    # "Untitled".
     messages.append({"role": "user", "content": user_message})
     _admin_chat_persist(session_id, "admin", "user", user_message)
+    _admin_chat_touch_session(session_id, first_user_message=user_message)
 
     final_text = ""
 
     for round_no in range(max_rounds):
         # Recompute tool list each round so newly added/removed MCP
         # connectors and custom skills become available without restart.
+        # Then drop anything the admin has turned off for this specific
+        # session via the Skills panel — function-name comparison covers
+        # both static admin tools and dynamic visitor/MCP/custom tools.
         round_tools = list(ADMIN_TOOLS) + _admin_chat_dynamic_tools()
+        if disabled_tools:
+            round_tools = [t for t in round_tools
+                           if ((t.get("function") or {}).get("name")
+                               not in disabled_tools)]
 
         round_text = ""
         tcs = []
@@ -16475,6 +16642,28 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
                         total_tokens=u.get("total_tokens"),
                         usage_known=u.get("usage_known", True),
                     )
+                    # Mirror the same cost calc into an SSE event so the
+                    # admin UI can render a per-message tokens + cost
+                    # footer without needing a separate DB round-trip.
+                    _est = _admin_chat_estimate_cost_usd(
+                        u.get("provider", "openai"),
+                        u.get("model", model),
+                        u.get("prompt_tokens", 0),
+                        u.get("completion_tokens", 0))
+                    yield {
+                        "type": "usage",
+                        "usage": {
+                            "provider": u.get("provider", "openai"),
+                            "model": u.get("model", model),
+                            "prompt_tokens": int(u.get("prompt_tokens", 0) or 0),
+                            "completion_tokens": int(u.get("completion_tokens", 0) or 0),
+                            "total_tokens": int(u.get("total_tokens") or
+                                                (u.get("prompt_tokens", 0) or 0) +
+                                                (u.get("completion_tokens", 0) or 0)),
+                            "cost_usd": _est,
+                            "round": round_no,
+                        },
+                    }
                 elif kind == "finish":
                     finish_reason = event[1]
         except Exception as e:
@@ -16674,7 +16863,7 @@ def admin_agent_chat_history():
     # would silently hide the most recent messages once a thread grew
     # past 200 rows, which is the opposite of what the UI wants.
     rows = query_db(
-        "SELECT role, content, tool_calls_json, tool_call_id, tool_name, "
+        "SELECT id, role, content, tool_calls_json, tool_call_id, tool_name, "
         "       created_at "
         "FROM ( "
         "  SELECT id, role, content, tool_calls_json, tool_call_id, "
@@ -16705,6 +16894,341 @@ def admin_agent_chat_clear():
         (session_id, mode),
     )
     return jsonify({"ok": True})
+
+
+# ---------- Admin chat sessions sidebar + per-session config ---------------
+# All endpoints below are admin-only. They power the new in-dashboard chat
+# shell: a sessions sidebar, per-conversation model/system-prompt/skills
+# overrides, branching (fork a thread up to message N into a new session),
+# and JSON/markdown export. Sessions self-create lazily on first use so
+# pre-existing localStorage session ids keep working.
+
+@app.route("/admin/api/chat/sessions", methods=["GET"])
+@admin_required
+def admin_chat_sessions_list():
+    """GET /admin/api/chat/sessions?q=<search>&mode=admin
+    Returns sessions ordered by pinned-first, then last_message_at DESC.
+    Each row carries a small `msg_count` + `last_preview` so the sidebar
+    can render rich item cards without N+1 queries."""
+    q = (request.args.get("q") or "").strip().lower()
+    mode = (request.args.get("mode") or "admin")[:20]
+    rows = query_db(
+        "SELECT s.session_id, s.title, s.pinned, s.model, "
+        "       s.last_message_at, s.created_at, "
+        "       COALESCE(s.system_prompt_override,'') <> '' AS has_prompt, "
+        "       jsonb_array_length(COALESCE(s.disabled_tools_json,'[]'::jsonb)) "
+        "         AS disabled_count, "
+        "       (SELECT COUNT(*) FROM admin_chat_messages m "
+        "          WHERE m.session_id = s.session_id AND m.mode = s.mode) "
+        "         AS msg_count, "
+        "       (SELECT content FROM admin_chat_messages m "
+        "          WHERE m.session_id = s.session_id AND m.mode = s.mode "
+        "            AND m.role IN ('user','assistant') "
+        "          ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS last_preview "
+        "FROM admin_chat_sessions s "
+        "WHERE s.mode = %s "
+        "ORDER BY s.pinned DESC, s.last_message_at DESC NULLS LAST, s.id DESC "
+        "LIMIT 200",
+        (mode,),
+    ) or []
+    out = []
+    for r in rows:
+        title = (r.get("title") or "").strip()
+        preview = (r.get("last_preview") or "").strip().replace("\n", " ")
+        if q:
+            blob = (title + " " + preview).lower()
+            if q not in blob:
+                continue
+        if len(preview) > 140:
+            preview = preview[:137] + "…"
+        last_at = r.get("last_message_at") or r.get("created_at")
+        out.append({
+            "session_id": r["session_id"],
+            "title": title,
+            "pinned": bool(r.get("pinned")),
+            "model": r.get("model") or "",
+            "has_prompt_override": bool(r.get("has_prompt")),
+            "disabled_count": int(r.get("disabled_count") or 0),
+            "msg_count": int(r.get("msg_count") or 0),
+            "last_preview": preview,
+            "last_at": last_at.isoformat() if hasattr(last_at, "isoformat") else None,
+        })
+    return jsonify({"sessions": out})
+
+
+@app.route("/admin/api/chat/sessions", methods=["POST"])
+@admin_required
+def admin_chat_sessions_create():
+    """POST /admin/api/chat/sessions  body {title?, mode?}
+    Mints a fresh session_id (server-side) so a tab without a stored
+    localStorage id can ask for one and get a clean conversation."""
+    data = request.get_json(silent=True) or {}
+    mode = (data.get("mode") or "admin")[:20]
+    sid = "admin_" + os.urandom(6).hex() + str(int(time.time()))[-6:]
+    title = (data.get("title") or "").strip()[:200]
+    execute_db(
+        "INSERT INTO admin_chat_sessions (session_id, mode, title) "
+        "VALUES (%s, %s, %s) ON CONFLICT (session_id) DO NOTHING",
+        (sid, mode, title),
+    )
+    return jsonify({"session_id": sid, "mode": mode, "title": title})
+
+
+@app.route("/admin/api/chat/sessions/<session_id>", methods=["GET"])
+@admin_required
+def admin_chat_session_get(session_id):
+    """GET full config for one session (used by the model picker, system-
+    prompt editor, and skills panel to seed their forms on open)."""
+    cfg = _admin_chat_get_or_create_session(session_id, "admin")
+    # Surface the default system prompt as a hint so the editor can
+    # show "currently using the default — start typing to override".
+    cfg["default_system_prompt"] = ADMIN_CHAT_SYSTEM_PROMPT
+    return jsonify(cfg)
+
+
+@app.route("/admin/api/chat/sessions/<session_id>", methods=["PATCH"])
+@admin_required
+def admin_chat_session_patch(session_id):
+    """PATCH config: any of {title, pinned, model, system_prompt_override,
+    disabled_tools}. Only fields present in the body are updated, so the
+    UI can hit this from several different panels independently."""
+    data = request.get_json(silent=True) or {}
+    sid = (session_id or "")[:100]
+    if not sid:
+        return jsonify({"error": "session_id required"}), 400
+    # Ensure the row exists (e.g. user just opened settings on a brand
+    # new local session id).
+    _admin_chat_get_or_create_session(sid, "admin")
+    sets, args = [], []
+    if "title" in data:
+        sets.append("title=%s")
+        args.append((data.get("title") or "").strip()[:200])
+    if "pinned" in data:
+        sets.append("pinned=%s")
+        args.append(bool(data.get("pinned")))
+    if "model" in data:
+        sets.append("model=%s")
+        args.append((data.get("model") or "").strip()[:120])
+    if "system_prompt_override" in data:
+        sets.append("system_prompt_override=%s")
+        args.append((data.get("system_prompt_override") or ""))
+    if "disabled_tools" in data:
+        dt = data.get("disabled_tools") or []
+        if not isinstance(dt, list):
+            dt = []
+        # Cap at 500 names to keep the column bounded.
+        dt = [str(x)[:200] for x in dt[:500]]
+        sets.append("disabled_tools_json=%s::jsonb")
+        args.append(json.dumps(dt))
+    if not sets:
+        return jsonify({"ok": True, "no_changes": True})
+    sets.append("updated_at=NOW()")
+    args.append(sid)
+    execute_db(
+        f"UPDATE admin_chat_sessions SET {', '.join(sets)} "
+        f"WHERE session_id=%s",
+        tuple(args),
+    )
+    return jsonify({"ok": True,
+                    "session": _admin_chat_get_or_create_session(sid, "admin")})
+
+
+@app.route("/admin/api/chat/sessions/<session_id>", methods=["DELETE"])
+@admin_required
+def admin_chat_session_delete(session_id):
+    """DELETE a session AND its messages. There is no soft-delete — the
+    sidebar's "Delete" is an explicit destructive action behind a
+    client-side confirm()."""
+    sid = (session_id or "")[:100]
+    if not sid:
+        return jsonify({"error": "session_id required"}), 400
+    # Scope deletes to mode='admin' so an admin-side delete can never
+    # touch a visitor-mode row that happens to share the same session_id.
+    execute_db(
+        "DELETE FROM admin_chat_messages WHERE session_id=%s AND mode='admin'",
+        (sid,))
+    execute_db(
+        "DELETE FROM admin_chat_sessions WHERE session_id=%s AND mode='admin'",
+        (sid,))
+    return jsonify({"ok": True})
+
+
+@app.route("/admin/api/chat/sessions/<session_id>/branch", methods=["POST"])
+@admin_required
+def admin_chat_session_branch(session_id):
+    """POST /admin/api/chat/sessions/<sid>/branch  body {up_to_message_id?}
+    Create a new session that inherits the prefix of this conversation up
+    to (and including) the given message id. If `up_to_message_id` is
+    omitted, copies EVERYTHING (a true fork). The new session's title
+    inherits "↳ <original-title>" so the sidebar shows the lineage.
+    Tool messages are also copied so the new branch's context is valid
+    for OpenAI's strict tool_call_id pairing rules."""
+    sid = (session_id or "")[:100]
+    src = _admin_chat_get_or_create_session(sid, "admin")
+    if not src["session_id"]:
+        return jsonify({"error": "source session not found"}), 404
+    data = request.get_json(silent=True) or {}
+    up_to = data.get("up_to_message_id")
+    new_sid = "admin_" + os.urandom(6).hex() + str(int(time.time()))[-6:]
+    base_title = (src.get("title") or "Conversation").strip()
+    new_title = ("↳ " + base_title)[:200]
+    # Seed the new session row with the SAME overrides as the source so
+    # the fork starts with identical config (admin can edit afterwards).
+    execute_db(
+        "INSERT INTO admin_chat_sessions "
+        "  (session_id, mode, title, model, system_prompt_override, "
+        "   disabled_tools_json) "
+        "VALUES (%s, 'admin', %s, %s, %s, %s::jsonb)",
+        (new_sid, new_title, src.get("model") or "",
+         src.get("system_prompt_override") or "",
+         json.dumps(src.get("disabled_tools") or [])),
+    )
+    # Copy messages up to the cutoff. Without a cutoff: copy everything.
+    if up_to is None:
+        execute_db(
+            "INSERT INTO admin_chat_messages "
+            "  (session_id, mode, role, content, tool_calls_json, "
+            "   tool_call_id, tool_name, created_at) "
+            "SELECT %s, mode, role, content, tool_calls_json, "
+            "       tool_call_id, tool_name, created_at "
+            "FROM admin_chat_messages "
+            "WHERE session_id=%s AND mode='admin' "
+            "ORDER BY created_at ASC, id ASC",
+            (new_sid, sid))
+    else:
+        try:
+            up_to = int(up_to)
+        except (TypeError, ValueError):
+            return jsonify({"error": "up_to_message_id must be an integer"}), 400
+        execute_db(
+            "INSERT INTO admin_chat_messages "
+            "  (session_id, mode, role, content, tool_calls_json, "
+            "   tool_call_id, tool_name, created_at) "
+            "SELECT %s, mode, role, content, tool_calls_json, "
+            "       tool_call_id, tool_name, created_at "
+            "FROM admin_chat_messages "
+            "WHERE session_id=%s AND mode='admin' AND id <= %s "
+            "ORDER BY created_at ASC, id ASC",
+            (new_sid, sid, up_to))
+    return jsonify({"session_id": new_sid, "title": new_title})
+
+
+@app.route("/admin/api/chat/sessions/<session_id>/export", methods=["GET"])
+@admin_required
+def admin_chat_session_export(session_id):
+    """GET /admin/api/chat/sessions/<sid>/export?format=md|json
+    Download the entire transcript as either Markdown (human-readable)
+    or JSON (full fidelity incl. tool_calls). Streams as an attachment
+    so the browser saves a file instead of rendering inline."""
+    fmt = (request.args.get("format") or "md").lower()
+    sid = (session_id or "")[:100]
+    if not sid:
+        return jsonify({"error": "session_id required"}), 400
+    msgs = query_db(
+        "SELECT id, role, content, tool_calls_json, tool_call_id, "
+        "       tool_name, created_at "
+        "FROM admin_chat_messages WHERE session_id=%s AND mode='admin' "
+        "ORDER BY created_at ASC, id ASC",
+        (sid,)) or []
+    for m in msgs:
+        if hasattr(m.get("created_at"), "isoformat"):
+            m["created_at"] = m["created_at"].isoformat()
+    cfg = _admin_chat_get_or_create_session(sid, "admin")
+    fname_base = (cfg.get("title") or sid).strip().replace("/", "-")[:80] or sid
+    if fmt == "json":
+        body = json.dumps({"session": cfg, "messages": msgs},
+                          indent=2, default=str)
+        resp = Response(body, mimetype="application/json")
+        resp.headers["Content-Disposition"] = \
+            f'attachment; filename="{fname_base}.json"'
+        return resp
+    # Markdown: human-readable transcript. Tool calls collapsed to a
+    # short "[tool: name(args)]" line; tool results inlined as fenced
+    # code so they're easy to skim.
+    lines = [f"# {cfg.get('title') or 'Admin chat'}",
+             f"_{len(msgs)} messages · session `{sid}`_", ""]
+    if cfg.get("system_prompt_override"):
+        lines += ["## System prompt override", "",
+                  "```", cfg["system_prompt_override"], "```", ""]
+    for m in msgs:
+        role = m.get("role") or "?"
+        ts = m.get("created_at") or ""
+        if role == "user":
+            lines.append(f"### 🧑 User · {ts}")
+            lines.append(""); lines.append(m.get("content") or ""); lines.append("")
+        elif role == "assistant":
+            lines.append(f"### 🤖 Assistant · {ts}")
+            lines.append(""); lines.append(m.get("content") or "")
+            tcs = m.get("tool_calls_json")
+            if isinstance(tcs, str):
+                try: tcs = json.loads(tcs)
+                except Exception: tcs = []
+            if tcs:
+                for tc in tcs or []:
+                    fn = (tc or {}).get("function") or {}
+                    lines.append(f"- 🔧 `{fn.get('name','tool')}({fn.get('arguments','')})`")
+            lines.append("")
+        elif role == "tool":
+            lines.append(f"#### ↩︎ tool result · `{m.get('tool_name','')}` · {ts}")
+            lines.append(""); lines.append("```")
+            lines.append((m.get("content") or "")[:4000])
+            lines.append("```"); lines.append("")
+    body = "\n".join(lines)
+    resp = Response(body, mimetype="text/markdown; charset=utf-8")
+    resp.headers["Content-Disposition"] = \
+        f'attachment; filename="{fname_base}.md"'
+    return resp
+
+
+@app.route("/admin/api/chat/skills", methods=["GET"])
+@admin_required
+def admin_chat_skills_catalog():
+    """GET /admin/api/chat/skills?session_id=...
+    Returns the full catalog of tools available to the admin chat —
+    static admin tools + dynamic visitor/custom/MCP tools — grouped by
+    category, with a `disabled` flag per row driven by the session's
+    `disabled_tools_json`. The Skills panel renders this so the admin
+    can flip individual tools off for a specific conversation."""
+    sid = (request.args.get("session_id") or "")[:100]
+    disabled = set()
+    if sid:
+        cfg = _admin_chat_get_or_create_session(sid, "admin")
+        disabled = set(cfg.get("disabled_tools") or [])
+    out = {"static": [], "dynamic": []}
+    for t in ADMIN_TOOLS:
+        fn = (t.get("function") or {})
+        name = fn.get("name", "")
+        if not name:
+            continue
+        # Classify: propose_* = write, otherwise read/admin.
+        cat = "admin_write" if name.startswith("admin_propose_") else "admin_read"
+        out["static"].append({
+            "name": name,
+            "description": (fn.get("description") or "")[:240],
+            "category": cat,
+            "disabled": name in disabled,
+        })
+    try:
+        for t in _admin_chat_dynamic_tools():
+            fn = (t.get("function") or {})
+            name = fn.get("name", "")
+            if not name:
+                continue
+            if name.startswith("mcp__"):
+                cat = "mcp"
+            elif name.startswith("lookup_"):
+                cat = "lookup"
+            else:
+                cat = "custom"
+            out["dynamic"].append({
+                "name": name,
+                "description": (fn.get("description") or "")[:240],
+                "category": cat,
+                "disabled": name in disabled,
+            })
+    except Exception as e:
+        print(f"[admin_chat] skills catalog dynamic load failed: {e}")
+    return jsonify(out)
 
 
 # --- Approval flow for admin_propose_* tools --------------------------------
@@ -36637,4 +37161,8 @@ if __name__ == "__main__":
     _run_alembic_upgrade()
     sync_skills_to_db()
     sync_custom_skills_to_agent_skills()
+    # Seed admin_chat_sessions rows for any historical session_id that
+    # only lives in admin_chat_messages, so the new sidebar shows
+    # pre-existing conversations on first boot after this upgrade.
+    _backfill_admin_chat_sessions()
     app.run(host="0.0.0.0", port=5000, debug=True)
