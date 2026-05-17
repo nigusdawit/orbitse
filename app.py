@@ -867,6 +867,10 @@ def execute_db(sql, params=None):
 # to `from app import …` (app.py imports it at line 567).
 semantic_cache.init_module(openai_client, query_db, execute_db)
 
+# RAG / auto-memory module is initialised later — its init_module() call
+# lives right after `record_chat_cost` is defined (it depends on that
+# function). See `_rag_init()` below.
+
 
 # =============================================================================
 # ENCRYPTION — used to store external data-source credentials at rest
@@ -4231,6 +4235,21 @@ def record_chat_cost(*, tenant_id=None, session_id="", visitor_id="",
     except Exception as e:
         sentry_sdk.capture_exception(e)
         print(f"[cost] record_chat_cost failed: {e}")
+
+
+# RAG / auto-memory module wiring. Deferred to this point because
+# `rag.init_module` takes a reference to `record_chat_cost` (defined
+# immediately above), so we can't initialise it up at the same place as
+# semantic_cache. All four dependencies (openai_client, query_db,
+# execute_db, current_tenant_id) are already in scope here.
+import rag  # noqa: E402
+rag.init_module(
+    openai_client=openai_client,
+    query_db=query_db,
+    execute_db=execute_db,
+    record_chat_cost=record_chat_cost,
+    current_tenant_id=current_tenant_id,
+)
 
 
 def record_voice_cost(*, tenant_id=None, session_id="", surface="voice_tts",
@@ -15183,6 +15202,64 @@ def _admin_tool_propose_create_site_theme(name=None, palette=None,
     )
 
 
+# ---- RAG tool handlers ----------------------------------------------------
+# Thin wrappers that adapt the rag.* helpers to the admin tool calling
+# convention. The dispatcher in execute_admin_tool() calls these as
+# `fn(**call_args)` where call_args is the model-emitted JSON args dict,
+# so the handlers accept named kwargs (query, top_k) plus **_ for
+# forward-compat with extra fields the model might hallucinate.
+#
+# Return a JSON-serialisable dict; the dispatcher wraps it via
+# json.dumps and feeds it back as the tool message content. Errors are
+# returned inline (rather than raised) so the model sees + apologizes
+# instead of the loop crashing.
+
+def _admin_tool_lookup_kb(query="", top_k=6, **_):
+    q = (query or "").strip()
+    if not q:
+        return {"error": "query required"}
+    try:
+        rows = rag.search_kb(q, top_k=int(top_k or 6))
+        return {
+            "count": len(rows),
+            "results": [{
+                "filename": r.get("filename"),
+                "page": r.get("page_number"),
+                "similarity": round(float(r.get("similarity") or 0), 4),
+                "text": (r.get("content_text") or "")[:1500],
+            } for r in rows],
+        }
+    except Exception as e:
+        return {"error": str(e)[:300]}
+
+
+def _admin_tool_lookup_past_conversations(query="", top_k=4, **_):
+    q = (query or "").strip()
+    if not q:
+        return {"error": "query required"}
+    try:
+        # session_id intentionally not excluded here — the dispatcher
+        # doesn't inject it into call_args for read-only tools, so we
+        # let the model see the full corpus; the auto-injection at
+        # system-prompt time already handles cross-session exclusion
+        # for the implicit-recall path.
+        rows = rag.search_past_chats(q, top_k=int(top_k or 4))
+        return {
+            "count": len(rows),
+            "results": [{
+                "session_id": r.get("session_id"),
+                "session_title": r.get("session_title") or "",
+                "role": r.get("role"),
+                "similarity": round(float(r.get("similarity") or 0), 4),
+                "text": (r.get("content_text") or "")[:800],
+                "when": (r.get("created_at").isoformat()
+                         if hasattr(r.get("created_at"), "isoformat") else None),
+            } for r in rows],
+        }
+    except Exception as e:
+        return {"error": str(e)[:300]}
+
+
 ADMIN_TOOL_FUNCTIONS = {
     # --- Read-only (run immediately, no approval) ---
     "admin_list_tables":            _admin_tool_list_tables,
@@ -15242,6 +15319,9 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_propose_create_site_design":     _admin_tool_propose_create_site_design,
     "admin_propose_publish_site_design":    _admin_tool_propose_publish_site_design,
     "admin_propose_create_site_theme":      _admin_tool_propose_create_site_theme,
+    # --- RAG: KB + cross-chat recall (read-only) ---
+    "lookup_knowledge_base":                _admin_tool_lookup_kb,
+    "lookup_past_conversations":            _admin_tool_lookup_past_conversations,
 }
 
 # Tools whose write-side effect runs only after explicit owner approval.
@@ -15886,7 +15966,42 @@ ADMIN_TOOLS = [
              "sort_order": {"type": "integer"},
          },
          "required": ["question", "answer"]}),
+    # --- RAG: knowledge base + past-chat recall (read-only) -------------
+    # These are EXTRA explicit lookups on top of the auto-injection that
+    # happens at system-prompt assembly. The admin uses them when they
+    # want a wider top-K or a different query than what the user typed —
+    # e.g. "search the KB for 'refund policy'" expects the AI to call
+    # lookup_knowledge_base with that exact query rather than rely on
+    # whatever was auto-retrieved for the original turn.
+    _admin_tool_schema(
+        "lookup_knowledge_base",
+        "Search the uploaded knowledge-base documents (PDF/DOCX/PPTX/"
+        "CSV/TXT) for chunks similar to a query. Returns up to `top_k` "
+        "chunks with source filename and page number. Use this when the "
+        "admin asks about something likely in their uploaded docs.",
+        {"type": "object",
+         "properties": {
+             "query": {"type": "string",
+                       "description": "Free-text question or phrase to match."},
+             "top_k": {"type": "integer", "minimum": 1, "maximum": 12,
+                       "default": 6},
+         },
+         "required": ["query"]}),
+    _admin_tool_schema(
+        "lookup_past_conversations",
+        "Search the admin's previous chat sessions (cross-session "
+        "semantic recall). Returns short snippets with the source chat "
+        "title and date. Excludes the current session.",
+        {"type": "object",
+         "properties": {
+             "query": {"type": "string"},
+             "top_k": {"type": "integer", "minimum": 1, "maximum": 10,
+                       "default": 4},
+         },
+         "required": ["query"]}),
 ]
+
+
 
 
 def _admin_chat_dynamic_tools():
@@ -16607,6 +16722,49 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
             _admin_sys = _admin_sys + _compose_scope_paragraph()
         except Exception as _e:
             print(f"[scope] admin prompt compose failed: {_e}")
+
+    # ---- RAG / memory injection ---------------------------------------
+    # Three independent system blocks the admin can toggle per-session
+    # via the Skills panel. The flags piggyback on the existing
+    # `disabled_tools` set — if the pseudo-name is NOT present, the
+    # feature is on (matches how visitor lookup_* tools work today).
+    #   use_memories     — auto-extracted durable facts about the user
+    #   use_knowledge_base — top-K chunks from uploaded KB docs
+    #   recall_past_chats  — top-K snippets from previous chat sessions
+    # Each block is appended to the system prompt as a clearly-labelled
+    # section, so the LLM treats it as authoritative context rather than
+    # part of the user turn. All retrieval calls wrap in try/except so
+    # an embedding outage NEVER blocks the chat from streaming.
+    try:
+        _memory_ids_used = []
+        if "use_memories" not in disabled_tools:
+            _mems = rag.get_memories_for_prompt(limit=25)
+            _mem_block = rag.format_memories_block(_mems)
+            if _mem_block:
+                _admin_sys = _admin_sys + "\n\n" + _mem_block
+                _memory_ids_used = [m["id"] for m in _mems]
+        if "use_knowledge_base" not in disabled_tools:
+            _kb_hits = rag.search_kb(user_message, top_k=4,
+                                     session_id=session_id)
+            _kb_block = rag.format_kb_block(_kb_hits)
+            if _kb_block:
+                _admin_sys = _admin_sys + "\n\n" + _kb_block
+        if "recall_past_chats" not in disabled_tools:
+            _past = rag.search_past_chats(
+                user_message, top_k=3,
+                exclude_session_id=session_id,
+                session_id=session_id)
+            _past_block = rag.format_past_chats_block(_past)
+            if _past_block:
+                _admin_sys = _admin_sys + "\n\n" + _past_block
+        # Mark the injected memories as used so the recency sort in
+        # get_memories_for_prompt reflects actual usage (drives which
+        # facts survive the limit=25 cut as the memory store grows).
+        if _memory_ids_used:
+            rag.bump_memories_used(_memory_ids_used)
+    except Exception as _e:
+        print(f"[rag] inject failed: {_e}")
+
     messages = [{"role": "system", "content": _admin_sys}]
     for h in history:
         r = h.get("role")
@@ -16637,6 +16795,21 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
     messages.append({"role": "user", "content": user_message})
     _admin_chat_persist(session_id, "admin", "user", user_message)
     _admin_chat_touch_session(session_id, first_user_message=user_message)
+    # Embed the user turn so future sessions can semantically recall it.
+    # We don't have admin_chat_messages.id yet (the persist helper doesn't
+    # return it), so message_id stays NULL — the rag_chat_turns unique
+    # index is partial (WHERE message_id IS NOT NULL) so two embeds of
+    # the same user_message are still idempotent at the content level
+    # via the cheap length-30 guard inside rag.embed_chat_turn.
+    try:
+        _sess_title = (session_cfg.get("title")
+                       or session_cfg.get("derived_title") or "")
+        rag.embed_chat_turn(
+            session_id=session_id, message_id=None,
+            role="user", content=user_message,
+            session_title=_sess_title)
+    except Exception as _e:
+        print(f"[rag] embed user turn failed: {_e}")
 
     final_text = ""
 
@@ -16808,6 +16981,25 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
         final_text = round_text or ""
         _admin_chat_persist(session_id, "admin", "assistant", final_text,
                             usage=last_round_usage)
+        # ---- Post-turn RAG hooks --------------------------------------
+        # (a) Embed the assistant turn for cross-chat recall. (b) Run the
+        # memory extractor — cheap regex pre-filter inside the helper
+        # gates the actual LLM call, so quiet turns cost nothing.
+        try:
+            _sess_title2 = (session_cfg.get("title")
+                            or session_cfg.get("derived_title") or "")
+            rag.embed_chat_turn(
+                session_id=session_id, message_id=None,
+                role="assistant", content=final_text,
+                session_title=_sess_title2)
+        except Exception as _e:
+            print(f"[rag] embed assistant turn failed: {_e}")
+        try:
+            rag.extract_and_store_memories(
+                user_text=user_message, assistant_text=final_text,
+                session_id=session_id, message_id=None)
+        except Exception as _e:
+            print(f"[rag] memory extract failed: {_e}")
         yield {"type": "done", "content": final_text}
         return
 
@@ -17253,6 +17445,143 @@ def admin_chat_session_export(session_id):
     resp.headers["Content-Disposition"] = \
         f'attachment; filename="{fname_base}.md"'
     return resp
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Base & Auto-Memory admin endpoints (task #79, admin chat RAG).
+# These power the "Knowledge" panel in the admin chat shell: upload docs
+# (PDF/DOCX/PPTX/CSV/TXT/MD), list them with their indexed-chunk count,
+# delete a doc (cascades to chunks + removes the source file), list the
+# auto-extracted long-term memories, and delete a memory the operator no
+# longer wants the AI to keep using. Everything is tenant-scoped via the
+# helpers in rag.py.
+# ---------------------------------------------------------------------------
+
+_RAG_MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB hard cap per file
+_RAG_KB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "uploads", "kb")
+_RAG_ALLOWED_EXTS = {"pdf", "docx", "pptx", "csv", "txt", "md"}
+
+
+@app.route("/admin/api/kb/documents", methods=["GET"])
+@admin_required
+def admin_kb_list_documents():
+    """List indexed knowledge-base documents for the current tenant."""
+    rows = rag.list_documents() or []
+    for r in rows:
+        for k in ("indexed_at", "created_at"):
+            v = r.get(k)
+            if hasattr(v, "isoformat"):
+                r[k] = v.isoformat()
+    return jsonify({"documents": rows})
+
+
+@app.route("/admin/api/kb/upload", methods=["POST"])
+@admin_required
+def admin_kb_upload():
+    """Upload one or more files to the knowledge base. Each file is
+    extracted, chunked, embedded, and inserted into rag_documents +
+    rag_chunks. Files are stored on disk under uploads/kb/<unique>.ext
+    so a re-index can re-read the original bytes if needed."""
+    files = request.files.getlist("files") or []
+    if not files and "file" in request.files:
+        files = [request.files["file"]]
+    files = [f for f in files if f and f.filename]
+    if not files:
+        return jsonify({"error": "No files provided"}), 400
+
+    os.makedirs(_RAG_KB_DIR, exist_ok=True)
+    results = []
+    for f in files:
+        fname = f.filename
+        ext = (fname.rsplit(".", 1)[-1].lower() if "." in fname else "")
+        if ext not in _RAG_ALLOWED_EXTS:
+            results.append({"filename": fname, "ok": False,
+                            "error": f"unsupported extension .{ext}"})
+            continue
+        # Read into memory so we can size-check before persisting. 25MB
+        # cap matches the per-file limit documented in rag.py.
+        data = f.read()
+        if not data:
+            results.append({"filename": fname, "ok": False, "error": "empty file"})
+            continue
+        if len(data) > _RAG_MAX_UPLOAD_BYTES:
+            results.append({"filename": fname, "ok": False,
+                            "error": f"file exceeds {_RAG_MAX_UPLOAD_BYTES // (1024*1024)}MB cap"})
+            continue
+        # Store with a randomized prefix so two uploads with the same
+        # display name don't collide on disk.
+        safe_base = re.sub(r"[^A-Za-z0-9._-]+", "_", fname)[:80] or "file"
+        unique = f"{secrets.token_hex(8)}_{safe_base}"
+        disk_path = os.path.join(_RAG_KB_DIR, unique)
+        try:
+            with open(disk_path, "wb") as out:
+                out.write(data)
+            mime = (f.mimetype or "application/octet-stream")[:120]
+            doc_id = rag.ingest_document(disk_path, fname, mime,
+                                         size_bytes=len(data))
+            # Fetch the resulting row so the UI can show real status
+            # (ready vs failed) + chunk_count right after the upload
+            # round-trips, without a second list call. ingest_document
+            # intentionally returns a doc_id even on extraction/embed
+            # failure (status='failed', with error_message set) so we
+            # MUST derive per-file ok-ness from the persisted status —
+            # not from the absence of an exception — otherwise the UI
+            # would happily report a failed file as "indexed".
+            tid = current_tenant_id() if "current_tenant_id" in globals() else 1
+            doc_row = query_db(
+                "SELECT id, status, chunk_count, page_count, error_message "
+                "FROM rag_documents WHERE id=%s AND tenant_id=%s",
+                (doc_id, tid), fetchone=True,
+            ) or {}
+            doc_row = dict(doc_row)
+            ok_flag = (doc_row.get("status") == "ready")
+            entry = {"filename": fname, "ok": ok_flag, "document": doc_row}
+            if not ok_flag:
+                entry["error"] = doc_row.get("error_message") or "indexing failed"
+            results.append(entry)
+        except Exception as e:
+            # On failure, drop the on-disk file so we don't accumulate
+            # orphaned bytes that no rag_documents row points to.
+            try:
+                if os.path.exists(disk_path):
+                    os.remove(disk_path)
+            except Exception:
+                pass
+            results.append({"filename": fname, "ok": False, "error": str(e)[:300]})
+    return jsonify({"results": results})
+
+
+@app.route("/admin/api/kb/documents/<int:doc_id>", methods=["DELETE"])
+@admin_required
+def admin_kb_delete_document(doc_id):
+    ok = rag.delete_document(doc_id)
+    if not ok:
+        return jsonify({"error": "not found"}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/admin/api/memories", methods=["GET"])
+@admin_required
+def admin_memories_list():
+    """List the auto-extracted long-term memories. Newest first; sensitive
+    fields (the embedding vector) are not returned."""
+    rows = rag.list_memories() or []
+    for r in rows:
+        for k in ("created_at", "last_used_at"):
+            v = r.get(k)
+            if hasattr(v, "isoformat"):
+                r[k] = v.isoformat()
+    return jsonify({"memories": rows})
+
+
+@app.route("/admin/api/memories/<int:memory_id>", methods=["DELETE"])
+@admin_required
+def admin_memories_delete(memory_id):
+    ok = rag.delete_memory(memory_id)
+    if not ok:
+        return jsonify({"error": "not found"}), 404
+    return jsonify({"ok": True})
 
 
 @app.route("/admin/api/chat/skills", methods=["GET"])

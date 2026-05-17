@@ -4222,6 +4222,8 @@ TO CUSTOMIZE THIS DASHBOARD:
                   data-testid="button-admin-chat-prompt">⚙ Prompt</button>
           <button class="acm-btn" onclick="adminChatOpenSkills()" title="Tools available to this conversation"
                   data-testid="button-admin-chat-skills">🧰 Skills</button>
+          <button class="acm-btn" onclick="adminChatOpenKnowledge()" title="Knowledge base documents and auto-extracted memories"
+                  data-testid="button-admin-chat-knowledge">📚 Knowledge</button>
           <button class="acm-btn" onclick="adminChatExport('md')" title="Download Markdown"
                   data-testid="button-admin-chat-export-md">↓ .md</button>
           <button class="acm-btn" onclick="adminChatExport('json')" title="Download JSON"
@@ -4273,6 +4275,40 @@ TO CUSTOMIZE THIS DASHBOARD:
         <div style="display:flex; gap:.5rem; justify-content:flex-end; margin-top:.75rem;">
           <button class="btn btn-secondary" onclick="adminChatCloseModal('skills')" data-testid="button-admin-chat-skills-close">Close</button>
           <button class="btn btn-primary" onclick="adminChatSkillsSave()" data-testid="button-admin-chat-skills-save">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Knowledge (KB docs + auto-memories) modal -->
+    <div class="admin-chat-modal-backdrop" id="admin-chat-knowledge-modal" onclick="if(event.target===this) adminChatCloseModal('knowledge')">
+      <div class="admin-chat-modal" data-testid="modal-admin-chat-knowledge" style="max-width:780px;">
+        <h3 style="margin-top:0;">Knowledge base &amp; memories</h3>
+        <p style="color:var(--admin-text-muted); font-size:.85rem; margin-top:0;">Upload reference documents the AI can search on demand (PDF, DOCX, PPTX, CSV, TXT, MD — 25MB cap each), and review the long-term memories it has auto-extracted from past conversations.</p>
+        <div style="display:flex; gap:.25rem; border-bottom:1px solid var(--admin-border); margin-bottom:.75rem;">
+          <button class="acm-btn" id="admin-chat-kb-tab-docs" onclick="adminChatKnowledgeShowTab('docs')" data-testid="tab-admin-chat-kb-docs">📄 Documents</button>
+          <button class="acm-btn" id="admin-chat-kb-tab-mems" onclick="adminChatKnowledgeShowTab('mems')" data-testid="tab-admin-chat-kb-mems">🧠 Memories</button>
+        </div>
+        <div id="admin-chat-kb-pane-docs">
+          <form id="admin-chat-kb-upload-form" onsubmit="event.preventDefault(); adminChatKbUpload();" style="margin-bottom:.75rem; padding:.6rem; border:1px dashed var(--admin-border); border-radius:.4rem;">
+            <input type="file" id="admin-chat-kb-file-input" multiple
+                   accept=".pdf,.docx,.pptx,.csv,.txt,.md"
+                   data-testid="input-admin-chat-kb-files"
+                   style="margin-right:.5rem;">
+            <button type="submit" class="btn btn-primary" id="admin-chat-kb-upload-btn"
+                    data-testid="button-admin-chat-kb-upload">Upload &amp; index</button>
+            <div id="admin-chat-kb-upload-status" style="margin-top:.4rem; font-size:.8rem; color:var(--admin-text-muted);"></div>
+          </form>
+          <div id="admin-chat-kb-docs-body" style="max-height:45vh; overflow:auto;">
+            <div style="color:var(--admin-text-muted); padding:1rem;">Loading…</div>
+          </div>
+        </div>
+        <div id="admin-chat-kb-pane-mems" style="display:none;">
+          <div id="admin-chat-kb-mems-body" style="max-height:50vh; overflow:auto;">
+            <div style="color:var(--admin-text-muted); padding:1rem;">Loading…</div>
+          </div>
+        </div>
+        <div style="display:flex; gap:.5rem; justify-content:flex-end; margin-top:.75rem;">
+          <button class="btn btn-secondary" onclick="adminChatCloseModal('knowledge')" data-testid="button-admin-chat-knowledge-close">Close</button>
         </div>
       </div>
     </div>
@@ -4740,6 +4776,124 @@ TO CUSTOMIZE THIS DASHBOARD:
       body.innerHTML = '<div style="color:#b91c1c; padding:1rem;">Failed to load skills.</div>';
     }
   }
+  // ---- Knowledge (KB docs + auto-memories) ---------------------------
+  function adminChatKnowledgeShowTab(which) {
+    const docs = document.getElementById('admin-chat-kb-pane-docs');
+    const mems = document.getElementById('admin-chat-kb-pane-mems');
+    docs.style.display = (which === 'docs') ? '' : 'none';
+    mems.style.display = (which === 'mems') ? '' : 'none';
+    if (which === 'mems') adminChatKbLoadMemories();
+    else adminChatKbLoadDocs();
+  }
+  function adminChatOpenKnowledge() {
+    adminChatOpenModal('knowledge');
+    adminChatKnowledgeShowTab('docs');
+  }
+  async function adminChatKbLoadDocs() {
+    const body = document.getElementById('admin-chat-kb-docs-body');
+    body.innerHTML = '<div style="color:var(--admin-text-muted); padding:1rem;">Loading…</div>';
+    try {
+      const r = await fetch('/admin/api/kb/documents');
+      const data = await r.json();
+      const docs = data.documents || [];
+      if (!docs.length) {
+        body.innerHTML = '<div style="color:var(--admin-text-muted); padding:1rem;">No documents indexed yet. Upload one above.</div>';
+        return;
+      }
+      let html = '<table style="width:100%; border-collapse:collapse; font-size:.85rem;"><thead><tr style="text-align:left;"><th style="padding:.4rem;">File</th><th style="padding:.4rem;">Status</th><th style="padding:.4rem;">Pages</th><th style="padding:.4rem;">Chunks</th><th style="padding:.4rem;">Indexed</th><th></th></tr></thead><tbody>';
+      for (const d of docs) {
+        const statusColor = d.status === 'ready' ? 'var(--admin-text)' :
+                            d.status === 'failed' ? '#b91c1c' : 'var(--admin-text-muted)';
+        const indexed = d.indexed_at ? new Date(d.indexed_at).toLocaleString() :
+                        (d.created_at ? new Date(d.created_at).toLocaleString() : '');
+        const err = d.error_message ? `<div style="color:#b91c1c; font-size:.75rem; margin-top:.2rem;">${adminChatEscape(d.error_message)}</div>` : '';
+        html += `<tr style="border-top:1px solid var(--admin-border);">
+          <td style="padding:.4rem;">${adminChatEscape(d.filename || '')}${err}</td>
+          <td style="padding:.4rem; color:${statusColor};">${adminChatEscape(d.status || '')}</td>
+          <td style="padding:.4rem;">${d.page_count || 0}</td>
+          <td style="padding:.4rem;">${d.chunk_count || 0}</td>
+          <td style="padding:.4rem; color:var(--admin-text-muted);">${adminChatEscape(indexed)}</td>
+          <td style="padding:.4rem;"><button class="acm-btn" onclick="adminChatKbDeleteDoc(${d.id})" data-testid="button-admin-chat-kb-delete-${d.id}">Delete</button></td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+      body.innerHTML = html;
+    } catch (e) {
+      body.innerHTML = '<div style="color:#b91c1c; padding:1rem;">Failed to load documents.</div>';
+    }
+  }
+  async function adminChatKbUpload() {
+    const input = document.getElementById('admin-chat-kb-file-input');
+    const status = document.getElementById('admin-chat-kb-upload-status');
+    const btn = document.getElementById('admin-chat-kb-upload-btn');
+    if (!input.files || !input.files.length) {
+      status.textContent = 'Pick at least one file.';
+      return;
+    }
+    const fd = new FormData();
+    for (const f of input.files) fd.append('files', f);
+    btn.disabled = true;
+    status.textContent = 'Uploading & indexing…';
+    try {
+      const r = await fetch('/admin/api/kb/upload', { method: 'POST', body: fd });
+      const data = await r.json();
+      const ok = (data.results || []).filter(x => x.ok).length;
+      const fail = (data.results || []).filter(x => !x.ok);
+      let msg = `${ok} indexed.`;
+      if (fail.length) {
+        msg += ' Failed: ' + fail.map(x => `${x.filename} (${x.error})`).join(', ');
+      }
+      status.textContent = msg;
+      input.value = '';
+      await adminChatKbLoadDocs();
+    } catch (e) {
+      status.textContent = 'Upload failed.';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  async function adminChatKbDeleteDoc(id) {
+    if (!confirm('Delete this document and all its indexed chunks?')) return;
+    await fetch('/admin/api/kb/documents/' + id, { method: 'DELETE' });
+    await adminChatKbLoadDocs();
+  }
+  async function adminChatKbLoadMemories() {
+    const body = document.getElementById('admin-chat-kb-mems-body');
+    body.innerHTML = '<div style="color:var(--admin-text-muted); padding:1rem;">Loading…</div>';
+    try {
+      const r = await fetch('/admin/api/memories');
+      const data = await r.json();
+      const mems = data.memories || [];
+      if (!mems.length) {
+        body.innerHTML = '<div style="color:var(--admin-text-muted); padding:1rem;">No memories yet. The AI will auto-extract them from conversations where you teach it durable facts (preferences, names, recurring policies, etc.).</div>';
+        return;
+      }
+      let html = '<div style="display:flex; flex-direction:column; gap:.4rem;">';
+      for (const m of mems) {
+        const when = m.created_at ? new Date(m.created_at).toLocaleDateString() : '';
+        const used = m.use_count || 0;
+        html += `<div style="border:1px solid var(--admin-border); border-radius:.4rem; padding:.5rem; display:flex; gap:.5rem; align-items:flex-start;">
+          <div style="flex:1;">
+            <div style="font-size:.9rem;">${adminChatEscape(m.content || '')}</div>
+            <div style="font-size:.72rem; color:var(--admin-text-muted); margin-top:.2rem;">
+              ${adminChatEscape(m.kind || 'fact')} · saved ${adminChatEscape(when)} · used ${used}×
+            </div>
+          </div>
+          <button class="acm-btn" onclick="adminChatMemoryDelete(${m.id})" data-testid="button-admin-chat-mem-delete-${m.id}">Delete</button>
+        </div>`;
+      }
+      html += '</div>';
+      body.innerHTML = html;
+    } catch (e) {
+      body.innerHTML = '<div style="color:#b91c1c; padding:1rem;">Failed to load memories.</div>';
+    }
+  }
+  async function adminChatMemoryDelete(id) {
+    if (!confirm('Forget this memory? The AI will no longer use it.')) return;
+    await fetch('/admin/api/memories/' + id, { method: 'DELETE' });
+    await adminChatKbLoadMemories();
+  }
+
   async function adminChatSkillsSave() {
     const sid = localStorage.getItem(ADMIN_CHAT_KEYS.admin);
     const body = document.getElementById('admin-chat-skills-body');
