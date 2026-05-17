@@ -3699,6 +3699,103 @@ def init_db():
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_weekly_digest_unique
                     ON weekly_digest_sends (tenant_id, week_start);
+
+                -- Task #80: admin chat multimodal input.
+                -- One row per uploaded attachment. Attachments are
+                -- created via /admin/api/chat/attachments/upload BEFORE
+                -- the user message is sent, then their ids are passed
+                -- into /admin/api/chat/stream which assembles them into
+                -- the next assistant turn (image_url parts for vision,
+                -- transient extracted-text system block for documents).
+                -- session_id is the admin chat session; message_id is
+                -- populated after persistence so attachments can be
+                -- replayed on /history.
+                CREATE TABLE IF NOT EXISTS admin_chat_attachments (
+                    id              SERIAL PRIMARY KEY,
+                    tenant_id       INTEGER      NOT NULL DEFAULT 1,
+                    session_id      VARCHAR(100) NOT NULL DEFAULT '',
+                    message_id      INTEGER,
+                    kind            VARCHAR(20)  NOT NULL DEFAULT 'file',
+                    filename        TEXT         NOT NULL DEFAULT '',
+                    mime            VARCHAR(120) NOT NULL DEFAULT '',
+                    size_bytes      INTEGER      NOT NULL DEFAULT 0,
+                    storage_key     TEXT         NOT NULL DEFAULT '',
+                    thumbnail_key   TEXT,
+                    extracted_text  TEXT,
+                    created_at      TIMESTAMP    DEFAULT NOW()
+                );
+                -- Defensive ALTER for any install that created the
+                -- table BEFORE the tenant_id / thumbnail_key columns
+                -- were added.
+                ALTER TABLE admin_chat_attachments
+                  ADD COLUMN IF NOT EXISTS tenant_id INTEGER NOT NULL DEFAULT 1;
+                ALTER TABLE admin_chat_attachments
+                  ADD COLUMN IF NOT EXISTS thumbnail_key TEXT;
+                CREATE INDEX IF NOT EXISTS idx_admin_chat_attachments_tenant
+                    ON admin_chat_attachments (tenant_id, session_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_admin_chat_attachments_session
+                    ON admin_chat_attachments (session_id, created_at);
+
+                -- Task #80: parallel subagent run log. One row per
+                -- `spawn_agents` worker — captures the sub-task, the
+                -- persona/tool subset it was constrained to, token and
+                -- cost totals (also written to api_cost_events under
+                -- surface='admin_chat'), and wall-clock duration so the
+                -- admin can see which subtasks ran in parallel and how
+                -- much they cost.
+                CREATE TABLE IF NOT EXISTS admin_subagent_runs (
+                    id                 SERIAL PRIMARY KEY,
+                    tenant_id          INTEGER      NOT NULL DEFAULT 1,
+                    parent_session_id  VARCHAR(100) NOT NULL DEFAULT '',
+                    sub_task           TEXT         NOT NULL DEFAULT '',
+                    persona            VARCHAR(40)  NOT NULL DEFAULT 'general',
+                    model              TEXT         NOT NULL DEFAULT '',
+                    prompt_tokens      INTEGER      NOT NULL DEFAULT 0,
+                    completion_tokens  INTEGER      NOT NULL DEFAULT 0,
+                    cost_usd           NUMERIC(12,6),
+                    duration_ms        INTEGER      NOT NULL DEFAULT 0,
+                    status             VARCHAR(20)  NOT NULL DEFAULT 'completed',
+                    result_preview     TEXT,
+                    error_text         TEXT,
+                    created_at         TIMESTAMP    DEFAULT NOW()
+                );
+                ALTER TABLE admin_subagent_runs
+                  ADD COLUMN IF NOT EXISTS tenant_id INTEGER NOT NULL DEFAULT 1;
+                CREATE INDEX IF NOT EXISTS idx_admin_subagent_runs_tenant
+                    ON admin_subagent_runs (tenant_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_admin_subagent_runs_session
+                    ON admin_subagent_runs (parent_session_id, created_at);
+
+                -- Task #80: atomic per-tenant daily subagent counter.
+                -- A separate counters table lets the quota check be a
+                -- SINGLE conditional UPSERT (INSERT ... ON CONFLICT DO
+                -- UPDATE WHERE count+req <= cap RETURNING) instead of
+                -- a racy SELECT-then-INSERT. The WHERE on DO UPDATE
+                -- is the atomic gate: when it fails, RETURNING is
+                -- empty and the caller knows quota would be exceeded.
+                CREATE TABLE IF NOT EXISTS admin_subagent_daily_counters (
+                    tenant_id  INTEGER NOT NULL,
+                    day        DATE    NOT NULL,
+                    count      INTEGER NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT NOW(),
+                    PRIMARY KEY (tenant_id, day)
+                );
+
+                -- Task #80: per-tenant parallel subagent quotas. Reuses
+                -- tenant_cost_caps so admins can tune chat-quality
+                -- knobs (parallelism, daily-run cap) in the same place
+                -- they tune $$ caps. Both DEFAULT to safe values so
+                -- existing tenants pick them up on next restart.
+                ALTER TABLE tenant_cost_caps
+                  ADD COLUMN IF NOT EXISTS max_parallel_subagents INTEGER NOT NULL DEFAULT 5;
+                ALTER TABLE tenant_cost_caps
+                  ADD COLUMN IF NOT EXISTS daily_subagent_runs_cap INTEGER NOT NULL DEFAULT 50;
+
+                -- Task #80: per-message attachment ids snapshot, so a
+                -- history reload can show "📎 file.pdf" chips on the
+                -- right user bubble.
+                ALTER TABLE admin_chat_messages
+                  ADD COLUMN IF NOT EXISTS attachment_ids_json JSONB;
             """)
 
             # Seed model_prices with current public list prices for the
@@ -15261,6 +15358,10 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_suggest_seo_improvements":       _admin_tool_suggest_seo_improvements,
     "admin_propose_draft_blog_post":        _admin_tool_propose_draft_blog_post,
     "admin_propose_draft_faq_entry":        _admin_tool_propose_draft_faq_entry,
+    # Task #80: parallel subagent fan-out. Registered AFTER its helper
+    # is defined further down (see `ADMIN_TOOL_FUNCTIONS["spawn_agents"]
+    # = _admin_tool_spawn_agents` near the persona helpers block) so
+    # forward-reference doesn't break import order.
     # --- Site themes (Themes tab) + site designs (Website tab) ---
     "admin_propose_create_site_design":     _admin_tool_propose_create_site_design,
     "admin_propose_publish_site_design":    _admin_tool_propose_publish_site_design,
@@ -15943,6 +16044,49 @@ ADMIN_TOOLS = [
                                        "(1-20, default 6)."},
          },
          "required": ["query"]}),
+    # Task #80: spawn_agents — fan out to 2-5 parallel sub-agents.
+    _admin_tool_schema(
+        "spawn_agents",
+        "Run several focused sub-tasks IN PARALLEL and get all their "
+        "results back in one tool reply. Use when the admin's question "
+        "naturally decomposes into independent pieces (e.g. 'compare X "
+        "across last quarter vs this quarter', 'draft three different "
+        "intro paragraphs', 'audit blog posts, FAQ, and pricing all at "
+        "once for inconsistencies'). Each task gets its OWN persona "
+        "(research/data_analyst/code/creative/ops/general) and a fresh "
+        "tool subset. Required: 2-5 tasks per call (a single sub-task "
+        "should just be answered directly without fan-out); max "
+        "parallelism is set per tenant. Subagents cannot call "
+        "spawn_agents themselves (no recursion). Subagent results come "
+        "back as a list — you must synthesize them into a single "
+        "answer for the admin.",
+        {"type": "object",
+         "properties": {
+             "tasks": {
+                 "type": "array",
+                 "minItems": 2,
+                 "maxItems": 5,
+                 "description": "2-5 sub-tasks to run in parallel.",
+                 "items": {
+                     "type": "object",
+                     "properties": {
+                         "prompt":  {"type": "string",
+                                     "description": "What this "
+                                                    "sub-agent should "
+                                                    "answer or do."},
+                         "persona": {"type": "string",
+                                     "enum": list(ADMIN_CHAT_PERSONAS.keys()) if False else ["general","research","data_analyst","code","creative","ops"],
+                                     "description": "Persona to apply."},
+                         "model":   {"type": "string",
+                                     "description": "Optional model "
+                                                    "override (e.g. "
+                                                    "gpt-4o-mini)."},
+                     },
+                     "required": ["prompt"],
+                 },
+             },
+         },
+         "required": ["tasks"]}),
 ]
 
 
@@ -16462,6 +16606,597 @@ ADMIN_CHAT_SYSTEM_PROMPT = (
 )
 
 
+# =============================================================================
+# Task #80 — Admin chat multimodal + persona router + parallel subagents.
+#
+# Three independent additions, all admin-only:
+#   1. Personas — a lightweight router classifies each user turn into one
+#      of six personas (Research / Data Analyst / Code / Creative / Ops /
+#      General). Each persona augments the system prompt and trims the
+#      tool list to a relevant subset. Admin can pin a persona to skip
+#      classification.
+#   2. Attachments — images go into the user message as image_url parts
+#      (vision); documents are text-extracted via rag.extract_text and
+#      injected as a transient system block.
+#   3. spawn_agents tool — fan-out to up to N parallel non-streaming
+#      sub-loops via ThreadPoolExecutor. Each worker is a bounded copy
+#      of _admin_chat_stream_loop with its own persona and tool subset.
+#      All costs flow through the existing record_chat_cost / cost-cap
+#      machinery.
+# =============================================================================
+
+ADMIN_CHAT_PERSONAS = {
+    # name → {label, prompt_suffix, tool_prefixes (substring match list),
+    #         extra_tools (always-included exact names)}
+    "general": {
+        "label": "General",
+        "prompt_suffix": "",
+        "tool_prefixes": None,  # None = no filtering; every tool available
+        "extra_tools": [],
+    },
+    "research": {
+        "label": "Research",
+        "prompt_suffix": (
+            "\n\nPERSONA: Research. Prefer evidence over opinion. When the "
+            "answer depends on facts you don't have, call admin_web_search "
+            "or lookup_knowledge_base before answering. Cite sources with "
+            "their URL or [source: …] markers."),
+        "tool_prefixes": ("admin_web_search", "lookup_", "admin_describe_",
+                          "admin_list_tables", "admin_run_sql"),
+        "extra_tools": ["spawn_agents"],
+    },
+    "data_analyst": {
+        "label": "Data Analyst",
+        "prompt_suffix": (
+            "\n\nPERSONA: Data Analyst. Use admin_run_sql and the "
+            "admin_overview_* / admin_recent_* / admin_skill_usage_stats "
+            "tools to ground every number. Show small tables when listing "
+            "comparisons. Prefer concrete counts over adjectives."),
+        "tool_prefixes": ("admin_run_sql", "admin_describe_", "admin_list_",
+                          "admin_recent_", "admin_overview_",
+                          "admin_skill_usage_stats", "admin_analyze_"),
+        "extra_tools": ["spawn_agents"],
+    },
+    "code": {
+        "label": "Code",
+        "prompt_suffix": (
+            "\n\nPERSONA: Code. Be concise and precise. Use fenced code "
+            "blocks with language hints. Reference column / table / file "
+            "names exactly. Prefer admin_describe_table over guessing a "
+            "schema."),
+        "tool_prefixes": ("admin_describe_", "admin_list_", "admin_run_sql",
+                          "admin_web_search"),
+        "extra_tools": ["spawn_agents"],
+    },
+    "creative": {
+        "label": "Creative",
+        "prompt_suffix": (
+            "\n\nPERSONA: Creative. Draft confident, original copy. When "
+            "the admin asks for ideas, suggest 2-3 distinct directions. "
+            "Use admin_propose_* tools to draft content the owner can "
+            "approve."),
+        "tool_prefixes": ("admin_propose_draft_", "admin_propose_create_",
+                          "admin_propose_insert", "admin_propose_update",
+                          "lookup_"),
+        "extra_tools": ["spawn_agents"],
+    },
+    "ops": {
+        "label": "Ops",
+        "prompt_suffix": (
+            "\n\nPERSONA: Ops. Focus on day-to-day operations: orders, "
+            "form submissions, bookings, messaging, automations. Always "
+            "use the dedicated admin_recent_* and admin_list_automations "
+            "tools first. Be terse — operators want answers, not essays."),
+        "tool_prefixes": ("admin_recent_", "admin_list_automations",
+                          "admin_get_automation", "admin_propose_",
+                          "admin_mcp_", "lookup_business_info"),
+        "extra_tools": ["spawn_agents"],
+    },
+}
+
+
+def _admin_classify_persona(user_message, model="gpt-4o-mini"):
+    """Cheap one-shot classifier — gpt-4o-mini in JSON mode. Returns
+    (persona_key, reasoning). Failure is NOT fatal: we default to
+    'general' so the chat always proceeds."""
+    if not openai_client:
+        return ("general", "openai client unavailable")
+    if not (user_message or "").strip():
+        return ("general", "empty input")
+    options = ", ".join(ADMIN_CHAT_PERSONAS.keys())
+    sys = ("You are a routing classifier. Pick the single persona that "
+           "best matches the admin's request from this list: " + options +
+           ". Reply ONLY as JSON: {\"persona\": \"<key>\", "
+           "\"reason\": \"<one short sentence>\"}. Persona meanings:\n"
+           "  research — questions about facts, comparisons, lookups, "
+           "external info\n"
+           "  data_analyst — questions about counts, metrics, trends, "
+           "logs, analytics\n"
+           "  code — schema, SQL, migrations, integrations, debugging, "
+           "developer tasks\n"
+           "  creative — writing copy, naming, design suggestions, blog "
+           "drafts, marketing\n"
+           "  ops — orders, bookings, messages, automations, day-to-day "
+           "tenant operations\n"
+           "  general — anything that doesn't clearly fit above")
+    try:
+        resp = openai_client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": sys},
+                      {"role": "user",
+                       "content": (user_message or "")[:1200]}],
+            response_format={"type": "json_object"},
+            max_tokens=80,
+            temperature=0.0,
+        )
+        # Cost ledger — the classifier itself is paid traffic.
+        try:
+            record_chat_cost_from_response(
+                resp, surface="admin_chat", provider="openai", model=model)
+        except Exception:
+            pass
+        txt = (resp.choices[0].message.content or "{}").strip()
+        data = json.loads(txt)
+        key = (data.get("persona") or "general").lower().strip()
+        if key not in ADMIN_CHAT_PERSONAS:
+            key = "general"
+        reason = str(data.get("reason") or "")[:200]
+        return (key, reason)
+    except Exception as e:
+        print(f"[admin_chat] persona classify failed: {e}")
+        return ("general", "")
+
+
+def _admin_apply_persona(tools, persona_key):
+    """Filter the round's tool list by persona. Always retains static
+    admin reads (admin_list_tables, admin_describe_table) so the model
+    can still orient itself, plus any tool whose name matches a prefix
+    in the persona's tool_prefixes list, plus any extra_tools."""
+    p = ADMIN_CHAT_PERSONAS.get(persona_key) or ADMIN_CHAT_PERSONAS["general"]
+    pfx = p.get("tool_prefixes")
+    if not pfx:
+        return tools
+    always_keep = {"admin_list_tables", "admin_describe_table",
+                   "spawn_agents"}
+    always_keep.update(p.get("extra_tools") or [])
+    out = []
+    for t in tools:
+        name = (t.get("function") or {}).get("name") or ""
+        if name in always_keep:
+            out.append(t); continue
+        if any(name.startswith(pp) or name == pp for pp in pfx):
+            out.append(t)
+    return out
+
+
+# ---- Attachments ---------------------------------------------------------
+
+# Hard caps so an admin (or an admin who got phished) can't blow up
+# OpenAI billing by uploading a 100MB PDF or 50 images. These match the
+# spirit of the visitor STT 5MB cap.
+ADMIN_ATTACH_MAX_BYTES = 25 * 1024 * 1024     # 25 MB per file
+ADMIN_ATTACH_MAX_PER_TURN = 8                  # 8 attachments per send
+ADMIN_ATTACH_IMAGE_MIMES = {
+    "image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}
+ADMIN_ATTACH_DOC_EXTS = {".pdf", ".docx", ".pptx", ".csv", ".txt", ".json"}
+
+
+def _admin_attachment_load(att_ids, session_id):
+    """Resolve a list of attachment ids to dicts the chat loop can use.
+    Returns [{id, kind, filename, mime, size_bytes, storage_key,
+              extracted_text, data_bytes (lazy)}]. Silently drops any id
+    that doesn't belong to this session — prevents cross-session leakage
+    if the client somehow sent a stale id."""
+    if not att_ids:
+        return []
+    ids = []
+    for x in att_ids[:ADMIN_ATTACH_MAX_PER_TURN]:
+        try:
+            ids.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return []
+    tid = current_tenant_id()
+    try:
+        rows = query_db(
+            "SELECT id, kind, filename, mime, size_bytes, storage_key, "
+            "       extracted_text "
+            "FROM admin_chat_attachments "
+            "WHERE id = ANY(%s) AND session_id=%s AND tenant_id=%s",
+            (ids, (session_id or "")[:100], tid)) or []
+    except Exception as e:
+        print(f"[admin_chat] attachment load failed: {e}")
+        return []
+    return rows
+
+
+def _admin_attachments_to_user_content(text, attachments):
+    """Build the user-message `content` array for one turn.
+
+    - Images become OpenAI-shaped image_url parts with a data: URL
+      (works for both gpt-4o vision and our internal Claude conversion
+      path). Loaded lazily from storage.
+    - Documents are NOT embedded inline; their extracted_text is folded
+      into a separate transient system block (see caller).
+
+    Returns either a plain string (when no images) or a list of parts.
+    Plain string is preferred when possible so legacy providers that
+    don't understand parts still work."""
+    images = [a for a in (attachments or [])
+              if a.get("kind") == "image"]
+    if not images:
+        return text or ""
+    parts = [{"type": "text", "text": text or ""}]
+    import base64 as _b64
+    for a in images:
+        try:
+            blob = storage.get_storage().read_bytes(a["storage_key"])
+            if not blob:
+                continue
+            mime = a.get("mime") or "image/png"
+            b64 = _b64.b64encode(blob).decode("ascii")
+            parts.append({"type": "image_url",
+                          "image_url": {"url": f"data:{mime};base64,{b64}"}})
+        except Exception as e:
+            print(f"[admin_chat] image load failed id={a.get('id')}: {e}")
+    return parts
+
+
+def _admin_attachments_doc_block(attachments):
+    """Combine extracted text from non-image attachments into one
+    bounded system message. Per-doc cap of 8000 chars; total cap of
+    24000 chars so an admin who uploads 8 docs at once doesn't push
+    the system prompt over the model's context budget."""
+    docs = [a for a in (attachments or [])
+            if a.get("kind") != "image" and (a.get("extracted_text") or "")]
+    if not docs:
+        return ""
+    chunks = []
+    used = 0
+    PER = 8000
+    TOTAL = 24000
+    for a in docs:
+        txt = (a.get("extracted_text") or "")[:PER]
+        snippet = f"[Attached: {a.get('filename') or 'document'}]\n{txt}"
+        if used + len(snippet) > TOTAL:
+            break
+        chunks.append(snippet)
+        used += len(snippet)
+    if not chunks:
+        return ""
+    return ("The admin attached the following document(s) to this turn. "
+            "Treat them as authoritative reference material for THIS "
+            "turn only; later turns will not see them unless the admin "
+            "re-uploads.\n\n" + "\n\n---\n\n".join(chunks))
+
+
+# ---- Subagent runner -----------------------------------------------------
+
+def _admin_subagent_quota_reserve(tenant_id, requested=1):
+    """ATOMIC daily quota check + reservation. Returns (ok, message,
+    cap, used_after). Uses a single conditional UPSERT on
+    admin_subagent_daily_counters so two concurrent spawn_agents calls
+    from the same tenant can't both observe used=49 and both insert 5
+    runs (54 > 50 cap). The WHERE clause on DO UPDATE is the gate:
+    when it fails, RETURNING is empty and we report quota exceeded
+    without touching the counter.
+
+    Counts attempted runs (matches "daily subagent run cap"); failures
+    still consume quota so a runaway agent can't burn the cap by
+    retrying. Reservation is best-effort released via
+    `_admin_subagent_quota_release` on validation failure BEFORE any
+    real work starts."""
+    req = max(1, int(requested or 1))
+    try:
+        cap_row = query_db(
+            "SELECT daily_subagent_runs_cap FROM tenant_cost_caps "
+            "WHERE tenant_id=%s", (tenant_id,), fetchone=True) or {}
+        cap = int(cap_row.get("daily_subagent_runs_cap") or 50)
+        # Conditional UPSERT — atomic across concurrent transactions
+        # because Postgres serializes the ON CONFLICT path on the PK.
+        row = execute_db(
+            "INSERT INTO admin_subagent_daily_counters "
+            "  (tenant_id, day, count, updated_at) "
+            "VALUES (%s, CURRENT_DATE, %s, NOW()) "
+            "ON CONFLICT (tenant_id, day) DO UPDATE "
+            "  SET count = admin_subagent_daily_counters.count + EXCLUDED.count, "
+            "      updated_at = NOW() "
+            "  WHERE admin_subagent_daily_counters.count + EXCLUDED.count <= %s "
+            "RETURNING count",
+            (tenant_id, req, cap))
+        if not row:
+            # Quota would be exceeded — fetch current used for the
+            # friendly error message; this read is non-atomic but only
+            # used for display, the gate above already rejected.
+            cur = query_db(
+                "SELECT count FROM admin_subagent_daily_counters "
+                "WHERE tenant_id=%s AND day=CURRENT_DATE",
+                (tenant_id,), fetchone=True) or {}
+            used = int(cur.get("count") or 0)
+            return (False,
+                    f"daily subagent quota would be exceeded "
+                    f"({used} used + {req} requested > {cap} cap)",
+                    cap, used)
+        return (True, "", cap, int(row.get("count") or 0))
+    except Exception as e:
+        print(f"[admin_chat] subagent quota reserve failed: {e}")
+        return (True, "", 0, 0)
+
+
+def _admin_subagent_quota_release(tenant_id, n=1):
+    """Best-effort decrement when a reservation is not consumed (e.g.
+    no valid tasks after cleaning). Floors at 0."""
+    try:
+        execute_db(
+            "UPDATE admin_subagent_daily_counters "
+            "SET count = GREATEST(0, count - %s), updated_at = NOW() "
+            "WHERE tenant_id=%s AND day=CURRENT_DATE",
+            (int(n), tenant_id))
+    except Exception:
+        pass
+
+
+def _admin_subagent_max_parallel(tenant_id):
+    try:
+        row = query_db(
+            "SELECT max_parallel_subagents FROM tenant_cost_caps "
+            "WHERE tenant_id=%s", (tenant_id,), fetchone=True) or {}
+        return max(1, min(int(row.get("max_parallel_subagents") or 5), 10))
+    except Exception:
+        return 5
+
+
+def _admin_run_subagent_once(parent_session_id, sub_task, persona,
+                             model=None, max_rounds=4, tenant_id=None):
+    """Bounded, non-streaming sub-agent run. Returns dict:
+        {persona, model, prompt_tokens, completion_tokens, cost_usd,
+         duration_ms, status, result, error}
+    Logs to admin_subagent_runs. Costs flow through record_chat_cost
+    via the existing tool-loop primitives."""
+    import time as _time
+    started = _time.time()
+    persona_key = persona if persona in ADMIN_CHAT_PERSONAS else "general"
+    # Default model: gpt-4o-mini — subagents are deliberately cheap
+    # and short. The admin can override per-call from spawn_agents.
+    use_model = (model or "gpt-4o-mini").strip()
+    _is_claude = use_model.lower().startswith("claude")
+    if _is_claude and anthropic_client is None:
+        use_model = "gpt-4o-mini"
+        _is_claude = False
+
+    persona_meta = ADMIN_CHAT_PERSONAS[persona_key]
+    sys_text = (ADMIN_CHAT_SYSTEM_PROMPT
+                + persona_meta.get("prompt_suffix", "")
+                + "\n\nYou are a focused SUB-AGENT spawned by the main "
+                  "admin assistant to solve ONE narrow task. Answer "
+                  "concisely (≤ 6 sentences or a small table). Do not "
+                  "call spawn_agents yourself.")
+    messages = [{"role": "system", "content": sys_text},
+                {"role": "user", "content": sub_task[:4000]}]
+
+    tools = list(ADMIN_TOOLS) + _admin_chat_dynamic_tools()
+    # Drop spawn_agents to prevent recursive fan-out.
+    tools = [t for t in tools
+             if (t.get("function") or {}).get("name") != "spawn_agents"]
+    tools = _admin_apply_persona(tools, persona_key)
+
+    pt = 0; ct = 0; cost = 0.0
+    final_text = ""
+    err = ""
+    try:
+        for _round in range(max_rounds):
+            if _is_claude:
+                claude_sys, claude_msgs = _messages_for_claude(messages)
+                claude_tools = _tools_for_claude(tools)
+                round_iter = _stream_round_claude(
+                    use_model, claude_sys, claude_msgs, claude_tools,
+                    max_tokens=1024, temperature=0.3)
+            else:
+                round_iter = _stream_round_openai(
+                    use_model, messages, tools,
+                    max_tokens=1024, temperature=0.3)
+            round_text = ""; tcs = []; finish = None
+            for evt in round_iter:
+                k = evt[0]
+                if k == "token":
+                    round_text += evt[1]
+                elif k == "tool_call":
+                    tcs.append(evt[1])
+                elif k == "usage":
+                    u = evt[1] or {}
+                    pt += int(u.get("prompt_tokens", 0) or 0)
+                    ct += int(u.get("completion_tokens", 0) or 0)
+                    provider = u.get("provider",
+                                     "anthropic" if _is_claude else "openai")
+                    try:
+                        record_chat_cost(
+                            session_id=parent_session_id,
+                            surface="admin_chat",
+                            provider=provider,
+                            model=u.get("model", use_model),
+                            prompt_tokens=u.get("prompt_tokens", 0),
+                            completion_tokens=u.get("completion_tokens", 0),
+                            total_tokens=u.get("total_tokens"),
+                            usage_known=u.get("usage_known", True),
+                        )
+                        cost += _admin_chat_estimate_cost_usd(
+                            provider, u.get("model", use_model),
+                            u.get("prompt_tokens", 0),
+                            u.get("completion_tokens", 0)) or 0.0
+                    except Exception:
+                        pass
+                elif k == "finish":
+                    finish = evt[1]
+            if finish == "tool_calls" and tcs:
+                tc_ser = [{"id": tc["id"], "type": "function",
+                           "function": {"name": tc["name"],
+                                        "arguments": tc["args"]}}
+                          for tc in tcs]
+                messages.append({"role": "assistant",
+                                 "content": round_text or "",
+                                 "tool_calls": tc_ser})
+                for tc in tcs:
+                    result_str, _log = execute_admin_tool(
+                        tc["name"], tc["args"],
+                        f"subagent_{parent_session_id}")
+                    messages.append({"role": "tool",
+                                     "tool_call_id": tc["id"],
+                                     "content": result_str})
+                continue
+            final_text = round_text or ""
+            break
+    except Exception as e:
+        err = str(e)[:300]
+
+    duration_ms = int((_time.time() - started) * 1000)
+    status = "error" if err else "completed"
+    try:
+        execute_db(
+            "INSERT INTO admin_subagent_runs "
+            "  (tenant_id, parent_session_id, sub_task, persona, model, "
+            "   prompt_tokens, completion_tokens, cost_usd, "
+            "   duration_ms, status, result_preview, error_text) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (tenant_id if tenant_id is not None else current_tenant_id(),
+             parent_session_id, sub_task[:2000], persona_key, use_model,
+             pt, ct, round(cost, 6), duration_ms, status,
+             (final_text or "")[:1000], err or None))
+    except Exception as e:
+        print(f"[admin_chat] subagent log failed: {e}")
+
+    return {
+        "persona": persona_key,
+        "model": use_model,
+        "prompt_tokens": pt,
+        "completion_tokens": ct,
+        "cost_usd": round(cost, 6),
+        "duration_ms": duration_ms,
+        "status": status,
+        "result": final_text,
+        "error": err,
+    }
+
+
+def _admin_tool_spawn_agents(tasks=None, _session_id="", **_):
+    """spawn_agents tool implementation. Runs every task in `tasks` in
+    parallel via ThreadPoolExecutor (capped at tenant_cost_caps.max_parallel_subagents),
+    each as a bounded sub-agent. Returns a list of result dicts in the
+    same order the admin specified.
+    """
+    if not isinstance(tasks, list) or not tasks:
+        return {"error": ("tasks must be a non-empty list of "
+                          "{prompt, persona?, model?} objects")}
+    # Task #80 spec: 2-5 subtasks per call. Single task should just be
+    # answered directly without fanning out (cheaper, no concurrency
+    # overhead); >5 is a code smell and a cost foot-gun.
+    if len(tasks) < 2:
+        return {"error": "spawn_agents requires at least 2 subtasks "
+                         "(use the regular flow for a single question)"}
+    if len(tasks) > 5:
+        return {"error": "max 5 parallel subagents per call"}
+    tid = current_tenant_id()
+    # Atomic reserve: increments the daily counter ONLY if it would
+    # stay <= cap. Two concurrent calls can no longer both pass with
+    # used=49 + 5 because the second UPSERT's WHERE will fail.
+    ok, msg, cap, used = _admin_subagent_quota_reserve(tid, requested=len(tasks))
+    if not ok:
+        return {"error": msg, "cap": cap, "used": used}
+    max_workers = _admin_subagent_max_parallel(tid)
+
+    cleaned = []
+    for t in tasks:
+        if not isinstance(t, dict):
+            continue
+        prompt = (t.get("prompt") or t.get("task") or "").strip()
+        if not prompt:
+            continue
+        persona = (t.get("persona") or "general").lower().strip()
+        if persona not in ADMIN_CHAT_PERSONAS:
+            persona = "general"
+        cleaned.append({"prompt": prompt[:4000],
+                        "persona": persona,
+                        "model": (t.get("model") or "").strip() or None})
+    if not cleaned:
+        # Release the reservation since nothing actually ran.
+        _admin_subagent_quota_release(tid, n=len(tasks))
+        return {"error": "no valid tasks"}
+    if len(cleaned) < len(tasks):
+        # Refund the rejected slots.
+        _admin_subagent_quota_release(tid, n=len(tasks) - len(cleaned))
+
+    # Per-subagent cost-cap gate routed through enforce_cost_cap — the
+    # SAME control surface every other paid HTTP path uses (chat, voice,
+    # SMS). It's the authoritative monthly-cap decision: returns None
+    # when the request may proceed, a (jsonify, 402) tuple under
+    # strict_block once spend has crossed the cap. We're still inside
+    # the admin chat HTTP request so the Flask request/`g` context that
+    # enforce_cost_cap inspects is live. The decision is re-evaluated
+    # per subagent so each one accounts for budget already consumed by
+    # the others that just finished in this same fan-out.
+    blocked_indices = set()
+    for i in range(len(cleaned)):
+        try:
+            decision = enforce_cost_cap("admin_chat")
+        except Exception:
+            decision = None
+        if decision is not None:
+            blocked_indices.add(i)
+
+    from concurrent.futures import ThreadPoolExecutor
+    results = [None] * len(cleaned)
+    # Pre-fill blocked slots so they appear in the result list with a
+    # clear status; the model can then decide whether to retry later.
+    for i in blocked_indices:
+        results[i] = {"persona": cleaned[i]["persona"],
+                      "model": cleaned[i]["model"] or "gpt-4o-mini",
+                      "prompt_tokens": 0, "completion_tokens": 0,
+                      "cost_usd": 0.0, "duration_ms": 0,
+                      "status": "blocked",
+                      "result": "",
+                      "error": "monthly cost cap reached"}
+    runnable = [(i, t) for i, t in enumerate(cleaned)
+                if i not in blocked_indices]
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {
+            ex.submit(_admin_run_subagent_once,
+                      _session_id, t["prompt"], t["persona"],
+                      t["model"], 4, tid): i
+            for i, t in runnable
+        }
+        for fut in futures:
+            i = futures[fut]
+            try:
+                results[i] = fut.result()
+            except Exception as e:
+                results[i] = {"persona": cleaned[i]["persona"],
+                              "model": cleaned[i]["model"] or "gpt-4o-mini",
+                              "prompt_tokens": 0, "completion_tokens": 0,
+                              "cost_usd": 0.0, "duration_ms": 0,
+                              "status": "error", "result": "",
+                              "error": str(e)[:300]}
+    return {
+        "count": len(results),
+        "results": [
+            {"persona": r["persona"],
+             "model":   r["model"],
+             "status":  r["status"],
+             "result":  r["result"],
+             "error":   r["error"],
+             "cost_usd": r["cost_usd"],
+             "duration_ms": r["duration_ms"]}
+            for r in results
+        ],
+    }
+
+
+# Task #80: late registration — the ADMIN_TOOL_FUNCTIONS dict was built
+# ~1200 lines above this point, before the helper above existed. Now
+# that the helper is defined we can wire it in. Doing it here avoids a
+# forward-reference NameError at module import time.
+ADMIN_TOOL_FUNCTIONS["spawn_agents"] = _admin_tool_spawn_agents
+
+
 def _admin_chat_get_or_create_session(session_id, mode="admin"):
     """Return the admin_chat_sessions row for this session_id, creating
     it lazily if missing. Never raises — on DB error returns an empty
@@ -16587,20 +17322,23 @@ def _admin_chat_estimate_cost_usd(provider, model, prompt_tokens,
 
 def _admin_chat_persist(session_id, mode, role, content,
                         tool_calls=None, tool_call_id=None, tool_name=None,
-                        usage=None, tool_meta=None):
+                        usage=None, tool_meta=None, attachment_ids=None):
     """Insert one admin-chat message row.
 
     `usage` (assistant rows) carries the per-turn token+cost snapshot so
     the chat UI can rehydrate the badge after refresh. `tool_meta` (tool
     rows) carries {rows, ms, error} so the tool-card row-count/duration
-    survives a reload too. Both columns are nullable JSONB; pre-existing
-    rows simply render without the extra badge."""
+    survives a reload too. `attachment_ids` (user rows, Task #80) carries
+    the list of admin_chat_attachments.id values uploaded with the turn
+    so a /history reload can re-render the attachment chips."""
     try:
-        execute_db(
+        row = execute_db(
             "INSERT INTO admin_chat_messages "
             "(session_id, mode, role, content, tool_calls_json, "
-            " tool_call_id, tool_name, usage_json, tool_meta_json) "
-            "VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s::jsonb)",
+            " tool_call_id, tool_name, usage_json, tool_meta_json, "
+            " attachment_ids_json) "
+            "VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, "
+            "        %s::jsonb, %s::jsonb) RETURNING id",
             (
                 (session_id or "")[:100],
                 (mode or "admin")[:20],
@@ -16611,13 +17349,27 @@ def _admin_chat_persist(session_id, mode, role, content,
                 (tool_name or None),
                 json.dumps(usage) if usage else None,
                 json.dumps(tool_meta) if tool_meta else None,
+                json.dumps(list(attachment_ids)) if attachment_ids else None,
             ),
         )
+        # Back-link attachments to the message id so they can be looked
+        # up by message rather than only by session.
+        if attachment_ids and row and row.get("id"):
+            try:
+                execute_db(
+                    "UPDATE admin_chat_attachments SET message_id=%s "
+                    "WHERE id = ANY(%s) AND session_id=%s "
+                    "  AND tenant_id=%s",
+                    (int(row["id"]), [int(x) for x in attachment_ids],
+                     (session_id or "")[:100], current_tenant_id()))
+            except Exception as e:
+                print(f"[admin_chat] attachment backlink failed: {e}")
     except Exception as e:
         print(f"[admin_chat] persist failed: {e}")
 
 
-def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
+def _admin_chat_stream_loop(session_id, user_message, max_rounds=8,
+                             attachment_ids=None, persona_override=None):
     """Streaming admin agent loop — generator yielding event dicts:
         {"type": "token",      "content": str}        — token delta
         {"type": "tool_start", "tool":    {id,name,args}} — about to run
@@ -16733,12 +17485,56 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
             messages.append({"role": r or "user",
                              "content": h.get("content") or ""})
 
-    # Append the new user message + persist it. Touching the session
-    # bumps last_message_at and (on a brand-new thread) derives a short
-    # title from the first user message so the sidebar isn't all
-    # "Untitled".
-    messages.append({"role": "user", "content": user_message})
-    _admin_chat_persist(session_id, "admin", "user", user_message)
+    # Task #80: persona routing. An explicit pin from the UI wins;
+    # otherwise classify the user message with a cheap gpt-4o-mini call.
+    # The persona augments the system prompt and trims the tool list to
+    # a relevant subset each round.
+    if persona_override and persona_override in ADMIN_CHAT_PERSONAS:
+        persona_key = persona_override
+        persona_reason = "pinned"
+    else:
+        persona_key, persona_reason = _admin_classify_persona(user_message)
+    persona_meta = ADMIN_CHAT_PERSONAS.get(persona_key, ADMIN_CHAT_PERSONAS["general"])
+    if persona_meta.get("prompt_suffix"):
+        messages[0]["content"] = (messages[0]["content"] or "") + persona_meta["prompt_suffix"]
+    yield {"type": "persona",
+           "persona": persona_key,
+           "label": persona_meta["label"],
+           "reason": persona_reason,
+           "pinned": bool(persona_override)}
+
+    # Task #80: attachments. Load metadata for any uploaded files, then
+    # split into images (folded into the user message as image_url parts)
+    # and documents (extracted text injected as a transient system block
+    # right before the user message, so it doesn't pollute future turns
+    # — extracted_text is also kept in the DB row for audit but never
+    # re-fed on subsequent turns).
+    _attachments = _admin_attachment_load(attachment_ids, session_id)
+    _doc_block = _admin_attachments_doc_block(_attachments)
+    if _doc_block:
+        messages.append({"role": "system", "content": _doc_block})
+    _user_content = _admin_attachments_to_user_content(user_message, _attachments)
+    # Image attachments require a vision-capable model. Claude IS
+    # vision-capable BUT our _messages_for_claude converter doesn't
+    # translate OpenAI image_url parts → Claude image blocks. Rather
+    # than ship half-working vision-on-claude, auto-swap to gpt-4o
+    # for THIS TURN ONLY when the admin uploaded images and selected
+    # a Claude model. The cost ledger will surface this swap.
+    _has_images = any(a.get("kind") == "image" for a in _attachments)
+    if _has_images and _is_claude:
+        model = "gpt-4o"
+        _is_claude = False
+        yield {"type": "model_swap", "model": model,
+               "reason": "vision attachment requires gpt-4o (Claude vision "
+                         "is not wired in this template yet)"}
+    elif _has_images and (model or "").lower().startswith("gpt-4o-mini"):
+        # gpt-4o-mini supports vision too, but cheaper to be explicit.
+        pass
+
+    messages.append({"role": "user", "content": _user_content})
+    _admin_chat_persist(session_id, "admin", "user", user_message,
+                        attachment_ids=([a["id"] for a in _attachments]
+                                        if _attachments else None))
     _admin_chat_touch_session(session_id, first_user_message=user_message)
 
     # ------------------------------------------------------------------
@@ -16791,6 +17587,10 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
             round_tools = [t for t in round_tools
                            if ((t.get("function") or {}).get("name")
                                not in disabled_tools)]
+        # Task #80: persona-based tool filtering. General leaves the
+        # full set; other personas trim to a relevant subset so the
+        # model isn't tempted to pick an off-topic tool.
+        round_tools = _admin_apply_persona(round_tools, persona_key)
 
         round_text = ""
         tcs = []
@@ -17021,15 +17821,33 @@ def admin_agent_chat_stream():
     data = request.get_json() or {}
     session_id = (data.get("session_id") or "")[:100]
     message = (data.get("message") or "").strip()
-    if not session_id or not message:
-        return jsonify({"error": "session_id and message are required"}), 400
+    # Task #80: optional multimodal attachment ids + persona pin.
+    attachment_ids = data.get("attachment_ids") or []
+    if not isinstance(attachment_ids, list):
+        attachment_ids = []
+    persona_override = (data.get("persona") or "").strip().lower() or None
+    if persona_override and persona_override not in ADMIN_CHAT_PERSONAS:
+        persona_override = None
+    # Allow empty `message` when at least one attachment is present
+    # (admin can drop a file and just say "what's in this?" by sending
+    # an empty body — we synthesize a generic prompt so the model has
+    # something to anchor on).
+    if not session_id:
+        return jsonify({"error": "session_id required"}), 400
+    if not message and not attachment_ids:
+        return jsonify({"error": "message or attachments required"}), 400
+    if not message:
+        message = "Please review the attached file(s)."
     _cap = enforce_cost_cap("admin_chat")
     if _cap is not None:
         return _cap
 
     def generate():
         try:
-            for evt in _admin_chat_stream_loop(session_id, message):
+            for evt in _admin_chat_stream_loop(
+                    session_id, message,
+                    attachment_ids=attachment_ids,
+                    persona_override=persona_override):
                 yield f"data: {json.dumps(evt)}\n\n"
         except Exception:
             import traceback
@@ -17071,20 +17889,87 @@ def admin_agent_chat_history():
     # is what loads when you click a session.
     rows = query_db(
         "SELECT id, role, content, tool_calls_json, tool_call_id, tool_name, "
-        "       usage_json, tool_meta_json, created_at "
+        "       usage_json, tool_meta_json, attachment_ids_json, created_at "
         "FROM ( "
         "  SELECT id, role, content, tool_calls_json, tool_call_id, "
-        "         tool_name, usage_json, tool_meta_json, created_at "
+        "         tool_name, usage_json, tool_meta_json, "
+        "         attachment_ids_json, created_at "
         "  FROM admin_chat_messages "
         "  WHERE session_id=%s AND mode=%s "
         "  ORDER BY created_at DESC, id DESC LIMIT 5000 "
         ") s ORDER BY s.created_at ASC, s.id ASC",
         (session_id, mode),
     ) or []
+    # Task #80: rehydrate attachment metadata so the chip strip can
+    # be re-rendered after a page refresh. We resolve ALL attachment
+    # ids referenced by the loaded turns in one tenant-scoped query
+    # to avoid the N+1.
+    needed_ids = set()
+    for r in rows:
+        aj = r.get("attachment_ids_json")
+        if isinstance(aj, str):
+            try: aj = json.loads(aj)
+            except Exception: aj = []
+        if isinstance(aj, list):
+            r["attachment_ids"] = [int(x) for x in aj if str(x).isdigit()]
+            for x in r["attachment_ids"]:
+                needed_ids.add(int(x))
+        else:
+            r["attachment_ids"] = []
+        r.pop("attachment_ids_json", None)
+    att_map = {}
+    if needed_ids:
+        try:
+            att_rows = query_db(
+                "SELECT id, kind, filename, mime, size_bytes "
+                "FROM admin_chat_attachments "
+                "WHERE id = ANY(%s) AND tenant_id=%s AND session_id=%s",
+                (list(needed_ids), current_tenant_id(), session_id)) or []
+            for a in att_rows:
+                att_map[int(a["id"])] = {
+                    "id": int(a["id"]),
+                    "kind": a.get("kind") or "file",
+                    "filename": a.get("filename") or "",
+                    "mime": a.get("mime") or "",
+                    "size": int(a.get("size_bytes") or 0),
+                    # Thumbnail URL for images — served by a separate
+                    # tokenless endpoint scoped by tenant + session.
+                    "thumb_url": (
+                        f"/admin/api/chat/attachments/{int(a['id'])}/thumb"
+                        if (a.get("kind") == "image") else None),
+                }
+        except Exception as e:
+            print(f"[admin_chat] attachment rehydrate failed: {e}")
+    for r in rows:
+        r["attachments"] = [att_map[i] for i in (r.get("attachment_ids") or [])
+                            if i in att_map]
     for r in rows:
         if hasattr(r.get("created_at"), "isoformat"):
             r["created_at"] = r["created_at"].isoformat()
     return jsonify({"messages": rows})
+
+
+@app.route("/admin/api/chat/attachments/<int:att_id>/thumb", methods=["GET"])
+@admin_required
+def admin_chat_attachment_thumb(att_id):
+    """Serve an image attachment's bytes for inline thumbnail rendering.
+    Tenant-scoped so an admin in tenant A can't fetch tenant B's image
+    by guessing ids. Returns 404 (not 403) on miss so we don't leak
+    existence."""
+    row = query_db(
+        "SELECT storage_key, mime, kind FROM admin_chat_attachments "
+        "WHERE id=%s AND tenant_id=%s",
+        (att_id, current_tenant_id()), fetchone=True)
+    if not row or row.get("kind") != "image":
+        abort(404)
+    try:
+        blob = storage.get_storage().read_bytes(row["storage_key"])
+    except Exception:
+        abort(404)
+    if not blob:
+        abort(404)
+    return Response(blob, mimetype=(row.get("mime") or "image/png"),
+                    headers={"Cache-Control": "private, max-age=3600"})
 
 
 @app.route("/admin/api/chat/clear", methods=["POST"])
@@ -17101,6 +17986,169 @@ def admin_agent_chat_clear():
         (session_id, mode),
     )
     return jsonify({"ok": True})
+
+
+# ---------- Task #80: attachments + voice transcribe + subagent log -------
+
+@app.route("/admin/api/chat/attachments/upload", methods=["POST"])
+@admin_required
+def admin_chat_attachment_upload():
+    """Multipart upload from the admin chat input.
+
+    Body: multipart with `file` and `session_id`. For images we store
+    the bytes and remember the mime so the chat loop can fold them
+    into the next user message as image_url parts. For documents
+    (pdf/docx/pptx/csv/txt) we ALSO extract text up-front via
+    rag.extract_text so the chat loop doesn't pay parsing latency on
+    the hot path.
+
+    Returns: {id, kind, filename, mime, size, text_preview}.
+    """
+    if "file" not in request.files:
+        return jsonify({"error": "missing file"}), 400
+    f = request.files["file"]
+    session_id = (request.form.get("session_id") or "")[:100]
+    if not session_id:
+        return jsonify({"error": "session_id required"}), 400
+    blob = f.read()
+    if not blob:
+        return jsonify({"error": "empty file"}), 400
+    if len(blob) > ADMIN_ATTACH_MAX_BYTES:
+        return jsonify({"error": f"file too large (max "
+                                 f"{ADMIN_ATTACH_MAX_BYTES // (1024*1024)}MB)"}), 413
+    filename = f.filename or "upload"
+    mime = (f.mimetype or "application/octet-stream").lower()
+    ext = os.path.splitext(filename)[1].lower()
+    is_image = (mime in ADMIN_ATTACH_IMAGE_MIMES
+                or ext in (".png", ".jpg", ".jpeg", ".gif", ".webp"))
+    is_doc = ext in ADMIN_ATTACH_DOC_EXTS
+    if not (is_image or is_doc):
+        return jsonify({"error": f"unsupported file type: {ext or mime}"}), 400
+
+    kind = "image" if is_image else "doc"
+    # Storage key: bucket per session so cleanup-by-session is one prefix.
+    import uuid as _uuid
+    storage_key = f"admin_chat_attachments/{session_id}/{_uuid.uuid4().hex}{ext}"
+    try:
+        storage.get_storage().write_bytes(storage_key, blob, content_type=mime)
+    except Exception as e:
+        print(f"[admin_chat] storage write failed: {e}")
+        return jsonify({"error": "storage write failed"}), 500
+
+    extracted_text = None
+    if is_doc:
+        try:
+            pages = rag.extract_text(filename, blob)
+            joined = "\n\n".join(t for _p, t in pages if t)
+            extracted_text = joined[:200_000]  # 200K char safety bound
+        except Exception as e:
+            print(f"[admin_chat] extract_text failed: {e}")
+            extracted_text = None
+
+    try:
+        row = execute_db(
+            "INSERT INTO admin_chat_attachments "
+            "  (tenant_id, session_id, kind, filename, mime, size_bytes, "
+            "   storage_key, extracted_text) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            (current_tenant_id(), session_id, kind, filename[:255], mime,
+             len(blob), storage_key, extracted_text),
+        )
+        att_id = int(row["id"]) if isinstance(row, dict) and row.get("id") else None
+    except Exception as e:
+        print(f"[admin_chat] attachment insert failed: {e}")
+        return jsonify({"error": "db insert failed"}), 500
+
+    return jsonify({
+        "id": att_id,
+        "kind": kind,
+        "filename": filename,
+        "mime": mime,
+        "size": len(blob),
+        "text_preview": (extracted_text[:200] + "…")
+            if (extracted_text and len(extracted_text) > 200)
+            else (extracted_text or ""),
+    })
+
+
+@app.route("/admin/api/chat/transcribe", methods=["POST"])
+@admin_required
+def admin_chat_transcribe():
+    """Multipart audio → text via OpenAI Whisper. Used by the admin
+    chat 🎤 button when the visitor-side stt_provider is whisper-style
+    OR when the admin simply prefers server-side STT. Web Speech API
+    is the free fallback (handled client-side).
+
+    Mirrors /api/voice/stt: 5MB cap, verbose_json so we capture audio
+    duration for accurate per-minute billing, costs flow through the
+    same record_voice_cost path."""
+    if not openai_direct_client:
+        return jsonify({"error": "OPENAI_API_KEY not configured"}), 503
+    _cap = enforce_cost_cap("voice_stt")
+    if _cap is not None:
+        return _cap
+    if "audio" not in request.files:
+        return jsonify({"error": "missing audio"}), 400
+    audio = request.files["audio"]
+    session_id = (request.form.get("session_id") or "")[:100]
+    blob = audio.read()
+    if not blob:
+        return jsonify({"error": "empty audio"}), 400
+    if len(blob) > 5 * 1024 * 1024:
+        return jsonify({"error": "audio too large (max 5MB)"}), 413
+    try:
+        from io import BytesIO
+        bio = BytesIO(blob)
+        bio.name = audio.filename or "audio.webm"
+        result = openai_direct_client.audio.transcriptions.create(
+            model="whisper-1", file=bio, response_format="verbose_json")
+        text = (getattr(result, "text", None) or "").strip()
+        try:
+            duration = float(getattr(result, "duration", 0) or 0)
+        except (TypeError, ValueError):
+            duration = 0.0
+    except Exception as e:
+        print(f"[admin_chat] whisper failed: {e}")
+        return jsonify({"error": "transcription failed"}), 500
+    _log_voice_usage(feature_type="stt_whisper", char_count=len(text),
+                     audio_seconds=duration, session_id=session_id)
+    return jsonify({"text": text, "duration_seconds": duration})
+
+
+@app.route("/admin/api/chat/subagent-runs", methods=["GET"])
+@admin_required
+def admin_chat_subagent_runs():
+    """List recent spawn_agents subagent invocations for transparency.
+
+    Query: ?session_id=... limits to one parent chat session; default
+    returns the last 100 across all sessions. Powers a small admin
+    sidebar showing parallelism in action."""
+    sid = (request.args.get("session_id") or "")[:100]
+    tid = current_tenant_id()
+    if sid:
+        rows = query_db(
+            "SELECT id, parent_session_id, sub_task, persona, model, "
+            "       prompt_tokens, completion_tokens, cost_usd, "
+            "       duration_ms, status, result_preview, error_text, "
+            "       created_at "
+            "FROM admin_subagent_runs "
+            "WHERE tenant_id=%s AND parent_session_id=%s "
+            "ORDER BY created_at DESC LIMIT 100", (tid, sid)) or []
+    else:
+        rows = query_db(
+            "SELECT id, parent_session_id, sub_task, persona, model, "
+            "       prompt_tokens, completion_tokens, cost_usd, "
+            "       duration_ms, status, result_preview, error_text, "
+            "       created_at "
+            "FROM admin_subagent_runs WHERE tenant_id=%s "
+            "ORDER BY created_at DESC LIMIT 100", (tid,)) or []
+    for r in rows:
+        if hasattr(r.get("created_at"), "isoformat"):
+            r["created_at"] = r["created_at"].isoformat()
+        if r.get("cost_usd") is not None:
+            try: r["cost_usd"] = float(r["cost_usd"])
+            except (TypeError, ValueError): r["cost_usd"] = 0.0
+    return jsonify({"runs": rows})
 
 
 # ---------- Admin chat sessions sidebar + per-session config ---------------
@@ -28090,6 +29138,31 @@ def admin_cost_summary():
     except Exception as e:
         print(f"[cost summary] top_visitors failed: {e}")
 
+    # Task #80: parallel subagent activity. Today's run count + cap
+    # (from the atomic daily-counter table) and MTD total runs +
+    # spend. Powers the "Sub-agent runs" tile on the Cost dashboard
+    # so admins can see fan-out activity at a glance and drill into
+    # /admin/api/chat/subagent-runs for the full per-run log.
+    sub_today = 0
+    sub_cap = int(cap_row.get("daily_subagent_runs_cap") or 50)
+    sub_mtd_runs = 0
+    sub_mtd_cost = 0.0
+    try:
+        r1 = query_db(
+            "SELECT count FROM admin_subagent_daily_counters "
+            "WHERE tenant_id=%s AND day=CURRENT_DATE",
+            (tid,), fetchone=True) or {}
+        sub_today = int(r1.get("count") or 0)
+        r2 = query_db(
+            "SELECT COUNT(*) AS runs, COALESCE(SUM(cost_usd),0) AS usd "
+            "FROM admin_subagent_runs "
+            "WHERE tenant_id=%s AND created_at >= DATE_TRUNC('month', NOW())",
+            (tid,), fetchone=True) or {}
+        sub_mtd_runs = int(r2.get("runs") or 0)
+        sub_mtd_cost = round(_to_float(r2.get("usd") or 0), 5)
+    except Exception as e:
+        print(f"[cost summary] subagent stats failed: {e}")
+
     return jsonify({
         "period": _current_period(),
         "spend": spend,
@@ -28097,6 +29170,12 @@ def admin_cost_summary():
         "week_usd": round(week_usd, 5),
         "projection_usd_eom": projection_usd,
         "top_visitors": top_visitors,
+        "subagents": {
+            "today_runs": sub_today,
+            "daily_cap": sub_cap,
+            "mtd_runs":  sub_mtd_runs,
+            "mtd_cost_usd": sub_mtd_cost,
+        },
         "cap": {
             "monthly_cap_usd": cap_f,
             "warn_at_percent": int(cap_row.get("warn_at_percent") or 80),

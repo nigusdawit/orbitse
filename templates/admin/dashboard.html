@@ -4204,6 +4204,17 @@ TO CUSTOMIZE THIS DASHBOARD:
                  onchange="adminChatSaveTitle()" 
                  style="flex:1; min-width:160px; background:transparent; border:0; outline:none; font-size:1rem; font-weight:600; color:var(--admin-text);"
                  data-testid="input-admin-chat-title">
+          <!-- Task #80: persona pin. Auto = router classifier picks per-turn. -->
+          <select id="admin-chat-persona" title="Persona — Auto lets the router pick per-turn" data-testid="select-admin-chat-persona"
+                  style="background:var(--admin-card); color:var(--admin-text); border:1px solid var(--admin-border); border-radius:.4rem; padding:.25rem .4rem;">
+            <option value="">🎭 Auto persona</option>
+            <option value="general">General</option>
+            <option value="research">🔎 Research</option>
+            <option value="data_analyst">📊 Data analyst</option>
+            <option value="code">💻 Code</option>
+            <option value="creative">🎨 Creative</option>
+            <option value="ops">🛠 Ops</option>
+          </select>
           <select id="admin-chat-model" onchange="adminChatSaveModel()" data-testid="select-admin-chat-model">
             <option value="">Default model</option>
             <optgroup label="OpenAI">
@@ -4237,7 +4248,30 @@ TO CUSTOMIZE THIS DASHBOARD:
           <div style="color:var(--admin-text-muted); font-size:.9rem;">Start a conversation below.</div>
         </div>
 
-        <form onsubmit="event.preventDefault(); adminChatSend();" style="display:flex; gap:.5rem;">
+        <!-- Task #80: pending-attachment chip strip. Hidden until the
+             admin actually drops/picks something. Each chip carries the
+             attachment id returned by /attachments/upload; the next
+             adminChatSend collects them, clears the strip, and forwards
+             the id list to the stream endpoint. -->
+        <div id="admin-chat-attach-strip" data-testid="admin-chat-attach-strip"
+             style="display:none; flex-wrap:wrap; gap:.4rem;"></div>
+
+        <form onsubmit="event.preventDefault(); adminChatSend();" style="display:flex; gap:.5rem; align-items:flex-end;">
+          <!-- Hidden file input driven by the 📎 button. accept covers
+               images + docs the backend whitelists. -->
+          <input type="file" id="admin-chat-file-input"
+                 accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.docx,.pptx,.csv,.txt,.json,image/*"
+                 multiple style="display:none;"
+                 onchange="adminChatHandleFiles(this.files); this.value='';"
+                 data-testid="input-admin-chat-file">
+          <button type="button" class="acm-btn" title="Attach image or document (≤25MB)"
+                  onclick="document.getElementById('admin-chat-file-input').click();"
+                  style="align-self:stretch; padding:0 .75rem;"
+                  data-testid="button-admin-chat-attach">📎</button>
+          <button type="button" id="admin-chat-mic-btn" class="acm-btn"
+                  title="Hold to dictate"
+                  style="align-self:stretch; padding:0 .75rem;"
+                  data-testid="button-admin-chat-mic">🎤</button>
           <textarea id="admin-chat-input" rows="2" placeholder="Ask the admin assistant anything about your site, or talk to your visitor agent..." style="flex:1; padding:.75rem; border:1px solid var(--admin-border); border-radius:.5rem; font-family:inherit; resize:vertical;" onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault(); adminChatSend();}" data-testid="input-admin-chat"></textarea>
           <button type="submit" id="admin-chat-send-btn" class="btn btn-primary" style="align-self:stretch; padding:0 1.25rem;" data-testid="button-admin-chat-send">Send</button>
         </form>
@@ -5043,6 +5077,290 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
   }
 
+  // ---- Task #80: attachments + voice input ---------------------------
+
+  // Renders the pending-attachment chip strip from the in-memory list.
+  // Hides itself when empty. Each chip has an × button that drops the
+  // attachment from the next turn (the underlying DB row is left in
+  // place — cheap, and lets us reuse the id if the admin re-attaches).
+  function adminChatRenderAttachStrip() {
+    const strip = document.getElementById('admin-chat-attach-strip');
+    if (!strip) return;
+    const list = window.__adminChatPendingAttachments || [];
+    if (!list.length) { strip.style.display = 'none'; strip.innerHTML = ''; return; }
+    strip.style.display = 'flex';
+    // Task #80 fix: image chips render a real thumbnail. Fresh uploads
+    // get a data: URL via FileReader (a.previewUrl); rehydrated history
+    // attachments get a tenant-scoped /thumb URL (a.thumb_url) from the
+    // /admin/api/chat/history payload. Doc chips stay text-only.
+    strip.innerHTML = list.map((a, i) => {
+      const thumbSrc = a.previewUrl || a.thumb_url || '';
+      const isImg = a.kind === 'image';
+      const preview = (isImg && thumbSrc)
+        ? '<img src="' + adminChatAttrEscape(thumbSrc) + '" '
+          + 'alt="" style="width:32px; height:32px; object-fit:cover; '
+          + 'border-radius:.25rem; border:1px solid var(--admin-border);">'
+        : (isImg ? '🖼' : '📄');
+      return '<span data-testid="chip-admin-chat-attach-' + (a.id || i) + '" '
+        + 'style="display:inline-flex; align-items:center; gap:.4rem; '
+        + 'background:var(--admin-card); border:1px solid var(--admin-border); '
+        + 'border-radius:.4rem; padding:.2rem .5rem; font-size:.8rem; color:var(--admin-text);">'
+        + preview + ' '
+        + adminChatEscape((a.filename || 'file').slice(0, 40))
+        + ' <button type="button" onclick="adminChatRemoveAttachment(' + i + ')" '
+        + 'style="background:none; border:0; color:var(--admin-text-muted); cursor:pointer; padding:0 .2rem;" '
+        + 'title="Remove">×</button>'
+        + '</span>';
+    }).join('');
+  }
+
+  function adminChatRemoveAttachment(idx) {
+    const list = window.__adminChatPendingAttachments || [];
+    list.splice(idx, 1);
+    window.__adminChatPendingAttachments = list;
+    adminChatRenderAttachStrip();
+  }
+
+  // Multipart-uploads each picked file to the backend, then pushes the
+  // returned row id into the pending list so the next adminChatSend can
+  // forward it. Errors are surfaced as toasts; partial successes are
+  // kept (one bad file shouldn't lose the good ones).
+  async function adminChatHandleFiles(fileList) {
+    if (!fileList || !fileList.length) return;
+    const sid = await adminChatEnsureActiveSession();
+    if (!window.__adminChatPendingAttachments) window.__adminChatPendingAttachments = [];
+    for (const f of fileList) {
+      // Build an instant local thumbnail for image kinds BEFORE the
+      // upload completes so the chip shows the visual immediately —
+      // network latency on the upload doesn't gate the preview.
+      let previewUrl = '';
+      if (f.type && f.type.indexOf('image/') === 0) {
+        try {
+          previewUrl = await new Promise((res, rej) => {
+            const fr = new FileReader();
+            fr.onload = () => res(fr.result);
+            fr.onerror = () => rej(fr.error);
+            fr.readAsDataURL(f);
+          });
+        } catch (_) { previewUrl = ''; }
+      }
+      try {
+        const fd = new FormData();
+        fd.append('file', f);
+        fd.append('session_id', sid);
+        const r = await fetch('/admin/api/chat/attachments/upload',
+                              { method: 'POST', body: fd });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { alert('Upload failed for ' + f.name + ': ' + (j.error || r.status)); continue; }
+        window.__adminChatPendingAttachments.push({
+          id: j.id, kind: j.kind, filename: j.filename, mime: j.mime, size: j.size,
+          previewUrl: previewUrl,
+        });
+      } catch (e) {
+        alert('Upload error for ' + f.name + ': ' + (e.message || e));
+      }
+    }
+    adminChatRenderAttachStrip();
+  }
+
+  // Task #80 fix: drag-and-drop on the messages pane. The pane gets a
+  // dashed accent border while a file is dragged over it; on drop the
+  // same handler the 📎 button uses runs, so the upload + chip-render
+  // path stays a single code path.
+  function adminChatInstallDragDrop() {
+    const box = document.getElementById('admin-chat-messages');
+    if (!box || box.dataset.dndBound === '1') return;
+    box.dataset.dndBound = '1';
+    const origBorder = box.style.border;
+    const setHover = on => {
+      box.style.outline = on
+        ? '2px dashed var(--admin-accent, #60a5fa)' : '';
+      box.style.outlineOffset = on ? '-6px' : '';
+    };
+    ['dragenter','dragover'].forEach(ev => box.addEventListener(ev, e => {
+      if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+      e.preventDefault(); e.stopPropagation(); setHover(true);
+    }));
+    ['dragleave','dragend'].forEach(ev => box.addEventListener(ev, e => {
+      if (e.target !== box) return;
+      setHover(false);
+    }));
+    box.addEventListener('drop', e => {
+      if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+      e.preventDefault(); e.stopPropagation(); setHover(false);
+      adminChatHandleFiles(e.dataTransfer.files);
+    });
+  }
+
+  // 🎤 button — HOLD to record (mousedown/touchstart), RELEASE to stop
+  // (mouseup/mouseleave/touchend). Mirrors public/voice.js: branches on
+  // /api/voice/settings → stt_provider. When 'webspeech' (free, default)
+  // we use the browser's webkitSpeechRecognition for live transcription;
+  // when 'whisper' we record with MediaRecorder and POST the blob to
+  // /admin/api/chat/transcribe (cost flows through the existing ledger).
+  let __admChatMediaRecorder = null;
+  let __admChatMediaChunks = [];
+  let __admChatMediaStream = null;
+  let __admChatRecog = null;          // SpeechRecognition instance (webspeech path)
+  let __admChatRecording = false;
+  let __admChatProvider = null;       // cached stt_provider lookup
+
+  async function adminChatGetSttProvider() {
+    if (__admChatProvider) return __admChatProvider;
+    try {
+      const r = await fetch('/api/voice/settings');
+      const j = await r.json().catch(() => ({}));
+      __admChatProvider = (j && j.stt_provider) || 'webspeech';
+    } catch (_) {
+      __admChatProvider = 'webspeech';
+    }
+    return __admChatProvider;
+  }
+
+  function adminChatMicSetState(state) {
+    const btn = document.getElementById('admin-chat-mic-btn');
+    if (!btn) return;
+    if (state === 'recording') {
+      btn.textContent = '⏺'; btn.style.background = 'rgba(255,80,80,.20)';
+    } else if (state === 'transcribing') {
+      btn.textContent = '⏳'; btn.style.background = '';
+    } else {
+      btn.textContent = '🎤'; btn.style.background = '';
+    }
+  }
+
+  function adminChatInsertTranscript(text) {
+    if (!text) return;
+    const input = document.getElementById('admin-chat-input');
+    if (!input) return;
+    const prefix = (input.value || '').trim();
+    input.value = (prefix ? prefix + ' ' : '') + text;
+    input.focus();
+  }
+
+  async function adminChatMicStart() {
+    if (__admChatRecording) return;
+    __admChatRecording = true;
+    const provider = await adminChatGetSttProvider();
+
+    if (provider === 'webspeech') {
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) {
+        // Browser lacks Web Speech (e.g. Firefox) — fall back to Whisper
+        // path so the feature still works.
+        __admChatProvider = 'whisper';
+        return adminChatMicStartWhisper();
+      }
+      try {
+        __admChatRecog = new SR();
+        __admChatRecog.lang = (navigator.language || 'en-US');
+        __admChatRecog.interimResults = false;
+        __admChatRecog.continuous = false;
+        let finalText = '';
+        __admChatRecog.onresult = (ev) => {
+          for (let i = ev.resultIndex; i < ev.results.length; i++) {
+            const r = ev.results[i];
+            if (r.isFinal) finalText += r[0].transcript + ' ';
+          }
+        };
+        __admChatRecog.onerror = (e) => {
+          console.warn('[admin-chat] webspeech error', e.error);
+        };
+        __admChatRecog.onend = () => {
+          __admChatRecording = false;
+          adminChatMicSetState('idle');
+          adminChatInsertTranscript(finalText.trim());
+          __admChatRecog = null;
+        };
+        __admChatRecog.start();
+        adminChatMicSetState('recording');
+      } catch (e) {
+        __admChatRecording = false;
+        adminChatMicSetState('idle');
+        alert('Speech recognition unavailable: ' + (e.message || e));
+      }
+      return;
+    }
+
+    return adminChatMicStartWhisper();
+  }
+
+  async function adminChatMicStartWhisper() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      __admChatRecording = false;
+      alert('Microphone not available in this browser.');
+      return;
+    }
+    try {
+      __admChatMediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      __admChatRecording = false;
+      alert('Microphone permission denied.');
+      return;
+    }
+    __admChatMediaChunks = [];
+    __admChatMediaRecorder = new MediaRecorder(__admChatMediaStream);
+    __admChatMediaRecorder.ondataavailable = e => {
+      if (e.data && e.data.size) __admChatMediaChunks.push(e.data);
+    };
+    __admChatMediaRecorder.onstop = async () => {
+      try { __admChatMediaStream.getTracks().forEach(t => t.stop()); } catch (_) {}
+      const blob = new Blob(__admChatMediaChunks,
+        { type: __admChatMediaRecorder.mimeType || 'audio/webm' });
+      const sid = await adminChatEnsureActiveSession();
+      const fd = new FormData();
+      fd.append('audio', blob, 'admin-chat.webm');
+      fd.append('session_id', sid);
+      adminChatMicSetState('transcribing');
+      try {
+        const r = await fetch('/admin/api/chat/transcribe',
+                              { method: 'POST', body: fd });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { alert('Transcription failed: ' + (j.error || r.status)); }
+        else adminChatInsertTranscript(j.text || '');
+      } catch (e) {
+        alert('Transcription error: ' + (e.message || e));
+      } finally {
+        __admChatRecording = false;
+        adminChatMicSetState('idle');
+      }
+    };
+    __admChatMediaRecorder.start();
+    adminChatMicSetState('recording');
+  }
+
+  function adminChatMicStop() {
+    if (!__admChatRecording) return;
+    if (__admChatRecog) {
+      try { __admChatRecog.stop(); } catch (_) {}
+      return; // onend handler will reset state
+    }
+    if (__admChatMediaRecorder && __admChatMediaRecorder.state === 'recording') {
+      try { __admChatMediaRecorder.stop(); } catch (_) {}
+    } else {
+      __admChatRecording = false;
+      adminChatMicSetState('idle');
+    }
+  }
+
+  function adminChatInstallMicHandlers() {
+    const btn = document.getElementById('admin-chat-mic-btn');
+    if (!btn || btn.dataset.holdBound === '1') return;
+    btn.dataset.holdBound = '1';
+    // Strip the previous onclick so a tap doesn't fire stop+start.
+    btn.onclick = null;
+    btn.removeAttribute('onclick');
+    btn.title = 'Hold to record — release to transcribe';
+    const start = (e) => { e.preventDefault(); adminChatMicStart(); };
+    const stop  = (e) => { e.preventDefault(); adminChatMicStop(); };
+    btn.addEventListener('mousedown', start);
+    btn.addEventListener('mouseup', stop);
+    btn.addEventListener('mouseleave', stop);
+    btn.addEventListener('touchstart', start, {passive: false});
+    btn.addEventListener('touchend', stop);
+    btn.addEventListener('touchcancel', stop);
+  }
+
   // ---- Rendering helpers ---------------------------------------------
 
   function adminChatEscape(s) {
@@ -5259,9 +5577,38 @@ TO CUSTOMIZE THIS DASHBOARD:
   // the branch modal. Persisted user messages have a numeric id we can
   // pass to up_to_message_id; freshly-sent ones don't (we only get the
   // id back on the next page reload), so we no-op when id is null.
-  function adminChatUserBubble(messageId, text) {
+  function adminChatUserBubble(messageId, text, attachments) {
     const safeText = adminChatEscape(text || '');           // visible bubble text
     const idAttr   = messageId != null ? messageId : '';
+    // Task #80 fix: rehydrate attachment chips/thumbnails inline with
+    // the user bubble on history reload. `attachments` comes from the
+    // /admin/api/chat/history payload (each item: {id, kind, filename,
+    // thumb_url for images}). When omitted, the bubble renders exactly
+    // as before so live-streamed turns are unaffected.
+    let attHtml = '';
+    if (Array.isArray(attachments) && attachments.length) {
+      attHtml = '<div style="display:flex; flex-wrap:wrap; gap:.35rem; '
+        + 'justify-content:flex-end; max-width:80%;">'
+        + attachments.map(a => {
+            const isImg = a.kind === 'image';
+            const src = a.thumb_url || '';
+            const inner = (isImg && src)
+              ? '<img src="' + adminChatAttrEscape(src) + '" alt="" '
+                + 'style="width:48px; height:48px; object-fit:cover; '
+                + 'border-radius:.3rem; border:1px solid var(--admin-border);">'
+              : '<span style="font-size:.8rem;">'
+                + (isImg ? '🖼' : '📄') + ' '
+                + adminChatEscape((a.filename || 'file').slice(0, 30))
+                + '</span>';
+            return '<span data-testid="rehydrated-attach-' + (a.id || 0) + '" '
+              + 'title="' + adminChatAttrEscape(a.filename || '') + '" '
+              + 'style="display:inline-flex; align-items:center; gap:.35rem; '
+              + 'background:rgba(59,130,246,0.10); border:1px solid rgba(59,130,246,0.35); '
+              + 'border-radius:.4rem; padding:.2rem .4rem;">'
+              + inner + '</span>';
+          }).join('')
+        + '</div>';
+    }
     // The branch button only carries data-branch-id in the HTML. We
     // resolve the original text from an in-memory map keyed by id at
     // click time (see adminChatBindBranchClicks below), so user
@@ -5270,6 +5617,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     // attribute. No attribute-escape edge cases to worry about.
     if (idAttr !== '') _adminChatBranchTextById[idAttr] = String(text || '');
     return `<div class="admin-chat-bubble-user" style="display:flex; flex-direction:column; align-items:flex-end; gap:.25rem; position:relative;" data-testid="bubble-admin-chat-user${idAttr ? '-' + idAttr : ''}">
+      ${attHtml}
       <div style="max-width:80%; background:rgba(59,130,246,0.18); color:#dbeafe; padding:.75rem 1rem; border-radius:.75rem; border:1px solid rgba(59,130,246,0.35); white-space:pre-wrap; word-wrap:break-word; position:relative;">
         ${safeText}
         ${idAttr !== '' ? `<div class="acu-actions"><button type="button" class="admin-chat-branch-btn" data-branch-id="${idAttr}" data-testid="button-edit-rerun-${idAttr}" title="Edit &amp; re-run">✎</button></div>` : ''}
@@ -5330,6 +5678,11 @@ TO CUSTOMIZE THIS DASHBOARD:
     // Kick off (or refresh) the sessions sidebar in parallel with the
     // history load so opening the tab populates both halves at once.
     adminChatLoadSessions();
+    // Task #80: idempotent install of drag-drop + hold-to-record. Both
+    // helpers are no-ops on repeat calls (they tag the element with a
+    // dataset flag), so calling on every chat-tab open is safe.
+    adminChatInstallDragDrop();
+    adminChatInstallMicHandlers();
     const sid = await adminChatEnsureActiveSession();
     box.innerHTML = '<div style="color:var(--admin-text-muted); font-size:.9rem;">Loading…</div>';
     // Pull the full per-session config in parallel so the header (title,
@@ -5367,7 +5720,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       }
       for (const m of msgs) {
         if (m.role === 'user') {
-          html += adminChatUserBubble(m.id, m.content || '');
+          html += adminChatUserBubble(m.id, m.content || '', m.attachments || []);
         } else if (m.role === 'assistant') {
           let toolHtml = '';
           let tcs = m.tool_calls_json;
@@ -5428,7 +5781,12 @@ TO CUSTOMIZE THIS DASHBOARD:
     const sendBtn = document.getElementById('admin-chat-send-btn');
     const box = document.getElementById('admin-chat-messages');
     const message = (input.value || '').trim();
-    if (!message) return;
+    // Task #80: collect any pending attachment chips for this turn,
+    // then clear the strip so the next turn starts fresh. Empty body
+    // is allowed when at least one file is attached.
+    const pendingAtts = (window.__adminChatPendingAttachments || []).slice();
+    const personaPin = (document.getElementById('admin-chat-persona')?.value || '').trim();
+    if (!message && pendingAtts.length === 0) return;
     const mode = adminChatMode;
     const sid = (mode === 'admin')
       ? await adminChatEnsureActiveSession()
@@ -5439,11 +5797,44 @@ TO CUSTOMIZE THIS DASHBOARD:
         !box.children[0].dataset.testid) {
       box.innerHTML = '';
     }
-    box.insertAdjacentHTML('beforeend', adminChatUserBubble(null, message));
+    // Render the user bubble with attachment chips inline so the
+    // admin sees what they sent even after the strip is cleared.
+    // Task #80 fix: render REAL image thumbnails (not emoji) in the
+    // live user bubble using the previewUrl data: URL captured by
+    // adminChatHandleFiles. Mirrors the rehydrated history bubble look
+    // so the visual is identical before and after a page refresh.
+    const userBubbleExtras = pendingAtts.length
+      ? '<div style="margin-top:.4rem; display:flex; flex-wrap:wrap; gap:.3rem;">'
+        + pendingAtts.map(a => {
+            const isImg = a.kind === 'image';
+            const src = a.previewUrl || '';
+            const visual = (isImg && src)
+              ? '<img src="' + adminChatAttrEscape(src) + '" alt="" '
+                + 'style="width:48px; height:48px; object-fit:cover; '
+                + 'border-radius:.25rem; border:1px solid rgba(255,255,255,.18);">'
+              : (isImg ? '🖼 ' : '📄 ') + adminChatEscape(a.filename || 'file');
+            return '<span style="display:inline-flex; align-items:center; gap:.3rem; '
+              + 'background:rgba(255,255,255,.10); padding:.2rem .45rem; '
+              + 'border-radius:.3rem; font-size:.75rem;" '
+              + 'title="' + adminChatAttrEscape(a.filename || '') + '">'
+              + visual + '</span>';
+          }).join('')
+        + '</div>'
+      : '';
+    box.insertAdjacentHTML('beforeend',
+      adminChatUserBubble(null, message || '(attachment only)') );
+    if (userBubbleExtras) {
+      // Inject chips inside the just-added bubble.
+      const lastBubble = box.lastElementChild;
+      if (lastBubble) lastBubble.insertAdjacentHTML('beforeend', userBubbleExtras);
+    }
     box.insertAdjacentHTML('beforeend',
       `<div id="admin-chat-thinking" style="color:var(--admin-text-muted); font-size:.9rem; align-self:flex-start;">Thinking…</div>`);
     input.value = '';
     sendBtn.disabled = true;
+    // Clear the pending-attachment strip now that the turn is in flight.
+    window.__adminChatPendingAttachments = [];
+    adminChatRenderAttachStrip();
     adminChatScrollDown();
 
     try {
@@ -5458,7 +5849,14 @@ TO CUSTOMIZE THIS DASHBOARD:
         const r = await fetch('/admin/api/chat/stream', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({session_id: sid, message: message}),
+          body: JSON.stringify({
+            session_id: sid,
+            message: message,
+            // Task #80: server accepts these when the admin uses the
+            // 📎 button or pins a persona from the header dropdown.
+            attachment_ids: pendingAtts.map(a => a.id).filter(Boolean),
+            persona: personaPin || undefined,
+          }),
         });
         document.getElementById('admin-chat-thinking')?.remove();
         if (!r.ok) {
@@ -5497,7 +5895,30 @@ TO CUSTOMIZE THIS DASHBOARD:
               if (!payload) continue;
               let evt;
               try { evt = JSON.parse(payload); } catch (_) { continue; }
-              if (evt.type === 'token' && evt.content) {
+              if (evt.type === 'persona') {
+                // Task #80: persona badge above the agent bubble.
+                // 'pinned' means the admin forced it from the dropdown;
+                // otherwise the router classifier chose it for the turn.
+                const label = evt.label || evt.persona || 'general';
+                const tag = evt.pinned ? '📌 pinned' : '🤖 auto';
+                toolBox.insertAdjacentHTML('beforeend',
+                  '<div data-testid="admin-chat-persona-badge" '
+                  + 'style="max-width:80%; font-size:.75rem; color:var(--admin-text-muted); '
+                  + 'background:rgba(201,169,110,.12); border:1px solid var(--admin-border); '
+                  + 'border-radius:.4rem; padding:.25rem .55rem;">'
+                  + '🎭 ' + adminChatEscape(label) + ' · ' + tag
+                  + (evt.reason && !evt.pinned
+                       ? ' <span style="opacity:.7;">— ' + adminChatEscape(String(evt.reason).slice(0,120)) + '</span>'
+                       : '')
+                  + '</div>');
+                adminChatScrollDown();
+              } else if (evt.type === 'model_swap') {
+                toolBox.insertAdjacentHTML('beforeend',
+                  '<div data-testid="admin-chat-model-swap" style="max-width:80%; font-size:.75rem; color:var(--admin-text-muted); background:rgba(255,193,7,.10); border:1px dashed var(--admin-border); border-radius:.4rem; padding:.25rem .55rem;">'
+                  + '⚡ Switched model to <code>' + adminChatEscape(evt.model || '') + '</code>'
+                  + (evt.reason ? ' — ' + adminChatEscape(evt.reason) : '') + '</div>');
+                adminChatScrollDown();
+              } else if (evt.type === 'token' && evt.content) {
                 acc += evt.content;
                 target.innerHTML = adminChatRenderMd(acc);
                 adminChatScrollDown();
@@ -23560,6 +23981,30 @@ TO CUSTOMIZE THIS DASHBOARD:
             <div style="font-size:1.4rem; font-weight:700;" data-testid="text-cost-projection">${_money(data.projection_usd_eom)}</div>
             <div style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.25rem;">MTD + 7-day rolling rate</div>
           </div>
+          ${(() => {
+            // Task #80: Sub-agent runs tile. Drill-down opens the
+            // per-run log served by /admin/api/chat/subagent-runs.
+            const sa = data.subagents || {};
+            const today = Number(sa.today_runs || 0);
+            const dcap  = Number(sa.daily_cap || 0);
+            const mtd   = Number(sa.mtd_runs || 0);
+            const sCost = Number(sa.mtd_cost_usd || 0);
+            const pctSa = dcap > 0 ? Math.min(100, Math.round((today / dcap) * 100)) : 0;
+            const barCol = pctSa >= 100 ? '#ef4444' : pctSa >= 80 ? '#f59e0b' : '#10b981';
+            return `
+              <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:1rem 1.25rem; cursor:pointer;"
+                   onclick="openSubagentRunsModal()" title="Click to view recent runs"
+                   data-testid="card-cost-subagents">
+                <div style="font-size:0.75rem; text-transform:uppercase; color:var(--admin-text-muted); letter-spacing:0.05em;">Sub-agent runs</div>
+                <div style="font-size:1.4rem; font-weight:700;" data-testid="text-cost-subagents-today">${today} / ${dcap} today</div>
+                <div style="margin-top:0.5rem; height:6px; background:rgba(255,255,255,0.06); border-radius:3px; overflow:hidden;">
+                  <div style="height:100%; width:${pctSa}%; background:${barCol}; transition:width 200ms;"></div>
+                </div>
+                <div style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.25rem;">
+                  MTD: ${mtd} runs · ${_money(sCost)} — click to view
+                </div>
+              </div>`;
+          })()}
         `;
         // Top visitors by spend (rendered separately so the cards grid
         // stays uniform). Hidden when the list is empty so we don't show
@@ -23726,6 +24171,79 @@ TO CUSTOMIZE THIS DASHBOARD:
         showToast('Save failed: ' + (e.message || e), 'error');
       }
     }
+
+    // Task #80: Sub-agent runs drill-down. Opens a simple modal that
+    // fetches /admin/api/chat/subagent-runs and lists recent parallel
+    // fan-out invocations with persona, model, tokens, cost, status,
+    // and a result preview. Powers the click target on the cost tile.
+    async function openSubagentRunsModal() {
+      let modal = document.getElementById('subagent-runs-modal');
+      if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'subagent-runs-modal';
+        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:9999; display:flex; align-items:center; justify-content:center; padding:1rem;';
+        modal.innerHTML = `
+          <div style="background:var(--admin-bg, #1a1a1a); color:var(--admin-text, #fff); border:1px solid var(--admin-border); border-radius:12px; max-width:1000px; width:100%; max-height:85vh; display:flex; flex-direction:column;">
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:1rem 1.25rem; border-bottom:1px solid var(--admin-border);">
+              <div style="font-weight:600; font-size:1.05rem;">Recent sub-agent runs</div>
+              <button type="button" onclick="document.getElementById('subagent-runs-modal').remove()"
+                      style="background:transparent; border:1px solid var(--admin-border); color:inherit; padding:.25rem .6rem; border-radius:6px; cursor:pointer;"
+                      data-testid="button-close-subagent-modal">Close</button>
+            </div>
+            <div id="subagent-runs-body" style="overflow:auto; padding:.5rem 1.25rem 1.25rem;">
+              <div class="empty-state" style="padding:1.5rem;">Loading…</div>
+            </div>
+          </div>`;
+        modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+        document.body.appendChild(modal);
+      }
+      const body = document.getElementById('subagent-runs-body');
+      try {
+        const res = await fetch('/admin/api/chat/subagent-runs', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        const runs = data.runs || [];
+        if (!runs.length) {
+          body.innerHTML = '<div class="empty-state" style="padding:1.5rem;">No sub-agent runs yet. They appear here whenever the admin chat uses the <code>spawn_agents</code> tool.</div>';
+          return;
+        }
+        const rows = runs.map(r => {
+          const status = r.status || 'completed';
+          const color = status === 'error' ? '#ef4444' : status === 'blocked' ? '#f59e0b' : '#10b981';
+          const cost = r.cost_usd != null ? _money(r.cost_usd) : '—';
+          const preview = escapeHTML((r.result_preview || r.error_text || '').slice(0, 200));
+          const when = r.created_at ? new Date(r.created_at).toLocaleString() : '';
+          return `<tr data-testid="row-subagent-run-${r.id}">
+            <td style="padding:.5rem .5rem; vertical-align:top; font-size:.8rem; color:var(--admin-text-muted); white-space:nowrap;">${escapeHTML(when)}</td>
+            <td style="padding:.5rem .5rem; vertical-align:top;"><span style="background:rgba(255,255,255,.08); padding:.1rem .4rem; border-radius:.3rem; font-size:.75rem;">${escapeHTML(r.persona || 'general')}</span></td>
+            <td style="padding:.5rem .5rem; vertical-align:top; font-size:.8rem;">${escapeHTML(r.model || '')}</td>
+            <td style="padding:.5rem .5rem; vertical-align:top; font-size:.8rem; max-width:340px;">${escapeHTML((r.sub_task || '').slice(0, 200))}</td>
+            <td style="padding:.5rem .5rem; vertical-align:top; font-size:.8rem; text-align:right; white-space:nowrap;">${(r.prompt_tokens||0)+(r.completion_tokens||0)}</td>
+            <td style="padding:.5rem .5rem; vertical-align:top; font-size:.8rem; text-align:right; white-space:nowrap;">${cost}</td>
+            <td style="padding:.5rem .5rem; vertical-align:top; font-size:.8rem; text-align:right; white-space:nowrap;">${r.duration_ms || 0}ms</td>
+            <td style="padding:.5rem .5rem; vertical-align:top; font-size:.75rem;"><span style="color:${color};">●</span> ${escapeHTML(status)}</td>
+          </tr>
+          <tr><td colspan="8" style="padding:0 .5rem .75rem; color:var(--admin-text-muted); font-size:.78rem; border-bottom:1px solid var(--admin-border);">${preview}</td></tr>`;
+        }).join('');
+        body.innerHTML = `
+          <table style="width:100%; border-collapse:collapse;">
+            <thead><tr style="text-align:left; font-size:.72rem; text-transform:uppercase; color:var(--admin-text-muted); letter-spacing:.05em;">
+              <th style="padding:.5rem .5rem;">When</th>
+              <th style="padding:.5rem .5rem;">Persona</th>
+              <th style="padding:.5rem .5rem;">Model</th>
+              <th style="padding:.5rem .5rem;">Sub-task</th>
+              <th style="padding:.5rem .5rem; text-align:right;">Tokens</th>
+              <th style="padding:.5rem .5rem; text-align:right;">Cost</th>
+              <th style="padding:.5rem .5rem; text-align:right;">Time</th>
+              <th style="padding:.5rem .5rem;">Status</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>`;
+      } catch (e) {
+        body.innerHTML = '<div class="empty-state" style="padding:1.5rem; color:#ef4444;">Failed to load: ' + escapeHTML(e.message || String(e)) + '</div>';
+      }
+    }
+    window.openSubagentRunsModal = openSubagentRunsModal;
 
     async function loadCostPrices() {
       const el = document.getElementById('cost-prices-list');
