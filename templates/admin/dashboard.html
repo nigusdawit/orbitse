@@ -4360,6 +4360,7 @@ TO CUSTOMIZE THIS DASHBOARD:
   let adminChatActiveCfg = null;        // full config of the active session
   let _adminChatSessionsDebounce = null;
   let _adminChatBranchMsgId = null;     // staged branch target
+  let _adminChatSkillRowSeq = 0;        // monotonic id for skills modal rows
 
   // Visitor session id: kept on the old localStorage key, no server row.
   function adminChatGetVisitorSession() {
@@ -4489,21 +4490,46 @@ TO CUSTOMIZE THIS DASHBOARD:
       if (s.has_prompt_override) meta.push('custom prompt');
       if (s.disabled_count) meta.push(s.disabled_count + ' skills off');
       const pin = s.pinned ? '📌 ' : '';
-      const sidEsc = adminChatEscape(s.session_id);
-      return `<div class="admin-chat-session-item${isActive?' active':''}" data-testid="session-item-${sidEsc}" onclick="adminChatSelectSession('${sidEsc}')">
+      // Attribute-safe escape for any spot a value lands inside an HTML
+      // attribute or data-* — session IDs are server-generated safe
+      // strings today, but quoting them defensively means a future
+      // tenant/admin-side ID format change (or any text-context value
+      // like meta) can never break out of the attribute.
+      const sidEsc = adminChatAttrEscape(s.session_id);
+      return `<div class="admin-chat-session-item${isActive?' active':''}" data-testid="session-item-${sidEsc}" data-acs-sid="${sidEsc}" data-acs-act="select">
         <div class="acs-title">${pin}${adminChatEscape(title)}</div>
         <div class="acs-preview">${adminChatEscape(preview)}</div>
         <div class="acs-meta">
           <span>${adminChatEscape(meta.join(' · ') || 'new')}</span>
           <span style="flex:1;"></span>
-          <span class="acs-actions" onclick="event.stopPropagation();">
-            <button title="Pin" onclick="adminChatTogglePin('${sidEsc}', ${s.pinned ? 'false' : 'true'})" data-testid="button-session-pin-${sidEsc}">${s.pinned ? 'Unpin' : 'Pin'}</button>
-            <button title="Fork" onclick="adminChatForkSession('${sidEsc}')" data-testid="button-session-fork-${sidEsc}">Fork</button>
-            <button title="Delete" onclick="adminChatDeleteSession('${sidEsc}')" data-testid="button-session-delete-${sidEsc}">Del</button>
+          <span class="acs-actions" data-acs-stop="1">
+            <button title="Pin" data-acs-sid="${sidEsc}" data-acs-act="pin" data-acs-pinned="${s.pinned ? '1' : '0'}" data-testid="button-session-pin-${sidEsc}">${s.pinned ? 'Unpin' : 'Pin'}</button>
+            <button title="Fork" data-acs-sid="${sidEsc}" data-acs-act="fork" data-testid="button-session-fork-${sidEsc}">Fork</button>
+            <button title="Delete" data-acs-sid="${sidEsc}" data-acs-act="delete" data-testid="button-session-delete-${sidEsc}">Del</button>
           </span>
         </div>
       </div>`;
     }).join('');
+    adminChatBindSessionListClicks(box);
+  }
+  // Delegated handler: one listener per render, reads action + session_id
+  // from dataset. No inline JS, so attribute-context values can never
+  // execute as code.
+  function adminChatBindSessionListClicks(box) {
+    if (!box || box._acsBound) return;
+    box._acsBound = true;
+    box.addEventListener('click', function(ev) {
+      const stop = ev.target.closest('[data-acs-stop]');
+      const el = ev.target.closest('[data-acs-act]');
+      if (!el || !box.contains(el)) return;
+      const sid = el.dataset.acsSid || '';
+      const act = el.dataset.acsAct;
+      if (stop && stop.contains(el) && act !== 'select') ev.stopPropagation();
+      if (act === 'select') return adminChatSelectSession(sid);
+      if (act === 'pin')    return adminChatTogglePin(sid, el.dataset.acsPinned !== '1');
+      if (act === 'fork')   return adminChatForkSession(sid);
+      if (act === 'delete') return adminChatDeleteSession(sid);
+    });
   }
   async function adminChatSelectSession(sid) {
     if (!sid) return;
@@ -4685,15 +4711,22 @@ TO CUSTOMIZE THIS DASHBOARD:
         if (!g.items.length) continue;
         html += '<h4 style="margin:.75rem 0 .25rem;">' + adminChatEscape(g.heading) + '</h4>';
         for (const it of g.items) {
-          const name = adminChatEscape(it.name);
-          const desc = adminChatEscape(it.description || '');
-          const cat  = adminChatEscape(it.category || '');
-          const checked = it.disabled ? '' : 'checked';
+          // Tool/skill names can come from MCP / custom-tool registries,
+          // so treat them as untrusted: text-context escape for visible
+          // text, attribute-context escape for everything that lands in
+          // an attribute, and use a numeric row index for the id/for
+          // pair (skill name is NOT an HTML-id-safe character set).
+          const nameTxt  = adminChatEscape(it.name);
+          const nameAttr = adminChatAttrEscape(it.name);
+          const descTxt  = adminChatEscape(it.description || '');
+          const catTxt   = adminChatEscape(it.category || '');
+          const checked  = it.disabled ? '' : 'checked';
+          const rowId    = 'admin-chat-skill-' + (_adminChatSkillRowSeq++);
           html += `<div class="admin-chat-skill-row">
-            <input type="checkbox" id="skill-${name}" data-skill-name="${name}" ${checked} data-testid="checkbox-skill-${name}">
+            <input type="checkbox" id="${rowId}" data-skill-name="${nameAttr}" ${checked} data-testid="checkbox-skill-${nameAttr}">
             <div style="flex:1;">
-              <label for="skill-${name}">${name} <span style="font-weight:400; font-size:.7rem; color:var(--admin-text-muted); margin-left:.3rem;">${cat}</span></label>
-              <p>${desc}</p>
+              <label for="${rowId}">${nameTxt} <span style="font-weight:400; font-size:.7rem; color:var(--admin-text-muted); margin-left:.3rem;">${catTxt}</span></label>
+              <p>${descTxt}</p>
             </div>
           </div>`;
         }
@@ -4770,6 +4803,15 @@ TO CUSTOMIZE THIS DASHBOARD:
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
+  // Attribute-safe escape: includes quotes + backtick so a value with
+  // `"` or `'` can't break out of an attribute or inline-JS context.
+  // Use anywhere a string is interpolated into an HTML attribute or
+  // dataset value, not just visible text.
+  function adminChatAttrEscape(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/`/g, '&#96;');
+  }
   function adminChatRenderMd(text) {
     // Rich markdown via marked + DOMPurify + highlight.js. Falls back to
     // the old escape-then-tiny-replace if any of those libs aren't loaded
@@ -4812,7 +4854,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     const args = adminChatEscape(t.args || '');
     const preview = adminChatEscape(t.result_preview || '');
     const meta = `${t.rows || 0} rows · ${t.ms || 0} ms${t.error ? ' · ERROR' : ''}`;
-    return `<details style="max-width:80%; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:.5rem; padding:.5rem .75rem; font-size:.85rem; color:var(--admin-text-muted);" data-testid="toolcall-${adminChatEscape(t.name)}">
+    return `<details style="max-width:80%; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:.5rem; padding:.5rem .75rem; font-size:.85rem; color:var(--admin-text-muted);" data-testid="toolcall-${adminChatAttrEscape(t.name)}">
       <summary style="cursor:pointer; user-select:none;">used <code>${adminChatEscape(t.name)}</code> — ${meta}</summary>
       <div style="margin-top:.5rem;"><strong>args:</strong> <pre style="white-space:pre-wrap; margin:.25rem 0;">${args}</pre></div>
       <div><strong>result:</strong> <pre style="white-space:pre-wrap; margin:.25rem 0;">${preview}</pre></div>
@@ -5182,7 +5224,7 @@ TO CUSTOMIZE THIS DASHBOARD:
                 const t = evt.tool;
                 const cardId = 'admin-chat-toolrun-' + (t.id || Math.random().toString(36).slice(2));
                 toolBox.insertAdjacentHTML('beforeend',
-                  `<div id="${cardId}" data-testid="toolrun-${adminChatEscape(t.name || 'tool')}" style="max-width:80%; background:var(--admin-bg); border:1px dashed var(--admin-border); border-radius:.5rem; padding:.5rem .75rem; font-size:.85rem; color:var(--admin-text-muted);">running <code>${adminChatEscape(t.name || 'tool')}</code>…</div>`);
+                  `<div id="${cardId}" data-testid="toolrun-${adminChatAttrEscape(t.name || 'tool')}" style="max-width:80%; background:var(--admin-bg); border:1px dashed var(--admin-border); border-radius:.5rem; padding:.5rem .75rem; font-size:.85rem; color:var(--admin-text-muted);">running <code>${adminChatEscape(t.name || 'tool')}</code>…</div>`);
                 adminChatScrollDown();
               } else if (evt.type === 'tool_end' && evt.tool) {
                 const t = evt.tool;

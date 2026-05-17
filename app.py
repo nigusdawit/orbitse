@@ -17151,13 +17151,19 @@ def admin_chat_session_branch(session_id):
          json.dumps(src.get("disabled_tools") or [])),
     )
     # Copy messages up to the cutoff. Without a cutoff: copy everything.
+    # Preserve usage_json / tool_meta_json on the copy so a forked
+    # transcript keeps its per-message tokens+cost badges and tool-card
+    # row/duration counts after reload/export — otherwise branches
+    # would silently lose those panels.
     if up_to is None:
         execute_db(
             "INSERT INTO admin_chat_messages "
             "  (session_id, mode, role, content, tool_calls_json, "
-            "   tool_call_id, tool_name, created_at) "
+            "   tool_call_id, tool_name, usage_json, tool_meta_json, "
+            "   created_at) "
             "SELECT %s, mode, role, content, tool_calls_json, "
-            "       tool_call_id, tool_name, created_at "
+            "       tool_call_id, tool_name, usage_json, tool_meta_json, "
+            "       created_at "
             "FROM admin_chat_messages "
             "WHERE session_id=%s AND mode='admin' "
             "ORDER BY created_at ASC, id ASC",
@@ -17170,9 +17176,11 @@ def admin_chat_session_branch(session_id):
         execute_db(
             "INSERT INTO admin_chat_messages "
             "  (session_id, mode, role, content, tool_calls_json, "
-            "   tool_call_id, tool_name, created_at) "
+            "   tool_call_id, tool_name, usage_json, tool_meta_json, "
+            "   created_at) "
             "SELECT %s, mode, role, content, tool_calls_json, "
-            "       tool_call_id, tool_name, created_at "
+            "       tool_call_id, tool_name, usage_json, tool_meta_json, "
+            "       created_at "
             "FROM admin_chat_messages "
             "WHERE session_id=%s AND mode='admin' AND id <= %s "
             "ORDER BY created_at ASC, id ASC",
