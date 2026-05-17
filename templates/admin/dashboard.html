@@ -4222,8 +4222,9 @@ TO CUSTOMIZE THIS DASHBOARD:
                   data-testid="button-admin-chat-prompt">⚙ Prompt</button>
           <button class="acm-btn" onclick="adminChatOpenSkills()" title="Tools available to this conversation"
                   data-testid="button-admin-chat-skills">🧰 Skills</button>
-          <button class="acm-btn" onclick="adminChatOpenKnowledge()" title="Knowledge base documents and auto-extracted memories"
-                  data-testid="button-admin-chat-knowledge">📚 Knowledge</button>
+          <!-- Task #79: Knowledge Base panel — upload docs the AI can cite -->
+          <button class="acm-btn" onclick="adminChatOpenKB()" title="Upload PDFs / docs the AI can search and cite"
+                  data-testid="button-admin-chat-kb">📚 KB</button>
           <button class="acm-btn" onclick="adminChatExport('md')" title="Download Markdown"
                   data-testid="button-admin-chat-export-md">↓ .md</button>
           <button class="acm-btn" onclick="adminChatExport('json')" title="Download JSON"
@@ -4269,6 +4270,18 @@ TO CUSTOMIZE THIS DASHBOARD:
       <div class="admin-chat-modal" data-testid="modal-admin-chat-skills">
         <h3 style="margin-top:0;">Skills available in this conversation</h3>
         <p style="color:var(--admin-text-muted); font-size:.85rem; margin-top:0;">Uncheck a skill to hide it from the assistant for this conversation only. Other conversations are unaffected. Changes apply on your next message.</p>
+        <!-- Task #79: per-session Knowledge Base toggle. Lives in the
+             Skills panel because it's logically a "tool that runs on
+             every turn". When off, the auto-retrieval is skipped but
+             the lookup_knowledge_base function-call tool still works,
+             so the AI can still pull from the KB on demand. -->
+        <div style="display:flex; align-items:center; gap:.5rem; padding:.5rem .25rem; border-bottom:1px solid var(--admin-border); margin-bottom:.5rem;">
+          <input type="checkbox" id="admin-chat-use-kb" data-testid="checkbox-admin-chat-use-kb">
+          <label for="admin-chat-use-kb" style="flex:1; font-weight:600;">
+            📚 Auto-search the Knowledge Base on every message
+          </label>
+          <button class="acm-btn" type="button" onclick="adminChatOpenKB()" data-testid="button-admin-chat-skills-kb">Manage docs →</button>
+        </div>
         <div id="admin-chat-skills-body" style="max-height:55vh; overflow:auto;">
           <div style="color:var(--admin-text-muted); padding:1rem;">Loading…</div>
         </div>
@@ -4279,36 +4292,41 @@ TO CUSTOMIZE THIS DASHBOARD:
       </div>
     </div>
 
-    <!-- Knowledge (KB docs + auto-memories) modal -->
-    <div class="admin-chat-modal-backdrop" id="admin-chat-knowledge-modal" onclick="if(event.target===this) adminChatCloseModal('knowledge')">
-      <div class="admin-chat-modal" data-testid="modal-admin-chat-knowledge" style="max-width:780px;">
-        <h3 style="margin-top:0;">Knowledge base &amp; memories</h3>
-        <p style="color:var(--admin-text-muted); font-size:.85rem; margin-top:0;">Upload reference documents the AI can search on demand (PDF, DOCX, PPTX, CSV, TXT, MD — 25MB cap each), and review the long-term memories it has auto-extracted from past conversations.</p>
-        <div style="display:flex; gap:.25rem; border-bottom:1px solid var(--admin-border); margin-bottom:.75rem;">
-          <button class="acm-btn" id="admin-chat-kb-tab-docs" onclick="adminChatKnowledgeShowTab('docs')" data-testid="tab-admin-chat-kb-docs">📄 Documents</button>
-          <button class="acm-btn" id="admin-chat-kb-tab-mems" onclick="adminChatKnowledgeShowTab('mems')" data-testid="tab-admin-chat-kb-mems">🧠 Memories</button>
+    <!-- Knowledge Base modal (Task #79) — upload + list + reindex docs the AI can cite -->
+    <div class="admin-chat-modal-backdrop" id="admin-chat-kb-modal" onclick="if(event.target===this) adminChatCloseModal('kb')">
+      <div class="admin-chat-modal" data-testid="modal-admin-chat-kb" style="max-width:720px;">
+        <h3 style="margin-top:0;">Knowledge Base</h3>
+        <p style="color:var(--admin-text-muted); font-size:.85rem; margin-top:0;">
+          Upload PDF, DOCX, PPTX, CSV, or TXT files. The admin assistant will automatically search them
+          on every message and quote passages with <code>[source: file p.N]</code> citations. Toggle KB
+          retrieval per conversation in the Skills panel.
+        </p>
+        <div style="display:flex; gap:.5rem; align-items:center; margin:.5rem 0;">
+          <input type="file" id="admin-chat-kb-file"
+                 accept=".pdf,.docx,.pptx,.csv,.txt"
+                 style="flex:1;" data-testid="input-admin-chat-kb-file">
+          <button class="btn btn-primary" onclick="adminChatKBUpload()"
+                  data-testid="button-admin-chat-kb-upload">Upload &amp; index</button>
         </div>
-        <div id="admin-chat-kb-pane-docs">
-          <form id="admin-chat-kb-upload-form" onsubmit="event.preventDefault(); adminChatKbUpload();" style="margin-bottom:.75rem; padding:.6rem; border:1px dashed var(--admin-border); border-radius:.4rem;">
-            <input type="file" id="admin-chat-kb-file-input" multiple
-                   accept=".pdf,.docx,.pptx,.csv,.txt,.md"
-                   data-testid="input-admin-chat-kb-files"
-                   style="margin-right:.5rem;">
-            <button type="submit" class="btn btn-primary" id="admin-chat-kb-upload-btn"
-                    data-testid="button-admin-chat-kb-upload">Upload &amp; index</button>
-            <div id="admin-chat-kb-upload-status" style="margin-top:.4rem; font-size:.8rem; color:var(--admin-text-muted);"></div>
-          </form>
-          <div id="admin-chat-kb-docs-body" style="max-height:45vh; overflow:auto;">
-            <div style="color:var(--admin-text-muted); padding:1rem;">Loading…</div>
-          </div>
-        </div>
-        <div id="admin-chat-kb-pane-mems" style="display:none;">
-          <div id="admin-chat-kb-mems-body" style="max-height:50vh; overflow:auto;">
-            <div style="color:var(--admin-text-muted); padding:1rem;">Loading…</div>
-          </div>
+        <div id="admin-chat-kb-status" style="font-size:.8rem; color:var(--admin-text-muted); min-height:1.2em;"></div>
+        <div id="admin-chat-kb-list" style="max-height:50vh; overflow:auto; margin-top:.5rem; border:1px solid var(--admin-border); border-radius:.4rem;">
+          <div style="color:var(--admin-text-muted); padding:1rem;">Loading…</div>
         </div>
         <div style="display:flex; gap:.5rem; justify-content:flex-end; margin-top:.75rem;">
-          <button class="btn btn-secondary" onclick="adminChatCloseModal('knowledge')" data-testid="button-admin-chat-knowledge-close">Close</button>
+          <button class="btn btn-secondary" onclick="adminChatCloseModal('kb')"
+                  data-testid="button-admin-chat-kb-close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Citation viewer modal (Task #79) — opens when admin clicks [source: ...] -->
+    <div class="admin-chat-modal-backdrop" id="admin-chat-cite-modal" onclick="if(event.target===this) adminChatCloseModal('cite')">
+      <div class="admin-chat-modal" data-testid="modal-admin-chat-cite" style="max-width:680px;">
+        <h3 style="margin-top:0;" id="admin-chat-cite-title">Source</h3>
+        <pre id="admin-chat-cite-body"
+             style="white-space:pre-wrap; background:var(--admin-card); padding:.75rem; border-radius:.4rem; max-height:55vh; overflow:auto; font-size:.85rem; font-family:inherit;"></pre>
+        <div style="display:flex; gap:.5rem; justify-content:flex-end; margin-top:.75rem;">
+          <button class="btn btn-secondary" onclick="adminChatCloseModal('cite')">Close</button>
         </div>
       </div>
     </div>
@@ -4739,6 +4757,16 @@ TO CUSTOMIZE THIS DASHBOARD:
     adminChatOpenModal('skills');
     const body = document.getElementById('admin-chat-skills-body');
     body.innerHTML = '<div style="color:var(--admin-text-muted); padding:1rem;">Loading…</div>';
+    // Task #79: seed the Use-KB checkbox from the session config so
+    // the toggle reflects the current state when the panel opens.
+    try {
+      const sr = await fetch('/admin/api/chat/sessions/' + encodeURIComponent(sid));
+      if (sr.ok) {
+        const sd = await sr.json();
+        const cb = document.getElementById('admin-chat-use-kb');
+        if (cb) cb.checked = (sd && sd.use_kb !== false);
+      }
+    } catch(_) {}
     try {
       const r = await fetch('/admin/api/chat/skills?session_id=' + encodeURIComponent(sid));
       const data = await r.json();
@@ -4776,124 +4804,6 @@ TO CUSTOMIZE THIS DASHBOARD:
       body.innerHTML = '<div style="color:#b91c1c; padding:1rem;">Failed to load skills.</div>';
     }
   }
-  // ---- Knowledge (KB docs + auto-memories) ---------------------------
-  function adminChatKnowledgeShowTab(which) {
-    const docs = document.getElementById('admin-chat-kb-pane-docs');
-    const mems = document.getElementById('admin-chat-kb-pane-mems');
-    docs.style.display = (which === 'docs') ? '' : 'none';
-    mems.style.display = (which === 'mems') ? '' : 'none';
-    if (which === 'mems') adminChatKbLoadMemories();
-    else adminChatKbLoadDocs();
-  }
-  function adminChatOpenKnowledge() {
-    adminChatOpenModal('knowledge');
-    adminChatKnowledgeShowTab('docs');
-  }
-  async function adminChatKbLoadDocs() {
-    const body = document.getElementById('admin-chat-kb-docs-body');
-    body.innerHTML = '<div style="color:var(--admin-text-muted); padding:1rem;">Loading…</div>';
-    try {
-      const r = await fetch('/admin/api/kb/documents');
-      const data = await r.json();
-      const docs = data.documents || [];
-      if (!docs.length) {
-        body.innerHTML = '<div style="color:var(--admin-text-muted); padding:1rem;">No documents indexed yet. Upload one above.</div>';
-        return;
-      }
-      let html = '<table style="width:100%; border-collapse:collapse; font-size:.85rem;"><thead><tr style="text-align:left;"><th style="padding:.4rem;">File</th><th style="padding:.4rem;">Status</th><th style="padding:.4rem;">Pages</th><th style="padding:.4rem;">Chunks</th><th style="padding:.4rem;">Indexed</th><th></th></tr></thead><tbody>';
-      for (const d of docs) {
-        const statusColor = d.status === 'ready' ? 'var(--admin-text)' :
-                            d.status === 'failed' ? '#b91c1c' : 'var(--admin-text-muted)';
-        const indexed = d.indexed_at ? new Date(d.indexed_at).toLocaleString() :
-                        (d.created_at ? new Date(d.created_at).toLocaleString() : '');
-        const err = d.error_message ? `<div style="color:#b91c1c; font-size:.75rem; margin-top:.2rem;">${adminChatEscape(d.error_message)}</div>` : '';
-        html += `<tr style="border-top:1px solid var(--admin-border);">
-          <td style="padding:.4rem;">${adminChatEscape(d.filename || '')}${err}</td>
-          <td style="padding:.4rem; color:${statusColor};">${adminChatEscape(d.status || '')}</td>
-          <td style="padding:.4rem;">${d.page_count || 0}</td>
-          <td style="padding:.4rem;">${d.chunk_count || 0}</td>
-          <td style="padding:.4rem; color:var(--admin-text-muted);">${adminChatEscape(indexed)}</td>
-          <td style="padding:.4rem;"><button class="acm-btn" onclick="adminChatKbDeleteDoc(${d.id})" data-testid="button-admin-chat-kb-delete-${d.id}">Delete</button></td>
-        </tr>`;
-      }
-      html += '</tbody></table>';
-      body.innerHTML = html;
-    } catch (e) {
-      body.innerHTML = '<div style="color:#b91c1c; padding:1rem;">Failed to load documents.</div>';
-    }
-  }
-  async function adminChatKbUpload() {
-    const input = document.getElementById('admin-chat-kb-file-input');
-    const status = document.getElementById('admin-chat-kb-upload-status');
-    const btn = document.getElementById('admin-chat-kb-upload-btn');
-    if (!input.files || !input.files.length) {
-      status.textContent = 'Pick at least one file.';
-      return;
-    }
-    const fd = new FormData();
-    for (const f of input.files) fd.append('files', f);
-    btn.disabled = true;
-    status.textContent = 'Uploading & indexing…';
-    try {
-      const r = await fetch('/admin/api/kb/upload', { method: 'POST', body: fd });
-      const data = await r.json();
-      const ok = (data.results || []).filter(x => x.ok).length;
-      const fail = (data.results || []).filter(x => !x.ok);
-      let msg = `${ok} indexed.`;
-      if (fail.length) {
-        msg += ' Failed: ' + fail.map(x => `${x.filename} (${x.error})`).join(', ');
-      }
-      status.textContent = msg;
-      input.value = '';
-      await adminChatKbLoadDocs();
-    } catch (e) {
-      status.textContent = 'Upload failed.';
-    } finally {
-      btn.disabled = false;
-    }
-  }
-  async function adminChatKbDeleteDoc(id) {
-    if (!confirm('Delete this document and all its indexed chunks?')) return;
-    await fetch('/admin/api/kb/documents/' + id, { method: 'DELETE' });
-    await adminChatKbLoadDocs();
-  }
-  async function adminChatKbLoadMemories() {
-    const body = document.getElementById('admin-chat-kb-mems-body');
-    body.innerHTML = '<div style="color:var(--admin-text-muted); padding:1rem;">Loading…</div>';
-    try {
-      const r = await fetch('/admin/api/memories');
-      const data = await r.json();
-      const mems = data.memories || [];
-      if (!mems.length) {
-        body.innerHTML = '<div style="color:var(--admin-text-muted); padding:1rem;">No memories yet. The AI will auto-extract them from conversations where you teach it durable facts (preferences, names, recurring policies, etc.).</div>';
-        return;
-      }
-      let html = '<div style="display:flex; flex-direction:column; gap:.4rem;">';
-      for (const m of mems) {
-        const when = m.created_at ? new Date(m.created_at).toLocaleDateString() : '';
-        const used = m.use_count || 0;
-        html += `<div style="border:1px solid var(--admin-border); border-radius:.4rem; padding:.5rem; display:flex; gap:.5rem; align-items:flex-start;">
-          <div style="flex:1;">
-            <div style="font-size:.9rem;">${adminChatEscape(m.content || '')}</div>
-            <div style="font-size:.72rem; color:var(--admin-text-muted); margin-top:.2rem;">
-              ${adminChatEscape(m.kind || 'fact')} · saved ${adminChatEscape(when)} · used ${used}×
-            </div>
-          </div>
-          <button class="acm-btn" onclick="adminChatMemoryDelete(${m.id})" data-testid="button-admin-chat-mem-delete-${m.id}">Delete</button>
-        </div>`;
-      }
-      html += '</div>';
-      body.innerHTML = html;
-    } catch (e) {
-      body.innerHTML = '<div style="color:#b91c1c; padding:1rem;">Failed to load memories.</div>';
-    }
-  }
-  async function adminChatMemoryDelete(id) {
-    if (!confirm('Forget this memory? The AI will no longer use it.')) return;
-    await fetch('/admin/api/memories/' + id, { method: 'DELETE' });
-    await adminChatKbLoadMemories();
-  }
-
   async function adminChatSkillsSave() {
     const sid = localStorage.getItem(ADMIN_CHAT_KEYS.admin);
     const body = document.getElementById('admin-chat-skills-body');
@@ -4901,13 +4811,191 @@ TO CUSTOMIZE THIS DASHBOARD:
     body.querySelectorAll('input[data-skill-name]').forEach(cb => {
       if (!cb.checked) disabled.push(cb.dataset.skillName);
     });
+    // Task #79: persist the Use-KB toggle alongside disabled_tools so
+    // the user only has to click Save once.
+    const useKB = !!document.getElementById('admin-chat-use-kb')?.checked;
     await fetch('/admin/api/chat/sessions/' + encodeURIComponent(sid), {
       method: 'PATCH',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({disabled_tools: disabled}),
+      body: JSON.stringify({disabled_tools: disabled, use_kb: useKB}),
     });
     adminChatCloseModal('skills');
     await adminChatLoadSessions();
+  }
+
+  // ---- Knowledge Base panel (Task #79) -------------------------------
+
+  async function adminChatOpenKB() {
+    adminChatOpenModal('kb');
+    document.getElementById('admin-chat-kb-status').textContent = '';
+    await adminChatKBReload();
+  }
+  async function adminChatKBReload() {
+    const list = document.getElementById('admin-chat-kb-list');
+    list.innerHTML = '<div style="color:var(--admin-text-muted); padding:1rem;">Loading…</div>';
+    try {
+      const r = await fetch('/admin/api/kb/list');
+      const data = await r.json();
+      const docs = data.documents || [];
+      if (!docs.length) {
+        list.innerHTML = '<div style="color:var(--admin-text-muted); padding:1rem;">No documents yet. Upload a PDF to get started.</div>';
+        return;
+      }
+      let html = '<table style="width:100%; border-collapse:collapse; font-size:.85rem;"><thead><tr style="background:var(--admin-card); text-align:left;"><th style="padding:.4rem;">Filename</th><th style="padding:.4rem;">Pages</th><th style="padding:.4rem;">Chunks</th><th style="padding:.4rem;">Status</th><th style="padding:.4rem;"></th></tr></thead><tbody>';
+      for (const d of docs) {
+        const statusColor = d.status === 'ready' ? 'var(--admin-text)'
+                          : d.status === 'error' ? '#b91c1c'
+                          : d.status === 'empty' ? '#a16207'
+                          : 'var(--admin-text-muted)';
+        const errTitle = d.error_text ? ` title="${adminChatAttrEscape(d.error_text)}"` : '';
+        html += `<tr style="border-top:1px solid var(--admin-border);">
+          <td style="padding:.4rem;" data-testid="text-kb-filename-${d.id}">${adminChatEscape(d.filename)}</td>
+          <td style="padding:.4rem; text-align:right;">${d.page_count || 0}</td>
+          <td style="padding:.4rem; text-align:right;">${d.chunk_count || 0}</td>
+          <td style="padding:.4rem; color:${statusColor};"${errTitle}>${adminChatEscape(d.status || '')}</td>
+          <td style="padding:.4rem; text-align:right; white-space:nowrap;">
+            <button class="acm-btn" onclick="adminChatKBReindex(${d.id})" data-testid="button-kb-reindex-${d.id}">↻ Reindex</button>
+            <button class="acm-btn" onclick="adminChatKBDelete(${d.id})" data-testid="button-kb-delete-${d.id}" style="color:#b91c1c;">✕ Delete</button>
+          </td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+      list.innerHTML = html;
+    } catch(e) {
+      list.innerHTML = '<div style="color:#b91c1c; padding:1rem;">Failed to load.</div>';
+    }
+  }
+  async function adminChatKBUpload() {
+    const input = document.getElementById('admin-chat-kb-file');
+    const status = document.getElementById('admin-chat-kb-status');
+    const file = input.files && input.files[0];
+    if (!file) { status.textContent = 'Pick a file first.'; return; }
+    status.textContent = `Uploading & embedding ${file.name}… this may take a moment.`;
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const r = await fetch('/admin/api/kb/upload', {method:'POST', body: fd});
+      const data = await r.json();
+      if (!r.ok || data.error) {
+        status.textContent = '✗ ' + (data.error || 'Upload failed');
+        return;
+      }
+      const res = data.result || {};
+      status.textContent = `✓ Indexed ${res.chunk_count || 0} chunks across ${res.page_count || 0} pages.`;
+      input.value = '';
+      await adminChatKBReload();
+    } catch(e) {
+      status.textContent = '✗ Network error.';
+    }
+  }
+  async function adminChatKBDelete(id) {
+    if (!confirm('Delete this document and all its embeddings? This cannot be undone.')) return;
+    await fetch('/admin/api/kb/' + id, {method:'DELETE'});
+    await adminChatKBReload();
+  }
+  async function adminChatKBReindex(id) {
+    const status = document.getElementById('admin-chat-kb-status');
+    status.textContent = 'Reindexing…';
+    try {
+      const r = await fetch('/admin/api/kb/' + id + '/reindex', {method:'POST'});
+      const data = await r.json();
+      const res = data.result || {};
+      status.textContent = data.ok
+        ? `✓ Reindexed: ${res.chunk_count || 0} chunks.`
+        : '✗ ' + ((res && res.error) || 'Reindex failed');
+    } catch(e) {
+      status.textContent = '✗ Network error.';
+    }
+    await adminChatKBReload();
+  }
+
+  // Inline-citation linkifier. The chat backend asks the AI to write
+  // `[source: filename p.N]` markers verbatim; here we wrap each one
+  // in a clickable span that opens the citation viewer modal showing
+  // the underlying chunk text (fetched via /api/kb/preview keyed on
+  // the filename so we don't need the AI to know chunk_ids). Used as
+  // a post-processing pass over the markdown-rendered HTML.
+  function adminChatLinkifyCitations(html) {
+    if (!html) return html;
+    // Match `[source: filename p.N #chunkid]` (chunk_id is optional —
+    // older messages or AI omissions degrade gracefully to a query
+    // fallback). The chunk_id, when present, is stored in
+    // `data-chunk-id` so the delegated listener can deep-link to the
+    // exact originating chunk instead of guessing.
+    return html.replace(
+      /\[source:\s*([^\]]+?)\]/g,
+      function(_, inner) {
+        const trimmed = inner.trim();
+        const m = trimmed.match(/^(.*?)(?:\s+#(\d+))\s*$/);
+        const visible = m ? m[1].trim() : trimmed;
+        const cid = m ? m[2] : '';
+        const dataAttrs = 'data-cite="' + adminChatAttrEscape(visible) + '"'
+                        + (cid ? ' data-chunk-id="' + cid + '"' : '');
+        return '<a href="#" class="admin-chat-cite" ' + dataAttrs
+             + ' style="color:var(--admin-text); background:rgba(201,169,110,.18); padding:0 .25rem; border-radius:.25rem; text-decoration:none; cursor:pointer; font-size:.85em;">'
+             + '[' + adminChatEscape(visible) + ']'
+             + '</a>';
+      }
+    );
+  }
+  // Single delegated click listener for citation pills. Avoids inline
+  // `onclick` (so DOMPurify can keep stripping event handlers from
+  // AI-rendered HTML) and naturally covers citation pills inserted by
+  // later renders, kb_retrieval badges, and historical messages.
+  function adminChatInstallCitationDelegate() {
+    if (window.__adminChatCitationDelegateInstalled) return;
+    window.__adminChatCitationDelegateInstalled = true;
+    document.addEventListener('click', function(ev) {
+      const a = ev.target && ev.target.closest && ev.target.closest('a.admin-chat-cite');
+      if (!a) return;
+      ev.preventDefault();
+      const cid = a.getAttribute('data-chunk-id') || '';
+      const cite = a.getAttribute('data-cite') || '';
+      adminChatShowCitation(cid, cite);
+    });
+  }
+  // Kick off the delegate as soon as the script runs (template is
+  // server-rendered so by this point document is alive).
+  try { adminChatInstallCitationDelegate(); } catch(_e) {}
+
+  async function adminChatShowCitation(chunkId, marker) {
+    const title = document.getElementById('admin-chat-cite-title');
+    const body = document.getElementById('admin-chat-cite-body');
+    title.textContent = 'Source: ' + (marker || '(unknown)');
+    body.textContent = 'Loading…';
+    adminChatOpenModal('cite');
+    try {
+      let c = null;
+      if (chunkId) {
+        // Preferred path: the AI kept the `#<chunk_id>` marker so we
+        // can fetch the originating chunk exactly. Tenant scoping is
+        // enforced server-side in /admin/api/kb/chunk/<id>.
+        const r = await fetch('/admin/api/kb/chunk/' + encodeURIComponent(chunkId));
+        if (r.ok) c = await r.json();
+      }
+      if (!c && marker) {
+        // Fallback for legacy markers without #id: re-query the KB
+        // using filename+page as the search text. Best-effort — we
+        // mark the result as approximate in the UI so the admin
+        // knows it isn't a verified deep-link.
+        const r2 = await fetch('/admin/api/kb/preview', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({query: marker, top_k: 3}),
+        });
+        const data = await r2.json();
+        const top = (data.chunks && data.chunks[0]) || null;
+        if (top) {
+          c = top;
+          title.textContent = 'Source (approximate): ' + marker;
+        }
+      }
+      body.textContent = c
+        ? (c.content_text || '(empty chunk)')
+        : 'No matching chunk found. The document may have been deleted or the AI may have made up this citation.';
+    } catch(e) {
+      body.textContent = 'Failed to load citation.';
+    }
   }
 
   // ---- Export ---------------------------------------------------------
@@ -5007,8 +5095,15 @@ TO CUSTOMIZE THIS DASHBOARD:
     try {
       window.marked.setOptions({ breaks: true, gfm: true });
       const dirty = window.marked.parse(raw);
-      const clean = window.DOMPurify.sanitize(dirty, {ADD_ATTR: ['target']});
-      return clean;
+      const clean = window.DOMPurify.sanitize(dirty, {ADD_ATTR: ['target', 'data-cite', 'data-chunk-id']});
+      // Task #79: turn every `[source: file p.N #id]` marker into a
+      // clickable pill that opens the citation viewer. Run AFTER
+      // DOMPurify so the linkified anchors don't get stripped. We
+      // intentionally do NOT allow `onclick` through DOMPurify (would
+      // open an XSS hole the moment a model echoed event handlers in
+      // its reply) — the click is dispatched by a single delegated
+      // listener installed in adminChatInstallCitationDelegate().
+      return adminChatLinkifyCitations(clean);
     } catch(e) {
       return adminChatEscape(raw);
     }
@@ -5405,6 +5500,32 @@ TO CUSTOMIZE THIS DASHBOARD:
               if (evt.type === 'token' && evt.content) {
                 acc += evt.content;
                 target.innerHTML = adminChatRenderMd(acc);
+                adminChatScrollDown();
+              } else if (evt.type === 'kb_retrieval' && evt.chunks) {
+                // Task #79: surface auto-retrieval transparently so
+                // the admin can see exactly which KB chunks the AI was
+                // handed. Rendered as a compact pill above the agent
+                // bubble; clicking a filename opens the citation
+                // viewer with the chunk text.
+                const items = (evt.chunks || []).map(c => {
+                  const label = (c.filename || 'document')
+                              + (c.page_number ? ' p.' + c.page_number : '');
+                  // No inline onclick — the delegated listener
+                  // (adminChatInstallCitationDelegate) picks these up
+                  // by `a.admin-chat-cite` and uses data-chunk-id for
+                  // an exact lookup. Keeps the XSS surface tight.
+                  const cidAttr = c.chunk_id
+                    ? ' data-chunk-id="' + parseInt(c.chunk_id, 10) + '"'
+                    : '';
+                  return '<a href="#" class="admin-chat-cite" '
+                       + 'data-cite="' + adminChatAttrEscape(label) + '"'
+                       + cidAttr + ' '
+                       + 'style="color:var(--admin-text); background:rgba(201,169,110,.18); padding:0 .35rem; border-radius:.3rem; text-decoration:none; font-size:.78rem; cursor:pointer;">'
+                       + adminChatEscape(label) + '</a>';
+                }).join(' ');
+                toolBox.insertAdjacentHTML('beforeend',
+                  '<div data-testid="admin-chat-kb-retrieval" style="max-width:80%; background:var(--admin-bg); border:1px dashed var(--admin-border); border-radius:.5rem; padding:.4rem .65rem; font-size:.78rem; color:var(--admin-text-muted);">'
+                  + '📚 Searched Knowledge Base: ' + items + '</div>');
                 adminChatScrollDown();
               } else if (evt.type === 'tool_start' && evt.tool) {
                 // Placeholder card replaced when the matching tool_end

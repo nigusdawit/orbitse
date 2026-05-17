@@ -867,9 +867,12 @@ def execute_db(sql, params=None):
 # to `from app import …` (app.py imports it at line 567).
 semantic_cache.init_module(openai_client, query_db, execute_db)
 
-# RAG / auto-memory module is initialised later — its init_module() call
-# lives right after `record_chat_cost` is defined (it depends on that
-# function). See `_rag_init()` below.
+# Admin chat Knowledge Base (RAG) — same late-binding pattern, see rag.py.
+# record_chat_cost is defined further down in this file (after the cost
+# infra is set up) so we re-wire rag with the real callback after that
+# point. Until then, calls into rag would crash; nothing reaches rag
+# this early in boot so the deferred wiring is safe.
+import rag  # noqa: E402 — must come after openai_client + DB helpers
 
 
 # =============================================================================
@@ -4237,19 +4240,20 @@ def record_chat_cost(*, tenant_id=None, session_id="", visitor_id="",
         print(f"[cost] record_chat_cost failed: {e}")
 
 
-# RAG / auto-memory module wiring. Deferred to this point because
-# `rag.init_module` takes a reference to `record_chat_cost` (defined
-# immediately above), so we can't initialise it up at the same place as
-# semantic_cache. All four dependencies (openai_client, query_db,
-# execute_db, current_tenant_id) are already in scope here.
-import rag  # noqa: E402
-rag.init_module(
-    openai_client=openai_client,
-    query_db=query_db,
-    execute_db=execute_db,
-    record_chat_cost=record_chat_cost,
-    current_tenant_id=current_tenant_id,
-)
+# Late-bind rag.py now that record_chat_cost is defined. Done here, not at
+# import time, because rag's embedding pipeline records cost rows and we
+# need the real callback wired in before the first /admin/api/kb/upload
+# request can land. Order: rag imported far above (line ~878), then this
+# block hands it the live dependencies.
+try:
+    rag.init_module(
+        openai_client=openai_client,
+        query_db=query_db,
+        execute_db=execute_db,
+        record_cost=record_chat_cost,
+    )
+except Exception as _rag_init_err:
+    print(f"[rag] init_module failed: {_rag_init_err}")
 
 
 def record_voice_cost(*, tenant_id=None, session_id="", surface="voice_tts",
@@ -15202,64 +15206,6 @@ def _admin_tool_propose_create_site_theme(name=None, palette=None,
     )
 
 
-# ---- RAG tool handlers ----------------------------------------------------
-# Thin wrappers that adapt the rag.* helpers to the admin tool calling
-# convention. The dispatcher in execute_admin_tool() calls these as
-# `fn(**call_args)` where call_args is the model-emitted JSON args dict,
-# so the handlers accept named kwargs (query, top_k) plus **_ for
-# forward-compat with extra fields the model might hallucinate.
-#
-# Return a JSON-serialisable dict; the dispatcher wraps it via
-# json.dumps and feeds it back as the tool message content. Errors are
-# returned inline (rather than raised) so the model sees + apologizes
-# instead of the loop crashing.
-
-def _admin_tool_lookup_kb(query="", top_k=6, **_):
-    q = (query or "").strip()
-    if not q:
-        return {"error": "query required"}
-    try:
-        rows = rag.search_kb(q, top_k=int(top_k or 6))
-        return {
-            "count": len(rows),
-            "results": [{
-                "filename": r.get("filename"),
-                "page": r.get("page_number"),
-                "similarity": round(float(r.get("similarity") or 0), 4),
-                "text": (r.get("content_text") or "")[:1500],
-            } for r in rows],
-        }
-    except Exception as e:
-        return {"error": str(e)[:300]}
-
-
-def _admin_tool_lookup_past_conversations(query="", top_k=4, **_):
-    q = (query or "").strip()
-    if not q:
-        return {"error": "query required"}
-    try:
-        # session_id intentionally not excluded here — the dispatcher
-        # doesn't inject it into call_args for read-only tools, so we
-        # let the model see the full corpus; the auto-injection at
-        # system-prompt time already handles cross-session exclusion
-        # for the implicit-recall path.
-        rows = rag.search_past_chats(q, top_k=int(top_k or 4))
-        return {
-            "count": len(rows),
-            "results": [{
-                "session_id": r.get("session_id"),
-                "session_title": r.get("session_title") or "",
-                "role": r.get("role"),
-                "similarity": round(float(r.get("similarity") or 0), 4),
-                "text": (r.get("content_text") or "")[:800],
-                "when": (r.get("created_at").isoformat()
-                         if hasattr(r.get("created_at"), "isoformat") else None),
-            } for r in rows],
-        }
-    except Exception as e:
-        return {"error": str(e)[:300]}
-
-
 ADMIN_TOOL_FUNCTIONS = {
     # --- Read-only (run immediately, no approval) ---
     "admin_list_tables":            _admin_tool_list_tables,
@@ -15319,9 +15265,18 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_propose_create_site_design":     _admin_tool_propose_create_site_design,
     "admin_propose_publish_site_design":    _admin_tool_propose_publish_site_design,
     "admin_propose_create_site_theme":      _admin_tool_propose_create_site_theme,
-    # --- RAG: KB + cross-chat recall (read-only) ---
-    "lookup_knowledge_base":                _admin_tool_lookup_kb,
-    "lookup_past_conversations":            _admin_tool_lookup_past_conversations,
+    # --- Knowledge Base (Task #79) ---
+    # Read-only RAG retrieval over uploaded admin documents. Auto-
+    # injection happens earlier in the chat loop, but the AI can ALSO
+    # invoke this explicitly when it wants a second, more targeted
+    # search (e.g. the user said "search the KB for ___").
+    # Forwarded via lambda because the implementation is defined further
+    # down the file (right next to its tool schema, for readability) but
+    # this dict is evaluated at import time. The dispatcher calls
+    # tools as fn(**call_args) where call_args is the JSON-decoded
+    # arg object — so we accept the schema fields as kwargs.
+    "lookup_knowledge_base":                (lambda **kw:
+                                             _admin_tool_lookup_knowledge_base(**kw)),
 }
 
 # Tools whose write-side effect runs only after explicit owner approval.
@@ -15966,42 +15921,69 @@ ADMIN_TOOLS = [
              "sort_order": {"type": "integer"},
          },
          "required": ["question", "answer"]}),
-    # --- RAG: knowledge base + past-chat recall (read-only) -------------
-    # These are EXTRA explicit lookups on top of the auto-injection that
-    # happens at system-prompt assembly. The admin uses them when they
-    # want a wider top-K or a different query than what the user typed —
-    # e.g. "search the KB for 'refund policy'" expects the AI to call
-    # lookup_knowledge_base with that exact query rather than rely on
-    # whatever was auto-retrieved for the original turn.
+    # Knowledge Base RAG retrieval (Task #79). Auto-injection covers the
+    # common case; this tool exists so the model can re-search with a
+    # narrower query when the auto block didn't surface what it needs.
     _admin_tool_schema(
         "lookup_knowledge_base",
-        "Search the uploaded knowledge-base documents (PDF/DOCX/PPTX/"
-        "CSV/TXT) for chunks similar to a query. Returns up to `top_k` "
-        "chunks with source filename and page number. Use this when the "
-        "admin asks about something likely in their uploaded docs.",
+        "Search the admin's uploaded knowledge-base documents "
+        "(PDF/DOCX/PPTX/CSV/TXT) for passages relevant to a query. "
+        "Use this when the auto-injected excerpts didn't cover the "
+        "question, or you want to drill into a specific topic with a "
+        "more focused query. Returns the top matching chunks with "
+        "filename, page number, and a relevance score. Always cite "
+        "the returned [source: file p.N] markers in your reply.",
         {"type": "object",
          "properties": {
-             "query": {"type": "string",
-                       "description": "Free-text question or phrase to match."},
-             "top_k": {"type": "integer", "minimum": 1, "maximum": 12,
-                       "default": 6},
-         },
-         "required": ["query"]}),
-    _admin_tool_schema(
-        "lookup_past_conversations",
-        "Search the admin's previous chat sessions (cross-session "
-        "semantic recall). Returns short snippets with the source chat "
-        "title and date. Excludes the current session.",
-        {"type": "object",
-         "properties": {
-             "query": {"type": "string"},
-             "top_k": {"type": "integer", "minimum": 1, "maximum": 10,
-                       "default": 4},
+             "query":  {"type": "string",
+                        "description": "Free-text question or topic "
+                                       "to search the KB for."},
+             "top_k":  {"type": "integer",
+                        "description": "How many chunks to return "
+                                       "(1-20, default 6)."},
          },
          "required": ["query"]}),
 ]
 
 
+def _admin_tool_lookup_knowledge_base(query=None, top_k=None, **_extra):
+    """Tool dispatcher for `lookup_knowledge_base`. Returns the same
+    dict shape every other admin lookup tool returns: `{rows, count}`
+    so the model can iterate uniformly. Empty corpus -> empty rows,
+    no error — the AI will then just answer without citations."""
+    q = (query or "").strip()
+    if not q:
+        return {"error": "query is required", "rows": [], "count": 0}
+    try:
+        k = int(top_k) if top_k is not None else rag.TOP_K_DEFAULT
+    except Exception:
+        k = rag.TOP_K_DEFAULT
+    try:
+        chunks = rag.retrieve(q, top_k=k,
+                              tenant_id=current_tenant_id(),
+                              session_id="admin_chat_kb_tool") or []
+    except Exception as e:
+        return {"error": f"KB retrieval failed: {str(e)[:200]}",
+                "rows": [], "count": 0}
+    # Trim chunk text to keep tool output compact in the chat context;
+    # the full body stays available via /admin/api/kb/chunk/<id>.
+    rows = []
+    for c in chunks:
+        body = (c.get("content_text") or "")
+        if len(body) > 1200:
+            body = body[:1200] + "…"
+        rows.append({
+            "chunk_id":     c.get("chunk_id"),
+            "document_id":  c.get("document_id"),
+            "filename":     c.get("filename"),
+            "page_number":  c.get("page_number"),
+            "score":        round(float(c.get("score") or 0.0), 4),
+            "content_text": body,
+            "citation":     f"[source: {c.get('filename') or 'document'}"
+                            + (f" p.{c['page_number']}"
+                               if c.get("page_number") else "") + "]",
+        })
+    return {"rows": rows, "count": len(rows)}
 
 
 def _admin_chat_dynamic_tools():
@@ -16492,7 +16474,8 @@ def _admin_chat_get_or_create_session(session_id, mode="admin"):
     try:
         row = query_db(
             "SELECT session_id, mode, title, pinned, model, "
-            "       system_prompt_override, disabled_tools_json "
+            "       system_prompt_override, disabled_tools_json, "
+            "       COALESCE(use_kb, TRUE) AS use_kb "
             "FROM admin_chat_sessions WHERE session_id=%s",
             (sid,), fetchone=True)
         if not row:
@@ -16503,7 +16486,8 @@ def _admin_chat_get_or_create_session(session_id, mode="admin"):
                 (sid, (mode or "admin")[:20]))
             row = query_db(
                 "SELECT session_id, mode, title, pinned, model, "
-                "       system_prompt_override, disabled_tools_json "
+                "       system_prompt_override, disabled_tools_json, "
+                "       COALESCE(use_kb, TRUE) AS use_kb "
                 "FROM admin_chat_sessions WHERE session_id=%s",
                 (sid,), fetchone=True) or {}
         dt = row.get("disabled_tools_json") or []
@@ -16518,12 +16502,16 @@ def _admin_chat_get_or_create_session(session_id, mode="admin"):
             "model": row.get("model") or "",
             "system_prompt_override": row.get("system_prompt_override") or "",
             "disabled_tools": list(dt) if isinstance(dt, (list, tuple)) else [],
+            # Per-session Knowledge Base toggle. Default TRUE so newly
+            # created sessions get RAG injection automatically; the admin
+            # can turn it off from the Skills panel for brainstorm chats.
+            "use_kb": bool(row.get("use_kb")) if row.get("use_kb") is not None else True,
         }
     except Exception as e:
         print(f"[admin_chat] get_or_create_session failed: {e}")
         return {"session_id": sid, "mode": mode, "title": "", "pinned": False,
                 "model": "", "system_prompt_override": "",
-                "disabled_tools": []}
+                "disabled_tools": [], "use_kb": True}
 
 
 def _admin_chat_touch_session(session_id, *, first_user_message=None):
@@ -16722,49 +16710,6 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
             _admin_sys = _admin_sys + _compose_scope_paragraph()
         except Exception as _e:
             print(f"[scope] admin prompt compose failed: {_e}")
-
-    # ---- RAG / memory injection ---------------------------------------
-    # Three independent system blocks the admin can toggle per-session
-    # via the Skills panel. The flags piggyback on the existing
-    # `disabled_tools` set — if the pseudo-name is NOT present, the
-    # feature is on (matches how visitor lookup_* tools work today).
-    #   use_memories     — auto-extracted durable facts about the user
-    #   use_knowledge_base — top-K chunks from uploaded KB docs
-    #   recall_past_chats  — top-K snippets from previous chat sessions
-    # Each block is appended to the system prompt as a clearly-labelled
-    # section, so the LLM treats it as authoritative context rather than
-    # part of the user turn. All retrieval calls wrap in try/except so
-    # an embedding outage NEVER blocks the chat from streaming.
-    try:
-        _memory_ids_used = []
-        if "use_memories" not in disabled_tools:
-            _mems = rag.get_memories_for_prompt(limit=25)
-            _mem_block = rag.format_memories_block(_mems)
-            if _mem_block:
-                _admin_sys = _admin_sys + "\n\n" + _mem_block
-                _memory_ids_used = [m["id"] for m in _mems]
-        if "use_knowledge_base" not in disabled_tools:
-            _kb_hits = rag.search_kb(user_message, top_k=4,
-                                     session_id=session_id)
-            _kb_block = rag.format_kb_block(_kb_hits)
-            if _kb_block:
-                _admin_sys = _admin_sys + "\n\n" + _kb_block
-        if "recall_past_chats" not in disabled_tools:
-            _past = rag.search_past_chats(
-                user_message, top_k=3,
-                exclude_session_id=session_id,
-                session_id=session_id)
-            _past_block = rag.format_past_chats_block(_past)
-            if _past_block:
-                _admin_sys = _admin_sys + "\n\n" + _past_block
-        # Mark the injected memories as used so the recency sort in
-        # get_memories_for_prompt reflects actual usage (drives which
-        # facts survive the limit=25 cut as the memory store grows).
-        if _memory_ids_used:
-            rag.bump_memories_used(_memory_ids_used)
-    except Exception as _e:
-        print(f"[rag] inject failed: {_e}")
-
     messages = [{"role": "system", "content": _admin_sys}]
     for h in history:
         r = h.get("role")
@@ -16795,21 +16740,43 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
     messages.append({"role": "user", "content": user_message})
     _admin_chat_persist(session_id, "admin", "user", user_message)
     _admin_chat_touch_session(session_id, first_user_message=user_message)
-    # Embed the user turn so future sessions can semantically recall it.
-    # We don't have admin_chat_messages.id yet (the persist helper doesn't
-    # return it), so message_id stays NULL — the rag_chat_turns unique
-    # index is partial (WHERE message_id IS NOT NULL) so two embeds of
-    # the same user_message are still idempotent at the content level
-    # via the cheap length-30 guard inside rag.embed_chat_turn.
-    try:
-        _sess_title = (session_cfg.get("title")
-                       or session_cfg.get("derived_title") or "")
-        rag.embed_chat_turn(
-            session_id=session_id, message_id=None,
-            role="user", content=user_message,
-            session_title=_sess_title)
-    except Exception as _e:
-        print(f"[rag] embed user turn failed: {_e}")
+
+    # ------------------------------------------------------------------
+    # Knowledge Base (RAG) auto-retrieval — Task #79.
+    # If the per-session toggle is on AND the admin has any indexed
+    # documents, embed the user message and slot the top-K matched
+    # chunks into a system message BEFORE this round of the loop. Each
+    # chunk carries an inline [source: file p.N] marker the AI is
+    # instructed (in the prompt header) to echo back so the admin can
+    # verify. Errors during retrieval are silent — the chat continues
+    # without injection rather than failing the turn.
+    # ------------------------------------------------------------------
+    if session_cfg.get("use_kb", True):
+        try:
+            _kb_chunks = rag.retrieve(user_message,
+                                      top_k=rag.TOP_K_DEFAULT,
+                                      tenant_id=current_tenant_id(),
+                                      session_id=session_id)
+            if _kb_chunks:
+                _kb_block = rag.format_chunks_for_prompt(_kb_chunks)
+                if _kb_block:
+                    # Insert just before the user message so the model
+                    # sees: system_prompt → KB excerpts → user question.
+                    messages.insert(len(messages) - 1,
+                                    {"role": "system", "content": _kb_block})
+                    # Surface in the SSE stream so the UI can show
+                    # "Pulled 6 KB excerpts" as a transparent
+                    # tool-card-like badge.
+                    yield {"type": "kb_retrieval",
+                           "chunks": [{
+                               "chunk_id": c["chunk_id"],
+                               "document_id": c["document_id"],
+                               "filename": c["filename"],
+                               "page_number": c["page_number"],
+                               "score": round(c["score"], 4),
+                           } for c in _kb_chunks]}
+        except Exception as _kb_e:
+            print(f"[admin_chat] KB retrieval failed: {_kb_e}")
 
     final_text = ""
 
@@ -16981,25 +16948,6 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
         final_text = round_text or ""
         _admin_chat_persist(session_id, "admin", "assistant", final_text,
                             usage=last_round_usage)
-        # ---- Post-turn RAG hooks --------------------------------------
-        # (a) Embed the assistant turn for cross-chat recall. (b) Run the
-        # memory extractor — cheap regex pre-filter inside the helper
-        # gates the actual LLM call, so quiet turns cost nothing.
-        try:
-            _sess_title2 = (session_cfg.get("title")
-                            or session_cfg.get("derived_title") or "")
-            rag.embed_chat_turn(
-                session_id=session_id, message_id=None,
-                role="assistant", content=final_text,
-                session_title=_sess_title2)
-        except Exception as _e:
-            print(f"[rag] embed assistant turn failed: {_e}")
-        try:
-            rag.extract_and_store_memories(
-                user_text=user_message, assistant_text=final_text,
-                session_id=session_id, message_id=None)
-        except Exception as _e:
-            print(f"[rag] memory extract failed: {_e}")
         yield {"type": "done", "content": final_text}
         return
 
@@ -17279,6 +17227,13 @@ def admin_chat_session_patch(session_id):
         dt = [str(x)[:200] for x in dt[:500]]
         sets.append("disabled_tools_json=%s::jsonb")
         args.append(json.dumps(dt))
+    if "use_kb" in data:
+        # Per-session Knowledge Base toggle (Task #79). When false, the
+        # chat loop skips the auto-retrieval block AND the lookup_*
+        # tool call still works (admin can ask for KB explicitly even
+        # in a "no auto-inject" session).
+        sets.append("use_kb=%s")
+        args.append(bool(data.get("use_kb")))
     if not sets:
         return jsonify({"ok": True, "no_changes": True})
     sets.append("updated_at=NOW()")
@@ -17290,6 +17245,200 @@ def admin_chat_session_patch(session_id):
     )
     return jsonify({"ok": True,
                     "session": _admin_chat_get_or_create_session(sid, "admin")})
+
+
+# =============================================================================
+# Admin Knowledge Base (RAG) — Task #79
+# =============================================================================
+# Admin uploads PDFs/DOCX/PPTX/CSV/TXT through the chat sidebar; we save the
+# bytes to storage under `kb/<docid>_<filename>`, ingest into pgvector via
+# rag.py, and expose CRUD + retrieval-preview routes that the dashboard UI
+# calls. Auto-retrieval into the chat itself happens earlier in
+# _admin_chat_stream_loop; these routes are just file management.
+# =============================================================================
+
+_KB_ALLOWED_EXTS = (".pdf", ".csv", ".txt", ".docx", ".pptx")
+
+
+def _kb_storage_subpath(doc_id: int, filename: str) -> str:
+    """Sanitised storage key. We prefix with the integer doc id so two
+    uploads with the same display name don't collide, and we keep the
+    original extension so the rendered-fetch / mime sniff still works."""
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", os.path.basename(filename or ""))[:200]
+    return f"kb/{int(doc_id)}_{safe}"
+
+
+@app.route("/admin/api/kb/list", methods=["GET"])
+@admin_required
+def admin_kb_list():
+    """GET every document the admin has uploaded, newest first. The
+    sidebar polls this on open and after upload/delete/reindex to keep
+    the list in sync without WebSocket plumbing."""
+    return jsonify({"documents": rag.list_documents(
+        tenant_id=current_tenant_id())})
+
+
+@app.route("/admin/api/kb/upload", methods=["POST"])
+@admin_required
+def admin_kb_upload():
+    """POST multipart/form-data with field `file=<...>`. Streams the
+    file into storage, then runs the full extract+chunk+embed pipeline
+    inline (small files finish in <2s; larger files block the request
+    for up to ~30s — the sidebar shows an "Uploading…" spinner). We
+    deliberately do NOT background this: the admin almost always
+    expects the doc to be ready by the time the request returns, and
+    moving to a worker queue would add infrastructure for a feature
+    that's rarely run on huge corpora."""
+    up = request.files.get("file")
+    if not up or not up.filename:
+        return jsonify({"error": "no file uploaded"}), 400
+    fname = up.filename
+    ext = os.path.splitext(fname)[1].lower()
+    if ext not in _KB_ALLOWED_EXTS:
+        return jsonify({"error": f"unsupported file type: {ext or '(none)'}. "
+                                  "Allowed: PDF, DOCX, PPTX, CSV, TXT"}), 400
+    data = up.read()
+    if not data:
+        return jsonify({"error": "empty file"}), 400
+    if len(data) > rag.MAX_FILE_BYTES:
+        return jsonify({"error": "file exceeds 25 MB cap"}), 413
+
+    # We need the inserted row's id BEFORE we can compute the final
+    # storage key (which prefixes with id to avoid collisions), so we
+    # ingest with an empty storage_key, then PATCH it after persisting
+    # to disk. That UPDATE also pins the source_mtime for the nightly
+    # reindex tick to compare against.
+    res = rag.ingest_document(
+        fname, data,
+        tenant_id=current_tenant_id(),
+        mime=(up.mimetype or "")[:120],
+        storage_key="",
+        session_id="kb_upload",
+    )
+    if "id" not in res:
+        return jsonify(res), 500
+    doc_id = int(res["id"])
+    try:
+        key = _kb_storage_subpath(doc_id, fname)
+        storage.get_storage().write_bytes(key, data,
+                                          content_type=up.mimetype or None)
+        # Capture mtime so the nightly tick can detect future edits.
+        mtime = None
+        try:
+            full = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "uploads", key)
+            if os.path.exists(full):
+                mtime = os.path.getmtime(full)
+        except Exception:
+            mtime = None
+        execute_db(
+            "UPDATE rag_documents SET storage_key=%s, source_mtime=%s "
+            "WHERE id=%s",
+            (key, mtime, doc_id))
+    except Exception as e:
+        # File saved -> chunks already in place; just log. Worst case
+        # the reindex button won't have a source to re-read from.
+        print(f"[kb] storage save failed for doc {doc_id}: {e}")
+    return jsonify({"ok": True, "document_id": doc_id,
+                    "filename": fname, "result": res})
+
+
+@app.route("/admin/api/kb/<int:doc_id>", methods=["DELETE"])
+@admin_required
+def admin_kb_delete(doc_id):
+    """DELETE one document. ON CASCADE removes its chunks; we also
+    try to drop the bytes from storage so /uploads/kb/* doesn't grow
+    unbounded across upload-delete-upload cycles."""
+    # Tenant-scoped read so an admin from tenant A can't probe (or
+    # delete) tenant B's documents by guessing the id.
+    row = query_db(
+        "SELECT storage_key FROM rag_documents "
+        "WHERE id=%s AND tenant_id=%s",
+        (int(doc_id), current_tenant_id()), fetchone=True)
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    if row.get("storage_key"):
+        try:
+            storage.get_storage().delete(row["storage_key"])
+        except Exception as e:
+            print(f"[kb] storage delete failed for doc {doc_id}: {e}")
+    if not rag.delete_document(int(doc_id),
+                               tenant_id=current_tenant_id()):
+        return jsonify({"error": "not found"}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/admin/api/kb/<int:doc_id>/reindex", methods=["POST"])
+@admin_required
+def admin_kb_reindex(doc_id):
+    """POST to rebuild one document's chunks from its saved bytes.
+    Useful after a chunking-parameter change, or if an admin replaces
+    the underlying file on disk and doesn't want to wait for the
+    6-hour reindex tick."""
+    # Tenant-scoped fetch — see admin_kb_delete for rationale.
+    row = query_db("SELECT filename, storage_key FROM rag_documents "
+                   "WHERE id=%s AND tenant_id=%s",
+                   (int(doc_id), current_tenant_id()), fetchone=True)
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    key = row.get("storage_key") or ""
+    if not key:
+        return jsonify({"error": "no stored bytes for this document — "
+                                  "delete and re-upload instead"}), 400
+    data = storage.get_storage().read_bytes(key)
+    if data is None:
+        return jsonify({"error": "stored file missing"}), 410
+    res = rag.reindex_document(int(doc_id), filename=row["filename"],
+                               data=data, session_id="kb_reindex")
+    return jsonify({"ok": "error" not in res, "result": res})
+
+
+@app.route("/admin/api/kb/chunk/<int:chunk_id>", methods=["GET"])
+@admin_required
+def admin_kb_chunk_get(chunk_id):
+    """GET the full text of one chunk. The chat UI calls this when the
+    admin clicks an inline `[source: file p.N]` citation — we render
+    the chunk in a modal with the filename / page so they can verify
+    the AI's quote without re-downloading the PDF."""
+    ch = rag.get_chunk(int(chunk_id),
+                       tenant_id=current_tenant_id())
+    if not ch:
+        return jsonify({"error": "chunk not found"}), 404
+    return jsonify(ch)
+
+
+@app.route("/admin/api/kb/preview", methods=["POST"])
+@admin_required
+def admin_kb_preview():
+    """POST {"query": "..."}: returns the same retrieval result the
+    auto-injection would have produced for this query. Useful in the
+    sidebar to debug "why didn't the AI cite my doc?" without actually
+    burning a chat turn."""
+    body = request.get_json(silent=True) or {}
+    q = (body.get("query") or "").strip()
+    if not q:
+        return jsonify({"chunks": []})
+    chunks = rag.retrieve(q,
+                          tenant_id=current_tenant_id(),
+                          top_k=int(body.get("top_k") or rag.TOP_K_DEFAULT),
+                          session_id="kb_preview") or []
+    return jsonify({"chunks": chunks})
+
+
+# Nightly reindex tick. Wrapped so messaging.register_tick (which calls
+# its argument with no args) gets a thunk; rag.reindex_tick needs a
+# read-bytes callable so it can stay storage-backend-agnostic.
+def _kb_reindex_tick():
+    try:
+        rag.reindex_tick(lambda key: storage.get_storage().read_bytes(key))
+    except Exception as e:
+        print(f"[kb] reindex tick failed: {e}")
+
+
+try:
+    messaging.register_tick(_kb_reindex_tick)
+except Exception as _e:
+    print(f"[kb] register_tick failed: {_e}")
 
 
 @app.route("/admin/api/chat/sessions/<session_id>", methods=["DELETE"])
@@ -17445,143 +17594,6 @@ def admin_chat_session_export(session_id):
     resp.headers["Content-Disposition"] = \
         f'attachment; filename="{fname_base}.md"'
     return resp
-
-
-# ---------------------------------------------------------------------------
-# Knowledge Base & Auto-Memory admin endpoints (task #79, admin chat RAG).
-# These power the "Knowledge" panel in the admin chat shell: upload docs
-# (PDF/DOCX/PPTX/CSV/TXT/MD), list them with their indexed-chunk count,
-# delete a doc (cascades to chunks + removes the source file), list the
-# auto-extracted long-term memories, and delete a memory the operator no
-# longer wants the AI to keep using. Everything is tenant-scoped via the
-# helpers in rag.py.
-# ---------------------------------------------------------------------------
-
-_RAG_MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB hard cap per file
-_RAG_KB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "uploads", "kb")
-_RAG_ALLOWED_EXTS = {"pdf", "docx", "pptx", "csv", "txt", "md"}
-
-
-@app.route("/admin/api/kb/documents", methods=["GET"])
-@admin_required
-def admin_kb_list_documents():
-    """List indexed knowledge-base documents for the current tenant."""
-    rows = rag.list_documents() or []
-    for r in rows:
-        for k in ("indexed_at", "created_at"):
-            v = r.get(k)
-            if hasattr(v, "isoformat"):
-                r[k] = v.isoformat()
-    return jsonify({"documents": rows})
-
-
-@app.route("/admin/api/kb/upload", methods=["POST"])
-@admin_required
-def admin_kb_upload():
-    """Upload one or more files to the knowledge base. Each file is
-    extracted, chunked, embedded, and inserted into rag_documents +
-    rag_chunks. Files are stored on disk under uploads/kb/<unique>.ext
-    so a re-index can re-read the original bytes if needed."""
-    files = request.files.getlist("files") or []
-    if not files and "file" in request.files:
-        files = [request.files["file"]]
-    files = [f for f in files if f and f.filename]
-    if not files:
-        return jsonify({"error": "No files provided"}), 400
-
-    os.makedirs(_RAG_KB_DIR, exist_ok=True)
-    results = []
-    for f in files:
-        fname = f.filename
-        ext = (fname.rsplit(".", 1)[-1].lower() if "." in fname else "")
-        if ext not in _RAG_ALLOWED_EXTS:
-            results.append({"filename": fname, "ok": False,
-                            "error": f"unsupported extension .{ext}"})
-            continue
-        # Read into memory so we can size-check before persisting. 25MB
-        # cap matches the per-file limit documented in rag.py.
-        data = f.read()
-        if not data:
-            results.append({"filename": fname, "ok": False, "error": "empty file"})
-            continue
-        if len(data) > _RAG_MAX_UPLOAD_BYTES:
-            results.append({"filename": fname, "ok": False,
-                            "error": f"file exceeds {_RAG_MAX_UPLOAD_BYTES // (1024*1024)}MB cap"})
-            continue
-        # Store with a randomized prefix so two uploads with the same
-        # display name don't collide on disk.
-        safe_base = re.sub(r"[^A-Za-z0-9._-]+", "_", fname)[:80] or "file"
-        unique = f"{secrets.token_hex(8)}_{safe_base}"
-        disk_path = os.path.join(_RAG_KB_DIR, unique)
-        try:
-            with open(disk_path, "wb") as out:
-                out.write(data)
-            mime = (f.mimetype or "application/octet-stream")[:120]
-            doc_id = rag.ingest_document(disk_path, fname, mime,
-                                         size_bytes=len(data))
-            # Fetch the resulting row so the UI can show real status
-            # (ready vs failed) + chunk_count right after the upload
-            # round-trips, without a second list call. ingest_document
-            # intentionally returns a doc_id even on extraction/embed
-            # failure (status='failed', with error_message set) so we
-            # MUST derive per-file ok-ness from the persisted status —
-            # not from the absence of an exception — otherwise the UI
-            # would happily report a failed file as "indexed".
-            tid = current_tenant_id() if "current_tenant_id" in globals() else 1
-            doc_row = query_db(
-                "SELECT id, status, chunk_count, page_count, error_message "
-                "FROM rag_documents WHERE id=%s AND tenant_id=%s",
-                (doc_id, tid), fetchone=True,
-            ) or {}
-            doc_row = dict(doc_row)
-            ok_flag = (doc_row.get("status") == "ready")
-            entry = {"filename": fname, "ok": ok_flag, "document": doc_row}
-            if not ok_flag:
-                entry["error"] = doc_row.get("error_message") or "indexing failed"
-            results.append(entry)
-        except Exception as e:
-            # On failure, drop the on-disk file so we don't accumulate
-            # orphaned bytes that no rag_documents row points to.
-            try:
-                if os.path.exists(disk_path):
-                    os.remove(disk_path)
-            except Exception:
-                pass
-            results.append({"filename": fname, "ok": False, "error": str(e)[:300]})
-    return jsonify({"results": results})
-
-
-@app.route("/admin/api/kb/documents/<int:doc_id>", methods=["DELETE"])
-@admin_required
-def admin_kb_delete_document(doc_id):
-    ok = rag.delete_document(doc_id)
-    if not ok:
-        return jsonify({"error": "not found"}), 404
-    return jsonify({"ok": True})
-
-
-@app.route("/admin/api/memories", methods=["GET"])
-@admin_required
-def admin_memories_list():
-    """List the auto-extracted long-term memories. Newest first; sensitive
-    fields (the embedding vector) are not returned."""
-    rows = rag.list_memories() or []
-    for r in rows:
-        for k in ("created_at", "last_used_at"):
-            v = r.get(k)
-            if hasattr(v, "isoformat"):
-                r[k] = v.isoformat()
-    return jsonify({"memories": rows})
-
-
-@app.route("/admin/api/memories/<int:memory_id>", methods=["DELETE"])
-@admin_required
-def admin_memories_delete(memory_id):
-    ok = rag.delete_memory(memory_id)
-    if not ok:
-        return jsonify({"error": "not found"}), 404
-    return jsonify({"ok": True})
 
 
 @app.route("/admin/api/chat/skills", methods=["GET"])
