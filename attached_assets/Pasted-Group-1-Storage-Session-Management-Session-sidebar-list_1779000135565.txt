@@ -1,0 +1,42 @@
+Group 1 — Storage & Session Management
+
+Session sidebar: list, search, rename, delete past conversations
+Export chat as Markdown or JSON
+All history already persisted in admin_chat_messages — just need routes + UI
+Group 2 — RAG (Retrieval-Augmented Generation)
+
+New rag_documents table: upload PDFs, CSVs, TXT, DOCX, PPTX → extract text → chunk → embed with OpenAI text-embedding-3-small → store embeddings
+On each chat turn: retrieve top-K relevant chunks, inject as context automatically
+New "Knowledge Base" panel in the chat sidebar showing indexed docs
+Group 3 — File & Image Attachments
+
+Drag-and-drop file upload in the chat bar
+PDFs/CSVs/TXT → extracted text injected into context
+Images → sent directly to GPT-4o vision (multimodal)
+Thumbnail previews inline in the message
+Group 4 — Voice Input
+
+Hold-to-record button using the browser's built-in speech API (no cost, no server)
+Fallback: send audio blob to OpenAI Whisper API for higher accuracy
+Transcript appears in the input box ready to edit before sending
+Group 5 — Router Agent + Parallel Sub-agents
+
+A planning step before each response: classify the query → pick a specialist persona (Research, Data Analyst, Code, Creative, Ops)
+Each specialist gets a tailored system prompt and tool subset
+New admin_spawn_agents tool: pass 2–5 parallel tasks, runs them simultaneously via threads, aggregates and returns all results
+Group 6 — Skill Management UI
+
+Panel listing every available tool with toggle on/off, description, and last-used timestamp
+Per-session tool overrides (turn off DB tools for a quick brainstorm session, etc.)
+Group 7 — Quality-of-life (2026 standard)
+
+Model selector: GPT-4o, GPT-4o-mini, o3-mini, Claude 3.5 Sonnet
+System prompt editor (customise the AI's persona per session)
+Streaming markdown with code syntax highlighting
+Token count + estimated cost shown per message
+Tool call cards: expandable, show input/output
+Conversation branching: edit any past user message and re-run from there
+New packages needed (minimal): pypdf (PDF parsing), tiktoken (token counting), numpy (cosine similarity for RAG) — Whisper and embeddings go through the OpenAI SDK already installed.
+
+New DB tables: rag_documents, rag_chunks, chat_attachments, one column addition to admin_chat_messages for attachments + model used.
+

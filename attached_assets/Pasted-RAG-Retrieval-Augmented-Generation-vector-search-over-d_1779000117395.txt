@@ -1,0 +1,29 @@
+RAG (Retrieval-Augmented Generation) - vector search over documents/data
+
+Save chats - persist conversation history
+
+LangChain - use LangChain for orchestration
+
+Router agent - route queries to appropriate sub-agents
+
+Spam subagents - ability to spawn multiple parallel sub-agents
+
+Skill management - manage what tools/skills the AI has
+
+Attach images - multimodal input
+
+Attach files - file upload and processing
+
+Voice transcript - speech-to-text input
+
+Other 2026 industry standard features
+
+This is a substantial upgrade request. I need to assess what's already in place with the current Flask and vanilla JS setup, then figure out what's feasible to add. Looking at what we have now, there's already some streaming with OpenAI/Anthropic, tool calling support, localStorage for sessions, and a basic skill management system in the database. I need to identify what's actually missing and prioritize the implementation.
+
+The big gaps are RAG capabilities—I'd need document uploads, chunking, embeddings, and a vector store like pgvector. For chat persistence, I should save history to the database instead of relying on localStorage alone. I'm leaning toward using LangChain specifically for the RAG pipeline since it's well-established for that. Beyond that, there's the router agent to classify and dispatch queries to specialized sub-agents, the ability to run multiple agents in parallel and merge their outputs, a UI for toggling skills on and off, file attachment support for PDFs and CSVs, and image handling.
+
+Then there's voice transcription via the Web Speech API or Whisper, plus a bunch of polish features like conversation branching, token counting and cost tracking per message, a model selector, temperature and system prompt controls, chat export, streaming with visible tool calls, markdown rendering, and syntax highlighting. This is genuinely massive scope. I should either ask the user to prioritize or map out a phased rollout focusing on the highest-impact features first. I should present a structured plan to the user first rather than diving straight into implementation. Looking at what's already in place — Flask backend, PostgreSQL, vanilla JS frontend, and OpenAI integration with streaming and tool calling — I can map out a realistic implementation path. The core features I'll focus on are chat persistence with session management, multimodal file and image uploads, and voice input capabilities.
+
+For the remaining features like RAG with pgvector, a router agent for query classification, parallel sub-agents, skill management, model selection, system prompt customization, and chat export, I need to prioritize what's essential versus what can be phased in. This is a substantial scope, so I should clarify with the user which features matter most for their immediate needs.
+
+Given the constraints of a single HTML file plus Flask backend, I'll need to add database tables for chat history and document storage, create new API endpoints for file uploads and RAG retrieval, and implement the voice transcription using the browser's native Web Speech API to avoid external dependencies.
