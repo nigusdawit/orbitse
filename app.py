@@ -1924,6 +1924,16 @@ def init_db():
                 );
                 CREATE INDEX IF NOT EXISTS idx_admin_chat_session
                     ON admin_chat_messages (session_id, mode, created_at);
+                -- Per-message metadata so the chat UI can rehydrate the
+                -- token/cost badge under each assistant turn AND the
+                -- rows/ms badge inside each tool card after a refresh.
+                -- usage_json on assistant rows: {provider,model,
+                -- prompt_tokens,completion_tokens,total_tokens,cost_usd}.
+                -- tool_meta_json on tool rows: {rows,ms,error}.
+                ALTER TABLE admin_chat_messages
+                    ADD COLUMN IF NOT EXISTS usage_json JSONB;
+                ALTER TABLE admin_chat_messages
+                    ADD COLUMN IF NOT EXISTS tool_meta_json JSONB;
 
                 -- One row per admin-chat conversation. The session_id used
                 -- to be only a localStorage value with no server-side
@@ -16473,13 +16483,21 @@ def _admin_chat_estimate_cost_usd(provider, model, prompt_tokens,
 
 
 def _admin_chat_persist(session_id, mode, role, content,
-                        tool_calls=None, tool_call_id=None, tool_name=None):
+                        tool_calls=None, tool_call_id=None, tool_name=None,
+                        usage=None, tool_meta=None):
+    """Insert one admin-chat message row.
+
+    `usage` (assistant rows) carries the per-turn token+cost snapshot so
+    the chat UI can rehydrate the badge after refresh. `tool_meta` (tool
+    rows) carries {rows, ms, error} so the tool-card row-count/duration
+    survives a reload too. Both columns are nullable JSONB; pre-existing
+    rows simply render without the extra badge."""
     try:
         execute_db(
             "INSERT INTO admin_chat_messages "
             "(session_id, mode, role, content, tool_calls_json, "
-            " tool_call_id, tool_name) "
-            "VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)",
+            " tool_call_id, tool_name, usage_json, tool_meta_json) "
+            "VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s::jsonb)",
             (
                 (session_id or "")[:100],
                 (mode or "admin")[:20],
@@ -16488,6 +16506,8 @@ def _admin_chat_persist(session_id, mode, role, content,
                 json.dumps(tool_calls) if tool_calls else None,
                 (tool_call_id or None),
                 (tool_name or None),
+                json.dumps(usage) if usage else None,
+                json.dumps(tool_meta) if tool_meta else None,
             ),
         )
     except Exception as e:
@@ -16517,7 +16537,9 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
     disabled_tools = set(session_cfg.get("disabled_tools") or [])
 
     # Pull the active openai model from agent_provider_settings, then
-    # apply the per-session override if one is set.
+    # apply the per-session override if one is set. The override can
+    # name either an OpenAI model (gpt-*, o3-*, etc.) or a Claude model
+    # (claude-*) — we route by model-name prefix below.
     model = "gpt-4o-mini"
     try:
         row = query_db(
@@ -16529,6 +16551,19 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
         pass
     if session_cfg.get("model"):
         model = session_cfg["model"]
+
+    # Provider = lowercased prefix check on the chosen model. Anything
+    # starting with "claude" goes to Anthropic; otherwise OpenAI. If the
+    # admin picks Claude but ANTHROPIC_API_KEY isn't set, fail loudly
+    # rather than silently swapping providers.
+    _is_claude = (model or "").lower().startswith("claude")
+    if _is_claude and anthropic_client is None:
+        err = ("Claude model selected for this conversation but "
+               "ANTHROPIC_API_KEY is not configured on the server. Either "
+               "switch the model in the chat header or set the key.")
+        _admin_chat_persist(session_id, "admin", "assistant", err)
+        yield {"type": "error", "content": err}
+        return
 
     # Build the messages array from persisted history (admin mode only).
     # Fetch the LATEST 60 turns (DESC subquery) then reverse to chronological
@@ -16620,10 +16655,25 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
         round_text = ""
         tcs = []
         finish_reason = None
+        # Track the latest usage event for this round so we can persist
+        # it onto the assistant message row when the round closes.
+        last_round_usage = None
         try:
-            for event in _stream_round_openai(
+            # Dispatch this round to the right provider. Claude needs
+            # both a different streaming primitive and a different
+            # messages/tools shape — _messages_for_claude / _tools_for_claude
+            # are the same converters the visitor chat uses.
+            if _is_claude:
+                claude_sys, claude_msgs = _messages_for_claude(messages)
+                claude_tools = _tools_for_claude(round_tools)
+                round_iter = _stream_round_claude(
+                    model, claude_sys, claude_msgs, claude_tools,
+                    max_tokens=2048, temperature=0.3)
+            else:
+                round_iter = _stream_round_openai(
                     model, messages, round_tools,
-                    max_tokens=2048, temperature=0.3):
+                    max_tokens=2048, temperature=0.3)
+            for event in round_iter:
                 kind = event[0]
                 if kind == "token":
                     round_text += event[1]
@@ -16632,10 +16682,12 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
                     tcs.append(event[1])
                 elif kind == "usage":
                     u = event[1] or {}
+                    _provider_name = u.get("provider",
+                                           "anthropic" if _is_claude else "openai")
                     record_chat_cost(
                         session_id=session_id,
                         surface="admin_chat",
-                        provider=u.get("provider", "openai"),
+                        provider=_provider_name,
                         model=u.get("model", model),
                         prompt_tokens=u.get("prompt_tokens", 0),
                         completion_tokens=u.get("completion_tokens", 0),
@@ -16646,24 +16698,26 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
                     # admin UI can render a per-message tokens + cost
                     # footer without needing a separate DB round-trip.
                     _est = _admin_chat_estimate_cost_usd(
-                        u.get("provider", "openai"),
+                        _provider_name,
                         u.get("model", model),
                         u.get("prompt_tokens", 0),
                         u.get("completion_tokens", 0))
-                    yield {
-                        "type": "usage",
-                        "usage": {
-                            "provider": u.get("provider", "openai"),
-                            "model": u.get("model", model),
-                            "prompt_tokens": int(u.get("prompt_tokens", 0) or 0),
-                            "completion_tokens": int(u.get("completion_tokens", 0) or 0),
-                            "total_tokens": int(u.get("total_tokens") or
-                                                (u.get("prompt_tokens", 0) or 0) +
-                                                (u.get("completion_tokens", 0) or 0)),
-                            "cost_usd": _est,
-                            "round": round_no,
-                        },
+                    usage_payload = {
+                        "provider": _provider_name,
+                        "model": u.get("model", model),
+                        "prompt_tokens": int(u.get("prompt_tokens", 0) or 0),
+                        "completion_tokens": int(u.get("completion_tokens", 0) or 0),
+                        "total_tokens": int(u.get("total_tokens") or
+                                            (u.get("prompt_tokens", 0) or 0) +
+                                            (u.get("completion_tokens", 0) or 0)),
+                        "cost_usd": _est,
+                        "round": round_no,
                     }
+                    # Stash so we can persist it on the assistant row
+                    # below — gives the chat UI a token+cost badge that
+                    # survives a refresh, not just one shown live.
+                    last_round_usage = usage_payload
+                    yield {"type": "usage", "usage": usage_payload}
                 elif kind == "finish":
                     finish_reason = event[1]
         except Exception as e:
@@ -16698,7 +16752,8 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
             })
             _admin_chat_persist(session_id, "admin", "assistant",
                                 round_text or "",
-                                tool_calls=tc_serialized_redacted)
+                                tool_calls=tc_serialized_redacted,
+                                usage=last_round_usage)
             for tc in tcs:
                 # Announce the tool is starting so the UI can render a
                 # "running…" placeholder card before the result lands.
@@ -16741,12 +16796,18 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
                 _admin_chat_persist(session_id, "admin", "tool",
                                     redacted_result,
                                     tool_call_id=tc["id"],
-                                    tool_name=tc["name"])
+                                    tool_name=tc["name"],
+                                    tool_meta={
+                                        "rows": int(log.get("rows", 0) or 0),
+                                        "ms": int(log.get("ms", 0) or 0),
+                                        "error": log.get("error", "") or "",
+                                    })
             continue
 
         # No more tool calls — final assistant turn.
         final_text = round_text or ""
-        _admin_chat_persist(session_id, "admin", "assistant", final_text)
+        _admin_chat_persist(session_id, "admin", "assistant", final_text,
+                            usage=last_round_usage)
         yield {"type": "done", "content": final_text}
         return
 
@@ -16754,7 +16815,8 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8):
     final_text = (final_text or
                   "I hit the tool-call round limit before reaching a "
                   "final answer. Try narrowing the question.")
-    _admin_chat_persist(session_id, "admin", "assistant", final_text)
+    _admin_chat_persist(session_id, "admin", "assistant", final_text,
+                        usage=last_round_usage)
     yield {"type": "done", "content": final_text}
 
 
@@ -16862,15 +16924,20 @@ def admin_agent_chat_history():
     # Latest 200 turns, returned in chronological order. Using ASC LIMIT
     # would silently hide the most recent messages once a thread grew
     # past 200 rows, which is the opposite of what the UI wants.
+    # Selected session loads its FULL transcript (cap at 5000 rows as a
+    # last-resort safety bound — well beyond any human conversation
+    # length). Previously capped at 200 which silently dropped the start
+    # of long threads on reload; the sidebar implies the whole history
+    # is what loads when you click a session.
     rows = query_db(
         "SELECT id, role, content, tool_calls_json, tool_call_id, tool_name, "
-        "       created_at "
+        "       usage_json, tool_meta_json, created_at "
         "FROM ( "
         "  SELECT id, role, content, tool_calls_json, tool_call_id, "
-        "         tool_name, created_at "
+        "         tool_name, usage_json, tool_meta_json, created_at "
         "  FROM admin_chat_messages "
         "  WHERE session_id=%s AND mode=%s "
-        "  ORDER BY created_at DESC, id DESC LIMIT 200 "
+        "  ORDER BY created_at DESC, id DESC LIMIT 5000 "
         ") s ORDER BY s.created_at ASC, s.id ASC",
         (session_id, mode),
     ) or []

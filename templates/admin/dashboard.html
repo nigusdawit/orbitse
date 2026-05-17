@@ -4206,11 +4206,17 @@ TO CUSTOMIZE THIS DASHBOARD:
                  data-testid="input-admin-chat-title">
           <select id="admin-chat-model" onchange="adminChatSaveModel()" data-testid="select-admin-chat-model">
             <option value="">Default model</option>
-            <option value="gpt-4o-mini">gpt-4o-mini</option>
-            <option value="gpt-4o">gpt-4o</option>
-            <option value="gpt-4.1-mini">gpt-4.1-mini</option>
-            <option value="gpt-4.1">gpt-4.1</option>
-            <option value="o3-mini">o3-mini</option>
+            <optgroup label="OpenAI">
+              <option value="gpt-4o-mini">GPT-4o-mini</option>
+              <option value="gpt-4o">GPT-4o</option>
+              <option value="gpt-4.1-mini">GPT-4.1-mini</option>
+              <option value="gpt-4.1">GPT-4.1</option>
+              <option value="o3-mini">o3-mini</option>
+            </optgroup>
+            <optgroup label="Anthropic">
+              <option value="claude-3-5-sonnet-latest">Claude 3.5 Sonnet</option>
+              <option value="claude-sonnet-4-5">Claude Sonnet 4.5</option>
+            </optgroup>
           </select>
           <button class="acm-btn" onclick="adminChatOpenPromptEditor()" title="System prompt for this conversation"
                   data-testid="button-admin-chat-prompt">⚙ Prompt</button>
@@ -5022,6 +5028,16 @@ TO CUSTOMIZE THIS DASHBOARD:
           toolResultsById[m.tool_call_id] = m;
         }
       }
+      // Build a quick id→tool-meta map so each tool card can render
+      // its persisted rows / ms / error counts (not just 0,0 placeholders).
+      const toolMetaById = {};
+      for (const m of msgs) {
+        if (m.role === 'tool' && m.tool_call_id) {
+          let meta = m.tool_meta_json;
+          if (typeof meta === 'string') { try { meta = JSON.parse(meta); } catch(e){ meta = null; } }
+          if (meta) toolMetaById[m.tool_call_id] = meta;
+        }
+      }
       for (const m of msgs) {
         if (m.role === 'user') {
           html += adminChatUserBubble(m.id, m.content || '');
@@ -5035,11 +5051,14 @@ TO CUSTOMIZE THIS DASHBOARD:
               const matched = toolResultsById[tc.id];
               const fullResult = matched ? (matched.content || '') : '';
               const preview = fullResult.slice(0, 500);
+              const meta = toolMetaById[tc.id] || {};
               toolHtml += adminChatToolCard({
                 name: fn.name || 'tool',
                 args: fn.arguments || '',
                 result_preview: preview,
-                rows: 0, ms: 0,
+                rows: meta.rows || 0,
+                ms: meta.ms || 0,
+                error: meta.error || '',
               });
               const proposal = adminChatPickProposal(fullResult);
               if (proposal) {
@@ -5048,16 +5067,23 @@ TO CUSTOMIZE THIS DASHBOARD:
               }
             }
           }
+          // Hydrate the per-message tokens+cost badge from usage_json.
+          // Live streaming appends its own badge from the SSE `usage`
+          // event; on reload that badge comes from this row instead.
+          let usage = m.usage_json;
+          if (typeof usage === 'string') { try { usage = JSON.parse(usage); } catch(e){ usage = null; } }
+          const usageHtml = usage ? adminChatUsageBadgeHtml(usage) : '';
           if ((m.content || '').trim() || !toolHtml) {
             // Render the assistant bubble with admin-chat-md-body so the
             // shared CSS rules (code/pre/table) apply to its contents.
             const md = adminChatRenderMd(m.content || '');
             html += `<div style="display:flex; flex-direction:column; align-items:flex-start; gap:.25rem;" data-testid="bubble-admin-chat-assistant${m.id ? '-' + m.id : ''}">
               <div class="admin-chat-md-body" style="max-width:80%; background:var(--admin-surface); color:var(--admin-text); padding:.75rem 1rem; border-radius:.75rem; border:1px solid var(--admin-border); word-wrap:break-word;">${md}</div>
+              ${usageHtml}
               ${toolHtml}
             </div>`;
           } else if (toolHtml) {
-            html += `<div style="display:flex; flex-direction:column; align-items:flex-start; gap:.25rem;">${toolHtml}</div>`;
+            html += `<div style="display:flex; flex-direction:column; align-items:flex-start; gap:.25rem;">${toolHtml}${usageHtml}</div>`;
           }
         }
       }
