@@ -1,0 +1,1947 @@
+# AI Implementer Toolkit Reference
+
+A working reference for the open-source (and select commercial) tools that make up the modern AI implementation stack. Built for someone shipping production AI systems across multiple industries.
+
+For each tool: what it does, origin, license, cost, pros, cons, common pitfalls, when NOT to use, and alternatives.
+
+> **Note on accuracy:** Pricing as of early 2026 — verify on vendor sites before quoting clients. GitHub star counts and version numbers shift quickly. “Verdict” lines are practical recommendations, not endorsements.
+
+-----
+
+## How to Read This Document
+
+Each entry follows the same template:
+
+- **One-line** — the 15-word pitch
+- **What it does** — the substantive explanation
+- **Origin** — who built it and why
+- **License** — matters for commercial use
+- **Cost** — open-source vs hosted pricing
+- **Best use cases** — when to reach for this
+- **Pros / Cons** — honest tradeoffs
+- **Common pitfalls** — what goes wrong in practice
+- **When NOT to use** — often more valuable than pros
+- **How to start** — first command or install
+- **Verdict** — practical recommendation
+- **Alternatives** — what else, and when to choose differently
+
+-----
+
+# LAYER 1: MODEL LAYER
+
+The layer that gets text in and out of LLMs. Routing, structured outputs, local inference, caching.
+
+-----
+
+## LiteLLM
+
+**One-line:** Unified API for 100+ LLM providers behind a single OpenAI-format interface.
+
+**What it does:** Wraps OpenAI, Anthropic, Google, Cohere, local models (Ollama, vLLM), Bedrock, Azure, and ~100 more providers behind one `completion()` call. Adds automatic fallbacks, rate limiting, cost tracking, semantic caching, and a proxy server for centralized control across teams.
+
+**Origin:** Built by BerriAI (Ishaan Jaffer + Krrish Dholakia), open-sourced 2023. Among the most-starred Python AI libraries. Funded by Y Combinator and used in production at many AI-native companies.
+
+**License:** MIT.
+
+**Cost:** Free (open source). LiteLLM Enterprise (hosted proxy + SSO + audit logs) starts around $50/user/month.
+
+**Best use cases:**
+
+- Multi-provider routing with automatic fallback (Claude rate-limited → GPT)
+- Centralized API key management for a team
+- Cost optimization by routing classes of tasks to cheaper models
+- Per-user spending budgets and tracking
+
+**Pros:**
+
+- Works with virtually every major model provider including local
+- Drop-in replacement for OpenAI SDK
+- Active development; new models supported within days
+- Proxy mode enables team-wide key rotation and budgets
+
+**Cons:**
+
+- Provider-specific features sometimes lag the official SDKs
+- Adds a thin abstraction; rare edge-case bugs
+- Streaming via proxy adds small latency overhead
+
+**Common pitfalls:**
+
+- Not enabling response caching → paying for redundant calls
+- Misconfigured fallbacks silently mask real outages
+- Tool-use formats vary between providers; LiteLLM smooths but doesn’t fully unify
+
+**When NOT to use:** Single-provider apps where you don’t need fallback. The official SDK is then simpler.
+
+**How to start:** `pip install litellm` then `from litellm import completion; completion(model="claude-opus-4-7", messages=[...])`. Proxy mode: `litellm --model gpt-4o --port 4000`.
+
+**Verdict:** Default choice for any production AI app. Use it.
+
+**Alternatives:**
+
+- **OpenRouter** — hosted multi-provider gateway, simpler, less control
+- **Portkey** — hosted with built-in observability and guardrails
+- **Official SDKs** — when single-provider and you want zero abstraction
+
+-----
+
+## Instructor
+
+**One-line:** Reliable structured outputs from LLMs using Pydantic models.
+
+**What it does:** Wraps any LLM call so it returns a validated Pydantic object instead of raw text. Handles retries on validation failures, streaming partial objects, and complex nested schemas. The single most reliable way to get JSON out of LLMs.
+
+**Origin:** Created by Jason Liu (2023). Started as a thin wrapper around OpenAI function calling, evolved into a multi-provider library. The de facto standard for typed LLM outputs.
+
+**License:** MIT.
+
+**Cost:** Free.
+
+**Best use cases:**
+
+- Any LLM call that needs to return structured data (90%+ of production agents)
+- Extracting fields from documents
+- Tool/function definitions in agent loops
+- Streaming UI that displays partial structured results
+
+**Pros:**
+
+- Real type safety; catch errors at parse-time
+- Automatic retry on validation failure with the error fed back to the model
+- Works with OpenAI, Anthropic, Cohere, local models, more
+- Excellent documentation and examples
+
+**Cons:**
+
+- Adds 1-3 retries to your latency budget on validation failures
+- Pydantic learning curve if you haven’t used it
+
+**Common pitfalls:**
+
+- Defining schemas that are too complex; LLMs fail repeatedly. Keep schemas simple.
+- Not setting `max_retries`; infinite loops on impossible schemas.
+- Using strict mode where partial responses would suffice.
+
+**When NOT to use:** When you genuinely want freeform text (creative writing, conversational responses).
+
+**How to start:** `pip install instructor`, then wrap your client: `client = instructor.from_anthropic(Anthropic())`. Define a Pydantic model. Pass `response_model=YourModel` to the call.
+
+**Verdict:** Use everywhere you take structured output. No reason not to.
+
+**Alternatives:**
+
+- **Outlines** — constraint-based generation, more deterministic, harder to use
+- **Native structured outputs** (OpenAI strict mode, Anthropic tool use) — work but less ergonomic
+- **PydanticAI** — newer agent-focused library that includes structured outputs
+
+-----
+
+## Ollama
+
+**One-line:** One-command local LLM runner with a clean API.
+
+**What it does:** Downloads, manages, and runs open-source LLMs (Llama, Qwen, Mistral, Gemma, etc.) locally with a single command. Exposes an OpenAI-compatible API on localhost. Handles model quantization (GGUF) and GPU offload automatically.
+
+**Origin:** Founded 2023 by Jeffrey Morgan + Michael Chiang. Built on top of llama.cpp (Georgi Gerganov’s C++ inference engine). Focused on developer ergonomics; “the Docker of LLMs.”
+
+**License:** MIT.
+
+**Cost:** Free. Hardware costs are yours (a M-series Mac or any GPU with 16GB+ runs most 7B-13B models well).
+
+**Best use cases:**
+
+- Local development without API costs
+- Privacy-required deployments (data can’t leave premises)
+- Edge inference (running a model on a customer’s machine)
+- Cheap inference for non-latency-critical batch jobs
+
+**Pros:**
+
+- Trivial setup (`ollama run qwen3:8b` just works)
+- Auto-handles model downloads and quantization
+- Excellent for development and demos
+- Active community with frequent model additions
+
+**Cons:**
+
+- Not built for high-throughput production (use vLLM for that)
+- Single-process, limited concurrency
+- Quantization quality varies between models
+
+**Common pitfalls:**
+
+- Using Ollama for production traffic when you should use vLLM
+- Underestimating RAM/VRAM needs; check model card before downloading
+- Forgetting to set context length (default is small)
+
+**When NOT to use:** Production inference at scale (>10 concurrent users). Switch to vLLM.
+
+**How to start:** Install from ollama.com, then `ollama run qwen3:8b`. Or API: `curl localhost:11434/api/generate -d '{"model":"qwen3:8b","prompt":"hello"}'`.
+
+**Verdict:** Use for dev, demos, and edge deployment. Don’t use for production scale.
+
+**Alternatives:**
+
+- **llama.cpp** — the underlying engine; use directly for max control
+- **LM Studio** — GUI desktop app, good for non-coders
+- **vLLM** — production server (see below)
+
+-----
+
+## vLLM
+
+**One-line:** High-throughput production inference server for open-source LLMs.
+
+**What it does:** Serves open-source LLMs with optimizations (PagedAttention, continuous batching, speculative decoding) that get 10-24x throughput over naive HuggingFace inference. The standard for self-hosted production LLM serving.
+
+**Origin:** Created at UC Berkeley by Woosuk Kwon + the LMSYS team (2023). PagedAttention paper drew major industry attention. Now backed by a venture-funded company (Neural Magic acquired by Red Hat for vLLM stewardship).
+
+**License:** Apache 2.0.
+
+**Cost:** Free (software). GPU costs: A100 80GB ~$1.50-2.50/hr on RunPod/Lambda, H100 ~$2.50-4/hr.
+
+**Best use cases:**
+
+- Self-hosting a fine-tuned model in production
+- High-throughput batch inference (summarization, classification at scale)
+- OpenAI-compatible API on your own infrastructure
+- Cost-sensitive deployments at scale
+
+**Pros:**
+
+- Best-in-class throughput for open models
+- OpenAI-compatible API (drop-in for many tools)
+- Supports most modern open-source architectures
+- Active development, frequent perf improvements
+
+**Cons:**
+
+- More setup than Ollama
+- Requires GPU and CUDA familiarity
+- Some bleeding-edge models take time to support
+
+**Common pitfalls:**
+
+- Sizing GPU memory wrong; OOM in production
+- Not enabling continuous batching → terrible throughput
+- Running fp16 when AWQ/GPTQ quant would save half the VRAM
+
+**When NOT to use:** Dev/demo (Ollama is easier). Models that vLLM doesn’t yet support.
+
+**How to start:** `pip install vllm`, then `vllm serve Qwen/Qwen3-8B-Instruct`. Hit the OpenAI-compatible API at `localhost:8000`.
+
+**Verdict:** Production-grade open-source LLM serving. Pair with fine-tuned models for cost savings.
+
+**Alternatives:**
+
+- **SGLang** — newer competitor, sometimes faster, more complex
+- **TGI (Hugging Face Text Generation Inference)** — Hugging Face’s solution, less popular now
+- **TensorRT-LLM** — NVIDIA’s solution, fastest on NVIDIA hardware, complex setup
+
+-----
+
+## Honorable mentions, Layer 1
+
+- **OpenRouter** — pay-as-you-go gateway to most providers, great for prototyping multi-provider workflows without writing fallback logic
+- **Portkey** — LiteLLM-adjacent with observability built in; hosted only
+- **llama.cpp** — the C++ engine under Ollama; use directly for embedded/edge
+- **SGLang** — newer high-throughput server, contender to vLLM
+- **TensorRT-LLM** — NVIDIA’s optimized inference, fastest on H100s
+
+-----
+
+# LAYER 2: KNOWLEDGE LAYER (Production RAG)
+
+Parsing → chunking → embedding → retrieval → reranking → evaluation. Every “AI for [company]” project needs this layer done well.
+
+-----
+
+## Docling
+
+**One-line:** IBM’s open-source document parser that handles tables, figures, and complex layouts.
+
+**What it does:** Converts PDFs, Word docs, PowerPoints, HTML, and images into structured representations preserving tables, figures, reading order, and document hierarchy. The cleanest path from “messy PDF” to “queryable data” without a paid service.
+
+**Origin:** IBM Research, open-sourced mid-2024. IBM’s bet to make enterprise document processing accessible. Excellent quality, actively maintained.
+
+**License:** MIT.
+
+**Cost:** Free. Runs locally on CPU or GPU.
+
+**Best use cases:**
+
+- Parsing contracts, medical records, financial documents
+- Tables-heavy PDFs (Marker handles tables less well)
+- Multi-modal extraction (text + figures + tables in one pass)
+- Anywhere Unstructured.io would be used but you want open-source
+
+**Pros:**
+
+- High-quality table extraction (rivals paid services)
+- Preserves document hierarchy (headings, sections)
+- Supports many input formats
+- Active IBM-backed development
+
+**Cons:**
+
+- Slower than naive PDF text extraction
+- Requires more compute for complex docs
+- Documentation still maturing
+
+**Common pitfalls:**
+
+- Treating Docling output like plain text; you lose the structure
+- Not using their JSON output for downstream RAG
+- Skipping the layout-preservation features
+
+**When NOT to use:** Simple text-only PDFs (PyMuPDF is faster). Scanned/handwritten documents (need dedicated OCR).
+
+**How to start:** `pip install docling`. Python: `from docling.document_converter import DocumentConverter; result = DocumentConverter().convert("file.pdf"); result.document.export_to_markdown()`.
+
+**Verdict:** Default open-source choice for serious document parsing as of 2026.
+
+**Alternatives:**
+
+- **Marker** — fast, PDF→Markdown focused, great quality, less feature-rich
+- **Unstructured.io** — broadest format support, open + commercial tiers
+- **LlamaParse** — paid, hosted, excellent quality, Llamacloud
+- **Mistral OCR** — paid, hosted, great for scanned docs
+
+-----
+
+## Marker
+
+**One-line:** Fast, high-quality PDF→Markdown converter.
+
+**What it does:** Converts PDF (and EPUB, MOBI) to clean Markdown using a pipeline of layout detection + OCR + LLM cleanup. Optimized for speed; converts a 100-page PDF in seconds on a GPU.
+
+**Origin:** Built by VikParuchuri (Vik Paruchuri) starting 2023. Spawned a small company (Datalab). Marker became popular for being faster and cleaner than alternatives.
+
+**License:** GPL-3.0 (with commercial license available via Datalab) — careful with this if you ship as part of a closed-source product.
+
+**Cost:** Free for self-host (GPL). Datalab API ~$3/1000 pages.
+
+**Best use cases:**
+
+- Bulk PDF → Markdown for RAG ingestion
+- Academic papers, books, reports
+- Speed-critical document pipelines
+
+**Pros:**
+
+- Very fast on GPU
+- Clean Markdown output
+- Handles equations, code blocks
+- Active development
+
+**Cons:**
+
+- **GPL license** — commercial deployment requires paid license or your code must be GPL
+- Less strong on table-heavy docs vs Docling
+- GPU strongly recommended for speed
+
+**Common pitfalls:**
+
+- Missing the GPL implication and shipping it in a closed-source SaaS without a license
+- Running on CPU and getting frustrated with speed
+
+**When NOT to use:** Closed-source commercial products without buying the Datalab license. Heavy table extraction (Docling is better).
+
+**How to start:** `pip install marker-pdf`, then `marker_single input.pdf output_folder`.
+
+**Verdict:** Great speed for batch jobs. Watch the license.
+
+**Alternatives:** Docling (MIT, more table-focused), Unstructured.io, LlamaParse.
+
+-----
+
+## pgvector
+
+**One-line:** Vector similarity search inside PostgreSQL.
+
+**What it does:** A Postgres extension that adds a `vector` data type and index types (HNSW, IVFFlat) for similarity search. Lets you store embeddings next to your relational data, query both in one SQL statement, and avoid running a separate vector database.
+
+**Origin:** Created by Andrew Kane (open-source maintainer behind many ML+Postgres tools), 2021. Battle-tested; used in production at Supabase, Cloudflare, and thousands of others.
+
+**License:** PostgreSQL License (essentially MIT-equivalent).
+
+**Cost:** Free. Costs are just your Postgres hosting.
+
+**Best use cases:**
+
+- Apps already using Postgres (you don’t need another DB)
+- Multi-tenant SaaS where you want per-tenant isolation via Postgres row-level security
+- Small-to-medium vector workloads (<10M vectors)
+- Hybrid queries (filter by metadata + vector similarity)
+
+**Pros:**
+
+- One database to run, backup, monitor
+- Works with all the Postgres tooling you already use
+- HNSW indexes are fast and well-tuned
+- Active maintenance
+
+**Cons:**
+
+- At 50M+ vectors, dedicated vector DBs outperform
+- Index build can be slow on large datasets
+- Memory-intensive for HNSW indexes
+
+**Common pitfalls:**
+
+- Using IVFFlat when HNSW would be better (HNSW is the modern default)
+- Forgetting to ANALYZE the table after bulk inserts
+- Not setting `maintenance_work_mem` high enough during index build
+
+**When NOT to use:** Vector workloads with >50M vectors and high QPS — use Qdrant, Vespa, or Turbopuffer.
+
+**How to start:** `CREATE EXTENSION vector;` then `CREATE TABLE items (embedding vector(1536));` then query: `SELECT * FROM items ORDER BY embedding <=> '[...]' LIMIT 10;`.
+
+**Verdict:** Default for any app already on Postgres. You have this.
+
+**Alternatives:**
+
+- **Qdrant** — fast standalone vector DB, Rust, open-source
+- **Weaviate** — open-source, GraphQL API, multi-modal
+- **Pinecone** — hosted only, expensive at scale
+- **Turbopuffer** — newer, very cheap for large workloads (object-storage backed)
+
+-----
+
+## Cohere Rerank / BGE Reranker
+
+**One-line:** Models that score query-document pairs to re-order retrieval results for better precision.
+
+**What it does:** Takes a query and a list of candidate documents (from vector search), returns them re-scored by a more capable model. Typically improves retrieval precision from 60% to 85%+ at top-3 — the single biggest RAG quality win available.
+
+**Origin:**
+
+- **Cohere Rerank** — by Cohere (Toronto-based AI company, founded by Aidan Gomez of Transformer-paper fame). Hosted API since 2022. Latest is Rerank 3.5.
+- **BGE Reranker** — by BAAI (Beijing Academy of AI). Open-source. Latest is bge-reranker-v2-m3.
+
+**License:**
+
+- Cohere Rerank: commercial API.
+- BGE Reranker: MIT-equivalent.
+
+**Cost:**
+
+- Cohere Rerank: $2/1000 searches.
+- BGE Reranker: free; self-host on a small GPU.
+
+**Best use cases:**
+
+- Every production RAG system (seriously)
+- Multi-source retrieval (vector + keyword + DB) → unified ranking
+- Long-tail queries where embeddings struggle
+
+**Pros:**
+
+- Massive precision improvement for small added latency (50-200ms)
+- Easy to add to an existing pipeline
+- Both Cohere and BGE quality is excellent
+
+**Cons:**
+
+- Adds latency (consider for hot paths)
+- Cohere is paid; BGE needs GPU to run fast
+- Cross-encoder architecture means it scales O(n) with candidates
+
+**Common pitfalls:**
+
+- Reranking 1000+ candidates → unnecessary latency. Cap at 50-100.
+- Not measuring impact; rerank quality varies by domain.
+- Using base BGE reranker when bge-reranker-v2-m3 is much better.
+
+**When NOT to use:** Latency-critical sub-100ms total RAG paths. Tiny corpora where retrieval is already precise.
+
+**How to start (BGE):** `pip install FlagEmbedding`, then `from FlagEmbedding import FlagReranker; reranker = FlagReranker('BAAI/bge-reranker-v2-m3'); scores = reranker.compute_score([[query, doc] for doc in docs])`.
+
+**Verdict:** Add to every RAG system. Use BGE if cost-sensitive, Cohere if you want zero infra.
+
+**Alternatives:** Voyage Rerank (paid, high quality), Jina Reranker (open + paid tiers), MonoT5 (older but still works).
+
+-----
+
+## Ragas
+
+**One-line:** Evaluation framework specifically for RAG systems.
+
+**What it does:** Quantifies RAG quality using metrics like context precision, context recall, faithfulness, answer relevance. Uses LLMs as judges with carefully designed prompts. Lets you measure “did changing the retriever improve things?” with data.
+
+**Origin:** Created by Explodinggradients (Shahul ES + Jithin James), 2023. Open-sourced. Became standard for RAG evaluation in the open-source community.
+
+**License:** Apache 2.0.
+
+**Cost:** Free (you pay for the LLM calls it makes during evaluation).
+
+**Best use cases:**
+
+- Before/after testing of RAG changes
+- CI gate before deploying retrieval changes
+- Comparing embedding models / chunkers on your actual corpus
+- Building eval sets from production logs
+
+**Pros:**
+
+- Sensible default metrics for RAG
+- Plays nicely with LangChain, LlamaIndex
+- LLM-as-judge done thoughtfully
+
+**Cons:**
+
+- Evaluation costs add up (each metric = LLM calls)
+- LLM-as-judge has known limitations; verify on your domain
+- Metric interpretation requires care (high faithfulness ≠ correct answer)
+
+**Common pitfalls:**
+
+- Treating metric scores as ground truth; spot-check manually
+- Not building a held-out eval set; using the same data for tuning and testing
+- Running expensive metrics on every CI run; pick a subset
+
+**When NOT to use:** Non-RAG agents (use Promptfoo or Inspect AI). Eval sets <20 examples (just review by hand).
+
+**How to start:** `pip install ragas`, then prepare a dataset of {question, contexts, answer, ground_truth} and run `evaluate(dataset, metrics=[faithfulness, context_recall])`.
+
+**Verdict:** Use for any RAG system you’ll iterate on. Don’t ship blind.
+
+**Alternatives:** Promptfoo (more general), DeepEval, Braintrust (paid), TruLens.
+
+-----
+
+## Honorable mentions, Layer 2
+
+- **Chonkie** — fast, simple text chunking library; great default if LangChain feels heavy
+- **Unstructured.io** — broad format support, open-source + commercial tiers
+- **LlamaParse** — Llamacloud’s hosted parser, very high quality on PDFs, paid
+- **Voyage Embeddings** — best-in-class embeddings as of 2026, paid
+- **BGE-M3** — best open-source embedding model, free, multilingual
+- **Qdrant** — fast Rust-based vector DB if pgvector hits limits
+
+-----
+
+# LAYER 3: AGENCY LAYER (Agents, Tools, MCP, Workflows)
+
+The layer where models call tools, multi-step plans execute, and durability matters.
+
+-----
+
+## LangGraph
+
+**One-line:** Graph-based orchestration framework for stateful, controllable LLM agents.
+
+**What it does:** Lets you build agents as directed graphs of nodes (functions, LLM calls, tools). Manages state, conditional edges, checkpointing, human-in-loop approvals, and time-travel debugging. The most popular framework for non-trivial agent workflows.
+
+**Origin:** Built by LangChain Inc. (Harrison Chase + team). Released early 2024 as a response to growing pains with the original LangChain agent abstractions. Now the recommended LangChain approach for agents.
+
+**License:** MIT.
+
+**Cost:** Free. LangSmith (their observability platform) is paid: free tier, then ~$39/user/month and up.
+
+**Best use cases:**
+
+- Multi-step agents with branching logic
+- Workflows needing checkpointing and resume-from-failure
+- Human-in-loop approval flows
+- Complex stateful agents (your NemoClaw is built on this)
+
+**Pros:**
+
+- Explicit graph structure makes flow visible and debuggable
+- Built-in checkpointing (Postgres, SQLite, memory)
+- Excellent for human-in-loop
+- Type-safe with TypedDict state schemas
+
+**Cons:**
+
+- Steeper learning curve than simpler frameworks
+- Graph abstraction can feel heavy for simple agents
+- Tight coupling to LangChain ecosystem (improving)
+
+**Common pitfalls:**
+
+- Building everything as a graph when a simple loop would work
+- Not using checkpointing → losing progress on failures
+- Mixing graph state with external state inconsistently
+
+**When NOT to use:** Single-call LLM apps. Workflows where Temporal-style durability is needed (LangGraph checkpoints help, but Temporal is sturdier for long-running).
+
+**How to start:** `pip install langgraph`, then define a state TypedDict, create a `StateGraph`, add nodes and edges, compile, invoke.
+
+**Verdict:** Best framework as of early 2026 for complex agent flows. Use it.
+
+**Alternatives:**
+
+- **OpenAI Agents SDK** — newer (2025), simpler API, OpenAI-centric
+- **PydanticAI** — newer Python framework, type-first, smaller scope
+- **CrewAI** — multi-agent role-playing focus, less control
+- **AutoGen** — Microsoft Research framework, more academic feel
+- **Custom loop** — for simple cases, just write Python; frameworks aren’t always worth it
+
+-----
+
+## Model Context Protocol (MCP)
+
+**One-line:** Open protocol for connecting LLMs to tools, data sources, and APIs.
+
+**What it does:** Standardizes how LLM applications discover and call external capabilities. An MCP server exposes “tools” (functions), “resources” (data), and “prompts” (templates). An MCP client (Claude Desktop, IDE, custom app) discovers and uses them. Think USB-C for AI tools.
+
+**Origin:** Released by Anthropic in November 2024. Designed to break the M×N integration problem (M tools × N AI apps). Adopted rapidly by OpenAI, Google, IDE makers, and major SaaS vendors throughout 2025.
+
+**License:** Open spec (MIT/Apache for SDKs).
+
+**Cost:** Free.
+
+**Best use cases:**
+
+- Exposing internal databases, APIs, or tools to AI assistants
+- Building IDE integrations
+- Building agent capabilities that are reusable across hosts
+- Standardizing tool access across your AI products
+
+**Pros:**
+
+- Industry standard (Anthropic + OpenAI + Google + IDE makers)
+- Rich ecosystem of pre-built servers (Postgres, GitHub, Slack, Filesystem, etc.)
+- SDKs in Python, TypeScript, Rust, Go, more
+- Solid spec; not a moving target
+
+**Cons:**
+
+- Stdio vs HTTP transport choice affects deployment
+- Auth patterns for HTTP servers still maturing
+- Some host implementations partial
+
+**Common pitfalls:**
+
+- Building a custom protocol when MCP would have worked
+- Not handling tool versioning as servers evolve
+- Exposing too-coarse tools (one mega-tool) instead of focused ones
+- Skipping permission/auth on HTTP-deployed servers
+
+**When NOT to use:** Internal-only single-app tool integrations where the overhead isn’t worth it. Real-time/streaming tool patterns (MCP is request-response).
+
+**How to start (Python):** `pip install mcp`, then `from mcp.server import Server; server = Server("my-server"); @server.tool() def my_tool(...)...`. Or use the FastMCP wrapper for less boilerplate.
+
+**Verdict:** The standard. If you’re not building MCP servers in 2026, you’re behind. **This is your highest-leverage gap to close.**
+
+**Alternatives:** OpenAI function calling directly (proprietary, less reusable), LangChain Tools (framework-specific), custom REST APIs (no discovery).
+
+-----
+
+## Temporal
+
+**One-line:** Durable execution platform for long-running, fault-tolerant workflows.
+
+**What it does:** Runs workflows that can survive crashes, timeouts, hours/days/months of waiting, retries, and external system failures. Workflow code looks like normal Python/TypeScript/Go but the runtime persists state at every step. Perfect for AI agents that must complete reliably.
+
+**Origin:** Founded 2019 by Maxim Fateev + Samar Abbas, former Uber engineers behind Cadence. Now a venture-funded company. Powers Snap, Stripe, Coinbase, Netflix workflows. Increasingly adopted for AI agent durability.
+
+**License:** MIT for the server. Temporal Cloud is paid.
+
+**Cost:** Free self-hosted. Temporal Cloud starts ~$200/month for production-grade.
+
+**Best use cases:**
+
+- Multi-day agent processes (research, document review, sales sequences)
+- Workflows with external API calls that may fail or rate-limit
+- Anything that needs guaranteed completion despite failures
+- Multi-tenant systems where workflow state must persist per tenant
+
+**Pros:**
+
+- Code looks normal; runtime handles all the hard parts
+- Battle-tested at scale (Uber, Snap, Coinbase)
+- Time-travel debugging via event history
+- Excellent for retries, timeouts, schedules
+
+**Cons:**
+
+- Significant learning curve (workflow vs activity model)
+- Operational overhead self-hosting
+- Overkill for short, in-process tasks
+
+**Common pitfalls:**
+
+- Putting non-deterministic code in workflow definitions (breaks replay)
+- Not separating concerns: workflow vs activity
+- Underestimating onboarding time for the team
+
+**When NOT to use:** Sub-second tasks. Workflows that don’t span across crashes (LangGraph checkpoints suffice).
+
+**How to start:** `pip install temporalio`, run `temporal server start-dev`, define a workflow with `@workflow.defn`, activities with `@activity.defn`.
+
+**Verdict:** Adopt when you have agent workflows that MUST complete. Skip for simpler in-process flows.
+
+**Alternatives:**
+
+- **Inngest** — TypeScript-first, simpler model, durable
+- **Trigger.dev** — TypeScript, dev-friendly, durable
+- **AWS Step Functions** — managed, AWS-lock, JSON-defined
+- **n8n** — low-code, simpler but less powerful
+
+-----
+
+## OpenAI Agents SDK
+
+**One-line:** OpenAI’s official lightweight framework for building multi-step agents.
+
+**What it does:** Provides primitives for agents, handoffs between agents, tracing, and guardrails. Simpler than LangGraph; opinionated toward OpenAI models but works with others. Released early 2025.
+
+**Origin:** Built by OpenAI to replace the “Assistants API” beta with something closer to community patterns. Open-source SDK; the API behind is OpenAI’s.
+
+**License:** MIT.
+
+**Cost:** SDK free. OpenAI API calls cost normally.
+
+**Best use cases:**
+
+- New agent projects with simple-to-medium complexity
+- Heavy OpenAI users who want first-party support
+- Multi-agent handoff patterns
+
+**Pros:**
+
+- Cleaner API than legacy LangChain
+- Built-in tracing
+- Good documentation
+- Active development from OpenAI
+
+**Cons:**
+
+- OpenAI-centric (works with others but with friction)
+- Less mature than LangGraph
+- Smaller community
+
+**When NOT to use:** Non-OpenAI workflows where LangGraph or PydanticAI are better citizens.
+
+**How to start:** `pip install openai-agents`, then `from agents import Agent, Runner; agent = Agent(name="researcher", instructions="...", tools=[...]); Runner.run_sync(agent, input)`.
+
+**Verdict:** Watch this; may become dominant if OpenAI invests heavily. For now, LangGraph still wins on complex flows.
+
+**Alternatives:** LangGraph, PydanticAI, custom.
+
+-----
+
+## PydanticAI
+
+**One-line:** Python agent framework from the Pydantic team, type-first and minimal.
+
+**What it does:** Lightweight framework for building agents with Pydantic-validated inputs/outputs, dependency injection, and streaming. Less abstraction than LangGraph, more structure than raw API calls.
+
+**Origin:** Built by Samuel Colvin (creator of Pydantic) and team, released late 2024. Designed for the “I want types and structure but not graphs” crowd.
+
+**License:** MIT.
+
+**Cost:** Free.
+
+**Best use cases:**
+
+- Type-heavy Python codebases
+- Single-agent applications with tool use
+- Teams already invested in Pydantic
+
+**Pros:**
+
+- Excellent type safety
+- Minimal magic
+- Plays well with FastAPI
+
+**Cons:**
+
+- Less mature than LangGraph
+- Smaller community
+- Not built for complex multi-agent graphs
+
+**Verdict:** Strong choice for clean Python apps that don’t need LangGraph’s graph features.
+
+-----
+
+## Honorable mentions, Layer 3
+
+- **CrewAI** — role-playing multi-agent, marketing-friendly but less control
+- **AutoGen** — Microsoft Research framework
+- **Google ADK** — Google’s Agent Development Kit
+- **Inngest / Trigger.dev** — durable execution alternatives to Temporal
+- **n8n** — low-code workflow automation (useful for non-engineering clients)
+
+-----
+
+# LAYER 4: MODALITY LAYER (Voice, Browser, Vision)
+
+Beyond text. Voice in 2026 is the hottest AI category. Browser/computer use is the platform shift. Vision/OCR is universal.
+
+-----
+
+## LiveKit Agents
+
+**One-line:** End-to-end framework for real-time, multimodal AI agents (voice + video + tool use).
+
+**What it does:** Orchestrates STT → LLM → TTS in real-time over WebRTC with sub-500ms latency. Handles interruption, turn-taking, telephony bridges (via Twilio/Telnyx), and video. The reference framework for production voice agents.
+
+**Origin:** LiveKit (the WebRTC infrastructure company, founded 2021) launched Agents in late 2023. They run the underlying real-time infrastructure used by many AI voice products. Backed by Redpoint, Altimeter.
+
+**License:** Apache 2.0 for the SDK. LiveKit Cloud is paid; self-host is free.
+
+**Cost:** Self-hosted: free + your STT/TTS/LLM API costs. LiveKit Cloud: usage-based, starts ~$50/month, voice agent minutes pricing.
+
+**Best use cases:**
+
+- Voice agents for any phone-based intake (sales, support, scheduling)
+- Multimodal agents (voice + video + screen share)
+- Real-time translation
+- AI tutors / coaches with voice
+
+**Pros:**
+
+- Production-grade WebRTC infrastructure
+- Best-in-class latency
+- Provider-agnostic for STT/TTS/LLM
+- Excellent docs and examples
+
+**Cons:**
+
+- WebRTC complexity if you self-host
+- Telephony adds Twilio/Telnyx costs
+- The full stack has many components to debug
+
+**Common pitfalls:**
+
+- Not measuring end-to-end latency; targets <500ms
+- Using cheap TTS that ruins UX
+- Forgetting interruption handling; agent talks over user
+
+**When NOT to use:** Async chat apps (overkill). Single-utterance voice (just use OpenAI’s voice API).
+
+**How to start:** Follow LiveKit Agents quickstart at docs.livekit.io/agents. Python: `pip install livekit-agents`.
+
+**Verdict:** Best-in-class for serious voice agents. Top priority for your stack.
+
+**Alternatives:**
+
+- **Pipecat** — Daily.co’s open-source framework, similar capabilities (see next)
+- **Vapi** — fully hosted, fast to start, less control
+- **Retell** — hosted, fast to start
+- **OpenAI Realtime API** — single-API option, less flexibility
+
+-----
+
+## Pipecat
+
+**One-line:** Open-source framework for voice and multimodal AI agents, by Daily.co.
+
+**What it does:** Similar scope to LiveKit Agents — pipelines STT → LLM → TTS for real-time conversation. More modular pipeline design; broad provider support.
+
+**Origin:** Built by Daily.co (the WebRTC video infra company), open-sourced 2024. Sometimes overlaps with LiveKit in capabilities; you’d pick based on infrastructure preference.
+
+**License:** BSD 2-Clause (very permissive).
+
+**Cost:** Free framework. Daily.co transport is paid; you can swap transport providers.
+
+**Best use cases:**
+
+- Same as LiveKit Agents — voice agents end-to-end
+- Teams that prefer Daily.co’s WebRTC stack
+- Maximum framework-level control
+
+**Pros:**
+
+- Permissive license
+- Modular pipeline design
+- Good provider abstractions
+
+**Cons:**
+
+- Slightly smaller community than LiveKit
+- Documentation less mature
+
+**When NOT to use:** Same as LiveKit. Pick one or the other.
+
+**Verdict:** Excellent alternative to LiveKit. Comparable quality. Choose based on which docs/examples click.
+
+-----
+
+## Deepgram
+
+**One-line:** Production-grade speech-to-text API with very low latency.
+
+**What it does:** Streaming and batch STT with industry-leading accuracy and latency. Nova-3 model (current as of 2026) handles English and 30+ languages, with diarization, profanity filtering, custom vocab.
+
+**Origin:** Founded 2015 by Scott Stephenson + Noah Shutty. Originally focused on enterprise call centers, pivoted to API-first model. Well-funded.
+
+**License:** Proprietary API.
+
+**Cost:** Pay-as-you-go. Streaming ~$0.0043-0.0077/minute depending on model. Batch cheaper. Free tier $200 credit.
+
+**Best use cases:**
+
+- Real-time voice agent transcription
+- Call center transcription at scale
+- Latency-sensitive applications
+
+**Pros:**
+
+- <300ms streaming latency
+- High accuracy especially on phone audio
+- Speaker diarization included
+- Custom vocab / keyterm boosting
+
+**Cons:**
+
+- Paid API
+- English is strongest; some languages weaker
+- Cost adds up at high volume
+
+**Common pitfalls:**
+
+- Not using `interim_results` for real-time UX
+- Not setting `endpointing` correctly → cutting users off
+- Missing keyterm boosting for domain-specific vocabulary
+
+**When NOT to use:** Privacy-required deployments (use Whisper local). Cost-critical batch jobs where Whisper would work.
+
+**How to start:** Sign up at deepgram.com, get API key, `pip install deepgram-sdk`.
+
+**Verdict:** Default choice for real-time voice agent STT. The latency matters.
+
+**Alternatives:**
+
+- **AssemblyAI** — comparable quality, sometimes better on certain languages
+- **Whisper / WhisperX** (open) — slower, free, runs locally
+- **Soniox** — newer competitor, strong multilingual
+- **Speechmatics** — strong on accents and dialects
+
+-----
+
+## Cartesia (Sonic)
+
+**One-line:** Ultra-low-latency TTS optimized for real-time voice agents.
+
+**What it does:** Generates speech with first-token latency ~40ms — the fastest production TTS available. Multiple voices, voice cloning, multilingual.
+
+**Origin:** Founded 2023 by Karan Goel + Albert Gu (Albert is one of the inventors of State Space Models, the architecture under Sonic). Their tech bet was that SSMs would beat transformers for streaming TTS — it worked.
+
+**License:** Proprietary API.
+
+**Cost:** Pay-as-you-go. ~$25/month minimum, then usage. Roughly $0.020-0.030 per 1000 characters.
+
+**Best use cases:**
+
+- Voice agents where latency matters
+- Real-time TTS in interactive apps
+- Voice cloning for branded agents
+
+**Pros:**
+
+- Lowest latency in the market
+- High quality voices
+- Voice cloning available
+
+**Cons:**
+
+- Paid; cost adds up at scale
+- Smaller voice library than ElevenLabs
+- Newer; less ecosystem
+
+**When NOT to use:** Non-real-time (batch TTS — ElevenLabs has better voice variety). Cost-sensitive at scale (consider Kokoro open-source).
+
+**How to start:** Sign up at cartesia.ai, API key, `pip install cartesia`.
+
+**Verdict:** Best TTS for real-time agents as of 2026.
+
+**Alternatives:**
+
+- **ElevenLabs** — broadest voice library, slightly higher latency, more expensive
+- **Kokoro** (open-source) — surprisingly good, free, run locally
+- **OpenAI TTS** — fine quality, easy if already using OpenAI
+- **Orpheus** (open) — newer open-source contender
+
+-----
+
+## Twilio
+
+**One-line:** The phone number + SMS + voice API that connects AI agents to actual phone calls.
+
+**What it does:** Programmable telephony. Buy a phone number, route inbound calls to your code, place outbound calls, send SMS. Bridges your AI voice agent to the global phone network.
+
+**Origin:** Founded 2008 by Jeff Lawson. The original CPaaS company. Battle-tested at massive scale (used by Uber, Airbnb, Lyft, etc.).
+
+**License:** Proprietary API.
+
+**Cost:**
+
+- Phone numbers: ~$1.15/month each
+- Inbound calls: ~$0.0085/minute
+- Outbound calls: ~$0.013-0.020/minute depending on destination
+- SMS: ~$0.0079/message (US)
+
+**Best use cases:**
+
+- Voice agent that answers a phone number
+- SMS notifications from agents
+- Outbound calling automation
+- 2FA / verification
+
+**Pros:**
+
+- Reliable at scale
+- Excellent documentation
+- Strong integrations with LiveKit, Pipecat
+- Global coverage
+
+**Cons:**
+
+- Pricing is per-minute; adds up
+- Compliance overhead (10DLC for SMS in US)
+- Some setup friction for advanced features
+
+**Common pitfalls:**
+
+- Not registering 10DLC for SMS in US → blocked messages
+- Not handling call hang-up signals → leaked connections
+- Forgetting recording compliance (some states require disclosure)
+
+**When NOT to use:** Pure web-based voice (no phone needed). Telnyx is cheaper for some use cases.
+
+**Verdict:** Default choice for AI agents that need phone numbers.
+
+**Alternatives:**
+
+- **Telnyx** — cheaper for some routes, similar capabilities
+- **Vonage** — alternative CPaaS
+- **Plivo** — cheaper, smaller scale
+
+-----
+
+## Anthropic Computer Use
+
+**One-line:** Claude with the ability to control a computer (mouse, keyboard, screenshots) to complete tasks.
+
+**What it does:** A Claude capability (via API) where the model sees screenshots and outputs mouse/keyboard actions. Lets agents perform tasks in arbitrary GUI applications, including web browsers and desktop software, by literally controlling the screen.
+
+**Origin:** Released by Anthropic October 2024 as a beta capability. Significantly improved through 2025-2026. The first major frontier-model computer control capability.
+
+**License:** Anthropic API (proprietary).
+
+**Cost:** Pays normal Claude API rates (currently Opus is the most capable). Computer use sessions burn tokens fast due to screenshots; expect $1-5 per agent task.
+
+**Best use cases:**
+
+- Automating tasks in apps without APIs
+- Filling forms across multiple legacy systems
+- QA / testing of web apps
+- Repetitive desktop workflows
+
+**Pros:**
+
+- Works on anything visible on a screen
+- No integration work needed
+- Improving rapidly with each Claude release
+
+**Cons:**
+
+- Token-expensive (screenshots are large)
+- Slower than API-based automation when an API exists
+- Requires sandboxed environment for safety
+
+**Common pitfalls:**
+
+- Running on production systems without isolation
+- Not capturing failures cleanly
+- Using it where an API would be 10x faster
+
+**When NOT to use:** When an API exists. When deterministic Playwright would work.
+
+**How to start:** Use the Anthropic API with the computer-use tool definition. Run the agent in a Docker container with a virtual display (X server). Or use Browserbase / Steel for hosted environments.
+
+**Verdict:** Powerful but expensive. Use for tasks without APIs; use Playwright when deterministic.
+
+**Alternatives:**
+
+- **Browserbase** — managed browser cloud, works with computer use
+- **Steel.dev** — similar to Browserbase
+- **OpenAI CUA** — OpenAI’s competitor (released 2025)
+- **Skyvern** — open-source browser agent
+- **Playwright + LLM planner** — DIY approach, more deterministic
+
+-----
+
+## Playwright
+
+**One-line:** Microsoft’s browser automation framework (Chrome, Firefox, Safari).
+
+**What it does:** Programmatic control of real browsers via a clean API. Handles screenshots, network interception, mobile emulation, multi-context isolation. The industry standard for web automation and testing.
+
+**Origin:** Built by Microsoft (the same team that previously created Puppeteer at Google). Released 2020. Now dominant for browser automation.
+
+**License:** Apache 2.0.
+
+**Cost:** Free.
+
+**Best use cases:**
+
+- Deterministic web scraping
+- Form filling / RPA
+- E2E testing
+- Bridge between AI planner and real browser
+
+**Pros:**
+
+- Excellent reliability
+- Multi-browser
+- Powerful selectors (text, role, label)
+- Great auto-wait behavior
+
+**Cons:**
+
+- Heavyweight (full browser)
+- Anti-bot detection on some sites
+- Setup complexity for parallel scale
+
+**Common pitfalls:**
+
+- Not using `expect()` auto-waits → flaky tests
+- Running too many parallel instances → resource exhaustion
+- Not handling lazy-loaded content properly
+
+**When NOT to use:** Sites with simple HTML where requests + BS4 suffice. Bot-protected sites (consider Browserbase + stealth plugins).
+
+**How to start:** `pip install playwright && playwright install`, then `from playwright.async_api import async_playwright`.
+
+**Verdict:** Default web automation tool. Pair with LLM planners for AI-driven browser control.
+
+**Alternatives:** Selenium (legacy), Puppeteer (Node only), Crawlee (scraping framework on top of Playwright).
+
+-----
+
+## Browserbase
+
+**One-line:** Managed headless browser cloud for AI agents and scraping at scale.
+
+**What it does:** Hosts browser instances in the cloud with stealth, residential proxies, session persistence, captcha handling, and recording. Integrates cleanly with Playwright, Anthropic Computer Use, and OpenAI CUA.
+
+**Origin:** Founded 2024 by Paul Klein + Nat Friedman (yes, the GitHub-ex-CEO Nat). YC-backed, growing fast in the AI agent infrastructure space.
+
+**License:** Proprietary.
+
+**Cost:** $39/month starting tier, then usage-based. Roughly $0.10-0.30 per browser-minute.
+
+**Best use cases:**
+
+- AI agents that need many concurrent browsers
+- Scraping bot-protected sites
+- Computer Use without managing infrastructure
+- Session persistence across runs
+
+**Pros:**
+
+- No browser infrastructure to manage
+- Built-in stealth + residential proxies
+- Session recording for debugging
+- Integrates with major AI agent frameworks
+
+**Cons:**
+
+- Paid; costs scale with usage
+- Some sites still detect headless characteristics
+- Adds external dependency
+
+**When NOT to use:** Local development. Simple scraping that runs in a single Docker container.
+
+**Verdict:** Use when you need scale, stealth, or computer use without infra burden.
+
+**Alternatives:** Steel.dev (similar product), self-hosted Playwright cluster (cheaper but more work).
+
+-----
+
+## Mistral OCR
+
+**One-line:** State-of-the-art OCR for complex documents, by Mistral AI.
+
+**What it does:** Extracts text from PDFs and images including tables, equations, multi-column layouts, and handwritten text. Outperforms most open-source OCR on benchmarks. Hosted API.
+
+**Origin:** Released by Mistral (Paris-based AI lab founded 2023 by ex-Meta/DeepMind researchers) in early 2025. Part of their push into enterprise products.
+
+**License:** Proprietary API (some weights may be open later, unclear as of early 2026).
+
+**Cost:** ~$1 per 1000 pages.
+
+**Best use cases:**
+
+- Scanned PDFs (legal, medical, financial)
+- Handwritten document processing
+- Complex layouts where Docling/Marker struggle
+- Multilingual OCR
+
+**Pros:**
+
+- Best-in-class quality for hard documents
+- Cheap per page
+- Fast (hosted)
+
+**Cons:**
+
+- Paid API
+- Data leaves your infrastructure (compliance check)
+
+**When NOT to use:** HIPAA-without-BAA contexts (check Mistral’s terms). Simple text-only PDFs.
+
+**Verdict:** Use for scanned/handwritten docs where local OCR fails.
+
+**Alternatives:** Tesseract (free, legacy), Surya (open-source modern alternative), Google Document AI (Google Cloud, enterprise pricing), Azure AI Document Intelligence.
+
+-----
+
+## Honorable mentions, Layer 4
+
+- **Whisper / WhisperX** — open-source STT, free, slower than Deepgram, runs locally
+- **Kokoro** — open-source TTS, surprisingly good quality, free
+- **ElevenLabs** — broadest voice library for TTS, slightly slower than Cartesia
+- **Vapi / Retell** — fully hosted voice agent platforms, easier to start than LiveKit but less control
+- **Florence-2** — open multimodal vision model from Microsoft
+- **SAM 2** — Meta’s segmentation model
+- **Surya** — open-source OCR; modern alternative to Tesseract
+- **Skyvern** — open-source browser agent
+
+-----
+
+# LAYER 5: PRODUCTION LAYER (Evals, Observability, Guardrails)
+
+The boring but essential layer that separates “shipped a demo” from “running in production.”
+
+-----
+
+## Langfuse
+
+**One-line:** Open-source LLM observability — traces, metrics, evals, prompt management.
+
+**What it does:** Captures every LLM call (prompt, response, latency, cost, model) with full trace context (which agent, which step, which user). Lets you search, debug, replay, attach evaluations, and version prompts. The most popular open-source LLM observability platform.
+
+**Origin:** Founded 2023 in Berlin by Marc Klingen + Max Deichmann + Marlies Mayerhofer. Open-source from day one. YC-backed (W23). Rapidly became a default in the community.
+
+**License:** MIT (self-host). Langfuse Cloud is paid.
+
+**Cost:** Free self-hosted (Docker compose + Postgres + ClickHouse). Cloud: free tier (50k events/mo), then $59/mo starting paid tier.
+
+**Best use cases:**
+
+- Any production AI app where you need to debug “why did the agent do that?”
+- Cost attribution per user/feature/client
+- A/B testing prompts and models
+- Eval pipelines with stored production data
+
+**Pros:**
+
+- Self-hostable (data stays with you)
+- Excellent UI for trace exploration
+- Integrates with LangChain, LlamaIndex, OpenAI SDK, LiteLLM
+- Active development, good docs
+
+**Cons:**
+
+- Self-hosting requires ClickHouse familiarity
+- Cloud pricing scales with event volume
+- Eval features less mature than dedicated eval tools
+
+**Common pitfalls:**
+
+- Not setting up tracing from day one; retroactive instrumentation is painful
+- Logging prompts that contain PII without scrubbing
+- Not tagging traces with user/session for filtering
+
+**When NOT to use:** Single-call simple apps. Compliance contexts where ClickHouse self-host is hard.
+
+**How to start:** `pip install langfuse`, then wrap your LLM calls or use the LiteLLM integration. Self-host: `docker compose up` on their reference deployment.
+
+**Verdict:** Default open-source observability. Top priority gap for your stack.
+
+**Alternatives:**
+
+- **Arize Phoenix** — open-source, focused on traces + evals, slightly different model
+- **Helicone** — open-source proxy-based observability
+- **LangSmith** — LangChain’s hosted offering, paid
+- **Braintrust** — paid, very strong on evals + observability
+- **Honeyhive** — paid, focused on evaluation
+
+-----
+
+## Promptfoo
+
+**One-line:** Open-source CLI/library for evaluating prompts and LLM outputs with test cases.
+
+**What it does:** Define test cases (input + expected behavior) in YAML or code. Run prompts across multiple models/providers. Get a comparison matrix with pass/fail per case + cost + latency. Supports LLM-as-judge, regex, semantic similarity, custom assertions.
+
+**Origin:** Built by Ian Webster (2023). Open-source from start. Used by Discord, Shopify, OpenAI internally. Sponsored development continues.
+
+**License:** MIT.
+
+**Cost:** Free CLI. Promptfoo Enterprise (hosted dashboards, team features) is paid.
+
+**Best use cases:**
+
+- Regression testing on prompts (catch breakage when you change a model)
+- Comparing models on your actual use case
+- Red-teaming / safety testing
+- CI gates before deploying prompt changes
+
+**Pros:**
+
+- Simple YAML config; runs locally
+- Excellent CLI experience
+- Supports virtually every provider
+- Easy to integrate into CI
+
+**Cons:**
+
+- LLM-as-judge requires careful prompt design
+- Hosted dashboard is paid for team collaboration
+- Eval costs add up if not careful
+
+**Common pitfalls:**
+
+- Vague assertions (“response should be helpful”) → unreliable evals
+- Not pinning evaluator model versions → drift over time
+- Running expensive evals on every CI run; batch instead
+
+**When NOT to use:** Single-shot prototyping. RAG-specific evals (Ragas is better there).
+
+**How to start:** `npm install -g promptfoo`, then `promptfoo init`. Define a `promptfooconfig.yaml`, run `promptfoo eval`.
+
+**Verdict:** Use for any prompt you’ll iterate on. Sets you apart from people who don’t measure.
+
+**Alternatives:**
+
+- **Inspect AI** (Anthropic, open) — UK AISI’s framework, more research-focused
+- **DeepEval** — Python-only, similar scope
+- **Braintrust** — paid, excellent UI
+- **Manual eval scripts** — fine for simple cases
+
+-----
+
+## DSPy
+
+**One-line:** Framework that compiles prompts and chains programmatically, optimizing for metrics.
+
+**What it does:** Instead of writing prompts as strings, you define modules with signatures (inputs/outputs). DSPy then optimizes the actual prompts using your eval set and metrics — algorithmic prompt engineering instead of manual.
+
+**Origin:** Stanford NLP group, led by Omar Khattab. Published 2023. Influential in AI engineering circles; production adoption growing.
+
+**License:** MIT.
+
+**Cost:** Free (you pay for the LLM calls during optimization).
+
+**Best use cases:**
+
+- Optimizing prompts where you have clear metrics
+- Production systems where prompt brittleness matters
+- Research on prompt patterns
+- Teams that want reproducible prompt engineering
+
+**Pros:**
+
+- Removes “magic prompt” guesswork
+- Can systematically improve metrics
+- Composable modules
+
+**Cons:**
+
+- Significant learning curve
+- Optimization runs are expensive
+- Less direct control than hand-written prompts
+
+**Common pitfalls:**
+
+- Trying DSPy without good metrics; garbage in, garbage out
+- Using it on simple cases where manual prompts would suffice
+- Not budgeting compute for optimization
+
+**When NOT to use:** Simple apps with hand-tunable prompts. Teams without strong eval discipline.
+
+**How to start:** `pip install dspy-ai`, then define a `dspy.Module` with `dspy.Signature` inputs/outputs. Compile with an optimizer like `BootstrapFewShot`.
+
+**Verdict:** Worth learning for serious production AI. Adopt selectively.
+
+**Alternatives:** TextGrad (similar idea, gradient-style), manual A/B with Promptfoo.
+
+-----
+
+## Honorable mentions, Layer 5
+
+- **Inspect AI** — UK AISI / Anthropic-adjacent eval framework, research-oriented
+- **Guardrails AI** — input/output validation framework for LLMs
+- **NeMo Guardrails** — NVIDIA’s rules-based safety/topical guardrails
+- **TruLens** — open-source feedback functions for RAG
+
+-----
+
+# LAYER 6: INTEGRATION LAYER
+
+The plumbing that connects AI to real systems. Less glamorous, but the difference between a demo and production.
+
+-----
+
+## WorkOS
+
+**One-line:** Enterprise SSO, SCIM, and directory sync as a hosted API.
+
+**What it does:** Lets your app accept enterprise login (Okta, Azure AD, Google Workspace) via SAML and OIDC. Handles user provisioning (SCIM), audit logs, magic link auth. The fastest path to “enterprise-ready” auth.
+
+**Origin:** Founded 2019 by Michael Grinich. Backed by Lightspeed, Lachy Groom. Used by Vercel, Webflow, Cohere, Notion, Drata, others.
+
+**License:** Proprietary.
+
+**Cost:** Free for 1M monthly users on User Management. SSO/SCIM is per-connection: $125/connection/month after free first 1M users tier (verify current pricing).
+
+**Best use cases:**
+
+- B2B SaaS that needs to sell to mid-market/enterprise
+- Quick SAML/SCIM compliance for an existing app
+- Multi-tenant apps with org-level auth
+
+**Pros:**
+
+- Best DX in enterprise auth
+- Free tier is genuinely usable
+- Strong docs and React/Node/Python SDKs
+- Includes magic links, social auth
+
+**Cons:**
+
+- Costs add up if you have many enterprise customers
+- Vendor dependency
+
+**When NOT to use:** Pure consumer apps (use Clerk or Supabase Auth). Hobby/MVP stage (overkill).
+
+**Verdict:** Default for SaaS targeting enterprise customers.
+
+**Alternatives:**
+
+- **Clerk** — broader auth platform with great DX, also strong on enterprise now
+- **Auth0** — legacy enterprise standard, expensive
+- **Stytch** — strong on B2B
+- **Supabase Auth** — open-source, simpler scope
+
+-----
+
+## Clerk
+
+**One-line:** Modern authentication with the cleanest developer experience.
+
+**What it does:** Full auth platform — signup/signin UIs, user management, sessions, MFA, organizations, SSO. The most polished React + Next.js auth experience.
+
+**Origin:** Founded 2020 by Colin Sidoti. Backed by Madrona, Stripe (yes, Stripe). Known for excellent developer marketing and DX.
+
+**License:** Proprietary.
+
+**Cost:** Free up to 10k MAU. Production paid starts ~$25/month + usage. Enterprise tier for SSO.
+
+**Best use cases:**
+
+- Next.js / React apps
+- Multi-tenant SaaS with organizations
+- Apps where signup/login UX matters
+
+**Pros:**
+
+- Drop-in components that look great
+- Excellent SDK for Next.js
+- Strong organization/team features
+- Good free tier
+
+**Cons:**
+
+- Vendor lock-in for auth state
+- Pricing scales with MAU
+- Some less common auth flows are awkward
+
+**Verdict:** Top choice for Next.js apps. Use it.
+
+**Alternatives:** WorkOS (enterprise-focused), Supabase Auth (open-source), Better Auth (newer open-source).
+
+-----
+
+## n8n
+
+**One-line:** Open-source workflow automation; Zapier alternative with much more power.
+
+**What it does:** Drag-and-drop workflows connecting APIs, databases, AI models, and custom code. Self-hostable. Useful both internally (your ops) and as a way to give clients no-code automation atop your AI tools.
+
+**Origin:** Founded 2019 by Jan Oberhauser in Berlin. Originally fair-code (custom license), now sustainable use license. Massive open-source community.
+
+**License:** Sustainable Use License (free for personal/internal use; restrictions on rehosting as a service).
+
+**Cost:** Self-hosted: free. Cloud: starts $20/month.
+
+**Best use cases:**
+
+- Internal automations connecting your stack
+- Client-facing automation features (embed n8n)
+- Rapid prototyping of integration ideas
+- Replacing Zapier/Make at lower cost
+
+**Pros:**
+
+- 400+ pre-built integrations
+- Self-hostable
+- Code blocks for custom logic
+- Active community
+
+**Cons:**
+
+- License is restrictive for SaaS re-hosting
+- UI can get cluttered on complex flows
+- Some integrations less polished than Zapier
+
+**When NOT to use:** When you want to white-label and resell as a service (license issue). When you need workflow-as-code (use Temporal or Inngest).
+
+**Verdict:** Excellent internal tool. Read the license before client-facing deployment.
+
+**Alternatives:** Make (Integromat) — polished hosted, paid; Zapier — broadest integrations, expensive; Activepieces — open-source MIT-licensed alternative; Trigger.dev — code-first.
+
+-----
+
+## Honorable mentions, Layer 6
+
+- **Stripe** — payments standard (you have)
+- **Stripe Connect** — marketplaces / multi-party payments (you have)
+- **Resend** — modern email API
+- **Cal.com** — open-source scheduling (Calendly alternative)
+- **Nylas** — unified email/calendar API
+- **Activepieces** — fully open-source Zapier alternative
+- **Hookdeck / Svix** — webhook infrastructure
+
+-----
+
+# LAYER 7: CUSTOMIZATION LAYER (Fine-Tuning)
+
+When prompting hits a ceiling — for accuracy, latency, or cost — fine-tuning is the next move.
+
+-----
+
+## Unsloth
+
+**One-line:** The fastest open-source LLM fine-tuning library; 2-5x speedups with less memory.
+
+**What it does:** Hand-optimized Triton kernels and memory tricks that make QLoRA fine-tuning dramatically faster. Supports Llama, Qwen, Mistral, Gemma, and most open-source LLMs. Trains 7B models on a single 16GB GPU.
+
+**Origin:** Founded 2023 by Daniel Han + Michael Han (brothers). Started as an open-source side project, became a YC-backed company while staying mostly open-source. Beloved in the open-source LLM community.
+
+**License:** Apache 2.0 (with some enterprise features in paid tiers).
+
+**Cost:** Free open-source. Unsloth Pro adds multi-GPU and faster speeds, paid.
+
+**Best use cases:**
+
+- QLoRA / LoRA fine-tuning on a single GPU
+- Cost-sensitive fine-tuning at small scale
+- Rapid experimentation (faster training = more experiments)
+
+**Pros:**
+
+- Genuinely fast (real measurable speedups)
+- Low memory; runs on consumer/cheap-cloud GPUs
+- Excellent Jupyter notebook examples
+- Strong community + Discord support
+
+**Cons:**
+
+- Single-GPU focus (open-source version)
+- Some custom architectures take time to add
+- Documentation can lag the code
+
+**When NOT to use:** Multi-GPU training at scale (use Axolotl or DeepSpeed). Full fine-tuning of very large models.
+
+**How to start:** Use their Colab notebooks (linked from the Unsloth GitHub README). Or `pip install unsloth` and import.
+
+**Verdict:** Default for QLoRA fine-tuning on a single GPU. You have this.
+
+**Alternatives:** Axolotl (multi-GPU, more config-heavy), TRL (Hugging Face’s framework, more general), LLaMA-Factory (Chinese-community popular).
+
+-----
+
+## Axolotl
+
+**One-line:** YAML-driven multi-GPU fine-tuning framework with broad model support.
+
+**What it does:** Config-file-driven fine-tuning. Supports full fine-tuning, LoRA, QLoRA, DPO, ORPO across many open-source models. Multi-GPU via DeepSpeed/FSDP.
+
+**Origin:** Created by Wing Lian (OpenAccess AI Collective), 2023. Backed by community contributions.
+
+**License:** Apache 2.0.
+
+**Cost:** Free.
+
+**Best use cases:**
+
+- Multi-GPU training
+- Production fine-tuning where you want reproducible configs
+- DPO / preference tuning
+
+**Pros:**
+
+- Powerful and flexible
+- Excellent for production fine-tuning workflows
+- Good community
+
+**Cons:**
+
+- Steeper learning curve than Unsloth
+- YAML configs can become unwieldy
+- Documentation requires reading the code at times
+
+**When NOT to use:** Single-GPU quick experiments (Unsloth is friendlier).
+
+**Verdict:** Graduate to this when single-GPU isn’t enough. Pair with Unsloth knowledge.
+
+**Alternatives:** TRL, LLaMA-Factory, raw PyTorch + DeepSpeed.
+
+-----
+
+## TRL (Hugging Face)
+
+**One-line:** Hugging Face’s library for SFT, DPO, and reward modeling on transformers.
+
+**What it does:** Reference implementations of supervised fine-tuning (SFT), direct preference optimization (DPO), reward modeling, and PPO for RLHF. Less optimized than Unsloth but most flexible.
+
+**Origin:** Built by the Hugging Face team. Open-source, very active.
+
+**License:** Apache 2.0.
+
+**Cost:** Free.
+
+**Best use cases:**
+
+- DPO / preference fine-tuning
+- Research-quality training pipelines
+- When you want HF ecosystem integration
+
+**Pros:**
+
+- Reference quality
+- Excellent docs
+- Plays nicely with HF Datasets / Hub
+
+**Cons:**
+
+- Slower than Unsloth
+- Requires more PyTorch knowledge
+
+**Verdict:** Know it. Use Unsloth or Axolotl as primary; reach for TRL when you need their specific algorithms.
+
+-----
+
+## RunPod
+
+**One-line:** GPU cloud with per-second billing and an indie-friendly UX.
+
+**What it does:** Rent GPUs (A100, H100, etc.) by the second for training or inference. Serverless endpoints for deploying models. Cheaper than AWS/GCP for AI workloads.
+
+**Origin:** Founded 2022 by Zhen Lu + Pardeep Singh. Bootstrapped, then VC-backed. Popular in the open-source AI community.
+
+**License:** Proprietary.
+
+**Cost:**
+
+- A100 80GB: ~$1.50-2.50/hr
+- H100 80GB: ~$2.50-4/hr
+- Per-second billing
+- Serverless: pay per request
+
+**Best use cases:**
+
+- Fine-tuning jobs (rent GPU for hours, return)
+- Self-hosted inference (your own vLLM)
+- Quick experimentation without AWS bureaucracy
+- Cost-sensitive AI startups
+
+**Pros:**
+
+- Cheap relative to hyperscalers
+- Per-second billing
+- Wide GPU selection
+- Good developer experience
+
+**Cons:**
+
+- Less reliable than hyperscalers
+- Limited regions
+- Serverless cold starts can be slow
+
+**When NOT to use:** Enterprise compliance requiring SOC 2 / HIPAA at hyperscale (use AWS Bedrock / Azure).
+
+**Verdict:** Default for indie/early-stage GPU needs. You have this.
+
+**Alternatives:** Lambda Labs (similar), Modal (Python-first serverless), Replicate (model-hosting API), Together AI (hosted open models), Fireworks (hosted open models), Vast.ai (cheapest, less reliable).
+
+-----
+
+## Modal
+
+**One-line:** Python-native serverless platform that handles GPU code, scheduling, and infra.
+
+**What it does:** Decorate Python functions, deploy them as cloud functions (CPU or GPU), with auto-scaling, scheduling, web endpoints, queues. Lets you write infrastructure in Python.
+
+**Origin:** Founded 2021 by Erik Bernhardsson (creator of Spotify’s Luigi). Backed by Redpoint, Lux. Beloved by Python-first ML teams.
+
+**License:** Proprietary platform; SDK is open-source.
+
+**Cost:** Free tier $30 credit. Pay-as-you-go: GPUs ~$1-3/hr depending on type, CPU/RAM cheap, with per-second billing.
+
+**Best use cases:**
+
+- Python AI pipelines that need GPU on demand
+- Batch processing (run nightly fine-tuning, etc.)
+- Web endpoints backed by models
+- Scheduled jobs (cron + GPU)
+
+**Pros:**
+
+- Pythonic; no Dockerfiles, no YAML
+- Fast cold starts
+- Auto-scaling
+- Great developer experience
+
+**Cons:**
+
+- Vendor lock-in
+- Pricing can surprise on high-volume
+
+**When NOT to use:** Heavy long-running training (RunPod is cheaper). Non-Python workloads.
+
+**Verdict:** Best Python-first serverless GPU platform. Worth knowing.
+
+**Alternatives:** RunPod serverless, Replicate, Banana, Beam.
+
+-----
+
+## Honorable mentions, Layer 7
+
+- **Together AI** — hosted open-source models, fast and cheap
+- **Fireworks AI** — hosted open models, very fast inference
+- **Replicate** — model API as a service, easy deployment
+- **Lambda Labs** — GPU cloud similar to RunPod
+- **Distilabel / Argilla** — synthetic data generation tools (Argilla now part of Hugging Face)
+
+-----
+
+# LAYER 8: ENTERPRISE LAYER
+
+The capabilities that make the difference between $5k/mo SMB deals and $50k+/mo enterprise contracts.
+
+-----
+
+## OpenFGA
+
+**One-line:** Open-source fine-grained authorization based on Google’s Zanzibar paper.
+
+**What it does:** Lets you define relationships (user X is editor of doc Y) and check permissions (can user X read doc Y?) at scale. Implements the model Google uses for Docs/Drive. Critical for multi-tenant apps with complex permissions.
+
+**Origin:** Originally Auth0’s open-source authorization project (now part of Okta). Released 2022. Active CNCF sandbox project.
+
+**License:** Apache 2.0.
+
+**Cost:** Free.
+
+**Best use cases:**
+
+- Multi-tenant SaaS where users have varied access (admin, editor, viewer, member of org X, can-see-doc-Y)
+- Hierarchical permissions
+- Sharing systems (like Google Docs sharing)
+
+**Pros:**
+
+- Industry-standard model (Zanzibar)
+- Scales to millions of permission checks
+- Active community
+- Self-hostable
+
+**Cons:**
+
+- Conceptual learning curve (relationships ≠ RBAC)
+- Modeling permissions well takes thought
+
+**When NOT to use:** Simple role-based apps. Use plain Postgres + middleware.
+
+**Verdict:** Adopt when you outgrow simple RBAC. Critical for serious multi-tenant.
+
+**Alternatives:** Cerbos (policy-as-code, simpler), Permify (similar to OpenFGA), Oso (commercial), Casbin (older, role-based).
+
+-----
+
+## HashiCorp Vault (or Infisical)
+
+**One-line:** Centralized secret management for API keys, DB credentials, certificates.
+
+**What it does:** Stores secrets encrypted, with audit logs, dynamic secret generation (DB credentials that expire), and policy-based access. Vault is enterprise standard; Infisical is the modern open-source alternative with better DX.
+
+**Origin:**
+
+- **Vault** — HashiCorp, 2015. Industry standard.
+- **Infisical** — 2022, YC-backed, modern alternative.
+
+**License:**
+
+- Vault: BSL (Business Source License, restrictive on competing services)
+- Infisical: MIT.
+
+**Cost:**
+
+- Vault: free open-source, Enterprise tier paid.
+- Infisical: free open-source, Cloud free tier + paid tiers.
+
+**Best use cases:**
+
+- Any production app with >5 secrets
+- Teams needing audit logs on secret access
+- Apps with rotated credentials
+- Enterprise deals where “where are your secrets?” matters
+
+**Pros:**
+
+- Audit trails
+- Dynamic secrets (DB credentials that auto-rotate)
+- Centralized access policies
+
+**Cons:**
+
+- Operational overhead for Vault
+- Adds a critical dependency
+
+**When NOT to use:** Single-developer projects. AWS-only stacks (Secrets Manager is fine).
+
+**Verdict:** Adopt Infisical for new projects (better DX, MIT license). Know Vault for enterprise contexts.
+
+**Alternatives:** AWS Secrets Manager, Doppler, 1Password Secrets Automation, Google Secret Manager.
+
+-----
+
+## Compliance Frameworks (overview)
+
+Not tools per se, but knowledge you sell:
+
+**SOC 2:**
+
+- What: audit of security controls
+- Who needs it: any B2B SaaS selling to mid-market+
+- Cost to get: $15-50k first year (auditor + tools like Drata/Vanta)
+- Your role: build systems that support SOC 2 (audit logs, access controls, encryption)
+
+**HIPAA:**
+
+- What: US healthcare data protection law
+- Who needs it: anyone touching PHI
+- Required: BAA with all vendors who touch PHI, encryption, access controls, audit logs
+- Cost: $5-25k first year for compliance prep
+
+**GDPR / CCPA:**
+
+- What: EU/California data privacy regulations
+- Who needs it: anyone with EU/California users
+- Key requirements: data minimization, right to delete, data portability
+- Cost: variable
+
+**FedRAMP:**
+
+- What: US federal government cloud certification
+- Cost: $500k-$5M+ to get
+- When to bother: enterprise govcon deals only
+
+**Verdict:** Learn SOC 2 controls (Drata/Vanta will accelerate you when needed). Understand HIPAA basics (you’ll meet PHI in many AI contexts). GDPR comes when you have EU users. FedRAMP is its own world.
+
+-----
+
+## Appendix: Decision Trees
+
+### “I need to do X — which tool?”
+
+**“Get JSON out of an LLM reliably”** → Instructor
+
+**“Route between multiple LLM providers”** → LiteLLM
+
+**“Run an open-source model locally for dev”** → Ollama
+
+**“Serve an open-source model in production”** → vLLM
+
+**“Parse PDFs for RAG”** → Docling (default), Marker (speed, GPL caveat), Mistral OCR (scanned)
+
+**“Vector search”** → pgvector (default), Qdrant (scale)
+
+**“Improve RAG precision”** → BGE Reranker (open) or Cohere Rerank (hosted)
+
+**“Evaluate RAG quality”** → Ragas
+
+**“Build a stateful agent”** → LangGraph
+
+**“Expose data/tools to AI clients”** → MCP server
+
+**“Long-running durable workflows”** → Temporal
+
+**“Real-time voice agent”** → LiveKit Agents + Deepgram + Cartesia + Twilio
+
+**“Browser automation by an agent”** → Anthropic Computer Use + Browserbase (no API), Playwright (deterministic)
+
+**“Observability for production AI”** → Langfuse
+
+**“Evaluate prompts in CI”** → Promptfoo
+
+**“Fine-tune an open-source model”** → Unsloth (single GPU), Axolotl (multi-GPU)
+
+**“GPU compute on demand”** → RunPod (training), Modal (serverless), Together/Fireworks (just want a hosted open model)
+
+**“Enterprise SSO for my SaaS”** → WorkOS or Clerk
+
+**“Fine-grained authorization”** → OpenFGA
+
+**“Secret management”** → Infisical (open + modern) or Vault (enterprise)
+
+**“No-code automation”** → n8n (self-host) or Make (hosted)
+
+-----
+
+## What’s Missing from Most Beginner Stacks
+
+The honest list of things people forget until production hurts:
+
+1. **Cost tracking per user/feature.** If you can’t answer “what is this customer costing me in LLM API?” you don’t have observability.
+1. **Eval sets in CI.** Without these, “we improved the prompt” is a vibe, not a fact.
+1. **Idempotency on webhooks.** AI agents that take action on external events double-fire constantly without idempotency keys.
+1. **Rate limiting at multiple layers.** Per-user, per-tenant, per-tool, per-provider. Otherwise one runaway agent burns your budget.
+1. **Graceful degradation.** What happens when Anthropic API is down? When Deepgram fails? When the vector DB is slow? Pre-design fallbacks.
+1. **Data retention policies.** Especially for voice/medical/financial. Decide before storing.
+1. **Logging without PII.** Easy to log a full prompt that contains the user’s email and SSN. Use redaction.
+1. **Schema versioning.** When you change agent tools or response schemas, downstream code breaks. Version explicitly.
+1. **Replay and time travel.** Can you run yesterday’s failed agent again with the same state? You should be able to.
+1. **Manual override / kill switch.** A way to stop an agent mid-execution or globally disable a feature. Build this before you need it.
+
+-----
+
+## License Cheat Sheet (Commercial Use)
+
+For each license, the question that matters: “Can I use this in my closed-source product I sell to customers?”
+
+|License                          |Closed-source SaaS okay?|Notes                                                                                                |
+|---------------------------------|------------------------|-----------------------------------------------------------------------------------------------------|
+|MIT                              |✅ Yes                   |Permissive; just preserve copyright notice                                                           |
+|Apache 2.0                       |✅ Yes                   |Permissive + patent grant                                                                            |
+|BSD (2-/3-clause)                |✅ Yes                   |Permissive                                                                                           |
+|PostgreSQL                       |✅ Yes                   |Equivalent to MIT                                                                                    |
+|GPL-3.0                          |⚠️ Risky                 |If you distribute as software, your code must be GPL too. SaaS-only is often okay but read carefully.|
+|AGPL-3.0                         |❌ Usually no            |Triggers on network use. Your SaaS must be open-sourced.                                             |
+|BSL (Business Source)            |⚠️ Conditional           |Often free for non-competing use, becomes open after N years                                         |
+|Sustainable Use (n8n)            |⚠️ Conditional           |Free for internal use; restrictions on rehosting                                                     |
+|Server Side Public License (SSPL)|❌ Usually no            |Used by MongoDB, Redis recently                                                                      |
+
+**Tools by license risk:**
+
+- **Safe (MIT/Apache):** LiteLLM, Instructor, Ollama, vLLM, Docling, pgvector, Ragas, LangGraph, MCP, Temporal, Pipecat, Playwright, Langfuse, Promptfoo, DSPy, Unsloth, Axolotl, TRL, OpenFGA, Infisical
+- **Watch:** Marker (GPL), n8n (Sustainable Use), Vault (BSL)
+- **Read carefully:** anything with a custom license
+
+-----
+
+## Final Thoughts
+
+The horizontal AI implementer’s edge is knowing which tool fits which problem, then assembling them quickly. The stack above covers >90% of what you’ll need across industries. Master 80% of these, ship public artifacts that demonstrate the capability, and the niche will find you.
+
+The tools change. The patterns last. Build patterns; learn tools as needed.
