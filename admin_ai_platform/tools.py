@@ -232,8 +232,8 @@ def sync_skills_to_db():
 
 
 def get_active_chat_tools():
-    """Return the CHAT_TOOLS subset whose agent_skills row is enabled. On a DB
-    error, fail open and return all builtins so chat keeps working."""
+    """Return the enabled builtin tools PLUS any enabled admin-defined custom
+    skills (SQL / HTTP). On a DB error, fail open to all builtins."""
     try:
         rows = query_db("SELECT name, enabled FROM agent_skills") or []
         enabled = {r["name"]: bool(r["enabled"]) for r in rows}
@@ -245,6 +245,18 @@ def get_active_chat_tools():
         # Unknown (not yet synced) → include; known+disabled → exclude.
         if enabled.get(name, True):
             out.append(t)
+    # Append admin-defined custom skills (their own enabled flag governs them).
+    try:
+        from .custom_skills import custom_tool_schemas
+        out.extend(custom_tool_schemas())
+    except Exception as e:
+        print(f"[tools] custom skill schemas skipped: {e}")
+    # Append MCP tools visible to visitors (servers flagged allowed_for_velo).
+    try:
+        from .mcp_tools import mcp_tool_schemas
+        out.extend(mcp_tool_schemas(audience="visitor"))
+    except Exception as e:
+        print(f"[tools] mcp schemas skipped: {e}")
     return out
 
 
@@ -274,8 +286,23 @@ def execute_chat_tool(name, args_json, session_id=""):
     fn = CHAT_LOOKUP_FUNCTIONS.get(name)
     entry = {"name": name, "args": args, "row_count": 0, "duration_ms": 0, "error": ""}
     if fn is None:
-        entry["error"] = "unknown_tool"
-        result_str = json.dumps({"error": f"Unknown tool {name}"})
+        # Not a builtin — try an admin-defined custom skill (SQL / HTTP).
+        try:
+            from .custom_skills import is_custom_skill, execute_custom_skill
+            from .mcp_tools import is_mcp_tool, execute_mcp_tool
+            if is_mcp_tool(name):
+                result = execute_mcp_tool(name, args)
+                result_str = json.dumps(result, default=str)
+            elif is_custom_skill(name):
+                result = execute_custom_skill(name, args)
+                entry["row_count"] = result.get("row_count", 0) if isinstance(result, dict) else 0
+                result_str = json.dumps(result, default=str)
+            else:
+                entry["error"] = "unknown_tool"
+                result_str = json.dumps({"error": f"Unknown tool {name}"})
+        except Exception as e:
+            entry["error"] = str(e)[:500]
+            result_str = json.dumps({"error": "tool_failed", "detail": str(e)[:200]})
     else:
         try:
             result = fn(**args)

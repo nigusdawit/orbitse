@@ -171,7 +171,11 @@ def query_db(sql, params=None, fetchone=False):
             if cur.description:
                 rows = cur.fetchall()
                 result = [dict(row) for row in rows]
-                return result[0] if fetchone and result else result
+                if fetchone:
+                    # Return the single row or None (never [] — callers rely on
+                    # `if row is None` / truthiness to detect "no row").
+                    return result[0] if result else None
+                return result
             return None
     finally:
         conn.close()

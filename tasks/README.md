@@ -8,7 +8,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 000 | M0 — Scaffolding & shared infra | done | task/000-scaffolding-shared-infra | — | — | Module relocation deferred to consuming milestones |
 | 001 | M1 — Visitor chat vertical slice | done | task/001-visitor-chat-slice | 000 | 002 | Gate GREEN vs embedded Postgres (19/19); live LLM+browser visuals still manual |
 | 002 | M2 — Admin core | done | task/002-admin-core | 000 | 001 | Gate 47/47 vs embedded Postgres; admin chat LLM stream needs key (manual) |
-| 003 | M3 — Cost + Skills/MCP | not_started | task/003-cost-skills-mcp | 002 | 004 | |
+| 003 | M3 — Cost + Skills/MCP | done | task/003-cost-skills-mcp | 002 | 004 | Gate 70/70 vs embedded Postgres; MCP/custom-skill live exec needs a server/key |
 | 004 | M4 — RAG + Automations + Scraper | not_started | task/004-rag-automations-scraper | 002 | 003 | |
 | 005 | M5 — Messaging + Reviews + Presentations | not_started | task/005-messaging-reviews-presentations | 003,004 | — | |
 | 006 | M6 — Commerce + Tenancy + VELO | not_started | task/006-commerce-tenancy-velo | 005 | — | |
