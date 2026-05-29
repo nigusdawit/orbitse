@@ -15,4 +15,15 @@ pending-action approval flow), provider settings, chat history, generated-pages 
 - `verify`: `/admin` renders, chat works, no console errors.
 
 ## Dependencies: 000   ## Parallel-with: 001
-## Status: not_started   ## Branch: task/002-admin-core
+## Status: done (merged)   ## Branch: task/002-admin-core
+
+## Verification (embedded-Postgres gate, 47/47 green)
+- admin auth: 401 when anon, /admin redirects to login, bad pw rejected, login sets
+  session, /admin serves dashboard when authed
+- provider get/put roundtrip (openai<->claude); chatbot-settings persist; default prompt
+- chat-history list/detail; generated-pages list/PUT-status/DELETE
+- admin tools: SELECT-only guard (rejects write + multi-statement), non-writable table
+  blocked, propose->park (nothing written)->approve writes->re-approve 409, reject preserves
+- ruff clean; unit suite green
+Unverified (needs OpenAI key): the admin chat LLM token stream itself. The tool dispatch +
+approval machinery (the risky part) is fully DB-verified.
