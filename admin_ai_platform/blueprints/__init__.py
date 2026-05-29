@@ -22,6 +22,7 @@ _BLUEPRINT_SPECS = [
     ("forms", "bp"),
     ("media", "bp"),
     ("voice", "bp"),
+    ("assets", "bp"),
     # M2
     # ("admin_chat", "bp"),
     # ("provider", "bp"),

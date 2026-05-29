@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Concierge — Demo</title>
+  <!--
+    Self-contained demo for the Admin/AI Platform widget. Serves as the M1
+    runtime-verification target: load this page (GET /demo) and exercise
+      1. gallery navigation   ("show me the wine cellar")
+      2. live generatePage    ("compare the rooms visually")
+      3. conversational form   ("I'd like to book")
+      4. spoken reply          (with voice enabled + an OpenAI key)
+    The widget talks to same-origin /api/* endpoints.
+  -->
+  <style>
+    :root {
+      --color-bg: #0a0f1a; --color-accent: #c9a96e; --color-text: #e8e8ec;
+      --font-serif: 'Playfair Display', Georgia, serif;
+      --font-sans: 'DM Sans', system-ui, sans-serif;
+      --glass-bg: rgba(20,20,24,0.78); --glass-border: rgba(255,255,255,0.12);
+    }
+    body { margin: 0; background: radial-gradient(circle at 30% 20%, #142033, #060b14 70%);
+           color: var(--color-text); font-family: var(--font-sans); min-height: 100vh; }
+    header { padding: 8vh 6vw 4vh; }
+    h1 { font-family: var(--font-serif); font-size: clamp(2rem, 6vw, 3.5rem); margin: 0 0 .4em; }
+    p.lede { max-width: 640px; opacity: .8; line-height: 1.6; }
+    section { padding: 4vh 6vw; }
+    h2 { font-family: var(--font-serif); color: var(--color-accent); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap: 16px; }
+    .card { background: var(--glass-bg); border: 1px solid var(--glass-border);
+            border-radius: 14px; padding: 16px; backdrop-filter: blur(14px); }
+    .hint { opacity: .6; font-size: 14px; margin-top: 3vh; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 data-aap-hero>Welcome to Casa Serena</h1>
+    <p class="lede">A demo site for the embeddable AI concierge. Open the chat
+      bar in the corner and try “show me the wine cellar”, “compare the rooms
+      visually”, or “I’d like to book a tasting”.</p>
+  </header>
+
+  <section id="section-experiences">
+    <h2>Experiences</h2>
+    <div class="grid">
+      <div class="card"><strong>Wine Tasting</strong><br>400+ labels, cellar temperature.</div>
+      <div class="card"><strong>Private Chef Dinner</strong><br>Al fresco on the terrace.</div>
+      <div class="card"><strong>Cooking Class</strong><br>Mediterranean recipes.</div>
+    </div>
+  </section>
+
+  <section id="section-testimonials">
+    <h2>What guests say</h2>
+    <div class="card">“The most beautiful stay of our lives.” — A. Rossi</div>
+  </section>
+
+  <p class="hint" style="padding: 0 6vw 8vh;">
+    Widget loads from <code>/widget/*</code> and talks to same-origin
+    <code>/api/*</code>. Configure content in the admin, or seed gallery cards
+    so “navigate” has somewhere to go.
+  </p>
+
+  <!-- Widget assets (served by the assets blueprint) -->
+  <link rel="stylesheet" href="/widget/chat-ui.css">
+  <script src="/widget/voice.js"></script>
+  <script src="/widget/chat-ui.js"></script>
+  <script>
+    // Same-origin: apiBase = "". For cross-origin embedding (M7) the loader
+    // passes the platform's base URL here.
+    window.addEventListener("DOMContentLoaded", function () {
+      ChatUI.init({ apiBase: "" });
+    });
+  </script>
+</body>
+</html>
