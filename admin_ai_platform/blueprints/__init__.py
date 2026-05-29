@@ -26,7 +26,7 @@ _BLUEPRINT_SPECS = [
     # M2
     ("admin", "bp"),
     ("provider", "bp"),
-    # ("admin_chat", "bp"),
+    ("admin_chat", "bp"),
     # ... later milestones append here.
 ]
 
