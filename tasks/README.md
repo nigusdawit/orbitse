@@ -14,7 +14,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 006 | M6 — Commerce + Tenancy + VELO | done | task/006-commerce-tenancy-velo | 005 | — | Gate 137/137; full Stripe Checkout + 30-cmd VELO are follow-ons (need keys) |
 | 007 | M7 — Embed snippet + cross-origin widget | done | task/007-embed-widget | 001,006 | — | Gate 147/147; security-review found+fixed 2 cost-abuse holes |
 | 008 | M8 — WordPress plugin + SSO | done | task/008-wordpress-plugin | 007,002 | — | Gate 159/159; security-review fixes applied; PHP unverified (no php in sandbox) |
-| 009 | M9 — Docs + final verify | not_started | task/009-docs-verify | 001-008 | — | |
+| 009 | M9 — Docs + final verify | done | task/009-docs-verify | 001-008 | — | Final: 159/159 gate, ruff+unit+node clean, live 6/6 200 |
 
 **Status legend:** not_started | in_progress | paused | blocked | awaiting_review | done
 
