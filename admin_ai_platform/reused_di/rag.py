@@ -30,12 +30,11 @@ from __future__ import annotations
 
 import csv as _csv
 import io
-import json
 import os
 import re
 import time
 import traceback
-from typing import Callable, Iterable, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 
 # Late-binding deps (injected by app.py via init_module so we don't
@@ -703,7 +702,6 @@ def reindex_tick(read_file_bytes: Callable[[str], Optional[bytes]]) -> None:
             # a proxy by comparing byte length to size_bytes.
             current_mtime = None
             try:
-                from storage import get_storage
                 full = os.path.join(os.path.dirname(
                     os.path.abspath(__file__)), "uploads", key)
                 if os.path.exists(full):

@@ -35,6 +35,10 @@ _BLUEPRINT_SPECS = [
     ("automations", "bp"),
     ("scraper", "bp"),
     ("rag", "bp"),
+    # M5
+    ("messaging", "bp"),
+    ("reviews", "bp"),
+    ("presentations", "bp"),
     # ... later milestones append here.
 ]
 

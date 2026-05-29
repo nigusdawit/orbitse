@@ -356,6 +356,69 @@ def main():
         check("rag blueprint registered",
               any("/admin/api/kb/list" in str(r) for r in app.url_map.iter_rules()))
 
+        # ----- M5: messaging -----
+        from admin_ai_platform.reused import messaging as _msg
+        check("messaging status", admin.get("/admin/api/messaging/status").status_code == 200)
+        subc = admin.post("/admin/api/messaging/subscribers",
+                          json={"email": "jane@example.com", "full_name": "Jane Doe"})
+        check("subscriber created", subc.status_code == 201)
+        tpl = admin.post("/admin/api/messaging/templates",
+                         json={"name": "Welcome", "subject": "Hi {{full_name}}",
+                               "body": "Hello {{full_name}}!"})
+        check("template created", tpl.status_code == 201)
+        tid = tpl.get_json()["id"]
+        prev = admin.get(f"/admin/api/messaging/templates/{tid}/preview").get_json()
+        check("merge tags rendered", "Jane Doe" in prev["subject"] and "Jane Doe" in prev["body"])
+        camp = admin.post("/admin/api/messaging/campaigns",
+                          json={"name": "Blast", "channel": "email", "recipient_kind": "ids",
+                                "recipient_filter": {"ids": []}, "subject_snapshot": "Hi",
+                                "body_snapshot": "Yo"})
+        check("campaign created", camp.status_code == 201)
+        # unsubscribe token roundtrip + endpoint.
+        utok = _msg.make_unsubscribe_token(subc.get_json()["id"])
+        check("unsubscribe token parses", _msg.parse_unsubscribe_token(utok) == subc.get_json()["id"])
+        check("unsubscribe endpoint", anon.get(f"/unsubscribe?token={utok}").status_code == 200)
+        sub_after = query_db("SELECT opt_in FROM subscribers WHERE id=%s",
+                             (subc.get_json()["id"],), fetchone=True)
+        check("unsubscribe flips opt_in", sub_after["opt_in"] is False)
+        check("twilio status webhook 204",
+              anon.post("/webhooks/twilio/sms-status", data={"MessageSid": "SM1", "MessageStatus": "delivered"}).status_code == 204)
+
+        # ----- M5: reviews -----
+        rdest = admin.post("/admin/api/reviews/destinations",
+                           json={"name": "Our Google", "kind": "google",
+                                 "url": "https://g.page/x", "public_visible": True})
+        check("review destination created", rdest.status_code == 201)
+        did = rdest.get_json()["id"]
+        check("review settings GET", admin.get("/admin/api/reviews/settings").status_code == 200)
+        rreq = admin.post("/admin/api/reviews/requests",
+                          json={"destination_id": did, "recipient_email": "a@b.com",
+                                "purchased_item": "Spa day"})
+        check("review request created", rreq.status_code == 201)
+        rtok = rreq.get_json()["short_token"]
+        clk = anon.get(f"/r/{rtok}")
+        check("short link redirects", clk.status_code in (301, 302))
+        clicked = query_db("SELECT clicked_at FROM review_requests WHERE short_token=%s",
+                           (rtok,), fetchone=True)
+        check("short link records click", clicked["clicked_at"] is not None)
+        check("review insights", "funnel" in admin.get("/admin/api/reviews/insights").get_json())
+        check("public review-snapshots", anon.get("/api/review-snapshots").status_code == 200)
+        check("unknown short link 404", anon.get("/r/nope").status_code == 404)
+
+        # ----- M5: presentations -----
+        deck = admin.post("/admin/api/presentations",
+                          json={"slug": "tour-deck", "title": "Tour", "enabled": True})
+        check("deck created", deck.status_code == 201)
+        pid2 = deck.get_json()["id"]
+        check("deck slug validation",
+              admin.post("/admin/api/presentations", json={"slug": "Bad Slug"}).status_code == 400)
+        sl = admin.post(f"/admin/api/presentations/{pid2}/slides",
+                        json={"title": "Welcome", "body": "Hi", "narration_text": "Hello there"})
+        check("slide added", sl.status_code == 201)
+        pub = anon.get("/api/presentations/tour-deck").get_json()
+        check("public deck has slide", len(pub["slides"]) == 1 and pub["slides"][0]["title"] == "Welcome")
+        check("deck delete", admin.delete(f"/admin/api/presentations/{pid2}").status_code == 200)
+
         print("[gate] schema + integration checks complete", flush=True)
 
     finally:

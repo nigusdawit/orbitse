@@ -44,6 +44,9 @@ IN_TABLES_M0_M1 = (
     "automations", "automation_runs", "automation_versions",
     "automation_settings", "automation_webhook_rejections",
     "scraper_settings", "scrape_jobs", "scrape_schedules",
+    # M5
+    "subscribers", "messaging_templates", "messaging_campaigns", "messaging_log",
+    "review_destinations", "review_requests", "external_reviews", "review_settings",
 )
 
 # Tables that belong to the original public website and must NOT be created by
@@ -711,6 +714,150 @@ CREATE TABLE IF NOT EXISTS scrape_schedules (
     created_at      TIMESTAMP DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_scrape_schedules_enabled ON scrape_schedules (enabled, next_run_at);
+
+-- ============================ MESSAGING (M5) ============================
+CREATE TABLE IF NOT EXISTS subscribers (
+    id              SERIAL PRIMARY KEY,
+    email           TEXT NOT NULL DEFAULT '',
+    phone           TEXT NOT NULL DEFAULT '',
+    full_name       TEXT NOT NULL DEFAULT '',
+    list_name       TEXT NOT NULL DEFAULT 'default',
+    source          TEXT NOT NULL DEFAULT 'manual',
+    opt_in          BOOLEAN NOT NULL DEFAULT TRUE,
+    opt_in_email    BOOLEAN NOT NULL DEFAULT TRUE,
+    opt_in_sms      BOOLEAN NOT NULL DEFAULT TRUE,
+    custom_fields   JSONB NOT NULL DEFAULT '{}'::jsonb,
+    unsubscribed_at TIMESTAMP,
+    created_at      TIMESTAMP DEFAULT NOW(),
+    updated_at      TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_subscribers_email ON subscribers (email);
+CREATE INDEX IF NOT EXISTS idx_subscribers_phone ON subscribers (phone);
+CREATE INDEX IF NOT EXISTS idx_subscribers_list ON subscribers (list_name);
+
+CREATE TABLE IF NOT EXISTS messaging_templates (
+    id           SERIAL PRIMARY KEY,
+    name         TEXT NOT NULL DEFAULT 'Untitled template',
+    channel      VARCHAR(10) NOT NULL DEFAULT 'email',
+    subject      TEXT NOT NULL DEFAULT '',
+    body         TEXT NOT NULL DEFAULT '',
+    from_name    TEXT NOT NULL DEFAULT '',
+    reply_to     TEXT NOT NULL DEFAULT '',
+    notes        TEXT NOT NULL DEFAULT '',
+    created_at   TIMESTAMP DEFAULT NOW(),
+    updated_at   TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS messaging_campaigns (
+    id                 SERIAL PRIMARY KEY,
+    name               TEXT NOT NULL DEFAULT '',
+    template_id        INTEGER REFERENCES messaging_templates(id) ON DELETE SET NULL,
+    channel            VARCHAR(10) NOT NULL DEFAULT 'email',
+    subject_snapshot   TEXT NOT NULL DEFAULT '',
+    body_snapshot      TEXT NOT NULL DEFAULT '',
+    recipient_kind     VARCHAR(20) NOT NULL DEFAULT 'all',
+    recipient_filter   JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status             VARCHAR(20) NOT NULL DEFAULT 'draft',
+    send_at            TIMESTAMP,
+    started_at         TIMESTAMP,
+    finished_at        TIMESTAMP,
+    total_recipients   INTEGER NOT NULL DEFAULT 0,
+    sent_count         INTEGER NOT NULL DEFAULT 0,
+    failed_count       INTEGER NOT NULL DEFAULT 0,
+    error_text         TEXT NOT NULL DEFAULT '',
+    created_at         TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_campaigns_status ON messaging_campaigns (status);
+CREATE INDEX IF NOT EXISTS idx_campaigns_send_at ON messaging_campaigns (send_at);
+
+CREATE TABLE IF NOT EXISTS messaging_log (
+    id                 SERIAL PRIMARY KEY,
+    campaign_id        INTEGER REFERENCES messaging_campaigns(id) ON DELETE SET NULL,
+    subscriber_id      INTEGER REFERENCES subscribers(id) ON DELETE SET NULL,
+    channel            VARCHAR(10) NOT NULL DEFAULT 'email',
+    to_address         TEXT NOT NULL DEFAULT '',
+    subject_snapshot   TEXT NOT NULL DEFAULT '',
+    body_snapshot      TEXT NOT NULL DEFAULT '',
+    status             VARCHAR(20) NOT NULL DEFAULT 'queued',
+    provider           VARCHAR(20) NOT NULL DEFAULT '',
+    provider_message_id TEXT NOT NULL DEFAULT '',
+    error_text         TEXT NOT NULL DEFAULT '',
+    sent_at            TIMESTAMP,
+    delivered_at       TIMESTAMP,
+    opened_at          TIMESTAMP,
+    clicked_at         TIMESTAMP,
+    open_count         INTEGER NOT NULL DEFAULT 0,
+    click_count        INTEGER NOT NULL DEFAULT 0,
+    is_test            BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at         TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_msg_log_campaign ON messaging_log (campaign_id);
+CREATE INDEX IF NOT EXISTS idx_msg_log_provider ON messaging_log (provider_message_id);
+CREATE INDEX IF NOT EXISTS idx_msg_log_to ON messaging_log (to_address);
+
+-- ============================ REVIEWS (M5) ==============================
+CREATE TABLE IF NOT EXISTS review_destinations (
+    id              SERIAL PRIMARY KEY,
+    name            TEXT NOT NULL DEFAULT '',
+    kind            VARCHAR(20) NOT NULL DEFAULT 'google',
+    url             TEXT NOT NULL DEFAULT '',
+    external_id     TEXT NOT NULL DEFAULT '',
+    auto_send       BOOLEAN NOT NULL DEFAULT FALSE,
+    auto_send_days  INTEGER NOT NULL DEFAULT 3,
+    is_default      BOOLEAN NOT NULL DEFAULT FALSE,
+    public_visible  BOOLEAN NOT NULL DEFAULT FALSE,
+    sort_order      INTEGER NOT NULL DEFAULT 0,
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_review_dest_sort ON review_destinations (sort_order);
+
+CREATE TABLE IF NOT EXISTS review_requests (
+    id                SERIAL PRIMARY KEY,
+    destination_id    INTEGER REFERENCES review_destinations(id) ON DELETE SET NULL,
+    channel           VARCHAR(10) NOT NULL DEFAULT 'email',
+    recipient_name    TEXT NOT NULL DEFAULT '',
+    recipient_email   TEXT NOT NULL DEFAULT '',
+    recipient_phone   TEXT NOT NULL DEFAULT '',
+    purchased_item    TEXT NOT NULL DEFAULT '',
+    source_kind       VARCHAR(20) NOT NULL DEFAULT 'manual',
+    source_id         INTEGER,
+    status            VARCHAR(20) NOT NULL DEFAULT 'queued',
+    short_token       VARCHAR(40) UNIQUE NOT NULL,
+    subject_snapshot  TEXT NOT NULL DEFAULT '',
+    body_snapshot     TEXT NOT NULL DEFAULT '',
+    error_text        TEXT NOT NULL DEFAULT '',
+    send_at           TIMESTAMP DEFAULT NOW(),
+    sent_at           TIMESTAMP,
+    clicked_at        TIMESTAMP,
+    converted_at      TIMESTAMP,
+    click_count       INTEGER NOT NULL DEFAULT 0,
+    created_at        TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_review_req_status ON review_requests (status);
+CREATE INDEX IF NOT EXISTS idx_review_req_send_at ON review_requests (send_at);
+CREATE INDEX IF NOT EXISTS idx_review_req_dest ON review_requests (destination_id);
+CREATE INDEX IF NOT EXISTS idx_review_req_source ON review_requests (source_kind, source_id);
+
+CREATE TABLE IF NOT EXISTS external_reviews (
+    id              SERIAL PRIMARY KEY,
+    destination_id  INTEGER UNIQUE REFERENCES review_destinations(id) ON DELETE CASCADE,
+    total_count     INTEGER NOT NULL DEFAULT 0,
+    avg_rating      REAL NOT NULL DEFAULT 0,
+    snapshot_at     TIMESTAMP DEFAULT NOW(),
+    raw_json        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    error_text      TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS review_settings (
+    id                  INTEGER PRIMARY KEY DEFAULT 1,
+    email_template_id   INTEGER REFERENCES messaging_templates(id) ON DELETE SET NULL,
+    sms_template_id     INTEGER REFERENCES messaging_templates(id) ON DELETE SET NULL,
+    auto_send_days      INTEGER NOT NULL DEFAULT 3,
+    public_show         BOOLEAN NOT NULL DEFAULT FALSE,
+    last_snapshot_at    TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT NOW()
+);
+INSERT INTO review_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 """
 
 # Seeds — singletons + default tenant + reference prices. All idempotent.
