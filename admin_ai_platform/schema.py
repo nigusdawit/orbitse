@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS gallery_cards (
     title       TEXT NOT NULL,
     subtitle    TEXT NOT NULL,
     image_url   TEXT NOT NULL,
+    video_url   TEXT NOT NULL DEFAULT '',
     category    VARCHAR(50) NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     details     JSONB DEFAULT '[]'::jsonb,
@@ -101,6 +102,7 @@ CREATE TABLE IF NOT EXISTS gallery_cards (
     updated_at  TIMESTAMP DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_gallery_cards_sort ON gallery_cards (sort_order);
+ALTER TABLE gallery_cards ADD COLUMN IF NOT EXISTS video_url TEXT NOT NULL DEFAULT '';
 
 -- ============================ CHATBOT + CHAT =============================
 CREATE TABLE IF NOT EXISTS chatbot_settings (

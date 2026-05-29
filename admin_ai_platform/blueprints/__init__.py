@@ -17,10 +17,10 @@ import importlib
 # uncommented as each milestone lands its blueprint module.
 _BLUEPRINT_SPECS = [
     # M1
+    ("gallery", "bp"),
+    ("forms", "bp"),
+    ("media", "bp"),
     # ("visitor_chat", "bp"),
-    # ("gallery", "bp"),
-    # ("forms", "bp"),
-    # ("media", "bp"),
     # ("voice", "bp"),
     # M2
     # ("admin_chat", "bp"),
