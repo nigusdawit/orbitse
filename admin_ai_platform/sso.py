@@ -88,12 +88,33 @@ def verify_sso_token(token: str):
     tid = payload.get("tid")
     if not jti or tid is None:
         return None
+    if not _claim_jti(jti, exp):
+        return None                         # replay (already consumed)
+    return int(tid)
+
+
+def _claim_jti(jti, exp):
+    """Atomically claim a jti so it can be used exactly once — ACROSS workers.
+    Primary store is the DB (INSERT ON CONFLICT DO NOTHING); the in-process set
+    is a fast path + a fallback if the DB is briefly unavailable. Returns True
+    if THIS call claimed it (i.e. it was unused)."""
+    now = time.time()
     with _USED_LOCK:
-        # Evict expired jtis opportunistically.
         if len(_USED_JTIS) > 5000:
             for k in [k for k, e in _USED_JTIS.items() if e < now]:
                 _USED_JTIS.pop(k, None)
         if jti in _USED_JTIS:
-            return None                     # replay
+            return False
         _USED_JTIS[jti] = exp
-    return int(tid)
+    try:
+        from .db import execute_db
+        row = execute_db(
+            "INSERT INTO sso_used_jtis (jti, expires_at) "
+            "VALUES (%s, to_timestamp(%s)) ON CONFLICT (jti) DO NOTHING RETURNING jti",
+            (jti, exp))
+        # row is None when the jti already existed (another worker claimed it).
+        return row is not None
+    except Exception as e:
+        # DB unavailable — fall back to the in-process claim we already made.
+        print(f"[sso] DB jti claim failed, using in-process only: {e}")
+        return True

@@ -45,6 +45,12 @@ def create_app(*, init_schema: bool = True, start_scheduler: bool = True) -> Fla
               "will not survive a restart. Set FLASK_SECRET_KEY in production.",
               file=sys.stderr)
 
+    # Session cookie hardening. SameSite=None + Secure is required for the
+    # WordPress-embedded admin (cross-site iframe); see config docs.
+    app.config["SESSION_COOKIE_SAMESITE"] = config.SESSION_COOKIE_SAMESITE
+    app.config["SESSION_COOKIE_SECURE"] = config.SESSION_COOKIE_SECURE
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+
     # Optional Sentry.
     if config.SENTRY_DSN:
         try:

@@ -117,6 +117,13 @@ DB_POOL_MIN = env_int("DB_POOL_MIN", 2)
 DB_POOL_MAX = env_int("DB_POOL_MAX", 20)
 
 FLASK_SECRET_KEY = env_str("FLASK_SECRET_KEY") or env_str("SESSION_SECRET")
+# Cross-site iframe embedding (the WordPress-embedded admin) needs the session
+# cookie to be SameSite=None; Secure — otherwise the browser won't send it
+# inside a cross-origin iframe and the embedded admin appears logged-out. That
+# combination requires HTTPS + CSRF protection on state-changing routes, so it's
+# OPT-IN. Default Lax (same-site only).
+SESSION_COOKIE_SAMESITE = env_choice("SESSION_COOKIE_SAMESITE", ("Lax", "Strict", "None"), "Lax")
+SESSION_COOKIE_SECURE = env_bool("SESSION_COOKIE_SECURE", False)
 ADMIN_PASSWORD = env_str("ADMIN_PASSWORD", "admin")
 ADMIN_API_KEY = env_str("ADMIN_API_KEY")
 ADMIN_EMAIL = env_str("ADMIN_EMAIL")
@@ -157,7 +164,11 @@ EMBED_ALLOWED_ORIGINS = tuple(
     o.strip() for o in env_str("EMBED_ALLOWED_ORIGINS").split(",") if o.strip()
 )
 EMBED_KEY_SIGNING_SECRET = env_str("EMBED_KEY_SIGNING_SECRET") or FLASK_SECRET_KEY
-SSO_SIGNING_SECRET = env_str("SSO_SIGNING_SECRET") or FLASK_SECRET_KEY
+# SSO secret must be DISTINCT and explicit — NO fallback to the session key.
+# Reusing the cookie-signing key to also mint admin-granting tokens would widen
+# the blast radius of a leak. When unset, SSO is disabled (mint raises, verify
+# returns None) — fail closed, never silently weak.
+SSO_SIGNING_SECRET = env_str("SSO_SIGNING_SECRET")
 # Where loader.js / widget assets are served from (defaults to same origin).
 WIDGET_CDN_BASE = env_str("WIDGET_CDN_BASE")
 # The WordPress site origin permitted to frame the admin (SSO iframe). When set,

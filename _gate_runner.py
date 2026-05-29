@@ -535,8 +535,17 @@ def main():
 
         # ----- M8: SSO (platform side; PHP uses the identical token scheme) -----
         import admin_ai_platform.config as _cfg8
-        _cfg8.SSO_SIGNING_SECRET = "ssosecret_for_gate"
         from admin_ai_platform.sso import mint_sso_token, verify_sso_token, _USED_JTIS
+        # Fail-closed when no SSO secret is configured (no FLASK_SECRET_KEY fallback).
+        _cfg8.SSO_SIGNING_SECRET = ""
+        check("sso verify disabled without secret", verify_sso_token("a.b") is None)
+        _minted_no_secret = True
+        try:
+            mint_sso_token(1)
+        except RuntimeError:
+            _minted_no_secret = False
+        check("sso mint fails closed without secret", _minted_no_secret is False)
+        _cfg8.SSO_SIGNING_SECRET = "ssosecret_for_gate"
         _USED_JTIS.clear()
         tok = mint_sso_token(1, secret="ssosecret_for_gate")
         check("sso verify roundtrip", verify_sso_token(tok) == 1)
