@@ -120,6 +120,16 @@ def submit_form(slug):
                RETURNING id, confirmation_number""",
             (form["id"],) + params + (session_id,),
         )
+    # Fire automations subscribed to form submissions (best-effort, never blocks
+    # the response). Matched by form_slug in the trigger config.
+    try:
+        from ..reused import automations
+        automations.dispatch_event("form_submitted", {
+            "form_slug": slug, "form_name": form.get("name"),
+            "submission_id": result["id"] if result else None, "fields": form_data})
+    except Exception as e:
+        print(f"[forms] automation dispatch skipped: {e}")
+
     return jsonify({
         "success": True,
         "id": result["id"] if result else None,

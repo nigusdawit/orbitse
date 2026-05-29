@@ -273,6 +273,41 @@ def main():
         check("is_mcp_tool detects namespace", is_mcp_tool(f"mcp__{msid}__search"))
         check("mcp delete", admin.delete(f"/admin/api/mcp/servers/{msid}").status_code == 200)
 
+        # ----- M4: automations engine -----
+        import time as _tt
+        meta = admin.get("/admin/api/automations/metadata").get_json()
+        check("automations metadata", meta.get("triggers") and meta.get("actions"))
+        # Create a webhook-triggered automation with a single save_data step.
+        created = admin.post("/admin/api/automations", json={
+            "name": "Gate test", "enabled": True, "trigger_type": "webhook",
+            "trigger_config": {},
+            "action_steps": [{"type": "save_data", "config": {
+                "table": "form_submissions", "fields": {}}}]})
+        check("automation created", created.status_code == 201)
+        autoid = created.get_json()["id"]
+        # Give it a webhook token, then hit the public hook → queues a run.
+        tok = admin.post(f"/admin/api/automations/{autoid}/regenerate-webhook").get_json()["webhook_token"]
+        check("webhook token issued", bool(tok))
+        hook = anon.post(f"/automations/hook/{tok}", json={"hello": "world"})
+        check("public webhook queues a run", hook.status_code == 200 and hook.get_json().get("queued"))
+        _tt.sleep(0.6)  # let the inline dispatch thread record the run
+        runs = admin.get(f"/admin/api/automations/{autoid}/runs").get_json()["runs"]
+        check("automation run recorded", len(runs) >= 1)
+        # test-run (manual dry run).
+        tr = admin.post(f"/admin/api/automations/{autoid}/test-run", json={"trigger_data": {}})
+        check("manual test-run queued", tr.status_code == 200 and tr.get_json().get("run_id"))
+        # toggle + version snapshot on update + delete.
+        check("toggle flips enabled",
+              admin.post(f"/admin/api/automations/{autoid}/toggle").get_json()["enabled"] is False)
+        admin.put(f"/admin/api/automations/{autoid}", json={"name": "Renamed"})
+        vrow = query_db("SELECT COUNT(*) AS c FROM automation_versions WHERE automation_id=%s",
+                        (autoid,), fetchone=True)
+        check("update snapshots a version", vrow["c"] >= 1)
+        check("automation delete",
+              admin.delete(f"/admin/api/automations/{autoid}").status_code == 200)
+        # Unknown webhook token → 404.
+        check("unknown webhook 404", anon.post("/automations/hook/nope").status_code == 404)
+
         print("[gate] schema + integration checks complete", flush=True)
 
     finally:

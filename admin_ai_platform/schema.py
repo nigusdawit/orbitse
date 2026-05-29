@@ -40,6 +40,9 @@ IN_TABLES_M0_M1 = (
     # M3
     "custom_knowledge_entries", "custom_webhook_skills", "custom_sql_skills",
     "mcp_servers", "mcp_tools_cache",
+    # M4
+    "automations", "automation_runs", "automation_versions",
+    "automation_settings", "automation_webhook_rejections",
 )
 
 # Tables that belong to the original public website and must NOT be created by
@@ -577,6 +580,76 @@ CREATE TABLE IF NOT EXISTS mcp_tools_cache (
     UNIQUE(server_id, tool_name)
 );
 CREATE INDEX IF NOT EXISTS idx_mcp_tools_server ON mcp_tools_cache (server_id);
+
+-- ============================ AUTOMATIONS (M4) ==========================
+CREATE TABLE IF NOT EXISTS automations (
+    id                  SERIAL PRIMARY KEY,
+    name                TEXT NOT NULL DEFAULT 'Untitled automation',
+    description         TEXT NOT NULL DEFAULT '',
+    enabled             BOOLEAN NOT NULL DEFAULT FALSE,
+    trigger_type        VARCHAR(30) NOT NULL DEFAULT 'manual',
+    trigger_config      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    action_steps        JSONB NOT NULL DEFAULT '[]'::jsonb,
+    webhook_token       TEXT NOT NULL DEFAULT '',
+    last_run_at         TIMESTAMP,
+    last_run_status     VARCHAR(20) NOT NULL DEFAULT '',
+    next_scheduled_at   TIMESTAMP,
+    created_at          TIMESTAMP DEFAULT NOW(),
+    updated_at          TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_automations_enabled ON automations (enabled);
+CREATE INDEX IF NOT EXISTS idx_automations_trigger ON automations (trigger_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_automations_webhook
+    ON automations (webhook_token) WHERE webhook_token <> '';
+
+CREATE TABLE IF NOT EXISTS automation_runs (
+    id                  SERIAL PRIMARY KEY,
+    automation_id       INTEGER REFERENCES automations(id) ON DELETE CASCADE,
+    status              VARCHAR(20) NOT NULL DEFAULT 'queued',
+    triggered_by        VARCHAR(20) NOT NULL DEFAULT 'event',
+    trigger_data        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    step_results        JSONB NOT NULL DEFAULT '[]'::jsonb,
+    error_text          TEXT NOT NULL DEFAULT '',
+    is_dry_run          BOOLEAN NOT NULL DEFAULT FALSE,
+    queued_at           TIMESTAMP DEFAULT NOW(),
+    started_at          TIMESTAMP,
+    finished_at         TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_runs_automation ON automation_runs (automation_id);
+CREATE INDEX IF NOT EXISTS idx_runs_status ON automation_runs (status);
+CREATE INDEX IF NOT EXISTS idx_runs_queued ON automation_runs (status, queued_at);
+CREATE INDEX IF NOT EXISTS idx_runs_automation_queued
+    ON automation_runs (automation_id, queued_at DESC);
+
+CREATE TABLE IF NOT EXISTS automation_versions (
+    id              SERIAL PRIMARY KEY,
+    automation_id   INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+    version_no      INTEGER NOT NULL,
+    snapshot        JSONB NOT NULL,
+    note            TEXT NOT NULL DEFAULT '',
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_versions_automation ON automation_versions (automation_id, version_no DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_versions_unique ON automation_versions (automation_id, version_no);
+
+CREATE TABLE IF NOT EXISTS automation_settings (
+    id                          INTEGER PRIMARY KEY DEFAULT 1,
+    retention_days              INTEGER,
+    keep_recent_per_automation  INTEGER,
+    updated_at                  TIMESTAMP DEFAULT NOW()
+);
+INSERT INTO automation_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS automation_webhook_rejections (
+    id              SERIAL PRIMARY KEY,
+    automation_id   INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+    reason          TEXT NOT NULL DEFAULT '',
+    source_ip       VARCHAR(64) NOT NULL DEFAULT '',
+    header_excerpt  TEXT NOT NULL DEFAULT '',
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_rejections_automation
+    ON automation_webhook_rejections (automation_id, created_at DESC);
 """
 
 # Seeds — singletons + default tenant + reference prices. All idempotent.
