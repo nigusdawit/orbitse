@@ -76,6 +76,18 @@ def _request_origin():
     return ""
 
 
+def _is_same_origin(origin):
+    """True for genuine first-party requests: no asserted origin, or an origin
+    whose host matches the platform's own Host. Used only in self_host, where
+    the operator's site is same-origin with the platform."""
+    if not origin:
+        return True
+    try:
+        return urlparse(origin).netloc == request.host
+    except Exception:
+        return False
+
+
 def _resolve_key(embed_key):
     """Return the embed-key row (with tenant + allowlist) if enabled, else None."""
     if not embed_key:
@@ -89,23 +101,34 @@ def _resolve_key(embed_key):
 
 
 def _origin_allowed(origin, allowlist):
-    """An origin is allowed if it's in the key's allowlist, or the global
-    EMBED_ALLOWED_ORIGINS fallback. ``*`` in a list allows any (opt-in only)."""
+    """True only for a NON-EMPTY origin present in the key's allowlist (or the
+    global fallback). ``*`` is an explicit opt-in wildcard. An empty origin is
+    NOT allowed here — callers decide whether a missing origin is acceptable
+    for a given endpoint (it never is for the cost-bearing ones)."""
     if not origin:
-        # No browser origin (server-to-server / curl). Allowed — the key itself
-        # is the credential; origin checks only constrain *browser* embeds.
-        return True
-    al = list(allowlist or [])
-    al += list(config.EMBED_ALLOWED_ORIGINS)
+        return False
+    al = list(allowlist or []) + list(config.EMBED_ALLOWED_ORIGINS)
     if "*" in al:
         return True
     return origin in al
+
+
+def _client_ip():
+    """Client IP for rate limiting. Uses the WSGI-resolved remote_addr (set
+    correctly by ProxyFix when a trusted-proxy hop count is configured). We do
+    NOT parse raw X-Forwarded-For here — it's attacker-controlled and would let
+    a client mint unlimited buckets."""
+    return (request.remote_addr or "unknown")
 
 
 def _rate_ok(tenant_id, ip):
     now = time.time()
     key = (tenant_id, ip)
     with _RATE_LOCK:
+        # Opportunistic eviction so the bucket map can't grow unbounded.
+        if len(_RATE_BUCKETS) > 10000:
+            for k in [k for k, v in _RATE_BUCKETS.items() if now - v[0] >= _RATE_WINDOW_SEC]:
+                _RATE_BUCKETS.pop(k, None)
         bucket = _RATE_BUCKETS.get(key)
         if not bucket or now - bucket[0] >= _RATE_WINDOW_SEC:
             _RATE_BUCKETS[key] = [now, 1]
@@ -125,6 +148,8 @@ def register_embed_middleware(app):
         if not _is_embeddable(path):
             return None
 
+        heavy = _is_rate_limited(path)           # cost-bearing: chat / voice
+        origin = _request_origin()
         embed_key = (request.headers.get("X-Embed-Key", "")
                      or request.args.get("embed_key", "")).strip()
 
@@ -134,26 +159,39 @@ def register_embed_middleware(app):
             _apply_cors(resp, embed_key)
             return resp
 
-        if not embed_key:
-            # First-party / same-origin: no key, pass through (tenant = default).
-            return None
+        rl_tenant = config.DEFAULT_TENANT_ID
 
-        row = _resolve_key(embed_key)
-        if not row or not row.get("enabled"):
-            return jsonify({"error": "invalid embed key"}), 403
-        origin = _request_origin()
-        if not _origin_allowed(origin, row.get("origin_allowlist")):
-            return jsonify({"error": "origin not allowed for this embed key"}), 403
+        if embed_key:
+            row = _resolve_key(embed_key)
+            if not row or not row.get("enabled"):
+                return jsonify({"error": "invalid embed key"}), 403
+            # A keyed BROWSER request must carry an allowlisted origin. For the
+            # cost-bearing endpoints we additionally REQUIRE a real origin — a
+            # publishable key with no asserted origin (curl/server) must not be
+            # able to spend the tenant's budget.
+            if origin:
+                if not _origin_allowed(origin, row.get("origin_allowlist")):
+                    return jsonify({"error": "origin not allowed for this embed key"}), 403
+            elif heavy:
+                return jsonify({"error": "origin required"}), 403
+            g.tenant_id = row["tenant_id"]
+            g.embed_origin = origin
+            g.embed_keyed = True
+            rl_tenant = row["tenant_id"]
+        else:
+            # No key. Cost-bearing endpoints require one unless this is a
+            # genuine first-party (same-origin) request in self_host. In central
+            # (SaaS) every legitimate caller is a keyed cross-origin embed, so
+            # no-key heavy requests are always rejected.
+            if heavy:
+                if config.is_central() or not _is_same_origin(origin):
+                    return jsonify({"error": "embed key required"}), 403
+            # Cross-origin no-key reads of PUBLIC content are harmless (the data
+            # is public anyway) and get no CORS headers, so a browser can't read
+            # them cross-origin regardless.
 
-        g.tenant_id = row["tenant_id"]
-        g.embed_origin = origin
-        g.embed_keyed = True
-
-        if _is_rate_limited(path):
-            ip = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-                  or request.remote_addr or "unknown")
-            if not _rate_ok(row["tenant_id"], ip):
-                return jsonify({"error": "rate limit exceeded"}), 429
+        if heavy and not _rate_ok(rl_tenant, _client_ip()):
+            return jsonify({"error": "rate limit exceeded"}), 429
         return None
 
     @app.after_request
@@ -175,7 +213,11 @@ def _apply_cors(resp, embed_key):
     allowlist = row.get("origin_allowlist") if row else []
     if _origin_allowed(origin, allowlist):
         resp.headers["Access-Control-Allow-Origin"] = origin
-        resp.headers["Vary"] = "Origin"
+        # Append (don't clobber) Vary so a handler's existing Vary survives —
+        # important for shared caches not to cross-serve origins.
+        existing_vary = resp.headers.get("Vary", "")
+        if "origin" not in existing_vary.lower():
+            resp.headers["Vary"] = (existing_vary + ", Origin").lstrip(", ") if existing_vary else "Origin"
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Embed-Key"
         resp.headers["Access-Control-Max-Age"] = "600"

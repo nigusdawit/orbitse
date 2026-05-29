@@ -512,6 +512,15 @@ def main():
         pre = anon.open("/api/chat", method="OPTIONS",
                         headers={"X-Embed-Key": ekey, "Origin": "https://shop.example"})
         check("preflight 204", pre.status_code == 204)
+        # 5b. Cost-bearing endpoints are protected (hardened after security review):
+        #     no-key cross-origin chat → 403; keyed chat with no Origin → 403.
+        check("no-key cross-origin chat 403",
+              anon.post("/api/chat", headers={"Origin": "https://evil.example"},
+                        json={"message": "hi", "session_id": "x"}).status_code == 403)
+        check("keyed chat without origin 403",
+              anon.post("/api/chat", headers={"X-Embed-Key": ekey},
+                        json={"message": "hi", "session_id": "x"}).status_code == 403)
+
         # 6. Rate limit: hammer chat past the cap (no LLM call needed — 429 short-circuits).
         import admin_ai_platform.embed_auth as _ea
         _ea._RATE_BUCKETS.clear()
