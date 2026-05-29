@@ -50,8 +50,8 @@ IN_TABLES_M0_M1 = (
     # M6
     "products", "customers", "orders", "order_items", "services", "service_addons",
     "service_availability_rules", "service_availability_overrides", "service_bookings",
-    "stripe_settings", "stripe_product_sync", "tenant_embed_keys", "sso_used_jtis",
-    "rate_buckets",
+    "stripe_settings", "stripe_product_sync", "stripe_events", "tenant_embed_keys",
+    "sso_used_jtis", "rate_buckets",
 )
 
 # Tables that belong to the original public website and must NOT be created by
@@ -903,6 +903,7 @@ CREATE TABLE IF NOT EXISTS orders (
     currency                 VARCHAR(3) NOT NULL DEFAULT 'USD',
     stripe_payment_intent_id VARCHAR(100) DEFAULT '',
     stripe_charge_id         VARCHAR(100) DEFAULT '',
+    refunded_cents           INTEGER NOT NULL DEFAULT 0,
     shipping_address         JSONB NOT NULL DEFAULT '{}'::jsonb,
     notes                    TEXT NOT NULL DEFAULT '',
     created_at               TIMESTAMP DEFAULT NOW(),
@@ -1033,6 +1034,15 @@ CREATE TABLE IF NOT EXISTS stripe_product_sync (
     last_attempt_at     TIMESTAMP DEFAULT NOW(),
     last_error          TEXT NOT NULL DEFAULT '',
     UNIQUE (local_product_id, mode)
+);
+
+-- Webhook idempotency: each Stripe event id is recorded the first time it's
+-- processed; a redelivery (Stripe retries aggressively) is a no-op. The PK
+-- INSERT ON CONFLICT is the atomic claim.
+CREATE TABLE IF NOT EXISTS stripe_events (
+    event_id      VARCHAR(120) PRIMARY KEY,
+    event_type    VARCHAR(80) NOT NULL DEFAULT '',
+    processed_at  TIMESTAMP DEFAULT NOW()
 );
 
 -- ============================ TENANCY: EMBED KEYS (M6, feeds M7) =========

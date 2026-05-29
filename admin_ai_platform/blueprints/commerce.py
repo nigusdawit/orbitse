@@ -25,15 +25,69 @@ from __future__ import annotations
 
 import json
 import secrets
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 
 from flask import Blueprint, request, jsonify
 
 from .. import config
-from ..db import query_db, execute_db
+from ..db import query_db, execute_db, get_db
 from ..auth import admin_required
+from ..reused import stripe_client
+from ..reused_di import stripe_settings, stripe_sync
 
 bp = Blueprint("commerce", __name__)
+
+
+# ======================= Stripe helpers =======================
+def _public_base_url():
+    """Origin for building Stripe success/cancel return URLs."""
+    return (config.PUBLIC_BASE_URL or request.host_url.rstrip("/")).rstrip("/")
+
+
+def _get_stripe():
+    """Return (stripe_module, None) when usable, else (None, (json, status))
+    so route handlers can `s, err = _get_stripe(); if err: return err`."""
+    try:
+        return stripe_client.get_stripe(), None
+    except Exception as e:
+        return None, (jsonify({"error": "stripe_unavailable", "detail": str(e)[:200]}), 503)
+
+
+@contextmanager
+def _locked_tx():
+    """A real transaction (autocommit off) for SELECT ... FOR UPDATE + UPDATE so
+    a webhook flip can't race a concurrent reader. Commits on success, rolls back
+    on error, and always returns the connection to the pool."""
+    conn = get_db()
+    try:
+        conn.autocommit = False
+        import psycopg2.extras
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            yield cur
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cur.close()
+    finally:
+        try:
+            conn.autocommit = True
+        except Exception:
+            pass
+        conn.close()
+
+
+def _maybe_sync_product(local_id):
+    """Mirror a product into Stripe when autosync is on. Fail-open: a sync error
+    never breaks the local CRUD response (it's recorded on the mapping row)."""
+    try:
+        if stripe_settings.get_settings().get("autosync_products"):
+            stripe_sync.sync_product(local_id)
+    except Exception as e:
+        print(f"[commerce] autosync skipped for product {local_id}: {e}")
 
 
 # ======================= PRODUCTS =======================
@@ -74,6 +128,7 @@ def create_product():
          int(d.get("sort_order", 0) or 0)))
     if not row:
         return jsonify({"error": "slug exists"}), 409
+    _maybe_sync_product(row["id"])
     return jsonify(row), 201
 
 
@@ -93,12 +148,19 @@ def update_product(pid):
     row = execute_db(f"UPDATE products SET {', '.join(sets)} WHERE id=%s RETURNING *", tuple(vals))
     if not row:
         return jsonify({"error": "Not found"}), 404
+    _maybe_sync_product(pid)
     return jsonify(row)
 
 
 @bp.route("/admin/api/products/<int:pid>", methods=["DELETE"])
 @admin_required
 def delete_product(pid):
+    # Archive the Stripe product(s) BEFORE the local row (and its mapping rows,
+    # which cascade) are deleted. Fail-open: a Stripe error must not block delete.
+    try:
+        stripe_sync.archive_product(pid)
+    except Exception as e:
+        print(f"[commerce] stripe archive skipped for product {pid}: {e}")
     execute_db("DELETE FROM products WHERE id=%s", (pid,))
     return jsonify({"success": True})
 
@@ -107,6 +169,102 @@ def delete_product(pid):
 @admin_required
 def admin_orders():
     return jsonify({"orders": query_db("SELECT * FROM orders ORDER BY id DESC LIMIT 200") or []})
+
+
+# ----- product checkout (public) ----------------------------------------
+def _upsert_customer(email, name):
+    """Find-or-create a customer by email; refresh the name when provided.
+    Returns the customer id or None when no email was given."""
+    email = (email or "").strip().lower()
+    if not email:
+        return None
+    row = execute_db(
+        "INSERT INTO customers (email, name) VALUES (%s,%s) "
+        "ON CONFLICT (email) DO UPDATE SET name=COALESCE(NULLIF(EXCLUDED.name,''), customers.name) "
+        "RETURNING id", (email, (name or "").strip()))
+    return row["id"] if row else None
+
+
+@bp.route("/api/checkout/create-payment-intent", methods=["POST"])
+def create_checkout():
+    """Create a Stripe Checkout Session for a product cart and a local ``pending``
+    order. Body: ``{items:[{slug, quantity}], customer_email, customer_name}``.
+    Returns ``{order_number, checkout_url}``. The webhook flips the order to
+    ``paid`` on ``checkout.session.completed``."""
+    d = request.get_json() or {}
+    items = d.get("items") or []
+    if not isinstance(items, list) or not items:
+        return jsonify({"error": "items required"}), 400
+
+    # Resolve products + build line items + totals from server-side prices (never
+    # trust client-supplied amounts).
+    line_items, order_items, subtotal = [], [], 0
+    currency = "usd"
+    for it in items:
+        slug = (it.get("slug") or "").strip()
+        qty = max(1, int(it.get("quantity", 1) or 1))
+        p = query_db("SELECT id, name, price_cents, currency, stock, track_inventory "
+                     "FROM products WHERE slug=%s AND active=TRUE", (slug,), fetchone=True)
+        if not p:
+            return jsonify({"error": f"unknown product: {slug}"}), 400
+        if p.get("track_inventory") and int(p.get("stock") or 0) < qty:
+            return jsonify({"error": f"insufficient stock for {slug}"}), 409
+        currency = (p.get("currency") or "usd").lower()
+        subtotal += p["price_cents"] * qty
+        order_items.append((p["id"], p["name"], p["price_cents"], qty))
+        line_items.append({
+            "price_data": {"currency": currency,
+                           "product_data": {"name": p["name"]},
+                           "unit_amount": p["price_cents"]},
+            "quantity": qty})
+
+    s, err = _get_stripe()
+    if err:
+        return err
+
+    order_number = "ORD-" + secrets.token_hex(6).upper()
+    cust_id = _upsert_customer(d.get("customer_email"), d.get("customer_name"))
+    order = execute_db(
+        "INSERT INTO orders (order_number, customer_id, customer_email, customer_name, "
+        " status, subtotal_cents, total_cents, currency) "
+        "VALUES (%s,%s,%s,%s,'pending',%s,%s,%s) RETURNING id",
+        (order_number, cust_id, (d.get("customer_email") or "").strip(),
+         (d.get("customer_name") or "").strip(), subtotal, subtotal, currency.upper()))
+    for pid, pname, unit, qty in order_items:
+        execute_db("INSERT INTO order_items (order_id, product_id, product_name, "
+                   "unit_price_cents, quantity) VALUES (%s,%s,%s,%s,%s)",
+                   (order["id"], pid, pname, unit, qty))
+
+    base = _public_base_url()
+    try:
+        session = s.checkout.Session.create(
+            mode="payment", line_items=line_items,
+            customer_email=(d.get("customer_email") or "").strip() or None,
+            success_url=f"{base}/api/orders/{order_number}?paid=1",
+            cancel_url=f"{base}/api/orders/{order_number}?cancelled=1",
+            metadata={"kind": "order", "order_number": order_number})
+    except Exception as e:
+        execute_db("UPDATE orders SET status='failed', notes=%s WHERE id=%s",
+                   (str(e)[:500], order["id"]))
+        return jsonify({"error": "stripe_checkout_failed", "detail": str(e)[:200]}), 502
+    execute_db("UPDATE orders SET stripe_payment_intent_id=%s WHERE id=%s",
+               (session.get("id", ""), order["id"]))
+    return jsonify({"order_number": order_number, "checkout_url": session.get("url"),
+                    "session_id": session.get("id")}), 201
+
+
+@bp.route("/api/orders/<order_number>", methods=["GET"])
+def public_order(order_number):
+    """Public order status lookup by order number (no PII beyond what the buyer
+    already submitted; used by the success page)."""
+    o = query_db("SELECT order_number, status, total_cents, currency, paid_at "
+                 "FROM orders WHERE order_number=%s", (order_number,), fetchone=True)
+    if not o:
+        return jsonify({"error": "Not found"}), 404
+    o["items"] = query_db("SELECT product_name, unit_price_cents, quantity FROM order_items "
+                          "WHERE order_id=(SELECT id FROM orders WHERE order_number=%s)",
+                          (order_number,)) or []
+    return jsonify(o)
 
 
 # ======================= SERVICES =======================
@@ -377,18 +535,58 @@ def book_service(slug):
     if model == "contract":
         return jsonify({"action": "contract_upload",
                         "url": f"/booking/{token}/contract", "booking_token": token}), 201
-    if not config.STRIPE_SECRET_KEY:
+
+    # Deposit/full → real Stripe Checkout. The webhook flips the booking to
+    # confirmed/paid on checkout.session.completed (metadata.kind == 'booking').
+    s, err = _get_stripe()
+    if err:
         return jsonify({"action": "payment_unavailable",
                         "error": "Stripe is not configured for paid bookings.",
                         "booking_token": token}), 200
-    return jsonify({"action": "redirect", "booking_token": token}), 201  # Stripe URL (follow-on)
+    base = _public_base_url()
+    label = ("Deposit" if model == "deposit" else "Booking") + f" — {svc.get('name') or slug}"
+    try:
+        session = s.checkout.Session.create(
+            mode="payment",
+            line_items=[{"price_data": {"currency": svc.get("currency", "usd"),
+                                        "product_data": {"name": label},
+                                        "unit_amount": total},
+                         "quantity": 1}],
+            customer_email=d["client_email"],
+            success_url=f"{base}/api/services/{slug}/booking/{token}?paid=1",
+            cancel_url=f"{base}/api/services/{slug}/booking/{token}?cancelled=1",
+            metadata={"kind": "booking", "booking_token": token})
+    except Exception as e:
+        return jsonify({"action": "payment_unavailable",
+                        "error": f"Stripe checkout failed: {str(e)[:200]}",
+                        "booking_token": token}), 200
+    execute_db("UPDATE service_bookings SET stripe_session_id=%s WHERE booking_token=%s",
+               (session.get("id", ""), token))
+    return jsonify({"action": "redirect", "checkout_url": session.get("url"),
+                    "booking_token": token}), 201
 
 
-# ======================= STRIPE settings + webhook (stub) =======================
+# ----- booking status (public) ------------------------------------------
+@bp.route("/api/services/<slug>/booking/<token>", methods=["GET"])
+def public_booking(slug, token):
+    b = query_db("SELECT booking_token, status, payment_status, total_cents, currency, "
+                 "scheduled_date, scheduled_start FROM service_bookings WHERE booking_token=%s",
+                 (token,), fetchone=True)
+    if not b:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(b)
+
+
+# ======================= STRIPE settings + sync + webhook =======================
 @bp.route("/admin/api/stripe-settings", methods=["GET"])
 @admin_required
 def get_stripe_settings():
-    return jsonify(query_db("SELECT * FROM stripe_settings WHERE id=1", fetchone=True) or {})
+    """Settings + (secret-free) key-presence snapshot for the admin console."""
+    s = stripe_settings.get_settings()
+    s["keys_present"] = stripe_client.detect_keys_present()
+    s["active_key_kind"] = stripe_client.detect_active_key_kind()
+    s["publishable_key"] = stripe_client.get_publishable_key()
+    return jsonify(s)
 
 
 @bp.route("/admin/api/stripe-settings", methods=["PUT"])
@@ -398,16 +596,253 @@ def put_stripe_settings():
     mode = d.get("mode", "test")
     if mode not in ("test", "live"):
         return jsonify({"error": "mode must be test|live"}), 400
-    row = execute_db("UPDATE stripe_settings SET mode=%s, autosync_products=%s, updated_at=NOW() "
-                     "WHERE id=1 RETURNING *", (mode, bool(d.get("autosync_products", False))))
+    try:
+        stripe_settings.set_mode(mode)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if "autosync_products" in d:
+        stripe_settings.set_autosync(bool(d.get("autosync_products")))
+    stripe_client.invalidate_cache()   # a mode flip must re-resolve keys
+    return jsonify(stripe_settings.get_settings())
+
+
+@bp.route("/admin/api/stripe/health", methods=["POST"])
+@admin_required
+def stripe_health():
+    """Probe the active-mode key with a cheap Stripe call; record the result."""
+    try:
+        s = stripe_client.get_stripe()
+        s.Balance.retrieve()
+        stripe_settings.record_health(True, "")
+        return jsonify({"ok": True})
+    except Exception as e:
+        stripe_settings.record_health(False, str(e)[:500])
+        return jsonify({"ok": False, "error": str(e)[:200]}), 200
+
+
+@bp.route("/admin/api/stripe/sync-status", methods=["GET"])
+@admin_required
+def stripe_sync_status():
+    return jsonify(stripe_sync.get_sync_status_rows())
+
+
+@bp.route("/admin/api/stripe/backfill", methods=["POST"])
+@admin_required
+def stripe_backfill():
+    return jsonify(stripe_sync.backfill_all())
+
+
+@bp.route("/admin/api/products/<int:pid>/sync", methods=["POST"])
+@admin_required
+def stripe_sync_one(pid):
+    return jsonify(stripe_sync.sync_product(pid))
+
+
+# ----- orders admin: detail / status / refund ---------------------------
+@bp.route("/admin/api/orders/<int:oid>", methods=["GET"])
+@admin_required
+def admin_order_detail(oid):
+    o = query_db("SELECT * FROM orders WHERE id=%s", (oid,), fetchone=True)
+    if not o:
+        return jsonify({"error": "Not found"}), 404
+    o["items"] = query_db("SELECT * FROM order_items WHERE order_id=%s", (oid,)) or []
+    return jsonify(o)
+
+
+_ORDER_STATUSES = ("pending", "paid", "fulfilled", "cancelled", "refunded",
+                   "partially_refunded", "failed")
+
+
+@bp.route("/admin/api/orders/<int:oid>/status", methods=["PUT"])
+@admin_required
+def admin_order_status(oid):
+    d = request.get_json() or {}
+    st = d.get("status", "")
+    if st not in _ORDER_STATUSES:
+        return jsonify({"error": f"status must be one of {_ORDER_STATUSES}"}), 400
+    row = execute_db("UPDATE orders SET status=%s WHERE id=%s RETURNING *", (st, oid))
+    if not row:
+        return jsonify({"error": "Not found"}), 404
     return jsonify(row)
+
+
+@bp.route("/admin/api/orders/<int:oid>/refund", methods=["POST"])
+@admin_required
+def admin_order_refund(oid):
+    """Refund a paid order via Stripe (full or partial ``amount_cents``).
+
+    Hardened against the two ways a naive refund leaks money: (1) the order row
+    is locked FOR UPDATE and its refundable state re-checked *inside* the txn so
+    two concurrent refund clicks can't both call Stripe (TOCTOU); (2) the amount
+    is validated against the remaining refundable balance so an over-refund or a
+    zero/negative amount is rejected before any Stripe call. A deterministic
+    idempotency key makes a retried request a no-op at Stripe too."""
+    d = request.get_json() or {}
+    s, err = _get_stripe()
+    if err:
+        return err
+
+    # Phase 1: claim the order under a row lock, compute the refund amount, and
+    # provisionally mark it so a concurrent request sees the new state. We do the
+    # Stripe call OUTSIDE the lock (network I/O under a row lock is an
+    # availability foot-gun), guarded by a 'refunding' marker we set here.
+    try:
+        with _locked_tx() as cur:
+            cur.execute("SELECT * FROM orders WHERE id=%s FOR UPDATE", (oid,))
+            o = cur.fetchone()
+            if not o:
+                return jsonify({"error": "Not found"}), 404
+            if o["status"] not in ("paid", "fulfilled", "partially_refunded"):
+                return jsonify({"error": "only paid/fulfilled orders can be refunded"}), 409
+            charge = o.get("stripe_charge_id") or ""
+            pi = o.get("stripe_payment_intent_id") or ""
+            if not (charge or pi):
+                return jsonify({"error": "no charge/payment_intent recorded"}), 409
+            already = int(o.get("refunded_cents") or 0)
+            remaining = int(o["total_cents"]) - already
+            if remaining <= 0:
+                return jsonify({"error": "nothing left to refund"}), 409
+            # Distinguish "omitted" (→ full remaining) from an explicit 0 (which
+            # must be rejected, not silently coerced to a full refund).
+            amount = int(d["amount_cents"]) if "amount_cents" in d else remaining
+            if amount <= 0 or amount > remaining:
+                return jsonify({"error": f"amount must be 1..{remaining} cents"}), 400
+            # Mark in-flight so a racing request bails (we re-check on commit).
+            cur.execute("UPDATE orders SET refunded_cents=refunded_cents+%s WHERE id=%s",
+                        (amount, oid))
+    except Exception as e:
+        return jsonify({"error": "refund_lock_failed", "detail": str(e)[:200]}), 500
+
+    # Phase 2: call Stripe with a deterministic idempotency key (order + running
+    # refunded total) so a network retry never double-refunds.
+    kwargs = {"amount": amount}
+    if charge:
+        kwargs["charge"] = charge
+    else:
+        kwargs["payment_intent"] = pi
+    idem = f"refund-{o['order_number']}-{already + amount}"
+    try:
+        s.Refund.create(idempotency_key=idem, **kwargs)
+    except Exception as e:
+        # Roll back the provisional increment so the operator can retry.
+        execute_db("UPDATE orders SET refunded_cents=GREATEST(0, refunded_cents-%s) WHERE id=%s",
+                   (amount, oid))
+        return jsonify({"error": "stripe_refund_failed", "detail": str(e)[:200]}), 502
+
+    new_total = already + amount
+    new_status = "refunded" if new_total >= int(o["total_cents"]) else "partially_refunded"
+    row = execute_db("UPDATE orders SET status=%s WHERE id=%s RETURNING *", (new_status, oid))
+    return jsonify(row)
+
+
+# ----- webhook ----------------------------------------------------------
+def _claim_event(event_id, event_type):
+    """Atomically record an event id; returns True only the FIRST time it's seen
+    (Stripe retries aggressively, so every handler must be idempotent)."""
+    try:
+        row = execute_db(
+            "INSERT INTO stripe_events (event_id, event_type) VALUES (%s,%s) "
+            "ON CONFLICT (event_id) DO NOTHING RETURNING event_id", (event_id, event_type))
+        return bool(row)
+    except Exception as e:
+        print(f"[commerce] event claim failed (processing anyway): {e}")
+        return True
+
+
+def _unclaim_event(event_id):
+    """Release a claimed event so a Stripe retry re-processes it. Called when the
+    handler raised AFTER the claim — otherwise the retry would hit the dedupe
+    path and the paid order would be stranded as 'pending'."""
+    try:
+        execute_db("DELETE FROM stripe_events WHERE event_id=%s", (event_id,))
+    except Exception as e:
+        print(f"[commerce] event unclaim failed: {e}")
+
+
+def _handle_checkout_completed(session):
+    """Flip the matching order/booking to paid/confirmed under a row lock."""
+    md = session.get("metadata") or {}
+    kind = md.get("kind")
+    pi = session.get("payment_intent") or ""
+    if kind == "order":
+        onum = md.get("order_number") or ""
+        with _locked_tx() as cur:
+            cur.execute("SELECT id, status FROM orders WHERE order_number=%s FOR UPDATE", (onum,))
+            o = cur.fetchone()
+            if o and o["status"] == "pending":
+                cur.execute("UPDATE orders SET status='paid', paid_at=NOW(), "
+                            "stripe_payment_intent_id=%s WHERE id=%s",
+                            (pi or "", o["id"]))
+                # Decrement inventory for tracked products in the same txn so a
+                # paid order and its stock change commit atomically.
+                cur.execute("SELECT product_id, quantity FROM order_items WHERE order_id=%s",
+                            (o["id"],))
+                for item in cur.fetchall():
+                    if item["product_id"]:
+                        cur.execute("UPDATE products SET stock = GREATEST(0, stock - %s) "
+                                    "WHERE id=%s AND track_inventory=TRUE",
+                                    (item["quantity"], item["product_id"]))
+    elif kind == "booking":
+        token = md.get("booking_token") or ""
+        amount = int(session.get("amount_total") or 0)
+        with _locked_tx() as cur:
+            cur.execute("SELECT id, payment_status FROM service_bookings "
+                        "WHERE booking_token=%s FOR UPDATE", (token,))
+            b = cur.fetchone()
+            if b and b["payment_status"] != "paid":
+                cur.execute("UPDATE service_bookings SET payment_status='paid', "
+                            "status='confirmed', amount_paid_cents=%s WHERE id=%s",
+                            (amount, b["id"]))
+
+
+def _handle_checkout_expired(session):
+    """Mark abandoned checkouts so they free their slot / show as cancelled."""
+    md = session.get("metadata") or {}
+    kind = md.get("kind")
+    if kind == "order":
+        execute_db("UPDATE orders SET status='cancelled' WHERE order_number=%s AND status='pending'",
+                   (md.get("order_number") or "",))
+    elif kind == "booking":
+        execute_db("UPDATE service_bookings SET payment_status='expired', status='cancelled' "
+                   "WHERE booking_token=%s AND payment_status='pending'",
+                   (md.get("booking_token") or "",))
 
 
 @bp.route("/api/stripe/webhook", methods=["POST"])
 def stripe_webhook():
-    """Stripe webhook. Full signature verification + checkout.session.completed
-    routing (flip orders/bookings to paid, idempotent FOR UPDATE) requires the
-    Stripe SDK + signing secret — a follow-on. We ack 200 so Stripe doesn't
-    retry-storm, and log when unconfigured."""
-    print("[commerce] Stripe webhook received (verification not configured in this build)")
+    """Verify the Stripe signature, dedupe by event id, then route
+    checkout.session.{completed,expired}. Returns 400 on a bad/again-unverifiable
+    signature; 200 once accepted (so Stripe stops retrying)."""
+    payload = request.get_data()
+    sig = request.headers.get("Stripe-Signature", "")
+    secret = stripe_client.get_webhook_secret()
+    if not secret:
+        # No signing secret configured — we cannot trust the body, so refuse
+        # rather than act on an unauthenticated event.
+        return jsonify({"error": "webhook not configured"}), 503
+    if stripe_client.stripe is None:
+        return jsonify({"error": "stripe sdk missing"}), 503
+    try:
+        event = stripe_client.stripe.Webhook.construct_event(payload, sig, secret)
+    except Exception as e:
+        return jsonify({"error": "signature verification failed", "detail": str(e)[:120]}), 400
+
+    eid = event.get("id") or ""
+    etype = event.get("type") or ""
+    if eid and not _claim_event(eid, etype):
+        return jsonify({"received": True, "duplicate": True}), 200
+
+    obj = (event.get("data") or {}).get("object") or {}
+    try:
+        if etype == "checkout.session.completed":
+            _handle_checkout_completed(obj)
+        elif etype == "checkout.session.expired":
+            _handle_checkout_expired(obj)
+    except Exception as e:
+        # Release the claim so Stripe's retry re-processes — otherwise a paid
+        # order whose flip failed here would be permanently stranded 'pending'.
+        if eid:
+            _unclaim_event(eid)
+        print(f"[commerce] webhook handler error for {etype}: {e}")
+        return jsonify({"error": "handler error"}), 500
     return jsonify({"received": True}), 200
