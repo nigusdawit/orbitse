@@ -419,6 +419,73 @@ def main():
         check("public deck has slide", len(pub["slides"]) == 1 and pub["slides"][0]["title"] == "Welcome")
         check("deck delete", admin.delete(f"/admin/api/presentations/{pid2}").status_code == 200)
 
+        # ----- M6: commerce -----
+        prod = admin.post("/admin/api/products", json={"slug": "mug", "name": "Mug",
+                                                       "price_cents": 1500, "stock": 10})
+        check("product created", prod.status_code == 201)
+        check("public products lists", any(p["slug"] == "mug" for p in anon.get("/api/products").get_json()))
+        svc = admin.post("/admin/api/services", json={
+            "slug": "tasting", "name": "Wine Tasting", "pricing_model": "rsvp",
+            "requires_calendar": True, "capacity_per_slot": 2})
+        check("service created", svc.status_code == 201)
+        svid = svc.get_json()["id"]
+        # Weekly rule: every day 09:00-11:00, 60-min slots → 09:00 & 10:00.
+        for dow in range(7):
+            admin.post(f"/admin/api/services/{svid}/rules",
+                       json={"day_of_week": dow, "start_time": "09:00", "end_time": "11:00",
+                             "slot_minutes": 60})
+        avail = anon.get("/api/services/tasting/availability?days=2").get_json()
+        check("availability engine returns slots",
+              avail["requires_calendar"] and len(avail["days"]) >= 1
+              and "09:00:00" in avail["days"][0]["open_starts"])
+        # RSVP booking on a slot; capacity=2 so two succeed, third 409.
+        day0 = avail["days"][0]["date"]
+        b1 = anon.post("/api/services/tasting/book", json={"client_name": "A", "client_email": "a@x.com",
+                       "scheduled_date": day0, "scheduled_start": "09:00:00"})
+        check("rsvp booking 1 confirmed", b1.status_code == 201 and b1.get_json()["action"] == "rsvp_confirmed")
+        anon.post("/api/services/tasting/book", json={"client_name": "B", "client_email": "b@x.com",
+                  "scheduled_date": day0, "scheduled_start": "09:00:00"})
+        b3 = anon.post("/api/services/tasting/book", json={"client_name": "C", "client_email": "c@x.com",
+                       "scheduled_date": day0, "scheduled_start": "09:00:00"})
+        check("rsvp capacity enforced (3rd rejected)", b3.status_code == 409)
+        # Filled slot drops out of availability.
+        avail2 = anon.get("/api/services/tasting/availability?days=2").get_json()
+        slot0 = next((s for s in avail2["days"][0]["slots"] if s["start"] == "09:00:00"), None)
+        check("filled slot removed from availability", slot0 is None)
+        check("stripe-settings GET", admin.get("/admin/api/stripe-settings").status_code == 200)
+        check("stripe webhook acks", anon.post("/api/stripe/webhook", json={}).status_code == 200)
+
+        # ----- M6: tenancy -----
+        pf = admin.get("/admin/api/plans-features").get_json()
+        check("plans-features lists", len(pf["features"]) > 0)
+        tog = admin.post("/admin/api/features/toggle", json={"name": "reviews", "enabled": False})
+        check("feature toggle off", tog.get_json()["enabled"] is False)
+        admin.post("/admin/api/features/toggle", json={"name": "reviews", "enabled": True})
+        ek = admin.post("/admin/api/embed-keys", json={"label": "site1",
+                        "origin_allowlist": ["https://site1.com"]})
+        check("embed key created", ek.status_code == 201 and ek.get_json()["embed_key"].startswith("pk_"))
+        check("embed keys list", len(admin.get("/admin/api/embed-keys").get_json()["keys"]) >= 1)
+        snap = admin.get("/admin/api/snapshot/export").get_json()
+        check("snapshot export has gallery", "gallery_cards" in snap["tables"])
+        check("secrets view presence-only",
+              "database_configured" in admin.get("/admin/api/secrets").get_json())
+        check("devconsole overview", "counts" in admin.get("/admin/api/devconsole/overview").get_json())
+
+        # ----- M6: VELO -----
+        import admin_ai_platform.config as _cfg
+        _cfg.VELO_SHARED_SECRET = "topsecret"  # enable the surface for the test
+        check("velo rejects bad secret",
+              anon.post("/api/velo/command", json={"command": "ping", "secret": "wrong"}).status_code == 403)
+        vp = anon.post("/api/velo/command", json={"command": "ping", "secret": "topsecret"})
+        check("velo ping authed", vp.status_code == 200 and vp.get_json()["result"]["pong"])
+        vf = anon.post("/api/velo/command", json={"command": "set_feature", "secret": "topsecret",
+                       "params": {"name": "voice", "enabled": False}})
+        check("velo set_feature", vf.get_json()["result"]["enabled"] is False)
+        check("velo unknown command 400",
+              anon.post("/api/velo/command", json={"command": "nope", "secret": "topsecret"}).status_code == 400)
+        check("velo status liveness", anon.get("/api/velo/status").status_code == 200)
+        _cfg.VELO_SHARED_SECRET = ""  # restore
+
         print("[gate] schema + integration checks complete", flush=True)
 
     finally:

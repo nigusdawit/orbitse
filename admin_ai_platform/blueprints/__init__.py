@@ -39,6 +39,10 @@ _BLUEPRINT_SPECS = [
     ("messaging", "bp"),
     ("reviews", "bp"),
     ("presentations", "bp"),
+    # M6
+    ("commerce", "bp"),
+    ("tenancy", "bp"),
+    ("velo", "bp"),
     # ... later milestones append here.
 ]
 

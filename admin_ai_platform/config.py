@@ -169,6 +169,8 @@ SCHEDULER_TICK_SECONDS = env_int("SCHEDULER_TICK_SECONDS", 30)
 # ---------------------------------------------------------------------------
 # Optional integrations (all fail-open — feature disables, app still boots)
 # ---------------------------------------------------------------------------
+STRIPE_SECRET_KEY = env_str("STRIPE_SECRET_KEY")
+STRIPE_WEBHOOK_SECRET = env_str("STRIPE_WEBHOOK_SECRET")
 RESEND_API_KEY = env_str("RESEND_API_KEY")
 RESEND_FROM_EMAIL = env_str("RESEND_FROM_EMAIL")
 RESEND_WEBHOOK_SECRET = env_str("RESEND_WEBHOOK_SECRET")
@@ -182,6 +184,9 @@ TRIPADVISOR_API_KEY = env_str("TRIPADVISOR_API_KEY")
 SENTRY_DSN = env_str("SENTRY_DSN")
 
 SKIP_ALEMBIC = env_bool("SKIP_ALEMBIC", False)
+
+# VELO master agent shared secret (agency multi-install control channel).
+VELO_SHARED_SECRET = env_str("VELO_SHARED_SECRET")
 
 
 def summary() -> dict:
