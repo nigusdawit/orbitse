@@ -1,0 +1,87 @@
+/* =============================================================================
+ * loader.js — Admin/AI Platform embed snippet
+ * =============================================================================
+ * Drop the concierge widget onto ANY website with one tag:
+ *
+ *   <script src="https://YOUR-PLATFORM/embed/loader.js"
+ *           data-embed-key="pk_..."
+ *           data-api-base="https://YOUR-PLATFORM"
+ *           defer></script>
+ *
+ * It mounts the widget inside a Shadow DOM so the host page's CSS can never
+ * collide with (or leak into) the widget. The widget's API calls carry the
+ * embed key; the platform validates it + the request Origin against the key's
+ * allowlist (see embed_auth.py).
+ *
+ * No build step, no dependencies. Idempotent (won't double-mount).
+ * ========================================================================== */
+(function () {
+  "use strict";
+
+  // Find our own <script> tag to read its data-* config.
+  var self = document.currentScript ||
+    (function () {
+      var s = document.getElementsByTagName("script");
+      return s[s.length - 1];
+    })();
+  if (!self) return;
+
+  var embedKey = self.getAttribute("data-embed-key") || "";
+  // api-base defaults to the origin the loader was served from.
+  var apiBase = self.getAttribute("data-api-base") || "";
+  if (!apiBase) {
+    try { apiBase = new URL(self.src).origin; } catch (e) { apiBase = ""; }
+  }
+
+  if (window.__aapEmbedMounted) return;   // idempotent
+  window.__aapEmbedMounted = true;
+
+  // The widget's API helpers read these globals.
+  window.__aapApiBase = apiBase;
+  window.__aapEmbedKey = embedKey;
+
+  function loadScript(src) {
+    return new Promise(function (resolve, reject) {
+      var s = document.createElement("script");
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = function () { reject(new Error("failed to load " + src)); };
+      document.head.appendChild(s);
+    });
+  }
+
+  function mount() {
+    // Style-isolated host: a fixed-position div with a shadow root.
+    var host = document.createElement("div");
+    host.id = "aap-embed-host";
+    host.style.cssText = "position:fixed;z-index:2147482000;right:0;bottom:0;width:0;height:0;";
+    document.body.appendChild(host);
+    var shadow = host.attachShadow ? host.attachShadow({ mode: "open" }) : host;
+
+    // Inject the widget stylesheet INTO the shadow root (scoped, no host bleed).
+    var link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = apiBase + "/widget/chat-ui.css";
+    shadow.appendChild(link);
+
+    // Mount point inside the shadow root.
+    var mountEl = document.createElement("div");
+    shadow.appendChild(mountEl);
+
+    // voice.js (optional) then chat-ui.js define window.VoiceAgent / ChatUI.
+    loadScript(apiBase + "/widget/voice.js").catch(function () {})
+      .then(function () { return loadScript(apiBase + "/widget/chat-ui.js"); })
+      .then(function () {
+        if (window.ChatUI && typeof window.ChatUI.init === "function") {
+          window.ChatUI.init({ apiBase: apiBase, embedKey: embedKey, mount: mountEl });
+        }
+      })
+      .catch(function (e) { console.warn("[aap-embed] widget load failed", e); });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", mount);
+  } else {
+    mount();
+  }
+})();

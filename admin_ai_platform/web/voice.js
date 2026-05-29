@@ -27,6 +27,7 @@
 
   var VOICE = {
     apiBase: "",
+    embedKey: "",
     settings: null,
     enabled: false,
     introPlayed: false,
@@ -40,12 +41,18 @@
   };
 
   function api(path) { return (VOICE.apiBase || "") + path; }
+  function hdrs(extra) {
+    var h = extra || {};
+    if (VOICE.embedKey) h["X-Embed-Key"] = VOICE.embedKey;
+    return h;
+  }
 
   // ---- Settings -----------------------------------------------------------
   function init(opts) {
     opts = opts || {};
     VOICE.apiBase = opts.apiBase || "";
-    return fetch(api("/api/voice/settings"))
+    VOICE.embedKey = opts.embedKey || "";
+    return fetch(api("/api/voice/settings"), { headers: hdrs() })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (s) {
         VOICE.settings = s || {};
@@ -65,7 +72,7 @@
       utm_campaign: utm.utm_campaign || "", referrer: document.referrer || "",
       session_id: utm.session_id || "",
     }).toString();
-    fetch(api("/api/voice/intro?" + qs))
+    fetch(api("/api/voice/intro?" + qs), { headers: hdrs() })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (data) {
         if (data && data.intro && data.intro.audio_url) {
@@ -95,7 +102,7 @@
   // Resolve a sentence's playable URL via the prepare handshake.
   function prepareSentence(text, sessionId) {
     return fetch(api("/api/voice/tts/stream/prepare"), {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: hdrs({ "Content-Type": "application/json" }),
       body: JSON.stringify({ text: text, session_id: sessionId || "" }),
     })
       .then(function (r) { return r.ok ? r.json() : null; })
@@ -223,7 +230,7 @@
         var fd = new FormData();
         fd.append("audio", blob, "audio.webm");
         fd.append("session_id", global.__chatSessionId || "");
-        fetch(api("/api/voice/stt"), { method: "POST", body: fd })
+        fetch(api("/api/voice/stt"), { method: "POST", body: fd, headers: hdrs() })
           .then(function (r) { return r.ok ? r.json() : null; })
           .then(function (d) { if (d && d.text && onText) onText(d.text.trim()); })
           .catch(function () {});
