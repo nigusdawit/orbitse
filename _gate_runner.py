@@ -841,6 +841,38 @@ def main():
         check("admin stripe sync-status lists products",
               admin.get("/admin/api/stripe/sync-status").status_code == 200)
 
+        # Refund hardening: the paid order (_onum) has a fake PI; over-refund and
+        # zero/negative amounts are rejected before any Stripe call; a valid
+        # partial refund flips to partially_refunded and tracks refunded_cents.
+        class _FakeRefund:
+            @staticmethod
+            def create(**k):
+                return _FakeObj(id="re_FAKE")
+
+        class _FakeStripeRefund:
+            Refund = _FakeRefund
+        _sc.get_stripe = lambda: _FakeStripeRefund
+        # _onum total is 3000, currently 'paid' with stripe_payment_intent_id.
+        check("refund rejects over-amount",
+              admin.post(f"/admin/api/orders/{_oid}/refund",
+                         json={"amount_cents": 99999}).status_code == 400)
+        check("refund rejects zero amount",
+              admin.post(f"/admin/api/orders/{_oid}/refund",
+                         json={"amount_cents": 0}).status_code == 400)
+        # Note: _oid was set to 'fulfilled' above — still refundable.
+        _rf = admin.post(f"/admin/api/orders/{_oid}/refund", json={"amount_cents": 1000})
+        check("partial refund -> partially_refunded",
+              _rf.get_json().get("status") == "partially_refunded")
+        check("partial refund tracks refunded_cents",
+              query_db("SELECT refunded_cents FROM orders WHERE id=%s", (_oid,),
+                       fetchone=True)["refunded_cents"] == 1000)
+        _rf2 = admin.post(f"/admin/api/orders/{_oid}/refund", json={"amount_cents": 2000})
+        check("refund balance -> fully refunded",
+              _rf2.get_json().get("status") == "refunded")
+        check("refund past balance rejected (409)",
+              admin.post(f"/admin/api/orders/{_oid}/refund",
+                         json={"amount_cents": 100}).status_code == 409)
+
         # Restore patched module state.
         _sc.get_stripe = _orig_get_stripe
         _sc.stripe = _orig_stripe_attr

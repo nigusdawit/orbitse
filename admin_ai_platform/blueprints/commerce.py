@@ -649,7 +649,8 @@ def admin_order_detail(oid):
     return jsonify(o)
 
 
-_ORDER_STATUSES = ("pending", "paid", "fulfilled", "cancelled", "refunded", "failed")
+_ORDER_STATUSES = ("pending", "paid", "fulfilled", "cancelled", "refunded",
+                   "partially_refunded", "failed")
 
 
 @bp.route("/admin/api/orders/<int:oid>/status", methods=["PUT"])
@@ -668,31 +669,69 @@ def admin_order_status(oid):
 @bp.route("/admin/api/orders/<int:oid>/refund", methods=["POST"])
 @admin_required
 def admin_order_refund(oid):
-    """Refund a paid order via Stripe (full or partial ``amount_cents``), then
-    mark it refunded. Requires a recorded charge or payment-intent id."""
-    o = query_db("SELECT * FROM orders WHERE id=%s", (oid,), fetchone=True)
-    if not o:
-        return jsonify({"error": "Not found"}), 404
-    if o["status"] not in ("paid", "fulfilled"):
-        return jsonify({"error": "only paid/fulfilled orders can be refunded"}), 409
+    """Refund a paid order via Stripe (full or partial ``amount_cents``).
+
+    Hardened against the two ways a naive refund leaks money: (1) the order row
+    is locked FOR UPDATE and its refundable state re-checked *inside* the txn so
+    two concurrent refund clicks can't both call Stripe (TOCTOU); (2) the amount
+    is validated against the remaining refundable balance so an over-refund or a
+    zero/negative amount is rejected before any Stripe call. A deterministic
+    idempotency key makes a retried request a no-op at Stripe too."""
+    d = request.get_json() or {}
     s, err = _get_stripe()
     if err:
         return err
-    d = request.get_json() or {}
-    kwargs = {}
-    if o.get("stripe_charge_id"):
-        kwargs["charge"] = o["stripe_charge_id"]
-    elif o.get("stripe_payment_intent_id"):
-        kwargs["payment_intent"] = o["stripe_payment_intent_id"]
-    else:
-        return jsonify({"error": "no charge/payment_intent recorded"}), 409
-    if d.get("amount_cents"):
-        kwargs["amount"] = int(d["amount_cents"])
+
+    # Phase 1: claim the order under a row lock, compute the refund amount, and
+    # provisionally mark it so a concurrent request sees the new state. We do the
+    # Stripe call OUTSIDE the lock (network I/O under a row lock is an
+    # availability foot-gun), guarded by a 'refunding' marker we set here.
     try:
-        s.Refund.create(**kwargs)
+        with _locked_tx() as cur:
+            cur.execute("SELECT * FROM orders WHERE id=%s FOR UPDATE", (oid,))
+            o = cur.fetchone()
+            if not o:
+                return jsonify({"error": "Not found"}), 404
+            if o["status"] not in ("paid", "fulfilled", "partially_refunded"):
+                return jsonify({"error": "only paid/fulfilled orders can be refunded"}), 409
+            charge = o.get("stripe_charge_id") or ""
+            pi = o.get("stripe_payment_intent_id") or ""
+            if not (charge or pi):
+                return jsonify({"error": "no charge/payment_intent recorded"}), 409
+            already = int(o.get("refunded_cents") or 0)
+            remaining = int(o["total_cents"]) - already
+            if remaining <= 0:
+                return jsonify({"error": "nothing left to refund"}), 409
+            # Distinguish "omitted" (→ full remaining) from an explicit 0 (which
+            # must be rejected, not silently coerced to a full refund).
+            amount = int(d["amount_cents"]) if "amount_cents" in d else remaining
+            if amount <= 0 or amount > remaining:
+                return jsonify({"error": f"amount must be 1..{remaining} cents"}), 400
+            # Mark in-flight so a racing request bails (we re-check on commit).
+            cur.execute("UPDATE orders SET refunded_cents=refunded_cents+%s WHERE id=%s",
+                        (amount, oid))
     except Exception as e:
+        return jsonify({"error": "refund_lock_failed", "detail": str(e)[:200]}), 500
+
+    # Phase 2: call Stripe with a deterministic idempotency key (order + running
+    # refunded total) so a network retry never double-refunds.
+    kwargs = {"amount": amount}
+    if charge:
+        kwargs["charge"] = charge
+    else:
+        kwargs["payment_intent"] = pi
+    idem = f"refund-{o['order_number']}-{already + amount}"
+    try:
+        s.Refund.create(idempotency_key=idem, **kwargs)
+    except Exception as e:
+        # Roll back the provisional increment so the operator can retry.
+        execute_db("UPDATE orders SET refunded_cents=GREATEST(0, refunded_cents-%s) WHERE id=%s",
+                   (amount, oid))
         return jsonify({"error": "stripe_refund_failed", "detail": str(e)[:200]}), 502
-    row = execute_db("UPDATE orders SET status='refunded' WHERE id=%s RETURNING *", (oid,))
+
+    new_total = already + amount
+    new_status = "refunded" if new_total >= int(o["total_cents"]) else "partially_refunded"
+    row = execute_db("UPDATE orders SET status=%s WHERE id=%s RETURNING *", (new_status, oid))
     return jsonify(row)
 
 
@@ -708,6 +747,16 @@ def _claim_event(event_id, event_type):
     except Exception as e:
         print(f"[commerce] event claim failed (processing anyway): {e}")
         return True
+
+
+def _unclaim_event(event_id):
+    """Release a claimed event so a Stripe retry re-processes it. Called when the
+    handler raised AFTER the claim — otherwise the retry would hit the dedupe
+    path and the paid order would be stranded as 'pending'."""
+    try:
+        execute_db("DELETE FROM stripe_events WHERE event_id=%s", (event_id,))
+    except Exception as e:
+        print(f"[commerce] event unclaim failed: {e}")
 
 
 def _handle_checkout_completed(session):
@@ -790,6 +839,10 @@ def stripe_webhook():
         elif etype == "checkout.session.expired":
             _handle_checkout_expired(obj)
     except Exception as e:
+        # Release the claim so Stripe's retry re-processes — otherwise a paid
+        # order whose flip failed here would be permanently stranded 'pending'.
+        if eid:
+            _unclaim_event(eid)
         print(f"[commerce] webhook handler error for {etype}: {e}")
         return jsonify({"error": "handler error"}), 500
     return jsonify({"received": True}), 200

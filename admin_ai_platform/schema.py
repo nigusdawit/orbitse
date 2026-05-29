@@ -903,6 +903,7 @@ CREATE TABLE IF NOT EXISTS orders (
     currency                 VARCHAR(3) NOT NULL DEFAULT 'USD',
     stripe_payment_intent_id VARCHAR(100) DEFAULT '',
     stripe_charge_id         VARCHAR(100) DEFAULT '',
+    refunded_cents           INTEGER NOT NULL DEFAULT 0,
     shipping_address         JSONB NOT NULL DEFAULT '{}'::jsonb,
     notes                    TEXT NOT NULL DEFAULT '',
     created_at               TIMESTAMP DEFAULT NOW(),
