@@ -308,6 +308,32 @@ def main():
         # Unknown webhook token → 404.
         check("unknown webhook 404", anon.post("/automations/hook/nope").status_code == 404)
 
+        # ----- M4: scraper -----
+        from admin_ai_platform.reused import scraper as _scraper
+        ssrf = _scraper.fetch_url("http://127.0.0.1/secret")
+        check("scraper SSRF blocks loopback", ssrf.get("ok") is False)
+        check("scraper-settings GET", admin.get("/admin/api/scraper-settings").status_code == 200)
+        check("scraper-settings PUT",
+              admin.put("/admin/api/scraper-settings",
+                        json={"disallowed_domains": "evil.com", "render_enabled": False}).status_code == 200)
+        check("scraper-status", admin.get("/admin/api/scraper-status").status_code == 200)
+        sj = admin.post("/admin/api/scrape-jobs", json={"input_mode": "url", "url": "https://example.com",
+                                                        "target_shape": "free_form"})
+        check("scrape job created", sj.status_code == 201 and sj.get_json().get("id"))
+        check("scrape job url required",
+              admin.post("/admin/api/scrape-jobs", json={"input_mode": "url"}).status_code == 400)
+        check("scrape jobs list", "jobs" in admin.get("/admin/api/scrape-jobs").get_json())
+        sch = admin.post("/admin/api/scrape-schedules", json={"name": "daily news", "url": "https://example.com",
+                                                              "schedule_mode": "daily"})
+        check("scrape schedule created", sch.status_code == 201)
+        schid = sch.get_json()["id"]
+        check("scrape schedule patch",
+              admin.patch(f"/admin/api/scrape-schedules/{schid}", json={"enabled": False}).status_code == 200)
+        check("scrape schedule resume",
+              admin.post(f"/admin/api/scrape-schedules/{schid}/resume").status_code == 200)
+        check("scrape schedule delete",
+              admin.delete(f"/admin/api/scrape-schedules/{schid}").status_code == 200)
+
         print("[gate] schema + integration checks complete", flush=True)
 
     finally:

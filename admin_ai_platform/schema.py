@@ -43,6 +43,7 @@ IN_TABLES_M0_M1 = (
     # M4
     "automations", "automation_runs", "automation_versions",
     "automation_settings", "automation_webhook_rejections",
+    "scraper_settings", "scrape_jobs", "scrape_schedules",
 )
 
 # Tables that belong to the original public website and must NOT be created by
@@ -650,6 +651,66 @@ CREATE TABLE IF NOT EXISTS automation_webhook_rejections (
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_rejections_automation
     ON automation_webhook_rejections (automation_id, created_at DESC);
+
+-- ============================ SCRAPER (M4) ==============================
+-- The upstream app hangs scraper config off site_settings; this package has no
+-- public-site settings table, so config lives in its own singleton instead.
+CREATE TABLE IF NOT EXISTS scraper_settings (
+    id                   INTEGER PRIMARY KEY DEFAULT 1,
+    disallowed_domains   TEXT NOT NULL DEFAULT '',
+    render_enabled       BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at           TIMESTAMP DEFAULT NOW()
+);
+INSERT INTO scraper_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS scrape_jobs (
+    id              SERIAL PRIMARY KEY,
+    input_mode      VARCHAR(20) NOT NULL DEFAULT 'url',
+    url             TEXT NOT NULL DEFAULT '',
+    objective       TEXT NOT NULL DEFAULT '',
+    target_shape    VARCHAR(40) NOT NULL DEFAULT 'free_form',
+    custom_schema   JSONB,
+    status          VARCHAR(20) NOT NULL DEFAULT 'queued',
+    result_json     JSONB,
+    error           TEXT NOT NULL DEFAULT '',
+    schedule_id     INTEGER,
+    result_signature TEXT NOT NULL DEFAULT '',
+    changed_from_previous BOOLEAN NOT NULL DEFAULT FALSE,
+    progress_steps  JSONB NOT NULL DEFAULT '[]'::jsonb,
+    stop_requested  BOOLEAN NOT NULL DEFAULT FALSE,
+    partial_state   JSONB,
+    requested_at    TIMESTAMP DEFAULT NOW(),
+    completed_at    TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_scrape_jobs_status ON scrape_jobs (status);
+CREATE INDEX IF NOT EXISTS idx_scrape_jobs_requested ON scrape_jobs (requested_at DESC);
+CREATE INDEX IF NOT EXISTS idx_scrape_jobs_schedule ON scrape_jobs (schedule_id, requested_at DESC);
+
+CREATE TABLE IF NOT EXISTS scrape_schedules (
+    id              SERIAL PRIMARY KEY,
+    name            VARCHAR(200) NOT NULL DEFAULT '',
+    input_mode      VARCHAR(20) NOT NULL DEFAULT 'url',
+    url             TEXT NOT NULL DEFAULT '',
+    objective       TEXT NOT NULL DEFAULT '',
+    target_shape    VARCHAR(40) NOT NULL DEFAULT 'free_form',
+    custom_schema   JSONB,
+    schedule_mode   VARCHAR(20) NOT NULL DEFAULT 'daily',
+    interval_minutes INTEGER NOT NULL DEFAULT 60,
+    daily_time      VARCHAR(5) NOT NULL DEFAULT '09:00',
+    weekly_dow      INTEGER NOT NULL DEFAULT 1,
+    enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+    notify_email    TEXT NOT NULL DEFAULT '',
+    notify_phone    TEXT NOT NULL DEFAULT '',
+    notify_only_on_change BOOLEAN NOT NULL DEFAULT TRUE,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    failure_threshold INTEGER NOT NULL DEFAULT 5,
+    auto_paused     BOOLEAN NOT NULL DEFAULT FALSE,
+    last_run_at     TIMESTAMP,
+    last_job_id     INTEGER,
+    next_run_at     TIMESTAMP,
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_scrape_schedules_enabled ON scrape_schedules (enabled, next_run_at);
 """
 
 # Seeds — singletons + default tenant + reference prices. All idempotent.
