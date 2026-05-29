@@ -102,6 +102,19 @@ def create_app(*, init_schema: bool = True, start_scheduler: bool = True) -> Fla
     except Exception as e:
         print(f"[app] automations wiring skipped: {e}", file=sys.stderr)
 
+    # Wire the RAG/KB module (pgvector). init_module just stashes deps; the
+    # blueprint guards every call behind schema.rag_available() so a DB without
+    # pgvector degrades cleanly to "KB unavailable" instead of erroring.
+    try:
+        from . import llm as _llm2
+        from .db import query_db as _q, execute_db as _e
+        from .cost import record_chat_cost as _rc
+        from .reused_di import rag
+        rag.init_module(openai_client=_llm2.openai_client, query_db=_q,
+                        execute_db=_e, record_cost=_rc)
+    except Exception as e:
+        print(f"[app] rag wiring skipped: {e}", file=sys.stderr)
+
     # Mount blueprints that exist at this milestone.
     from .blueprints import register_all
     register_all(app)

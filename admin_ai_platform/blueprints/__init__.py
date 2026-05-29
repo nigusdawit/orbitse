@@ -34,6 +34,7 @@ _BLUEPRINT_SPECS = [
     # M4
     ("automations", "bp"),
     ("scraper", "bp"),
+    ("rag", "bp"),
     # ... later milestones append here.
 ]
 

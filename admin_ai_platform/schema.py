@@ -755,8 +755,79 @@ ON CONFLICT (provider, model, surface) DO NOTHING;
 """
 
 
+# RAG tables need the pgvector extension. They're created in a SEPARATE guarded
+# step so a Postgres without pgvector (e.g. the embedded test DB) still boots —
+# RAG features then degrade to "unavailable" instead of failing the whole schema.
+# Columns match reused_di/rag.py exactly (storage_key, content_text, vector(1536)).
+_RAG_DDL = r"""
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS rag_documents (
+    id              SERIAL PRIMARY KEY,
+    tenant_id       INTEGER NOT NULL DEFAULT 1 REFERENCES tenants(id) ON DELETE CASCADE,
+    filename        TEXT NOT NULL,
+    storage_key     TEXT NOT NULL DEFAULT '',
+    mime            TEXT NOT NULL DEFAULT '',
+    size_bytes      BIGINT NOT NULL DEFAULT 0,
+    page_count      INTEGER NOT NULL DEFAULT 0,
+    chunk_count     INTEGER NOT NULL DEFAULT 0,
+    token_count     INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'indexing',
+    error_text      TEXT NOT NULL DEFAULT '',
+    source_mtime    DOUBLE PRECISION,
+    indexed_at      TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS rag_documents_tenant_idx ON rag_documents (tenant_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS rag_chunks (
+    id              BIGSERIAL PRIMARY KEY,
+    document_id     INTEGER NOT NULL REFERENCES rag_documents(id) ON DELETE CASCADE,
+    tenant_id       INTEGER NOT NULL DEFAULT 1,
+    chunk_index     INTEGER NOT NULL,
+    page_number     INTEGER,
+    content_text    TEXT NOT NULL,
+    token_count     INTEGER NOT NULL DEFAULT 0,
+    embedding       vector(1536),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS rag_chunks_doc_idx ON rag_chunks (document_id, chunk_index);
+CREATE INDEX IF NOT EXISTS rag_chunks_tenant_idx ON rag_chunks (tenant_id);
+"""
+
+_rag_ready = False
+
+
+def rag_available() -> bool:
+    """True if the RAG tables exist (i.e. pgvector was available at boot)."""
+    return _rag_ready
+
+
+def _try_init_rag(conn):
+    """Attempt to create the pgvector-backed RAG tables. On any failure (no
+    pgvector extension available), log and leave RAG disabled — never fatal."""
+    global _rag_ready
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_RAG_DDL)
+            # Best-effort cosine index (separate so its failure doesn't drop tables).
+            try:
+                cur.execute("CREATE INDEX IF NOT EXISTS rag_chunks_embedding_idx "
+                            "ON rag_chunks USING ivfflat (embedding vector_cosine_ops) "
+                            "WITH (lists = 100)")
+            except Exception:
+                pass
+        _rag_ready = True
+    except Exception as e:
+        import sys
+        print(f"[schema] RAG/pgvector unavailable — KB features disabled: "
+              f"{str(e)[:160]}", file=sys.stderr)
+        _rag_ready = False
+
+
 def init_db():
-    """Create the package's owned tables + seed singletons. Idempotent."""
+    """Create the package's owned tables + seed singletons. Idempotent.
+    RAG tables are attempted separately and skipped if pgvector is missing."""
     conn = get_db()
     try:
         with conn.cursor() as cur:
@@ -764,3 +835,9 @@ def init_db():
             cur.execute(_SEED)
     finally:
         conn.close()
+    # RAG in its own connection so a pgvector failure can't poison the main txn.
+    rag_conn = get_db()
+    try:
+        _try_init_rag(rag_conn)
+    finally:
+        rag_conn.close()

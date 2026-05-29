@@ -334,6 +334,28 @@ def main():
         check("scrape schedule delete",
               admin.delete(f"/admin/api/scrape-schedules/{schid}").status_code == 200)
 
+        # ----- M4: RAG/KB graceful degradation (this gate DB has no pgvector) -----
+        from admin_ai_platform import schema as _schema
+        from admin_ai_platform.tools import get_active_chat_tools as _tools_now
+        if _schema.rag_available():
+            # If a future gate DB DOES have pgvector, assert the happy path.
+            check("kb list 200 (pgvector present)",
+                  admin.get("/admin/api/kb/list").status_code == 200)
+            check("kb tool offered when available",
+                  any(t["function"]["name"] == "lookup_knowledge_base" for t in _tools_now()))
+        else:
+            check("kb endpoints 503 without pgvector",
+                  admin.get("/admin/api/kb/list").status_code == 503)
+            check("kb upload 503 without pgvector",
+                  admin.post("/admin/api/kb/upload").status_code == 503)
+            check("kb tool hidden when unavailable",
+                  not any(t["function"]["name"] == "lookup_knowledge_base" for t in _tools_now()))
+            # The tool executor also degrades cleanly if called directly.
+            kbres, _ = execute_chat_tool("lookup_knowledge_base", '{"query":"x"}', session_id="s")
+            check("kb tool executor degrades cleanly", "unavailable" in kbres)
+        check("rag blueprint registered",
+              any("/admin/api/kb/list" in str(r) for r in app.url_map.iter_rules()))
+
         print("[gate] schema + integration checks complete", flush=True)
 
     finally:
