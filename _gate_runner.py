@@ -879,6 +879,99 @@ def main():
         _os11.environ.pop("STRIPE_WEBHOOK_SECRET", None)
         _sc.invalidate_cache()
 
+        # ----- M12: Events ticketing ------------------------------------------
+        check("events table present", table_exists("events"))
+        check("event_rsvps table present", table_exists("event_rsvps"))
+        check("lookup_events registered", "lookup_events" in tools.CHAT_LOOKUP_FUNCTIONS)
+
+        # Admin create (free) + public reads.
+        execute_db("DELETE FROM events")
+        r_ce = admin.post("/admin/api/events",
+                          json={"slug": "gala", "title": "Spring Gala", "price_mode": "free",
+                                "capacity": 2, "status": "published"})
+        check("admin create free event 201", r_ce.status_code == 201)
+        check("public events lists it",
+              any(e["slug"] == "gala" for e in c.get("/api/events").get_json()))
+        _ev = c.get("/api/events/gala").get_json()
+        check("public event detail seats_remaining=2", _ev.get("seats_remaining") == 2)
+
+        # Free RSVP confirmed immediately + reserves a seat.
+        r_rsvp = c.post("/api/events/gala/rsvp",
+                        json={"name": "A", "email": "a@gate.test", "guests": 1})
+        check("free RSVP confirmed", r_rsvp.get_json().get("action") == "rsvp_confirmed")
+        check("seats decremented after RSVP",
+              c.get("/api/events/gala").get_json().get("seats_remaining") == 1)
+
+        # Capacity enforced: 2-guest RSVP would exceed the remaining 1 → 409.
+        r_full = c.post("/api/events/gala/rsvp",
+                        json={"name": "B", "email": "b@gate.test", "guests": 2})
+        check("over-capacity RSVP rejected (409)", r_full.status_code == 409)
+        # Exactly filling the last seat is allowed.
+        check("last seat RSVP allowed",
+              c.post("/api/events/gala/rsvp",
+                     json={"name": "C", "email": "c@gate.test", "guests": 1}).status_code == 201)
+        check("event now sold out",
+              c.get("/api/events/gala").get_json().get("seats_remaining") == 0)
+
+        # lookup_events reflects capacity.
+        _le = tools.lookup_events(slug="gala")
+        check("lookup_events returns sold-out seats_remaining=0",
+              _le and _le[0]["seats_remaining"] == 0)
+
+        # Paid event → pending RSVP + Stripe redirect (fake), webhook confirms.
+        _sc.get_stripe = lambda: _FakeStripeCheckout   # reuse the M11 fake
+        admin.post("/admin/api/events",
+                   json={"slug": "concert", "title": "Concert", "price_mode": "paid",
+                         "price_cents": 2000, "capacity": 50, "status": "published"})
+        r_paid = c.post("/api/events/concert/rsvp",
+                        json={"name": "P", "email": "p@gate.test", "guests": 2})
+        check("paid RSVP returns redirect + checkout_url",
+              r_paid.get_json().get("action") == "redirect"
+              and r_paid.get_json().get("checkout_url"))
+        _ptok = r_paid.get_json().get("rsvp_token")
+        _prsvp = query_db("SELECT payment_status, status, amount_cents FROM event_rsvps "
+                          "WHERE rsvp_token=%s", (_ptok,), fetchone=True)
+        check("paid RSVP pending with per-guest amount (2000 x 2)",
+              _prsvp["payment_status"] == "pending" and _prsvp["amount_cents"] == 4000)
+        check("pending paid RSVP still reserves the seat",
+              tools.lookup_events(slug="concert")[0]["seats_remaining"] == 48)
+
+        # Webhook (event_rsvp completed) confirms; (expired) frees the seat.
+        _os11.environ["STRIPE_WEBHOOK_SECRET"] = "whsec_gate"
+        _sc.invalidate_cache()
+        _sc.stripe = _FakeStripeWebhook
+        _evt_holder["raise"] = False
+        _evt_holder["event"] = {
+            "id": "evt_EV1", "type": "checkout.session.completed",
+            "data": {"object": {"metadata": {"kind": "event_rsvp", "rsvp_token": _ptok}}}}
+        c.post("/api/stripe/webhook", data=b"{}", headers={"Stripe-Signature": "x"})
+        check("webhook confirms paid event RSVP",
+              query_db("SELECT payment_status, status FROM event_rsvps WHERE rsvp_token=%s",
+                       (_ptok,), fetchone=True)["payment_status"] == "paid")
+
+        # A second pending RSVP that expires releases its held seats.
+        r_paid2 = c.post("/api/events/concert/rsvp",
+                         json={"name": "Q", "email": "q@gate.test", "guests": 3})
+        _ptok2 = r_paid2.get_json().get("rsvp_token")
+        check("expiring RSVP held 3 seats (50-2-3=45)",
+              tools.lookup_events(slug="concert")[0]["seats_remaining"] == 45)
+        _evt_holder["event"] = {
+            "id": "evt_EV2", "type": "checkout.session.expired",
+            "data": {"object": {"metadata": {"kind": "event_rsvp", "rsvp_token": _ptok2}}}}
+        c.post("/api/stripe/webhook", data=b"{}", headers={"Stripe-Signature": "x"})
+        check("expired RSVP frees its seats (back to 48)",
+              tools.lookup_events(slug="concert")[0]["seats_remaining"] == 48)
+
+        # Admin RSVP list + delete.
+        _ceid = query_db("SELECT id FROM events WHERE slug='concert'", fetchone=True)["id"]
+        check("admin RSVP list returns rows",
+              len(admin.get(f"/admin/api/events/{_ceid}/rsvps").get_json()["rsvps"]) >= 1)
+
+        _sc.get_stripe = _orig_get_stripe
+        _sc.stripe = _orig_stripe_attr
+        _os11.environ.pop("STRIPE_WEBHOOK_SECRET", None)
+        _sc.invalidate_cache()
+
         print("[gate] schema + integration checks complete", flush=True)
 
     finally:

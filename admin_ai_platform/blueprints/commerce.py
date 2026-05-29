@@ -793,6 +793,15 @@ def _handle_checkout_completed(session):
                 cur.execute("UPDATE service_bookings SET payment_status='paid', "
                             "status='confirmed', amount_paid_cents=%s WHERE id=%s",
                             (amount, b["id"]))
+    elif kind == "event_rsvp":
+        token = md.get("rsvp_token") or ""
+        with _locked_tx() as cur:
+            cur.execute("SELECT id, payment_status FROM event_rsvps "
+                        "WHERE rsvp_token=%s FOR UPDATE", (token,))
+            r = cur.fetchone()
+            if r and r["payment_status"] != "paid":
+                cur.execute("UPDATE event_rsvps SET payment_status='paid', "
+                            "status='confirmed' WHERE id=%s", (r["id"],))
 
 
 def _handle_checkout_expired(session):
@@ -806,6 +815,11 @@ def _handle_checkout_expired(session):
         execute_db("UPDATE service_bookings SET payment_status='expired', status='cancelled' "
                    "WHERE booking_token=%s AND payment_status='pending'",
                    (md.get("booking_token") or "",))
+    elif kind == "event_rsvp":
+        # Free the held seat so capacity is released for other buyers.
+        execute_db("UPDATE event_rsvps SET payment_status='expired', status='cancelled' "
+                   "WHERE rsvp_token=%s AND payment_status='pending'",
+                   (md.get("rsvp_token") or "",))
 
 
 @bp.route("/api/stripe/webhook", methods=["POST"])

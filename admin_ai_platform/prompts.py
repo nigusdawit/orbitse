@@ -162,6 +162,24 @@ def build_site_index():
             f"PRESENTATION DECKS ({len(decks)} available) — call "
             f"lookup_presentation then start_presentation to launch:", lines))
 
+    try:
+        events = query_db(
+            "SELECT slug, title, start_at, price_mode FROM events "
+            "WHERE status='published' ORDER BY start_at NULLS LAST, sort_order, id "
+            "LIMIT 100") or []
+    except Exception:
+        events = []
+    if events:
+        lines = []
+        for e in events:
+            line = f'  - "{e["slug"]}" — "{e["title"]}" [{e.get("price_mode")}]'
+            if e.get("start_at"):
+                line += f' @ {e["start_at"].isoformat()}'
+            lines.append(line)
+        parts.append(_section(
+            f"EVENTS ({len(events)} upcoming) — call lookup_events for capacity "
+            f"+ price, then direct the visitor to RSVP:", lines))
+
     return "\n\n".join(p for p in parts if p)
 
 

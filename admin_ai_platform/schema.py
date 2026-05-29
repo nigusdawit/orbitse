@@ -52,6 +52,8 @@ IN_TABLES_M0_M1 = (
     "service_availability_rules", "service_availability_overrides", "service_bookings",
     "stripe_settings", "stripe_product_sync", "stripe_events", "tenant_embed_keys",
     "sso_used_jtis", "rate_buckets",
+    # M12
+    "events", "event_rsvps",
 )
 
 # Tables that belong to the original public website and must NOT be created by
@@ -1044,6 +1046,49 @@ CREATE TABLE IF NOT EXISTS stripe_events (
     event_type    VARCHAR(80) NOT NULL DEFAULT '',
     processed_at  TIMESTAMP DEFAULT NOW()
 );
+
+-- ============================ EVENTS / TICKETING (M12) ==================
+-- Event listings + RSVPs. price_mode: free (RSVP confirmed immediately),
+-- paid (price_cents per guest, Stripe Checkout), donation (donor-chosen
+-- amount at RSVP time, Stripe Checkout). capacity 0 = unlimited.
+CREATE TABLE IF NOT EXISTS events (
+    id             SERIAL PRIMARY KEY,
+    slug           VARCHAR(150) UNIQUE NOT NULL,
+    title          TEXT NOT NULL DEFAULT '',
+    description    TEXT NOT NULL DEFAULT '',
+    start_at       TIMESTAMP,
+    end_at         TIMESTAMP,
+    location       TEXT NOT NULL DEFAULT '',
+    capacity       INTEGER NOT NULL DEFAULT 0,
+    price_mode     VARCHAR(10) NOT NULL DEFAULT 'free',
+    price_cents    INTEGER NOT NULL DEFAULT 0,
+    currency       VARCHAR(8) NOT NULL DEFAULT 'usd',
+    image_url      TEXT NOT NULL DEFAULT '',
+    status         VARCHAR(20) NOT NULL DEFAULT 'published',
+    sort_order     INTEGER NOT NULL DEFAULT 0,
+    created_at     TIMESTAMP DEFAULT NOW(),
+    updated_at     TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_events_status_sort ON events (status, sort_order);
+CREATE INDEX IF NOT EXISTS idx_events_start ON events (start_at);
+
+CREATE TABLE IF NOT EXISTS event_rsvps (
+    id              SERIAL PRIMARY KEY,
+    event_id        INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    rsvp_token      VARCHAR(64) UNIQUE NOT NULL,
+    name            TEXT NOT NULL DEFAULT '',
+    email           TEXT NOT NULL DEFAULT '',
+    phone           TEXT NOT NULL DEFAULT '',
+    guests          INTEGER NOT NULL DEFAULT 1,
+    notes           TEXT NOT NULL DEFAULT '',
+    amount_cents    INTEGER NOT NULL DEFAULT 0,
+    currency        VARCHAR(8) NOT NULL DEFAULT 'usd',
+    payment_status  VARCHAR(20) NOT NULL DEFAULT 'none',
+    status          VARCHAR(20) NOT NULL DEFAULT 'confirmed',
+    stripe_session_id VARCHAR(200) NOT NULL DEFAULT '',
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_event_rsvps_event ON event_rsvps (event_id, status);
 
 -- ============================ TENANCY: EMBED KEYS (M6, feeds M7) =========
 -- Publishable per-tenant key for the cross-origin widget, with an origin

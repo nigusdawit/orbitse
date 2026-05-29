@@ -43,6 +43,8 @@ _BLUEPRINT_SPECS = [
     ("commerce", "bp"),
     ("tenancy", "bp"),
     ("velo", "bp"),
+    # M12
+    ("events", "bp"),
     # ... later milestones append here.
 ]
 

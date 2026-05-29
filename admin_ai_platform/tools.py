@@ -165,6 +165,37 @@ def lookup_presentation(slug=None, query=None, limit=3):
     return out
 
 
+def lookup_events(slug=None, query=None, limit=5):
+    """Upcoming published events with capacity + price mode (for RSVP/ticketing).
+    Returns seats_remaining so the AI can tell a visitor if an event is sold out."""
+    sql = ("SELECT id, slug, title, description, start_at, location, capacity, "
+           "price_mode, price_cents, currency FROM events WHERE status='published'")
+    params = []
+    if slug:
+        sql += " AND slug = %s"
+        params.append(slug)
+    if query:
+        sql += " AND (title ILIKE %s OR description ILIKE %s OR location ILIKE %s)"
+        params.extend([f"%{query}%", f"%{query}%", f"%{query}%"])
+    sql += " ORDER BY start_at NULLS LAST, sort_order, id LIMIT %s"
+    params.append(max(1, min(int(limit or 5), 20)))
+    rows = query_db(sql, tuple(params)) or []
+    out = []
+    for r in rows:
+        taken = int((query_db(
+            "SELECT COALESCE(SUM(guests),0) AS n FROM event_rsvps WHERE event_id=%s "
+            "AND status IN ('confirmed','pending') AND payment_status NOT IN ('expired','refunded')",
+            (r["id"],), fetchone=True) or {}).get("n", 0))
+        out.append({
+            "slug": r["slug"], "title": r.get("title"),
+            "description": trim_text(r.get("description"), 200),
+            "start_at": r["start_at"].isoformat() if r.get("start_at") else None,
+            "location": r.get("location"), "price_mode": r.get("price_mode"),
+            "price_cents": r.get("price_cents"), "currency": r.get("currency"),
+            "seats_remaining": (max(0, r["capacity"] - taken) if r["capacity"] else None)})
+    return out
+
+
 # --------------------------------------------------------------------------
 # Schemas + registry
 # --------------------------------------------------------------------------
@@ -211,6 +242,15 @@ CHAT_TOOLS = [
             "query": {"type": "string"}, "limit": {"type": "integer"}},
             "required": ["query"]},
     }},
+    {"type": "function", "function": {
+        "name": "lookup_events",
+        "description": ("Upcoming events with date, location, price mode (free/paid/"
+                        "donation) and seats remaining. Use when a visitor asks about "
+                        "events or wants to RSVP/buy tickets."),
+        "parameters": {"type": "object", "properties": {
+            "slug": {"type": "string"}, "query": {"type": "string"},
+            "limit": {"type": "integer"}}},
+    }},
 ]
 
 CHAT_LOOKUP_FUNCTIONS = {
@@ -219,6 +259,7 @@ CHAT_LOOKUP_FUNCTIONS = {
     "lookup_generated_page": lookup_generated_page,
     "lookup_presentation": lookup_presentation,
     "lookup_knowledge_base": lookup_knowledge_base,
+    "lookup_events": lookup_events,
 }
 
 # name -> (display_name, category) for the agent_skills registry sync.
@@ -228,6 +269,7 @@ SKILL_METADATA = {
     "lookup_generated_page": ("Search saved pages", "lookup"),
     "lookup_presentation": ("Look up presentations", "presentation"),
     "lookup_knowledge_base": ("Search knowledge base", "rag"),
+    "lookup_events": ("Look up events", "lookup"),
 }
 
 
