@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import datetime, timedelta
 
 from flask import Blueprint, request, jsonify
 
@@ -218,8 +219,88 @@ def run_now(sid):
 @bp.route("/admin/api/scrape-schedules/<int:sid>/resume", methods=["POST"])
 @admin_required
 def resume_schedule(sid):
-    row = execute_db("UPDATE scrape_schedules SET auto_paused=FALSE, consecutive_failures=0 "
-                     "WHERE id=%s RETURNING id", (sid,))
+    row = execute_db("UPDATE scrape_schedules SET auto_paused=FALSE, consecutive_failures=0, "
+                     "next_run_at=NOW() WHERE id=%s RETURNING id", (sid,))
     if not row:
         return jsonify({"error": "Not found"}), 404
     return jsonify({"success": True})
+
+
+# ---- scheduler tick -----------------------------------------------------
+def _compute_next_run(sch, from_dt=None):
+    """Next UTC run time for a schedule given its mode. ``interval`` adds
+    ``interval_minutes``; ``daily`` targets ``daily_time`` HH:MM; ``weekly``
+    targets ``weekly_dow`` (0=Mon) at ``daily_time``. Falls back to +60min on a
+    malformed config so a bad row can't wedge the loop."""
+    base = from_dt or datetime.utcnow()
+    mode = (sch.get("schedule_mode") or "daily").lower()
+    try:
+        if mode == "interval":
+            # 0/None is not a sane interval → fall back to hourly.
+            mins = int(sch.get("interval_minutes") or 60)
+            return base + timedelta(minutes=max(1, mins))
+        hh, mm = (sch.get("daily_time") or "09:00").split(":")
+        target = base.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+        if mode == "weekly":
+            # weekly_dow=0 (Monday) is valid, so don't use `or` (it's falsy) —
+            # only substitute the default when the value is genuinely missing.
+            dow = sch.get("weekly_dow")
+            want_dow = (int(dow) if dow is not None else 1) % 7
+            days = (want_dow - target.weekday()) % 7
+            target = target + timedelta(days=days)
+            if target <= base:
+                target = target + timedelta(days=7)
+            return target
+        # daily
+        if target <= base:
+            target = target + timedelta(days=1)
+        return target
+    except Exception:
+        return base + timedelta(minutes=60)
+
+
+def scrape_schedule_tick():
+    """Scheduler tick: dispatch any enabled, non-paused schedule whose
+    ``next_run_at`` is due (or unset). Before dispatching, fold the *previous*
+    job's outcome into the failure counter and auto-pause once the threshold is
+    crossed. Best-effort; one bad schedule never blocks the others."""
+    try:
+        due = query_db(
+            "SELECT * FROM scrape_schedules WHERE enabled = TRUE AND auto_paused = FALSE "
+            "  AND (next_run_at IS NULL OR next_run_at <= NOW())") or []
+    except Exception as e:
+        print(f"[scraper] schedule_tick query failed: {e}")
+        return
+    now = datetime.utcnow()
+    for sch in due:
+        sid = sch["id"]
+        try:
+            # Fold the last job's result into the failure counter / auto-pause.
+            last_job_id = sch.get("last_job_id")
+            if last_job_id:
+                lj = query_db("SELECT status FROM scrape_jobs WHERE id=%s", (last_job_id,),
+                              fetchone=True)
+                if lj and lj.get("status") == "error":
+                    fails = int(sch.get("consecutive_failures") or 0) + 1
+                    threshold = int(sch.get("failure_threshold") or 5)
+                    if fails >= threshold:
+                        execute_db("UPDATE scrape_schedules SET consecutive_failures=%s, "
+                                   "auto_paused=TRUE WHERE id=%s", (fails, sid))
+                        continue
+                    execute_db("UPDATE scrape_schedules SET consecutive_failures=%s WHERE id=%s",
+                               (fails, sid))
+                elif lj and lj.get("status") == "done":
+                    execute_db("UPDATE scrape_schedules SET consecutive_failures=0 WHERE id=%s",
+                               (sid,))
+            # Spawn the job for this run.
+            job = execute_db(
+                "INSERT INTO scrape_jobs (input_mode, url, objective, target_shape, custom_schema, "
+                " schedule_id) VALUES (%s,%s,%s,%s,%s::jsonb,%s) RETURNING id",
+                (sch["input_mode"], sch["url"], sch["objective"], sch["target_shape"],
+                 json.dumps(sch.get("custom_schema")) if sch.get("custom_schema") else None, sid))
+            next_run = _compute_next_run(sch, now)
+            execute_db("UPDATE scrape_schedules SET last_run_at=NOW(), last_job_id=%s, "
+                       "next_run_at=%s WHERE id=%s", (job["id"], next_run, sid))
+            threading.Thread(target=_run_job, args=(job["id"],), daemon=True).start()
+        except Exception as e:
+            print(f"[scraper] schedule_tick dispatch failed for {sid}: {e}")

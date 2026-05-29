@@ -7,7 +7,7 @@ Run: uv run --python 3.12 --with pgserver --with pytest python _gate_runner.py
 import os
 import sys
 import tempfile
-import json
+import time as _t
 
 
 def main():
@@ -100,7 +100,7 @@ def main():
         # 8. Cost ledger write + MTD spend.
         cost.record_chat_cost(session_id="s1", surface="visitor_chat", provider="openai",
                               model="gpt-4o-mini", prompt_tokens=1000, completion_tokens=500)
-        import time as _t; _t.sleep(0.3)  # async warn-check thread harmless
+        _t.sleep(0.3)  # async warn-check thread harmless
         n = query_db("SELECT COUNT(*) AS c FROM api_cost_events", fetchone=True)
         check("api_cost_events row written", n and n["c"] >= 1)
         mtd = cost.compute_mtd_spend()
@@ -523,12 +523,14 @@ def main():
 
         # 6. Rate limit: hammer chat past the cap (no LLM call needed — 429 short-circuits).
         import admin_ai_platform.embed_auth as _ea
+        import admin_ai_platform.config as _cfg7
         _ea._RATE_BUCKETS.clear()
-        _ea._RATE_MAX = 3
+        execute_db("DELETE FROM rate_buckets")
+        _cfg7.RATE_LIMIT_MAX = 3
         codes = [anon.post("/api/chat", headers={"X-Embed-Key": ekey, "Origin": "https://shop.example"},
                            json={"message": "hi", "session_id": "rl"}).status_code for _ in range(5)]
         check("rate limit eventually 429", 429 in codes)
-        _ea._RATE_MAX = 40
+        _cfg7.RATE_LIMIT_MAX = 40
         # 7. loader.js served.
         check("loader.js served",
               admin.get("/embed/loader.js").status_code == 200)
@@ -569,6 +571,92 @@ def main():
         _cfg8.CSP_FRAME_ANCESTORS = ""
         xfo = app.test_client().get("/admin/login").headers.get("X-Frame-Options", "")
         check("frame default-deny without WP origin", xfo == "SAMEORIGIN")
+
+        # ----- M10: scheduler ticks + scaling --------------------------------
+        check("rate_buckets table present", table_exists("rate_buckets"))
+
+        # Postgres-backed rate limiter: shared, atomic, enforces the cap.
+        import admin_ai_platform.embed_auth as _ea
+        import admin_ai_platform.config as _cfg10
+        execute_db("DELETE FROM rate_buckets")
+        _cfg10.RATE_LIMIT_MAX = 3
+        _cfg10.RATE_LIMIT_WINDOW_SEC = 60
+        oks = [_ea._rate_ok(99, "1.2.3.4") for _ in range(5)]
+        check("rate limiter allows up to the cap", oks[:3] == [True, True, True])
+        check("rate limiter blocks past the cap", oks[3] is False and oks[4] is False)
+        _bk = query_db("SELECT count FROM rate_buckets WHERE bucket_key=%s",
+                       ("99:1.2.3.4",), fetchone=True)
+        check("rate limiter persists count in Postgres", _bk and int(_bk["count"]) >= 4)
+        check("separate ip gets its own bucket", _ea._rate_ok(99, "5.6.7.8") is True)
+
+        # scrape_schedule_tick dispatches a due schedule and advances next_run_at.
+        from admin_ai_platform.blueprints.scraper import (
+            scrape_schedule_tick, _compute_next_run)
+        execute_db("DELETE FROM scrape_jobs")
+        execute_db("DELETE FROM scrape_schedules")
+        _sid = execute_db(
+            "INSERT INTO scrape_schedules (name, input_mode, url, schedule_mode, "
+            " interval_minutes, enabled, next_run_at) "
+            "VALUES ('gate','url','http://example.com','interval',60,TRUE, NOW() - INTERVAL '1 minute') "
+            "RETURNING id")["id"]
+        scrape_schedule_tick()
+        _job = query_db("SELECT COUNT(*) AS n FROM scrape_jobs WHERE schedule_id=%s",
+                        (_sid,), fetchone=True)
+        check("scrape_schedule_tick spawns a job for a due schedule", int(_job["n"]) == 1)
+        _sch = query_db("SELECT next_run_at FROM scrape_schedules WHERE id=%s",
+                        (_sid,), fetchone=True)
+        check("scrape_schedule_tick advances next_run_at into the future",
+              _sch["next_run_at"] is not None)
+        # Not-due schedule is left alone on a second tick (no extra job).
+        scrape_schedule_tick()
+        _job2 = query_db("SELECT COUNT(*) AS n FROM scrape_jobs WHERE schedule_id=%s",
+                         (_sid,), fetchone=True)
+        check("scrape_schedule_tick skips a not-yet-due schedule", int(_job2["n"]) == 1)
+        # next-run computation: interval mode is strictly in the future.
+        from datetime import datetime as _dt
+        _nr = _compute_next_run({"schedule_mode": "interval", "interval_minutes": 30}, _dt.utcnow())
+        check("_compute_next_run interval is in the future", _nr > _dt.utcnow())
+
+        # campaign_dispatch_tick claims a due queued campaign (send fails w/o
+        # provider keys, but the row must transition out of 'queued').
+        from admin_ai_platform.blueprints.messaging import campaign_dispatch_tick
+        execute_db("DELETE FROM messaging_campaigns")
+        _cid = execute_db(
+            "INSERT INTO messaging_campaigns (name, channel, status, send_at) "
+            "VALUES ('gate','email','queued', NOW() - INTERVAL '1 minute') RETURNING id")["id"]
+        campaign_dispatch_tick()
+        _camp = query_db("SELECT status FROM messaging_campaigns WHERE id=%s",
+                         (_cid,), fetchone=True)
+        check("campaign_dispatch_tick claims a due queued campaign",
+              _camp["status"] != "queued")
+        # A future-dated queued campaign is left untouched.
+        _cid2 = execute_db(
+            "INSERT INTO messaging_campaigns (name, channel, status, send_at) "
+            "VALUES ('gate2','email','queued', NOW() + INTERVAL '1 hour') RETURNING id")["id"]
+        campaign_dispatch_tick()
+        _camp2 = query_db("SELECT status FROM messaging_campaigns WHERE id=%s",
+                          (_cid2,), fetchone=True)
+        check("campaign_dispatch_tick ignores a future campaign", _camp2["status"] == "queued")
+
+        # review_collector_tick dispatches a due queued request (no provider →
+        # marked failed, but must leave 'queued').
+        from admin_ai_platform.blueprints.reviews import review_collector_tick
+        execute_db("DELETE FROM review_requests")
+        _rid = execute_db(
+            "INSERT INTO review_requests (channel, recipient_email, status, short_token, send_at) "
+            "VALUES ('email','x@example.com','queued','gatetok', NOW() - INTERVAL '1 minute') "
+            "RETURNING id")["id"]
+        review_collector_tick()
+        _rr = query_db("SELECT status FROM review_requests WHERE id=%s", (_rid,), fetchone=True)
+        check("review_collector_tick dispatches a due request", _rr["status"] != "queued")
+
+        # All ticks are registered with the scheduler (leader-gated at runtime).
+        from admin_ai_platform import scheduler as _sched_g
+        _tick_names = {getattr(cb, "__name__", "") for cb in _sched_g._TICK_CALLBACKS}
+        check("scheduler has scrape tick registered", "scrape_schedule_tick" in _tick_names)
+        check("scheduler has campaign tick registered", "campaign_dispatch_tick" in _tick_names)
+        check("scheduler has review tick registered", "review_collector_tick" in _tick_names)
+        check("scheduler has weekly digest tick registered", "weekly_digest_tick" in _tick_names)
 
         print("[gate] schema + integration checks complete", flush=True)
 

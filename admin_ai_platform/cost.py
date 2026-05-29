@@ -311,6 +311,38 @@ def set_warn_email_sender(fn):
     _warn_email_sender = fn
 
 
+def weekly_digest_tick():
+    """Scheduler tick: once per ISO-week per tenant, send a 'what your AI did this
+    week' email. Idempotent via weekly_digest_sends (tenant_id, week_start). Only
+    fires Mon 09:00–10:00 UTC to avoid mid-week sends. Best-effort."""
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    if now.weekday() != 0 or now.hour != 9:   # Monday, 09:00–09:59 UTC
+        return
+    if not tenant_has_feature("weekly_digest"):
+        return
+    week_start = (now - timedelta(days=now.weekday())).date()
+    tid = current_tenant_id()
+    try:
+        claimed = execute_db(
+            "INSERT INTO weekly_digest_sends (tenant_id, week_start) VALUES (%s,%s) "
+            "ON CONFLICT (tenant_id, week_start) DO NOTHING RETURNING id", (tid, week_start))
+        if not claimed:
+            return                              # already sent this week
+        mtd = compute_mtd_spend(tid)
+        cap = get_tenant_cost_cap(tid)
+        to_email = (cap.get("digest_email") or cap.get("alert_email") or "").strip()
+        if to_email and _warn_email_sender is not None:
+            html = (f"<h2>What your AI did this week</h2>"
+                    f"<p>Month-to-date spend ${mtd['total_usd']:.2f} "
+                    f"(chat ${mtd['chat_usd']:.2f}, voice ${mtd['voice_usd']:.2f}, "
+                    f"sms ${mtd['sms_usd']:.2f}).</p>")
+            _warn_email_sender(to_email, "Your AI — weekly digest", html)
+    except Exception as e:
+        _capture(e)
+        print(f"[cost] weekly_digest_tick failed: {e}")
+
+
 def _async_warn_check(tenant_id):
     """Fire-and-forget: on first crossing of warn-at-percent this period, record
     an idempotent cost_alerts row (and email if a sender is wired). Never raises."""

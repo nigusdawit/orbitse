@@ -34,6 +34,18 @@ def create_app(*, init_schema: bool = True, start_scheduler: bool = True) -> Fla
     """
     app = Flask(__name__, static_folder=None)
 
+    # Trust N reverse-proxy hops so request.remote_addr / scheme reflect the real
+    # client (used by the rate limiter + Secure-cookie logic). 0 = no proxy. Must
+    # match the actual deployment or a client could spoof its IP via XFF.
+    if config.TRUSTED_PROXY_HOPS > 0:
+        try:
+            from werkzeug.middleware.proxy_fix import ProxyFix
+            app.wsgi_app = ProxyFix(
+                app.wsgi_app, x_for=config.TRUSTED_PROXY_HOPS,
+                x_proto=config.TRUSTED_PROXY_HOPS, x_host=config.TRUSTED_PROXY_HOPS)
+        except Exception as e:  # pragma: no cover
+            print(f"[app] ProxyFix wiring skipped: {e}", file=sys.stderr)
+
     # Secret key — required for admin sessions. Fall back to an ephemeral key in
     # dev (with a loud warning) so a bare `python -m admin_ai_platform` runs.
     if config.FLASK_SECRET_KEY:
@@ -143,6 +155,29 @@ def create_app(*, init_schema: bool = True, start_scheduler: bool = True) -> Fla
     # Mount blueprints that exist at this milestone.
     from .blueprints import register_all
     register_all(app)
+
+    # Register all subsystem scheduler ticks. Each is best-effort and guarded by
+    # the leader-election in scheduler.py, so only one worker fires them. Wrapped
+    # individually so a missing module at this milestone can't block the rest.
+    try:
+        from . import scheduler as _sched2
+        from .cost import weekly_digest_tick
+        from .blueprints.scraper import scrape_schedule_tick
+        from .blueprints.reviews import review_collector_tick
+        from .blueprints.messaging import campaign_dispatch_tick
+        _sched2.register_tick(weekly_digest_tick)
+        _sched2.register_tick(scrape_schedule_tick)
+        _sched2.register_tick(review_collector_tick)
+        _sched2.register_tick(campaign_dispatch_tick)
+        # RAG reindex sweep — inject the KB file reader (throttled internally).
+        try:
+            from .reused_di import rag as _rag2
+            from .blueprints.rag import _read_kb_file
+            _sched2.register_tick(lambda: _rag2.reindex_tick(_read_kb_file))
+        except Exception as e:
+            print(f"[app] rag reindex tick skipped: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"[app] scheduler tick registration skipped: {e}", file=sys.stderr)
 
     # Health + config-summary routes (no secrets).
     @app.route("/healthz")
