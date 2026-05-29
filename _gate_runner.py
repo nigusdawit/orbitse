@@ -112,9 +112,106 @@ def main():
         bs = c.get("/api/generated-pages/by-slug/tour")
         check("by-slug published page 200", bs.status_code == 200 and bs.get_json()["html"] == "<div>hi</div>")
 
-        # 10. (Schema assertions above already cover what test_schema.py checks —
-        # idempotent init_db, IN tables present, OUT absent, seeds. The unit
-        # suite runs separately under the project venv via `uv run pytest`.)
+        # ----- M2: admin auth + settings + history + pages -----
+        # Unauthenticated admin API is rejected; /admin redirects to login.
+        anon = app.test_client()
+        check("admin API 401 when unauthenticated",
+              anon.get("/admin/api/llm-provider").status_code == 401)
+        check("/admin redirects to login when anon",
+              anon.get("/admin").status_code in (301, 302))
+
+        # Wrong password does not authenticate.
+        admin = app.test_client()
+        bad_login = admin.post("/admin/login", json={"password": "wrong"})
+        check("bad password rejected", bad_login.status_code == 401)
+        # Correct password (config default 'admin') authenticates.
+        ok_login = admin.post("/admin/login", json={"password": "admin"})
+        check("login sets session", ok_login.status_code == 200)
+        check("/admin serves dashboard when authed", admin.get("/admin").status_code == 200)
+
+        # Provider get/put roundtrip.
+        check("GET llm-provider", admin.get("/admin/api/llm-provider").get_json()["provider"] == "openai")
+        admin.put("/admin/api/llm-provider", json={"provider": "claude"})
+        check("provider switched to claude",
+              admin.get("/admin/api/llm-provider").get_json()["provider"] == "claude")
+        admin.put("/admin/api/llm-provider", json={"provider": "openai"})
+
+        # Chatbot settings get/put.
+        admin.put("/admin/api/chatbot-settings",
+                  json={"enabled": True, "agent_name": "Aria", "greeting": "Hi"})
+        cs = admin.get("/admin/api/chatbot-settings").get_json()
+        check("chatbot settings persisted", cs.get("agent_name") == "Aria" and cs.get("enabled"))
+        check("default-system-prompt served",
+              "system_prompt" in admin.get("/admin/api/default-system-prompt").get_json())
+
+        # Chat history from a seeded conversation.
+        conv = execute_db("INSERT INTO chat_conversations (session_id, visitor_id) "
+                          "VALUES ('hist1','vh') RETURNING id")
+        execute_db("INSERT INTO chat_messages (conversation_id, role, content) "
+                   "VALUES (%s,'user','hello')", (conv["id"],))
+        hist = admin.get("/admin/api/chat-history").get_json()
+        check("chat-history lists conversation", hist["stats"]["total_conversations"] >= 1)
+        detail = admin.get(f"/admin/api/chat-history/{conv['id']}").get_json()
+        check("chat-history detail has messages", len(detail["messages"]) >= 1)
+
+        # Generated pages admin (the 'tour' page from check 9 exists).
+        pages = admin.get("/admin/api/generated-pages").get_json()
+        check("generated-pages admin lists", any(p["slug"] == "tour" for p in pages))
+        pid = [p for p in pages if p["slug"] == "tour"][0]["id"]
+        check("generated-pages PUT status",
+              admin.put(f"/admin/api/generated-pages/{pid}", json={"status": "draft"}).status_code == 200)
+        check("generated-pages DELETE",
+              admin.delete(f"/admin/api/generated-pages/{pid}").status_code == 200)
+
+        # ----- M2: admin tools + pending-action approval flow (no LLM needed) -----
+        from admin_ai_platform import admin_tools as at
+        # Read tool: SELECT allowed, INSERT rejected.
+        check("admin_run_sql allows SELECT",
+              "rows" in at.admin_run_sql("SELECT 1 AS x"))
+        check("admin_run_sql rejects write",
+              "error" in at.admin_run_sql("INSERT INTO gallery_cards (slug) VALUES ('x')"))
+        check("admin_run_sql rejects multi-statement",
+              "error" in at.admin_run_sql("SELECT 1; SELECT 2"))
+        check("admin_describe_table works",
+              at.admin_describe_table("gallery_cards").get("row_count") is not None)
+        check("admin tool blocks non-writable table",
+              "error" in at.admin_propose_insert(table_name="api_cost_events",
+                                                  fields={"surface": "x"}, _session_id="s"))
+
+        # Propose insert -> parked pending -> approve -> row exists.
+        prop = at.admin_propose_insert(
+            table_name="gallery_cards",
+            fields={"slug": "spa", "title": "Spa", "subtitle": "Relax",
+                    "image_url": "/s.jpg", "category": "spaces"},
+            _session_id="adm1")
+        check("propose_insert parks action", prop.get("awaiting_approval") and prop.get("action_id"))
+        aid = prop["action_id"]
+        # Action route reachable (authed).
+        check("GET action detail 200", admin.get(f"/admin/api/chat/action/{aid}").status_code == 200)
+        before = query_db("SELECT COUNT(*) AS c FROM gallery_cards WHERE slug='spa'", fetchone=True)["c"]
+        check("nothing written before approval", before == 0)
+        ap = admin.post(f"/admin/api/chat/action/{aid}/approve")
+        check("approve executes write", ap.status_code == 200 and ap.get_json().get("success"))
+        after = query_db("SELECT COUNT(*) AS c FROM gallery_cards WHERE slug='spa'", fetchone=True)["c"]
+        check("row written after approval", after == 1)
+        check("re-approve rejected (already approved)",
+              admin.post(f"/admin/api/chat/action/{aid}/approve").status_code == 409)
+
+        # Propose delete -> reject -> row remains.
+        prop2 = at.admin_propose_delete(table_name="gallery_cards",
+                                        row_id=query_db("SELECT id FROM gallery_cards WHERE slug='spa'",
+                                                        fetchone=True)["id"], _session_id="adm1")
+        rj = admin.post(f"/admin/api/chat/action/{prop2['action_id']}/reject")
+        check("reject works", rj.status_code == 200)
+        check("rejected action does not delete",
+              query_db("SELECT COUNT(*) AS c FROM gallery_cards WHERE slug='spa'", fetchone=True)["c"] == 1)
+
+        # admin chat history endpoint (authed).
+        execute_db("INSERT INTO admin_chat_messages (session_id, mode, role, content) "
+                   "VALUES ('adm1','admin','user','hi')")
+        ah = admin.get("/admin/api/chat/history?session_id=adm1").get_json()
+        check("admin chat history returns messages", len(ah["messages"]) >= 1)
+
         print("[gate] schema + integration checks complete", flush=True)
 
     finally:

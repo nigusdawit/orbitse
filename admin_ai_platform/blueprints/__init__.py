@@ -24,8 +24,9 @@ _BLUEPRINT_SPECS = [
     ("voice", "bp"),
     ("assets", "bp"),
     # M2
-    # ("admin_chat", "bp"),
-    # ("provider", "bp"),
+    ("admin", "bp"),
+    ("provider", "bp"),
+    ("admin_chat", "bp"),
     # ... later milestones append here.
 ]
 
