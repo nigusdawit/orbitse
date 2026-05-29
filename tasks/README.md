@@ -5,7 +5,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 
 | ID | Title | Status | Branch | Depends on | Parallel-with | Drift |
 |----|-------|--------|--------|------------|---------------|-------|
-| 000 | M0 — Scaffolding & shared infra | in_progress | task/000-scaffolding-shared-infra | — | — | |
+| 000 | M0 — Scaffolding & shared infra | done | task/000-scaffolding-shared-infra | — | — | Module relocation deferred to consuming milestones |
 | 001 | M1 — Visitor chat vertical slice | not_started | task/001-visitor-chat-slice | 000 | 002 | |
 | 002 | M2 — Admin core | not_started | task/002-admin-core | 000 | 001 | |
 | 003 | M3 — Cost + Skills/MCP | not_started | task/003-cost-skills-mcp | 002 | 004 | |
