@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin · Sign in</title>
+  <style>
+    :root { --accent: #c9a96e; }
+    body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+           background: radial-gradient(circle at 30% 20%, #142033, #060b14 70%);
+           font-family: 'DM Sans', system-ui, sans-serif; color: #eee; }
+    form { background: rgba(20,20,24,0.8); border: 1px solid rgba(255,255,255,0.12);
+           border-radius: 16px; padding: 32px; width: 320px; backdrop-filter: blur(20px); }
+    h1 { font-family: 'Playfair Display', Georgia, serif; margin: 0 0 6px; font-size: 22px; }
+    p { opacity: .6; margin: 0 0 20px; font-size: 14px; }
+    input { width: 100%; padding: 11px 13px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.15);
+            background: rgba(255,255,255,0.05); color: #fff; box-sizing: border-box; outline: none; }
+    button { width: 100%; margin-top: 14px; padding: 11px; border: none; border-radius: 10px;
+             background: var(--accent); color: #1a1a1a; font-weight: 700; cursor: pointer; }
+    .err { color: #ff8a8a; font-size: 13px; margin-top: 10px; min-height: 16px; }
+  </style>
+</head>
+<body>
+  <form method="POST" action="/admin/login">
+    <h1>AI Concierge — Admin</h1>
+    <p>Sign in to manage your concierge.</p>
+    <input type="password" name="password" placeholder="Admin password" autofocus aria-label="Admin password">
+    <button type="submit">Sign in</button>
+    <div class="err" id="err"></div>
+  </form>
+  <script>
+    // Surface a friendly error when redirected back after a failed attempt.
+    if (new URLSearchParams(location.search).get("error")) {
+      document.getElementById("err").textContent = "Invalid password.";
+    }
+  </script>
+</body>
+</html>

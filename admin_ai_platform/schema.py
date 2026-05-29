@@ -35,6 +35,8 @@ IN_TABLES_M0_M1 = (
     "agent_provider_settings", "model_prices", "api_cost_events",
     "voice_cost_events", "sms_cost_events", "tenant_cost_caps", "cost_alerts",
     "weekly_digest_sends",
+    # M2
+    "admin_chat_messages", "admin_chat_sessions", "admin_pending_actions",
 )
 
 # Tables that belong to the original public website and must NOT be created by
@@ -442,6 +444,60 @@ CREATE TABLE IF NOT EXISTS weekly_digest_sends (
     payload_json    JSONB,
     UNIQUE(tenant_id, week_start)
 );
+
+-- ============================ ADMIN CHAT (M2) ===========================
+CREATE TABLE IF NOT EXISTS admin_chat_messages (
+    id              SERIAL PRIMARY KEY,
+    session_id      VARCHAR(100) NOT NULL DEFAULT '',
+    mode            VARCHAR(20)  NOT NULL DEFAULT 'admin',
+    role            VARCHAR(20)  NOT NULL DEFAULT 'user',
+    content         TEXT         NOT NULL DEFAULT '',
+    tool_calls_json JSONB,
+    tool_call_id    TEXT,
+    tool_name       TEXT,
+    usage_json      JSONB,
+    tool_meta_json  JSONB,
+    created_at      TIMESTAMP    DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_chat_session
+    ON admin_chat_messages (session_id, mode, created_at);
+
+CREATE TABLE IF NOT EXISTS admin_chat_sessions (
+    id                     SERIAL PRIMARY KEY,
+    session_id             VARCHAR(100) NOT NULL UNIQUE,
+    mode                   VARCHAR(20)  NOT NULL DEFAULT 'admin',
+    title                  TEXT         NOT NULL DEFAULT '',
+    pinned                 BOOLEAN      NOT NULL DEFAULT false,
+    model                  TEXT         NOT NULL DEFAULT '',
+    system_prompt_override TEXT         NOT NULL DEFAULT '',
+    disabled_tools_json    JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    created_at             TIMESTAMP    DEFAULT NOW(),
+    updated_at             TIMESTAMP    DEFAULT NOW(),
+    last_message_at        TIMESTAMP    DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_chat_sessions_recent
+    ON admin_chat_sessions (mode, pinned DESC, last_message_at DESC);
+
+-- Every WRITE the admin assistant wants to make is parked here with a preview
+-- and only runs after the owner approves it in the chat UI.
+CREATE TABLE IF NOT EXISTS admin_pending_actions (
+    id              SERIAL PRIMARY KEY,
+    session_id      VARCHAR(100) NOT NULL DEFAULT '',
+    action_type     VARCHAR(20)  NOT NULL,
+    target_table    VARCHAR(100),
+    target_id       INTEGER,
+    payload_json    JSONB,
+    preview         TEXT         NOT NULL DEFAULT '',
+    status          VARCHAR(20)  NOT NULL DEFAULT 'pending',
+    result_json     JSONB,
+    error_text      TEXT,
+    created_at      TIMESTAMP    DEFAULT NOW(),
+    decided_at      TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_admin_pending_session
+    ON admin_pending_actions (session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_admin_pending_status
+    ON admin_pending_actions (status, created_at);
 """
 
 # Seeds — singletons + default tenant + reference prices. All idempotent.

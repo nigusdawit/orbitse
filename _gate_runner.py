@@ -112,9 +112,57 @@ def main():
         bs = c.get("/api/generated-pages/by-slug/tour")
         check("by-slug published page 200", bs.status_code == 200 and bs.get_json()["html"] == "<div>hi</div>")
 
-        # 10. (Schema assertions above already cover what test_schema.py checks —
-        # idempotent init_db, IN tables present, OUT absent, seeds. The unit
-        # suite runs separately under the project venv via `uv run pytest`.)
+        # ----- M2: admin auth + settings + history + pages -----
+        # Unauthenticated admin API is rejected; /admin redirects to login.
+        anon = app.test_client()
+        check("admin API 401 when unauthenticated",
+              anon.get("/admin/api/llm-provider").status_code == 401)
+        check("/admin redirects to login when anon",
+              anon.get("/admin").status_code in (301, 302))
+
+        # Wrong password does not authenticate.
+        admin = app.test_client()
+        bad_login = admin.post("/admin/login", json={"password": "wrong"})
+        check("bad password rejected", bad_login.status_code == 401)
+        # Correct password (config default 'admin') authenticates.
+        ok_login = admin.post("/admin/login", json={"password": "admin"})
+        check("login sets session", ok_login.status_code == 200)
+        check("/admin serves dashboard when authed", admin.get("/admin").status_code == 200)
+
+        # Provider get/put roundtrip.
+        check("GET llm-provider", admin.get("/admin/api/llm-provider").get_json()["provider"] == "openai")
+        admin.put("/admin/api/llm-provider", json={"provider": "claude"})
+        check("provider switched to claude",
+              admin.get("/admin/api/llm-provider").get_json()["provider"] == "claude")
+        admin.put("/admin/api/llm-provider", json={"provider": "openai"})
+
+        # Chatbot settings get/put.
+        admin.put("/admin/api/chatbot-settings",
+                  json={"enabled": True, "agent_name": "Aria", "greeting": "Hi"})
+        cs = admin.get("/admin/api/chatbot-settings").get_json()
+        check("chatbot settings persisted", cs.get("agent_name") == "Aria" and cs.get("enabled"))
+        check("default-system-prompt served",
+              "system_prompt" in admin.get("/admin/api/default-system-prompt").get_json())
+
+        # Chat history from a seeded conversation.
+        conv = execute_db("INSERT INTO chat_conversations (session_id, visitor_id) "
+                          "VALUES ('hist1','vh') RETURNING id")
+        execute_db("INSERT INTO chat_messages (conversation_id, role, content) "
+                   "VALUES (%s,'user','hello')", (conv["id"],))
+        hist = admin.get("/admin/api/chat-history").get_json()
+        check("chat-history lists conversation", hist["stats"]["total_conversations"] >= 1)
+        detail = admin.get(f"/admin/api/chat-history/{conv['id']}").get_json()
+        check("chat-history detail has messages", len(detail["messages"]) >= 1)
+
+        # Generated pages admin (the 'tour' page from check 9 exists).
+        pages = admin.get("/admin/api/generated-pages").get_json()
+        check("generated-pages admin lists", any(p["slug"] == "tour" for p in pages))
+        pid = [p for p in pages if p["slug"] == "tour"][0]["id"]
+        check("generated-pages PUT status",
+              admin.put(f"/admin/api/generated-pages/{pid}", json={"status": "draft"}).status_code == 200)
+        check("generated-pages DELETE",
+              admin.delete(f"/admin/api/generated-pages/{pid}").status_code == 200)
+
         print("[gate] schema + integration checks complete", flush=True)
 
     finally:
