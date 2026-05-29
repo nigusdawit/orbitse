@@ -1,8 +1,12 @@
 # PLAN — Extract the Admin/AI Platform into a Standalone, Embeddable Product
 
-- **Status:** IN_PROGRESS
+- **Status:** COMPLETE (M0–M9 merged to main, 2026-05-29)
 - **Drafted:** 2026-05-29
 - **Approved:** 2026-05-29
+- **Completed:** 2026-05-29 — final gate 159/159 (embedded Postgres), ruff + unit + node clean,
+  live server 6/6 public surfaces 200. Follow-ons (need live keys/services): full Stripe Checkout
+  + product sync, live LLM/embedding/scrape-AI rounds, single-DB multi-tenant row scoping, the
+  upstream 30-command VELO surface, and an in-browser/WordPress manual UX pass.
 - **Full design doc:** `~/.claude/plans/tender-knitting-token.md` (canonical; this is the working mirror)
 - **Task index:** `tasks/README.md`
 
