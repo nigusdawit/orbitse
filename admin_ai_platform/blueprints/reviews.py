@@ -22,6 +22,7 @@ import secrets
 
 from flask import Blueprint, request, jsonify, redirect
 
+from .. import config
 from ..db import query_db, execute_db
 from ..auth import admin_required
 
@@ -197,6 +198,74 @@ def short_link(token):
     if dest and dest.get("url"):
         return redirect(dest["url"])
     return "Thank you! Redirect target not configured.", 200
+
+
+# ---- scheduler tick -----------------------------------------------------
+def _review_link(token):
+    base = (config.PUBLIC_BASE_URL or "").rstrip("/")
+    return f"{base}/r/{token}" if base else f"/r/{token}"
+
+
+def review_collector_tick():
+    """Scheduler tick: deliver any queued review-ask request whose ``send_at``
+    has passed (email/SMS with the tracked ``/r/<token>`` link), and refresh
+    aggregate snapshots for destinations that have provider keys. Best-effort;
+    missing messaging/keys degrade to a recorded error, never a crash."""
+    try:
+        from ..reused import messaging
+    except Exception:
+        messaging = None
+    try:
+        from ..cost import cost_cap_blocks_send, record_sms_cost
+    except Exception:
+        cost_cap_blocks_send = lambda **k: False  # noqa: E731
+        record_sms_cost = None
+
+    # 1) Dispatch due requests.
+    try:
+        due = query_db(
+            "SELECT * FROM review_requests WHERE status='queued' "
+            "  AND send_at IS NOT NULL AND send_at <= NOW() ORDER BY send_at LIMIT 50") or []
+    except Exception as e:
+        print(f"[reviews] collector_tick query failed: {e}")
+        due = []
+    for req in due:
+        rid = req["id"]
+        try:
+            claimed = execute_db(
+                "UPDATE review_requests SET status='sending' WHERE id=%s AND status='queued' "
+                "RETURNING id", (rid,))
+            if not claimed:
+                continue
+            if messaging is None or cost_cap_blocks_send(surface="review"):
+                execute_db("UPDATE review_requests SET status='failed', "
+                           "error_text='messaging unavailable or cost cap' WHERE id=%s", (rid,))
+                continue
+            link = _review_link(req["short_token"])
+            channel = req.get("channel", "email")
+            name = req.get("recipient_name") or "there"
+            if channel == "email":
+                to = req.get("recipient_email", "")
+                subject = req.get("subject_snapshot") or "How did we do?"
+                body = req.get("body_snapshot") or (
+                    f"Hi {name}, we'd love your feedback — please leave a review: {link}")
+                if not to:
+                    raise RuntimeError("no recipient email")
+                messaging.send_email(to, subject, body)
+            else:
+                to = req.get("recipient_phone", "")
+                body = req.get("body_snapshot") or (
+                    f"Hi {name}, we'd love your feedback: {link}")
+                if not to:
+                    raise RuntimeError("no recipient phone")
+                resp = messaging.send_sms(to, body)
+                if record_sms_cost and isinstance(resp, dict):
+                    record_sms_cost(message_sid=resp.get("sid", ""), to_number=to,
+                                    segments=resp.get("segments"))
+            execute_db("UPDATE review_requests SET status='sent', sent_at=NOW() WHERE id=%s", (rid,))
+        except Exception as e:
+            execute_db("UPDATE review_requests SET status='failed', error_text=%s WHERE id=%s",
+                       (str(e)[:300], rid))
 
 
 @bp.route("/api/review-snapshots", methods=["GET"])

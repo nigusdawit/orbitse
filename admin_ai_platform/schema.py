@@ -51,6 +51,7 @@ IN_TABLES_M0_M1 = (
     "products", "customers", "orders", "order_items", "services", "service_addons",
     "service_availability_rules", "service_availability_overrides", "service_bookings",
     "stripe_settings", "stripe_product_sync", "tenant_embed_keys", "sso_used_jtis",
+    "rate_buckets",
 )
 
 # Tables that belong to the original public website and must NOT be created by
@@ -1055,6 +1056,14 @@ CREATE INDEX IF NOT EXISTS idx_embed_keys_tenant ON tenant_embed_keys (tenant_id
 CREATE TABLE IF NOT EXISTS sso_used_jtis (
     jti         VARCHAR(64) PRIMARY KEY,
     expires_at  TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Shared rate-limit buckets (M10) so limits hold ACROSS workers when Redis isn't
+-- configured. One row per (key, window); incremented atomically.
+CREATE TABLE IF NOT EXISTS rate_buckets (
+    bucket_key    VARCHAR(180) PRIMARY KEY,
+    window_start  BIGINT NOT NULL,
+    count         INTEGER NOT NULL DEFAULT 0
 );
 """
 

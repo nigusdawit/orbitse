@@ -21,8 +21,10 @@ through unchanged (so the bundled demo and the hosted admin keep working). This
 means cross-origin embeds MUST send the key (the loader always does), while the
 operator's own same-origin pages don't need one.
 
-Single-worker note: the rate limiter is in-process. A multi-worker central
-deployment should back it with Redis/Postgres (see PLAN.md security section).
+Multi-worker note: the rate limiter is **Postgres-backed** (the ``rate_buckets``
+table) so all gunicorn workers share one counter via an atomic UPSERT. If the DB
+is unreachable it degrades to a per-process in-memory bucket (fail-open to the
+local counter rather than letting traffic through unbounded).
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ from urllib.parse import urlparse
 from flask import request, g, jsonify, make_response
 
 from . import config
-from .db import query_db
+from .db import query_db, execute_db
 
 # Public endpoints the widget may call cross-origin. Prefix match.
 EMBEDDABLE_PREFIXES = (
@@ -47,8 +49,14 @@ RATE_LIMITED_PREFIXES = ("/api/chat", "/api/voice/")
 
 _RATE_LOCK = threading.Lock()
 _RATE_BUCKETS: dict = {}   # (tenant_id, ip) -> [window_start_epoch, count]
-_RATE_WINDOW_SEC = 60
-_RATE_MAX = 40             # requests per window per (tenant, ip) on heavy endpoints
+
+
+def _rate_window_sec():
+    return max(1, config.RATE_LIMIT_WINDOW_SEC)
+
+
+def _rate_max():
+    return max(1, config.RATE_LIMIT_MAX)
 
 
 def _is_embeddable(path):
@@ -122,18 +130,43 @@ def _client_ip():
 
 
 def _rate_ok(tenant_id, ip):
-    now = time.time()
+    """True if the (tenant, ip) is under the per-window cap. Shared across workers
+    via the ``rate_buckets`` table: one atomic UPSERT that resets the counter on a
+    new fixed window or increments within the current one. Falls back to the local
+    in-memory counter if the DB write fails."""
+    window = _rate_window_sec()
+    now = int(time.time())
+    win_start = (now // window) * window
+    if config.DATABASE_URL:
+        bucket_key = f"{tenant_id}:{ip}"[:180]
+        try:
+            row = execute_db(
+                "INSERT INTO rate_buckets (bucket_key, window_start, count) VALUES (%s,%s,1) "
+                "ON CONFLICT (bucket_key) DO UPDATE SET "
+                "  count = CASE WHEN rate_buckets.window_start = EXCLUDED.window_start "
+                "               THEN rate_buckets.count + 1 ELSE 1 END, "
+                "  window_start = EXCLUDED.window_start "
+                "RETURNING count, window_start",
+                (bucket_key, win_start))
+            if row:
+                return int(row["count"]) <= _rate_max()
+        except Exception as e:
+            print(f"[embed_auth] rate-limit DB write failed, using local fallback: {e}")
+    return _rate_ok_local(tenant_id, ip, window, now)
+
+
+def _rate_ok_local(tenant_id, ip, window, now):
     key = (tenant_id, ip)
     with _RATE_LOCK:
         # Opportunistic eviction so the bucket map can't grow unbounded.
         if len(_RATE_BUCKETS) > 10000:
-            for k in [k for k, v in _RATE_BUCKETS.items() if now - v[0] >= _RATE_WINDOW_SEC]:
+            for k in [k for k, v in _RATE_BUCKETS.items() if now - v[0] >= window]:
                 _RATE_BUCKETS.pop(k, None)
         bucket = _RATE_BUCKETS.get(key)
-        if not bucket or now - bucket[0] >= _RATE_WINDOW_SEC:
+        if not bucket or now - bucket[0] >= window:
             _RATE_BUCKETS[key] = [now, 1]
             return True
-        if bucket[1] >= _RATE_MAX:
+        if bucket[1] >= _rate_max():
             return False
         bucket[1] += 1
         return True

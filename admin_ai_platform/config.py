@@ -179,6 +179,17 @@ CSP_FRAME_ANCESTORS = env_str("CSP_FRAME_ANCESTORS")
 # Scheduler
 # ---------------------------------------------------------------------------
 SCHEDULER_TICK_SECONDS = env_int("SCHEDULER_TICK_SECONDS", 30)
+# Only the worker that wins a Postgres advisory lock runs the ticks, so multiple
+# gunicorn workers don't all fire the same scheduled jobs.
+SCHEDULER_ADVISORY_LOCK_KEY = env_int("SCHEDULER_ADVISORY_LOCK_KEY", 947213001)
+# Number of trusted reverse-proxy hops (for ProxyFix → correct client IP). 0 =
+# no proxy (use the direct peer). Set to 1 behind a single proxy/LB.
+TRUSTED_PROXY_HOPS = env_int("TRUSTED_PROXY_HOPS", 0)
+# Optional Redis for shared rate limiting; when unset, a Postgres table is used.
+REDIS_URL = env_str("REDIS_URL")
+# Per-(tenant, ip) request cap per window on the heavy embeddable endpoints.
+RATE_LIMIT_MAX = env_int("RATE_LIMIT_MAX", 40)
+RATE_LIMIT_WINDOW_SEC = env_int("RATE_LIMIT_WINDOW_SEC", 60)
 
 # ---------------------------------------------------------------------------
 # Optional integrations (all fail-open — feature disables, app still boots)

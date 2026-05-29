@@ -228,6 +228,47 @@ def send_now(cid):
     return jsonify({"status": "sending"})
 
 
+@bp.route("/admin/api/messaging/campaigns/<int:cid>/schedule", methods=["POST"])
+@admin_required
+def schedule_campaign(cid):
+    """Queue a campaign for later delivery; ``campaign_dispatch_tick`` sends it
+    once ``send_at`` passes. Pass ISO-8601 ``send_at`` (UTC)."""
+    d = request.get_json() or {}
+    send_at = (d.get("send_at") or "").strip()
+    if not send_at:
+        return jsonify({"error": "send_at required"}), 400
+    row = execute_db("UPDATE messaging_campaigns SET status='queued', send_at=%s WHERE id=%s "
+                     "AND status IN ('draft','queued') RETURNING *", (send_at, cid))
+    if not row:
+        return jsonify({"error": "Not found or not schedulable"}), 404
+    return jsonify(row)
+
+
+def campaign_dispatch_tick():
+    """Scheduler tick: send any campaign that's queued with a ``send_at`` in the
+    past. Claims each row (status→sending) atomically so concurrent ticks can't
+    double-send, then runs it inline (we're already on the scheduler thread)."""
+    try:
+        due = query_db(
+            "SELECT id FROM messaging_campaigns WHERE status='queued' "
+            "  AND send_at IS NOT NULL AND send_at <= NOW() ORDER BY send_at LIMIT 20") or []
+    except Exception as e:
+        print(f"[messaging] campaign_dispatch_tick query failed: {e}")
+        return
+    for camp in due:
+        cid = camp["id"]
+        try:
+            # Atomic claim: only one worker transitions queued→sending.
+            claimed = execute_db(
+                "UPDATE messaging_campaigns SET status='sending', started_at=NOW() "
+                "WHERE id=%s AND status='queued' RETURNING id", (cid,))
+            if not claimed:
+                continue
+            _run_campaign(cid)
+        except Exception as e:
+            print(f"[messaging] campaign_dispatch_tick failed for {cid}: {e}")
+
+
 def _recipients(camp):
     kind = camp.get("recipient_kind", "all")
     flt = camp.get("recipient_filter") or {}
