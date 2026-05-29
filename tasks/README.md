@@ -20,7 +20,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 
 | ID | Title | Status | Branch | Depends on |
 |----|-------|--------|--------|------------|
-| 010 | M10 — Scheduler ticks + multi-worker safety + backed rate limit | not_started | task/010-scheduler-and-scaling | — |
+| 010 | M10 — Scheduler ticks + multi-worker safety + backed rate limit | done | task/010-scheduler-and-scaling | — | Gate 175/175; Postgres-backed rate limiter + advisory-lock leader + all ticks registered; fixed weekly_dow=0 falsy bug |
 | 011 | M11 — Stripe end-to-end (orders, bookings, webhook, sync) | not_started | task/011-stripe-end-to-end | 010 |
 | 012 | M12 — Events ticketing | not_started | task/012-events-ticketing | 011 |
 | 013 | M13 — Full visitor lookup tools + dropped content + web search | not_started | task/013-visitor-lookup-parity | — |
