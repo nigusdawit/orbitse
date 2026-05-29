@@ -27,6 +27,7 @@ bp = Blueprint("assets", __name__)
 _PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _WEB_DIR = os.path.join(_PKG, "web")
 _DEMO_DIR = os.path.join(_PKG, "demo")
+_EMBED_DIR = os.path.join(os.path.dirname(_PKG), "embed")  # repo-root /embed
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-]{0,199}$")
 _ALLOWED = {"chat-ui.js", "chat-ui.css", "voice.js"}
 
@@ -41,6 +42,16 @@ def widget_asset(filename):
 @bp.route("/demo", methods=["GET"])
 def demo_page():
     return send_from_directory(_DEMO_DIR, "index.html")
+
+
+@bp.route("/embed/loader.js", methods=["GET"])
+def embed_loader():
+    # The cross-origin snippet target. Loaded via <script src> from any site —
+    # script tags need no CORS. Served with a JS content type.
+    resp = send_from_directory(_EMBED_DIR, "loader.js")
+    resp.headers["Content-Type"] = "text/javascript"
+    resp.headers["Cache-Control"] = "public, max-age=300"
+    return resp
 
 
 @bp.route("/api/generated-pages/by-slug/<slug>", methods=["GET"])

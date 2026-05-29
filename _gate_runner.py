@@ -486,6 +486,44 @@ def main():
         check("velo status liveness", anon.get("/api/velo/status").status_code == 200)
         _cfg.VELO_SHARED_SECRET = ""  # restore
 
+        # ----- M7: embed-key auth + origin allowlist + CORS + rate limit -----
+        # Create an embed key allowlisting one origin.
+        ekr = admin.post("/admin/api/embed-keys",
+                         json={"label": "embed", "origin_allowlist": ["https://shop.example"]})
+        ekey = ekr.get_json()["embed_key"]
+
+        # 1. No key (first-party) → passes through.
+        check("embeddable no-key passes", anon.get("/api/gallery-cards").status_code == 200)
+        # 2. Valid key + allowlisted Origin → 200 + CORS echoes that origin.
+        r_ok = anon.get("/api/gallery-cards", headers={"X-Embed-Key": ekey,
+                        "Origin": "https://shop.example"})
+        check("keyed + allowlisted origin 200", r_ok.status_code == 200)
+        check("CORS echoes allowlisted origin",
+              r_ok.headers.get("Access-Control-Allow-Origin") == "https://shop.example")
+        # 3. Valid key + NON-allowlisted Origin → 403.
+        r_bad = anon.get("/api/gallery-cards", headers={"X-Embed-Key": ekey,
+                         "Origin": "https://evil.example"})
+        check("keyed + bad origin 403", r_bad.status_code == 403)
+        # 4. Unknown key → 403.
+        check("unknown embed key 403",
+              anon.get("/api/gallery-cards", headers={"X-Embed-Key": "pk_nope",
+                       "Origin": "https://shop.example"}).status_code == 403)
+        # 5. OPTIONS preflight answered 204 with CORS.
+        pre = anon.open("/api/chat", method="OPTIONS",
+                        headers={"X-Embed-Key": ekey, "Origin": "https://shop.example"})
+        check("preflight 204", pre.status_code == 204)
+        # 6. Rate limit: hammer chat past the cap (no LLM call needed — 429 short-circuits).
+        import admin_ai_platform.embed_auth as _ea
+        _ea._RATE_BUCKETS.clear()
+        _ea._RATE_MAX = 3
+        codes = [anon.post("/api/chat", headers={"X-Embed-Key": ekey, "Origin": "https://shop.example"},
+                           json={"message": "hi", "session_id": "rl"}).status_code for _ in range(5)]
+        check("rate limit eventually 429", 429 in codes)
+        _ea._RATE_MAX = 40
+        # 7. loader.js served.
+        check("loader.js served",
+              admin.get("/embed/loader.js").status_code == 200)
+
         print("[gate] schema + integration checks complete", flush=True)
 
     finally:

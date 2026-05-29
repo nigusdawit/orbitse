@@ -126,6 +126,14 @@ def create_app(*, init_schema: bool = True, start_scheduler: bool = True) -> Fla
     except Exception as e:
         print(f"[app] rag wiring skipped: {e}", file=sys.stderr)
 
+    # Cross-origin embed trust boundary (embed-key auth + origin allowlist +
+    # scoped CORS + rate limit) for the embeddable public endpoints.
+    try:
+        from .embed_auth import register_embed_middleware
+        register_embed_middleware(app)
+    except Exception as e:
+        print(f"[app] embed middleware skipped: {e}", file=sys.stderr)
+
     # Mount blueprints that exist at this milestone.
     from .blueprints import register_all
     register_all(app)

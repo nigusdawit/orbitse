@@ -22,12 +22,19 @@
   "use strict";
 
   var S = {
-    apiBase: "", mount: null, sessionId: "", visitorId: "",
+    apiBase: "", embedKey: "", mount: null, sessionId: "", visitorId: "",
     settings: {}, gallery: [], history: [], open: false,
     els: {}, immersive: null,
   };
 
   function api(p) { return (S.apiBase || "") + p; }
+  // Headers for every API call — attaches the publishable embed key when the
+  // widget is embedded cross-origin (the platform validates key + origin).
+  function hdrs(extra) {
+    var h = extra || {};
+    if (S.embedKey) h["X-Embed-Key"] = S.embedKey;
+    return h;
+  }
   function uid(p) { return p + Math.random().toString(36).slice(2) + Date.now().toString(36); }
   function esc(s) {
     return String(s == null ? "" : s)
@@ -243,7 +250,7 @@
         break;
       case "showSavedPage":
         if (!cmd.slug) break;
-        fetch(api("/api/generated-pages/by-slug/" + encodeURIComponent(cmd.slug)))
+        fetch(api("/api/generated-pages/by-slug/" + encodeURIComponent(cmd.slug)), { headers: hdrs() })
           .then(function (r) { return r.ok ? r.json() : null; })
           .then(function (d) { if (d && d.html) openImmersiveOneShot(d.html); });
         break;
@@ -292,7 +299,7 @@
   }
   function postForm(path, fields) {
     fetch(api(path), {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: hdrs({ "Content-Type": "application/json" }),
       body: JSON.stringify({ fields: fields || {}, session_id: S.sessionId,
         page_url: location.href, referrer: document.referrer || "" }),
     }).catch(function () {});
@@ -319,7 +326,7 @@
     if (global.VoiceAgent) try { global.VoiceAgent.streamSpeakBegin(); } catch (e) {}
 
     fetch(api("/api/chat"), {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: hdrs({ "Content-Type": "application/json" }),
       body: JSON.stringify({ message: text, history: S.history.slice(-20),
         session_id: S.sessionId, visitor_id: S.visitorId,
         page_url: location.href, referrer: document.referrer || "" }),
@@ -455,23 +462,24 @@
 
   function init(opts) {
     opts = opts || {};
-    S.apiBase = opts.apiBase || "";
+    S.apiBase = opts.apiBase || global.__aapApiBase || "";
+    S.embedKey = opts.embedKey || global.__aapEmbedKey || "";
     S.mount = opts.mount || null;
     S.sessionId = opts.sessionId || uid("cs_");
     S.visitorId = opts.visitorId || uid("v_");
     global.__chatSessionId = S.sessionId;
 
-    var pSettings = fetch(api("/api/chatbot-settings"))
+    var pSettings = fetch(api("/api/chatbot-settings"), { headers: hdrs() })
       .then(function (r) { return r.ok ? r.json() : {}; })
       .then(function (s) { S.settings = s || {}; }).catch(function () { S.settings = {}; });
-    var pGallery = fetch(api("/api/gallery-cards"))
+    var pGallery = fetch(api("/api/gallery-cards"), { headers: hdrs() })
       .then(function (r) { return r.ok ? r.json() : []; })
       .then(function (g) { S.gallery = g || []; }).catch(function () { S.gallery = []; });
 
     return Promise.all([pSettings, pGallery]).then(function () {
       buildDom();
       if (global.VoiceAgent) {
-        global.VoiceAgent.init({ apiBase: S.apiBase }).then(function () {
+        global.VoiceAgent.init({ apiBase: S.apiBase, embedKey: S.embedKey }).then(function () {
           var q = new URLSearchParams(location.search);
           global.VoiceAgent.playIntro({
             utm_source: q.get("utm_source") || "", utm_medium: q.get("utm_medium") || "",
