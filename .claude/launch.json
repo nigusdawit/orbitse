@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "admin-ai-platform",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "python", "-m", "admin_ai_platform"],
+      "port": 5000
+    }
+  ]
+}

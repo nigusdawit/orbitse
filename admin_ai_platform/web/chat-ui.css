@@ -1,0 +1,92 @@
+/* =============================================================================
+ * chat-ui.css — Admin/AI Platform embeddable concierge widget
+ * =============================================================================
+ * Frosted-glass aesthetic. All selectors are namespaced under .aap-* so the
+ * widget never collides with a host page's styles; when embedded cross-origin
+ * (M7) the whole tree is additionally mounted in a Shadow DOM. Theme is driven
+ * by CSS variables with sensible fallbacks.
+ * ========================================================================== */
+.aap-root {
+  --aap-accent: var(--color-accent, #c9a96e);
+  --aap-bg: var(--glass-bg, rgba(20, 20, 24, 0.78));
+  --aap-border: var(--glass-border, rgba(255, 255, 255, 0.12));
+  --aap-text: var(--color-text, #f3f3f5);
+  --aap-serif: var(--font-serif, 'Playfair Display', Georgia, serif);
+  --aap-sans: var(--font-sans, 'DM Sans', system-ui, sans-serif);
+  position: fixed; z-index: 2147482000; right: 20px; bottom: 20px;
+  font-family: var(--aap-sans); color: var(--aap-text);
+  -webkit-font-smoothing: antialiased;
+}
+.aap-root *, .aap-root *::before, .aap-root *::after { box-sizing: border-box; }
+
+/* Collapsed bar -------------------------------------------------------------*/
+.aap-bar {
+  display: flex; align-items: center; gap: 10px;
+  min-width: 280px; max-width: 380px; padding: 10px 14px;
+  background: var(--aap-bg); border: 1px solid var(--aap-border);
+  border-radius: 999px; backdrop-filter: blur(20px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35); cursor: pointer;
+}
+.aap-bar .aap-avatar {
+  width: 30px; height: 30px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--aap-accent); color: #1a1a1a; font-weight: 700;
+  display: flex; align-items: center; justify-content: center; font-size: 14px;
+}
+.aap-bar input {
+  flex: 1; background: transparent; border: none; outline: none;
+  color: var(--aap-text); font-size: 14px;
+}
+.aap-bar input::placeholder { color: rgba(255, 255, 255, 0.5); }
+.aap-bar .aap-mic { background: transparent; border: none; cursor: pointer; font-size: 16px; opacity: 0.8; }
+
+/* Expanded panel ------------------------------------------------------------*/
+.aap-panel {
+  display: none; flex-direction: column; width: 380px; max-width: 92vw;
+  height: 520px; max-height: 76vh; margin-bottom: 10px;
+  background: var(--aap-bg); border: 1px solid var(--aap-border);
+  border-radius: 18px; backdrop-filter: blur(22px); overflow: hidden;
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.45);
+}
+.aap-root.aap-open .aap-panel { display: flex; }
+.aap-panel .aap-head {
+  display: flex; align-items: center; gap: 10px; padding: 14px 16px;
+  border-bottom: 1px solid var(--aap-border);
+}
+.aap-panel .aap-head .aap-title { font-family: var(--aap-serif); font-size: 16px; }
+.aap-panel .aap-head .aap-close { margin-left: auto; background: none; border: none; color: var(--aap-text); cursor: pointer; font-size: 18px; opacity: 0.7; }
+.aap-msgs { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.aap-msg { max-width: 85%; padding: 10px 13px; border-radius: 14px; font-size: 14px; line-height: 1.5; white-space: normal; }
+.aap-msg.user { align-self: flex-end; background: var(--aap-accent); color: #1a1a1a; }
+.aap-msg.agent { align-self: flex-start; background: rgba(255, 255, 255, 0.06); border: 1px solid var(--aap-border); }
+.aap-msg.agent h1, .aap-msg.agent h2, .aap-msg.agent h3, .aap-msg.agent h4 { font-family: var(--aap-serif); margin: 0.3em 0; }
+.aap-msg.agent ul { margin: 0.4em 0; padding-left: 1.2em; }
+.aap-msg.agent a { color: var(--aap-accent); }
+.aap-msg.agent table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.aap-msg.agent td, .aap-msg.agent th { border: 1px solid var(--aap-border); padding: 4px 8px; }
+.aap-foot { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--aap-border); }
+.aap-foot input { flex: 1; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--aap-border); border-radius: 10px; padding: 9px 12px; color: var(--aap-text); outline: none; }
+.aap-foot button { background: var(--aap-accent); border: none; border-radius: 10px; padding: 0 14px; color: #1a1a1a; font-weight: 600; cursor: pointer; }
+
+/* Immersive page / split overlay -------------------------------------------*/
+.aap-overlay {
+  display: none; position: fixed; inset: 0; z-index: 2147483000;
+  background: rgba(6, 8, 14, 0.92); backdrop-filter: blur(6px);
+}
+.aap-overlay.aap-show { display: block; }
+.aap-overlay .aap-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.aap-overlay .aap-ov-close {
+  position: absolute; top: 16px; right: 18px; z-index: 5; background: var(--aap-bg);
+  border: 1px solid var(--aap-border); color: var(--aap-text); border-radius: 999px;
+  width: 38px; height: 38px; cursor: pointer; font-size: 18px;
+}
+.aap-overlay .aap-ov-side {
+  position: absolute; right: 0; top: 0; bottom: 0; width: 360px; max-width: 90vw;
+  background: var(--aap-bg); border-left: 1px solid var(--aap-border);
+  backdrop-filter: blur(22px); display: flex; flex-direction: column;
+}
+/* Gallery split view (40/60) */
+.aap-overlay.aap-split .aap-ov-side { left: 0; right: auto; border-left: none; border-right: 1px solid var(--aap-border); width: 40%; }
+.aap-overlay.aap-split .aap-gallery { position: absolute; left: 40%; right: 0; top: 0; bottom: 0; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.aap-overlay.aap-split .aap-gallery img { max-width: 100%; max-height: 70%; border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+.aap-gcap { position: absolute; bottom: 8%; left: 44%; right: 4%; }
+.aap-gcap h2 { font-family: var(--aap-serif); margin: 0 0 6px; }

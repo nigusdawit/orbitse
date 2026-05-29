@@ -39,13 +39,19 @@ class LLMProviderUnavailable(RuntimeError):
 
 
 # --- Client singletons, built once at import ------------------------------
-# Chat client: proxy key if present, else the (possibly empty) direct key so a
-# fully-unconfigured install still constructs an object that errors clearly on
-# first use rather than crashing at import.
-openai_client = OpenAI(
-    api_key=config.AI_INTEGRATIONS_OPENAI_API_KEY or config.OPENAI_API_KEY or "",
-    base_url=config.AI_INTEGRATIONS_OPENAI_BASE_URL,
-)
+# FAIL OPEN: construct a client ONLY when a key is present. The OpenAI SDK
+# raises at construction time when the key is empty, so passing "" would crash
+# import and (because blueprints import this module) silently prevent the chat
+# / voice routes from mounting. With no key, openai_client stays None and the
+# chat route returns a clean 503 instead.
+openai_client = None
+_chat_key = config.AI_INTEGRATIONS_OPENAI_API_KEY or config.OPENAI_API_KEY
+if _chat_key:
+    try:
+        openai_client = OpenAI(api_key=_chat_key,
+                               base_url=config.AI_INTEGRATIONS_OPENAI_BASE_URL)
+    except Exception as e:  # pragma: no cover
+        print(f"[llm] OpenAI chat client init error: {e}", file=sys.stderr)
 
 openai_direct_client = None
 if config.OPENAI_API_KEY:

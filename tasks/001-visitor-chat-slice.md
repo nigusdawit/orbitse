@@ -47,10 +47,43 @@ host wiring. This is the original ask, shipped as a working slice.
 002 (disjoint files).
 
 ## Status
-not_started
+done  (merged to main; runtime gate GREEN via embedded Postgres)
 
 ## Branch
 task/001-visitor-chat-slice
 
+## Verification state
+Built modules: auth, util, gallery/forms/media blueprints, chat_runtime, tools,
+prompts, visitor_chat blueprint, voice blueprint, web/voice.js, web/chat-ui.{js,css},
+demo/index.html, assets blueprint.
+
+PASSED in the build sandbox:
+- ruff clean across the package
+- pytest: 18 passed / 2 skipped (the 2 skips are DB-backed schema tests — no local Postgres)
+- `node --check` on chat-ui.js + voice.js (valid syntax)
+- `create_app` boots in self_host AND central; all M1 routes register
+- live server boots; GET /healthz, /demo, /widget/* all 200 with correct content-types; unknown widget asset 404
+
+VERIFIED against a REAL embedded Postgres (pgserver, _gate_runner.py) — 19/19 GREEN:
+- init_db() idempotent; all IN tables created; OUT tables absent; singletons + prices seeded
+- GET /api/chatbot-settings, /api/gallery-cards, /api/voice/settings → 200 (caught a real
+  fail-open bug: openai SDK raises on empty key at import → llm.py now builds clients only when
+  a key is present, so blueprints mount + routes work with no key; chat returns 503 gracefully)
+- gallery write→read→lookup_gallery_cards→build_site_index→assemble_system_prompt
+- skills sync + per-skill enable filter (disable excludes the tool)
+- forms: required-field rejection (400), submit (201 + confirmation #), persisted as 'new'
+- cost: api_cost_events row written, compute_mtd_spend > 0
+- /api/generated-pages/by-slug published page (200) for showSavedPage
+
+STILL UNVERIFIED (needs an OpenAI key / a real browser — out of sandbox scope):
+- a live /api/chat LLM completion round; pixel-level in-browser widget behavior
+  (gallery split visuals, progressive generatePage animation, audible voice). The widget JS
+  is node --check-valid and the SSE/command contract is unit-tested; visual confirmation
+  remains a manual step for an env with a key + browser.
+
+Gate tooling: _gate_runner.py + a 3.12 .gatevenv (.gitignored) stand up an ephemeral Postgres
+so DB-backed milestones can be verified locally without a remote DB.
+
 ## Notes
-Expand research line numbers on first commit of this branch.
+Anthropic provider path is ported (chat_runtime.stream_round_claude) but only
+exercised when agent_provider_settings.provider='claude' + ANTHROPIC_API_KEY.
