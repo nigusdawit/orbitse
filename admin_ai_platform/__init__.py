@@ -67,14 +67,20 @@ def create_app(*, init_schema: bool = True, start_scheduler: bool = True) -> Fla
         except Exception as e:
             print(f"[app] skill sync skipped: {e}", file=sys.stderr)
 
-    # Wire the cost warn-line email sender once messaging is available (M3/M5).
-    # No-op until then.
+    # Wire messaging (Resend/Twilio) into the cost warn-line emailer and the
+    # automations engine, now that it's relocated (M5). Fail-open.
     try:
         from . import cost
-        # messaging relocation lands later; leave sender unset for now.
-        _ = cost  # referenced to keep import meaningful
+        from .reused import messaging as _msg
+
+        def _warn_email(to_email, subject, html):
+            try:
+                _msg.send_email(to_email, subject, html)
+            except Exception as ex:
+                print(f"[app] warn-line email failed: {ex}", file=sys.stderr)
+        cost.set_warn_email_sender(_warn_email)
     except Exception as e:  # pragma: no cover
-        print(f"[app] cost wiring skipped: {e}", file=sys.stderr)
+        print(f"[app] messaging/cost wiring skipped: {e}", file=sys.stderr)
 
     # Wire the automations engine: bind DB/LLM/cost helpers, register its
     # background tick with our scheduler, and give it a skill executor so the
@@ -85,10 +91,15 @@ def create_app(*, init_schema: bool = True, start_scheduler: bool = True) -> Fla
         from .cost import cost_cap_blocks_send, record_sms_cost
         from .tools import execute_chat_tool
         from .reused import automations
+        try:
+            from .reused import messaging as _automsg
+        except Exception:
+            _automsg = None
         automations.configure(
             query_db=_db.query_db, execute_db=_db.execute_db,
             database_url=config.DATABASE_URL, openai_client=_llm.openai_client,
             public_base_url_fn=lambda: config.PUBLIC_BASE_URL,
+            messaging_module=_automsg,
             cost_cap_blocks_send_fn=cost_cap_blocks_send,
             record_sms_cost_fn=record_sms_cost)
 
