@@ -16,6 +16,23 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 008 | M8 — WordPress plugin + SSO | done | task/008-wordpress-plugin | 007,002 | — | Gate 159/159; security-review fixes applied; PHP unverified (no php in sandbox) |
 | 009 | M9 — Docs + final verify | done | task/009-docs-verify | 001-008 | — | Final: 159/159 gate, ruff+unit+node clean, live 6/6 200 |
 
+## Phase 2 — gap closure (see `PLAN_PHASE2.md`; DRAFT, awaiting approval)
+
+| ID | Title | Status | Branch | Depends on |
+|----|-------|--------|--------|------------|
+| 010 | M10 — Scheduler ticks + multi-worker safety + backed rate limit | not_started | task/010-scheduler-and-scaling | — |
+| 011 | M11 — Stripe end-to-end (orders, bookings, webhook, sync) | not_started | task/011-stripe-end-to-end | 010 |
+| 012 | M12 — Events ticketing | not_started | task/012-events-ticketing | 011 |
+| 013 | M13 — Full visitor lookup tools + dropped content + web search | not_started | task/013-visitor-lookup-parity | — |
+| 014 | M14 — Integrations completion (voice admin, reviews agg, MCP OAuth, deck import, SMS) | not_started | task/014-integrations-completion | 010 |
+| 015 | M15 — Analytics (pageviews + dashboards) | not_started | task/015-analytics | — |
+| 016 | M16 — Admin dashboard SPA — all tabs | not_started | task/016-admin-dashboard-spa | 011-015 |
+| 017 | M17 — Onboarding (setup wizard + client checklist + AI assistant + agency provisioning) | not_started | task/017-onboarding | 016 |
+| 018 | M18 — Multi-tenant single-DB isolation + per-tenant admin users | not_started | task/018-multitenant-isolation | 010 |
+| 019 | M19 — Security hardening (CSRF + secrets-at-rest) | not_started | task/019-security-hardening | 018 |
+| 020 | M20 — Deploy artifacts + widget bundling + migrations + snapshot CLI | not_started | task/020-deploy-and-assets | — |
+| 021 | M21 — Verification (browser + live-key E2E + CI) | not_started | task/021-real-env-verification | 011-020 |
+
 **Status legend:** not_started | in_progress | paused | blocked | awaiting_review | done
 
 **Concurrency note:** M1 and M2 touch disjoint files (visitor widget/chat vs admin shell) and can run
