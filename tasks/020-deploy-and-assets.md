@@ -7,8 +7,8 @@ Make the package independently deployable and the widget production-served.
 - [ ] Package deploy artifacts: `Dockerfile` (gunicorn entry
       `admin_ai_platform:create_app()`), `docker-compose.yml` (app + Postgres +
       optional pgvector image + Redis), `pyproject.toml`/`requirements.txt` for
-      the package, `.env.example` (every config name, no values), and a
-      Render/Fly recipe (target per open question).
+      the package, `.env.example` (every config name, no values), and recipes for
+      **Railway** + **Render** (both confirmed) on top of Docker/compose.
 - [ ] System deps documented/installed for full features: pgvector, LibreOffice
       (deck import), fonts.
 - [ ] Widget bundling: concat (+ optional minify) chat-ui.css/js + voice.js into

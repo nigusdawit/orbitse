@@ -1,6 +1,6 @@
 # PLAN — Phase 2: close every gap in `admin_ai_platform`
 
-- **Status:** DRAFT (awaiting approval)
+- **Status:** APPROVED (2026-05-29) — building in order M10→M21
 - **Drafted:** 2026-05-29
 - **Builds on:** `PLAN.md` (Phase 1, M0–M9 COMPLETE)
 - **Task index:** `tasks/README.md` (rows 010–021)
@@ -127,14 +127,12 @@ DB-backed checks, `ruff` + `pytest` + `node --check` clean, `security-review`
 test-mode keys; live-key + browser + WordPress checks are the M21 real-env pass.
 Each milestone: branch `task/0NN-*`, gate-before-merge, `--no-ff`.
 
-## Open questions (resolve before building)
+## Decisions (confirmed 2026-05-29)
 
-1. **Multi-tenant model (M18):** implement single-DB row isolation now, or keep
-   one-DB-per-tenant and instead build provisioning tooling? (Plan assumes
-   single-DB isolation; it's the bigger but more flexible choice.)
-2. **Stripe scope (M11):** one-time Checkout only (matches the original), or also
-   subscriptions/agency billing? (Plan assumes one-time only.)
-3. **Hosting target for deploy artifacts (M20):** Render / Fly / Railway / Docker-
-   generic — which to prioritize for ready-to-run recipes?
-4. **Onboarding AI assistant (M19):** reuse the admin AI with an onboarding system
-   prompt, or a separate guided flow? (Plan assumes reuse + a checklist UI.)
+1. **Multi-tenant (M18):** implement **single-DB row isolation** (tenant_id
+   everywhere + query scoping + per-tenant admin users).
+2. **Stripe (M11):** **one-time payments only** (Checkout) — no subscriptions.
+3. **Deploy (M20):** ship recipes for **Docker/compose + Railway + Render**.
+4. **Onboarding assistant (M17):** reuse the admin AI with an onboarding system
+   prompt + a checklist UI.
+5. **Order:** build straight through **M10 → M21**, gated + merged per milestone.
