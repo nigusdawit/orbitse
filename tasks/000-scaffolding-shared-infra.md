@@ -58,18 +58,32 @@ None.
 None (foundation).
 
 ## Status
-in_progress
+done
 
 ## Branch
 task/000-scaffolding-shared-infra
 
 ## Commits
-- (pending)
+- (recorded at merge)
 
 ## Drift reason
-(blank)
+Full Tier-1/Tier-2 helper-module relocation deferred to the consuming milestones
+(M1/M3/M4/M5/M6) rather than done up front — keeps M0 a small, genuinely bootable
+foundation and avoids carrying dead code. The mechanism (`reused/`, `reused_di/`,
+`scheduler.py`) is in place now; modules land as each subsystem needs them.
 
 ## Notes
-- Independent-copy decision: duplicate db/llm/cost logic; do NOT touch original `app.py`.
-- Verification gate for this task: build/import smoke, ruff lint, the 3 unit test files above, boot
-  smoke in both modes. Typecheck N/A (no mypy configured) — note in PR/merge.
+- Independent-copy decision honored: db/llm/cost/tenancy/schema are standalone; original `app.py`
+  untouched. Verified by `test_imports.test_no_legacy_app_import`.
+- Tenant resolution + feature flags landed in `tenancy.py` (foundation); the tenancy *admin UI* is M6.
+- Cost warn-line email sender left unset (no-op) until messaging is relocated (M3/M5).
+- **Verification gate (passed):**
+  - Build/import: `create_app(init_schema=False)` boots; `/healthz` 200. ✅
+  - Lint: `ruff check admin_ai_platform/` → All checks passed. ✅
+  - Tests: `pytest admin_ai_platform/tests/` → 8 passed, 2 skipped. ✅
+  - New tests: test_config, test_imports, test_schema. ✅
+  - Smoke: boots in DEPLOY_MODE=self_host AND central. ✅
+  - Typecheck: N/A — no mypy configured for this project.
+  - DB schema test: SKIPPED — no local Postgres (DATABASE_URL unset). Honest skip; runs in any
+    env with a DB. Re-run with DATABASE_URL set to exercise init_db idempotency + IN/OUT assertions.
+- Toolchain: project uses `uv` (uv.lock). Run tests via `uv run python -m pytest admin_ai_platform/tests/`.
