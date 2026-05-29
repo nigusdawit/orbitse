@@ -972,6 +972,85 @@ def main():
         _os11.environ.pop("STRIPE_WEBHOOK_SECRET", None)
         _sc.invalidate_cache()
 
+        # ----- M13: visitor lookup parity + content CRUD + web search ---------
+        for _t13 in ("experiences", "pricing_seasons", "testimonials", "team_members",
+                     "faqs", "blog_posts", "business_info", "custom_section_items"):
+            check(f"M13 table {_t13} present", table_exists(_t13))
+
+        # Content admin CRUD (generic, column-allowlisted).
+        r_exp = admin.post("/admin/api/content/experiences",
+                           json={"name": "Wine Tasting", "description": "Guided flight",
+                                 "icon": "wine", "sort_order": 1})
+        check("content create experience 201", r_exp.status_code == 201)
+        _exp_id = r_exp.get_json()["id"]
+        check("content list experiences",
+              len(admin.get("/admin/api/content/experiences").get_json()["items"]) >= 1)
+        check("content update experience",
+              admin.put(f"/admin/api/content/experiences/{_exp_id}",
+                        json={"description": "Updated"}).get_json()["description"] == "Updated")
+        check("content unknown resource 404",
+              admin.get("/admin/api/content/nope").status_code == 404)
+        # Blog requires a unique slug on create.
+        check("content blog requires slug",
+              admin.post("/admin/api/content/blog", json={"title": "x"}).status_code == 400)
+        check("content blog create with slug",
+              admin.post("/admin/api/content/blog",
+                         json={"slug": "hello", "title": "Hello", "excerpt": "Hi there",
+                               "status": "published"}).status_code == 201)
+        # business_info singleton PUT/GET (incl. JSONB hours).
+        admin.put("/admin/api/content/business-info",
+                  json={"name": "Acme Vineyard", "phone": "555-1234",
+                        "hours": {"mon": "9-5"}})
+        _bi = admin.get("/admin/api/content/business-info").get_json()
+        check("business_info persisted", _bi.get("name") == "Acme Vineyard")
+        check("business_info JSONB hours stored", (_bi.get("hours") or {}).get("mon") == "9-5")
+
+        # Seed remaining content + a service/product so the lookups have rows.
+        execute_db("INSERT INTO pricing_seasons (label, date_range, price_range) "
+                   "VALUES ('Peak','Jun-Aug','$200-$300')")
+        execute_db("INSERT INTO faqs (question, answer) VALUES ('Parking?','Yes, free.')")
+        execute_db("INSERT INTO testimonials (reviewer_name, content, rating) "
+                   "VALUES ('Sam','Loved it',5)")
+        execute_db("INSERT INTO team_members (name, title) VALUES ('Ada','Host')")
+        execute_db("INSERT INTO custom_section_items (section_slug, title, content) "
+                   "VALUES ('awards','Best of 2025','We won')")
+        execute_db("INSERT INTO services (slug, name, is_active, pricing_model, base_price_cents) "
+                   "VALUES ('tour','Tour',TRUE,'rsvp',0) ON CONFLICT (slug) DO NOTHING")
+
+        # Lookup tools return expected shapes.
+        check("lookup_services returns rows", any(s["slug"] == "tour" for s in tools.lookup_services()))
+        check("lookup_products returns rows", any(p["slug"] == "gate-sku" for p in tools.lookup_products()))
+        check("lookup_experiences returns rows",
+              any(e["name"] == "Wine Tasting" for e in tools.lookup_experiences()))
+        check("lookup_pricing returns rows", any(p["label"] == "Peak" for p in tools.lookup_pricing()))
+        check("lookup_faq returns rows", any("Parking" in f["question"] for f in tools.lookup_faq()))
+        check("lookup_testimonials returns rows",
+              any(t["reviewer_name"] == "Sam" for t in tools.lookup_testimonials()))
+        check("lookup_team returns rows", any(t["name"] == "Ada" for t in tools.lookup_team()))
+        check("lookup_blog returns only published",
+              any(b["slug"] == "hello" for b in tools.lookup_blog()))
+        check("lookup_business_info returns the profile",
+              tools.lookup_business_info().get("name") == "Acme Vineyard")
+        check("lookup_custom_section_items filter by slug",
+              len(tools.lookup_custom_section_items(section_slug="awards")) == 1)
+        _avail = tools.lookup_service_availability(slug="tour")
+        check("lookup_service_availability returns shape", "days" in _avail or "error" in _avail)
+
+        # Web search degrades cleanly without a key.
+        _wsearch = tools.lookup_web_search(query="anything")
+        check("web search degrades without a key",
+              _wsearch.get("error") == "web search not configured")
+
+        # All new lookups are registered + appear in the site index.
+        for _n in ("lookup_services", "lookup_products", "lookup_experiences", "lookup_pricing",
+                   "lookup_blog", "lookup_team", "lookup_faq", "lookup_testimonials",
+                   "lookup_business_info", "lookup_custom_section_items", "lookup_web_search",
+                   "lookup_service_availability"):
+            check(f"{_n} registered", _n in tools.CHAT_LOOKUP_FUNCTIONS)
+        _idx = prompts.build_site_index()
+        check("site index includes services + experiences + business",
+              "lookup_services" in _idx and "EXPERIENCES" in _idx and "BUSINESS" in _idx)
+
         print("[gate] schema + integration checks complete", flush=True)
 
     finally:

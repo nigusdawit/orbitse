@@ -196,6 +196,189 @@ def lookup_events(slug=None, query=None, limit=5):
     return out
 
 
+def lookup_services(slug=None, query=None, limit=10):
+    """Bookable services with pricing model + base price (for bookService)."""
+    sql = ("SELECT slug, name, short_description, duration_minutes, pricing_model, "
+           "base_price_cents, deposit_cents, currency, requires_calendar "
+           "FROM services WHERE is_active=TRUE")
+    params = []
+    if slug:
+        sql += " AND slug = %s"
+        params.append(slug)
+    if query:
+        sql += " AND (name ILIKE %s OR short_description ILIKE %s)"
+        params.extend([f"%{query}%", f"%{query}%"])
+    sql += " ORDER BY sort_order, id LIMIT %s"
+    params.append(max(1, min(int(limit or 10), 30)))
+    return query_db(sql, tuple(params)) or []
+
+
+def lookup_service_availability(slug=None, days=14):
+    """Open booking slots for a calendar service over the next ``days`` days.
+    Returns the same shape the availability endpoint serves."""
+    if not (slug or "").strip():
+        return {"error": "slug required"}
+    svc = query_db("SELECT * FROM services WHERE slug=%s AND is_active=TRUE",
+                   (slug,), fetchone=True)
+    if not svc:
+        return {"error": "service not found"}
+    if not svc.get("requires_calendar"):
+        return {"requires_calendar": False, "days": []}
+    from datetime import date, timedelta
+    from .blueprints.commerce import _compute_availability
+    n = max(1, min(int(days or 14), 60))
+    start = date.today()
+    return {"requires_calendar": True,
+            "days": _compute_availability(svc, start, start + timedelta(days=n - 1))}
+
+
+def lookup_products(slug=None, query=None, limit=10):
+    """Purchasable products with price + stock (for checkout)."""
+    sql = ("SELECT slug, name, description, price_cents, currency, stock, "
+           "track_inventory FROM products WHERE active=TRUE")
+    params = []
+    if slug:
+        sql += " AND slug = %s"
+        params.append(slug)
+    if query:
+        sql += " AND (name ILIKE %s OR description ILIKE %s)"
+        params.extend([f"%{query}%", f"%{query}%"])
+    sql += " ORDER BY sort_order, id LIMIT %s"
+    params.append(max(1, min(int(limit or 10), 30)))
+    return query_db(sql, tuple(params)) or []
+
+
+def lookup_experiences(query=None, limit=20):
+    """Curated 'experiences'/highlights the venue or business offers."""
+    sql = "SELECT name, description, icon FROM experiences"
+    params = []
+    if query:
+        sql += " WHERE name ILIKE %s OR description ILIKE %s"
+        params.extend([f"%{query}%", f"%{query}%"])
+    sql += " ORDER BY sort_order, id LIMIT %s"
+    params.append(max(1, min(int(limit or 20), 50)))
+    return query_db(sql, tuple(params)) or []
+
+
+def lookup_pricing(limit=20):
+    """Seasonal pricing tiers (label + date range + price range)."""
+    return query_db("SELECT label, date_range, price_range FROM pricing_seasons "
+                    "ORDER BY sort_order, id LIMIT %s",
+                    (max(1, min(int(limit or 20), 50)),)) or []
+
+
+def lookup_blog(slug=None, query=None, limit=5):
+    """Published blog posts (excerpt-level; for linking/answering)."""
+    sql = ("SELECT slug, title, excerpt, author, category FROM blog_posts "
+           "WHERE status='published'")
+    params = []
+    if slug:
+        sql += " AND slug = %s"
+        params.append(slug)
+    if query:
+        sql += " AND (title ILIKE %s OR excerpt ILIKE %s OR tags ILIKE %s)"
+        params.extend([f"%{query}%", f"%{query}%", f"%{query}%"])
+    sql += " ORDER BY published_at DESC NULLS LAST, sort_order, id LIMIT %s"
+    params.append(max(1, min(int(limit or 5), 20)))
+    return query_db(sql, tuple(params)) or []
+
+
+def lookup_team(query=None, limit=20):
+    """Team/staff member bios."""
+    sql = "SELECT name, title, bio FROM team_members"
+    params = []
+    if query:
+        sql += " WHERE name ILIKE %s OR title ILIKE %s"
+        params.extend([f"%{query}%", f"%{query}%"])
+    sql += " ORDER BY sort_order, id LIMIT %s"
+    params.append(max(1, min(int(limit or 20), 50)))
+    return query_db(sql, tuple(params)) or []
+
+
+def lookup_faq(query=None, limit=20):
+    """FAQ question/answer pairs."""
+    sql = "SELECT question, answer FROM faqs"
+    params = []
+    if query:
+        sql += " WHERE question ILIKE %s OR answer ILIKE %s"
+        params.extend([f"%{query}%", f"%{query}%"])
+    sql += " ORDER BY sort_order, id LIMIT %s"
+    params.append(max(1, min(int(limit or 20), 50)))
+    return query_db(sql, tuple(params)) or []
+
+
+def lookup_testimonials(limit=10):
+    """Customer testimonials/reviews shown on the site."""
+    return query_db("SELECT reviewer_name, reviewer_role, content, rating FROM testimonials "
+                    "ORDER BY sort_order, id LIMIT %s",
+                    (max(1, min(int(limit or 10), 30)),)) or []
+
+
+def lookup_business_info():
+    """The single business profile row (name, contact, hours, socials)."""
+    return query_db("SELECT name, tagline, about, phone, email, address, hours, social "
+                    "FROM business_info WHERE id=1", fetchone=True) or {}
+
+
+def lookup_custom_section_items(section_slug=None, limit=30):
+    """Generic content items, optionally filtered to one section_slug group."""
+    sql = ("SELECT section_slug, title, subtitle, content, link_url, link_text "
+           "FROM custom_section_items")
+    params = []
+    if section_slug:
+        sql += " WHERE section_slug = %s"
+        params.append(section_slug)
+    sql += " ORDER BY section_slug, sort_order, id LIMIT %s"
+    params.append(max(1, min(int(limit or 30), 80)))
+    return query_db(sql, tuple(params)) or []
+
+
+def lookup_web_search(query=None, count=5):
+    """Live web search. Prefers Brave Search (BRAVE_SEARCH_API_KEY); falls back
+    to Anthropic's server-side web_search tool when an Anthropic key is set.
+    Degrades to a clear 'unavailable' message when neither is configured — never
+    raises into the chat loop."""
+    from . import config
+    q = (query or "").strip()
+    if not q:
+        return {"error": "query required"}
+    n = max(1, min(int(count or 5), 10))
+
+    if config.BRAVE_SEARCH_API_KEY:
+        try:
+            import requests
+            r = requests.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                params={"q": q, "count": n},
+                headers={"Accept": "application/json",
+                         "X-Subscription-Token": config.BRAVE_SEARCH_API_KEY},
+                timeout=8)
+            r.raise_for_status()
+            results = (r.json().get("web") or {}).get("results") or []
+            return {"provider": "brave", "results": [
+                {"title": x.get("title"), "url": x.get("url"),
+                 "snippet": trim_text(x.get("description"), 300)} for x in results[:n]]}
+        except Exception as e:
+            print(f"[tools] brave search failed: {e}")
+
+    if config.ANTHROPIC_API_KEY:
+        try:
+            from . import llm
+            if llm.anthropic_client is not None:
+                resp = llm.anthropic_client.messages.create(
+                    model="claude-haiku-4-5-20251001", max_tokens=1024,
+                    tools=[{"type": "web_search_20250305", "name": "web_search",
+                            "max_uses": 3}],
+                    messages=[{"role": "user", "content": f"Search the web: {q}"}])
+                text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+                return {"provider": "anthropic", "summary": text}
+        except Exception as e:
+            print(f"[tools] anthropic web search failed: {e}")
+
+    return {"error": "web search not configured",
+            "note": "set BRAVE_SEARCH_API_KEY or ANTHROPIC_API_KEY to enable"}
+
+
 # --------------------------------------------------------------------------
 # Schemas + registry
 # --------------------------------------------------------------------------
@@ -251,6 +434,89 @@ CHAT_TOOLS = [
             "slug": {"type": "string"}, "query": {"type": "string"},
             "limit": {"type": "integer"}}},
     }},
+    {"type": "function", "function": {
+        "name": "lookup_services",
+        "description": ("Bookable services with pricing model + base price. Use before "
+                        "a bookService command or when a visitor asks what they can book."),
+        "parameters": {"type": "object", "properties": {
+            "slug": {"type": "string"}, "query": {"type": "string"},
+            "limit": {"type": "integer"}}},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_service_availability",
+        "description": ("Open booking slots for a calendar service over the next N days. "
+                        "Call with a service slug before offering times."),
+        "parameters": {"type": "object", "properties": {
+            "slug": {"type": "string"}, "days": {"type": "integer"}},
+            "required": ["slug"]},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_products",
+        "description": ("Purchasable products with price + stock. Use before a checkout "
+                        "command or when a visitor asks what's for sale."),
+        "parameters": {"type": "object", "properties": {
+            "slug": {"type": "string"}, "query": {"type": "string"},
+            "limit": {"type": "integer"}}},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_experiences",
+        "description": "Curated experiences / highlights the business offers.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string"}, "limit": {"type": "integer"}}},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_pricing",
+        "description": "Seasonal pricing tiers (label, date range, price range).",
+        "parameters": {"type": "object", "properties": {
+            "limit": {"type": "integer"}}},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_blog",
+        "description": "Published blog posts (title + excerpt) for answering/linking.",
+        "parameters": {"type": "object", "properties": {
+            "slug": {"type": "string"}, "query": {"type": "string"},
+            "limit": {"type": "integer"}}},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_team",
+        "description": "Team/staff member bios.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string"}, "limit": {"type": "integer"}}},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_faq",
+        "description": "FAQ question/answer pairs. Check before answering common questions.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string"}, "limit": {"type": "integer"}}},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_testimonials",
+        "description": "Customer testimonials/reviews to quote when asked about reputation.",
+        "parameters": {"type": "object", "properties": {
+            "limit": {"type": "integer"}}},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_business_info",
+        "description": ("The business profile: name, tagline, about, phone, email, "
+                        "address, hours, socials. Use for contact/hours questions."),
+        "parameters": {"type": "object", "properties": {}},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_custom_section_items",
+        "description": ("Generic content items, optionally filtered by section_slug. Use "
+                        "for bespoke content the other lookups don't cover."),
+        "parameters": {"type": "object", "properties": {
+            "section_slug": {"type": "string"}, "limit": {"type": "integer"}}},
+    }},
+    {"type": "function", "function": {
+        "name": "lookup_web_search",
+        "description": ("Live web search for facts NOT covered by the site index or other "
+                        "lookups (current events, external info). Prefer internal lookups "
+                        "first; only search the web when they can't answer."),
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string"}, "count": {"type": "integer"}},
+            "required": ["query"]},
+    }},
 ]
 
 CHAT_LOOKUP_FUNCTIONS = {
@@ -260,6 +526,18 @@ CHAT_LOOKUP_FUNCTIONS = {
     "lookup_presentation": lookup_presentation,
     "lookup_knowledge_base": lookup_knowledge_base,
     "lookup_events": lookup_events,
+    "lookup_services": lookup_services,
+    "lookup_service_availability": lookup_service_availability,
+    "lookup_products": lookup_products,
+    "lookup_experiences": lookup_experiences,
+    "lookup_pricing": lookup_pricing,
+    "lookup_blog": lookup_blog,
+    "lookup_team": lookup_team,
+    "lookup_faq": lookup_faq,
+    "lookup_testimonials": lookup_testimonials,
+    "lookup_business_info": lookup_business_info,
+    "lookup_custom_section_items": lookup_custom_section_items,
+    "lookup_web_search": lookup_web_search,
 }
 
 # name -> (display_name, category) for the agent_skills registry sync.
@@ -270,6 +548,18 @@ SKILL_METADATA = {
     "lookup_presentation": ("Look up presentations", "presentation"),
     "lookup_knowledge_base": ("Search knowledge base", "rag"),
     "lookup_events": ("Look up events", "lookup"),
+    "lookup_services": ("Look up services", "lookup"),
+    "lookup_service_availability": ("Check service availability", "lookup"),
+    "lookup_products": ("Look up products", "lookup"),
+    "lookup_experiences": ("Look up experiences", "lookup"),
+    "lookup_pricing": ("Look up pricing", "lookup"),
+    "lookup_blog": ("Look up blog posts", "lookup"),
+    "lookup_team": ("Look up team members", "lookup"),
+    "lookup_faq": ("Look up FAQ", "lookup"),
+    "lookup_testimonials": ("Look up testimonials", "lookup"),
+    "lookup_business_info": ("Look up business info", "lookup"),
+    "lookup_custom_section_items": ("Look up custom content", "lookup"),
+    "lookup_web_search": ("Web search", "web"),
 }
 
 

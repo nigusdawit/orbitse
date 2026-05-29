@@ -45,6 +45,8 @@ _BLUEPRINT_SPECS = [
     ("velo", "bp"),
     # M12
     ("events", "bp"),
+    # M13
+    ("content", "bp"),
     # ... later milestones append here.
 ]
 

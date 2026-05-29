@@ -54,6 +54,9 @@ IN_TABLES_M0_M1 = (
     "sso_used_jtis", "rate_buckets",
     # M12
     "events", "event_rsvps",
+    # M13
+    "experiences", "pricing_seasons", "testimonials", "team_members", "faqs",
+    "blog_posts", "business_info", "custom_section_items",
 )
 
 # Tables that belong to the original public website and must NOT be created by
@@ -1089,6 +1092,119 @@ CREATE TABLE IF NOT EXISTS event_rsvps (
     created_at      TIMESTAMP DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_event_rsvps_event ON event_rsvps (event_id, status);
+
+-- ============================ AI-REFERENCED CONTENT (M13) ===============
+-- Data tables for content the visitor AI looks up. The kit dropped the public
+-- website editors for these (per the boundary decision), but keeps the data +
+-- a minimal admin CRUD so an operator can populate what the AI references.
+CREATE TABLE IF NOT EXISTS experiences (
+    id          SERIAL PRIMARY KEY,
+    name        TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    icon        VARCHAR(50) NOT NULL DEFAULT 'star',
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TIMESTAMP DEFAULT NOW(),
+    updated_at  TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_experiences_sort ON experiences (sort_order);
+
+CREATE TABLE IF NOT EXISTS pricing_seasons (
+    id          SERIAL PRIMARY KEY,
+    label       VARCHAR(80) NOT NULL DEFAULT '',
+    date_range  TEXT NOT NULL DEFAULT '',
+    price_range TEXT NOT NULL DEFAULT '',
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TIMESTAMP DEFAULT NOW(),
+    updated_at  TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_pricing_sort ON pricing_seasons (sort_order);
+
+CREATE TABLE IF NOT EXISTS testimonials (
+    id            SERIAL PRIMARY KEY,
+    reviewer_name TEXT NOT NULL DEFAULT '',
+    reviewer_role TEXT NOT NULL DEFAULT '',
+    content       TEXT NOT NULL DEFAULT '',
+    rating        INTEGER NOT NULL DEFAULT 5,
+    image_url     TEXT NOT NULL DEFAULT '',
+    sort_order    INTEGER NOT NULL DEFAULT 0,
+    created_at    TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_testimonials_sort ON testimonials (sort_order);
+
+CREATE TABLE IF NOT EXISTS team_members (
+    id          SERIAL PRIMARY KEY,
+    name        TEXT NOT NULL DEFAULT '',
+    title       TEXT NOT NULL DEFAULT '',
+    bio         TEXT NOT NULL DEFAULT '',
+    image_url   TEXT NOT NULL DEFAULT '',
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_team_sort ON team_members (sort_order);
+
+CREATE TABLE IF NOT EXISTS faqs (
+    id          SERIAL PRIMARY KEY,
+    question    TEXT NOT NULL DEFAULT '',
+    answer      TEXT NOT NULL DEFAULT '',
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_faqs_sort ON faqs (sort_order);
+
+CREATE TABLE IF NOT EXISTS blog_posts (
+    id              SERIAL PRIMARY KEY,
+    slug            TEXT UNIQUE NOT NULL,
+    title           TEXT NOT NULL DEFAULT '',
+    subtitle        TEXT NOT NULL DEFAULT '',
+    excerpt         TEXT NOT NULL DEFAULT '',
+    content         TEXT NOT NULL DEFAULT '',
+    cover_image     TEXT NOT NULL DEFAULT '',
+    author          TEXT NOT NULL DEFAULT '',
+    category        TEXT NOT NULL DEFAULT '',
+    tags            TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'draft',
+    seo_title       TEXT NOT NULL DEFAULT '',
+    seo_description TEXT NOT NULL DEFAULT '',
+    published_at    TIMESTAMP,
+    created_at      TIMESTAMP DEFAULT NOW(),
+    updated_at      TIMESTAMP DEFAULT NOW(),
+    sort_order      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_blog_posts_status ON blog_posts (status);
+CREATE INDEX IF NOT EXISTS idx_blog_posts_sort ON blog_posts (sort_order);
+
+-- Single-row business profile the AI quotes (name, contact, hours, socials).
+CREATE TABLE IF NOT EXISTS business_info (
+    id          INTEGER PRIMARY KEY DEFAULT 1,
+    name        TEXT NOT NULL DEFAULT '',
+    tagline     TEXT NOT NULL DEFAULT '',
+    about       TEXT NOT NULL DEFAULT '',
+    phone       TEXT NOT NULL DEFAULT '',
+    email       TEXT NOT NULL DEFAULT '',
+    address     TEXT NOT NULL DEFAULT '',
+    hours       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    social      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at  TIMESTAMP DEFAULT NOW()
+);
+INSERT INTO business_info (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+-- Generic content rows grouped by a free-form section_slug (standalone — the
+-- package drops the page_sections editor, so no FK to it).
+CREATE TABLE IF NOT EXISTS custom_section_items (
+    id           SERIAL PRIMARY KEY,
+    section_slug VARCHAR(150) NOT NULL DEFAULT '',
+    title        TEXT NOT NULL DEFAULT '',
+    subtitle     TEXT NOT NULL DEFAULT '',
+    content      TEXT NOT NULL DEFAULT '',
+    image_url    TEXT NOT NULL DEFAULT '',
+    link_url     TEXT NOT NULL DEFAULT '',
+    link_text    TEXT NOT NULL DEFAULT '',
+    icon         TEXT NOT NULL DEFAULT '',
+    sort_order   INTEGER NOT NULL DEFAULT 0,
+    extra_data   JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at   TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_custom_items_section ON custom_section_items (section_slug, sort_order);
 
 -- ============================ TENANCY: EMBED KEYS (M6, feeds M7) =========
 -- Publishable per-tenant key for the cross-origin widget, with an origin
