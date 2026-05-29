@@ -24,6 +24,7 @@ import os
 from flask import (Blueprint, request, session, redirect, jsonify,
                    send_from_directory)
 
+from .. import config
 from ..db import query_db, execute_db
 from ..auth import admin_required, check_admin_password, is_admin_authenticated
 
@@ -62,6 +63,37 @@ def login():
 def logout():
     session.pop("is_admin", None)
     return redirect("/admin/login")
+
+
+@bp.route("/admin/sso", methods=["GET"])
+def sso_login():
+    """Single-use SSO entry for the WordPress-embedded admin iframe. Verifies a
+    short-lived HMAC token (signed by the plugin with the shared SSO secret),
+    establishes the admin session, and redirects into /admin — which then
+    renders inside the wp-admin iframe (frame-ancestors set in after_request)."""
+    from ..sso import verify_sso_token
+    tid = verify_sso_token(request.args.get("token", ""))
+    if tid is None:
+        return jsonify({"error": "invalid or expired SSO token"}), 403
+    session["is_admin"] = True
+    session["tenant_id"] = tid
+    session.permanent = True
+    return redirect("/admin")
+
+
+@bp.after_request
+def _frame_ancestors(resp):
+    """Allow the configured WordPress origin to frame the admin (for the SSO
+    iframe), and only that origin — default-deny framing everywhere else."""
+    if request.path.startswith("/admin"):
+        wp_origin = config.CSP_FRAME_ANCESTORS
+        if wp_origin:
+            resp.headers["Content-Security-Policy"] = f"frame-ancestors 'self' {wp_origin}"
+            resp.headers.pop("X-Frame-Options", None)
+        else:
+            resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+            resp.headers["Content-Security-Policy"] = "frame-ancestors 'self'"
+    return resp
 
 
 # ---- Chat history (visitor conversations) -------------------------------

@@ -533,6 +533,34 @@ def main():
         check("loader.js served",
               admin.get("/embed/loader.js").status_code == 200)
 
+        # ----- M8: SSO (platform side; PHP uses the identical token scheme) -----
+        import admin_ai_platform.config as _cfg8
+        _cfg8.SSO_SIGNING_SECRET = "ssosecret_for_gate"
+        from admin_ai_platform.sso import mint_sso_token, verify_sso_token, _USED_JTIS
+        _USED_JTIS.clear()
+        tok = mint_sso_token(1, secret="ssosecret_for_gate")
+        check("sso verify roundtrip", verify_sso_token(tok) == 1)
+        check("sso single-use (replay rejected)", verify_sso_token(tok) is None)
+        check("sso forged signature rejected", verify_sso_token(tok.split(".")[0] + ".bogus") is None)
+        check("sso expired rejected", verify_sso_token(mint_sso_token(1, ttl_seconds=-5)) is None)
+        check("sso over-long token rejected", verify_sso_token(mint_sso_token(1, ttl_seconds=3600)) is None)
+        # /admin/sso route establishes a session for a fresh client.
+        sso_client = app.test_client()
+        route_tok = mint_sso_token(1, secret="ssosecret_for_gate")
+        r_sso = sso_client.get(f"/admin/sso?token={route_tok}")
+        check("/admin/sso redirects on valid token", r_sso.status_code in (301, 302))
+        check("/admin/sso establishes admin session", sso_client.get("/admin").status_code == 200)
+        check("/admin/sso forged token 403",
+              app.test_client().get("/admin/sso?token=nope.nope").status_code == 403)
+        # Clickjacking: with a configured WP origin, admin allows only that framer.
+        _cfg8.CSP_FRAME_ANCESTORS = "https://wp.example"
+        csp = sso_client.get("/admin/login").headers.get("Content-Security-Policy", "")
+        check("frame-ancestors allows configured WP origin",
+              "frame-ancestors" in csp and "https://wp.example" in csp)
+        _cfg8.CSP_FRAME_ANCESTORS = ""
+        xfo = app.test_client().get("/admin/login").headers.get("X-Frame-Options", "")
+        check("frame default-deny without WP origin", xfo == "SAMEORIGIN")
+
         print("[gate] schema + integration checks complete", flush=True)
 
     finally:

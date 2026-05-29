@@ -160,6 +160,9 @@ EMBED_KEY_SIGNING_SECRET = env_str("EMBED_KEY_SIGNING_SECRET") or FLASK_SECRET_K
 SSO_SIGNING_SECRET = env_str("SSO_SIGNING_SECRET") or FLASK_SECRET_KEY
 # Where loader.js / widget assets are served from (defaults to same origin).
 WIDGET_CDN_BASE = env_str("WIDGET_CDN_BASE")
+# The WordPress site origin permitted to frame the admin (SSO iframe). When set,
+# the admin allows framing by 'self' + this origin; otherwise framing is denied.
+CSP_FRAME_ANCESTORS = env_str("CSP_FRAME_ANCESTORS")
 
 # ---------------------------------------------------------------------------
 # Scheduler
