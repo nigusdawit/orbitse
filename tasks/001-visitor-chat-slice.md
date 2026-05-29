@@ -47,10 +47,35 @@ host wiring. This is the original ask, shipped as a working slice.
 002 (disjoint files).
 
 ## Status
-not_started
+awaiting_review  (code-complete; runtime gate pending)
 
 ## Branch
 task/001-visitor-chat-slice
 
+## Verification state
+Built modules: auth, util, gallery/forms/media blueprints, chat_runtime, tools,
+prompts, visitor_chat blueprint, voice blueprint, web/voice.js, web/chat-ui.{js,css},
+demo/index.html, assets blueprint.
+
+PASSED in the build sandbox:
+- ruff clean across the package
+- pytest: 18 passed / 2 skipped (the 2 skips are DB-backed schema tests — no local Postgres)
+- `node --check` on chat-ui.js + voice.js (valid syntax)
+- `create_app` boots in self_host AND central; all M1 routes register
+- live server boots; GET /healthz, /demo, /widget/* all 200 with correct content-types; unknown widget asset 404
+
+NOT YET VERIFIED (needs a real environment — blocked here):
+- A real /api/chat round (needs DATABASE_URL + OPENAI_API_KEY)
+- In-browser widget behavior: gallery navigate, progressive generatePage render,
+  conversational form submit, spoken reply (needs a browser + DB + key)
+- init_db() against real Postgres (idempotency + IN/OUT table assertions)
+
+TO CLOSE THE GATE + MERGE: run, with DATABASE_URL + OPENAI_API_KEY set,
+  uv run python -m pytest admin_ai_platform/tests/   (all incl. schema)
+  uv run python -m admin_ai_platform   then load /demo and exercise the 4 flows.
+NOT merged to main: the 6-point gate's runtime "verify" step is unsatisfied in
+this environment; merging would claim a pass I cannot substantiate.
+
 ## Notes
-Expand research line numbers on first commit of this branch.
+Anthropic provider path is ported (chat_runtime.stream_round_claude) but only
+exercised when agent_provider_settings.provider='claude' + ANTHROPIC_API_KEY.
