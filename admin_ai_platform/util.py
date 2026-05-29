@@ -40,6 +40,14 @@ def parse_ua(ua_string: str):
     return browser, os_name, device
 
 
+def trim_text(s, n=300):
+    """Trim a string to ``n`` chars with an ellipsis; None-safe."""
+    if not s:
+        return s
+    s = str(s)
+    return s if len(s) <= n else s[: n - 1].rstrip() + "…"
+
+
 def client_ip() -> str:
     """Best-effort client IP, honoring the first X-Forwarded-For hop."""
     fwd = request.headers.get("X-Forwarded-For", "")

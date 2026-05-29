@@ -60,6 +60,12 @@ def create_app(*, init_schema: bool = True, start_scheduler: bool = True) -> Fla
             init_db()
         except Exception as e:
             print(f"[app] schema init failed (continuing): {e}", file=sys.stderr)
+        # Sync builtin chat skills so the admin Skills tab can toggle them.
+        try:
+            from .tools import sync_skills_to_db
+            sync_skills_to_db()
+        except Exception as e:
+            print(f"[app] skill sync skipped: {e}", file=sys.stderr)
 
     # Wire the cost warn-line email sender once messaging is available (M3/M5).
     # No-op until then.
