@@ -22,7 +22,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 |----|-------|--------|--------|------------|
 | 010 | M10 — Scheduler ticks + multi-worker safety + backed rate limit | done | task/010-scheduler-and-scaling | — | Gate 175/175; Postgres-backed rate limiter + advisory-lock leader + all ticks registered; fixed weekly_dow=0 falsy bug |
 | 011 | M11 — Stripe end-to-end (orders, bookings, webhook, sync) | done | task/011-stripe-end-to-end | 010 | Gate 205/205; verified-webhook idempotent routing + refund hardening (security-review: 3 fixed); live test-mode purchase → M21 |
-| 012 | M12 — Events ticketing | not_started | task/012-events-ticketing | 011 |
+| 012 | M12 — Events ticketing | done | task/012-events-ticketing | 011 | Gate 224/224; free/paid/donation RSVPs, capacity reservation (no double-sell), webhook confirm/free-seats, lookup_events. Landed on main directly (commit e4e24ad) |
 | 013 | M13 — Full visitor lookup tools + dropped content + web search | not_started | task/013-visitor-lookup-parity | — |
 | 014 | M14 — Integrations completion (voice admin, reviews agg, MCP OAuth, deck import, SMS) | not_started | task/014-integrations-completion | 010 |
 | 015 | M15 — Analytics (pageviews + dashboards) | not_started | task/015-analytics | — |
