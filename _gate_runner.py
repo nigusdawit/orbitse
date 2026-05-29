@@ -212,6 +212,67 @@ def main():
         ah = admin.get("/admin/api/chat/history?session_id=adm1").get_json()
         check("admin chat history returns messages", len(ah["messages"]) >= 1)
 
+        # ----- M3: cost dashboard -----
+        check("cost summary 200", admin.get("/admin/api/cost/summary").status_code == 200)
+        check("cost series 200", "series" in admin.get("/admin/api/cost/series").get_json())
+        check("cost by-surface 200", "by_surface" in admin.get("/admin/api/cost/by-surface").get_json())
+        check("cost by-model 200", "by_model" in admin.get("/admin/api/cost/by-model").get_json())
+        prices = admin.get("/admin/api/cost/prices").get_json()["prices"]
+        check("cost prices listed", len(prices) >= 1)
+        pid_price = prices[0]["id"]
+        check("cost price PATCH",
+              admin.patch(f"/admin/api/cost/prices/{pid_price}", json={"notes": "edited"}).status_code == 200)
+        check("cost cap PUT",
+              admin.put("/admin/api/cost/cap", json={"monthly_cap_usd": 50, "cap_behavior": "alert_only"}).status_code == 200)
+        check("cost cap PUT rejects bad behavior",
+              admin.put("/admin/api/cost/cap", json={"cap_behavior": "nuke"}).status_code == 400)
+
+        # ----- M3: skills registry + custom SQL skill executed via dispatcher -----
+        skills = admin.get("/admin/api/skills").get_json()["skills"]
+        check("skills registry lists builtins", any(s["name"] == "lookup_gallery_cards" for s in skills))
+        builtin_id = [s for s in skills if s["name"] == "lookup_gallery_cards"][0]["id"]
+        check("builtin delete refused",
+              admin.delete(f"/admin/api/skills/{builtin_id}").status_code == 400)
+        check("custom skill name validation",
+              admin.post("/admin/api/skills", json={"name": "Bad Name"}).status_code == 400)
+        # Create a custom SQL skill, enable it, and run it through the chat dispatcher.
+        csql = admin.post("/admin/api/custom-sql", json={
+            "name": "count_cards", "description": "count gallery cards",
+            "sql_template": "SELECT COUNT(*) AS n FROM gallery_cards",
+            "enabled": True, "args_schema_json": {"type": "object", "properties": {}}})
+        check("custom-sql created", csql.status_code == 201)
+        from admin_ai_platform.tools import get_active_chat_tools, execute_chat_tool
+        names = {t["function"]["name"] for t in get_active_chat_tools()}
+        check("custom skill appears in tools", "count_cards" in names)
+        res_str, _ = execute_chat_tool("count_cards", "{}", session_id="s")
+        check("custom SQL skill executes (read-only)", '"rows"' in res_str and '"n"' in res_str)
+        # SSRF / write guards.
+        from admin_ai_platform.custom_skills import _url_is_safe, _run_sql_skill
+        check("SSRF blocks localhost", _url_is_safe("http://127.0.0.1/x") is False)
+        check("SSRF blocks private", _url_is_safe("http://192.168.1.5/x") is False)
+        check("custom SQL rejects write",
+              "error" in _run_sql_skill({"sql_template": "DELETE FROM gallery_cards"}, {}))
+
+        # ----- M3: MCP registry + graceful failure on unreachable server -----
+        mcp = admin.post("/admin/api/mcp/servers", json={
+            "name": "demo-mcp", "url": "http://localhost:59999/mcp",
+            "transport": "http", "auth_type": "none", "allowed_for_velo": True})
+        check("mcp server created", mcp.status_code == 201)
+        msid = mcp.get_json()["id"]
+        check("mcp credential redacted in list",
+              all(s["auth_credential"] in ("", "***") for s in admin.get("/admin/api/mcp/servers").get_json()["servers"]))
+        test = admin.post(f"/admin/api/mcp/servers/{msid}/test").get_json()
+        check("mcp test fails gracefully on unreachable", test["ok"] is False)
+        # Seed a cached tool directly and verify it surfaces as a namespaced visitor tool.
+        execute_db("INSERT INTO mcp_tools_cache (server_id, tool_name, description, enabled) "
+                   "VALUES (%s,'search','search the web',TRUE)", (msid,))
+        from admin_ai_platform.mcp_tools import mcp_tool_schemas, is_mcp_tool
+        mschemas = mcp_tool_schemas(audience="visitor")
+        check("mcp tool exposed to visitor (allowed_for_velo)",
+              any(t["function"]["name"] == f"mcp__{msid}__search" for t in mschemas))
+        check("is_mcp_tool detects namespace", is_mcp_tool(f"mcp__{msid}__search"))
+        check("mcp delete", admin.delete(f"/admin/api/mcp/servers/{msid}").status_code == 200)
+
         print("[gate] schema + integration checks complete", flush=True)
 
     finally:

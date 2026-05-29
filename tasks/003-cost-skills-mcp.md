@@ -14,4 +14,19 @@ Cost dashboard blueprint (summary/series/by-surface/by-model/prices/cap) + caps 
   SQL-skill parameter binding safety.
 
 ## Dependencies: 002   ## Parallel-with: 004
-## Status: not_started   ## Branch: task/003-cost-skills-mcp
+## Status: done (merged)   ## Branch: task/003-cost-skills-mcp
+
+## Verification (embedded-Postgres gate, 70/70 green)
+- cost: summary/series/by-surface/by-model 200; prices list + PATCH; cap PUT +
+  reject bad behavior; feature-gated (404 when cost_dashboard off)
+- skills: registry lists builtins; builtin delete refused; custom name validation;
+  custom SQL skill created+enabled -> appears in get_active_chat_tools ->
+  executes read-only via execute_chat_tool; SSRF guard blocks localhost/private;
+  custom SQL rejects writes
+- MCP: server create (cred redacted in list); test fails gracefully on unreachable
+  host; seeded cached tool surfaces as namespaced visitor tool (allowed_for_velo);
+  is_mcp_tool detection; delete
+- Two real bugs caught + fixed: query_db(fetchone) returned [] not None (broke
+  tenant_has_feature); custom-skill create ignored the enabled flag.
+Unverified (needs live MCP server / OpenAI key): actual MCP tools/call round and
+custom HTTP-skill live request; both are SSRF-guarded and unit-shaped here.

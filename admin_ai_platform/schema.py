@@ -37,6 +37,9 @@ IN_TABLES_M0_M1 = (
     "weekly_digest_sends",
     # M2
     "admin_chat_messages", "admin_chat_sessions", "admin_pending_actions",
+    # M3
+    "custom_knowledge_entries", "custom_webhook_skills", "custom_sql_skills",
+    "mcp_servers", "mcp_tools_cache",
 )
 
 # Tables that belong to the original public website and must NOT be created by
@@ -498,6 +501,82 @@ CREATE INDEX IF NOT EXISTS idx_admin_pending_session
     ON admin_pending_actions (session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_admin_pending_status
     ON admin_pending_actions (status, created_at);
+
+-- ============================ SKILLS + MCP (M3) =========================
+CREATE TABLE IF NOT EXISTS custom_knowledge_entries (
+    id          SERIAL PRIMARY KEY,
+    topic       VARCHAR(200) NOT NULL DEFAULT '',
+    content     TEXT         NOT NULL DEFAULT '',
+    enabled     BOOLEAN      NOT NULL DEFAULT true,
+    created_at  TIMESTAMP    DEFAULT NOW(),
+    updated_at  TIMESTAMP    DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_custom_knowledge_enabled ON custom_knowledge_entries (enabled);
+
+-- Webhook skills: calling the tool POSTs/GETs to url with the tool args. URL is
+-- SSRF-validated at call time (no private/loopback/link-local).
+CREATE TABLE IF NOT EXISTS custom_webhook_skills (
+    id                  SERIAL PRIMARY KEY,
+    name                VARCHAR(100) NOT NULL UNIQUE,
+    description         TEXT         NOT NULL DEFAULT '',
+    url                 TEXT         NOT NULL DEFAULT '',
+    method              VARCHAR(10)  NOT NULL DEFAULT 'POST',
+    headers_json        JSONB        DEFAULT '{}'::jsonb,
+    args_schema_json    JSONB        DEFAULT '{"type":"object","properties":{},"required":[]}'::jsonb,
+    timeout_seconds     INTEGER      NOT NULL DEFAULT 10,
+    enabled             BOOLEAN      NOT NULL DEFAULT false,
+    created_at          TIMESTAMP    DEFAULT NOW(),
+    updated_at          TIMESTAMP    DEFAULT NOW()
+);
+
+-- SQL skills: one read-only SELECT tool each. sql_template uses %(name)s named
+-- params, bound at call time under the SELECT-only / 100-row / 5s guardrails.
+CREATE TABLE IF NOT EXISTS custom_sql_skills (
+    id                  SERIAL PRIMARY KEY,
+    name                VARCHAR(100) NOT NULL UNIQUE,
+    description         TEXT         NOT NULL DEFAULT '',
+    sql_template        TEXT         NOT NULL DEFAULT '',
+    args_schema_json    JSONB        DEFAULT '{"type":"object","properties":{},"required":[]}'::jsonb,
+    enabled             BOOLEAN      NOT NULL DEFAULT false,
+    created_at          TIMESTAMP    DEFAULT NOW(),
+    updated_at          TIMESTAMP    DEFAULT NOW()
+);
+
+-- MCP connector registry. Discovered tools are cached in mcp_tools_cache.
+-- NOTE: auth_credential is stored as-is in this package (the upstream app
+-- encrypts it at rest via Fernet; encrypting here is a follow-on hardening).
+CREATE TABLE IF NOT EXISTS mcp_servers (
+    id                  SERIAL PRIMARY KEY,
+    name                VARCHAR(100) NOT NULL UNIQUE,
+    description         TEXT         NOT NULL DEFAULT '',
+    transport           VARCHAR(20)  NOT NULL DEFAULT 'http',
+    url                 TEXT         NOT NULL DEFAULT '',
+    auth_type           VARCHAR(20)  NOT NULL DEFAULT 'none',
+    auth_header_name    VARCHAR(100) NOT NULL DEFAULT '',
+    auth_credential     TEXT         NOT NULL DEFAULT '',
+    enabled             BOOLEAN      NOT NULL DEFAULT true,
+    allowed_for_admin   BOOLEAN      NOT NULL DEFAULT true,
+    allowed_for_velo    BOOLEAN      NOT NULL DEFAULT false,
+    connector_type      VARCHAR(50)  NOT NULL DEFAULT 'custom',
+    oauth_state         JSONB        DEFAULT '{}'::jsonb,
+    last_test_at        TIMESTAMP,
+    last_test_ok        BOOLEAN,
+    last_test_error     TEXT         NOT NULL DEFAULT '',
+    created_at          TIMESTAMP    DEFAULT NOW(),
+    updated_at          TIMESTAMP    DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS mcp_tools_cache (
+    id                  SERIAL PRIMARY KEY,
+    server_id           INTEGER      NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,
+    tool_name           VARCHAR(200) NOT NULL,
+    description         TEXT         NOT NULL DEFAULT '',
+    input_schema_json   JSONB        DEFAULT '{"type":"object","properties":{},"required":[]}'::jsonb,
+    enabled             BOOLEAN      NOT NULL DEFAULT true,
+    last_synced_at      TIMESTAMP    DEFAULT NOW(),
+    UNIQUE(server_id, tool_name)
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_tools_server ON mcp_tools_cache (server_id);
 """
 
 # Seeds — singletons + default tenant + reference prices. All idempotent.
