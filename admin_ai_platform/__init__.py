@@ -144,6 +144,16 @@ def create_app(*, init_schema: bool = True, start_scheduler: bool = True) -> Fla
     except Exception as e:
         print(f"[app] rag wiring skipped: {e}", file=sys.stderr)
 
+    # Wire the Stripe modules (relocated/DI in M11): bind DB helpers so the
+    # settings + product-sync layers don't import the legacy monolith. Fail-open.
+    try:
+        from .db import query_db as _sq, execute_db as _se
+        from .reused_di import stripe_settings as _ssettings, stripe_sync as _ssync
+        _ssettings.configure(query_db=_sq, execute_db=_se)
+        _ssync.configure(query_db=_sq, execute_db=_se)
+    except Exception as e:
+        print(f"[app] stripe wiring skipped: {e}", file=sys.stderr)
+
     # Cross-origin embed trust boundary (embed-key auth + origin allowlist +
     # scoped CORS + rate limit) for the embeddable public endpoints.
     try:

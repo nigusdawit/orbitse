@@ -285,7 +285,7 @@ def main():
                 "table": "form_submissions", "fields": {}}}]})
         check("automation created", created.status_code == 201)
         autoid = created.get_json()["id"]
-        # Give it a webhook token, then hit the public hook → queues a run.
+        # Give it a webhook token, then hit the public hook -> queues a run.
         tok = admin.post(f"/admin/api/automations/{autoid}/regenerate-webhook").get_json()["webhook_token"]
         check("webhook token issued", bool(tok))
         hook = anon.post(f"/automations/hook/{tok}", json={"hello": "world"})
@@ -305,7 +305,7 @@ def main():
         check("update snapshots a version", vrow["c"] >= 1)
         check("automation delete",
               admin.delete(f"/admin/api/automations/{autoid}").status_code == 200)
-        # Unknown webhook token → 404.
+        # Unknown webhook token -> 404.
         check("unknown webhook 404", anon.post("/automations/hook/nope").status_code == 404)
 
         # ----- M4: scraper -----
@@ -429,7 +429,7 @@ def main():
             "requires_calendar": True, "capacity_per_slot": 2})
         check("service created", svc.status_code == 201)
         svid = svc.get_json()["id"]
-        # Weekly rule: every day 09:00-11:00, 60-min slots → 09:00 & 10:00.
+        # Weekly rule: every day 09:00-11:00, 60-min slots -> 09:00 & 10:00.
         for dow in range(7):
             admin.post(f"/admin/api/services/{svid}/rules",
                        json={"day_of_week": dow, "start_time": "09:00", "end_time": "11:00",
@@ -453,7 +453,10 @@ def main():
         slot0 = next((s for s in avail2["days"][0]["slots"] if s["start"] == "09:00:00"), None)
         check("filled slot removed from availability", slot0 is None)
         check("stripe-settings GET", admin.get("/admin/api/stripe-settings").status_code == 200)
-        check("stripe webhook acks", anon.post("/api/stripe/webhook", json={}).status_code == 200)
+        # Webhook now refuses (503) when no signing secret is configured — the
+        # full verify/idempotency/routing path is exercised in the M11 section.
+        check("stripe webhook 503 without secret",
+              anon.post("/api/stripe/webhook", json={}).status_code == 503)
 
         # ----- M6: tenancy -----
         pf = admin.get("/admin/api/plans-features").get_json()
@@ -492,19 +495,19 @@ def main():
                          json={"label": "embed", "origin_allowlist": ["https://shop.example"]})
         ekey = ekr.get_json()["embed_key"]
 
-        # 1. No key (first-party) → passes through.
+        # 1. No key (first-party) -> passes through.
         check("embeddable no-key passes", anon.get("/api/gallery-cards").status_code == 200)
-        # 2. Valid key + allowlisted Origin → 200 + CORS echoes that origin.
+        # 2. Valid key + allowlisted Origin -> 200 + CORS echoes that origin.
         r_ok = anon.get("/api/gallery-cards", headers={"X-Embed-Key": ekey,
                         "Origin": "https://shop.example"})
         check("keyed + allowlisted origin 200", r_ok.status_code == 200)
         check("CORS echoes allowlisted origin",
               r_ok.headers.get("Access-Control-Allow-Origin") == "https://shop.example")
-        # 3. Valid key + NON-allowlisted Origin → 403.
+        # 3. Valid key + NON-allowlisted Origin -> 403.
         r_bad = anon.get("/api/gallery-cards", headers={"X-Embed-Key": ekey,
                          "Origin": "https://evil.example"})
         check("keyed + bad origin 403", r_bad.status_code == 403)
-        # 4. Unknown key → 403.
+        # 4. Unknown key -> 403.
         check("unknown embed key 403",
               anon.get("/api/gallery-cards", headers={"X-Embed-Key": "pk_nope",
                        "Origin": "https://shop.example"}).status_code == 403)
@@ -513,7 +516,7 @@ def main():
                         headers={"X-Embed-Key": ekey, "Origin": "https://shop.example"})
         check("preflight 204", pre.status_code == 204)
         # 5b. Cost-bearing endpoints are protected (hardened after security review):
-        #     no-key cross-origin chat → 403; keyed chat with no Origin → 403.
+        #     no-key cross-origin chat -> 403; keyed chat with no Origin -> 403.
         check("no-key cross-origin chat 403",
               anon.post("/api/chat", headers={"Origin": "https://evil.example"},
                         json={"message": "hi", "session_id": "x"}).status_code == 403)
@@ -638,7 +641,7 @@ def main():
                           (_cid2,), fetchone=True)
         check("campaign_dispatch_tick ignores a future campaign", _camp2["status"] == "queued")
 
-        # review_collector_tick dispatches a due queued request (no provider →
+        # review_collector_tick dispatches a due queued request (no provider ->
         # marked failed, but must leave 'queued').
         from admin_ai_platform.blueprints.reviews import review_collector_tick
         execute_db("DELETE FROM review_requests")
@@ -657,6 +660,192 @@ def main():
         check("scheduler has campaign tick registered", "campaign_dispatch_tick" in _tick_names)
         check("scheduler has review tick registered", "review_collector_tick" in _tick_names)
         check("scheduler has weekly digest tick registered", "weekly_digest_tick" in _tick_names)
+
+        # ----- M11: Stripe end-to-end (no live SDK; fakes for the SDK calls) ---
+        check("stripe_events table present", table_exists("stripe_events"))
+        import os as _os11
+        import admin_ai_platform.reused.stripe_client as _sc
+        import admin_ai_platform.reused_di.stripe_settings as _sset
+        import admin_ai_platform.reused_di.stripe_sync as _ssync
+
+        # DI wiring is in place (configure() ran in create_app).
+        check("stripe_settings DI configured", _sset._query_db is not None)
+        check("stripe default mode is test", _sset.get_mode() == "test")
+
+        # --- product sync upsert logic (fake Stripe SDK) ---
+        class _FakeObj(dict):
+            pass
+
+        class _FakeProduct:
+            @staticmethod
+            def create(**k):
+                return _FakeObj(id="prod_FAKE")
+
+            @staticmethod
+            def modify(*a, **k):
+                return _FakeObj(id=a[0] if a else "prod_FAKE")
+
+        class _FakePrice:
+            @staticmethod
+            def create(**k):
+                return _FakeObj(id="price_FAKE")
+
+            @staticmethod
+            def modify(*a, **k):
+                return _FakeObj()
+
+        class _FakeStripeSync:
+            Product = _FakeProduct
+            Price = _FakePrice
+
+        _orig_get_stripe = _sc.get_stripe
+        _sc.get_stripe = lambda: _FakeStripeSync
+        execute_db("DELETE FROM stripe_product_sync")
+        execute_db("DELETE FROM products WHERE slug='gate-sku'")
+        _pid = execute_db("INSERT INTO products (slug, name, price_cents, currency, active, "
+                          " stock, track_inventory) "
+                          "VALUES ('gate-sku','Gate SKU',1500,'USD',TRUE,100,TRUE) RETURNING id")["id"]
+        _res = _ssync.sync_product(_pid)
+        check("sync_product creates mapping (action=created)",
+              _res.get("ok") and _res.get("action") == "created")
+        _map = query_db("SELECT stripe_product_id, stripe_price_id, synced_price_cents "
+                        "FROM stripe_product_sync WHERE local_product_id=%s AND mode='test'",
+                        (_pid,), fetchone=True)
+        check("sync mapping row persisted", _map and _map["stripe_product_id"] == "prod_FAKE")
+        # Re-sync with same price -> 'updated' (no new price); price change -> new price.
+        _res2 = _ssync.sync_product(_pid)
+        check("re-sync with no price change -> updated", _res2.get("action") == "updated")
+        execute_db("UPDATE products SET price_cents=2500 WHERE id=%s", (_pid,))
+        _res3 = _ssync.sync_product(_pid)
+        check("price change -> updated_with_new_price",
+              _res3.get("action") == "updated_with_new_price")
+
+        # --- product checkout creates a pending order (fake Checkout Session) ---
+        class _FakeSession:
+            @staticmethod
+            def create(**k):
+                return _FakeObj(id="cs_FAKE", url="https://stripe.test/cs_FAKE")
+
+        class _FakeCheckout:
+            Session = _FakeSession
+
+        class _FakeStripeCheckout:
+            checkout = _FakeCheckout
+
+        _sc.get_stripe = lambda: _FakeStripeCheckout
+        # The sync test above bumped the price to 2500; reset so the checkout
+        # math is the intuitive 1500 x 2 = 3000.
+        execute_db("UPDATE products SET price_cents=1500 WHERE id=%s", (_pid,))
+        execute_db("DELETE FROM orders WHERE customer_email='buyer@gate.test'")
+        _co = c.post("/api/checkout/create-payment-intent",
+                     json={"items": [{"slug": "gate-sku", "quantity": 2}],
+                           "customer_email": "buyer@gate.test", "customer_name": "Gate Buyer"})
+        check("checkout returns 201 + checkout_url",
+              _co.status_code == 201 and _co.get_json().get("checkout_url"))
+        _onum = _co.get_json().get("order_number")
+        _ord = query_db("SELECT status, total_cents, stripe_payment_intent_id FROM orders "
+                        "WHERE order_number=%s", (_onum,), fetchone=True)
+        check("checkout order is pending with server-side total",
+              _ord and _ord["status"] == "pending" and _ord["total_cents"] == 3000)
+        check("checkout stored the stripe session id", _ord["stripe_payment_intent_id"] == "cs_FAKE")
+        check("public order lookup returns items",
+              len(c.get(f"/api/orders/{_onum}").get_json().get("items", [])) == 1)
+        check("unknown product rejected",
+              c.post("/api/checkout/create-payment-intent",
+                     json={"items": [{"slug": "nope"}]}).status_code == 400)
+
+        # --- webhook: no secret -> 503; bad signature -> 400; valid -> routes ---
+        _sc.invalidate_cache()
+        _os11.environ.pop("STRIPE_WEBHOOK_SECRET", None)
+        check("webhook 503 without signing secret",
+              c.post("/api/stripe/webhook", data=b"{}").status_code == 503)
+        _os11.environ["STRIPE_WEBHOOK_SECRET"] = "whsec_gate"
+        _sc.invalidate_cache()
+
+        _evt_holder = {"event": None, "raise": False}
+
+        class _FakeWebhook:
+            @staticmethod
+            def construct_event(payload, sig, secret):
+                if _evt_holder["raise"]:
+                    raise ValueError("bad signature")
+                return _evt_holder["event"]
+
+        class _FakeStripeWebhook:
+            Webhook = _FakeWebhook
+        _orig_stripe_attr = _sc.stripe
+        _sc.stripe = _FakeStripeWebhook
+
+        _evt_holder["raise"] = True
+        check("webhook bad signature -> 400",
+              c.post("/api/stripe/webhook", data=b"{}",
+                     headers={"Stripe-Signature": "x"}).status_code == 400)
+
+        # Valid completed event flips the order to paid (idempotently).
+        _evt_holder["raise"] = False
+        _evt_holder["event"] = {
+            "id": "evt_GATE1", "type": "checkout.session.completed",
+            "data": {"object": {"payment_intent": "pi_GATE", "metadata":
+                     {"kind": "order", "order_number": _onum}}}}
+        r_wh = c.post("/api/stripe/webhook", data=b"{}", headers={"Stripe-Signature": "x"})
+        check("webhook completed -> 200", r_wh.status_code == 200)
+        _ord2 = query_db("SELECT status, paid_at FROM orders WHERE order_number=%s",
+                         (_onum,), fetchone=True)
+        check("webhook flips order to paid", _ord2["status"] == "paid" and _ord2["paid_at"])
+        check("webhook decrements tracked stock (100 - 2)",
+              query_db("SELECT stock FROM products WHERE id=%s", (_pid,), fetchone=True)["stock"] == 98)
+        # Replay the SAME event id -> no-op, reported as duplicate.
+        r_dup = c.post("/api/stripe/webhook", data=b"{}", headers={"Stripe-Signature": "x"})
+        check("webhook duplicate event is idempotent",
+              r_dup.get_json().get("duplicate") is True)
+
+        # Booking completed event confirms the booking.
+        execute_db("DELETE FROM service_bookings WHERE booking_token='tok_GATE'")
+        execute_db("INSERT INTO service_bookings (service_id, booking_token, client_name, "
+                   " client_email, pricing_model, total_cents, payment_status, status) "
+                   "VALUES (NULL,'tok_GATE','G','g@gate.test','deposit',5000,'pending','pending')")
+        _evt_holder["event"] = {
+            "id": "evt_GATE2", "type": "checkout.session.completed",
+            "data": {"object": {"amount_total": 5000, "metadata":
+                     {"kind": "booking", "booking_token": "tok_GATE"}}}}
+        c.post("/api/stripe/webhook", data=b"{}", headers={"Stripe-Signature": "x"})
+        _bk = query_db("SELECT payment_status, status, amount_paid_cents FROM service_bookings "
+                       "WHERE booking_token='tok_GATE'", fetchone=True)
+        check("webhook confirms paid booking",
+              _bk["payment_status"] == "paid" and _bk["status"] == "confirmed"
+              and _bk["amount_paid_cents"] == 5000)
+
+        # Expired event cancels a pending order.
+        _co2 = c.post("/api/checkout/create-payment-intent",
+                      json={"items": [{"slug": "gate-sku"}], "customer_email": "x@gate.test"})
+        _onum2 = _co2.get_json().get("order_number")
+        _evt_holder["event"] = {
+            "id": "evt_GATE3", "type": "checkout.session.expired",
+            "data": {"object": {"metadata": {"kind": "order", "order_number": _onum2}}}}
+        c.post("/api/stripe/webhook", data=b"{}", headers={"Stripe-Signature": "x"})
+        check("webhook expired cancels pending order",
+              query_db("SELECT status FROM orders WHERE order_number=%s", (_onum2,),
+                       fetchone=True)["status"] == "cancelled")
+
+        # Admin order detail + status transition (admin client from M7 section).
+        _oid = query_db("SELECT id FROM orders WHERE order_number=%s", (_onum,),
+                        fetchone=True)["id"]
+        check("admin order detail returns items",
+              len(admin.get(f"/admin/api/orders/{_oid}").get_json().get("items", [])) == 1)
+        check("admin order status update to fulfilled",
+              admin.put(f"/admin/api/orders/{_oid}/status",
+                        json={"status": "fulfilled"}).get_json().get("status") == "fulfilled")
+        check("admin order status rejects bad value",
+              admin.put(f"/admin/api/orders/{_oid}/status",
+                        json={"status": "bogus"}).status_code == 400)
+        check("admin stripe sync-status lists products",
+              admin.get("/admin/api/stripe/sync-status").status_code == 200)
+
+        # Restore patched module state.
+        _sc.get_stripe = _orig_get_stripe
+        _sc.stripe = _orig_stripe_attr
+        _os11.environ.pop("STRIPE_WEBHOOK_SECRET", None)
+        _sc.invalidate_cache()
 
         print("[gate] schema + integration checks complete", flush=True)
 
