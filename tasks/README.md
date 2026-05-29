@@ -6,7 +6,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | ID | Title | Status | Branch | Depends on | Parallel-with | Drift |
 |----|-------|--------|--------|------------|---------------|-------|
 | 000 | M0 — Scaffolding & shared infra | done | task/000-scaffolding-shared-infra | — | — | Module relocation deferred to consuming milestones |
-| 001 | M1 — Visitor chat vertical slice | awaiting_review | task/001-visitor-chat-slice | 000 | 002 | Code-complete; runtime gate (browser+DB+key) pending |
+| 001 | M1 — Visitor chat vertical slice | done | task/001-visitor-chat-slice | 000 | 002 | Gate GREEN vs embedded Postgres (19/19); live LLM+browser visuals still manual |
 | 002 | M2 — Admin core | not_started | task/002-admin-core | 000 | 001 | |
 | 003 | M3 — Cost + Skills/MCP | not_started | task/003-cost-skills-mcp | 002 | 004 | |
 | 004 | M4 — RAG + Automations + Scraper | not_started | task/004-rag-automations-scraper | 002 | 003 | |

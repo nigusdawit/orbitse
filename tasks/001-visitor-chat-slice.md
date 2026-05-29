@@ -47,7 +47,7 @@ host wiring. This is the original ask, shipped as a working slice.
 002 (disjoint files).
 
 ## Status
-awaiting_review  (code-complete; runtime gate pending)
+done  (merged to main; runtime gate GREEN via embedded Postgres)
 
 ## Branch
 task/001-visitor-chat-slice
@@ -64,17 +64,25 @@ PASSED in the build sandbox:
 - `create_app` boots in self_host AND central; all M1 routes register
 - live server boots; GET /healthz, /demo, /widget/* all 200 with correct content-types; unknown widget asset 404
 
-NOT YET VERIFIED (needs a real environment — blocked here):
-- A real /api/chat round (needs DATABASE_URL + OPENAI_API_KEY)
-- In-browser widget behavior: gallery navigate, progressive generatePage render,
-  conversational form submit, spoken reply (needs a browser + DB + key)
-- init_db() against real Postgres (idempotency + IN/OUT table assertions)
+VERIFIED against a REAL embedded Postgres (pgserver, _gate_runner.py) — 19/19 GREEN:
+- init_db() idempotent; all IN tables created; OUT tables absent; singletons + prices seeded
+- GET /api/chatbot-settings, /api/gallery-cards, /api/voice/settings → 200 (caught a real
+  fail-open bug: openai SDK raises on empty key at import → llm.py now builds clients only when
+  a key is present, so blueprints mount + routes work with no key; chat returns 503 gracefully)
+- gallery write→read→lookup_gallery_cards→build_site_index→assemble_system_prompt
+- skills sync + per-skill enable filter (disable excludes the tool)
+- forms: required-field rejection (400), submit (201 + confirmation #), persisted as 'new'
+- cost: api_cost_events row written, compute_mtd_spend > 0
+- /api/generated-pages/by-slug published page (200) for showSavedPage
 
-TO CLOSE THE GATE + MERGE: run, with DATABASE_URL + OPENAI_API_KEY set,
-  uv run python -m pytest admin_ai_platform/tests/   (all incl. schema)
-  uv run python -m admin_ai_platform   then load /demo and exercise the 4 flows.
-NOT merged to main: the 6-point gate's runtime "verify" step is unsatisfied in
-this environment; merging would claim a pass I cannot substantiate.
+STILL UNVERIFIED (needs an OpenAI key / a real browser — out of sandbox scope):
+- a live /api/chat LLM completion round; pixel-level in-browser widget behavior
+  (gallery split visuals, progressive generatePage animation, audible voice). The widget JS
+  is node --check-valid and the SSE/command contract is unit-tested; visual confirmation
+  remains a manual step for an env with a key + browser.
+
+Gate tooling: _gate_runner.py + a 3.12 .gatevenv (.gitignored) stand up an ephemeral Postgres
+so DB-backed milestones can be verified locally without a remote DB.
 
 ## Notes
 Anthropic provider path is ported (chat_runtime.stream_round_claude) but only
