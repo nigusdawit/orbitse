@@ -17,4 +17,29 @@ SSO mint/verify endpoint.
 - **security-review required** (SSO + iframe embedding / clickjacking headers).
 
 ## Dependencies: 007, 002   ## Parallel-with: —
-## Status: not_started   ## Branch: task/008-wordpress-plugin
+## Status: done (merged)   ## Branch: task/008-wordpress-plugin
+
+## Security review (independent) — findings + resolution
+Crypto core judged sound (HMAC over correct bytes, constant-time, no alg field,
+tid authenticated by signature, PHP↔Python byte-identical). Findings:
+- HIGH single-use jti was in-process only → multi-worker replay. FIXED: DB-backed
+  sso_used_jtis claim (INSERT ON CONFLICT DO NOTHING) — final across workers.
+- HIGH SSO secret fell back to FLASK_SECRET_KEY. FIXED: no fallback; SSO is
+  disabled (mint raises / verify None) when SSO_SIGNING_SECRET is unset.
+- HIGH cross-site iframe vs SameSite=Lax cookie. ADDRESSED: SESSION_COOKIE_SAMESITE
+  + SESSION_COOKIE_SECURE are configurable (opt-in None+Secure for cross-site WP);
+  documented that cross-site cookies require CSRF protection on state-changing
+  admin routes (follow-on before enabling None+Secure).
+- HIGH "admin queries not tenant-scoped." DECISION (documented, not a code bug for
+  the shipping model): the deployment model is ONE DATABASE PER TENANT (each
+  client install has its own Postgres), so there is no cross-tenant data in one
+  DB. tenants/tenant_features/embed-keys provide feature-flag + key management,
+  NOT per-row isolation. Single-DB multi-tenancy (adding tenant_id columns +
+  query scoping to chat/pages/etc.) is an explicit follow-on if that model is
+  ever adopted. In self_host (default) there is exactly one tenant.
+- MEDIUM token-in-URL leak: mitigated by 45s TTL + final DB single-use.
+
+Gate (159/159): fail-closed-without-secret, roundtrip, DB single-use replay
+reject, forged/expired/over-long reject, /admin/sso session + 403,
+frame-ancestors allow configured WP origin / default-deny.
+PHP unverified in sandbox (no php binary); manual WP-install check in readme.txt.

@@ -50,7 +50,7 @@ IN_TABLES_M0_M1 = (
     # M6
     "products", "customers", "orders", "order_items", "services", "service_addons",
     "service_availability_rules", "service_availability_overrides", "service_bookings",
-    "stripe_settings", "stripe_product_sync", "tenant_embed_keys",
+    "stripe_settings", "stripe_product_sync", "tenant_embed_keys", "sso_used_jtis",
 )
 
 # Tables that belong to the original public website and must NOT be created by
@@ -1048,6 +1048,14 @@ CREATE TABLE IF NOT EXISTS tenant_embed_keys (
     created_at        TIMESTAMP DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_embed_keys_tenant ON tenant_embed_keys (tenant_id);
+
+-- Single-use SSO token ledger (M8). A token's jti is claimed via INSERT ... ON
+-- CONFLICT DO NOTHING, so consumption is final ACROSS workers/instances — the
+-- in-process cache alone couldn't guarantee single-use under gunicorn.
+CREATE TABLE IF NOT EXISTS sso_used_jtis (
+    jti         VARCHAR(64) PRIMARY KEY,
+    expires_at  TIMESTAMP NOT NULL DEFAULT NOW()
+);
 """
 
 # Seeds — singletons + default tenant + reference prices. All idempotent.
