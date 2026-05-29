@@ -31,6 +31,10 @@ _BLUEPRINT_SPECS = [
     ("cost", "bp"),
     ("skills", "bp"),
     ("mcp", "bp"),
+    # M4
+    ("automations", "bp"),
+    ("scraper", "bp"),
+    ("rag", "bp"),
     # ... later milestones append here.
 ]
 

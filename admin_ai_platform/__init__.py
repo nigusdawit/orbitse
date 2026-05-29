@@ -76,6 +76,45 @@ def create_app(*, init_schema: bool = True, start_scheduler: bool = True) -> Fla
     except Exception as e:  # pragma: no cover
         print(f"[app] cost wiring skipped: {e}", file=sys.stderr)
 
+    # Wire the automations engine: bind DB/LLM/cost helpers, register its
+    # background tick with our scheduler, and give it a skill executor so the
+    # "call a skill" action can reach the chat tools. Fail-open.
+    try:
+        import json as _json
+        from . import db as _db, llm as _llm, scheduler as _sched
+        from .cost import cost_cap_blocks_send, record_sms_cost
+        from .tools import execute_chat_tool
+        from .reused import automations
+        automations.configure(
+            query_db=_db.query_db, execute_db=_db.execute_db,
+            database_url=config.DATABASE_URL, openai_client=_llm.openai_client,
+            public_base_url_fn=lambda: config.PUBLIC_BASE_URL,
+            cost_cap_blocks_send_fn=cost_cap_blocks_send,
+            record_sms_cost_fn=record_sms_cost)
+
+        def _skill_exec(name, args):
+            try:
+                return _json.loads(execute_chat_tool(name, args)[0])
+            except Exception as ex:
+                return {"error": str(ex)[:200]}
+        automations.set_skill_executor(_skill_exec)
+        automations.register_with_scheduler(_sched)
+    except Exception as e:
+        print(f"[app] automations wiring skipped: {e}", file=sys.stderr)
+
+    # Wire the RAG/KB module (pgvector). init_module just stashes deps; the
+    # blueprint guards every call behind schema.rag_available() so a DB without
+    # pgvector degrades cleanly to "KB unavailable" instead of erroring.
+    try:
+        from . import llm as _llm2
+        from .db import query_db as _q, execute_db as _e
+        from .cost import record_chat_cost as _rc
+        from .reused_di import rag
+        rag.init_module(openai_client=_llm2.openai_client, query_db=_q,
+                        execute_db=_e, record_cost=_rc)
+    except Exception as e:
+        print(f"[app] rag wiring skipped: {e}", file=sys.stderr)
+
     # Mount blueprints that exist at this milestone.
     from .blueprints import register_all
     register_all(app)

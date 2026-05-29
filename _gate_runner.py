@@ -273,6 +273,89 @@ def main():
         check("is_mcp_tool detects namespace", is_mcp_tool(f"mcp__{msid}__search"))
         check("mcp delete", admin.delete(f"/admin/api/mcp/servers/{msid}").status_code == 200)
 
+        # ----- M4: automations engine -----
+        import time as _tt
+        meta = admin.get("/admin/api/automations/metadata").get_json()
+        check("automations metadata", meta.get("triggers") and meta.get("actions"))
+        # Create a webhook-triggered automation with a single save_data step.
+        created = admin.post("/admin/api/automations", json={
+            "name": "Gate test", "enabled": True, "trigger_type": "webhook",
+            "trigger_config": {},
+            "action_steps": [{"type": "save_data", "config": {
+                "table": "form_submissions", "fields": {}}}]})
+        check("automation created", created.status_code == 201)
+        autoid = created.get_json()["id"]
+        # Give it a webhook token, then hit the public hook → queues a run.
+        tok = admin.post(f"/admin/api/automations/{autoid}/regenerate-webhook").get_json()["webhook_token"]
+        check("webhook token issued", bool(tok))
+        hook = anon.post(f"/automations/hook/{tok}", json={"hello": "world"})
+        check("public webhook queues a run", hook.status_code == 200 and hook.get_json().get("queued"))
+        _tt.sleep(0.6)  # let the inline dispatch thread record the run
+        runs = admin.get(f"/admin/api/automations/{autoid}/runs").get_json()["runs"]
+        check("automation run recorded", len(runs) >= 1)
+        # test-run (manual dry run).
+        tr = admin.post(f"/admin/api/automations/{autoid}/test-run", json={"trigger_data": {}})
+        check("manual test-run queued", tr.status_code == 200 and tr.get_json().get("run_id"))
+        # toggle + version snapshot on update + delete.
+        check("toggle flips enabled",
+              admin.post(f"/admin/api/automations/{autoid}/toggle").get_json()["enabled"] is False)
+        admin.put(f"/admin/api/automations/{autoid}", json={"name": "Renamed"})
+        vrow = query_db("SELECT COUNT(*) AS c FROM automation_versions WHERE automation_id=%s",
+                        (autoid,), fetchone=True)
+        check("update snapshots a version", vrow["c"] >= 1)
+        check("automation delete",
+              admin.delete(f"/admin/api/automations/{autoid}").status_code == 200)
+        # Unknown webhook token → 404.
+        check("unknown webhook 404", anon.post("/automations/hook/nope").status_code == 404)
+
+        # ----- M4: scraper -----
+        from admin_ai_platform.reused import scraper as _scraper
+        ssrf = _scraper.fetch_url("http://127.0.0.1/secret")
+        check("scraper SSRF blocks loopback", ssrf.get("ok") is False)
+        check("scraper-settings GET", admin.get("/admin/api/scraper-settings").status_code == 200)
+        check("scraper-settings PUT",
+              admin.put("/admin/api/scraper-settings",
+                        json={"disallowed_domains": "evil.com", "render_enabled": False}).status_code == 200)
+        check("scraper-status", admin.get("/admin/api/scraper-status").status_code == 200)
+        sj = admin.post("/admin/api/scrape-jobs", json={"input_mode": "url", "url": "https://example.com",
+                                                        "target_shape": "free_form"})
+        check("scrape job created", sj.status_code == 201 and sj.get_json().get("id"))
+        check("scrape job url required",
+              admin.post("/admin/api/scrape-jobs", json={"input_mode": "url"}).status_code == 400)
+        check("scrape jobs list", "jobs" in admin.get("/admin/api/scrape-jobs").get_json())
+        sch = admin.post("/admin/api/scrape-schedules", json={"name": "daily news", "url": "https://example.com",
+                                                              "schedule_mode": "daily"})
+        check("scrape schedule created", sch.status_code == 201)
+        schid = sch.get_json()["id"]
+        check("scrape schedule patch",
+              admin.patch(f"/admin/api/scrape-schedules/{schid}", json={"enabled": False}).status_code == 200)
+        check("scrape schedule resume",
+              admin.post(f"/admin/api/scrape-schedules/{schid}/resume").status_code == 200)
+        check("scrape schedule delete",
+              admin.delete(f"/admin/api/scrape-schedules/{schid}").status_code == 200)
+
+        # ----- M4: RAG/KB graceful degradation (this gate DB has no pgvector) -----
+        from admin_ai_platform import schema as _schema
+        from admin_ai_platform.tools import get_active_chat_tools as _tools_now
+        if _schema.rag_available():
+            # If a future gate DB DOES have pgvector, assert the happy path.
+            check("kb list 200 (pgvector present)",
+                  admin.get("/admin/api/kb/list").status_code == 200)
+            check("kb tool offered when available",
+                  any(t["function"]["name"] == "lookup_knowledge_base" for t in _tools_now()))
+        else:
+            check("kb endpoints 503 without pgvector",
+                  admin.get("/admin/api/kb/list").status_code == 503)
+            check("kb upload 503 without pgvector",
+                  admin.post("/admin/api/kb/upload").status_code == 503)
+            check("kb tool hidden when unavailable",
+                  not any(t["function"]["name"] == "lookup_knowledge_base" for t in _tools_now()))
+            # The tool executor also degrades cleanly if called directly.
+            kbres, _ = execute_chat_tool("lookup_knowledge_base", '{"query":"x"}', session_id="s")
+            check("kb tool executor degrades cleanly", "unavailable" in kbres)
+        check("rag blueprint registered",
+              any("/admin/api/kb/list" in str(r) for r in app.url_map.iter_rules()))
+
         print("[gate] schema + integration checks complete", flush=True)
 
     finally:

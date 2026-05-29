@@ -40,6 +40,10 @@ IN_TABLES_M0_M1 = (
     # M3
     "custom_knowledge_entries", "custom_webhook_skills", "custom_sql_skills",
     "mcp_servers", "mcp_tools_cache",
+    # M4
+    "automations", "automation_runs", "automation_versions",
+    "automation_settings", "automation_webhook_rejections",
+    "scraper_settings", "scrape_jobs", "scrape_schedules",
 )
 
 # Tables that belong to the original public website and must NOT be created by
@@ -577,6 +581,136 @@ CREATE TABLE IF NOT EXISTS mcp_tools_cache (
     UNIQUE(server_id, tool_name)
 );
 CREATE INDEX IF NOT EXISTS idx_mcp_tools_server ON mcp_tools_cache (server_id);
+
+-- ============================ AUTOMATIONS (M4) ==========================
+CREATE TABLE IF NOT EXISTS automations (
+    id                  SERIAL PRIMARY KEY,
+    name                TEXT NOT NULL DEFAULT 'Untitled automation',
+    description         TEXT NOT NULL DEFAULT '',
+    enabled             BOOLEAN NOT NULL DEFAULT FALSE,
+    trigger_type        VARCHAR(30) NOT NULL DEFAULT 'manual',
+    trigger_config      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    action_steps        JSONB NOT NULL DEFAULT '[]'::jsonb,
+    webhook_token       TEXT NOT NULL DEFAULT '',
+    last_run_at         TIMESTAMP,
+    last_run_status     VARCHAR(20) NOT NULL DEFAULT '',
+    next_scheduled_at   TIMESTAMP,
+    created_at          TIMESTAMP DEFAULT NOW(),
+    updated_at          TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_automations_enabled ON automations (enabled);
+CREATE INDEX IF NOT EXISTS idx_automations_trigger ON automations (trigger_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_automations_webhook
+    ON automations (webhook_token) WHERE webhook_token <> '';
+
+CREATE TABLE IF NOT EXISTS automation_runs (
+    id                  SERIAL PRIMARY KEY,
+    automation_id       INTEGER REFERENCES automations(id) ON DELETE CASCADE,
+    status              VARCHAR(20) NOT NULL DEFAULT 'queued',
+    triggered_by        VARCHAR(20) NOT NULL DEFAULT 'event',
+    trigger_data        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    step_results        JSONB NOT NULL DEFAULT '[]'::jsonb,
+    error_text          TEXT NOT NULL DEFAULT '',
+    is_dry_run          BOOLEAN NOT NULL DEFAULT FALSE,
+    queued_at           TIMESTAMP DEFAULT NOW(),
+    started_at          TIMESTAMP,
+    finished_at         TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_runs_automation ON automation_runs (automation_id);
+CREATE INDEX IF NOT EXISTS idx_runs_status ON automation_runs (status);
+CREATE INDEX IF NOT EXISTS idx_runs_queued ON automation_runs (status, queued_at);
+CREATE INDEX IF NOT EXISTS idx_runs_automation_queued
+    ON automation_runs (automation_id, queued_at DESC);
+
+CREATE TABLE IF NOT EXISTS automation_versions (
+    id              SERIAL PRIMARY KEY,
+    automation_id   INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+    version_no      INTEGER NOT NULL,
+    snapshot        JSONB NOT NULL,
+    note            TEXT NOT NULL DEFAULT '',
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_versions_automation ON automation_versions (automation_id, version_no DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_versions_unique ON automation_versions (automation_id, version_no);
+
+CREATE TABLE IF NOT EXISTS automation_settings (
+    id                          INTEGER PRIMARY KEY DEFAULT 1,
+    retention_days              INTEGER,
+    keep_recent_per_automation  INTEGER,
+    updated_at                  TIMESTAMP DEFAULT NOW()
+);
+INSERT INTO automation_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS automation_webhook_rejections (
+    id              SERIAL PRIMARY KEY,
+    automation_id   INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+    reason          TEXT NOT NULL DEFAULT '',
+    source_ip       VARCHAR(64) NOT NULL DEFAULT '',
+    header_excerpt  TEXT NOT NULL DEFAULT '',
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_rejections_automation
+    ON automation_webhook_rejections (automation_id, created_at DESC);
+
+-- ============================ SCRAPER (M4) ==============================
+-- The upstream app hangs scraper config off site_settings; this package has no
+-- public-site settings table, so config lives in its own singleton instead.
+CREATE TABLE IF NOT EXISTS scraper_settings (
+    id                   INTEGER PRIMARY KEY DEFAULT 1,
+    disallowed_domains   TEXT NOT NULL DEFAULT '',
+    render_enabled       BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at           TIMESTAMP DEFAULT NOW()
+);
+INSERT INTO scraper_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS scrape_jobs (
+    id              SERIAL PRIMARY KEY,
+    input_mode      VARCHAR(20) NOT NULL DEFAULT 'url',
+    url             TEXT NOT NULL DEFAULT '',
+    objective       TEXT NOT NULL DEFAULT '',
+    target_shape    VARCHAR(40) NOT NULL DEFAULT 'free_form',
+    custom_schema   JSONB,
+    status          VARCHAR(20) NOT NULL DEFAULT 'queued',
+    result_json     JSONB,
+    error           TEXT NOT NULL DEFAULT '',
+    schedule_id     INTEGER,
+    result_signature TEXT NOT NULL DEFAULT '',
+    changed_from_previous BOOLEAN NOT NULL DEFAULT FALSE,
+    progress_steps  JSONB NOT NULL DEFAULT '[]'::jsonb,
+    stop_requested  BOOLEAN NOT NULL DEFAULT FALSE,
+    partial_state   JSONB,
+    requested_at    TIMESTAMP DEFAULT NOW(),
+    completed_at    TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_scrape_jobs_status ON scrape_jobs (status);
+CREATE INDEX IF NOT EXISTS idx_scrape_jobs_requested ON scrape_jobs (requested_at DESC);
+CREATE INDEX IF NOT EXISTS idx_scrape_jobs_schedule ON scrape_jobs (schedule_id, requested_at DESC);
+
+CREATE TABLE IF NOT EXISTS scrape_schedules (
+    id              SERIAL PRIMARY KEY,
+    name            VARCHAR(200) NOT NULL DEFAULT '',
+    input_mode      VARCHAR(20) NOT NULL DEFAULT 'url',
+    url             TEXT NOT NULL DEFAULT '',
+    objective       TEXT NOT NULL DEFAULT '',
+    target_shape    VARCHAR(40) NOT NULL DEFAULT 'free_form',
+    custom_schema   JSONB,
+    schedule_mode   VARCHAR(20) NOT NULL DEFAULT 'daily',
+    interval_minutes INTEGER NOT NULL DEFAULT 60,
+    daily_time      VARCHAR(5) NOT NULL DEFAULT '09:00',
+    weekly_dow      INTEGER NOT NULL DEFAULT 1,
+    enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+    notify_email    TEXT NOT NULL DEFAULT '',
+    notify_phone    TEXT NOT NULL DEFAULT '',
+    notify_only_on_change BOOLEAN NOT NULL DEFAULT TRUE,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    failure_threshold INTEGER NOT NULL DEFAULT 5,
+    auto_paused     BOOLEAN NOT NULL DEFAULT FALSE,
+    last_run_at     TIMESTAMP,
+    last_job_id     INTEGER,
+    next_run_at     TIMESTAMP,
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_scrape_schedules_enabled ON scrape_schedules (enabled, next_run_at);
 """
 
 # Seeds — singletons + default tenant + reference prices. All idempotent.
@@ -621,8 +755,79 @@ ON CONFLICT (provider, model, surface) DO NOTHING;
 """
 
 
+# RAG tables need the pgvector extension. They're created in a SEPARATE guarded
+# step so a Postgres without pgvector (e.g. the embedded test DB) still boots —
+# RAG features then degrade to "unavailable" instead of failing the whole schema.
+# Columns match reused_di/rag.py exactly (storage_key, content_text, vector(1536)).
+_RAG_DDL = r"""
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS rag_documents (
+    id              SERIAL PRIMARY KEY,
+    tenant_id       INTEGER NOT NULL DEFAULT 1 REFERENCES tenants(id) ON DELETE CASCADE,
+    filename        TEXT NOT NULL,
+    storage_key     TEXT NOT NULL DEFAULT '',
+    mime            TEXT NOT NULL DEFAULT '',
+    size_bytes      BIGINT NOT NULL DEFAULT 0,
+    page_count      INTEGER NOT NULL DEFAULT 0,
+    chunk_count     INTEGER NOT NULL DEFAULT 0,
+    token_count     INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'indexing',
+    error_text      TEXT NOT NULL DEFAULT '',
+    source_mtime    DOUBLE PRECISION,
+    indexed_at      TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS rag_documents_tenant_idx ON rag_documents (tenant_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS rag_chunks (
+    id              BIGSERIAL PRIMARY KEY,
+    document_id     INTEGER NOT NULL REFERENCES rag_documents(id) ON DELETE CASCADE,
+    tenant_id       INTEGER NOT NULL DEFAULT 1,
+    chunk_index     INTEGER NOT NULL,
+    page_number     INTEGER,
+    content_text    TEXT NOT NULL,
+    token_count     INTEGER NOT NULL DEFAULT 0,
+    embedding       vector(1536),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS rag_chunks_doc_idx ON rag_chunks (document_id, chunk_index);
+CREATE INDEX IF NOT EXISTS rag_chunks_tenant_idx ON rag_chunks (tenant_id);
+"""
+
+_rag_ready = False
+
+
+def rag_available() -> bool:
+    """True if the RAG tables exist (i.e. pgvector was available at boot)."""
+    return _rag_ready
+
+
+def _try_init_rag(conn):
+    """Attempt to create the pgvector-backed RAG tables. On any failure (no
+    pgvector extension available), log and leave RAG disabled — never fatal."""
+    global _rag_ready
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_RAG_DDL)
+            # Best-effort cosine index (separate so its failure doesn't drop tables).
+            try:
+                cur.execute("CREATE INDEX IF NOT EXISTS rag_chunks_embedding_idx "
+                            "ON rag_chunks USING ivfflat (embedding vector_cosine_ops) "
+                            "WITH (lists = 100)")
+            except Exception:
+                pass
+        _rag_ready = True
+    except Exception as e:
+        import sys
+        print(f"[schema] RAG/pgvector unavailable — KB features disabled: "
+              f"{str(e)[:160]}", file=sys.stderr)
+        _rag_ready = False
+
+
 def init_db():
-    """Create the package's owned tables + seed singletons. Idempotent."""
+    """Create the package's owned tables + seed singletons. Idempotent.
+    RAG tables are attempted separately and skipped if pgvector is missing."""
     conn = get_db()
     try:
         with conn.cursor() as cur:
@@ -630,3 +835,9 @@ def init_db():
             cur.execute(_SEED)
     finally:
         conn.close()
+    # RAG in its own connection so a pgvector failure can't poison the main txn.
+    rag_conn = get_db()
+    try:
+        _try_init_rag(rag_conn)
+    finally:
+        rag_conn.close()

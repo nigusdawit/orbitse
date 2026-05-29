@@ -9,7 +9,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 001 | M1 — Visitor chat vertical slice | done | task/001-visitor-chat-slice | 000 | 002 | Gate GREEN vs embedded Postgres (19/19); live LLM+browser visuals still manual |
 | 002 | M2 — Admin core | done | task/002-admin-core | 000 | 001 | Gate 47/47 vs embedded Postgres; admin chat LLM stream needs key (manual) |
 | 003 | M3 — Cost + Skills/MCP | done | task/003-cost-skills-mcp | 002 | 004 | Gate 70/70 vs embedded Postgres; MCP/custom-skill live exec needs a server/key |
-| 004 | M4 — RAG + Automations + Scraper | not_started | task/004-rag-automations-scraper | 002 | 003 | |
+| 004 | M4 — RAG + Automations + Scraper | done | task/004-rag-automations-scraper | 002 | 003 | Gate 94/94 vs embedded Postgres (pgvector present); full embed/scrape-AI need a key |
 | 005 | M5 — Messaging + Reviews + Presentations | not_started | task/005-messaging-reviews-presentations | 003,004 | — | |
 | 006 | M6 — Commerce + Tenancy + VELO | not_started | task/006-commerce-tenancy-velo | 005 | — | |
 | 007 | M7 — Embed snippet + cross-origin widget | not_started | task/007-embed-widget | 001,006 | — | |

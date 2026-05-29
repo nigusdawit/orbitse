@@ -121,6 +121,20 @@ def lookup_generated_page(topic=None, slug=None, limit=5):
              "originally_for": trim_text(r.get("prompt"), 160)} for r in rows]
 
 
+def lookup_knowledge_base(query=None, limit=6):
+    """Semantic search over uploaded KB documents (pgvector). Returns matched
+    chunks with source markers. No-op message when pgvector is unavailable."""
+    from .schema import rag_available
+    if not rag_available():
+        return {"error": "knowledge base unavailable"}
+    if not (query or "").strip():
+        return {"error": "query required"}
+    from .reused_di import rag
+    from .tenancy import current_tenant_id
+    chunks = rag.retrieve(query, tenant_id=current_tenant_id(), top_k=int(limit or 6))
+    return {"chunks": chunks}
+
+
 def lookup_presentation(slug=None, query=None, limit=3):
     """Presentation decks + their slide bodies (for start_presentation)."""
     sql = ("SELECT id, slug, title, description FROM presentations "
@@ -189,6 +203,14 @@ CHAT_TOOLS = [
             "slug": {"type": "string"}, "query": {"type": "string"},
             "limit": {"type": "integer"}}},
     }},
+    {"type": "function", "function": {
+        "name": "lookup_knowledge_base",
+        "description": ("Semantic search over the uploaded knowledge-base documents. "
+                        "Use for questions the site index/other lookups can't answer."),
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["query"]},
+    }},
 ]
 
 CHAT_LOOKUP_FUNCTIONS = {
@@ -196,6 +218,7 @@ CHAT_LOOKUP_FUNCTIONS = {
     "lookup_forms": lookup_forms,
     "lookup_generated_page": lookup_generated_page,
     "lookup_presentation": lookup_presentation,
+    "lookup_knowledge_base": lookup_knowledge_base,
 }
 
 # name -> (display_name, category) for the agent_skills registry sync.
@@ -204,6 +227,7 @@ SKILL_METADATA = {
     "lookup_forms": ("Look up forms", "lookup"),
     "lookup_generated_page": ("Search saved pages", "lookup"),
     "lookup_presentation": ("Look up presentations", "presentation"),
+    "lookup_knowledge_base": ("Search knowledge base", "rag"),
 }
 
 
@@ -239,9 +263,18 @@ def get_active_chat_tools():
         enabled = {r["name"]: bool(r["enabled"]) for r in rows}
     except Exception:
         return list(CHAT_TOOLS)
+    # Drop the KB tool entirely when pgvector isn't available, so the model is
+    # never offered a tool that can only error.
+    try:
+        from .schema import rag_available
+        kb_ok = rag_available()
+    except Exception:
+        kb_ok = False
     out = []
     for t in CHAT_TOOLS:
         name = t["function"]["name"]
+        if name == "lookup_knowledge_base" and not kb_ok:
+            continue
         # Unknown (not yet synced) → include; known+disabled → exclude.
         if enabled.get(name, True):
             out.append(t)
