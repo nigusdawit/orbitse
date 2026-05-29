@@ -47,6 +47,10 @@ IN_TABLES_M0_M1 = (
     # M5
     "subscribers", "messaging_templates", "messaging_campaigns", "messaging_log",
     "review_destinations", "review_requests", "external_reviews", "review_settings",
+    # M6
+    "products", "customers", "orders", "order_items", "services", "service_addons",
+    "service_availability_rules", "service_availability_overrides", "service_bookings",
+    "stripe_settings", "stripe_product_sync", "tenant_embed_keys",
 )
 
 # Tables that belong to the original public website and must NOT be created by
@@ -858,6 +862,192 @@ CREATE TABLE IF NOT EXISTS review_settings (
     updated_at          TIMESTAMP DEFAULT NOW()
 );
 INSERT INTO review_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+-- ============================ COMMERCE (M6) =============================
+CREATE TABLE IF NOT EXISTS products (
+    id              SERIAL PRIMARY KEY,
+    slug            VARCHAR(150) UNIQUE NOT NULL,
+    name            TEXT NOT NULL DEFAULT '',
+    description     TEXT NOT NULL DEFAULT '',
+    price_cents     INTEGER NOT NULL DEFAULT 0,
+    currency        VARCHAR(3) NOT NULL DEFAULT 'USD',
+    image_url       TEXT NOT NULL DEFAULT '',
+    gallery_images  JSONB NOT NULL DEFAULT '[]'::jsonb,
+    stock           INTEGER NOT NULL DEFAULT 0,
+    track_inventory BOOLEAN NOT NULL DEFAULT true,
+    active          BOOLEAN NOT NULL DEFAULT true,
+    sort_order      INTEGER NOT NULL DEFAULT 0,
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_products_active ON products (active);
+CREATE INDEX IF NOT EXISTS idx_products_sort ON products (sort_order);
+
+CREATE TABLE IF NOT EXISTS customers (
+    id                 SERIAL PRIMARY KEY,
+    email              VARCHAR(255) UNIQUE NOT NULL,
+    name               TEXT NOT NULL DEFAULT '',
+    stripe_customer_id VARCHAR(100) DEFAULT '',
+    created_at         TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+    id                       SERIAL PRIMARY KEY,
+    order_number             VARCHAR(40) UNIQUE NOT NULL,
+    customer_id              INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+    customer_email           VARCHAR(255) NOT NULL DEFAULT '',
+    customer_name            TEXT NOT NULL DEFAULT '',
+    status                   VARCHAR(20) NOT NULL DEFAULT 'pending',
+    subtotal_cents           INTEGER NOT NULL DEFAULT 0,
+    total_cents              INTEGER NOT NULL DEFAULT 0,
+    currency                 VARCHAR(3) NOT NULL DEFAULT 'USD',
+    stripe_payment_intent_id VARCHAR(100) DEFAULT '',
+    stripe_charge_id         VARCHAR(100) DEFAULT '',
+    shipping_address         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    notes                    TEXT NOT NULL DEFAULT '',
+    created_at               TIMESTAMP DEFAULT NOW(),
+    paid_at                  TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status);
+CREATE INDEX IF NOT EXISTS idx_orders_pi ON orders (stripe_payment_intent_id);
+
+CREATE TABLE IF NOT EXISTS order_items (
+    id               SERIAL PRIMARY KEY,
+    order_id         INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    product_id       INTEGER REFERENCES products(id) ON DELETE SET NULL,
+    product_name     TEXT NOT NULL DEFAULT '',
+    unit_price_cents INTEGER NOT NULL DEFAULT 0,
+    quantity         INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items (order_id);
+
+CREATE TABLE IF NOT EXISTS services (
+    id                     SERIAL PRIMARY KEY,
+    slug                   VARCHAR(100) UNIQUE NOT NULL,
+    name                   VARCHAR(200) NOT NULL,
+    short_description      VARCHAR(500) NOT NULL DEFAULT '',
+    long_description       TEXT NOT NULL DEFAULT '',
+    image_url              TEXT NOT NULL DEFAULT '',
+    duration_minutes       INTEGER NOT NULL DEFAULT 60,
+    pricing_model          VARCHAR(20) NOT NULL DEFAULT 'rsvp',
+    base_price_cents       INTEGER NOT NULL DEFAULT 0,
+    deposit_cents          INTEGER NOT NULL DEFAULT 0,
+    currency               VARCHAR(8) NOT NULL DEFAULT 'usd',
+    contract_template_url  TEXT NOT NULL DEFAULT '',
+    contract_template_name VARCHAR(200) NOT NULL DEFAULT '',
+    requires_calendar      BOOLEAN NOT NULL DEFAULT TRUE,
+    capacity_per_slot      INTEGER NOT NULL DEFAULT 1,
+    sort_order             INTEGER NOT NULL DEFAULT 0,
+    is_active              BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at             TIMESTAMP DEFAULT NOW(),
+    updated_at             TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_services_active_sort ON services (is_active, sort_order);
+
+CREATE TABLE IF NOT EXISTS service_addons (
+    id           SERIAL PRIMARY KEY,
+    service_id   INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+    name         VARCHAR(200) NOT NULL,
+    description  TEXT NOT NULL DEFAULT '',
+    price_cents  INTEGER NOT NULL DEFAULT 0,
+    sort_order   INTEGER NOT NULL DEFAULT 0,
+    is_active    BOOLEAN NOT NULL DEFAULT TRUE
+);
+CREATE INDEX IF NOT EXISTS idx_service_addons_svc ON service_addons (service_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS service_availability_rules (
+    id            SERIAL PRIMARY KEY,
+    service_id    INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+    day_of_week   INTEGER NOT NULL,
+    start_time    TIME NOT NULL,
+    end_time      TIME NOT NULL,
+    slot_minutes  INTEGER NOT NULL DEFAULT 60,
+    is_active     BOOLEAN NOT NULL DEFAULT TRUE
+);
+CREATE INDEX IF NOT EXISTS idx_avail_rules_svc ON service_availability_rules (service_id, day_of_week);
+
+CREATE TABLE IF NOT EXISTS service_availability_overrides (
+    id             SERIAL PRIMARY KEY,
+    service_id     INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+    override_date  DATE NOT NULL,
+    start_time     TIME,
+    end_time       TIME,
+    override_kind  VARCHAR(10) NOT NULL,
+    slot_minutes   INTEGER NOT NULL DEFAULT 60,
+    note           TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_avail_ovr_svc ON service_availability_overrides (service_id, override_date);
+
+CREATE TABLE IF NOT EXISTS service_bookings (
+    id                    SERIAL PRIMARY KEY,
+    service_id            INTEGER REFERENCES services(id) ON DELETE SET NULL,
+    booking_token         VARCHAR(64) NOT NULL UNIQUE,
+    client_name           VARCHAR(200) NOT NULL,
+    client_email          VARCHAR(200) NOT NULL,
+    client_phone          VARCHAR(50) NOT NULL DEFAULT '',
+    notes                 TEXT NOT NULL DEFAULT '',
+    scheduled_date        DATE,
+    scheduled_start       TIME,
+    scheduled_end         TIME,
+    selected_addon_ids    INTEGER[] NOT NULL DEFAULT '{}',
+    addon_snapshot        JSONB NOT NULL DEFAULT '[]'::jsonb,
+    pricing_model         VARCHAR(20) NOT NULL DEFAULT 'rsvp',
+    base_price_cents      INTEGER NOT NULL DEFAULT 0,
+    addons_total_cents    INTEGER NOT NULL DEFAULT 0,
+    total_cents           INTEGER NOT NULL DEFAULT 0,
+    amount_paid_cents     INTEGER NOT NULL DEFAULT 0,
+    currency              VARCHAR(8) NOT NULL DEFAULT 'usd',
+    payment_status        VARCHAR(20) NOT NULL DEFAULT 'none',
+    stripe_session_id     VARCHAR(200) NOT NULL DEFAULT '',
+    signed_contract_url   TEXT NOT NULL DEFAULT '',
+    status                VARCHAR(20) NOT NULL DEFAULT 'pending',
+    utm_source            VARCHAR(200) NOT NULL DEFAULT '',
+    utm_medium            VARCHAR(200) NOT NULL DEFAULT '',
+    utm_campaign          VARCHAR(200) NOT NULL DEFAULT '',
+    created_at            TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_bookings_recent ON service_bookings (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS stripe_settings (
+    id                    INTEGER PRIMARY KEY,
+    mode                  VARCHAR(10) NOT NULL DEFAULT 'test',
+    autosync_products     BOOLEAN NOT NULL DEFAULT FALSE,
+    last_health_check_at  TIMESTAMP,
+    last_health_ok        BOOLEAN,
+    last_health_error     TEXT NOT NULL DEFAULT '',
+    last_backfill_at      TIMESTAMP,
+    last_backfill_summary JSONB DEFAULT '{}'::jsonb,
+    updated_at            TIMESTAMP DEFAULT NOW()
+);
+INSERT INTO stripe_settings (id, mode) VALUES (1, 'test') ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS stripe_product_sync (
+    id                  SERIAL PRIMARY KEY,
+    local_product_id    INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    mode                VARCHAR(10) NOT NULL,
+    stripe_product_id   VARCHAR(100) NOT NULL DEFAULT '',
+    stripe_price_id     VARCHAR(100) NOT NULL DEFAULT '',
+    synced_price_cents  INTEGER,
+    synced_currency     VARCHAR(8) NOT NULL DEFAULT '',
+    last_synced_at      TIMESTAMP,
+    last_attempt_at     TIMESTAMP DEFAULT NOW(),
+    last_error          TEXT NOT NULL DEFAULT '',
+    UNIQUE (local_product_id, mode)
+);
+
+-- ============================ TENANCY: EMBED KEYS (M6, feeds M7) =========
+-- Publishable per-tenant key for the cross-origin widget, with an origin
+-- allowlist. The visitor/embed endpoints validate the request Origin against
+-- this allowlist in central mode (M7 wires the enforcement).
+CREATE TABLE IF NOT EXISTS tenant_embed_keys (
+    id                SERIAL PRIMARY KEY,
+    tenant_id         INTEGER NOT NULL DEFAULT 1 REFERENCES tenants(id) ON DELETE CASCADE,
+    embed_key         VARCHAR(64) UNIQUE NOT NULL,
+    label             TEXT NOT NULL DEFAULT '',
+    origin_allowlist  JSONB NOT NULL DEFAULT '[]'::jsonb,
+    enabled           BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at        TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_embed_keys_tenant ON tenant_embed_keys (tenant_id);
 """
 
 # Seeds — singletons + default tenant + reference prices. All idempotent.

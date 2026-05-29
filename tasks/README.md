@@ -11,7 +11,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 003 | M3 — Cost + Skills/MCP | done | task/003-cost-skills-mcp | 002 | 004 | Gate 70/70 vs embedded Postgres; MCP/custom-skill live exec needs a server/key |
 | 004 | M4 — RAG + Automations + Scraper | done | task/004-rag-automations-scraper | 002 | 003 | Gate 94/94 vs embedded Postgres (pgvector present); full embed/scrape-AI need a key |
 | 005 | M5 — Messaging + Reviews + Presentations | done | task/005-messaging-reviews-presentations | 003,004 | — | Gate 116/116; live email/SMS send needs Resend/Twilio keys |
-| 006 | M6 — Commerce + Tenancy + VELO | not_started | task/006-commerce-tenancy-velo | 005 | — | |
+| 006 | M6 — Commerce + Tenancy + VELO | done | task/006-commerce-tenancy-velo | 005 | — | Gate 137/137; full Stripe Checkout + 30-cmd VELO are follow-ons (need keys) |
 | 007 | M7 — Embed snippet + cross-origin widget | not_started | task/007-embed-widget | 001,006 | — | |
 | 008 | M8 — WordPress plugin + SSO | not_started | task/008-wordpress-plugin | 007,002 | — | |
 | 009 | M9 — Docs + final verify | not_started | task/009-docs-verify | 001-008 | — | |
