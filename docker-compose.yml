@@ -1,14 +1,14 @@
 # =============================================================================
-# AI Concierge Platform — local one-command spin-up
+# admin_ai_platform — local one-command spin-up (M20)
 # =============================================================================
 # Usage:
-#   1. Copy .env.example to .env and fill in the keys you want
+#   1. cp .env.example .env   and fill in the keys you want
 #   2. docker compose up --build
-#   3. Open http://localhost:5000  (admin: /admin)
+#   3. Open http://localhost:5000  (admin: /admin, first run: /setup)
 #
-# This brings up the app + a Postgres 16 sidecar with persistent storage.
-# For production, point DATABASE_URL at a managed Postgres instead and drop
-# the `db` service.
+# Brings up the app + a pgvector-enabled Postgres + an optional Redis (shared
+# rate-limit / cache). For production, point DATABASE_URL at a managed Postgres
+# (with the `vector` extension available) and drop the `db` service.
 # =============================================================================
 
 services:
@@ -17,9 +17,11 @@ services:
     ports:
       - "5000:5000"
     environment:
-      # Override DATABASE_URL to point at the sidecar; everything else
-      # comes from your .env file
+      # Override DATABASE_URL to the sidecar; everything else comes from .env.
       DATABASE_URL: postgresql://aiconcierge:aiconcierge@db:5432/aiconcierge
+      # Use the bundled Redis for shared rate limiting (comment out to fall back
+      # to the Postgres-backed limiter instead).
+      REDIS_URL: redis://redis:6379/0
     env_file:
       - .env
     depends_on:
@@ -30,7 +32,8 @@ services:
     restart: unless-stopped
 
   db:
-    image: postgres:16-alpine
+    # pgvector image so the RAG/knowledge-base feature works out of the box.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: aiconcierge
       POSTGRES_PASSWORD: aiconcierge
@@ -43,10 +46,15 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
-    # Expose on a non-default host port for direct DB access (psql, etc).
-    # Comment out if you don't want the DB reachable from the host.
     ports:
+      # Non-default host port for direct psql access. Comment out if you don't
+      # want the DB reachable from the host.
       - "55432:5432"
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    restart: unless-stopped
 
 volumes:
   postgres_data:

@@ -54,6 +54,36 @@ def embed_loader():
     return resp
 
 
+# ---- bundled widget (M20) ----------------------------------------------
+_DIST_DIR = os.path.join(_EMBED_DIR, "dist")
+_DIST_RE = re.compile(r"^widget\.[a-f0-9]{6,16}\.(js|css)$")
+
+
+@bp.route("/embed/dist/manifest.json", methods=["GET"])
+def bundle_manifest():
+    """Current hashed bundle filenames. Short cache so a new deploy's manifest is
+    picked up quickly; the hashed assets it points to are themselves immutable."""
+    if not os.path.isfile(os.path.join(_DIST_DIR, "manifest.json")):
+        return jsonify({"error": "bundle not built"}), 404
+    resp = send_from_directory(_DIST_DIR, "manifest.json")
+    resp.headers["Content-Type"] = "application/json"
+    resp.headers["Cache-Control"] = "public, max-age=60"
+    return resp
+
+
+@bp.route("/embed/dist/<path:filename>", methods=["GET"])
+def bundle_asset(filename):
+    """Serve a content-hashed widget bundle file. The hash in the filename makes
+    it safe to cache for a year, immutable — a source change rotates the name."""
+    if not _DIST_RE.match(filename):
+        abort(404)
+    resp = send_from_directory(_DIST_DIR, filename)
+    resp.headers["Content-Type"] = ("text/javascript" if filename.endswith(".js")
+                                    else "text/css")
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
 @bp.route("/api/generated-pages/by-slug/<slug>", methods=["GET"])
 def generated_page_by_slug(slug):
     if not slug or not _SLUG_RE.match(slug):

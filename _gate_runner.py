@@ -1297,6 +1297,68 @@ def main():
         check("provisioned tenant row exists",
               query_db("SELECT 1 FROM tenants WHERE id=%s", (_pj["tenant_id"],), fetchone=True) is not None)
 
+        # ----- M20: deploy artifacts (widget bundle + snapshot CLI + env) ----
+        import os as _os20
+        import json as _json20
+        import re as _re20
+        from admin_ai_platform import bundle as _bundle
+        _man = _bundle.build_bundle()
+        check("widget bundle built (version + js + css)",
+              bool(_man.get("version")) and _man["js"].startswith("widget.")
+              and _man["css"].endswith(".css"))
+        check("bundle files written to embed/dist",
+              _os20.path.isfile(_os20.path.join(_bundle.dist_dir(), _man["js"]))
+              and _os20.path.isfile(_os20.path.join(_bundle.dist_dir(), _man["css"])))
+        check("bundle hash is deterministic", _bundle.build_bundle()["version"] == _man["version"])
+        _bjs = c.get("/embed/dist/" + _man["js"])
+        check("bundle js served as javascript", _bjs.status_code == 200
+              and "javascript" in _bjs.headers.get("Content-Type", ""))
+        check("bundle js immutable-cached",
+              "immutable" in _bjs.headers.get("Cache-Control", "")
+              and "max-age=31536000" in _bjs.headers.get("Cache-Control", ""))
+        _bman = c.get("/embed/dist/manifest.json")
+        check("bundle manifest served + short-cached",
+              _bman.status_code == 200 and "max-age=60" in _bman.headers.get("Cache-Control", ""))
+        check("bundle rejects non-hashed filename",
+              c.get("/embed/dist/config.py").status_code in (404, 400))
+
+        # Snapshot CLI round-trip: export -> wipe -> apply -> rows present.
+        from admin_ai_platform import snapshot as _snap
+        execute_db("DELETE FROM gallery_cards")
+        execute_db("INSERT INTO gallery_cards (slug, title, subtitle, image_url, category) "
+                   "VALUES ('snap-card','Snap','sub','','spaces')")
+        execute_db("UPDATE business_info SET name='SnapCo' WHERE id=1")
+        _exp = _json20.loads(_json20.dumps(_snap.export_snapshot()))
+        check("snapshot export has gallery + business_info",
+              any(r["slug"] == "snap-card" for r in _exp["tables"].get("gallery_cards", []))
+              and any(r.get("name") == "SnapCo" for r in _exp["tables"].get("business_info", [])))
+        execute_db("DELETE FROM gallery_cards")
+        execute_db("UPDATE business_info SET name='' WHERE id=1")
+        _snap.apply_snapshot(_exp)
+        check("snapshot apply restores gallery card",
+              query_db("SELECT 1 FROM gallery_cards WHERE slug='snap-card'", fetchone=True) is not None)
+        check("snapshot apply restores singleton business_info",
+              query_db("SELECT name FROM business_info WHERE id=1", fetchone=True)["name"] == "SnapCo")
+        _snap.apply_snapshot(_exp)  # re-apply
+        check("snapshot apply is idempotent (no dup)",
+              query_db("SELECT COUNT(*) AS n FROM gallery_cards WHERE slug='snap-card'",
+                       fetchone=True)["n"] == 1)
+        check("snapshot redacts provider secrets",
+              all(not r.get("openai_api_key") and not r.get("anthropic_api_key")
+                  for r in _exp["tables"].get("agent_provider_settings", [])))
+
+        # .env.example lists every config var name.
+        _cfgpath = os.path.abspath(aap.__file__)
+        _repo = _os20.path.dirname(_os20.path.dirname(_cfgpath))
+        with open(_os20.path.join(_os20.path.dirname(_cfgpath), "config.py"),
+                  encoding="utf-8") as _cf:
+            _cfgtext = _cf.read()
+        _names = set(_re20.findall(r'env_(?:str|int|bool|choice)\("([A-Z_]+)"', _cfgtext))
+        with open(_os20.path.join(_repo, ".env.example"), encoding="utf-8") as _ef:
+            _envtext = _ef.read()
+        _missing = sorted(n for n in _names if (n + "=") not in _envtext)
+        check(f".env.example lists every config name (missing: {_missing})", not _missing)
+
         print("[gate] schema + integration checks complete", flush=True)
 
     finally:

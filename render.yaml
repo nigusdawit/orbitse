@@ -1,0 +1,43 @@
+# Render blueprint (M20) — one web service (Docker) + a managed Postgres.
+# Deploy: push to a repo, then "New > Blueprint" in Render and point at this file.
+# Per-client silo: duplicate this blueprint per client (separate service + DB),
+# or use Render's "Preview/duplicate" — each gets its own DATABASE_URL + secrets.
+services:
+  - type: web
+    name: ai-concierge
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ai-concierge-db
+          property: connectionString
+      - key: FLASK_SECRET_KEY
+        generateValue: true       # Render generates + persists a strong secret
+      - key: SECRETS_ENCRYPTION_KEY
+        generateValue: true
+      - key: ADMIN_PASSWORD
+        sync: false               # set in the dashboard (never commit a password)
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: DEPLOY_MODE
+        value: self_host
+      - key: SESSION_COOKIE_SECURE
+        value: "true"
+      - key: ENABLE_HSTS
+        value: "true"
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"                # Render terminates TLS at a single proxy hop
+
+databases:
+  - name: ai-concierge-db
+    plan: basic-256mb
+    postgresMajorVersion: "16"
+    # NOTE: enable the `vector` extension for RAG — run once after provisioning:
+    #   CREATE EXTENSION IF NOT EXISTS vector;
+    # (Render Postgres supports pgvector; init_db() guards the RAG tables so the
+    #  app still boots without it.)
