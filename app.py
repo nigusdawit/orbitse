@@ -5398,6 +5398,25 @@ def embed_loader_js():
     return resp
 
 
+_WIDGET_ALLOWED = {"chat-ui.js", "chat-ui.css", "voice.js"}
+
+
+@app.route("/widget/<path:filename>", methods=["GET"])
+def embed_widget_asset(filename):
+    """Serve the embeddable widget assets the loader pulls (chat-ui.js/css,
+    voice.js). Loaded cross-origin via <script>/<link>, which need no CORS."""
+    if filename not in _WIDGET_ALLOWED:
+        abort(404)
+    widget_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "embed", "widget")
+    resp = send_from_directory(widget_dir, filename)
+    if filename.endswith(".js"):
+        resp.headers["Content-Type"] = "text/javascript"
+    elif filename.endswith(".css"):
+        resp.headers["Content-Type"] = "text/css"
+    resp.headers["Cache-Control"] = "public, max-age=300"
+    return resp
+
+
 @app.route("/admin/api/embed-keys", methods=["GET"])
 @admin_required
 def admin_list_embed_keys():
