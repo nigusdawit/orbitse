@@ -370,6 +370,73 @@ def twilio_status_webhook():
     return ("", 204)
 
 
+# Carrier-required SMS opt-out/opt-in keywords (case-insensitive, exact match).
+_SMS_STOP = {"stop", "stopall", "unsubscribe", "cancel", "end", "quit"}
+_SMS_START = {"start", "unstop", "yes"}
+
+
+def _twiml(message=None):
+    """Minimal TwiML response. Empty <Response/> means 'no auto-reply'."""
+    from flask import Response
+    if message:
+        body = (f"<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Message>"
+                f"{message}</Message></Response>")
+    else:
+        body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response></Response>"
+    return Response(body, mimetype="text/xml")
+
+
+@bp.route("/webhooks/twilio/inbound-sms", methods=["POST"])
+def twilio_inbound_sms():
+    """Inbound SMS handler. Honors STOP/START opt-out keywords first (carrier
+    compliance), then routes a normal message to the AI agent and replies via
+    TwiML. Replies only to known, SMS-opted-in subscribers to avoid being used
+    as an open SMS relay."""
+    from_number = (request.form.get("From") or "").strip()
+    body = (request.form.get("Body") or "").strip()
+    word = body.lower().strip(" .!")
+
+    if word in _SMS_STOP:
+        execute_db("UPDATE subscribers SET opt_in_sms=FALSE, unsubscribed_at=NOW() "
+                   "WHERE phone=%s", (from_number,))
+        return _twiml("You've been unsubscribed and won't receive further messages. "
+                      "Reply START to opt back in.")
+    if word in _SMS_START:
+        execute_db("UPDATE subscribers SET opt_in_sms=TRUE, unsubscribed_at=NULL "
+                   "WHERE phone=%s", (from_number,))
+        return _twiml("You're opted back in. Reply STOP to unsubscribe at any time.")
+
+    # Route to the AI agent — but only for a known, opted-in subscriber.
+    sub = query_db("SELECT id, full_name, opt_in_sms FROM subscribers WHERE phone=%s",
+                   (from_number,), fetchone=True)
+    if not sub or not sub.get("opt_in_sms"):
+        return _twiml()  # silent: unknown/opted-out number
+    if llm.openai_client is None or not body:
+        return _twiml()
+    if cost_cap_blocks_send(surface="sms_agent"):
+        return _twiml()
+    try:
+        resp = llm.openai_client.chat.completions.create(
+            model="gpt-4o-mini", temperature=0.5, max_tokens=300,
+            messages=[{"role": "system", "content": "You are a concise SMS concierge. "
+                       "Reply in under 320 characters, friendly and helpful."},
+                      {"role": "user", "content": body}])
+        reply = (resp.choices[0].message.content or "").strip()[:320]
+    except Exception as e:
+        print(f"[messaging] inbound-sms AI error: {e}")
+        return _twiml()
+    if reply:
+        # Log the agent reply against the subscriber for the messaging timeline.
+        try:
+            execute_db("INSERT INTO messaging_log (subscriber_id, channel, to_address, "
+                       " body_snapshot, status, provider) "
+                       "VALUES (%s,'sms',%s,%s,'sent','twilio_inbound')",
+                       (sub["id"], from_number, reply))
+        except Exception:
+            pass
+    return _twiml(reply or None)
+
+
 @bp.route("/unsubscribe", methods=["GET", "POST"])
 def unsubscribe():
     token = request.args.get("token") or (request.form.get("token") if request.form else "")

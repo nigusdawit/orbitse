@@ -1051,6 +1051,66 @@ def main():
         check("site index includes services + experiences + business",
               "lookup_services" in _idx and "EXPERIENCES" in _idx and "BUSINESS" in _idx)
 
+        # ----- M14: integrations completion (the genuinely-new pieces) --------
+        import io
+        # Reviews aggregate parsers (pure) + no-key refresh path.
+        from admin_ai_platform.blueprints import reviews as _rev
+        check("google places parser", _rev._parse_google(
+            {"result": {"rating": 4.6, "user_ratings_total": 120}}) == (120, 4.6))
+        check("yelp parser", _rev._parse_yelp({"rating": 4.0, "review_count": 88}) == (88, 4.0))
+        check("tripadvisor parser",
+              _rev._parse_tripadvisor({"rating": "3.5", "num_reviews": "12"}) == (12, 3.5))
+        _did = execute_db("INSERT INTO review_destinations (name, kind, external_id) "
+                          "VALUES ('G','google','PLACE123') RETURNING id")["id"]
+        _rr = admin.post(f"/admin/api/reviews/destinations/{_did}/refresh").get_json()
+        check("review refresh records key-not-configured cleanly",
+              _rr.get("ok") is False and "not configured" in _rr.get("error", ""))
+        check("review refresh wrote an error snapshot row",
+              (query_db("SELECT error_text FROM external_reviews WHERE destination_id=%s",
+                        (_did,), fetchone=True) or {}).get("error_text", "") != "")
+        check("reviews ai-draft requires LLM (503 without key)",
+              admin.post("/admin/api/reviews/ai-draft", json={}).status_code == 503)
+
+        # Presentations import: rejects unsupported types, imports a real .pptx
+        # (built in-memory) with text + speaker-notes → narration.
+        check("import rejects unsupported type",
+              admin.post("/admin/api/presentations/import",
+                         data={"file": (io.BytesIO(b"x"), "notes.txt")},
+                         content_type="multipart/form-data").status_code == 400)
+        try:
+            import io as _io
+            from pptx import Presentation as _Prs
+            _prs = _Prs()
+            _slide = _prs.slides.add_slide(_prs.slide_layouts[1])
+            _slide.shapes.title.text = "Welcome"
+            _slide.placeholders[1].text = "Body bullet one"
+            _slide.notes_slide.notes_text_frame.text = "Say hello warmly."
+            _buf = _io.BytesIO()
+            _prs.save(_buf)
+            _buf.seek(0)
+            _imp = admin.post("/admin/api/presentations/import",
+                              data={"file": (_buf, "MyDeck.pptx")},
+                              content_type="multipart/form-data")
+            _ij = _imp.get_json()
+            check("pptx import 201 + slides created",
+                  _imp.status_code == 201 and _ij.get("slides_created", 0) >= 1)
+            _pid14 = _ij["id"]
+            _sl = query_db("SELECT title, narration_text FROM presentation_slides "
+                           "WHERE presentation_id=%s ORDER BY order_index", (_pid14,))
+            check("pptx import extracted title", _sl and _sl[0]["title"] == "Welcome")
+            check("pptx import extracted speaker notes as narration",
+                  _sl and _sl[0]["narration_text"] == "Say hello warmly.")
+            check("generate-narration needs LLM (503 without key)",
+                  admin.post(f"/admin/api/presentations/{_pid14}/generate-narration",
+                             json={}).status_code == 503)
+        except Exception as _pe:
+            check(f"pptx import smoke (python-pptx available): {_pe}", False)
+
+        # Legacy non-streaming TTS route is wired (403 when AI voice disabled by
+        # default — not a 404).
+        check("legacy /api/voice/tts wired (not 404)",
+              c.post("/api/voice/tts", json={"text": "hi"}).status_code in (403, 503, 201, 429))
+
         print("[gate] schema + integration checks complete", flush=True)
 
     finally:
