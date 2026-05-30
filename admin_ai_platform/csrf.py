@@ -45,12 +45,16 @@ def get_csrf_token() -> str:
 
 
 def _authed_by_api_key() -> bool:
-    """True when this request is authenticated by the Bearer/admin API key rather
-    than the session cookie — such requests are not CSRF-susceptible."""
+    """True when this request is authenticated by the **Bearer** admin API key
+    rather than the session cookie — such requests are not CSRF-susceptible. We
+    only honor the Authorization header here (NOT ``?key=``): a query-string key
+    can be smuggled into a cross-site GET/navigation and lands in logs/referrers,
+    so it must never relax CSRF."""
     from . import config
     auth = request.headers.get("Authorization", "")
-    key = auth[7:].strip() if auth.startswith("Bearer ") else request.args.get("key", "")
-    return bool(config.ADMIN_API_KEY) and key == config.ADMIN_API_KEY
+    if not auth.startswith("Bearer "):
+        return False
+    return bool(config.ADMIN_API_KEY) and auth[7:].strip() == config.ADMIN_API_KEY
 
 
 def register_csrf(app):
@@ -61,7 +65,11 @@ def register_csrf(app):
         if request.method in _SAFE_METHODS:
             return None
         path = request.path
-        if not path.startswith("/admin/api"):
+        # Protect EVERY admin route (not just /admin/api) so a future
+        # state-changing admin route added outside that prefix can't be silently
+        # unprotected. Non-admin paths (embed/public, webhooks, VELO) carry their
+        # own auth and are not cookie-ambient.
+        if not path.startswith("/admin"):
             return None
         if any(path.startswith(p) for p in _EXEMPT_PREFIXES):
             return None

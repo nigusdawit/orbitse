@@ -77,14 +77,14 @@
       <div id="chatlog"></div>
       <div style="display:flex; gap:8px;">
         <input id="chatinput" placeholder="e.g. how many gallery cards do I have?" />
-        <button class="act" style="margin:0" onclick="sendChat()">Send</button>
+        <button class="act" style="margin:0" id="chatsend">Send</button>
       </div>
     </section>
     <!-- All other tabs are injected by JS into #main -->
   </main>
   <div id="toast"></div>
 
-  <script>
+  <script nonce="__CSP_NONCE__">
   "use strict";
   const $ = s => document.querySelector(s);
 
@@ -388,6 +388,7 @@
         else if(ev.type==='error'){ bubble.textContent=ev.content; } } }
   }
   document.addEventListener('keydown', e=>{ if(e.key==='Enter' && document.activeElement===$('#chatinput')) sendChat(); });
+  document.getElementById('chatsend').addEventListener('click', sendChat);
 
   // ---- Chatbot ----
   async function renderChatbot(el){

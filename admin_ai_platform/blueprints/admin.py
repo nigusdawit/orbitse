@@ -37,7 +37,20 @@ _ADMIN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
 def dashboard():
     if not is_admin_authenticated():
         return redirect("/admin/login")
-    return send_from_directory(_ADMIN_DIR, "dashboard.html")
+    # Inject a per-response CSP nonce into the inline <script> so the admin CSP
+    # can use 'nonce-…' instead of 'unsafe-inline' (M19 security-review M2). The
+    # nonce is stashed on g for the after_request CSP composer.
+    import os
+    import base64
+    from flask import g, Response
+    nonce = base64.b64encode(os.urandom(16)).decode()
+    g.csp_nonce = nonce
+    try:
+        with open(os.path.join(_ADMIN_DIR, "dashboard.html"), encoding="utf-8") as fh:
+            html = fh.read()
+    except OSError:
+        return send_from_directory(_ADMIN_DIR, "dashboard.html")
+    return Response(html.replace("__CSP_NONCE__", nonce), mimetype="text/html")
 
 
 @bp.route("/admin/login", methods=["GET", "POST"])

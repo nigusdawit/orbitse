@@ -68,15 +68,21 @@ def is_encrypted(value) -> bool:
 
 def encrypt(plaintext) -> str:
     """Encrypt a string → ``enc:v1:<token>``. Empty/None passes through unchanged
-    (nothing to protect). If crypto is unavailable, returns the plaintext (logged
-    once) so the feature still functions in a degraded dev environment."""
+    (nothing to protect).
+
+    **Fails loud, not open:** if there is a real secret to protect but the crypto
+    backend is unavailable, this RAISES rather than silently persisting cleartext
+    (which would leave operators believing secrets are encrypted when they aren't).
+    ``cryptography`` is a hard dependency, so this only fires on a broken install."""
     if not plaintext:
         return plaintext or ""
     if is_encrypted(plaintext):
         return plaintext
     f = _get_fernet()
     if f is None:
-        return plaintext
+        raise RuntimeError(
+            "Cannot encrypt secret at rest: the 'cryptography' backend is "
+            "unavailable. Refusing to store the credential in cleartext.")
     return _PREFIX + f.encrypt(str(plaintext).encode()).decode()
 
 

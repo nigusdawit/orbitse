@@ -197,11 +197,17 @@ def create_app(*, init_schema: bool = True, start_scheduler: bool = True) -> Fla
                 frame = "frame-ancestors 'self'"
                 resp.headers["X-Frame-Options"] = "SAMEORIGIN"
             # Conservative CSP — the dashboard is self-hosted vanilla JS/CSS, no
-            # external scripts. The public embed widget is NOT constrained here
-            # (it must run on third-party origins).
+            # external scripts. script-src uses a per-response nonce (set by the
+            # /admin dashboard route) instead of 'unsafe-inline', so injected
+            # markup can't execute script. style-src keeps 'unsafe-inline' (the
+            # dashboard uses inline style attributes; lower risk). The public
+            # embed widget is NOT constrained here (third-party origins).
+            from flask import g
+            nonce = getattr(g, "csp_nonce", "")
+            script_src = f"script-src 'self' 'nonce-{nonce}'" if nonce else "script-src 'self'"
             resp.headers["Content-Security-Policy"] = (
                 "default-src 'self'; img-src 'self' data: https:; "
-                "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+                "style-src 'self' 'unsafe-inline'; " + script_src + "; "
                 "connect-src 'self'; base-uri 'self'; form-action 'self'; " + frame)
         return resp
 

@@ -1232,10 +1232,16 @@ def main():
               _crypto.is_encrypted(query_db("SELECT auth_credential FROM mcp_servers "
                                             "WHERE name='sec-test'", fetchone=True)["auth_credential"]))
         # Security headers.
-        _h = admin.get("/admin").headers
+        _dashresp = admin.get("/admin")
+        _h = _dashresp.headers
+        _csp = _h.get("Content-Security-Policy", "")
         check("X-Content-Type-Options nosniff", _h.get("X-Content-Type-Options") == "nosniff")
         check("Referrer-Policy set", "strict-origin" in _h.get("Referrer-Policy", ""))
-        check("baseline CSP on /admin", "default-src 'self'" in _h.get("Content-Security-Policy", ""))
+        check("baseline CSP on /admin", "default-src 'self'" in _csp)
+        check("CSP script-src uses a nonce, not unsafe-inline",
+              "'nonce-" in _csp and "script-src 'self' 'unsafe-inline'" not in _csp)
+        check("dashboard nonce placeholder replaced",
+              "__CSP_NONCE__" not in _dashresp.get_data(as_text=True))
 
         # ----- M17: onboarding -----------------------------------------------
         check("platform_setup table present", table_exists("platform_setup"))
