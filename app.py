@@ -2181,6 +2181,21 @@ def init_db():
                     note         TEXT        NOT NULL DEFAULT '',
                     UNIQUE(tenant_id, feature_name)
                 );
+
+                -- Publishable per-client embed keys for the cross-origin widget.
+                -- origin_allowlist is a JSONB array of allowed page origins; the
+                -- embed before_request validates the request Origin against it.
+                CREATE TABLE IF NOT EXISTS tenant_embed_keys (
+                    id               SERIAL PRIMARY KEY,
+                    tenant_id        INTEGER NOT NULL DEFAULT 1 REFERENCES tenants(id) ON DELETE CASCADE,
+                    embed_key        VARCHAR(64) UNIQUE NOT NULL,
+                    label            TEXT NOT NULL DEFAULT '',
+                    origin_allowlist JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    enabled          BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at       TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_tenant_embed_keys_key
+                    ON tenant_embed_keys (embed_key);
             """)
 
             # Seed the voice_settings singleton row (idempotent)
@@ -5261,6 +5276,179 @@ def admin_required(f):
             return redirect(url_for("admin_login"))
         return f(*args, **kwargs)
     return decorated_function
+
+
+# =============================================================================
+# EMBED / CROSS-ORIGIN WIDGET  (client distribution layer)
+# =============================================================================
+# Lets a client drop the chat widget on their OWN third-party site via a
+# publishable per-client embed key (origin-allowlisted). A request with NO key
+# is treated as first-party / same-origin (the operator's own site) and passes
+# through UNCHANGED — so existing installs behave exactly as before. A keyed
+# cross-origin request must carry an Origin in the key's allowlist and gets
+# scoped CORS headers (never '*').
+import secrets as _embed_secrets
+from urllib.parse import urlparse as _embed_urlparse
+
+_EMBEDDABLE_PREFIXES = (
+    "/api/chat", "/api/chatbot-settings", "/api/voice/", "/api/forms/",
+    "/api/gallery-cards", "/api/products", "/api/services", "/api/presentations/",
+)
+
+
+def _embed_is_embeddable(path):
+    return any(path.startswith(p) for p in _EMBEDDABLE_PREFIXES)
+
+
+def _embed_request_origin():
+    origin = (request.headers.get("Origin") or "").strip()
+    if origin:
+        return origin
+    ref = (request.headers.get("Referer") or "").strip()
+    if ref:
+        try:
+            p = _embed_urlparse(ref)
+            if p.scheme and p.netloc:
+                return f"{p.scheme}://{p.netloc}"
+        except Exception:
+            pass
+    return ""
+
+
+def _embed_resolve_key(key):
+    if not key:
+        return None
+    try:
+        return query_db(
+            "SELECT tenant_id, origin_allowlist, enabled FROM tenant_embed_keys "
+            "WHERE embed_key = %s", (key,), fetchone=True)
+    except Exception:
+        return None
+
+
+def _embed_origin_allowed(origin, allowlist):
+    if not origin:
+        return False
+    al = allowlist if isinstance(allowlist, list) else []
+    if isinstance(allowlist, str):
+        try:
+            al = json.loads(allowlist)
+        except Exception:
+            al = []
+    if "*" in al:
+        return True
+    return origin in al
+
+
+def _embed_apply_cors(resp, key):
+    origin = _embed_request_origin()
+    if not origin:
+        return
+    row = _embed_resolve_key((key or "").strip())
+    if row and _embed_origin_allowed(origin, row.get("origin_allowlist")):
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        existing_vary = resp.headers.get("Vary", "")
+        if "origin" not in existing_vary.lower():
+            resp.headers["Vary"] = (existing_vary + ", Origin").lstrip(", ") if existing_vary else "Origin"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Embed-Key"
+        resp.headers["Access-Control-Max-Age"] = "600"
+
+
+@app.before_request
+def _embed_auth():
+    from flask import g
+    path = request.path or ""
+    if not _embed_is_embeddable(path):
+        return None
+    key = (request.headers.get("X-Embed-Key", "") or request.args.get("embed_key", "")).strip()
+    origin = _embed_request_origin()
+    if request.method == "OPTIONS":
+        resp = make_response("", 204)
+        _embed_apply_cors(resp, key)
+        return resp
+    if key:
+        row = _embed_resolve_key(key)
+        if not row or not row.get("enabled"):
+            return jsonify({"error": "invalid embed key"}), 403
+        if origin and not _embed_origin_allowed(origin, row.get("origin_allowlist")):
+            return jsonify({"error": "origin not allowed for this embed key"}), 403
+        g._embed_keyed = True
+        g._embed_key = key
+    # No key → treat as first-party / same-origin; behavior is unchanged.
+    return None
+
+
+@app.after_request
+def _embed_cors(resp):
+    from flask import g
+    if getattr(g, "_embed_keyed", False):
+        _embed_apply_cors(resp, getattr(g, "_embed_key", ""))
+    return resp
+
+
+@app.route("/embed/loader.js", methods=["GET"])
+def embed_loader_js():
+    """Serve the cross-origin Shadow-DOM widget loader. Script tags need no CORS;
+    served with a JS content type + a short cache."""
+    embed_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "embed")
+    resp = send_from_directory(embed_dir, "loader.js")
+    resp.headers["Content-Type"] = "text/javascript"
+    resp.headers["Cache-Control"] = "public, max-age=300"
+    return resp
+
+
+@app.route("/admin/api/embed-keys", methods=["GET"])
+@admin_required
+def admin_list_embed_keys():
+    rows = query_db("SELECT * FROM tenant_embed_keys WHERE tenant_id = %s ORDER BY id DESC",
+                    (current_tenant_id(),))
+    return jsonify({"keys": rows or []})
+
+
+@app.route("/admin/api/embed-keys", methods=["POST"])
+@admin_required
+def admin_create_embed_key():
+    d = request.get_json() or {}
+    key = "pk_" + _embed_secrets.token_urlsafe(24)
+    row = execute_db(
+        "INSERT INTO tenant_embed_keys (tenant_id, embed_key, label, origin_allowlist) "
+        "VALUES (%s, %s, %s, %s::jsonb) RETURNING *",
+        (current_tenant_id(), key, d.get("label", ""), json.dumps(d.get("origin_allowlist", []))))
+    return jsonify(row), 201
+
+
+@app.route("/admin/api/embed-keys/<int:kid>", methods=["PUT"])
+@admin_required
+def admin_update_embed_key(kid):
+    d = request.get_json() or {}
+    sets, vals = [], []
+    if "label" in d:
+        sets.append("label = %s")
+        vals.append(d["label"])
+    if "origin_allowlist" in d:
+        sets.append("origin_allowlist = %s::jsonb")
+        vals.append(json.dumps(d["origin_allowlist"]))
+    if "enabled" in d:
+        sets.append("enabled = %s")
+        vals.append(bool(d["enabled"]))
+    if not sets:
+        return jsonify({"error": "No fields"}), 400
+    vals.extend([kid, current_tenant_id()])
+    row = execute_db(
+        "UPDATE tenant_embed_keys SET " + ", ".join(sets)
+        + " WHERE id = %s AND tenant_id = %s RETURNING *", tuple(vals))
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(row)
+
+
+@app.route("/admin/api/embed-keys/<int:kid>", methods=["DELETE"])
+@admin_required
+def admin_delete_embed_key(kid):
+    execute_db("DELETE FROM tenant_embed_keys WHERE id = %s AND tenant_id = %s",
+               (kid, current_tenant_id()))
+    return jsonify({"success": True})
 
 
 @app.route("/admin/login", methods=["GET", "POST"])
