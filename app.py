@@ -3946,6 +3946,11 @@ def init_db():
 
 # (feature_name, human_label, plan_tier_required, default_enabled, group)
 _FEATURE_REGISTRY = [
+    # Website builder (the public marketing-site editor surface). Turn this OFF
+    # for "client" installs that only want the AI concierge + its admin — the
+    # before_request hook then 403s every website-builder admin route. Defaults
+    # ON so existing operator installs are completely unaffected.
+    ("website_builder",      "Website builder (themes/pages/SEO/sections)", "solo", True, "Website"),
     # Core (always on for paid plans)
     ("site_themes",          "Site Themes",                  "solo",       True,  "Design"),
     ("site_designs",         "Multi-Homepage Designs",       "growth",     True,  "Design"),
@@ -3969,6 +3974,17 @@ _FEATURE_REGISTRY = [
 ]
 _FEATURE_NAMES = {row[0] for row in _FEATURE_REGISTRY}
 _FEATURE_DEFAULTS = {row[0]: row[3] for row in _FEATURE_REGISTRY}
+
+# CLIENT_MODE — a one-switch "this install is a client, not the operator" flag.
+# When truthy, operator-only features default OFF, so a fresh client install has
+# the website-builder surface disabled with no manual toggling. Operators leave
+# CLIENT_MODE unset → every default stays exactly as before (fully unaffected).
+# Per-tenant overrides in the Plans & Features tab still win over these defaults.
+_OPERATOR_ONLY_FEATURES = ("website_builder",)
+_CLIENT_MODE = os.environ.get("CLIENT_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+if _CLIENT_MODE:
+    for _f in _OPERATOR_ONLY_FEATURES:
+        _FEATURE_DEFAULTS[_f] = False
 
 # Per-process cache of {(tenant_id, feature_name): enabled_bool, expires_at}.
 # Tiny TTL so flag flips become visible quickly across requests without
@@ -4162,6 +4178,26 @@ _FEATURE_ROUTE_PREFIXES = [
     ("/api/generated-pages",       "generated_pages"),
     ("/api/presentations/",        "presentations"),
     ("/api/voice/",                "voice"),
+    # Website-builder (marketing-site editor) admin routes — gated as a unit by
+    # the `website_builder` flag so a client install has the whole site-builder
+    # surface disabled at the route layer while keeping the AI concierge admin.
+    # NOTE: deliberately EXCLUDES AI-referenced content the concierge reads
+    # (blog/team/faq/testimonials/experiences/pricing/business-info) and
+    # /admin/api/marketing (= Marketing Insights, an AI feature).
+    ("/admin/api/theme",             "website_builder"),
+    ("/admin/api/curated-font-pairs", "website_builder"),
+    ("/admin/api/site-settings",     "website_builder"),
+    ("/admin/api/page-sections",     "website_builder"),
+    ("/admin/api/pages",             "website_builder"),
+    ("/admin/api/custom-sections",   "website_builder"),
+    ("/admin/api/section-visibility", "website_builder"),
+    ("/admin/api/seo",               "website_builder"),
+    ("/admin/api/social-links",      "website_builder"),
+    ("/admin/api/sphere-images",     "website_builder"),
+    ("/admin/api/sphere-settings",   "website_builder"),
+    ("/admin/api/video-gallery",     "website_builder"),
+    ("/admin/api/podcast",           "website_builder"),
+    ("/admin/api/reorder",           "website_builder"),
     # Public ingress for the automations webhook trigger. We DO gate this
     # one — if a tenant turns Automations off, third-party services hitting
     # the saved hook URL should get a 404 (not silently consume the post).
