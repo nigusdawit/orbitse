@@ -39,6 +39,7 @@ from flask import Blueprint, request, jsonify, Response, stream_with_context, se
 
 from .. import config, llm
 from ..db import query_db, execute_db
+from ..auth import admin_required
 from ..cost import record_voice_cost, enforce_cost_cap, is_cost_throttled
 
 bp = Blueprint("voice", __name__)
@@ -343,6 +344,52 @@ def tts_stream_consume():
                              "X-TTS-Provider": provider})
 
 
+@bp.route("/api/voice/tts", methods=["POST"])
+def tts_legacy():
+    """Legacy non-streaming TTS: synthesize the whole clip, cache it, and return
+    its URL in one call. The streaming prepare/consume handshake is preferred for
+    latency, but some clients want a single request → single URL. Same caps +
+    per-IP daily budget as the streaming path."""
+    s = _settings()
+    if not s or not s.get("enabled_ai_voice"):
+        return jsonify({"error": "AI voice is disabled"}), 403
+    body = request.get_json(silent=True) or {}
+    text = (body.get("text") or "").strip()
+    session_id = (body.get("session_id") or "").strip()
+    if not text:
+        return jsonify({"error": "Missing text"}), 400
+    if len(text) > config.TTS_MAX_CHARS:
+        text = text[:config.TTS_MAX_CHARS]
+    capped = enforce_cost_cap("voice_tts")
+    if capped is not None:
+        return capped
+    try:
+        provider, voice, model = _resolve_tts_provider(s, body)
+    except ValueError as ve:
+        msg, status = ve.args[0]
+        return jsonify({"error": msg}), status
+
+    filename = _cache_filename(text, voice, model)
+    if _cache_exists(filename):
+        _log_voice_usage("tts_cached", len(text), voice, session_id)
+        return jsonify({"audio_url": f"/uploads/voice/{filename}", "cached": True,
+                        "provider": provider})
+    if not _check_tts_ip_budget(_client_ip(), len(text)):
+        return jsonify({"error": "Daily voice quota exceeded"}), 429
+    try:
+        url = _synthesize_to_cache(text, voice, model, provider)
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 503
+    except Exception as e:
+        print(f"[voice] legacy tts failed: {e}")
+        return jsonify({"error": "TTS generation failed"}), 502
+    record_voice_cost(session_id=session_id, surface="voice_tts", provider=provider,
+                      model=model, feature_type=f"tts_generate_{provider}",
+                      voice_id=voice, char_count=len(text))
+    _log_voice_usage(f"tts_generate_{provider}", len(text), voice, session_id)
+    return jsonify({"audio_url": url, "cached": False, "provider": provider}), 201
+
+
 @bp.route("/api/voice/stt", methods=["POST"])
 def voice_stt():
     s = _settings()
@@ -393,3 +440,192 @@ def voice_stt():
                       char_count=len(text), audio_seconds=duration)
     _log_voice_usage("stt_whisper", len(text), "", session_id)
     return jsonify({"text": text})
+
+
+# ==========================================================================
+# Voice admin (M14): settings, intros CRUD + audio pre-render, sample preview,
+# ElevenLabs voice list, usage stats. All @admin_required.
+# ==========================================================================
+_VOICE_SETTINGS_FIELDS = (
+    "enabled_intros", "enabled_visitor_voice", "enabled_ai_voice", "default_voice",
+    "tts_model", "autoplay_strategy", "tts_provider", "stt_provider", "premium_enabled",
+    "elevenlabs_voice_id", "elevenlabs_model")
+
+
+@bp.route("/admin/api/voice/settings", methods=["GET"])
+@admin_required
+def admin_get_voice_settings():
+    return jsonify(_settings() or {})
+
+
+@bp.route("/admin/api/voice/settings", methods=["PUT"])
+@admin_required
+def admin_put_voice_settings():
+    d = request.get_json() or {}
+    execute_db("INSERT INTO voice_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+    sets, vals = [], []
+    for k in _VOICE_SETTINGS_FIELDS:
+        if k in d:
+            sets.append(f"{k}=%s")
+            vals.append(d[k])
+    if not sets:
+        return jsonify({"error": "no fields"}), 400
+    sets.append("updated_at=NOW()")
+    row = execute_db(f"UPDATE voice_settings SET {', '.join(sets)} WHERE id=1 RETURNING *",
+                     tuple(vals))
+    return jsonify(row)
+
+
+@bp.route("/admin/api/voice/intros", methods=["GET"])
+@admin_required
+def admin_list_intros():
+    return jsonify({"intros": query_db(
+        "SELECT * FROM voice_intros ORDER BY priority DESC, id") or []})
+
+
+_INTRO_FIELDS = ("name", "message_text", "voice_id", "utm_source", "utm_medium",
+                 "utm_campaign", "referrer_match", "priority", "enabled", "audio_url")
+
+
+@bp.route("/admin/api/voice/intros", methods=["POST"])
+@admin_required
+def admin_create_intro():
+    d = request.get_json() or {}
+    row = execute_db(
+        "INSERT INTO voice_intros (name, message_text, voice_id, utm_source, utm_medium, "
+        " utm_campaign, referrer_match, priority, enabled) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+        (d.get("name", ""), d.get("message_text", ""), d.get("voice_id", "alloy"),
+         d.get("utm_source", ""), d.get("utm_medium", ""), d.get("utm_campaign", ""),
+         d.get("referrer_match", ""), int(d.get("priority", 0) or 0),
+         bool(d.get("enabled", True))))
+    return jsonify(row), 201
+
+
+@bp.route("/admin/api/voice/intros/<int:iid>", methods=["PUT"])
+@admin_required
+def admin_update_intro(iid):
+    d = request.get_json() or {}
+    sets, vals = [], []
+    for k in _INTRO_FIELDS:
+        if k in d:
+            sets.append(f"{k}=%s")
+            vals.append(d[k])
+    if not sets:
+        return jsonify({"error": "no fields"}), 400
+    vals.append(iid)
+    row = execute_db(f"UPDATE voice_intros SET {', '.join(sets)} WHERE id=%s RETURNING *",
+                     tuple(vals))
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(row)
+
+
+@bp.route("/admin/api/voice/intros/<int:iid>", methods=["DELETE"])
+@admin_required
+def admin_delete_intro(iid):
+    execute_db("DELETE FROM voice_intros WHERE id=%s", (iid,))
+    return jsonify({"success": True})
+
+
+def _synthesize_to_cache(text, voice, model, provider):
+    """Generate the full MP3 for ``text`` and write it to the FS cache, returning
+    the public URL. Used by intro pre-render + sample preview. Raises on failure
+    (caller maps to a 503)."""
+    filename = _cache_filename(text, voice, model)
+    if not _cache_exists(filename):
+        if provider == "elevenlabs":
+            gen = _stream_tts_elevenlabs(text, voice, model, filename)
+        else:
+            gen = _stream_tts_openai(text, voice, model, filename)
+        for _ in gen:  # drain the generator; it tees to the cache on completion
+            pass
+    return f"/uploads/voice/{filename}"
+
+
+@bp.route("/admin/api/voice/intros/<int:iid>/generate", methods=["POST"])
+@admin_required
+def admin_generate_intro_audio(iid):
+    """Pre-render an intro's audio so the public /api/voice/intro can serve a
+    cached URL with zero latency. Requires a TTS key for the chosen provider."""
+    intro = query_db("SELECT * FROM voice_intros WHERE id=%s", (iid,), fetchone=True)
+    if not intro:
+        return jsonify({"error": "Not found"}), 404
+    text = (intro.get("message_text") or "").strip()
+    if not text:
+        return jsonify({"error": "intro has no message_text"}), 400
+    s = _settings() or {}
+    provider = (s.get("tts_provider") or "openai").lower()
+    voice = (intro.get("voice_id") or s.get("default_voice") or "alloy").strip()
+    model = (s.get("elevenlabs_model") if provider == "elevenlabs"
+             else s.get("tts_model")) or ("eleven_turbo_v2_5" if provider == "elevenlabs"
+                                          else "tts-1")
+    try:
+        url = _synthesize_to_cache(text, voice, model, provider)
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 503
+    except Exception as e:
+        print(f"[voice] intro generate failed: {e}")
+        return jsonify({"error": "audio generation failed"}), 502
+    row = execute_db("UPDATE voice_intros SET audio_url=%s WHERE id=%s RETURNING *", (url, iid))
+    return jsonify(row)
+
+
+@bp.route("/admin/api/voice/sample", methods=["POST"])
+@admin_required
+def admin_voice_sample():
+    """Generate a short preview clip for a voice so the admin can audition it."""
+    d = request.get_json() or {}
+    text = (d.get("text") or "Hello! This is a preview of the selected voice.").strip()[:200]
+    s = _settings() or {}
+    provider = (d.get("provider") or s.get("tts_provider") or "openai").lower()
+    if provider == "elevenlabs":
+        voice = (d.get("voice") or s.get("elevenlabs_voice_id") or "").strip()
+        model = s.get("elevenlabs_model") or "eleven_turbo_v2_5"
+        if not voice:
+            return jsonify({"error": "ElevenLabs voice not configured"}), 503
+    else:
+        provider = "openai"
+        voice = (d.get("voice") or s.get("default_voice") or "alloy").strip()
+        if voice not in ALLOWED_TTS_VOICES:
+            voice = "alloy"
+        model = s.get("tts_model") or "tts-1"
+    try:
+        url = _synthesize_to_cache(text, voice, model, provider)
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 503
+    except Exception as e:
+        print(f"[voice] sample failed: {e}")
+        return jsonify({"error": "audio generation failed"}), 502
+    return jsonify({"audio_url": url, "provider": provider, "voice": voice})
+
+
+@bp.route("/admin/api/voice/elevenlabs-voices", methods=["GET"])
+@admin_required
+def admin_elevenlabs_voices():
+    """Live ElevenLabs voice list for the settings dropdown. Fail-closed (empty
+    list + reason) when the key is missing or the API errors."""
+    if not config.ELEVENLABS_API_KEY:
+        return jsonify({"voices": [], "error": "ELEVENLABS_API_KEY not configured"}), 200
+    try:
+        r = httpx.get(f"{config.ELEVENLABS_API_BASE}/voices",
+                      headers={"xi-api-key": config.ELEVENLABS_API_KEY}, timeout=10.0)
+        r.raise_for_status()
+        voices = [{"voice_id": v.get("voice_id"), "name": v.get("name"),
+                   "category": v.get("category")} for v in (r.json().get("voices") or [])]
+        return jsonify({"voices": voices})
+    except Exception as e:
+        return jsonify({"voices": [], "error": str(e)[:200]}), 200
+
+
+@bp.route("/admin/api/voice/usage", methods=["GET"])
+@admin_required
+def admin_voice_usage():
+    """Aggregate voice usage for the admin dashboard (counts + chars by feature,
+    last 30 days, plus a recent-rows tail)."""
+    by_feature = query_db(
+        "SELECT feature_type, COUNT(*) AS events, COALESCE(SUM(char_count),0) AS chars "
+        "FROM voice_usage_log WHERE created_at > NOW() - INTERVAL '30 days' "
+        "GROUP BY feature_type ORDER BY events DESC") or []
+    recent = query_db("SELECT * FROM voice_usage_log ORDER BY id DESC LIMIT 50") or []
+    return jsonify({"by_feature": by_feature, "recent": recent})
