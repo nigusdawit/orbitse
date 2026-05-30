@@ -210,6 +210,14 @@ SENTRY_DSN = env_str("SENTRY_DSN")
 
 SKIP_ALEMBIC = env_bool("SKIP_ALEMBIC", False)
 
+# Secrets-at-rest (M19). Fernet key for encrypting DB-stored credentials
+# (mcp_servers.auth_credential, etc.). When unset, the crypto layer derives a key
+# from FLASK_SECRET_KEY so encryption still works in dev — but set an explicit,
+# rotated SECRETS_ENCRYPTION_KEY in production (a urlsafe-base64 32-byte key).
+SECRETS_ENCRYPTION_KEY = env_str("SECRETS_ENCRYPTION_KEY")
+# HSTS is opt-in (you may terminate TLS at a proxy and not want HSTS from Flask).
+ENABLE_HSTS = env_bool("ENABLE_HSTS", False)
+
 # VELO master agent shared secret (agency multi-install control channel).
 VELO_SHARED_SECRET = env_str("VELO_SHARED_SECRET")
 

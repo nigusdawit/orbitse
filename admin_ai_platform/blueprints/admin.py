@@ -24,7 +24,6 @@ import os
 from flask import (Blueprint, request, session, redirect, jsonify,
                    send_from_directory)
 
-from .. import config
 from ..db import query_db, execute_db
 from ..auth import admin_required, check_admin_password, is_admin_authenticated
 
@@ -81,19 +80,11 @@ def sso_login():
     return redirect("/admin")
 
 
-@bp.after_request
-def _frame_ancestors(resp):
-    """Allow the configured WordPress origin to frame the admin (for the SSO
-    iframe), and only that origin — default-deny framing everywhere else."""
-    if request.path.startswith("/admin"):
-        wp_origin = config.CSP_FRAME_ANCESTORS
-        if wp_origin:
-            resp.headers["Content-Security-Policy"] = f"frame-ancestors 'self' {wp_origin}"
-            resp.headers.pop("X-Frame-Options", None)
-        else:
-            resp.headers["X-Frame-Options"] = "SAMEORIGIN"
-            resp.headers["Content-Security-Policy"] = "frame-ancestors 'self'"
-    return resp
+# NOTE: the admin framing policy (frame-ancestors + X-Frame-Options) and the
+# baseline CSP are now composed in a SINGLE app-level after_request in
+# admin_ai_platform/__init__.py (M19), so this blueprint no longer sets CSP
+# headers itself — two after_requests both writing Content-Security-Policy fought
+# and dropped the baseline directives.
 
 
 # ---- Chat history (visitor conversations) -------------------------------

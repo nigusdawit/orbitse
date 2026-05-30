@@ -29,8 +29,24 @@ from .. import config
 from ..db import query_db, execute_db
 from ..auth import admin_required
 from .. import mcp_client
+from .. import crypto
 
 bp = Blueprint("mcp", __name__)
+
+
+def migrate_encrypt_credentials():
+    """One-time, idempotent: encrypt any plaintext ``auth_credential`` rows so
+    existing installs upgrade their secrets at rest. Called from create_app after
+    schema init. ``crypto.is_encrypted`` makes re-runs a no-op."""
+    try:
+        rows = query_db("SELECT id, auth_credential FROM mcp_servers "
+                        "WHERE auth_credential <> ''") or []
+    except Exception:
+        return
+    for r in rows:
+        if not crypto.is_encrypted(r["auth_credential"]):
+            execute_db("UPDATE mcp_servers SET auth_credential=%s WHERE id=%s",
+                       (crypto.encrypt(r["auth_credential"]), r["id"]))
 
 _VALID_TRANSPORT = ("http", "sse")
 _VALID_AUTH = ("none", "bearer", "header", "oauth")
@@ -82,7 +98,8 @@ def create_server():
         " auth_header_name, auth_credential, enabled, allowed_for_admin, allowed_for_velo) "
         "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (name) DO NOTHING RETURNING *",
         (name, d.get("description", ""), d.get("transport", "http"), d.get("url", ""),
-         d.get("auth_type", "none"), d.get("auth_header_name", ""), d.get("auth_credential", ""),
+         d.get("auth_type", "none"), d.get("auth_header_name", ""),
+         crypto.encrypt(d.get("auth_credential", "")),
          bool(d.get("enabled", True)), bool(d.get("allowed_for_admin", True)),
          bool(d.get("allowed_for_velo", False))))
     if not row:
@@ -103,7 +120,8 @@ def update_server(sid):
             if c == "auth_credential" and d[c] in ("***", None):
                 continue
             sets.append(f"{c}=%s")
-            vals.append(d[c])
+            # Encrypt the credential at rest (M19); other columns stored as-is.
+            vals.append(crypto.encrypt(d[c]) if c == "auth_credential" else d[c])
     if not sets:
         return jsonify({"error": "No fields"}), 400
     sets.append("updated_at=NOW()")
@@ -271,7 +289,7 @@ def oauth_callback():
     vals = [json.dumps(cfg)]
     if token:
         sets += ["auth_credential=%s", "auth_header_name=%s", "auth_type='bearer'"]
-        vals += [token, "Authorization"]
+        vals += [crypto.encrypt(token), "Authorization"]
     vals.append(server["id"])
     execute_db(f"UPDATE mcp_servers SET {', '.join(sets)} WHERE id=%s", tuple(vals))
     return redirect(f"/admin?mcp_oauth={'connected' if token else 'failed'}")
