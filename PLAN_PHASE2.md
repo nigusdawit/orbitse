@@ -1,6 +1,6 @@
 # PLAN — Phase 2: close every gap in `admin_ai_platform`
 
-- **Status:** APPROVED (2026-05-29) — M10–M17 DONE; deployment-model decision below
+- **Status:** COMPLETE (2026-05-29) — M10–M17, M19, M20, M22, M21 DONE; M18 deferred (silo). See `admin_ai_platform/VERIFICATION.md` for the PASS/residuals report.
 - **Drafted:** 2026-05-29
 - **Builds on:** `PLAN.md` (Phase 1, M0–M9 COMPLETE)
 - **Task index:** `tasks/README.md` (rows 010–022)

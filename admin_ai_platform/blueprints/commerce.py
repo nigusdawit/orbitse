@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import secrets
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from flask import Blueprint, request, jsonify
 
@@ -37,6 +37,22 @@ from ..reused import stripe_client
 from ..reused_di import stripe_settings, stripe_sync
 
 bp = Blueprint("commerce", __name__)
+
+
+def _jsonable_row(row):
+    """Coerce psycopg2 temporal types in a RETURNING-* row dict to strings so
+    Flask's jsonify can serialize them. Postgres TIME comes back as
+    ``datetime.time``, which Flask's JSON provider does NOT handle and 500s on
+    (unlike date/datetime). Render time as HH:MM:SS, date/datetime as isoformat."""
+    if not row:
+        return row
+    out = dict(row)
+    for k, v in out.items():
+        if isinstance(v, time):
+            out[k] = v.strftime("%H:%M:%S")
+        elif isinstance(v, (datetime, date)):
+            out[k] = v.isoformat()
+    return out
 
 
 # ======================= Stripe helpers =======================
@@ -361,7 +377,7 @@ def add_rule(sid):
                      "end_time, slot_minutes) VALUES (%s,%s,%s,%s,%s) RETURNING *",
                      (sid, int(d.get("day_of_week", 1)), d.get("start_time", "09:00"),
                       d.get("end_time", "17:00"), int(d.get("slot_minutes", 60) or 60)))
-    return jsonify(row), 201
+    return jsonify(_jsonable_row(row)), 201
 
 
 @bp.route("/admin/api/services/<int:sid>/overrides", methods=["POST"])
@@ -375,7 +391,7 @@ def add_override(sid):
                      "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING *",
                      (sid, d.get("override_date"), d.get("start_time"), d.get("end_time"),
                       d["override_kind"], int(d.get("slot_minutes", 60) or 60), d.get("note", "")))
-    return jsonify(row), 201
+    return jsonify(_jsonable_row(row)), 201
 
 
 # ---- Availability engine -------------------------------------------------
