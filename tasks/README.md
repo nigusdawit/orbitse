@@ -25,7 +25,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 012 | M12 — Events ticketing | done | task/012-events-ticketing | 011 | Gate 224/224; free/paid/donation RSVPs, capacity reservation (no double-sell), webhook confirm/free-seats, lookup_events. Landed on main directly (commit e4e24ad) |
 | 013 | M13 — Full visitor lookup tools + dropped content + web search | done | task/013-visitor-lookup-parity | — | Gate 265/265; 12 new lookup tools + content CRUD + web-search (fail-closed); bookService UI chips → M16 |
 | 014 | M14 — Integrations completion (voice admin, reviews agg, MCP OAuth, deck import, SMS) | done | task/014-integrations-completion | 010 | Gate 277/277; voice admin, reviews aggregation+AI-draft, MCP OAuth, pptx import+narration, SMS STOP/inbound. Live provider calls → M21 |
-| 015 | M15 — Analytics (pageviews + dashboards) | not_started | task/015-analytics | — |
+| 015 | M15 — Analytics (pageviews + dashboards) | done | task/015-analytics | — | Gate 289/289; pageview/duration tracking (deduped, UA parse), summary+chart+chat+forms dashboards, loader fires tracking |
 | 016 | M16 — Admin dashboard SPA — all tabs | not_started | task/016-admin-dashboard-spa | 011-015 |
 | 017 | M17 — Onboarding (setup wizard + client checklist + AI assistant + agency provisioning) | not_started | task/017-onboarding | 016 |
 | 018 | M18 — Multi-tenant single-DB isolation + per-tenant admin users | not_started | task/018-multitenant-isolation | 010 |
