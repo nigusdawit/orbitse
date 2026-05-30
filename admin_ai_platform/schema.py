@@ -28,6 +28,7 @@ from .db import get_db
 # assert presence, and to document the growing surface.
 IN_TABLES_M0_M1 = (
     "plans", "tenants", "platform_setup", "tenant_features", "feature_addons",
+    "managed_defaults", "managed_override_history", "fleet_bundles",
     "gallery_cards", "chatbot_settings", "chat_conversations", "chat_messages",
     "page_views",
     "uploaded_images", "custom_forms", "form_fields", "form_submissions",
@@ -100,6 +101,44 @@ CREATE TABLE IF NOT EXISTS platform_setup (
     completed_at        TIMESTAMP
 );
 INSERT INTO platform_setup (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+-- ============================ FLEET SYNC (M22) ==========================
+-- Master-managed defaults with per-item versioning + local override. Master
+-- pushes signed bundles over the VELO channel; each item carries a monotonic
+-- version. A client edit pins a local value (is_overridden). Master can FORCE
+-- past an override by bumping the version with force=true — the prior local
+-- value is preserved as an override-of-record in managed_override_history.
+CREATE TABLE IF NOT EXISTS managed_defaults (
+    item_key         VARCHAR(160) PRIMARY KEY,
+    category         VARCHAR(40) NOT NULL DEFAULT '',
+    master_version   INTEGER NOT NULL DEFAULT 0,
+    master_value     JSONB NOT NULL DEFAULT 'null'::jsonb,
+    local_value      JSONB,                          -- NULL = following master
+    is_overridden    BOOLEAN NOT NULL DEFAULT FALSE,
+    override_version INTEGER,                         -- master_version at override time
+    updated_at       TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_managed_defaults_cat ON managed_defaults (category);
+
+-- Override-of-record: a client's local value preserved when master force-wins.
+CREATE TABLE IF NOT EXISTS managed_override_history (
+    id                    SERIAL PRIMARY KEY,
+    item_key              VARCHAR(160) NOT NULL,
+    local_value           JSONB,
+    override_version      INTEGER,
+    superseded_by_version INTEGER,
+    created_at            TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_managed_override_hist_key ON managed_override_history (item_key);
+
+-- Applied bundle log: idempotency + monotonic downgrade/replay protection. A
+-- bundle whose version <= the latest applied is rejected.
+CREATE TABLE IF NOT EXISTS fleet_bundles (
+    bundle_version INTEGER PRIMARY KEY,
+    item_count     INTEGER NOT NULL DEFAULT 0,
+    note           TEXT NOT NULL DEFAULT '',
+    applied_at     TIMESTAMP DEFAULT NOW()
+);
 
 CREATE TABLE IF NOT EXISTS tenant_features (
     id           SERIAL PRIMARY KEY,
