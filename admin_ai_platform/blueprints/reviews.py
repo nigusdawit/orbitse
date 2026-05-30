@@ -19,6 +19,7 @@ failing.
 from __future__ import annotations
 
 import secrets
+import time
 
 from flask import Blueprint, request, jsonify, redirect
 
@@ -27,6 +28,10 @@ from ..db import query_db, execute_db
 from ..auth import admin_required
 
 bp = Blueprint("reviews", __name__)
+
+# Throttle the nightly aggregate-refresh sweep to once per ~24h per process.
+_LAST_AGG_REFRESH = 0.0
+_AGG_REFRESH_INTERVAL = 24 * 3600
 
 _VALID_KIND = ("google", "yelp", "tripadvisor", "internal")
 
@@ -84,24 +89,116 @@ def delete_destination(did):
     return jsonify({"success": True})
 
 
+# ---- aggregate provider parsers (pure — unit-testable) -----------------
+def _parse_google(payload):
+    """Google Places Details → (total_count, avg_rating). Accepts both the
+    legacy ``result`` shape and the Places API (New) ``rating``/``userRatingCount``."""
+    res = payload.get("result") or payload
+    total = int(res.get("user_ratings_total") or res.get("userRatingCount") or 0)
+    rating = float(res.get("rating") or 0.0)
+    return total, rating
+
+
+def _parse_yelp(payload):
+    """Yelp Fusion business → (review_count, rating)."""
+    return int(payload.get("review_count") or 0), float(payload.get("rating") or 0.0)
+
+
+def _parse_tripadvisor(payload):
+    """TripAdvisor Content API location details → (num_reviews, rating)."""
+    return int(payload.get("num_reviews") or 0), float(payload.get("rating") or 0.0)
+
+
+_PARSERS = {"google": _parse_google, "yelp": _parse_yelp, "tripadvisor": _parse_tripadvisor}
+
+
+def _fetch_aggregate(kind, external_id):
+    """Call the provider's API for an aggregate rating snapshot. Returns
+    (total, avg, error). Network/parse failures degrade to (None, None, msg)."""
+    keyed = {"google": config.GOOGLE_PLACES_API_KEY, "yelp": config.YELP_API_KEY,
+             "tripadvisor": config.TRIPADVISOR_API_KEY}
+    key = keyed.get(kind)
+    if not key:
+        return None, None, f"{kind} API key not configured"
+    if not external_id:
+        return None, None, f"{kind} destination has no external_id"
+    try:
+        import httpx
+        if kind == "google":
+            r = httpx.get("https://maps.googleapis.com/maps/api/place/details/json",
+                          params={"place_id": external_id,
+                                  "fields": "rating,user_ratings_total", "key": key},
+                          timeout=12.0)
+        elif kind == "yelp":
+            r = httpx.get(f"https://api.yelp.com/v3/businesses/{external_id}",
+                          headers={"Authorization": f"Bearer {key}"}, timeout=12.0)
+        else:  # tripadvisor
+            r = httpx.get(
+                f"https://api.content.tripadvisor.com/api/v1/location/{external_id}/details",
+                params={"key": key}, timeout=12.0)
+        r.raise_for_status()
+        total, avg = _PARSERS[kind](r.json())
+        return total, avg, None
+    except Exception as e:
+        return None, None, str(e)[:300]
+
+
+def _refresh_one(did, kind, external_id):
+    """Fetch + upsert one destination's aggregate snapshot. Returns a result dict."""
+    total, avg, err = _fetch_aggregate(kind, external_id)
+    if err:
+        execute_db("INSERT INTO external_reviews (destination_id, error_text) VALUES (%s,%s) "
+                   "ON CONFLICT (destination_id) DO UPDATE SET error_text=EXCLUDED.error_text, "
+                   "snapshot_at=NOW()", (did, err))
+        return {"ok": False, "error": err}
+    execute_db(
+        "INSERT INTO external_reviews (destination_id, total_count, avg_rating, error_text) "
+        "VALUES (%s,%s,%s,'') ON CONFLICT (destination_id) DO UPDATE SET "
+        "total_count=EXCLUDED.total_count, avg_rating=EXCLUDED.avg_rating, error_text='', "
+        "snapshot_at=NOW()", (did, total, avg))
+    return {"ok": True, "total_count": total, "avg_rating": avg}
+
+
 @bp.route("/admin/api/reviews/destinations/<int:did>/refresh", methods=["POST"])
 @admin_required
 def refresh_destination(did):
-    # Aggregate fetch requires Google/Yelp/TripAdvisor API keys (not wired in
-    # this build). Record a clear "needs credentials" snapshot rather than fail.
-    from .. import config
-    keyed = {"google": config.GOOGLE_PLACES_API_KEY, "yelp": config.YELP_API_KEY,
-             "tripadvisor": config.TRIPADVISOR_API_KEY}
-    dest = query_db("SELECT kind FROM review_destinations WHERE id=%s", (did,), fetchone=True)
+    """Fetch the live aggregate rating from the destination's provider and store
+    a snapshot. Without the provider key (or external_id) it records a clear
+    error rather than failing."""
+    dest = query_db("SELECT kind, external_id FROM review_destinations WHERE id=%s",
+                    (did,), fetchone=True)
     if not dest:
         return jsonify({"error": "Not found"}), 404
-    if not keyed.get(dest["kind"]):
-        execute_db("INSERT INTO external_reviews (destination_id, error_text) VALUES (%s,%s) "
-                   "ON CONFLICT (destination_id) DO UPDATE SET error_text=EXCLUDED.error_text, "
-                   "snapshot_at=NOW()", (did, f"{dest['kind']} API key not configured"))
-        return jsonify({"ok": False, "error": f"{dest['kind']} API key not configured"}), 200
-    # With a key, a real provider fetch would go here (follow-on).
-    return jsonify({"ok": True, "note": "provider fetch not implemented in this build"})
+    return jsonify(_refresh_one(did, dest["kind"], dest.get("external_id", "")))
+
+
+@bp.route("/admin/api/reviews/ai-draft", methods=["POST"])
+@admin_required
+def ai_draft_request():
+    """AI-draft a short, friendly review-ask message (email or SMS). Returns the
+    draft text; the admin edits + saves it onto a request. Needs an LLM key."""
+    from .. import llm
+    if llm.openai_client is None:
+        return jsonify({"error": "No LLM provider configured"}), 503
+    d = request.get_json() or {}
+    channel = d.get("channel", "email")
+    business = (d.get("business_name") or "our business").strip()
+    item = (d.get("purchased_item") or "").strip()
+    name = (d.get("recipient_name") or "there").strip()
+    sys = ("You write concise, warm review-request messages. "
+           + ("Keep it under 320 characters for SMS." if channel == "sms"
+              else "Email-length, with a subject line on the first line."))
+    user = (f"Draft a review request from {business} to {name}"
+            + (f" who purchased {item}" if item else "")
+            + ". Include a clear ask to leave a review and a friendly tone. "
+            "Use the placeholder {{review_link}} where the link should go.")
+    try:
+        resp = llm.openai_client.chat.completions.create(
+            model="gpt-4o-mini", temperature=0.7, max_tokens=300,
+            messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}])
+        return jsonify({"draft": (resp.choices[0].message.content or "").strip()})
+    except Exception as e:
+        return jsonify({"error": str(e)[:200]}), 502
 
 
 # ---- settings -----------------------------------------------------------
@@ -266,6 +363,19 @@ def review_collector_tick():
         except Exception as e:
             execute_db("UPDATE review_requests SET status='failed', error_text=%s WHERE id=%s",
                        (str(e)[:300], rid))
+
+    # 2) Nightly aggregate snapshot refresh (throttled once/~24h per process).
+    global _LAST_AGG_REFRESH
+    now = time.time()
+    if now - _LAST_AGG_REFRESH >= _AGG_REFRESH_INTERVAL:
+        _LAST_AGG_REFRESH = now
+        try:
+            dests = query_db("SELECT id, kind, external_id FROM review_destinations "
+                             "WHERE external_id <> ''") or []
+            for dst in dests:
+                _refresh_one(dst["id"], dst["kind"], dst.get("external_id", ""))
+        except Exception as e:
+            print(f"[reviews] aggregate refresh sweep failed: {e}")
 
 
 @bp.route("/api/review-snapshots", methods=["GET"])

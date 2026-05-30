@@ -19,8 +19,13 @@ schema.py flags that at-rest encryption is a follow-on hardening.
 
 from __future__ import annotations
 
-from flask import Blueprint, request, jsonify
+import json
+import secrets
+from urllib.parse import urlencode
 
+from flask import Blueprint, request, jsonify, redirect
+
+from .. import config
 from ..db import query_db, execute_db
 from ..auth import admin_required
 from .. import mcp_client
@@ -28,7 +33,23 @@ from .. import mcp_client
 bp = Blueprint("mcp", __name__)
 
 _VALID_TRANSPORT = ("http", "sse")
-_VALID_AUTH = ("none", "bearer", "header")
+_VALID_AUTH = ("none", "bearer", "header", "oauth")
+
+# Known OAuth connector blueprints. An admin picks one (or "custom" and fills the
+# endpoints manually); oauth/start reads these defaults. authorize_url/token_url
+# are the provider's standard OAuth2 endpoints.
+CONNECTOR_BLUEPRINTS = {
+    "notion": {"label": "Notion", "authorize_url": "https://api.notion.com/v1/oauth/authorize",
+               "token_url": "https://api.notion.com/v1/oauth/token", "scopes": ""},
+    "github": {"label": "GitHub", "authorize_url": "https://github.com/login/oauth/authorize",
+               "token_url": "https://github.com/login/oauth/access_token", "scopes": "repo read:user"},
+    "google_drive": {"label": "Google Drive",
+                     "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+                     "token_url": "https://oauth2.googleapis.com/token",
+                     "scopes": "https://www.googleapis.com/auth/drive.readonly"},
+    "slack": {"label": "Slack", "authorize_url": "https://slack.com/oauth/v2/authorize",
+              "token_url": "https://slack.com/api/oauth.v2.access", "scopes": "channels:read"},
+}
 
 
 def _redact(row):
@@ -156,3 +177,113 @@ def toggle_tool(tool_id):
     if not row:
         return jsonify({"error": "Not found"}), 404
     return jsonify(row)
+
+
+# ==========================================================================
+# OAuth (M14): connect an OAuth2 MCP connector. oauth_state JSONB holds the
+# in-flight CSRF state + the provider's OAuth config + (after callback) tokens.
+# auth_credential stores the bearer token the client sends per request.
+# ==========================================================================
+@bp.route("/admin/api/mcp/connectors", methods=["GET"])
+@admin_required
+def list_connectors():
+    """Available OAuth connector blueprints for the 'Connect…' picker."""
+    return jsonify({"connectors": [
+        {"type": k, "label": v["label"], "scopes": v["scopes"]}
+        for k, v in CONNECTOR_BLUEPRINTS.items()]})
+
+
+def _redirect_uri():
+    base = (config.PUBLIC_BASE_URL or request.host_url.rstrip("/")).rstrip("/")
+    return f"{base}/admin/oauth/mcp/callback"
+
+
+@bp.route("/admin/api/mcp/servers/<int:sid>/oauth/start", methods=["POST"])
+@admin_required
+def oauth_start(sid):
+    """Begin the OAuth2 Authorization Code flow. Body (or the connector blueprint)
+    supplies client_id/secret/authorize_url/token_url/scopes. Returns the
+    authorize_url the admin's browser should visit; a single-use ``state`` is
+    stored on the server row to defend the callback against CSRF."""
+    server = query_db("SELECT * FROM mcp_servers WHERE id=%s", (sid,), fetchone=True)
+    if not server:
+        return jsonify({"error": "Not found"}), 404
+    d = request.get_json() or {}
+    bp_cfg = CONNECTOR_BLUEPRINTS.get((server.get("connector_type") or "").lower(), {})
+    authorize_url = (d.get("authorize_url") or bp_cfg.get("authorize_url") or "").strip()
+    token_url = (d.get("token_url") or bp_cfg.get("token_url") or "").strip()
+    client_id = (d.get("client_id") or "").strip()
+    client_secret = (d.get("client_secret") or "").strip()
+    scopes = (d.get("scopes") or bp_cfg.get("scopes") or "").strip()
+    if not (authorize_url and token_url and client_id):
+        return jsonify({"error": "authorize_url, token_url and client_id are required"}), 400
+
+    state = secrets.token_urlsafe(24)
+    oauth_cfg = {"state": state, "token_url": token_url, "client_id": client_id,
+                 "client_secret": client_secret, "scopes": scopes,
+                 "redirect_uri": _redirect_uri(), "connected": False}
+    execute_db("UPDATE mcp_servers SET oauth_state=%s::jsonb, auth_type='oauth' WHERE id=%s",
+               (json.dumps(oauth_cfg), sid))
+    params = {"response_type": "code", "client_id": client_id,
+              "redirect_uri": _redirect_uri(), "state": state}
+    if scopes:
+        params["scope"] = scopes
+    return jsonify({"authorize_url": f"{authorize_url}?{urlencode(params)}", "state": state})
+
+
+@bp.route("/admin/oauth/mcp/callback", methods=["GET"])
+@admin_required
+def oauth_callback():
+    """OAuth2 redirect target. Matches the ``state`` back to a server row (CSRF
+    guard), exchanges the code for an access token, and stores it. Token exchange
+    needs network; on failure we record the error and still redirect so the admin
+    sees the result in the UI."""
+    code = (request.args.get("code") or "").strip()
+    state = (request.args.get("state") or "").strip()
+    if not (code and state):
+        return jsonify({"error": "missing code/state"}), 400
+    server = query_db("SELECT * FROM mcp_servers WHERE oauth_state->>'state' = %s",
+                      (state,), fetchone=True)
+    if not server:
+        return jsonify({"error": "unknown or expired state"}), 400
+    cfg = server.get("oauth_state") or {}
+    if isinstance(cfg, str):
+        cfg = json.loads(cfg)
+
+    token, err = None, None
+    try:
+        import httpx
+        r = httpx.post(cfg["token_url"], data={
+            "grant_type": "authorization_code", "code": code,
+            "redirect_uri": cfg.get("redirect_uri", ""), "client_id": cfg.get("client_id", ""),
+            "client_secret": cfg.get("client_secret", "")},
+            headers={"Accept": "application/json"}, timeout=15.0)
+        r.raise_for_status()
+        token = (r.json() or {}).get("access_token")
+    except Exception as e:
+        err = str(e)[:300]
+
+    # Rotate the state (single-use) regardless of outcome.
+    cfg["state"] = ""
+    cfg["connected"] = bool(token)
+    cfg["last_error"] = err or ""
+    sets = ["oauth_state=%s::jsonb"]
+    vals = [json.dumps(cfg)]
+    if token:
+        sets += ["auth_credential=%s", "auth_header_name=%s", "auth_type='bearer'"]
+        vals += [token, "Authorization"]
+    vals.append(server["id"])
+    execute_db(f"UPDATE mcp_servers SET {', '.join(sets)} WHERE id=%s", tuple(vals))
+    return redirect(f"/admin?mcp_oauth={'connected' if token else 'failed'}")
+
+
+@bp.route("/admin/api/mcp/servers/<int:sid>/oauth/disconnect", methods=["POST"])
+@admin_required
+def oauth_disconnect(sid):
+    """Clear stored OAuth tokens + state for a server (revokes our copy)."""
+    row = execute_db(
+        "UPDATE mcp_servers SET auth_credential='', oauth_state='{}'::jsonb, auth_type='none' "
+        "WHERE id=%s RETURNING id", (sid,))
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"success": True})
