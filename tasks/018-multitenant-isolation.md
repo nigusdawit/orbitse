@@ -4,9 +4,23 @@
 Make a single shared database safely multi-tenant (resolves the security-review
 finding that admin queries are global), enabling true central SaaS.
 
-## OPEN DECISION (confirm first)
-Implement single-DB row isolation (this task), OR keep one-DB-per-tenant and
-build provisioning instead. Plan assumes single-DB isolation.
+## DECISION (2026-05-29): DEFERRED — silo model chosen
+The operator chose the **silo** deployment model (one app instance + one
+database per client, `DEPLOY_MODE=self_host`, everything pinned to
+`tenant_id=1`). Under silo, cross-tenant isolation is provided by the OS/DB
+boundary — separate databases physically cannot leak into each other — so the
+single-DB row-level isolation + RLS work in this task is **not needed**.
+
+This task stays on the backlog as **deferred**: it only becomes relevant if the
+product later adds a **pooled multi-tenant (central SaaS) tier** sharing one DB
+across many self-serve tenants. If/when that happens, implement it as
+**Postgres Row-Level Security** (tenant_id columns + RLS policies + a per-request
+`app.current_tenant` session GUC set from `current_tenant_id()`), NOT by
+hand-scoping every query — RLS is the category standard and is default-deny.
+
+Central-control of the silo fleet is handled by the new **M22 fleet-sync** task
+(managed defaults + local-override flag + per-tenant feature-flag rollout +
+version/migration status), not by this task.
 
 ## Acceptance criteria
 - [ ] Add `tenant_id` (default 1, FK tenants) to all content/runtime tables that
@@ -27,4 +41,4 @@ build provisioning instead. Plan assumes single-DB isolation.
   login scopes session tenant.
 - **security-review** (cross-tenant access) required.
 
-## Dependencies: 010   ## Status: not_started   ## Branch: task/018-multitenant-isolation
+## Dependencies: 010   ## Status: deferred (not needed under silo)   ## Branch: task/018-multitenant-isolation

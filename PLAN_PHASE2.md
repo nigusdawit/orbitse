@@ -1,9 +1,29 @@
 # PLAN — Phase 2: close every gap in `admin_ai_platform`
 
-- **Status:** APPROVED (2026-05-29) — building in order M10→M21
+- **Status:** APPROVED (2026-05-29) — M10–M17 DONE; deployment-model decision below
 - **Drafted:** 2026-05-29
 - **Builds on:** `PLAN.md` (Phase 1, M0–M9 COMPLETE)
-- **Task index:** `tasks/README.md` (rows 010–021)
+- **Task index:** `tasks/README.md` (rows 010–022)
+
+## Deployment-model decision (2026-05-29) — SILO
+
+The operator chose the **silo** model: one app instance + one database per
+client (`DEPLOY_MODE=self_host`, `tenant_id=1`). Consequences:
+
+- **M18 (single-DB row isolation / RLS) → DEFERRED, not needed.** Separate
+  databases give free, airtight isolation. Revisit only if a pooled central-SaaS
+  tier is later added (then use Postgres **RLS**, not hand-scoped queries).
+- **Central control becomes a fleet problem, not an isolation problem.** New
+  milestone **M22 — fleet sync**: master pushes code/UI (image rollout), schema
+  (additive Alembic per-instance), and **managed default data** over the VELO
+  channel, while each client's customizations live in their DB and are never
+  clobbered (managed-vs-`is_overridden` layer; `tenant_features` gradual rollout;
+  per-instance migration/version status).
+- **Load-bearing rule:** all per-client behavior is DB data; code is identical
+  everywhere — so an image update can never erase a client's config.
+- **Remaining order:** M19 (security hardening) → M20 (deploy artifacts, incl.
+  additive-only Alembic + per-instance widget + per-client secrets) → M22
+  (fleet sync) → M21 (final verification).
 
 ## Goal
 
