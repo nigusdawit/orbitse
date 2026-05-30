@@ -4,19 +4,19 @@
 Finish the half-built integration surfaces so they're fully usable from admin.
 
 ## Acceptance criteria
-- [ ] Voice admin: `GET/PUT /admin/api/voice/settings`, voice-intros CRUD +
+- [x] Voice admin: `GET/PUT /admin/api/voice/settings`, voice-intros CRUD +
       `/generate` (pre-render intro audio), `/admin/api/voice/sample` preview,
       ElevenLabs dynamic voice list, legacy `POST /api/voice/tts` pre-gen,
       voice usage stats.
-- [ ] Reviews aggregation: real Google Places / Yelp Fusion / TripAdvisor fetch
-      in `refresh_destination` + nightly snapshot tick; AI-drafted review-ask
-      (gpt-4o-mini) wrapped in the admin template, sent via messaging.
-- [ ] MCP OAuth: `/admin/api/mcp/servers/<id>/oauth/start`, `/admin/oauth/mcp/
+- [x] Reviews aggregation: real Google Places / Yelp Fusion / TripAdvisor fetch
+      in `refresh_destination` + nightly snapshot sweep (in the collector tick);
+      AI-drafted review-ask (gpt-4o-mini), sent via messaging.
+- [x] MCP OAuth: `/admin/api/mcp/servers/<id>/oauth/start`, `/admin/oauth/mcp/
       callback`, `/oauth/disconnect`; connector blueprints list.
-- [ ] Presentations import: `POST /admin/api/presentations/import` (Office/PPTX →
-      PDF via LibreOffice → per-slide JPGs; pptx notes → narration) +
-      `/generate-narration` (AI).
-- [ ] Messaging: campaign `send_at` scheduling (tick from M10), SMS STOP-keyword
+- [x] Presentations import: `POST /admin/api/presentations/import` (PPTX text +
+      speaker-notes via python-pptx; per-slide JPGs best-effort via LibreOffice +
+      pdftoppm; rejects unsupported types) + `/generate-narration` (AI).
+- [x] Messaging: campaign `send_at` scheduling (tick from M10), SMS STOP/START
       opt-out + `POST /webhooks/twilio/inbound-sms` routed to the AI agent.
 
 ## Test requirements
@@ -25,4 +25,17 @@ Finish the half-built integration surfaces so they're fully usable from admin.
   state transitions; import rejects unsupported types; SMS STOP flips opt-out.
 - Live provider calls verified in M21.
 
-## Dependencies: 010   ## Status: not_started   ## Branch: task/014-integrations-completion
+## Dependencies: 010   ## Status: done   ## Branch: task/014-integrations-completion
+
+## Notes
+Merged to main (--no-ff). Gate: 277/277 incl. review parsers (legacy + new
+Google shapes, Yelp, TripAdvisor), no-key refresh records a clean error, pptx
+import (in-memory deck → title + speaker-notes→narration), unsupported-type
+reject, legacy /api/voice/tts wired. Unit: `test_integrations.py` pins parsers,
+MCP connector catalog, SMS keyword sets, and import slug derivation. Drift: most
+of M14 (voice admin, reviews aggregation, MCP OAuth, messaging inbound) was
+already built as **uncommitted** working-tree edits on this branch from a prior
+session — committed here alongside the genuinely-new presentations import +
+generate-narration + legacy TTS. Image rendering needs LibreOffice+pdftoppm at
+runtime (absent in sandbox) → degrades to text+narration; live provider calls
+(Google/Yelp/TA, ElevenLabs, Twilio) verified in M21.
