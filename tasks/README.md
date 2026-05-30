@@ -29,7 +29,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 016 | M16 — Admin dashboard SPA — all tabs | done | task/016-admin-dashboard-spa | 011-015 | Gate 304/304; all subsystem tabs (data-driven renderResource + bespoke), JS syntax-checked, dep-free. Browser per-tab pass → M21 |
 | 017 | M17 — Onboarding (setup wizard + client checklist + AI assistant + agency provisioning) | done | task/017-onboarding | 016 | Gate 322/322; /setup provision+self-close, hashed admin pw override, checklist, seed tools, agency provision-tenant |
 | 018 | M18 — Multi-tenant single-DB isolation + per-tenant admin users | deferred | task/018-multitenant-isolation | 010 | **Not needed under silo** (separate DB per client = free isolation). Revisit only if a pooled central-SaaS tier is added → use Postgres RLS, not hand-scoped queries |
-| 019 | M19 — Security hardening (CSRF + secrets-at-rest) | not_started | task/019-security-hardening | — | (M18 dep dropped — silo) |
+| 019 | M19 — Security hardening (CSRF + secrets-at-rest) | done | task/019-security-hardening | — | Gate 339/339; CSRF (all /admin), Fernet secrets-at-rest, nonce'd CSP + headers. security-review: 4 fixed |
 | 020 | M20 — Deploy artifacts + widget bundling + migrations + snapshot CLI | not_started | task/020-deploy-and-assets | — | Add: additive-only Alembic, per-instance widget, per-client secrets (silo provisioning) |
 | 022 | M22 — Fleet sync (managed defaults + local override + rollout) | not_started | task/022-fleet-sync | 019,020 | Silo central-control: master pushes features; client config in their DB stays. Replaces M18's central-control role |
 | 021 | M21 — Verification (browser + live-key E2E + CI) | not_started | task/021-real-env-verification | 011-020,022 |
