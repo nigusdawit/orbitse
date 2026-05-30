@@ -51,6 +51,8 @@ _BLUEPRINT_SPECS = [
     ("analytics", "bp"),
     # M17
     ("onboarding", "bp"),
+    # M22
+    ("fleet", "bp"),
     # ... later milestones append here.
 ]
 

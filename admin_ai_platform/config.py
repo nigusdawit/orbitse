@@ -220,6 +220,10 @@ ENABLE_HSTS = env_bool("ENABLE_HSTS", False)
 
 # VELO master agent shared secret (agency multi-install control channel).
 VELO_SHARED_SECRET = env_str("VELO_SHARED_SECRET")
+# Fleet-sync (M22): a signed managed-defaults bundle must carry an ``issued_at``
+# epoch within this many seconds of now, so a captured valid bundle can't be
+# replayed indefinitely (it's only good for this window).
+FLEET_BUNDLE_MAX_AGE_SEC = env_int("FLEET_BUNDLE_MAX_AGE_SEC", 3600)
 
 
 def summary() -> dict:

@@ -447,10 +447,22 @@ def main():
         check("service created", svc.status_code == 201)
         svid = svc.get_json()["id"]
         # Weekly rule: every day 09:00-11:00, 60-min slots -> 09:00 & 10:00.
-        for dow in range(7):
-            admin.post(f"/admin/api/services/{svid}/rules",
-                       json={"day_of_week": dow, "start_time": "09:00", "end_time": "11:00",
-                             "slot_minutes": 60})
+        rule_resps = [admin.post(f"/admin/api/services/{svid}/rules",
+                                 json={"day_of_week": dow, "start_time": "09:00", "end_time": "11:00",
+                                       "slot_minutes": 60})
+                      for dow in range(7)]
+        # RETURNING * yields TIME columns (datetime.time) that Flask can't jsonify
+        # unless coerced — assert 201 + serialized TIME so the 500 can't go latent.
+        _r0 = rule_resps[0]
+        check("availability rule POST returns 201 JSON (TIME serialized)",
+              _r0.status_code == 201 and _r0.get_json().get("start_time") == "09:00:00")
+        # Date-bearing override path has the same RETURNING * exposure.
+        _ovr = admin.post(f"/admin/api/services/{svid}/overrides",
+                          json={"override_kind": "block", "override_date": "2099-01-01",
+                                "start_time": "09:00", "end_time": "10:00"})
+        check("availability override POST returns 201 JSON (TIME/DATE serialized)",
+              _ovr.status_code == 201 and _ovr.get_json().get("start_time") == "09:00:00"
+              and _ovr.get_json().get("override_date") == "2099-01-01")
         avail = anon.get("/api/services/tasting/availability?days=2").get_json()
         check("availability engine returns slots",
               avail["requires_calendar"] and len(avail["days"]) >= 1
@@ -1358,6 +1370,100 @@ def main():
             _envtext = _ef.read()
         _missing = sorted(n for n in _names if (n + "=") not in _envtext)
         check(f".env.example lists every config name (missing: {_missing})", not _missing)
+
+        # ----- M22: fleet sync (versioned managed defaults) ------------------
+        for _t22 in ("managed_defaults", "managed_override_history", "fleet_bundles"):
+            check(f"M22 table {_t22} present", table_exists(_t22))
+        import admin_ai_platform.config as _cfg22
+        from admin_ai_platform import fleet as _fleet
+        execute_db("DELETE FROM fleet_bundles")
+        execute_db("DELETE FROM managed_defaults")
+        execute_db("DELETE FROM managed_override_history")
+
+        def _signed(bundle, issued_at=None):
+            b = dict(bundle)
+            b.setdefault("issued_at", issued_at if issued_at is not None else _t.time())
+            b["signature"] = _fleet.sign_bundle(b, "fleetsecret")
+            return b
+
+        _cfg22.VELO_SHARED_SECRET = ""
+        check("fleet bundle disabled without secret",
+              c.post("/api/fleet/bundle", json={"bundle_version": 1}).status_code == 503)
+        _cfg22.VELO_SHARED_SECRET = "fleetsecret"
+        check("fleet bundle bad signature -> 401",
+              c.post("/api/fleet/bundle",
+                     json={"bundle_version": 1, "items": [], "signature": "nope"}).status_code == 401)
+        # H2: a correctly-signed but STALE bundle (old issued_at) is rejected.
+        _stale = _signed({"bundle_version": 1, "items": []}, issued_at=_t.time() - 99999)
+        check("fleet bundle stale issued_at rejected",
+              c.post("/api/fleet/bundle", json=_stale).get_json().get("applied") is False)
+
+        _b1 = _signed({"bundle_version": 1, "items": [
+            {"item_key": "chatbot.prompt", "category": "chatbot", "version": 1, "value": "Master v1"},
+            {"item_key": "skill.greet", "category": "skill", "version": 1, "value": "Hello"}]})
+        _r1 = c.post("/api/fleet/bundle", json=_b1)
+        check("fleet bundle v1 applied (2 created)",
+              _r1.status_code == 200 and _r1.get_json().get("created") == 2)
+        check("effective value follows master after seed",
+              _fleet.effective_value("chatbot.prompt") == "Master v1")
+        check("fleet bundle replay (same version) is a no-op",
+              c.post("/api/fleet/bundle", json=_b1).get_json().get("applied") is False)
+
+        _ov = admin.put("/admin/api/fleet/managed/chatbot.prompt", json={"value": "Client edit"})
+        check("admin sets local override", _ov.get_json().get("overridden") is True)
+        check("effective value follows local override",
+              _fleet.effective_value("chatbot.prompt") == "Client edit")
+
+        _b2 = _signed({"bundle_version": 2, "items": [
+            {"item_key": "chatbot.prompt", "category": "chatbot", "version": 2, "value": "Master v2"}]})
+        _r2 = c.post("/api/fleet/bundle", json=_b2).get_json()
+        check("v2 non-force keeps local override", _r2.get("kept_local_override") == 1)
+        check("override still effective after non-force push",
+              _fleet.effective_value("chatbot.prompt") == "Client edit")
+        _mg = {m["item_key"]: m for m in _fleet.list_managed()}
+        check("update_available flagged for overridden item",
+              _mg["chatbot.prompt"]["update_available"] is True)
+
+        _b3 = _signed({"bundle_version": 3, "items": [
+            {"item_key": "chatbot.prompt", "category": "chatbot", "version": 3,
+             "value": "Master v3", "force": True}]})
+        _r3 = c.post("/api/fleet/bundle", json=_b3).get_json()
+        check("v3 force wins past override", _r3.get("forced_past_override") == 1)
+        check("effective follows master after force",
+              _fleet.effective_value("chatbot.prompt") == "Master v3")
+        check("forced override preserved as override-of-record",
+              query_db("SELECT local_value FROM managed_override_history "
+                       "WHERE item_key='chatbot.prompt'", fetchone=True)["local_value"] == "Client edit")
+
+        admin.put("/admin/api/fleet/managed/skill.greet", json={"value": "local greet"})
+        check("reset override follows master again",
+              admin.post("/admin/api/fleet/managed/skill.greet/reset").status_code == 200
+              and _fleet.effective_value("skill.greet") == "Hello")
+
+        execute_db("DELETE FROM tenant_features WHERE feature_name='voice'")
+        _b4 = _signed({"bundle_version": 4, "items": [],
+                       "features": [{"name": "voice", "enabled": True}]})
+        c.post("/api/fleet/bundle", json=_b4)
+        check("bundle feature flag toggles tenant_features",
+              query_db("SELECT enabled FROM tenant_features WHERE feature_name='voice'",
+                       fetchone=True)["enabled"] is True)
+
+        # M1: a malformed item is skipped, good items still apply, bundle records.
+        _b5 = _signed({"bundle_version": 5, "items": [
+            {"item_key": "ok.item", "version": 1, "value": "good"},
+            "not-a-dict",
+            {"item_key": "bad.ver", "version": "abc", "value": "x"}]})
+        _r5 = c.post("/api/fleet/bundle", json=_b5).get_json()
+        check("malformed items skipped, good item applied",
+              _r5.get("applied") is True and _r5.get("created") == 1 and _r5.get("skipped") == 2)
+        check("good item from mixed bundle is effective",
+              _fleet.effective_value("ok.item") == "good")
+
+        _st = admin.get("/admin/api/fleet/status").get_json()
+        check("fleet status reports last bundle version", _st.get("last_bundle_version") == 5)
+        check("fleet admin routes require auth",
+              anon.get("/admin/api/fleet/status").status_code == 401)
+        _cfg22.VELO_SHARED_SECRET = ""
 
         print("[gate] schema + integration checks complete", flush=True)
 
