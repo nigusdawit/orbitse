@@ -43,6 +43,7 @@ EMBEDDABLE_PREFIXES = (
     "/api/chat", "/api/chatbot-settings", "/api/voice/", "/api/forms/",
     "/api/gallery-cards", "/api/products", "/api/services", "/api/presentations/",
     "/api/review-snapshots", "/api/checkout/", "/api/orders/", "/api/events",
+    "/api/track/",
 )
 # Heavier endpoints that get the per-tenant rate limit.
 RATE_LIMITED_PREFIXES = ("/api/chat", "/api/voice/")

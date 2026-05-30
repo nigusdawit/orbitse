@@ -1111,6 +1111,47 @@ def main():
         check("legacy /api/voice/tts wired (not 404)",
               c.post("/api/voice/tts", json={"text": "hi"}).status_code in (403, 503, 201, 429))
 
+        # ----- M15: analytics -------------------------------------------------
+        check("page_views table present", table_exists("page_views"))
+        execute_db("DELETE FROM page_views")
+        _pv = c.post("/api/track/pageview",
+                     json={"url": "https://shop.test/pricing?utm_source=fb",
+                           "session_id": "sess-A", "visitor_id": "vis-1",
+                           "utm_source": "fb", "referrer": "https://google.com"},
+                     headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS) Safari"})
+        check("pageview tracked 200", _pv.status_code == 200 and _pv.get_json().get("tracked"))
+        _row = query_db("SELECT path, utm_source, device_type, browser FROM page_views "
+                        "WHERE session_id='sess-A'", fetchone=True)
+        check("pageview parsed path + UTM + UA",
+              _row and _row["path"] == "/pricing" and _row["utm_source"] == "fb"
+              and _row["device_type"] == "mobile" and _row["browser"] == "Safari")
+        _pv2 = c.post("/api/track/pageview",
+                      json={"url": "https://shop.test/pricing", "session_id": "sess-A"})
+        check("repeat pageview deduped", _pv2.get_json().get("deduped") is True)
+        check("dedupe left a single row",
+              query_db("SELECT COUNT(*) AS n FROM page_views WHERE session_id='sess-A'",
+                       fetchone=True)["n"] == 1)
+        c.post("/api/track/pageview", json={"url": "https://shop.test/", "session_id": "sess-B",
+                                            "visitor_id": "vis-2"})
+        c.post("/api/track/duration", json={"session_id": "sess-A", "path": "/pricing",
+                                            "duration_ms": 4200})
+        check("duration patched onto pageview",
+              query_db("SELECT duration_ms FROM page_views WHERE session_id='sess-A'",
+                       fetchone=True)["duration_ms"] == 4200)
+        _an = admin.get("/admin/api/analytics?days=30").get_json()
+        check("analytics totals views=2 sessions=2",
+              _an["totals"]["views"] == 2 and _an["totals"]["sessions"] == 2)
+        check("analytics top_pages includes /pricing",
+              any(p["value"] == "/pricing" for p in _an["top_pages"]))
+        check("analytics chart returns a daily series",
+              len(admin.get("/admin/api/analytics/chart").get_json()["series"]) >= 1)
+        check("analytics chat endpoint returns tool_usage key",
+              "tool_usage" in admin.get("/admin/api/analytics/chat").get_json())
+        check("analytics forms endpoint returns forms",
+              "forms" in admin.get("/admin/api/analytics/forms").get_json())
+        check("analytics admin read requires auth",
+              anon.get("/admin/api/analytics").status_code == 401)
+
         print("[gate] schema + integration checks complete", flush=True)
 
     finally:

@@ -47,6 +47,8 @@ _BLUEPRINT_SPECS = [
     ("events", "bp"),
     # M13
     ("content", "bp"),
+    # M15
+    ("analytics", "bp"),
     # ... later milestones append here.
 ]
 

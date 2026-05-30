@@ -50,6 +50,57 @@
     });
   }
 
+  // ---- pageview analytics (M15) ----------------------------------------
+  // A stable-per-tab session id + per-visitor id (localStorage). Best-effort:
+  // any failure is swallowed so tracking never disrupts the host page.
+  function trackingIds() {
+    var sid, vid;
+    try {
+      sid = sessionStorage.getItem("__aap_sid");
+      if (!sid) { sid = "s-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+                  sessionStorage.setItem("__aap_sid", sid); }
+      vid = localStorage.getItem("__aap_vid");
+      if (!vid) { vid = "v-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+                  localStorage.setItem("__aap_vid", vid); }
+    } catch (e) { sid = sid || ""; vid = vid || ""; }
+    return { sid: sid, vid: vid };
+  }
+
+  function trackPageview() {
+    if (!apiBase) return;
+    var ids = trackingIds();
+    var qp = new URLSearchParams(location.search);
+    var body = {
+      url: location.href, referrer: document.referrer || "",
+      session_id: ids.sid, visitor_id: ids.vid,
+      utm_source: qp.get("utm_source") || "", utm_medium: qp.get("utm_medium") || "",
+      utm_campaign: qp.get("utm_campaign") || "",
+      screen: (screen.width || 0) + "x" + (screen.height || 0),
+      language: navigator.language || ""
+    };
+    var headers = { "Content-Type": "application/json" };
+    if (embedKey) headers["X-Embed-Key"] = embedKey;
+    try {
+      fetch(apiBase + "/api/track/pageview", {
+        method: "POST", headers: headers, body: JSON.stringify(body),
+        keepalive: true, mode: "cors"
+      }).catch(function () {});
+    } catch (e) {}
+
+    // Dwell time on unload via sendBeacon (survives page teardown).
+    var started = Date.now();
+    window.addEventListener("pagehide", function () {
+      try {
+        var payload = JSON.stringify({
+          session_id: ids.sid, path: location.pathname,
+          duration_ms: Date.now() - started, embed_key: embedKey
+        });
+        navigator.sendBeacon(apiBase + "/api/track/duration",
+          new Blob([payload], { type: "application/json" }));
+      } catch (e) {}
+    });
+  }
+
   function mount() {
     // Style-isolated host: a fixed-position div with a shadow root.
     var host = document.createElement("div");
@@ -84,4 +135,5 @@
   } else {
     mount();
   }
+  trackPageview();
 })();
