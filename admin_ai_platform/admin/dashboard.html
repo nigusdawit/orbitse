@@ -77,16 +77,27 @@
       <div id="chatlog"></div>
       <div style="display:flex; gap:8px;">
         <input id="chatinput" placeholder="e.g. how many gallery cards do I have?" />
-        <button class="act" style="margin:0" onclick="sendChat()">Send</button>
+        <button class="act" style="margin:0" id="chatsend">Send</button>
       </div>
     </section>
     <!-- All other tabs are injected by JS into #main -->
   </main>
   <div id="toast"></div>
 
-  <script>
+  <script nonce="__CSP_NONCE__">
   "use strict";
   const $ = s => document.querySelector(s);
+
+  // CSRF: mutations carry X-CSRF-Token (the server requires it on cookie-authed
+  // /admin/api writes — M19). Fetched once on boot from the token endpoint.
+  let CSRF = '';
+  async function loadCsrf(){
+    try { const r = await fetch('/admin/api/csrf-token'); if(r.ok){ CSRF = (await r.json()).csrf_token || ''; } }
+    catch(e){ /* dashboard still loads; first mutation will 403 and prompt reload */ }
+  }
+  function csrfHeaders(extra){
+    return Object.assign({'X-CSRF-Token': CSRF}, extra || {});
+  }
 
   // ---- shared fetch wrappers + toast ----
   function toast(msg, kind){ const t=$('#toast'); t.textContent=msg; t.className=kind||'';
@@ -97,7 +108,7 @@
     catch(e){ toast('Network error: '+u,'bad'); return null; } }
   async function send(u, method, body){
     try {
-      const r=await fetch(u,{method,headers:{'Content-Type':'application/json'},
+      const r=await fetch(u,{method,headers:csrfHeaders({'Content-Type':'application/json'}),
         body: body!==undefined ? JSON.stringify(body) : undefined});
       const j = await r.json().catch(()=>null);
       if(!r.ok){ toast((j&&j.error)||(method+' '+u+' → '+r.status),'bad'); return null; }
@@ -363,7 +374,8 @@
     const text=$('#chatinput').value.trim(); if(!text) return;
     $('#chatinput').value=''; addMsg('user', text); const bubble=addMsg('assistant','');
     let resp; try { resp=await fetch('/admin/api/chat/stream',{method:'POST',
-      headers:{'Content-Type':'application/json'}, body:JSON.stringify({message:text, session_id:SESSION})}); }
+      headers:csrfHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({message:text, session_id:SESSION})}); }
     catch(e){ bubble.textContent='Network error'; return; }
     const reader=resp.body.getReader(); const dec=new TextDecoder(); let buf='', acc='';
     while(true){ const {done,value}=await reader.read(); if(done) break;
@@ -376,6 +388,7 @@
         else if(ev.type==='error'){ bubble.textContent=ev.content; } } }
   }
   document.addEventListener('keydown', e=>{ if(e.key==='Enter' && document.activeElement===$('#chatinput')) sendChat(); });
+  document.getElementById('chatsend').addEventListener('click', sendChat);
 
   // ---- Chatbot ----
   async function renderChatbot(el){
@@ -489,7 +502,7 @@
       td.appendChild(del); tr.appendChild(td); tb.appendChild(tr); });
     $('#kb_up').onclick=async()=>{ const f=$('#kb_file').files[0]; if(!f){ toast('Pick a file','bad'); return; }
       const fd=new FormData(); fd.append('file', f);
-      const r=await fetch('/admin/api/kb/upload',{method:'POST',body:fd});
+      const r=await fetch('/admin/api/kb/upload',{method:'POST',headers:csrfHeaders(),body:fd});
       if(r.ok){ toast('Uploaded','ok'); renderKB(el); } else { toast('Upload failed','bad'); } };
   }
   // ---- Scraper ----
@@ -595,6 +608,7 @@
 
   // ===================== BOOT =====================
   buildNav();
+  loadCsrf();
   </script>
 </body>
 </html>

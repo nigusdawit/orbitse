@@ -129,6 +129,23 @@ def main():
         check("login sets session", ok_login.status_code == 200)
         check("/admin serves dashboard when authed", admin.get("/admin").status_code == 200)
 
+        # M19 CSRF: cookie-authed admin mutations now require X-CSRF-Token. The
+        # real dashboard fetches it from /admin/api/csrf-token and echoes it on
+        # every write — simulate that by wrapping the admin client's .open() to
+        # inject the header on unsafe methods (so the rest of the gate's existing
+        # admin POST/PUT/DELETE calls keep working, exactly like the browser).
+        _csrf_tok = admin.get("/admin/api/csrf-token").get_json()["csrf_token"]
+        _admin_open = admin.open
+
+        def _open_csrf(*a, **k):
+            method = (k.get("method") or "GET").upper()
+            if method not in ("GET", "HEAD", "OPTIONS"):
+                hdrs = dict(k.get("headers") or {})
+                hdrs.setdefault("X-CSRF-Token", _csrf_tok)
+                k["headers"] = hdrs
+            return _admin_open(*a, **k)
+        admin.open = _open_csrf
+
         # Provider get/put roundtrip.
         check("GET llm-provider", admin.get("/admin/api/llm-provider").get_json()["provider"] == "openai")
         admin.put("/admin/api/llm-provider", json={"provider": "claude"})
@@ -902,7 +919,7 @@ def main():
         check("seats decremented after RSVP",
               c.get("/api/events/gala").get_json().get("seats_remaining") == 1)
 
-        # Capacity enforced: 2-guest RSVP would exceed the remaining 1 → 409.
+        # Capacity enforced: 2-guest RSVP would exceed the remaining 1 -> 409.
         r_full = c.post("/api/events/gala/rsvp",
                         json={"name": "B", "email": "b@gate.test", "guests": 2})
         check("over-capacity RSVP rejected (409)", r_full.status_code == 409)
@@ -918,7 +935,7 @@ def main():
         check("lookup_events returns sold-out seats_remaining=0",
               _le and _le[0]["seats_remaining"] == 0)
 
-        # Paid event → pending RSVP + Stripe redirect (fake), webhook confirms.
+        # Paid event -> pending RSVP + Stripe redirect (fake), webhook confirms.
         _sc.get_stripe = lambda: _FakeStripeCheckout   # reuse the M11 fake
         admin.post("/admin/api/events",
                    json={"slug": "concert", "title": "Concert", "price_mode": "paid",
@@ -1072,7 +1089,7 @@ def main():
               admin.post("/admin/api/reviews/ai-draft", json={}).status_code == 503)
 
         # Presentations import: rejects unsupported types, imports a real .pptx
-        # (built in-memory) with text + speaker-notes → narration.
+        # (built in-memory) with text + speaker-notes -> narration.
         check("import rejects unsupported type",
               admin.post("/admin/api/presentations/import",
                          data={"file": (io.BytesIO(b"x"), "notes.txt")},
@@ -1165,6 +1182,67 @@ def main():
         check("anon still redirected from dashboard",
               anon.get("/admin").status_code in (301, 302))
 
+        # ----- M19: security hardening (CSRF + secrets-at-rest + headers) ----
+        import admin_ai_platform.crypto as _crypto
+        # crypto roundtrip (pure).
+        _ct = _crypto.encrypt("super-secret-token")
+        check("crypto ciphertext is tagged + differs from plaintext",
+              _ct.startswith("enc:v1:") and _ct != "super-secret-token")
+        check("crypto decrypt roundtrips", _crypto.decrypt(_ct) == "super-secret-token")
+        check("crypto decrypt passes through legacy plaintext",
+              _crypto.decrypt("legacy-plain") == "legacy-plain")
+        # CSRF: a cookie-authed admin WITHOUT a token is rejected; with it, ok.
+        _nocsrf = app.test_client()
+        _nocsrf.post("/admin/login", json={"password": "admin"})
+        check("admin mutation without CSRF token -> 403",
+              _nocsrf.post("/admin/api/mcp/servers", json={"name": "x"}).status_code == 403)
+        _tok2 = _nocsrf.get("/admin/api/csrf-token").get_json()["csrf_token"]
+        check("admin mutation WITH CSRF token accepted",
+              _nocsrf.post("/admin/api/mcp/servers",
+                           json={"name": "csrf-ok", "transport": "http"},
+                           headers={"X-CSRF-Token": _tok2}).status_code in (201, 409))
+        check("safe GET needs no CSRF token",
+              _nocsrf.get("/admin/api/mcp/servers").status_code == 200)
+        check("API-key callers are CSRF-exempt (still 401 without key here)",
+              app.test_client().post("/admin/api/mcp/servers", json={"name": "y"}).status_code == 401)
+        # Secrets at rest: a stored MCP credential is ciphertext in the DB but
+        # decrypts at the point of use.
+        execute_db("DELETE FROM mcp_servers WHERE name='sec-test'")
+        admin.post("/admin/api/mcp/servers",
+                   json={"name": "sec-test", "transport": "http", "url": "http://x",
+                         "auth_type": "bearer", "auth_credential": "tok_PLAINTEXT_123"})
+        _stored = query_db("SELECT auth_credential FROM mcp_servers WHERE name='sec-test'",
+                           fetchone=True)["auth_credential"]
+        check("stored credential is encrypted (not plaintext)",
+              _stored.startswith("enc:v1:") and "tok_PLAINTEXT_123" not in _stored)
+        check("stored credential decrypts to original",
+              _crypto.decrypt(_stored) == "tok_PLAINTEXT_123")
+        import admin_ai_platform.mcp_client as _mc
+        _hdrs = _mc._headers({"auth_type": "bearer", "auth_credential": _stored})
+        check("mcp_client builds Bearer from decrypted credential",
+              _hdrs.get("authorization") == "Bearer tok_PLAINTEXT_123")
+        check("GET list redacts the credential (never returns ciphertext/plaintext)",
+              all(s.get("auth_credential") in ("***", "") for s in
+                  admin.get("/admin/api/mcp/servers").get_json()["servers"]))
+        # Migration encrypts legacy plaintext rows idempotently.
+        execute_db("UPDATE mcp_servers SET auth_credential='legacy_plain_cred' WHERE name='sec-test'")
+        from admin_ai_platform.blueprints.mcp import migrate_encrypt_credentials
+        migrate_encrypt_credentials()
+        check("migration encrypted a legacy plaintext credential",
+              _crypto.is_encrypted(query_db("SELECT auth_credential FROM mcp_servers "
+                                            "WHERE name='sec-test'", fetchone=True)["auth_credential"]))
+        # Security headers.
+        _dashresp = admin.get("/admin")
+        _h = _dashresp.headers
+        _csp = _h.get("Content-Security-Policy", "")
+        check("X-Content-Type-Options nosniff", _h.get("X-Content-Type-Options") == "nosniff")
+        check("Referrer-Policy set", "strict-origin" in _h.get("Referrer-Policy", ""))
+        check("baseline CSP on /admin", "default-src 'self'" in _csp)
+        check("CSP script-src uses a nonce, not unsafe-inline",
+              "'nonce-" in _csp and "script-src 'self' 'unsafe-inline'" not in _csp)
+        check("dashboard nonce placeholder replaced",
+              "__CSP_NONCE__" not in _dashresp.get_data(as_text=True))
+
         # ----- M17: onboarding -----------------------------------------------
         check("platform_setup table present", table_exists("platform_setup"))
         # Before completion the wizard is open.
@@ -1186,7 +1264,7 @@ def main():
               query_db("SELECT COUNT(*) AS n FROM experiences", fetchone=True)["n"] >= 1)
         check("setup created a publishable embed key",
               query_db("SELECT 1 FROM tenant_embed_keys LIMIT 1", fetchone=True) is not None)
-        # Self-closes: subsequent GET + POST → 404.
+        # Self-closes: subsequent GET + POST -> 404.
         check("/setup 404 after completion (GET)", c.get("/setup").status_code == 404)
         check("/setup 404 after completion (POST)",
               c.post("/setup", json={"business_name": "x", "admin_password": "yyyyyy"}).status_code == 404)

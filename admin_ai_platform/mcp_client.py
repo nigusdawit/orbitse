@@ -24,7 +24,10 @@ _PROTOCOL_VERSION = "2025-03-26"
 def _headers(server):
     h = {"content-type": "application/json", "accept": "application/json"}
     auth_type = (server.get("auth_type") or "none").lower()
-    cred = server.get("auth_credential") or ""
+    # Stored credential is encrypted at rest (M19); decrypt at the point of use.
+    # decrypt() returns legacy plaintext unchanged, so this is safe pre-migration.
+    from . import crypto
+    cred = crypto.decrypt(server.get("auth_credential") or "")
     if auth_type == "bearer" and cred:
         h["authorization"] = f"Bearer {cred}"
     elif auth_type == "header" and cred and server.get("auth_header_name"):

@@ -24,7 +24,6 @@ import os
 from flask import (Blueprint, request, session, redirect, jsonify,
                    send_from_directory)
 
-from .. import config
 from ..db import query_db, execute_db
 from ..auth import admin_required, check_admin_password, is_admin_authenticated
 
@@ -38,7 +37,20 @@ _ADMIN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
 def dashboard():
     if not is_admin_authenticated():
         return redirect("/admin/login")
-    return send_from_directory(_ADMIN_DIR, "dashboard.html")
+    # Inject a per-response CSP nonce into the inline <script> so the admin CSP
+    # can use 'nonce-…' instead of 'unsafe-inline' (M19 security-review M2). The
+    # nonce is stashed on g for the after_request CSP composer.
+    import os
+    import base64
+    from flask import g, Response
+    nonce = base64.b64encode(os.urandom(16)).decode()
+    g.csp_nonce = nonce
+    try:
+        with open(os.path.join(_ADMIN_DIR, "dashboard.html"), encoding="utf-8") as fh:
+            html = fh.read()
+    except OSError:
+        return send_from_directory(_ADMIN_DIR, "dashboard.html")
+    return Response(html.replace("__CSP_NONCE__", nonce), mimetype="text/html")
 
 
 @bp.route("/admin/login", methods=["GET", "POST"])
@@ -81,19 +93,11 @@ def sso_login():
     return redirect("/admin")
 
 
-@bp.after_request
-def _frame_ancestors(resp):
-    """Allow the configured WordPress origin to frame the admin (for the SSO
-    iframe), and only that origin — default-deny framing everywhere else."""
-    if request.path.startswith("/admin"):
-        wp_origin = config.CSP_FRAME_ANCESTORS
-        if wp_origin:
-            resp.headers["Content-Security-Policy"] = f"frame-ancestors 'self' {wp_origin}"
-            resp.headers.pop("X-Frame-Options", None)
-        else:
-            resp.headers["X-Frame-Options"] = "SAMEORIGIN"
-            resp.headers["Content-Security-Policy"] = "frame-ancestors 'self'"
-    return resp
+# NOTE: the admin framing policy (frame-ancestors + X-Frame-Options) and the
+# baseline CSP are now composed in a SINGLE app-level after_request in
+# admin_ai_platform/__init__.py (M19), so this blueprint no longer sets CSP
+# headers itself — two after_requests both writing Content-Security-Policy fought
+# and dropped the baseline directives.
 
 
 # ---- Chat history (visitor conversations) -------------------------------

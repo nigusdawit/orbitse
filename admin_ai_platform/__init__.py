@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import sys
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 from . import config
 
@@ -84,6 +84,12 @@ def create_app(*, init_schema: bool = True, start_scheduler: bool = True) -> Fla
             sync_skills_to_db()
         except Exception as e:
             print(f"[app] skill sync skipped: {e}", file=sys.stderr)
+        # Encrypt any pre-existing plaintext secrets at rest (M19, idempotent).
+        try:
+            from .blueprints.mcp import migrate_encrypt_credentials
+            migrate_encrypt_credentials()
+        except Exception as e:
+            print(f"[app] secret-at-rest migration skipped: {e}", file=sys.stderr)
 
     # Wire messaging (Resend/Twilio) into the cost warn-line emailer and the
     # automations engine, now that it's relocated (M5). Fail-open.
@@ -161,6 +167,49 @@ def create_app(*, init_schema: bool = True, start_scheduler: bool = True) -> Fla
         register_embed_middleware(app)
     except Exception as e:
         print(f"[app] embed middleware skipped: {e}", file=sys.stderr)
+
+    # CSRF protection for cookie-authed admin mutations (M19). Exempts the
+    # token-authed surfaces (embed/public, webhooks, VELO, SSO, API-key callers).
+    try:
+        from .csrf import register_csrf
+        register_csrf(app)
+    except Exception as e:
+        print(f"[app] CSRF protection skipped: {e}", file=sys.stderr)
+
+    # Baseline security headers + the single CSP authority for /admin (M19).
+    # This OWNS the admin CSP (including frame-ancestors for the SSO iframe) so
+    # there's one composed policy rather than two after_requests fighting.
+    @app.after_request
+    def _security_headers(resp):
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        if config.ENABLE_HSTS or config.SESSION_COOKIE_SECURE:
+            resp.headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        if request.path.startswith("/admin"):
+            # frame-ancestors: allow the configured WP origin to frame the admin
+            # (SSO iframe), else default-deny + X-Frame-Options fallback.
+            wp = config.CSP_FRAME_ANCESTORS
+            if wp:
+                frame = f"frame-ancestors 'self' {wp}"
+                resp.headers.pop("X-Frame-Options", None)
+            else:
+                frame = "frame-ancestors 'self'"
+                resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+            # Conservative CSP — the dashboard is self-hosted vanilla JS/CSS, no
+            # external scripts. script-src uses a per-response nonce (set by the
+            # /admin dashboard route) instead of 'unsafe-inline', so injected
+            # markup can't execute script. style-src keeps 'unsafe-inline' (the
+            # dashboard uses inline style attributes; lower risk). The public
+            # embed widget is NOT constrained here (third-party origins).
+            from flask import g
+            nonce = getattr(g, "csp_nonce", "")
+            script_src = f"script-src 'self' 'nonce-{nonce}'" if nonce else "script-src 'self'"
+            resp.headers["Content-Security-Policy"] = (
+                "default-src 'self'; img-src 'self' data: https:; "
+                "style-src 'self' 'unsafe-inline'; " + script_src + "; "
+                "connect-src 'self'; base-uri 'self'; form-action 'self'; " + frame)
+        return resp
 
     # Mount blueprints that exist at this milestone.
     from .blueprints import register_all
