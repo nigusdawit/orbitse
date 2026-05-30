@@ -27,7 +27,7 @@ from .db import get_db
 # Tables the package owns at this milestone — used by the verification test to
 # assert presence, and to document the growing surface.
 IN_TABLES_M0_M1 = (
-    "plans", "tenants", "tenant_features", "feature_addons",
+    "plans", "tenants", "platform_setup", "tenant_features", "feature_addons",
     "gallery_cards", "chatbot_settings", "chat_conversations", "chat_messages",
     "page_views",
     "uploaded_images", "custom_forms", "form_fields", "form_submissions",
@@ -86,6 +86,20 @@ CREATE TABLE IF NOT EXISTS tenants (
     updated_at  TIMESTAMP   DEFAULT NOW()
 );
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'UTC';
+
+-- First-run setup state (M17). The /setup wizard provisions once, sets this
+-- completed=TRUE, and afterwards /setup returns 404. admin_password_hash, when
+-- set, overrides the env ADMIN_PASSWORD (pbkdf2-hmac-sha256 + per-install salt).
+CREATE TABLE IF NOT EXISTS platform_setup (
+    id                  INTEGER PRIMARY KEY DEFAULT 1,
+    completed           BOOLEAN NOT NULL DEFAULT FALSE,
+    preset              VARCHAR(40) NOT NULL DEFAULT 'generic',
+    business_name       TEXT NOT NULL DEFAULT '',
+    admin_password_hash TEXT NOT NULL DEFAULT '',
+    admin_password_salt TEXT NOT NULL DEFAULT '',
+    completed_at        TIMESTAMP
+);
+INSERT INTO platform_setup (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS tenant_features (
     id           SERIAL PRIMARY KEY,
@@ -1275,6 +1289,10 @@ ON CONFLICT (slug) DO NOTHING;
 INSERT INTO tenants (id, name, status)
 VALUES (1, 'Default Tenant', 'active')
 ON CONFLICT (id) DO NOTHING;
+-- The explicit id=1 seed above does NOT advance the SERIAL sequence, so the
+-- first auto-id INSERT would collide on id=1. Bump the sequence past the max.
+SELECT setval(pg_get_serial_sequence('tenants', 'id'),
+              GREATEST((SELECT MAX(id) FROM tenants), 1));
 
 INSERT INTO chatbot_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 INSERT INTO voice_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;

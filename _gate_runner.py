@@ -1165,6 +1165,60 @@ def main():
         check("anon still redirected from dashboard",
               anon.get("/admin").status_code in (301, 302))
 
+        # ----- M17: onboarding -----------------------------------------------
+        check("platform_setup table present", table_exists("platform_setup"))
+        # Before completion the wizard is open.
+        check("/setup open before completion", c.get("/setup").status_code == 200)
+        # Validation runs before provisioning: a too-short password is rejected.
+        check("/setup short password rejected (400)",
+              c.post("/setup", json={"business_name": "x", "admin_password": "abc"})
+              .status_code == 400)
+        # Provision: business + preset seed + admin password + first embed key.
+        execute_db("DELETE FROM experiences")  # so preset seed is observable
+        _setup = c.post("/setup", json={"business_name": "Gate Vineyard",
+                                        "preset": "restaurant", "admin_password": "setuppw123"})
+        check("/setup provisions (201 + embed key)",
+              _setup.status_code == 201 and _setup.get_json().get("embed_key", "").startswith("pk_"))
+        check("setup set business_info name",
+              (query_db("SELECT name FROM business_info WHERE id=1", fetchone=True) or {})
+              .get("name") == "Gate Vineyard")
+        check("setup seeded preset experiences",
+              query_db("SELECT COUNT(*) AS n FROM experiences", fetchone=True)["n"] >= 1)
+        check("setup created a publishable embed key",
+              query_db("SELECT 1 FROM tenant_embed_keys LIMIT 1", fetchone=True) is not None)
+        # Self-closes: subsequent GET + POST → 404.
+        check("/setup 404 after completion (GET)", c.get("/setup").status_code == 404)
+        check("/setup 404 after completion (POST)",
+              c.post("/setup", json={"business_name": "x", "admin_password": "yyyyyy"}).status_code == 404)
+        # DB admin password now overrides env: new password logs in, old 'admin' rejected.
+        _fresh = app.test_client()
+        check("login with new DB password works",
+              _fresh.post("/admin/login", json={"password": "setuppw123"}).status_code == 200)
+        check("old env password now rejected",
+              app.test_client().post("/admin/login", json={"password": "admin"}).status_code == 401)
+        # Checklist reflects real state.
+        _cl = admin.get("/admin/api/onboarding/checklist").get_json()
+        check("checklist business_named true after setup", _cl["steps"]["business_named"] is True)
+        check("checklist has_embed_key true", _cl["steps"]["has_embed_key"] is True)
+        # Onboarding tools.
+        execute_db("DELETE FROM gallery_cards")
+        _seed = admin.post("/admin/api/onboarding/seed-sample", json={})
+        check("seed-sample creates gallery cards", _seed.get_json().get("seeded", 0) >= 1)
+        check("assistant-prompt returned",
+              "onboarding" in admin.get("/admin/api/onboarding/assistant-prompt")
+              .get_json().get("prompt", "").lower())
+        # Agency provisioning: new tenant + embed key + snapshot cards.
+        _prov = admin.post("/admin/api/onboarding/provision-tenant",
+                           json={"name": "Client Co",
+                                 "snapshot": {"tables": {"gallery_cards":
+                                              [{"slug": "snap-card", "title": "Snapped"}]}}})
+        _pj = _prov.get_json()
+        check("provision-tenant creates tenant + key",
+              _prov.status_code == 201 and _pj.get("tenant_id") and _pj.get("embed_key", "").startswith("pk_"))
+        check("provision-tenant applied snapshot card", _pj.get("snapshot_cards_applied", 0) == 1)
+        check("provisioned tenant row exists",
+              query_db("SELECT 1 FROM tenants WHERE id=%s", (_pj["tenant_id"],), fetchone=True) is not None)
+
         print("[gate] schema + integration checks complete", flush=True)
 
     finally:
