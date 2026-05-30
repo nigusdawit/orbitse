@@ -2196,6 +2196,13 @@ def init_db():
                 );
                 CREATE INDEX IF NOT EXISTS idx_tenant_embed_keys_key
                     ON tenant_embed_keys (embed_key);
+
+                -- Single-use SSO token jti ledger (WordPress-embedded admin).
+                -- A token's jti is recorded on first use so it can't be replayed.
+                CREATE TABLE IF NOT EXISTS sso_used_jtis (
+                    jti         VARCHAR(64) PRIMARY KEY,
+                    expires_at  TIMESTAMP NOT NULL
+                );
             """)
 
             # Seed the voice_settings singleton row (idempotent)
@@ -5479,6 +5486,86 @@ def admin_delete_embed_key(kid):
     execute_db("DELETE FROM tenant_embed_keys WHERE id = %s AND tenant_id = %s",
                (kid, current_tenant_id()))
     return jsonify({"success": True})
+
+
+# ---- WordPress-embedded admin SSO ----------------------------------------
+# The WP plugin mints a single-use, short-lived HMAC token (the identical scheme
+# below) with the shared SSO_SIGNING_SECRET and iframes /admin/sso?token=...; we
+# verify it, establish the admin session, and redirect into /admin. Token format
+# (PHP and Python agree exactly): payload {tid, exp, jti} → b64url(json) +
+# "." + b64url(HMAC-SHA256(b64, secret)). No secret configured → SSO disabled.
+import time as _sso_time
+
+_SSO_SIGNING_SECRET = os.environ.get("SSO_SIGNING_SECRET", "").strip()
+_SSO_MAX_TTL_SECONDS = 60
+
+
+def _sso_b64u_decode(s):
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s + pad)
+
+
+def _sso_sign(b64_payload, secret):
+    import hmac as _hmac
+    return base64.urlsafe_b64encode(
+        _hmac.new(secret.encode("utf-8"), b64_payload.encode("ascii"),
+                  hashlib.sha256).digest()).rstrip(b"=").decode("ascii")
+
+
+def _sso_claim_jti(jti, exp):
+    """Record the jti once (single-use). Returns True only if THIS call claimed
+    it. Fails open to allowing the login if the DB is briefly unavailable."""
+    try:
+        row = execute_db(
+            "INSERT INTO sso_used_jtis (jti, expires_at) VALUES (%s, to_timestamp(%s)) "
+            "ON CONFLICT (jti) DO NOTHING RETURNING jti", (jti, exp))
+        return row is not None
+    except Exception as e:
+        print(f"[sso] jti claim failed (allowing): {e}")
+        return True
+
+
+def _sso_verify_token(token):
+    """Return the tenant_id for a valid, unused, unexpired token, else None.
+    Constant-time signature check; rejects expired / over-long / replayed tokens."""
+    import hmac as _hmac
+    secret = _SSO_SIGNING_SECRET
+    if not secret or not token or "." not in token:
+        return None
+    b64, _, sig = token.partition(".")
+    if not _hmac.compare_digest(sig, _sso_sign(b64, secret)):
+        return None
+    try:
+        payload = json.loads(_sso_b64u_decode(b64))
+    except Exception:
+        return None
+    now = _sso_time.time()
+    exp = payload.get("exp", 0)
+    if not isinstance(exp, (int, float)) or exp <= now:
+        return None
+    if exp - now > _SSO_MAX_TTL_SECONDS + 5:
+        return None
+    jti, tid = payload.get("jti"), payload.get("tid")
+    if not jti or tid is None:
+        return None
+    if not _sso_claim_jti(jti, exp):
+        return None
+    return int(tid)
+
+
+@app.route("/admin/sso", methods=["GET"])
+def admin_sso():
+    """Single-use SSO entry for the WordPress-embedded admin iframe. Verifies the
+    plugin's signed token, establishes the admin session, and redirects to /admin.
+    403 on a missing/forged/expired/replayed token."""
+    if not _SSO_SIGNING_SECRET:
+        return jsonify({"error": "SSO is not configured"}), 503
+    tid = _sso_verify_token(request.args.get("token", ""))
+    if tid is None:
+        return jsonify({"error": "invalid or expired SSO token"}), 403
+    session["admin_logged_in"] = True
+    session.permanent = True
+    return redirect("/admin")
 
 
 @app.route("/admin/login", methods=["GET", "POST"])
