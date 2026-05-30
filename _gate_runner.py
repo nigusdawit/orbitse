@@ -1152,6 +1152,19 @@ def main():
         check("analytics admin read requires auth",
               anon.get("/admin/api/analytics").status_code == 401)
 
+        # ----- M16: admin dashboard SPA --------------------------------------
+        _dash = admin.get("/admin")
+        check("dashboard served to authed admin", _dash.status_code == 200)
+        _html = _dash.get_data(as_text=True)
+        for _lbl in ("Analytics", "Embed Keys", "Web Scraper", "Knowledge Base",
+                     "Automations", "MCP Connectors", "Events", "Products",
+                     "Campaigns", "Developer Console", "renderResource", "TABS"):
+            check(f"dashboard contains '{_lbl}'", _lbl in _html)
+        check("dashboard is dependency-free (no external script src)",
+              "<script src" not in _html.lower())
+        check("anon still redirected from dashboard",
+              anon.get("/admin").status_code in (301, 302))
+
         print("[gate] schema + integration checks complete", flush=True)
 
     finally:
