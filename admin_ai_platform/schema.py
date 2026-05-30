@@ -29,6 +29,7 @@ from .db import get_db
 IN_TABLES_M0_M1 = (
     "plans", "tenants", "tenant_features", "feature_addons",
     "gallery_cards", "chatbot_settings", "chat_conversations", "chat_messages",
+    "page_views",
     "uploaded_images", "custom_forms", "form_fields", "form_submissions",
     "generated_pages", "voice_settings", "voice_intros", "voice_usage_log",
     "presentations", "presentation_slides", "agent_skills", "skill_usage_log",
@@ -168,6 +169,31 @@ CREATE INDEX IF NOT EXISTS idx_chat_msg_conv ON chat_messages (conversation_id);
 -- tool_calls_json was added after the original chat_messages shipped; keep the
 -- idempotent add so an older DB upgrades cleanly.
 ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS tool_calls_json JSONB;
+
+-- Visitor pageview analytics (M15). One row per tracked view; duration is
+-- patched in later via the sendBeacon /api/track/duration call on unload.
+CREATE TABLE IF NOT EXISTS page_views (
+    id            SERIAL PRIMARY KEY,
+    tenant_id     INTEGER NOT NULL DEFAULT 1,
+    session_id    VARCHAR(100) NOT NULL DEFAULT '',
+    visitor_id    VARCHAR(100) NOT NULL DEFAULT '',
+    url           TEXT NOT NULL DEFAULT '',
+    path          TEXT NOT NULL DEFAULT '',
+    referrer      TEXT NOT NULL DEFAULT '',
+    utm_source    VARCHAR(200) NOT NULL DEFAULT '',
+    utm_medium    VARCHAR(200) NOT NULL DEFAULT '',
+    utm_campaign  VARCHAR(200) NOT NULL DEFAULT '',
+    device_type   VARCHAR(20) NOT NULL DEFAULT 'desktop',
+    browser       VARCHAR(40) NOT NULL DEFAULT '',
+    os            VARCHAR(40) NOT NULL DEFAULT '',
+    screen        VARCHAR(20) NOT NULL DEFAULT '',
+    language      VARCHAR(20) NOT NULL DEFAULT '',
+    duration_ms   INTEGER NOT NULL DEFAULT 0,
+    created_at    TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_page_views_created ON page_views (tenant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_page_views_session ON page_views (session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_page_views_path ON page_views (tenant_id, path);
 
 CREATE TABLE IF NOT EXISTS uploaded_images (
     id            SERIAL PRIMARY KEY,
