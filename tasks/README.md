@@ -31,7 +31,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 018 | M18 — Multi-tenant single-DB isolation + per-tenant admin users | deferred | task/018-multitenant-isolation | 010 | **Not needed under silo** (separate DB per client = free isolation). Revisit only if a pooled central-SaaS tier is added → use Postgres RLS, not hand-scoped queries |
 | 019 | M19 — Security hardening (CSRF + secrets-at-rest) | done | task/019-security-hardening | — | Gate 339/339; CSRF (all /admin), Fernet secrets-at-rest, nonce'd CSP + headers. security-review: 4 fixed |
 | 020 | M20 — Deploy artifacts + widget bundling + migrations + snapshot CLI | done | task/020-deploy-and-assets | — | Gate 352/352; package Dockerfile/compose/Railway/Render, hashed widget bundle, snapshot CLI, additive-only policy. Container boot → M21 |
-| 022 | M22 — Fleet sync (managed defaults + local override + rollout) | not_started | task/022-fleet-sync | 019,020 | Silo central-control: master pushes features; client config in their DB stays. Replaces M18's central-control role |
+| 022 | M22 — Fleet sync (managed defaults + local override + rollout) | done | task/022-fleet-sync | 019,020 | Gate 377/377; versioned-merge managed defaults, signed bundles (replay/TOCTOU-hardened), override-of-record, feature rollout. security-review: 4 fixed |
 | 021 | M21 — Verification (browser + live-key E2E + CI) | not_started | task/021-real-env-verification | 011-020,022 |
 
 **Status legend:** not_started | in_progress | paused | blocked | awaiting_review | done

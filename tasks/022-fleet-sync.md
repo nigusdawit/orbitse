@@ -50,5 +50,26 @@ while each client's own customizations live in their DB and are never clobbered.
 - **security-review** required (VELO bundle auth = a master→all-installs control
   channel; a forged/replayed bundle must be rejected).
 
-## Dependencies: 020 (deploy topology must exist first), 019 (secret store)
-## Status: not_started   ## Branch: task/022-fleet-sync
+## Decision (2026-05-29): conflict policy = VERSIONED MERGE
+The operator chose **versioned merge** (not master-wins-on-untouched): every
+managed item carries a monotonic version; a normal push updates only
+non-overridden items; a push with `force=true` and a higher version wins past a
+client override, preserving the client's prior value as an override-of-record.
+
+## Dependencies: 020, 019   ## Status: done   ## Branch: task/022-fleet-sync
+
+## Notes
+Merged to main (--no-ff). Gate: 377/377 incl. signed-bundle verify (bad sig 401,
+no-secret 503, stale issued_at rejected), versioned merge (seed→override→non-force
+keeps local + flags update_available→force-past-override preserves override-of-
+record), reset-follows-master, bundle feature-flag rollout, malformed-item
+isolation, status + admin-auth gating. Unit: `test_fleet.py` pins the signature
+scheme (canonical excludes sig, tamper/wrong-secret/no-secret/missing-sig fail).
+**security-review (agent) run; 4 findings fixed** in a follow-up commit: H1
+atomic version-claim (TOCTOU double-apply), H2 issued_at freshness window
+(replay), M1 per-item isolation + MAX_ITEMS cap (crash/DoS), M2 request-
+independent tenant for feature flags. Reviewer confirmed signing soundness,
+constant-time compare, fail-closed, no SQLi. Implementation note: the
+versioned-merge layer is built + tested; wiring specific managed defaults (e.g.
+chatbot prompt) to READ `fleet.effective_value()` at runtime is a thin follow-on
+per-consumer (the override/merge engine + control channel are done).
