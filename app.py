@@ -5364,8 +5364,19 @@ def _embed_auth():
     key = (request.headers.get("X-Embed-Key", "") or request.args.get("embed_key", "")).strip()
     origin = _embed_request_origin()
     if request.method == "OPTIONS":
+        # CORS preflight requests do NOT carry custom headers (no X-Embed-Key),
+        # so we can't resolve/validate the key here. Preflight is only a
+        # capability check — answer it permissively (echo the requesting origin +
+        # the allowed methods/headers). The ACTUAL request still enforces the
+        # embed key + origin allowlist below, and only an allowed request gets
+        # CORS on its real response (via the after_request hook).
         resp = make_response("", 204)
-        _embed_apply_cors(resp, key)
+        if origin:
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Vary"] = "Origin"
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Embed-Key"
+            resp.headers["Access-Control-Max-Age"] = "600"
         return resp
     if key:
         row = _embed_resolve_key(key)
