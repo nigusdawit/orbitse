@@ -1380,8 +1380,9 @@ def main():
         execute_db("DELETE FROM managed_defaults")
         execute_db("DELETE FROM managed_override_history")
 
-        def _signed(bundle):
+        def _signed(bundle, issued_at=None):
             b = dict(bundle)
+            b.setdefault("issued_at", issued_at if issued_at is not None else _t.time())
             b["signature"] = _fleet.sign_bundle(b, "fleetsecret")
             return b
 
@@ -1392,6 +1393,10 @@ def main():
         check("fleet bundle bad signature -> 401",
               c.post("/api/fleet/bundle",
                      json={"bundle_version": 1, "items": [], "signature": "nope"}).status_code == 401)
+        # H2: a correctly-signed but STALE bundle (old issued_at) is rejected.
+        _stale = _signed({"bundle_version": 1, "items": []}, issued_at=_t.time() - 99999)
+        check("fleet bundle stale issued_at rejected",
+              c.post("/api/fleet/bundle", json=_stale).get_json().get("applied") is False)
 
         _b1 = _signed({"bundle_version": 1, "items": [
             {"item_key": "chatbot.prompt", "category": "chatbot", "version": 1, "value": "Master v1"},
@@ -1443,8 +1448,19 @@ def main():
               query_db("SELECT enabled FROM tenant_features WHERE feature_name='voice'",
                        fetchone=True)["enabled"] is True)
 
+        # M1: a malformed item is skipped, good items still apply, bundle records.
+        _b5 = _signed({"bundle_version": 5, "items": [
+            {"item_key": "ok.item", "version": 1, "value": "good"},
+            "not-a-dict",
+            {"item_key": "bad.ver", "version": "abc", "value": "x"}]})
+        _r5 = c.post("/api/fleet/bundle", json=_b5).get_json()
+        check("malformed items skipped, good item applied",
+              _r5.get("applied") is True and _r5.get("created") == 1 and _r5.get("skipped") == 2)
+        check("good item from mixed bundle is effective",
+              _fleet.effective_value("ok.item") == "good")
+
         _st = admin.get("/admin/api/fleet/status").get_json()
-        check("fleet status reports last bundle version", _st.get("last_bundle_version") == 4)
+        check("fleet status reports last bundle version", _st.get("last_bundle_version") == 5)
         check("fleet admin routes require auth",
               anon.get("/admin/api/fleet/status").status_code == 401)
         _cfg22.VELO_SHARED_SECRET = ""

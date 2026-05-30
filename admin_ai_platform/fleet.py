@@ -71,24 +71,66 @@ def _latest_bundle_version() -> int:
     return int((row or {}).get("v", 0))
 
 
+# Hard cap on items per bundle so even a compromised/buggy master can't push an
+# unbounded payload.
+MAX_ITEMS = 2000
+
+
 def apply_bundle(bundle: dict) -> dict:
     """Apply a (already signature-verified) bundle with versioned-merge semantics.
-    Idempotent + monotonic: a bundle_version <= the latest applied is a no-op.
-    Returns a summary dict."""
+
+    Hardened (security-review): (H2) requires a fresh ``issued_at`` so a captured
+    bundle can't be replayed indefinitely; (H1) **claims** the bundle_version with
+    an atomic INSERT-ON-CONFLICT *before* applying, so two concurrent posts of the
+    same version can't both apply (double-apply); (M1) each item is validated +
+    isolated so one malformed item can't half-apply the bundle."""
+    import time as _time
     try:
         bundle_version = int(bundle.get("bundle_version"))
     except (TypeError, ValueError):
         return {"applied": False, "error": "bundle_version required (int)"}
+
+    # H2: freshness — a signed bundle is only good for a short window.
+    try:
+        issued = float(bundle.get("issued_at"))
+    except (TypeError, ValueError):
+        return {"applied": False, "error": "issued_at required (epoch seconds)"}
+    if abs(_time.time() - issued) > config.FLEET_BUNDLE_MAX_AGE_SEC:
+        return {"applied": False, "error": "bundle expired or clock skew too large"}
+
+    items = bundle.get("items") or []
+    if not isinstance(items, list) or len(items) > MAX_ITEMS:
+        return {"applied": False, "error": f"items must be a list of <= {MAX_ITEMS}"}
+
     if bundle_version <= _latest_bundle_version():
         return {"applied": False, "reason": "stale or duplicate bundle_version",
                 "bundle_version": bundle_version}
 
-    items = bundle.get("items") or []
+    # H1: atomically claim this version FIRST. If another worker already inserted
+    # it (concurrent replay of the same bundle), we lose the claim and abort —
+    # the item side effects only run for the single winner.
+    claimed = execute_db(
+        "INSERT INTO fleet_bundles (bundle_version, item_count, note) VALUES (%s,%s,%s) "
+        "ON CONFLICT (bundle_version) DO NOTHING RETURNING bundle_version",
+        (bundle_version, len(items), (bundle.get("note") or "")[:500]))
+    if not claimed:
+        return {"applied": False, "reason": "already applied (concurrent claim)",
+                "bundle_version": bundle_version}
+
     result = {"applied": True, "bundle_version": bundle_version,
               "created": 0, "updated_following_master": 0,
-              "kept_local_override": 0, "forced_past_override": 0}
+              "kept_local_override": 0, "forced_past_override": 0, "skipped": 0}
     for item in items:
-        _apply_item(item, result)
+        # M1: isolate each item so a bad one can't abort the rest (the version is
+        # already claimed, so a partial apply can't be re-applied by replay).
+        try:
+            if not isinstance(item, dict):
+                result["skipped"] += 1
+                continue
+            _apply_item(item, result)
+        except Exception as e:
+            result["skipped"] += 1
+            print(f"[fleet] item skipped: {e}")
 
     # Optional gradual-rollout feature flags carried by the bundle.
     for feat in (bundle.get("features") or []):
@@ -96,10 +138,6 @@ def apply_bundle(bundle: dict) -> dict:
             _apply_feature_flag(feat)
         except Exception as e:
             print(f"[fleet] feature flag skipped: {e}")
-
-    execute_db("INSERT INTO fleet_bundles (bundle_version, item_count, note) "
-               "VALUES (%s,%s,%s) ON CONFLICT (bundle_version) DO NOTHING",
-               (bundle_version, len(items), (bundle.get("note") or "")[:500]))
     return result
 
 
@@ -155,15 +193,20 @@ def _apply_item(item, result):
 
 
 def _apply_feature_flag(feat):
-    from .tenancy import current_tenant_id
     name = feat.get("name")
     if not name:
         return
+    # A fleet bundle is a server-to-server call with NO request/session context,
+    # so we must NOT depend on request-derived tenant resolution. In silo this is
+    # the default tenant; ``g.tenant_id`` is used only if an embed/middleware set
+    # it (it won't for this path).
+    from flask import g
+    tid = getattr(g, "tenant_id", None) or config.DEFAULT_TENANT_ID
     execute_db(
         "INSERT INTO tenant_features (tenant_id, feature_name, enabled) VALUES (%s,%s,%s) "
         "ON CONFLICT (tenant_id, feature_name) DO UPDATE SET enabled=EXCLUDED.enabled, "
         "updated_at=NOW()",
-        (current_tenant_id(), name, bool(feat.get("enabled", True))))
+        (tid, name, bool(feat.get("enabled", True))))
 
 
 # ---- client-side override controls -------------------------------------
