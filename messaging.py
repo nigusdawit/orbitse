@@ -211,6 +211,24 @@ def _signing_secret() -> bytes:
     return hashlib.sha256(secret.encode("utf-8")).digest()
 
 
+def signing_secret_is_insecure() -> bool:
+    """True when no real signing secret is configured and `_signing_secret()`
+    would fall back to the built-in dev placeholder — meaning every HMAC token
+    is forgeable. Callers guarding a SENSITIVE token surface (the preferences
+    portal exposes a subscriber's email/phone + lets it edit opt-ins) should
+    fail CLOSED when this returns True, so a misconfigured host can't be used to
+    enumerate/modify subscribers with a self-minted token."""
+    if os.environ.get("FLASK_SECRET_KEY", "").strip():
+        return False
+    try:
+        with open(".flask_secret", "r") as f:
+            if f.read().strip():
+                return False
+    except FileNotFoundError:
+        pass
+    return True
+
+
 def make_unsubscribe_token(subscriber_id: int) -> str:
     payload = f"{int(subscriber_id)}".encode("utf-8")
     sig = hmac.new(_signing_secret(), payload, hashlib.sha256).digest()
@@ -234,6 +252,44 @@ def parse_unsubscribe_token(token: str) -> Optional[int]:
         return None
     try:
         return int(payload.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+
+# Preferences-portal token (task 043). Same HMAC construction as the unsubscribe
+# token, but the signed payload carries a distinct `prefs:` scope prefix so the
+# two token types are NOT interchangeable: an unsubscribe link (which only flips
+# opt_in off) can never be replayed to reach the broader prefs-edit surface, and
+# vice-versa. Both are unguessable capability tokens keyed to one subscriber id.
+_PREFS_SCOPE = b"prefs:"
+
+
+def make_prefs_token(subscriber_id: int) -> str:
+    payload = _PREFS_SCOPE + f"{int(subscriber_id)}".encode("utf-8")
+    sig = hmac.new(_signing_secret(), payload, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(payload + b"." + sig).decode("ascii").rstrip("=")
+
+
+def parse_prefs_token(token: str) -> Optional[int]:
+    """Return the subscriber id for a valid prefs token, else None. Rejects a
+    token whose payload lacks the `prefs:` scope (e.g. an unsubscribe token)."""
+    if not token:
+        return None
+    try:
+        pad = "=" * (-len(token) % 4)
+        raw = base64.urlsafe_b64decode((token + pad).encode("ascii"))
+    except Exception:
+        return None
+    if b"." not in raw:
+        return None
+    payload, sig = raw.split(b".", 1)
+    expected = hmac.new(_signing_secret(), payload, hashlib.sha256).digest()
+    if not hmac.compare_digest(sig, expected):
+        return None
+    if not payload.startswith(_PREFS_SCOPE):
+        return None
+    try:
+        return int(payload[len(_PREFS_SCOPE):].decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         return None
 
