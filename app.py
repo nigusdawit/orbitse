@@ -6326,6 +6326,16 @@ def setup_wizard_post():
             "error": "settings.site_settings.site_name is required and must be a non-empty string.",
         }), 400
 
+    # Ensure the singleton site_settings row exists before we attempt the
+    # atomic claim. On a fresh install the table is empty, so the UPDATE
+    # below would match zero rows and wrongly report "already finished".
+    try:
+        execute_db(
+            "INSERT INTO site_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING"
+        )
+    except Exception as e:
+        return jsonify({"error": f"Could not initialise site_settings row: {e}"}), 500
+
     # Atomic claim. Two concurrent POSTs would both pass the earlier gate
     # check (TOCTOU), so we have to claim the bootstrap slot in a single
     # SQL statement. The conditional UPDATE returns a row only for the
