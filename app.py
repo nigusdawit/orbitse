@@ -917,6 +917,11 @@ from pylego import respcache as _pylego_respcache  # noqa: E402
 
 _ADMIN_RESPCACHE = None
 _ADMIN_RESPCACHE_LOCK = threading.Lock()
+# Persistent rate-limit store (holds the windowed counters). The limiter WRAPPER
+# is rebuilt per request from the live AI Control settings, but the store must
+# persist across requests/turns or counts would reset every call.
+_ADMIN_RL_STORE = None
+_ADMIN_RL_STORE_LOCK = threading.Lock()
 
 
 def _admin_respcache_embed(text):
@@ -928,21 +933,199 @@ def _admin_respcache_embed(text):
 
 
 def _get_admin_respcache():
-    """Lazily build the process-wide admin response cache from pylego.config.
-    Disabled by default → lookup/store are no-ops."""
+    """Lazily build the process-wide admin response cache from the LIVE AI
+    Control settings (DB > env > default). Rebuilt when a setting changes (the
+    cache singleton is reset by _invalidate_ai_control). Disabled by default."""
     global _ADMIN_RESPCACHE
     if _ADMIN_RESPCACHE is not None:
         return _ADMIN_RESPCACHE
     with _ADMIN_RESPCACHE_LOCK:
         if _ADMIN_RESPCACHE is None:
-            _cfg = _pylego_config.get_config()
             _ADMIN_RESPCACHE = _pylego_respcache.ResponseCache(
                 embed_fn=_admin_respcache_embed,
                 store=_pylego_respcache.InMemoryStore(),
-                enabled=_cfg.respcache_enabled,
-                threshold=_cfg.respcache_threshold,
+                enabled=get_ai_setting("respcache_enabled"),
+                threshold=get_ai_setting("respcache_threshold"),
             )
     return _ADMIN_RESPCACHE
+
+
+# =============================================================================
+# AI CONTROL SETTINGS (Phase 5) — super-admin-tunable knobs for the Admin AI.
+# =============================================================================
+# Mirrors the ai_prompts pattern: a registry of knobs, a TTL-cached getter with
+# DB > env > default precedence, and super-admin set/reset. Each knob maps to a
+# pylego.config attribute, which already resolves env→default — so the DB row is
+# simply an override layer the panel writes. Reading is cheap (30s cache); a save
+# busts the cache (and rebuilds dependent singletons) so changes take effect
+# without a restart, propagating to other workers within the TTL.
+_AI_CONTROL_CACHE = {}            # key -> (db_value_str_or_None, expires_at)
+_AI_CONTROL_CACHE_TTL = 30
+_AI_CONTROL_CACHE_LOCK = threading.Lock()
+
+
+def _ai_control_registry():
+    """Ordered catalog of tunable knobs. `attr` is the pylego.config field that
+    supplies the env/default fallback; `type` drives coercion + the UI control."""
+    return [
+        # Reliability
+        {"key": "llm_timeout", "attr": "llm_timeout_seconds", "type": "float",
+         "group": "Reliability", "label": "LLM call timeout (seconds)",
+         "env": "ADMIN_CHAT_LLM_TIMEOUT",
+         "description": "Max seconds for an LLM call. 0 = SDK default (no extra bound)."},
+        {"key": "llm_max_retries", "attr": "llm_max_retries", "type": "int",
+         "group": "Reliability", "label": "Max retries on transient errors",
+         "env": "ADMIN_CHAT_LLM_MAX_RETRIES",
+         "description": "Extra attempts when opening the stream fails transiently (429/5xx/timeout). 0 = none."},
+        {"key": "provider_fallback", "attr": "provider_fallback_enabled", "type": "bool",
+         "group": "Reliability", "label": "Provider fallback",
+         "env": "ADMIN_CHAT_PROVIDER_FALLBACK",
+         "description": "If the primary provider can't start the stream, try the fallback model."},
+        {"key": "fallback_model", "attr": "admin_chat_fallback_model", "type": "string",
+         "group": "Reliability", "label": "Fallback model",
+         "env": "ADMIN_CHAT_FALLBACK_MODEL",
+         "description": "Model on the OTHER provider to fall back to (e.g. claude-… or gpt-…). Blank = no fallback."},
+        {"key": "rate_limit_enabled", "attr": "admin_rate_limit_enabled", "type": "bool",
+         "group": "Reliability", "label": "Rate limit admin chat",
+         "env": "ADMIN_CHAT_RATE_LIMIT_ENABLED",
+         "description": "Cap how many admin-chat requests a session can make per window."},
+        {"key": "rate_limit_max", "attr": "admin_rate_limit_max", "type": "int",
+         "group": "Reliability", "label": "Rate limit: max requests",
+         "env": "ADMIN_CHAT_RATE_LIMIT_MAX", "description": "Requests allowed per window."},
+        {"key": "rate_limit_window", "attr": "admin_rate_limit_window_seconds", "type": "int",
+         "group": "Reliability", "label": "Rate limit: window (seconds)",
+         "env": "ADMIN_CHAT_RATE_LIMIT_WINDOW", "description": "Length of the rate-limit window."},
+        # Smarter context
+        {"key": "history_token_budget", "attr": "history_token_budget", "type": "int",
+         "group": "Context", "label": "History token budget",
+         "env": "ADMIN_CHAT_HISTORY_TOKEN_BUDGET",
+         "description": "Trim old turns to fit this many tokens. 0 = off (keep the fixed 60-turn window)."},
+        {"key": "history_summarize_enabled", "attr": "history_summarize_enabled", "type": "bool",
+         "group": "Context", "label": "Summarize dropped history",
+         "env": "ADMIN_CHAT_HISTORY_SUMMARIZE",
+         "description": "When trimming, summarize the dropped oldest turns into a short note instead of dropping them."},
+        {"key": "respcache_enabled", "attr": "respcache_enabled", "type": "bool",
+         "group": "Context", "label": "Response cache (no-tool answers)",
+         "env": "ADMIN_RESPCACHE_ENABLED",
+         "description": "Cache + reuse answers for repeated questions that used no tools (never caches live-data answers)."},
+        {"key": "respcache_threshold", "attr": "respcache_threshold", "type": "float",
+         "group": "Context", "label": "Response cache similarity threshold",
+         "env": "ADMIN_RESPCACHE_THRESHOLD",
+         "description": "How close a question must be to reuse a cached answer (0.80–0.99)."},
+        # Safety
+        {"key": "sqlguard_enabled", "attr": "sqlguard_enabled", "type": "bool",
+         "group": "Safety", "label": "Extra SQL guard (stricter)",
+         "env": "ADMIN_SQLGUARD_ENABLED",
+         "description": "Add a second read-only-SQL validator on top of the built-in one. Can over-reject; off by default."},
+        {"key": "redact_enabled", "attr": "redact_enabled", "type": "bool",
+         "group": "Safety", "label": "Redact secrets in activity/logs",
+         "env": "ADMIN_REDACT_ENABLED",
+         "description": "Mask emails/keys/phones in the observability log + stored activity. Log-only; safe to leave on."},
+        # Activity
+        {"key": "activity_logging_enabled", "attr": "activity_logging_enabled", "type": "bool",
+         "group": "Activity", "label": "Log admin-AI turns to the database",
+         "env": "ADMIN_CHAT_ACTIVITY_LOGGING",
+         "description": "Persist each admin-AI turn (for the AI Activity tab). Turn off to stop recording."},
+    ]
+
+
+_AI_CONTROL_BY_KEY = {e["key"]: e for e in _ai_control_registry()}
+
+
+def _ai_control_coerce(type_, raw):
+    """Coerce a stored string / submitted value to the knob's type. Raises on
+    a clearly-invalid value so set_ai_setting can reject bad input."""
+    if type_ == "bool":
+        if isinstance(raw, bool):
+            return raw
+        return str(raw).strip().lower() in ("1", "true", "yes", "on")
+    if type_ == "int":
+        return int(float(raw))
+    if type_ == "float":
+        return float(raw)
+    return str(raw)
+
+
+def get_ai_setting(key):
+    """Effective value of an AI Control knob: DB override if set, else the
+    pylego.config (env→default) value. TTL-cached; never raises (falls back to
+    the env/default layer on any DB error)."""
+    spec = _AI_CONTROL_BY_KEY.get(key)
+    if spec is None:
+        raise KeyError(f"unknown AI control key: {key}")
+    now = _time.time()
+    cached = _AI_CONTROL_CACHE.get(key)
+    if cached is not None and cached[1] > now:
+        db_val = cached[0]
+    else:
+        db_val = None
+        try:
+            row = query_db("SELECT value FROM ai_control_settings WHERE key=%s",
+                           (key,), fetchone=True)
+            if row is not None:
+                db_val = row.get("value")
+        except Exception:
+            db_val = None
+        _AI_CONTROL_CACHE[key] = (db_val, now + _AI_CONTROL_CACHE_TTL)
+    if db_val is not None and db_val != "":
+        try:
+            return _ai_control_coerce(spec["type"], db_val)
+        except Exception:
+            pass  # fall through to env/default on a corrupt stored value
+    return getattr(_pylego_config.get_config(), spec["attr"])
+
+
+def _ai_setting_source(key):
+    """Where the effective value comes from — for the UI: 'db' | 'env' | 'default'."""
+    try:
+        row = query_db("SELECT value FROM ai_control_settings WHERE key=%s",
+                       (key,), fetchone=True)
+        if row is not None and (row.get("value") or "") != "":
+            return "db"
+    except Exception:
+        pass
+    spec = _AI_CONTROL_BY_KEY.get(key, {})
+    return "env" if os.environ.get(spec.get("env", ""), "") != "" else "default"
+
+
+def _invalidate_ai_control(key=None):
+    """Bust the settings cache + rebuild dependent singletons so a save takes
+    effect immediately in THIS worker (others converge within the TTL). The rate
+    limiter STORE persists (it holds counters); its wrapper is rebuilt per
+    request from live settings, so nothing to reset there."""
+    global _ADMIN_RESPCACHE
+    with _AI_CONTROL_CACHE_LOCK:
+        if key is None:
+            _AI_CONTROL_CACHE.clear()
+        else:
+            _AI_CONTROL_CACHE.pop(key, None)
+    _ADMIN_RESPCACHE = None        # rebuilt from live settings on next use
+
+
+def set_ai_setting(key, value, by=""):
+    """Persist a knob override (super-admin). Validates by coercing; stores the
+    canonical string. Returns the coerced value."""
+    spec = _AI_CONTROL_BY_KEY.get(key)
+    if spec is None:
+        raise ValueError(f"unknown AI control key: {key}")
+    coerced = _ai_control_coerce(spec["type"], value)  # raises on invalid
+    sval = ("true" if coerced else "false") if spec["type"] == "bool" else str(coerced)
+    execute_db(
+        "INSERT INTO ai_control_settings (key, value, updated_by, updated_at) "
+        "VALUES (%s, %s, %s, NOW()) "
+        "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, "
+        "updated_by=EXCLUDED.updated_by, updated_at=NOW()",
+        (key, sval, by or ""))
+    _invalidate_ai_control(key)
+    return coerced
+
+
+def reset_ai_setting(key, by=""):
+    """Delete a knob override → revert to env/default."""
+    if key not in _AI_CONTROL_BY_KEY:
+        raise ValueError(f"unknown AI control key: {key}")
+    execute_db("DELETE FROM ai_control_settings WHERE key=%s", (key,))
+    _invalidate_ai_control(key)
 
 
 # =============================================================================
@@ -4041,6 +4224,51 @@ def init_db():
                     updated_by  TEXT
                 );
                 """
+            )
+
+            # AI CONTROL SETTINGS (Phase 5) — super-admin-tunable knobs for the
+            # Admin AI (reliability/context/safety/activity). One row per knob;
+            # absent = fall back to env var, then to the registry default. Also
+            # declared in migration 0009 for existing DBs. Mirrors ai_prompts.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ai_control_settings (
+                    key         TEXT PRIMARY KEY,
+                    value       TEXT NOT NULL DEFAULT '',
+                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_by  TEXT NOT NULL DEFAULT ''
+                );
+                """
+            )
+
+            # AI ACTIVITY LOG (Phase 5) — one row per admin-AI turn, written by
+            # the pylego.obs DB sink. Metadata + (redacted) question/answer so the
+            # super admin can review what the AI did. Also in migration 0009.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ai_activity_log (
+                    id            BIGSERIAL PRIMARY KEY,
+                    tenant_id     INTEGER NOT NULL DEFAULT 1,
+                    session_id    TEXT,
+                    model         TEXT,
+                    provider      TEXT,
+                    rounds        INTEGER NOT NULL DEFAULT 0,
+                    tool_calls    INTEGER NOT NULL DEFAULT 0,
+                    tokens_in     INTEGER NOT NULL DEFAULT 0,
+                    tokens_out    INTEGER NOT NULL DEFAULT 0,
+                    cost_usd      DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    duration_ms   INTEGER NOT NULL DEFAULT 0,
+                    status        TEXT,
+                    error_text    TEXT,
+                    user_message  TEXT,
+                    final_answer  TEXT,
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS ai_activity_log_recent_idx "
+                "ON ai_activity_log (created_at DESC);"
             )
     finally:
         conn.close()
@@ -13444,7 +13672,7 @@ def _stream_round_openai(model, messages, tools, max_tokens=4096, temperature=0.
     # (Claude's round already had a 25s bound; this closes the OpenAI gap).
     _client = openai_client
     try:
-        _t = _pylego_config.get_config().llm_timeout_seconds
+        _t = get_ai_setting("llm_timeout")
         if _t and _t > 0:
             _client = openai_client.with_options(timeout=_t)
     except Exception:
@@ -13826,7 +14054,7 @@ def _admin_tool_run_sql(sql=None, **_):
     # can only REJECT more (never permit more), so turning it on can't open a
     # hole. The execution below also pins transaction_read_only regardless.
     try:
-        if _pylego_config.get_config().sqlguard_enabled:
+        if get_ai_setting("sqlguard_enabled"):
             from pylego import sqlguard as _sg
             _ok, _reason = _sg.check(safe)
             if not _ok:
@@ -19160,9 +19388,8 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8,
     #    answered WITHOUT tools (a static/how-to answer), serve it and skip the
     #    LLM entirely. Cache is disabled by default; data-dependent questions are
     #    never stored (see the store step after the loop), so they never hit here.
-    _rc_cfg = _pylego_config.get_config()
     messages = _pylego_history.trim_to_budget(
-        messages, _rc_cfg.history_token_budget, model)
+        messages, get_ai_setting("history_token_budget"), model)
     _respcache = _get_admin_respcache()
     _cached_answer = _respcache.lookup(user_message)
     if _cached_answer:
@@ -19217,23 +19444,22 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8,
                 return _stream_round_claude(_m, _csys, _cmsgs, _ctools,
                                             max_tokens=2048, temperature=0.3)
 
-            _rcfg = _pylego_config.get_config()
+            _fb_on = get_ai_setting("provider_fallback")
+            _fb_model = get_ai_setting("fallback_model")
             if _is_claude:
                 _openers = [lambda: _open_claude(model)]
-                _fb_model = _rcfg.admin_chat_fallback_model
-                if (_rcfg.provider_fallback_enabled and _fb_model
+                if (_fb_on and _fb_model
                         and not _fb_model.lower().startswith("claude")
                         and openai_client is not None):
                     _openers.append(lambda: _open_openai(_fb_model))
             else:
                 _openers = [lambda: _open_openai(model)]
-                _fb_model = _rcfg.admin_chat_fallback_model
-                if (_rcfg.provider_fallback_enabled and _fb_model
+                if (_fb_on and _fb_model
                         and _fb_model.lower().startswith("claude")
                         and anthropic_client is not None):
                     _openers.append(lambda: _open_claude(_fb_model))
             round_iter = _pylego_router.reliable_round(
-                _openers, max_retries=_rcfg.llm_max_retries)
+                _openers, max_retries=get_ai_setting("llm_max_retries"))
             for event in round_iter:
                 kind = event[0]
                 if kind == "token":
@@ -19415,15 +19641,39 @@ def _admin_chat_run_loop(session_id, user_message, max_rounds=8):
     return final_text, tool_trace
 
 
-def _admin_chat_rate_limited(session_id):
-    """Optional per-session admin-chat rate limit (pylego.ratelimit).
+def _admin_rate_limit_store():
+    """Lazily build the persistent rate-limit store (Postgres cluster-wide when
+    configured + DB helpers available, else in-memory). Built once; the limiter
+    wrapper around it is rebuilt per request from live settings."""
+    global _ADMIN_RL_STORE
+    if _ADMIN_RL_STORE is not None:
+        return _ADMIN_RL_STORE
+    with _ADMIN_RL_STORE_LOCK:
+        if _ADMIN_RL_STORE is None:
+            try:
+                if _pylego_config.get_config().admin_rate_limit_store == "postgres":
+                    _ADMIN_RL_STORE = _pylego_ratelimit.PostgresStore(query_db, execute_db)
+                else:
+                    _ADMIN_RL_STORE = _pylego_ratelimit.MemoryStore()
+            except Exception:
+                _ADMIN_RL_STORE = _pylego_ratelimit.MemoryStore()
+    return _ADMIN_RL_STORE
 
-    Returns a Flask 429 tuple when the limit is exceeded, else None. The limiter
-    is DISABLED by default (ADMIN_CHAT_RATE_LIMIT_ENABLED), so this is a no-op
-    returning None until an operator turns it on; and it FAILS OPEN on any error
-    so it can never wrongly block a legitimate admin request."""
+
+def _admin_chat_rate_limited(session_id):
+    """Optional per-session admin-chat rate limit, driven by the LIVE AI Control
+    settings (so the super admin can toggle/tune it from the panel with no
+    restart). Returns a Flask 429 tuple when exceeded, else None. Disabled by
+    default; FAILS OPEN on any error so it can never wrongly block a request."""
     try:
-        limiter = _pylego_ratelimit.get_admin_chat_limiter()
+        if not get_ai_setting("rate_limit_enabled"):
+            return None
+        limiter = _pylego_ratelimit.RateLimiter(
+            limit=get_ai_setting("rate_limit_max"),
+            window_seconds=get_ai_setting("rate_limit_window"),
+            store=_admin_rate_limit_store(),
+            enabled=True,
+        )
         decision = limiter.check(f"admin_chat:{current_tenant_id()}:{session_id}")
     except Exception:
         return None
@@ -25795,6 +26045,71 @@ def admin_update_chatbot():
 # the super-admin role: the tab is hidden from clients in the template, but the
 # real boundary is _require_super_admin_role() here so a client session can
 # never read or change prompt wording even by calling the API directly.
+
+@app.route("/admin/api/ai-control", methods=["GET"])
+@admin_required
+def admin_list_ai_control():
+    """Return every AI Control knob with its effective value + where it comes
+    from (db override / env / default). Super-admin only."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    items = []
+    for spec in _ai_control_registry():
+        key = spec["key"]
+        try:
+            effective = get_ai_setting(key)
+        except Exception:
+            effective = None
+        items.append({
+            "key": key, "label": spec["label"], "group": spec["group"],
+            "type": spec["type"], "description": spec["description"],
+            "env": spec["env"],
+            "value": effective,
+            "default": getattr(_pylego_config.get_config(), spec["attr"]),
+            "source": _ai_setting_source(key),
+        })
+    return jsonify({"settings": items})
+
+
+@app.route("/admin/api/ai-control/<key>", methods=["PUT"])
+@admin_required
+def admin_set_ai_control(key):
+    """Persist an AI Control override. Body: {"value": ...}. Super-admin only."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    body = request.get_json(silent=True) or {}
+    if "value" not in body:
+        return jsonify({"error": "missing_field", "field": "value"}), 400
+    try:
+        by = "super_admin"
+        new_val = set_ai_setting(key, body.get("value"), by=by)
+        return jsonify({"key": key, "value": new_val, "source": _ai_setting_source(key)})
+    except ValueError as ve:
+        return jsonify({"error": "invalid", "detail": str(ve)}), 400
+    except Exception as e:
+        print(f"[ai-control] set {key} failed: {e}")
+        return jsonify({"error": "save_failed", "detail": str(e)}), 500
+
+
+@app.route("/admin/api/ai-control/<key>/reset", methods=["POST"])
+@admin_required
+def admin_reset_ai_control(key):
+    """Delete an override → revert the knob to its env/default. Super-admin only."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    try:
+        reset_ai_setting(key)
+        return jsonify({"key": key, "value": get_ai_setting(key),
+                        "source": _ai_setting_source(key)})
+    except ValueError as ve:
+        return jsonify({"error": "invalid", "detail": str(ve)}), 400
+    except Exception as e:
+        print(f"[ai-control] reset {key} failed: {e}")
+        return jsonify({"error": "reset_failed", "detail": str(e)}), 500
+
 
 @app.route("/admin/api/ai-prompts", methods=["GET"])
 @admin_required

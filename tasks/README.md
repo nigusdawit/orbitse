@@ -51,6 +51,15 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 028 | pylego Smarter context (token-trim + semantic response cache) | done | task/028-pylego-context | 027 | — | |
 | 029 | pylego Safety (sqlguard + redact + structured args + action-queue) | done | task/029-pylego-safety | 028 | — | |
 
+## Phase 5 — AI Control & Activity (panel-controlled + persisted; see `PLAN_AI_CONTROL.md`)
+
+| ID | Title | Status | Branch | Depends on | Parallel-with | Drift |
+|----|-------|--------|--------|------------|---------------|-------|
+| 030 | AI Control settings backend (DB-backed live knobs + routes) | done | task/030-ai-control-settings | 026–029 | — | |
+| 031 | AI Activity persistence (obs DB sink + /admin/api/ai-activity) | not_started | task/031-ai-activity | 030 | — | |
+| 032 | History summarization (summarize dropped turns) | not_started | task/032-history-summarize | 030 | — | |
+| 033 | AI Control + AI Activity admin tabs (super-admin-only) | not_started | task/033-ai-control-tabs | 030,031 | — | |
+
 **Status legend:** not_started | in_progress | paused | blocked | awaiting_review | done
 
 **Concurrency note:** M1 and M2 touch disjoint files (visitor widget/chat vs admin shell) and can run
