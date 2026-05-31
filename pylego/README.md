@@ -19,8 +19,8 @@ propagate. See `PLAN_ADMIN_AI.md`.
 | `config.py` | `@altay/typed-config` | ✅ task 026 — one env-driven settings object; per-feature `enabled`. |
 | `obs.py` | `@altay/langfuse-client` | ✅ task 026 — `observe_admin_turn(meta, events)` pass-through tracer; structured local logs by default, auto-Langfuse when keys present. |
 | `evals/` | `@altay/eval-harness` (+ ragas) | ✅ task 026 — dependency-free eval runner + seed admin-AI suite. |
-| `llm_router.py` | `@altay/llm-router` | ⏳ task 027 — provider fallback + retry + timeout. |
-| `ratelimit.py` | `@altay/rate-limit` | ⏳ task 027 — DB-backed fixed-window limiter. |
+| `llm_router.py` | `@altay/llm-router` | ✅ task 027 — `reliable_round` retry/fallback before first token + opt-in OpenAI timeout. Identity at default config. |
+| `ratelimit.py` | `@altay/rate-limit` | ✅ task 027 — fixed-window limiter, Postgres (cluster-wide) or memory store, fail-open. Default off. |
 | `history.py` | `@altay/chat-history` | ⏳ task 028 — token-aware trim. |
 | `respcache.py` | `@altay/semantic-response-cache` | ⏳ task 028. |
 | `sqlguard.py` | `@altay/sql-guardrail` | ⏳ task 029. |

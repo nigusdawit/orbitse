@@ -900,6 +900,15 @@ import rag  # noqa: E402 — must come after openai_client + DB helpers
 # break a chat turn). See pylego/obs.py. Importing it only pulls in stdlib
 # (langfuse is lazy-loaded later, and only if keys are set).
 from pylego import obs as _pylego_obs  # noqa: E402
+# pylego reliability (task 027): retry/fallback + rate limit for the Admin AI.
+# Both are INERT at their default config (no retries, no fallback, limiter off),
+# so importing/wiring them changes nothing until an operator opts in via env.
+from pylego import llm_router as _pylego_router  # noqa: E402
+from pylego import ratelimit as _pylego_ratelimit  # noqa: E402
+from pylego import config as _pylego_config  # noqa: E402
+# Give the rate limiter the monolith's DB helpers so its (optional) Postgres
+# store can enforce cluster-wide limits across gunicorn workers.
+_pylego_ratelimit.configure(query_db, execute_db)
 
 
 # =============================================================================
@@ -13395,7 +13404,18 @@ def _stream_round_openai(model, messages, tools, max_tokens=4096, temperature=0.
     total_tokens). We capture that and yield a final ("usage", {...})
     event so callers can write a cost ledger row without re-tokenizing
     the conversation."""
-    stream = openai_client.chat.completions.create(
+    # Optional explicit per-call timeout (pylego.config ADMIN_CHAT_LLM_TIMEOUT).
+    # Default is 0 → use the SDK default (no behavior change). When set >0 we
+    # bound the call so a hung provider can't stall an SSE stream indefinitely
+    # (Claude's round already had a 25s bound; this closes the OpenAI gap).
+    _client = openai_client
+    try:
+        _t = _pylego_config.get_config().llm_timeout_seconds
+        if _t and _t > 0:
+            _client = openai_client.with_options(timeout=_t)
+    except Exception:
+        _client = openai_client  # fail-open to current behavior
+    stream = _client.chat.completions.create(
         model=model,
         messages=messages,
         tools=tools,
@@ -19116,16 +19136,40 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8,
             # both a different streaming primitive and a different
             # messages/tools shape — _messages_for_claude / _tools_for_claude
             # are the same converters the visitor chat uses.
+            # Build provider "openers" (zero-arg callables returning a fresh
+            # round stream). The primary matches the chosen model; pylego may
+            # retry it on a transient stream-open failure and — only when
+            # explicitly configured (ADMIN_CHAT_PROVIDER_FALLBACK +
+            # ADMIN_CHAT_FALLBACK_MODEL + the other client present) — fall back
+            # to the other provider. With the default config this resolves to a
+            # single opener with zero retries, i.e. exactly the prior behavior.
+            def _open_openai(_m):
+                return _stream_round_openai(_m, messages, round_tools,
+                                            max_tokens=2048, temperature=0.3)
+
+            def _open_claude(_m):
+                _csys, _cmsgs = _messages_for_claude(messages)
+                _ctools = _tools_for_claude(round_tools)
+                return _stream_round_claude(_m, _csys, _cmsgs, _ctools,
+                                            max_tokens=2048, temperature=0.3)
+
+            _rcfg = _pylego_config.get_config()
             if _is_claude:
-                claude_sys, claude_msgs = _messages_for_claude(messages)
-                claude_tools = _tools_for_claude(round_tools)
-                round_iter = _stream_round_claude(
-                    model, claude_sys, claude_msgs, claude_tools,
-                    max_tokens=2048, temperature=0.3)
+                _openers = [lambda: _open_claude(model)]
+                _fb_model = _rcfg.admin_chat_fallback_model
+                if (_rcfg.provider_fallback_enabled and _fb_model
+                        and not _fb_model.lower().startswith("claude")
+                        and openai_client is not None):
+                    _openers.append(lambda: _open_openai(_fb_model))
             else:
-                round_iter = _stream_round_openai(
-                    model, messages, round_tools,
-                    max_tokens=2048, temperature=0.3)
+                _openers = [lambda: _open_openai(model)]
+                _fb_model = _rcfg.admin_chat_fallback_model
+                if (_rcfg.provider_fallback_enabled and _fb_model
+                        and _fb_model.lower().startswith("claude")
+                        and anthropic_client is not None):
+                    _openers.append(lambda: _open_claude(_fb_model))
+            round_iter = _pylego_router.reliable_round(
+                _openers, max_retries=_rcfg.llm_max_retries)
             for event in round_iter:
                 kind = event[0]
                 if kind == "token":
@@ -19298,6 +19342,26 @@ def _admin_chat_run_loop(session_id, user_message, max_rounds=8):
     return final_text, tool_trace
 
 
+def _admin_chat_rate_limited(session_id):
+    """Optional per-session admin-chat rate limit (pylego.ratelimit).
+
+    Returns a Flask 429 tuple when the limit is exceeded, else None. The limiter
+    is DISABLED by default (ADMIN_CHAT_RATE_LIMIT_ENABLED), so this is a no-op
+    returning None until an operator turns it on; and it FAILS OPEN on any error
+    so it can never wrongly block a legitimate admin request."""
+    try:
+        limiter = _pylego_ratelimit.get_admin_chat_limiter()
+        decision = limiter.check(f"admin_chat:{current_tenant_id()}:{session_id}")
+    except Exception:
+        return None
+    if not decision.allowed:
+        return (jsonify({
+            "error": "rate_limited",
+            "message": "Too many admin chat requests — please slow down.",
+        }), 429, {"Retry-After": str(decision.reset_seconds)})
+    return None
+
+
 @app.route("/admin/api/chat/send", methods=["POST"])
 @admin_required
 def admin_agent_chat_send():
@@ -19313,6 +19377,9 @@ def admin_agent_chat_send():
     _cap = enforce_cost_cap("admin_chat")
     if _cap is not None:
         return _cap
+    _rl = _admin_chat_rate_limited(session_id)
+    if _rl is not None:
+        return _rl
     text, trace = _admin_chat_run_loop(session_id, message)
     return jsonify({"reply": text, "tool_trace": trace})
 
@@ -19357,6 +19424,9 @@ def admin_agent_chat_stream():
     _cap = enforce_cost_cap("admin_chat")
     if _cap is not None:
         return _cap
+    _rl = _admin_chat_rate_limited(session_id)
+    if _rl is not None:
+        return _rl
 
     def generate():
         # Wrap the loop's event generator with pylego observability. This is a
