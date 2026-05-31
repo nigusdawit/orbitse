@@ -4712,6 +4712,7 @@ def init_db():
                     email             TEXT NOT NULL DEFAULT '',
                     phone             TEXT NOT NULL DEFAULT '',
                     requested_time    TEXT NOT NULL DEFAULT '',
+                    start_iso         TEXT NOT NULL DEFAULT '',
                     duration_minutes  INTEGER NOT NULL DEFAULT 30,
                     notes             TEXT NOT NULL DEFAULT '',
                     status            TEXT NOT NULL DEFAULT 'requested',
@@ -11884,20 +11885,45 @@ def request_callback(name=None, phone=None, preferred_time=None, reason=None, **
         return {"ok": False, "message": "Sorry, I couldn't log your callback request just now."}
 
 
-def _meeting_calendar_push(name, email, requested_time, duration_minutes, notes):
+def _normalize_meeting_time(requested_time, start_iso=None):
+    """Return a valid ISO 8601 / RFC 3339 timestamp for the calendar, or "".
+
+    Primary path: the model supplies `start_iso` (it can compute it from the
+    visitor's phrasing + today's date); we VALIDATE it parses before trusting
+    it — never send unvalidated text to a calendar API. Fallback: best-effort
+    parse of the free-text `requested_time` via python-dateutil IF it's
+    installed (optional dep). Anything we can't validate → "" (store-only)."""
+    from datetime import datetime as _dt
+    cand = (start_iso or "").strip()
+    if cand:
+        try:
+            _dt.fromisoformat(cand.replace("Z", "+00:00"))
+            return cand  # valid — keep the model's original (offset/Z preserved)
+        except Exception:
+            pass
+    txt = (requested_time or "").strip()
+    if txt:
+        try:
+            from dateutil import parser as _dup  # optional; absent → skip
+            return _dup.parse(txt).isoformat()
+        except Exception:
+            pass
+    return ""
+
+
+def _meeting_calendar_push(name, email, start_iso, duration_minutes, notes):
     """OPTIONAL live calendar push (task 047). When a Calendar MCP server is
-    configured (meeting_calendar_mcp_server), call its create-event tool and
-    return the created event id. Fail-open: returns "" when no server is
-    configured, the server isn't found/enabled, or the call errors — the
-    booking is still recorded as 'requested'. This is the credential-dependent
-    leg; with no connected calendar it's a no-op (store-only).
+    configured (meeting_calendar_mcp_server), call its create-event tool with a
+    VALIDATED ISO start and return the created event id. Fail-open: returns ""
+    when no server is configured, no valid start, the server isn't found, or the
+    call errors — the booking is still recorded as 'requested'.
 
     OPERATOR RUNBOOK: connect a Calendar MCP server in the Connectors tab whose
     create-event tool accepts {summary, start, duration_minutes, attendee_email,
-    description}, then set meeting_calendar_mcp_server (+ optionally
-    meeting_calendar_tool) in AI Control."""
+    description} (start is RFC 3339), then set meeting_calendar_mcp_server (+
+    optionally meeting_calendar_tool) in AI Control."""
     server_name = (get_ai_setting("meeting_calendar_mcp_server") or "").strip()
-    if not server_name:
+    if not server_name or not (start_iso or "").strip():
         return ""
     tool = (get_ai_setting("meeting_calendar_tool") or "").strip() or "create_event"
     try:
@@ -11909,7 +11935,7 @@ def _meeting_calendar_push(name, email, requested_time, duration_minutes, notes)
             return ""
         result, err = _mcp_call_tool(server, tool, {
             "summary": f"Meeting with {name or email or 'website visitor'}",
-            "start": requested_time,
+            "start": start_iso,
             "duration_minutes": duration_minutes,
             "attendee_email": email,
             "description": notes or "",
@@ -11926,13 +11952,18 @@ def _meeting_calendar_push(name, email, requested_time, duration_minutes, notes)
         return ""
 
 
-def book_meeting(name=None, email=None, requested_time=None, notes=None,
-                 duration_minutes=None, phone=None, **_extra):
+def book_meeting(name=None, email=None, requested_time=None, start_iso=None,
+                 notes=None, duration_minutes=None, phone=None, **_extra):
     """Book / request a meeting the visitor wants (Phase 6 / Epic F, task 047).
     GATED by 'meetings_enabled' (default OFF, master-switch-aware). Needs an
     email and a requested time. Records the request; if a Calendar MCP server is
-    configured it also creates a real event (status → 'booked'), else stores it
-    as 'requested' for the team. Optionally notifies the team. Never raises."""
+    configured AND we have a valid ISO start time it also creates a real event
+    (status → 'booked'), else stores it as 'requested' for the team. Optionally
+    notifies the team. Never raises.
+
+    `requested_time` is the visitor's phrasing (kept for display); `start_iso`
+    is the RFC 3339 timestamp the model computes from it — validated before any
+    calendar push so we never send a calendar API free text (task 051)."""
     try:
         if not get_ai_setting("meetings_enabled"):
             return {"ok": False, "message": "Meeting booking isn't available right now."}
@@ -11951,14 +11982,16 @@ def book_meeting(name=None, email=None, requested_time=None, notes=None,
         dur = max(5, min(dur, 480))
         ph = (phone or "").strip()[:50]
         nt = (notes or "").strip()[:2000]
-        # Optional live calendar event (fail-open to store-only).
-        event_id = _meeting_calendar_push(nm, em, when, dur, nt)
+        iso = _normalize_meeting_time(when, start_iso)[:64]
+        # Optional live calendar event (fail-open to store-only; only with a
+        # valid ISO start so we never push free text to a calendar API).
+        event_id = _meeting_calendar_push(nm, em, iso, dur, nt)
         status = "booked" if event_id else "requested"
         row = execute_db(
             "INSERT INTO meetings (tenant_id, name, email, phone, requested_time, "
-            " duration_minutes, notes, status, calendar_event_id) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-            (current_tenant_id(), nm, em, ph, when, dur, nt, status, event_id))
+            " start_iso, duration_minutes, notes, status, calendar_event_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            (current_tenant_id(), nm, em, ph, when, iso, dur, nt, status, event_id))
         if not row:
             return {"ok": False, "message": "Sorry, I couldn't book that just now."}
         try:
@@ -12928,7 +12961,8 @@ CHAT_TOOLS = [
         "parameters": {"type": "object", "properties": {
             "name": {"type": "string"},
             "email": {"type": "string"},
-            "requested_time": {"type": "string", "description": "Requested date/time, e.g. 'Tue Jun 3 at 2pm ET'."},
+            "requested_time": {"type": "string", "description": "The visitor's stated date/time in their own words, e.g. 'Tue Jun 3 at 2pm ET'."},
+            "start_iso": {"type": "string", "description": "The same time as a full RFC 3339 / ISO 8601 timestamp WITH timezone offset, computed from the visitor's words and today's date, e.g. '2026-06-03T14:00:00-04:00'. Required for the meeting to land on a calendar."},
             "duration_minutes": {"type": "integer"},
             "notes": {"type": "string"},
             "phone": {"type": "string"},
@@ -27989,8 +28023,8 @@ def admin_list_meetings():
         limit = 100
     tid = current_tenant_id()
     rows = query_db(
-        "SELECT id, name, email, phone, requested_time, duration_minutes, notes, "
-        "status, calendar_event_id, created_at FROM meetings "
+        "SELECT id, name, email, phone, requested_time, start_iso, duration_minutes, "
+        "notes, status, calendar_event_id, created_at FROM meetings "
         "WHERE tenant_id=%s ORDER BY id DESC LIMIT %s", (tid, limit)) or []
     return jsonify({"meetings": [_iso_row(r, "created_at") for r in rows]})
 

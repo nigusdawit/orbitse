@@ -63,12 +63,45 @@ def test_store_only_requested():
     app.set_ai_setting("meetings_enabled", True); app._invalidate_ai_control()
     try:
         r = app.book_meeting(name="Jo", email="jo@example.com",
-                             requested_time="Tue Jun 3 2pm", notes="demo")
+                             requested_time="Tue Jun 3 2pm",
+                             start_iso="2026-06-03T14:00:00-04:00", notes="demo")
         assert r["ok"] is True and r.get("requested") is True
-        row = app.query_db("SELECT status, calendar_event_id, duration_minutes "
+        row = app.query_db("SELECT status, calendar_event_id, duration_minutes, start_iso "
                            "FROM meetings ORDER BY id DESC", fetchone=True)
         assert row["status"] == "requested" and row["calendar_event_id"] == ""
         assert row["duration_minutes"] == 30   # default
+        assert row["start_iso"] == "2026-06-03T14:00:00-04:00"  # validated + stored
+    finally:
+        _reset(); _wipe()
+
+
+# ---- ISO datetime normalization (task 051) ----------------------------------
+
+def test_normalize_meeting_time_validates_iso():
+    # Valid ISO (with offset) is kept verbatim.
+    assert app._normalize_meeting_time("whatever", "2026-06-03T14:00:00-04:00") == "2026-06-03T14:00:00-04:00"
+    # 'Z' suffix is accepted.
+    assert app._normalize_meeting_time("", "2026-06-03T18:00:00Z") == "2026-06-03T18:00:00Z"
+    # Garbage ISO with no parseable free-text fallback → "".
+    assert app._normalize_meeting_time("sometime next week", "not-a-date") == ""
+    # No inputs → "".
+    assert app._normalize_meeting_time("", "") == ""
+
+
+def test_invalid_iso_is_store_only(monkeypatch):
+    _reset(); _wipe()
+    app.set_ai_setting("meetings_enabled", True); app._invalidate_ai_control()
+    # Even if a calendar push were wired, an unparseable time must NOT reach it.
+    seen = {}
+    monkeypatch.setattr(app, "_meeting_calendar_push",
+                        lambda n, e, iso, d, nt: seen.update(iso=iso) or "")
+    try:
+        r = app.book_meeting(email="jo@example.com",
+                             requested_time="sometime soon", start_iso="garbage")
+        assert r["ok"] is True and r.get("requested") is True
+        assert seen.get("iso") == ""        # empty ISO passed → push no-ops
+        row = app.query_db("SELECT start_iso FROM meetings ORDER BY id DESC", fetchone=True)
+        assert row["start_iso"] == ""
     finally:
         _reset(); _wipe()
 
