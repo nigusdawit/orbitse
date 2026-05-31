@@ -68,8 +68,9 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 035 | Epic A: visitor reliability/context (pylego) + eval seed | done | task/035-visitor-pylego | 034 | |
 | 036 | Epic B: RAG audience scoping + doc portal | done | task/036-rag-audience | 034 | |
 | 037 | Safety: master AI-enhancements kill switch | done | task/037-master-killswitch | 030 | inserted ahead of roadmap (user-requested off-switch) |
-| 038 | Epic B: async ingestion + hybrid retrieval + visitor KB tool | not_started | task/038-rag-async | 036 | |
-| 039 | Epic B: optional OCR ingestion | not_started | task/039-rag-ocr | 038 | |
+| 038 | Epic B: visitor KB tool (audience-scoped retrieval) | done | task/038-visitor-kb-tool | 036 | |
+| 039 | Epic B: async ingestion + hybrid retrieval | not_started | task/039-rag-async | 038 | |
+| 039b | Epic B: optional OCR ingestion | not_started | task/039b-rag-ocr | 039 | |
 | 040 | Epic C: per-request model routing | not_started | task/040-model-routing | 034 | |
 | 041 | Epic C: prompt caching + page-gen speed | not_started | task/041-prompt-cache | 040 | |
 | 042 | Epic D: visitor profile/CRM + needs capture | not_started | task/042-visitor-profiles | 034 | |

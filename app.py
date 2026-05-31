@@ -11246,6 +11246,36 @@ def lookup_faq(query=None, limit=8):
     ]
 
 
+def lookup_knowledge_base(query=None, limit=6, **_extra):
+    """Visitor KB search (Phase 6 / Epic B). Semantic search over the documents
+    the operator uploaded AND scoped to the visitor (audience 'visitor' or
+    'both' — admin-only docs are never returned here). Returns excerpts with a
+    `source` marker the agent can cite. Empty when no visitor-scoped docs match
+    (the agent then just answers without citations). Never raises."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    try:
+        k = max(1, min(int(limit or 6), 10))
+    except Exception:
+        k = 6
+    try:
+        chunks = rag.retrieve(q, tenant_id=current_tenant_id(), top_k=k,
+                              session_id="visitor_kb", surface="visitor") or []
+    except Exception as e:
+        print(f"[visitor_kb] retrieve failed: {e}")
+        return []
+    return [
+        {
+            "source":  c.get("filename") or "document",
+            "page":    c.get("page_number"),
+            "content": _trim_text(c.get("content_text"), 1200),
+            "score":   round(float(c.get("score") or 0.0), 4),
+        }
+        for c in chunks
+    ]
+
+
 def lookup_testimonials(query=None, min_rating=None, limit=5):
     """Customer reviews / testimonials. Useful for social proof."""
     sql = (
@@ -12052,6 +12082,21 @@ CHAT_TOOLS = [
         }},
     }},
     {"type": "function", "function": {
+        "name": "lookup_knowledge_base",
+        "description": (
+            "Semantic search over documents the business uploaded to its "
+            "knowledge base (only those shared with the visitor concierge). "
+            "Use for detailed questions the other lookups don't cover — "
+            "policies, manuals, specs, FAQs in a PDF, etc. Returns excerpts "
+            "with `source` markers; cite them when you use them. If it returns "
+            "nothing, just answer normally."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "What to search the documents for."},
+            "limit": {"type": "integer", "default": 6},
+        }, "required": ["query"]},
+    }},
+    {"type": "function", "function": {
         "name": "lookup_testimonials",
         "description": "Get customer testimonials/reviews. Useful for social proof when the visitor is hesitating.",
         "parameters": {"type": "object", "properties": {
@@ -12148,6 +12193,7 @@ CHAT_LOOKUP_FUNCTIONS = {
     "lookup_blog": lookup_blog,
     "lookup_team": lookup_team,
     "lookup_faq": lookup_faq,
+    "lookup_knowledge_base": lookup_knowledge_base,
     "lookup_testimonials": lookup_testimonials,
     "lookup_business_info": lookup_business_info,
     "lookup_custom_section_items": lookup_custom_section_items,
