@@ -11532,6 +11532,33 @@ def subscribe_newsletter(email=None, full_name=None, **_extra):
         return {"ok": False, "message": "Sorry, I couldn't complete the signup just now."}
 
 
+# Per-process outbound-notify throttle (task 045 hardening). Even though team
+# notifications only reach the operator's own address, a public visitor (once
+# the knob is on) could drive the LLM to fire many notify_team / capture_lead
+# calls per minute — flooding the inbox and, for SMS, running up real cost. We
+# cap outbound team notifications per tenant per 60s window. Configurable.
+_NOTIFY_RL_LOCK = threading.Lock()
+_NOTIFY_RL_HITS = {}   # tenant_id -> list[timestamps within the window]
+
+
+def _notify_rate_ok(tenant_id):
+    """True if another team notification is allowed for this tenant right now.
+    Sliding 60s window, cap from TEAM_NOTIFY_MAX_PER_MIN (default 10)."""
+    try:
+        cap = max(1, int(os.environ.get("TEAM_NOTIFY_MAX_PER_MIN", "10") or 10))
+    except (TypeError, ValueError):
+        cap = 10
+    now = _time.time()
+    with _NOTIFY_RL_LOCK:
+        hits = [t for t in _NOTIFY_RL_HITS.get(tenant_id, []) if now - t < 60.0]
+        if len(hits) >= cap:
+            _NOTIFY_RL_HITS[tenant_id] = hits
+            return False
+        hits.append(now)
+        _NOTIFY_RL_HITS[tenant_id] = hits
+        return True
+
+
 def _notify_team(subject, message_text):
     """Send a team notification to the OPERATOR-configured destination(s) only
     (task 045). The recipient is NEVER taken from the visitor/agent — only the
@@ -11540,6 +11567,10 @@ def _notify_team(subject, message_text):
     a provider error on one channel is logged and skipped, never raised."""
     channels = []
     if not get_ai_setting("team_notifications_enabled"):
+        return False, channels
+    # Throttle outbound volume per tenant (inbox-flood / SMS-cost protection).
+    if not _notify_rate_ok(current_tenant_id()):
+        print("[notify_team] rate limit hit — skipping outbound notification")
         return False, channels
     subject = (subject or "AI concierge notification").strip()[:200]
     body = (message_text or "").strip()[:4000]

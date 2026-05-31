@@ -135,6 +135,28 @@ def test_capture_lead_notifies_team(monkeypatch):
         _reset(); _wipe()
 
 
+def test_notify_team_rate_limited(monkeypatch):
+    """Outbound notifications are capped per tenant per minute (cost/flood
+    protection) — beyond the cap, sends are skipped."""
+    _reset()
+    app._NOTIFY_RL_HITS.clear()
+    monkeypatch.setenv("TEAM_NOTIFY_MAX_PER_MIN", "2")
+    app.set_ai_setting("team_notifications_enabled", True)
+    app.set_ai_setting("team_notify_email", "team@business.com")
+    app._invalidate_ai_control()
+    calls = []
+    monkeypatch.setattr(messaging, "send_email",
+                        lambda to, subj, html, **kw: calls.append(to) or {"id": "x"})
+    try:
+        assert app.notify_team(message="1")["ok"] is True
+        assert app.notify_team(message="2")["ok"] is True
+        assert app.notify_team(message="3")["ok"] is False   # over cap
+        assert len(calls) == 2                                 # 3rd never sent
+    finally:
+        app._NOTIFY_RL_HITS.clear()
+        _reset()
+
+
 # ---- master switch ----------------------------------------------------------
 
 def test_master_switch_forces_all_off():
