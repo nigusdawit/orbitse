@@ -73,7 +73,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 039b | Epic B: optional OCR ingestion | not_started | task/039b-rag-ocr | 039 | |
 | 040 | Epic C: per-request model routing | done | task/040-model-routing | 034 | Gate 8/8 model-routing tests + full migration chain clean; default-off identity, master-switch-inert, routes both admin+visitor to a fast model for short turns |
 | 041 | Epic C: prompt caching + page-gen speed | done | task/041-prompt-cache | 040 | Gate 14/14 (7 prompt-cache + routing regression); Anthropic cache_control on system prompt at _stream_round_claude (covers admin+visitor+page-gen); default-off plain-string shape, master-switch-inert; OpenAI auto-caches |
-| 042 | Epic D: visitor profile/CRM + needs capture | not_started | task/042-visitor-profiles | 034 | |
+| 042 | Epic D: visitor profile/CRM + needs capture | done | (on main) | 034 | Gate 13/13 + migration chain (0012) clean + 23 prior AI tests green; security-review: 2 fixed (bounded profiler concurrency, redact stored PII). Landed on main directly (commits e187ae4, 04b6ce7) |
 | 043 | Epic D: newsletter subscribe + self-service portal | not_started | task/043-newsletter | 042 | |
 | 044 | Epic D: deals/offers + proactive engine | not_started | task/044-deals | 042 | |
 | 045 | Epic D: agent tools (capture_lead/notify_team/request_callback) | not_started | task/045-growth-tools | 042 | |
