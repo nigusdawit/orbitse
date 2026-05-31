@@ -909,6 +909,40 @@ from pylego import config as _pylego_config  # noqa: E402
 # Give the rate limiter the monolith's DB helpers so its (optional) Postgres
 # store can enforce cluster-wide limits across gunicorn workers.
 _pylego_ratelimit.configure(query_db, execute_db)
+# pylego smarter-context (task 028): token-aware history trim + an opt-in
+# semantic response cache. Both inert at default config (budget 0 = no trim,
+# cache disabled). See pylego/history.py + pylego/respcache.py.
+from pylego import history as _pylego_history  # noqa: E402
+from pylego import respcache as _pylego_respcache  # noqa: E402
+
+_ADMIN_RESPCACHE = None
+_ADMIN_RESPCACHE_LOCK = threading.Lock()
+
+
+def _admin_respcache_embed(text):
+    """Embed a question for the admin response cache. Reuses the same model as
+    the visitor semantic cache. Raises on failure (the cache swallows it)."""
+    resp = openai_client.embeddings.create(
+        model="text-embedding-3-small", input=text)
+    return list(resp.data[0].embedding)
+
+
+def _get_admin_respcache():
+    """Lazily build the process-wide admin response cache from pylego.config.
+    Disabled by default → lookup/store are no-ops."""
+    global _ADMIN_RESPCACHE
+    if _ADMIN_RESPCACHE is not None:
+        return _ADMIN_RESPCACHE
+    with _ADMIN_RESPCACHE_LOCK:
+        if _ADMIN_RESPCACHE is None:
+            _cfg = _pylego_config.get_config()
+            _ADMIN_RESPCACHE = _pylego_respcache.ResponseCache(
+                embed_fn=_admin_respcache_embed,
+                store=_pylego_respcache.InMemoryStore(),
+                enabled=_cfg.respcache_enabled,
+                threshold=_cfg.respcache_threshold,
+            )
+    return _ADMIN_RESPCACHE
 
 
 # =============================================================================
@@ -19107,6 +19141,24 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8,
         except Exception as _kb_e:
             print(f"[admin_chat] KB retrieval failed: {_kb_e}")
 
+    # pylego smarter-context (task 028), both inert at default config:
+    #  * Token-aware trim: bound the assembled history to a token budget so a
+    #    long thread can't overflow the model's context window (budget 0 = off).
+    #  * Response cache LOOKUP: if a near-duplicate question was previously
+    #    answered WITHOUT tools (a static/how-to answer), serve it and skip the
+    #    LLM entirely. Cache is disabled by default; data-dependent questions are
+    #    never stored (see the store step after the loop), so they never hit here.
+    _rc_cfg = _pylego_config.get_config()
+    messages = _pylego_history.trim_to_budget(
+        messages, _rc_cfg.history_token_budget, model)
+    _respcache = _get_admin_respcache()
+    _cached_answer = _respcache.lookup(user_message)
+    if _cached_answer:
+        _admin_chat_persist(session_id, "admin", "assistant", _cached_answer)
+        yield {"type": "done", "content": _cached_answer, "cached": True}
+        return
+    _turn_used_tools = False  # gates whether this answer is safe to cache
+
     final_text = ""
 
     for round_no in range(max_rounds):
@@ -19224,6 +19276,10 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8,
             return
 
         if finish_reason == "tool_calls" and tcs:
+            # This turn touched live data via a tool → its answer is NOT safe to
+            # cache (it could go stale). Mark it so the response-cache store step
+            # below skips it. Data-dependent admin queries always land here.
+            _turn_used_tools = True
             # In-memory tool_calls (raw) keep the conversation valid
             # for the next OpenAI round. The DB-persisted copy and the
             # UI tool events use a redacted version so credentials
@@ -19305,6 +19361,11 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8,
         final_text = round_text or ""
         _admin_chat_persist(session_id, "admin", "assistant", final_text,
                             usage=last_round_usage)
+        # Response-cache STORE: only when this whole turn used NO tools (a pure,
+        # non-data-dependent answer) — so a cache hit can never serve stale live
+        # data. No-op when the cache is disabled (default); fail-open.
+        if not _turn_used_tools and final_text:
+            _respcache.store_answer(user_message, final_text)
         yield {"type": "done", "content": final_text}
         return
 

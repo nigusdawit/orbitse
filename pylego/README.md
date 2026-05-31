@@ -21,8 +21,8 @@ propagate. See `PLAN_ADMIN_AI.md`.
 | `evals/` | `@altay/eval-harness` (+ ragas) | ✅ task 026 — dependency-free eval runner + seed admin-AI suite. |
 | `llm_router.py` | `@altay/llm-router` | ✅ task 027 — `reliable_round` retry/fallback before first token + opt-in OpenAI timeout. Identity at default config. |
 | `ratelimit.py` | `@altay/rate-limit` | ✅ task 027 — fixed-window limiter, Postgres (cluster-wide) or memory store, fail-open. Default off. |
-| `history.py` | `@altay/chat-history` | ⏳ task 028 — token-aware trim. |
-| `respcache.py` | `@altay/semantic-response-cache` | ⏳ task 028. |
+| `history.py` | `@altay/chat-history` | ✅ task 028 — token-aware trim (tiktoken or chars/4 fallback); budget 0 = off; never orphans a tool msg. |
+| `respcache.py` | `@altay/semantic-response-cache` | ✅ task 028 — semantic cache; admin wiring stores ONLY no-tool answers (never stale data); PII-guarded; default off. |
 | `sqlguard.py` | `@altay/sql-guardrail` | ⏳ task 029. |
 | `redact.py` | `@altay/pii-redact` | ⏳ task 029. |
 | `structured.py` | `@altay/structured-llm` | ⏳ task 029. |
