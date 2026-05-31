@@ -6287,8 +6287,7 @@ def setup_wizard_post():
     if _is_install_bootstrapped():
         abort(404)
 
-    # Reuse the /admin/login per-IP throttle so guessing ADMIN_PASSWORD here
-    # doesn't get a fresh budget separate from regular admin-login attempts.
+    # Rate-limit the setup endpoint to prevent rapid automated submissions.
     ip = _client_ip()
     allowed, retry_after = _login_throttle_check(ip)
     if not allowed:
@@ -6297,10 +6296,14 @@ def setup_wizard_post():
             "retry_after": retry_after,
         }), 429
 
+    # The setup wizard sets the admin password — it does not authenticate
+    # against the current one (which on a fresh install defaults to "admin").
+    # The _is_install_bootstrapped() gate above is the access control here.
+    # We only validate that the chosen password meets the minimum length.
     pw = request.form.get("admin_password", "")
-    if pw != ADMIN_PASSWORD:
+    if len(pw) < 8:
         _login_throttle_record_failure(ip)
-        return jsonify({"error": "Invalid admin password."}), 401
+        return jsonify({"error": "Admin password must be at least 8 characters."}), 400
     _login_throttle_clear(ip)
 
     raw_tpl = request.form.get("template_json", "").strip()
@@ -6422,12 +6425,28 @@ def setup_wizard_post():
         except Exception:
             pass  # Malformed secrets_json — silently skip, not fatal.
 
+    # ---- Write ADMIN_PASSWORD — this is the provisioning step that sets the
+    #      super-admin credential for all future logins.  Must happen after
+    #      bootstrap so a partial failure doesn't leave a new password without
+    #      a working install.  Reload the module-level variable so the current
+    #      worker process doesn't need a restart to use the new credential. ----
+    try:
+        from env_manager import set_var as _sv
+        _sv("ADMIN_PASSWORD", pw, force_override=True)
+        secrets_written.append("ADMIN_PASSWORD")
+        # Reload module-level cache so the current process accepts the new pw.
+        global ADMIN_PASSWORD
+        ADMIN_PASSWORD = pw
+    except Exception as _pw_err:
+        secrets_errors.append({"key": "ADMIN_PASSWORD", "error": str(_pw_err)})
+
     # ---- Write CLIENT_PASSWORD if provided ----------------------------------
     client_pw = request.form.get("client_password", "").strip()
     if client_pw:
         try:
             from env_manager import set_var
             set_var("CLIENT_PASSWORD", client_pw, force_override=True)
+            secrets_written.append("CLIENT_PASSWORD")
         except Exception:
             pass  # Non-fatal.
 

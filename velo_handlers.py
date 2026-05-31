@@ -2125,6 +2125,9 @@ def bootstrap_install(params):
     else:
         summary["page_sections"] = {}
 
+    # Collect page-section errors so they count toward summary["ok"].
+    _ps_errors = (summary.get("page_sections") or {}).get("errors") or []
+
     summary["ok"] = (
         not summary["settings_errors"]
         and not summary["faqs_errors"]
@@ -2133,6 +2136,7 @@ def bootstrap_install(params):
         and not summary["content_errors"]
         and not summary["admin_records_errors"]
         and not summary["template_errors"]
+        and not _ps_errors
         # An admin_records section is "ok" only if NO per-row errors
         # appeared in any table-summary or any nested child summary.
         and not any(

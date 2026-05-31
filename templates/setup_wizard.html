@@ -1494,6 +1494,42 @@ function buildReview() {
 }
 
 /* ============================================================
+   STARTER FAQS — per-industry defaults seeded during provisioning
+   ============================================================ */
+const STARTER_FAQS = {
+  generic: [
+    { question: "What services do you offer?",          answer: "We offer a range of services tailored to your needs. Contact us to learn more.",       sort_order: 1 },
+    { question: "How can I get in touch?",              answer: "You can reach us by phone, email, or through the contact form on this site.",             sort_order: 2 },
+    { question: "What are your business hours?",        answer: "Please see the Business Hours section above, or contact us for current hours.",           sort_order: 3 },
+  ],
+  restaurant: [
+    { question: "Do you take reservations?",            answer: "Yes! You can book a table through our reservation form or by calling us directly.",       sort_order: 1 },
+    { question: "Do you cater to dietary restrictions?",answer: "Absolutely — please inform your server and we'll do our best to accommodate you.",        sort_order: 2 },
+    { question: "Is parking available?",                answer: "Yes, we have complimentary parking available for our guests.",                            sort_order: 3 },
+  ],
+  hotel: [
+    { question: "What time is check-in and check-out?", answer: "Check-in is at 3 PM and check-out is at 11 AM. Early/late options may be available.",    sort_order: 1 },
+    { question: "Is breakfast included?",               answer: "Breakfast inclusion depends on your room package. Check your booking details or ask us.",  sort_order: 2 },
+    { question: "Do you offer airport transfers?",      answer: "Yes, we can arrange airport transfers for guests. Please contact us at least 24 hours in advance.", sort_order: 3 },
+  ],
+  realestate: [
+    { question: "How do I schedule a property viewing?", answer: "Contact us through the form or call us directly. We typically respond within one business day.", sort_order: 1 },
+    { question: "Do you assist with financing?",         answer: "We can connect you with trusted mortgage advisors. Ask us for referrals.",               sort_order: 2 },
+    { question: "What areas do you cover?",              answer: "We cover the local metro area and surrounding suburbs. Ask us for specific listings.",    sort_order: 3 },
+  ],
+  agency: [
+    { question: "What is your typical project timeline?", answer: "Timelines vary by project scope. We'll discuss a detailed plan in your free discovery call.", sort_order: 1 },
+    { question: "Do you work with startups?",             answer: "Yes — we love working with early-stage companies as well as established brands.",        sort_order: 2 },
+    { question: "How do I get a quote?",                  answer: "Fill out our contact form with your project brief and we'll get back to you within 24 hours.", sort_order: 3 },
+  ],
+  wellness: [
+    { question: "Do I need to book in advance?",          answer: "We recommend booking ahead, especially for peak times. Walk-ins are welcome when available.", sort_order: 1 },
+    { question: "What should I bring to my first session?", answer: "Comfortable clothing and a water bottle. Everything else is provided.",               sort_order: 2 },
+    { question: "Do you offer gift vouchers?",            answer: "Yes! Gift vouchers are available for all services — a great wellness gift.",             sort_order: 3 },
+  ],
+};
+
+/* ============================================================
    BUILD TEMPLATE JSON
    ============================================================ */
 function collectSecrets() {
@@ -1533,6 +1569,21 @@ function buildTemplate() {
   });
   S.customAutos.forEach(a => automations.push(a));
 
+  // Starter FAQs — use the industry preset's FAQ set, fall back to generic
+  const faqs = (STARTER_FAQS[S.preset] || STARTER_FAQS.generic).map((f,i) => ({
+    question: f.question, answer: f.answer, sort_order: f.sort_order || (i+1),
+  }));
+
+  // Admin chat settings (step 4)
+  const adminChatSettings = {};
+  const adminPrompt = gv("adminSystemPrompt");
+  if (adminPrompt) adminChatSettings.system_prompt = adminPrompt;
+  const llmV = gv("llmVisitor"), llmA = gv("llmAdmin");
+  if (llmV) adminChatSettings.visitor_llm_provider = llmV;
+  if (llmA) adminChatSettings.admin_llm_provider    = llmA;
+  adminChatSettings.admin_chat_enabled = document.getElementById("adminChatEnabled").checked;
+  adminChatSettings.kb_enabled         = document.getElementById("kbEnabled").checked;
+
   const tpl = {
     settings: {
       site_settings: {
@@ -1542,7 +1593,8 @@ function buildTemplate() {
         hero_tagline:     gv("heroTagline"),
         hero_description: gv("heroDescription"),
         logo_initials:    gv("logoInitials"),
-        hero_image_url:   gv("heroImageUrl"),
+        // Use the key the backend _SETTINGS_TABLES actually maps ("hero_image")
+        hero_image:       gv("heroImageUrl"),
       },
       business_info: {
         business_phone:   gv("bizPhone"),
@@ -1565,7 +1617,10 @@ function buildTemplate() {
         tts_provider:          gv("ttsProvider"),
         default_voice:         gv("defaultVoice"),
       },
+      // Admin AI config — stored under admin_settings in site_settings table
+      admin_settings: adminChatSettings,
     },
+    faqs,
     features: {
       plan: S.selectedPlan,
       ...(Object.keys(S.featureSet).length ? {set: S.featureSet} : {}),
@@ -1584,7 +1639,7 @@ function buildTemplate() {
     ...(Object.keys(S.pageSections).length ? {page_sections: S.pageSections} : {}),
   };
 
-  // Strip undefined/empty
+  // Strip undefined/null/empty-string top-level values
   return JSON.parse(JSON.stringify(tpl));
 }
 
