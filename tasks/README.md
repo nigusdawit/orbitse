@@ -56,7 +56,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | ID | Title | Status | Branch | Depends on | Parallel-with | Drift |
 |----|-------|--------|--------|------------|---------------|-------|
 | 030 | AI Control settings backend (DB-backed live knobs + routes) | done | task/030-ai-control-settings | 026–029 | — | |
-| 031 | AI Activity persistence (obs DB sink + /admin/api/ai-activity) | not_started | task/031-ai-activity | 030 | — | |
+| 031 | AI Activity persistence (obs DB sink + /admin/api/ai-activity) | done | task/031-ai-activity | 030 | — | |
 | 032 | History summarization (summarize dropped turns) | not_started | task/032-history-summarize | 030 | — | |
 | 033 | AI Control + AI Activity admin tabs (super-admin-only) | not_started | task/033-ai-control-tabs | 030,031 | — | |
 
