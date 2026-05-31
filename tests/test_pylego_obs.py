@@ -75,6 +75,59 @@ def test_early_consumer_close_does_not_raise_out_of_obs():
     gen.close()  # simulate client disconnect; must not raise
 
 
+def test_persist_fn_receives_record_and_is_failopen():
+    _set(True)
+    got = {}
+
+    def persist(record):
+        got.update(record)
+
+    events = [
+        {"type": "tool_start", "tool": {"id": "1"}},
+        {"type": "usage", "usage": {"prompt_tokens": 100, "completion_tokens": 20,
+                                    "model": "gpt-4o-mini", "provider": "openai",
+                                    "cost_usd": 0.001}},
+        {"type": "done", "content": "the answer"},
+    ]
+    out = list(obs.observe_admin_turn(
+        {"session_id": "s9", "user_message": "the question"}, iter(events),
+        persist_fn=persist))
+    assert out == events                       # pass-through intact
+    # The record carries the FIXED nested-usage tally + content.
+    assert got["tokens_in"] == 100 and got["tokens_out"] == 20
+    assert got["model"] == "gpt-4o-mini" and got["provider"] == "openai"
+    assert got["tool_calls"] == 1 and got["rounds"] == 1
+    assert got["user_message"] == "the question"
+    assert got["final_answer"] == "the answer"
+    assert abs(got["cost_usd"] - 0.001) < 1e-9
+
+
+def test_persist_fn_failure_never_breaks_stream():
+    _set(True)
+
+    def boom(record):
+        raise RuntimeError("db down")
+
+    out = list(obs.observe_admin_turn({"session_id": "s"}, iter(SAMPLE),
+                                      persist_fn=boom))
+    assert out == SAMPLE                        # persist error swallowed
+
+
+def test_redact_disabled_keeps_content_verbatim():
+    _set(True)
+    got = {}
+    events = [{"type": "done", "content": "email me at a@b.com"}]
+    list(obs.observe_admin_turn(
+        {"session_id": "s", "user_message": "ping a@b.com"}, iter(events),
+        persist_fn=lambda r: got.update(r), redact_enabled=False))
+    assert "a@b.com" in got["final_answer"]     # redaction off → verbatim
+    list(obs.observe_admin_turn(
+        {"session_id": "s", "user_message": "ping a@b.com"},
+        iter([{"type": "done", "content": "email me at a@b.com"}]),
+        persist_fn=lambda r: got.update(r), redact_enabled=True))
+    assert "a@b.com" not in got["final_answer"]  # redaction on → masked
+
+
 def test_backend_failure_inside_emit_is_swallowed(monkeypatch):
     _set(True)
     # Make the logging backend blow up. _emit must swallow it so the chat

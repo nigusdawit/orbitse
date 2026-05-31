@@ -1128,6 +1128,42 @@ def reset_ai_setting(key, by=""):
     _invalidate_ai_control(key)
 
 
+# ---- AI Activity persistence (Phase 5, task 031) ---------------------------
+# pylego.obs calls this once per admin-AI turn with an already-redacted record.
+# We write one ai_activity_log row when activity logging is enabled, and
+# opportunistically prune to bound growth (admin chat is low-volume).
+_AI_ACTIVITY_ROW_CAP = 5000
+
+
+def _ai_activity_persist(record):
+    """obs DB sink → ai_activity_log. Gated by the live activity_logging setting.
+    Never raises (obs guards too, but we belt-and-suspenders here)."""
+    try:
+        if not get_ai_setting("activity_logging_enabled"):
+            return
+        execute_db(
+            "INSERT INTO ai_activity_log (tenant_id, session_id, model, provider, "
+            "rounds, tool_calls, tokens_in, tokens_out, cost_usd, duration_ms, "
+            "status, error_text, user_message, final_answer) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (current_tenant_id(), record.get("session_id"), record.get("model"),
+             record.get("provider"), int(record.get("rounds") or 0),
+             int(record.get("tool_calls") or 0), int(record.get("tokens_in") or 0),
+             int(record.get("tokens_out") or 0), float(record.get("cost_usd") or 0),
+             int(record.get("duration_ms") or 0), record.get("status"),
+             (record.get("error_text") or "")[:2000],
+             (record.get("user_message") or "")[:8000],
+             (record.get("final_answer") or "")[:16000]))
+        import random as _rnd
+        if _rnd.random() < 0.03:  # ~3% of inserts trim the tail — cheap, bounded
+            execute_db(
+                "DELETE FROM ai_activity_log WHERE id < "
+                "(SELECT COALESCE(MAX(id), 0) - %s FROM ai_activity_log)",
+                (_AI_ACTIVITY_ROW_CAP,))
+    except Exception as e:
+        print(f"[ai-activity] persist failed (ignored): {e}")
+
+
 # =============================================================================
 # ENCRYPTION — used to store external data-source credentials at rest
 # =============================================================================
@@ -19623,12 +19659,15 @@ def _admin_chat_run_loop(session_id, user_message, max_rounds=8):
     callers that don't speak SSE (curl tests, server-to-server, etc.)."""
     final_text = ""
     tool_trace = []
-    _obs_meta = {"session_id": session_id, "persona": None}
+    _obs_meta = {"session_id": session_id, "persona": None,
+                 "user_message": user_message}
     try:
         for evt in _pylego_obs.observe_admin_turn(
                 _obs_meta,
                 _admin_chat_stream_loop(
-                    session_id, user_message, max_rounds=max_rounds)):
+                    session_id, user_message, max_rounds=max_rounds),
+                persist_fn=_ai_activity_persist,
+                redact_enabled=get_ai_setting("redact_enabled")):
             t = evt.get("type")
             if t == "tool_end":
                 tool_trace.append(evt.get("tool") or {})
@@ -19755,13 +19794,17 @@ def admin_agent_chat_stream():
         # Wrap the loop's event generator with pylego observability. This is a
         # pass-through: every event is yielded unchanged; obs only records a
         # trace on the side and can never break the stream.
-        _obs_meta = {"session_id": session_id, "persona": persona_override}
+        _obs_meta = {"session_id": session_id, "persona": persona_override,
+                     "user_message": message}
         _loop = _admin_chat_stream_loop(
             session_id, message,
             attachment_ids=attachment_ids,
             persona_override=persona_override)
         try:
-            for evt in _pylego_obs.observe_admin_turn(_obs_meta, _loop):
+            for evt in _pylego_obs.observe_admin_turn(
+                    _obs_meta, _loop,
+                    persist_fn=_ai_activity_persist,
+                    redact_enabled=get_ai_setting("redact_enabled")):
                 yield f"data: {json.dumps(evt)}\n\n"
         except Exception:
             import traceback
@@ -26109,6 +26152,44 @@ def admin_reset_ai_control(key):
     except Exception as e:
         print(f"[ai-control] reset {key} failed: {e}")
         return jsonify({"error": "reset_failed", "detail": str(e)}), 500
+
+
+@app.route("/admin/api/ai-activity", methods=["GET"])
+@admin_required
+def admin_list_ai_activity():
+    """Recent admin-AI turns (metadata + redacted question/answer) + light
+    totals. Super-admin only. ?limit=N (default 100, max 500)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    try:
+        limit = int(request.args.get("limit", 100) or 100)
+    except (TypeError, ValueError):
+        limit = 100
+    limit = max(1, min(limit, 500))
+    rows = query_db(
+        "SELECT id, session_id, model, provider, rounds, tool_calls, tokens_in, "
+        "tokens_out, cost_usd, duration_ms, status, error_text, user_message, "
+        "final_answer, created_at FROM ai_activity_log ORDER BY id DESC LIMIT %s",
+        (limit,)) or []
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d.get("created_at"):
+            d["created_at"] = d["created_at"].isoformat()
+        out.append(d)
+    stats = query_db(
+        "SELECT COUNT(*) AS n, COALESCE(SUM(cost_usd),0) AS cost, "
+        "COALESCE(SUM(tokens_in+tokens_out),0) AS tokens FROM ai_activity_log",
+        fetchone=True) or {}
+    return jsonify({
+        "activity": out,
+        "stats": {
+            "count": int(stats.get("n") or 0),
+            "cost_usd": round(float(stats.get("cost") or 0), 6),
+            "tokens": int(stats.get("tokens") or 0),
+        },
+    })
 
 
 @app.route("/admin/api/ai-prompts", methods=["GET"])

@@ -67,32 +67,48 @@ class _TurnTally:
     """Mutable counters accumulated as events stream by. Plain object so
     updating it is allocation-free and exception-free."""
 
-    __slots__ = ("rounds", "tool_calls", "tokens_in", "tokens_out",
-                 "errored", "error_text", "final_chars")
+    __slots__ = ("rounds", "tool_calls", "tokens_in", "tokens_out", "cost_usd",
+                 "model", "provider", "errored", "error_text", "final_text")
 
     def __init__(self) -> None:
         self.rounds = 0
         self.tool_calls = 0
         self.tokens_in = 0
         self.tokens_out = 0
+        self.cost_usd = 0.0
+        self.model = ""
+        self.provider = ""
         self.errored = False
         self.error_text = ""
-        self.final_chars = 0
+        self.final_text = ""
 
     def observe(self, evt: Dict[str, Any]) -> None:
         t = evt.get("type")
         if t == "tool_start":
             self.tool_calls += 1
         elif t == "usage":
-            # The loop yields {"type":"usage","prompt_tokens":..,"completion_tokens":..}
+            # The admin loop yields {"type":"usage","usage":{prompt_tokens,
+            # completion_tokens, provider, model, cost_usd, ...}}. Tolerate a
+            # flat shape too (other callers). Reading the nested dict is the fix
+            # for tokens/cost always being 0.
+            u = evt.get("usage") if isinstance(evt.get("usage"), dict) else evt
             self.rounds += 1
-            self.tokens_in += int(evt.get("prompt_tokens") or 0)
-            self.tokens_out += int(evt.get("completion_tokens") or 0)
+            self.tokens_in += int(u.get("prompt_tokens") or 0)
+            self.tokens_out += int(u.get("completion_tokens") or 0)
+            if u.get("cost_usd") is not None:
+                try:
+                    self.cost_usd += float(u.get("cost_usd") or 0)
+                except (TypeError, ValueError):
+                    pass
+            if u.get("model"):
+                self.model = str(u.get("model"))
+            if u.get("provider"):
+                self.provider = str(u.get("provider"))
         elif t == "error":
             self.errored = True
             self.error_text = str(evt.get("content") or "")[:500]
         elif t == "done":
-            self.final_chars = len(str(evt.get("content") or ""))
+            self.final_text = str(evt.get("content") or "")
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -100,23 +116,28 @@ class _TurnTally:
             "tool_calls": self.tool_calls,
             "tokens_in": self.tokens_in,
             "tokens_out": self.tokens_out,
+            "cost_usd": round(self.cost_usd, 6),
             "errored": self.errored,
-            "final_chars": self.final_chars,
+            "final_chars": len(self.final_text),
         }
 
 
 def observe_admin_turn(meta: Dict[str, Any],
-                       events: Iterable[Dict[str, Any]]) -> Iterator[Dict[str, Any]]:
+                       events: Iterable[Dict[str, Any]],
+                       *,
+                       persist_fn=None,
+                       redact_enabled=None) -> Iterator[Dict[str, Any]]:
     """Wrap the admin chat event generator with observability.
 
-    `meta` is light context for the trace (session_id, model, provider, etc.).
+    `meta` is light context for the trace (session_id, persona, user_message…).
     `events` is the generator returned by _admin_chat_stream_loop. Yields the
-    exact same events, unchanged. Records timing + a tally to local logs and
-    (if configured) Langfuse.
+    exact same events, unchanged. Records timing + a tally to local logs, to
+    Langfuse (if configured), and to an injected `persist_fn(record)` DB sink
+    (if provided). `redact_enabled` overrides the config flag for redacting the
+    record's text fields; None → use the config value.
 
-    Usage at the call site:
-        for evt in observe_admin_turn(meta, _admin_chat_stream_loop(...)):
-            ...
+    persist_fn / redaction failures are swallowed — they can never break the
+    stream. The wrapped generator's own errors are always re-raised.
     """
     cfg = config.get_config()
 
@@ -142,53 +163,79 @@ def observe_admin_turn(meta: Dict[str, Any],
     except GeneratorExit:
         # Consumer (HTTP client) disconnected mid-stream.
         status = "client_closed"
-        _emit(meta, tally, started, status)
+        _emit(meta, tally, started, status, persist_fn, redact_enabled)
         raise
     except BaseException as e:  # the loop's own failure — record, then re-raise.
         status = "exception"
         tally.errored = True
         tally.error_text = f"{type(e).__name__}: {e}"[:500]
-        _emit(meta, tally, started, status)
+        _emit(meta, tally, started, status, persist_fn, redact_enabled)
         raise
     else:
         if tally.errored:
             status = "error_event"
-        _emit(meta, tally, started, status)
+        _emit(meta, tally, started, status, persist_fn, redact_enabled)
 
 
-def _emit(meta: Dict[str, Any], tally: _TurnTally, started: float, status: str) -> None:
-    """Write the trace to the configured backend(s). Never raises."""
+def _emit(meta: Dict[str, Any], tally: _TurnTally, started: float, status: str,
+          persist_fn=None, redact_enabled=None) -> None:
+    """Write the trace to the configured backend(s) + the injected DB sink.
+    Never raises (all sinks are guarded)."""
     try:
         cfg = config.get_config()
+        do_redact = cfg.redact_enabled if redact_enabled is None else bool(redact_enabled)
         duration_ms = int((time.time() - started) * 1000)
+
+        def _r(text):
+            """Redact a text field when redaction is on. Never raises."""
+            if not do_redact or not text:
+                return text
+            try:
+                from . import redact
+                return redact.redact_text(text)
+            except Exception:
+                return text
+
+        # Full per-turn record. Text fields (error/question/answer) are redacted
+        # so neither the log NOR the persisted activity row can leak a secret.
         record = {
             "event": "admin_chat_turn",
             "status": status,
             "duration_ms": duration_ms,
-            **{k: meta.get(k) for k in ("session_id", "model", "provider", "persona")},
-            **tally.as_dict(),
+            "session_id": meta.get("session_id"),
+            "persona": meta.get("persona"),
+            "model": tally.model or meta.get("model") or "",
+            "provider": tally.provider or meta.get("provider") or "",
+            "rounds": tally.rounds,
+            "tool_calls": tally.tool_calls,
+            "tokens_in": tally.tokens_in,
+            "tokens_out": tally.tokens_out,
+            "cost_usd": round(tally.cost_usd, 6),
+            "error_text": _r(tally.error_text) if (tally.errored and tally.error_text) else "",
+            "user_message": _r(str(meta.get("user_message") or "")),
+            "final_answer": _r(tally.final_text),
         }
-        if tally.errored and tally.error_text:
-            # Redact secrets/PII from the exception text before it lands in logs
-            # or a trace (an LLM/provider error can echo an API key or email).
-            # log-only → safe; enabled by default. Lazy import keeps obs light.
-            err_text = tally.error_text
-            if cfg.redact_enabled:
-                try:
-                    from . import redact
-                    err_text = redact.redact_text(err_text)
-                except Exception:
-                    pass
-            record["error_text"] = err_text
 
+        # Local structured log (a compact subset — no full content, to keep logs
+        # light; the full content goes to the DB sink instead).
         if cfg.obs_local_logging:
-            _log.info("admin_chat_turn %s", json.dumps(record, default=str))
+            _log.info("admin_chat_turn %s", json.dumps(
+                {k: record[k] for k in (
+                    "status", "duration_ms", "session_id", "model", "provider",
+                    "rounds", "tool_calls", "tokens_in", "tokens_out", "cost_usd",
+                    "error_text")},
+                default=str))
+
+        # Injected DB sink (e.g. write a row to ai_activity_log). Guarded.
+        if persist_fn is not None:
+            try:
+                persist_fn(record)
+            except Exception:
+                _log.debug("obs persist_fn failed (ignored)", exc_info=True)
 
         lf = _get_langfuse()
         if lf is not None:
             try:
-                # Langfuse v3-style trace creation; guarded so any SDK version
-                # mismatch just degrades to local logging.
                 lf.trace(name="admin_chat_turn",
                          session_id=meta.get("session_id"),
                          metadata=record)
