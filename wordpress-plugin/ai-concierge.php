@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       AI Concierge
  * Description:        Adds the hosted AI Concierge widget to your site and lets you manage it from wp-admin (via secure SSO). Configure your embed key + platform URL under Settings → AI Concierge.
- * Version:           1.0.0
+ * Version:           1.1.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * License:           Proprietary
@@ -28,6 +28,8 @@
 if (!defined('ABSPATH')) { exit; } // No direct access.
 
 define('AAP_OPT', 'aap_concierge_settings');
+define('AAP_VERSION', '1.1.0');   // MUST match the Version: header above.
+define('AAP_SLUG', 'ai-concierge'); // plugin folder/slug.
 
 /* ---------------------------------------------------------------------------
  * Settings
@@ -328,8 +330,38 @@ function aap_render_admin_page() {
     // The platform consumes the one-shot token at /admin/sso and renders /admin
     // inside this iframe (it sets frame-ancestors to allow this WP origin).
     $src = esc_url($api . '/admin/sso?token=' . rawurlencode($tok));
+
+    // Fallback: open the dashboard in a NEW TAB instead of the iframe. Useful
+    // when a browser blocks third-party cookies inside iframes. It points at our
+    // admin-post handler (aap_open_admin) which mints a FRESH single-use token at
+    // click time (the iframe's token above is already spent / may have expired).
+    $newtab = wp_nonce_url(admin_url('admin-post.php?action=aap_open_admin'), 'aap_open_admin');
+    echo '<p style="margin:0 0 10px;"><a class="button button-secondary" target="_blank" rel="noopener" href="' .
+         esc_url($newtab) . '">Open dashboard in a new tab ↗</a> ' .
+         '<span class="description">Use this if the embedded view below stays blank ' .
+         '(some browsers block logins inside an iframe).</span></p>';
+
     echo '<iframe src="' . $src . '" style="width:100%;height:80vh;border:1px solid #ddd;border-radius:8px;"></iframe>';
     echo '</div>';
+}
+
+/* ---------------------------------------------------------------------------
+ * "Open dashboard in a new tab" handler. Mints a fresh single-use SSO token at
+ * click time and redirects the new tab to the platform's /admin/sso, which logs
+ * the client in (top-level page — no iframe cookie restrictions) and lands on
+ * the dashboard.
+ * ------------------------------------------------------------------------- */
+add_action('admin_post_aap_open_admin', 'aap_open_admin_redirect');
+function aap_open_admin_redirect() {
+    if (!current_user_can('manage_options')) { wp_die('Forbidden', '', array('response' => 403)); }
+    check_admin_referer('aap_open_admin');
+    $api = aap_get('api_base');
+    $tok = aap_mint_sso_token();
+    if (empty($api) || empty($tok)) {
+        wp_die('Set the Platform URL and SSO secret first.');
+    }
+    wp_redirect($api . '/admin/sso?token=' . rawurlencode($tok));
+    exit;
 }
 
 /* ---------------------------------------------------------------------------
@@ -341,7 +373,7 @@ add_action('wp_enqueue_scripts', function () {
     $key = aap_get('embed_key');
     if (empty($api) || empty($key)) { return; }
     // Register the loader with its data-* attributes via the script_loader_tag filter.
-    wp_enqueue_script('aap-concierge-loader', $api . '/embed/loader.js', array(), '1.0.0', true);
+    wp_enqueue_script('aap-concierge-loader', $api . '/embed/loader.js', array(), AAP_VERSION, true);
     add_filter('script_loader_tag', function ($tag, $handle) use ($api, $key) {
         if ($handle !== 'aap-concierge-loader') { return $tag; }
         return str_replace(' src=',
@@ -368,3 +400,91 @@ add_action('init', function () {
         ));
     }
 });
+
+/* ---------------------------------------------------------------------------
+ * Self-hosted auto-updates.
+ *
+ * WordPress only auto-updates plugins listed on wordpress.org. This plugin is
+ * private, so we hook the SAME update flow WordPress uses internally, but point
+ * it at YOUR platform instead of wordpress.org:
+ *
+ *   1. The plugin asks <Platform URL>/plugin/update.json "what's the latest
+ *      version?" (cached, checked on WordPress's normal update schedule).
+ *   2. If the manifest version is higher than the installed one, WordPress shows
+ *      its usual "update available" notice + one-click Update button.
+ *   3. Update downloads the zip from the manifest's download_url (served by your
+ *      platform) and installs it like any other plugin.
+ *
+ * Publishing a new version is platform-side: bump the Version: header + AAP_VERSION,
+ * run scripts/build_plugin.py, deploy. Your platform's source is never exposed —
+ * only this client-facing plugin zip is served.
+ * ------------------------------------------------------------------------- */
+function aap_fetch_manifest() {
+    $api = aap_get('api_base');
+    if (empty($api)) { return null; }
+    $cached = get_transient('aap_update_manifest');
+    if ($cached !== false) { return $cached; }   // may legitimately be null
+    $resp = wp_remote_get($api . '/plugin/update.json', array('timeout' => 8));
+    if (is_wp_error($resp) || wp_remote_retrieve_response_code($resp) !== 200) {
+        set_transient('aap_update_manifest', null, 15 * MINUTE_IN_SECONDS);
+        return null;
+    }
+    $data = json_decode(wp_remote_retrieve_body($resp), true);
+    if (!is_array($data) || empty($data['version'])) { $data = null; }
+    set_transient('aap_update_manifest', $data, 6 * HOUR_IN_SECONDS);
+    return $data;
+}
+
+// Clear the cached manifest whenever settings change (e.g. Platform URL edited).
+add_action('update_option_' . AAP_OPT, function () { delete_transient('aap_update_manifest'); });
+
+add_filter('pre_set_site_transient_update_plugins', 'aap_inject_update');
+function aap_inject_update($transient) {
+    if (empty($transient) || empty($transient->checked)) { return $transient; }
+    $manifest = aap_fetch_manifest();
+    $basename = plugin_basename(__FILE__);   // e.g. ai-concierge/ai-concierge.php
+    if (!is_array($manifest) || empty($manifest['version']) || empty($manifest['download_url'])) {
+        return $transient;
+    }
+    if (version_compare($manifest['version'], AAP_VERSION, '>')) {
+        $transient->response[$basename] = (object) array(
+            'slug'         => AAP_SLUG,
+            'plugin'       => $basename,
+            'new_version'  => $manifest['version'],
+            'package'      => $manifest['download_url'],
+            'url'          => aap_get('api_base'),
+            'tested'       => isset($manifest['tested']) ? $manifest['tested'] : '',
+            'requires'     => isset($manifest['requires']) ? $manifest['requires'] : '',
+            'requires_php' => isset($manifest['requires_php']) ? $manifest['requires_php'] : '',
+        );
+    } else {
+        // Tell WordPress it's current (keeps the "no update" UI accurate).
+        $transient->no_update[$basename] = (object) array(
+            'slug' => AAP_SLUG, 'plugin' => $basename,
+            'new_version' => AAP_VERSION, 'package' => '', 'url' => aap_get('api_base'),
+        );
+    }
+    return $transient;
+}
+
+add_filter('plugins_api', 'aap_plugin_info', 20, 3);
+function aap_plugin_info($result, $action, $args) {
+    if ($action !== 'plugin_information') { return $result; }
+    if (empty($args->slug) || $args->slug !== AAP_SLUG) { return $result; }
+    $manifest = aap_fetch_manifest();
+    if (!is_array($manifest)) { return $result; }
+    return (object) array(
+        'name'          => isset($manifest['name']) ? $manifest['name'] : 'AI Concierge',
+        'slug'          => AAP_SLUG,
+        'version'       => isset($manifest['version']) ? $manifest['version'] : AAP_VERSION,
+        'requires'      => isset($manifest['requires']) ? $manifest['requires'] : '',
+        'tested'        => isset($manifest['tested']) ? $manifest['tested'] : '',
+        'requires_php'  => isset($manifest['requires_php']) ? $manifest['requires_php'] : '',
+        'last_updated'  => isset($manifest['last_updated']) ? $manifest['last_updated'] : '',
+        'download_link' => $manifest['download_url'],
+        'sections'      => array(
+            'description' => isset($manifest['description']) ? $manifest['description'] : '',
+            'changelog'   => isset($manifest['changelog']) ? $manifest['changelog'] : '',
+        ),
+    );
+}

@@ -1,0 +1,12 @@
+{
+  "name": "AI Concierge",
+  "slug": "ai-concierge",
+  "version": "1.1.0",
+  "zip": "ai-concierge.zip",
+  "requires": "5.8",
+  "tested": "6.5",
+  "requires_php": "7.4",
+  "last_updated": "2026-05-31",
+  "description": "Hosted AI Concierge widget + embedded admin for WordPress.",
+  "changelog": "See your platform release notes."
+}

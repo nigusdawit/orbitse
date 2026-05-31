@@ -5828,6 +5828,61 @@ def embed_diagnostics():
     return jsonify(out)
 
 
+# ---- WordPress plugin self-hosted auto-updates ---------------------------
+# WordPress only auto-updates plugins listed on wordpress.org. Ours is private,
+# so the plugin polls these PUBLIC endpoints (the same flow WP uses internally):
+# /plugin/update.json reports the latest version + download URL; /plugin/download
+# serves the client-facing plugin zip (contains NO platform source). To publish a
+# new version: bump the plugin's Version: header, run scripts/build_plugin.py
+# (writes plugin_dist/manifest.json + the zip), and deploy.
+_PLUGIN_DIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugin_dist")
+_PLUGIN_ZIP_RE = re.compile(r"^[A-Za-z0-9._-]+\.zip$")
+
+
+@app.route("/plugin/update.json", methods=["GET"])
+def plugin_update_manifest():
+    """Public update manifest the WordPress plugin polls. 404 until a release is
+    published.
+
+    SECURITY: WordPress treats the manifest's download_url as the trusted source
+    of the update package, so we must NOT derive it from spoofable request
+    headers (Host / X-Forwarded-Host). Instead we build it from the platform's
+    TRUSTED canonical base — _public_base_url() prefers the admin-configured
+    canonical URL, then PUBLIC_BASE_URL, then the Replit-managed hostname, and
+    only falls back to the request host when nothing is configured (local/dev).
+    We also pin the zip name to the regex-validated manifest value."""
+    manifest_path = os.path.join(_PLUGIN_DIST_DIR, "manifest.json")
+    if not os.path.exists(manifest_path):
+        return jsonify({"error": "no plugin release published"}), 404
+    try:
+        with open(manifest_path) as f:
+            data = json.load(f)
+    except Exception:
+        return jsonify({"error": "manifest unreadable"}), 500
+    zip_name = data.get("zip", "ai-concierge.zip")
+    if not _PLUGIN_ZIP_RE.match(zip_name):
+        return jsonify({"error": "invalid release artifact"}), 500
+    base = (_public_base_url() or "").rstrip("/")
+    if not base:
+        # Last-resort dev fallback only when nothing trusted is configured.
+        base = request.url_root.rstrip("/") if request else ""
+    data["download_url"] = base + "/plugin/download/" + zip_name
+    resp = jsonify(data)
+    resp.headers["Cache-Control"] = "public, max-age=300"
+    return resp
+
+
+@app.route("/plugin/download/<path:filename>", methods=["GET"])
+def plugin_download(filename):
+    """Serve a published plugin zip from plugin_dist/. Restricted to *.zip names
+    (the client-facing plugin — no platform source is ever exposed)."""
+    if not _PLUGIN_ZIP_RE.match(filename):
+        abort(404)
+    resp = send_from_directory(_PLUGIN_DIST_DIR, filename, as_attachment=True)
+    resp.headers["Cache-Control"] = "public, max-age=300"
+    return resp
+
+
 @app.route("/admin/login", methods=["GET", "POST"])
 def admin_login():
     """
