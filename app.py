@@ -1120,6 +1120,33 @@ def _ai_control_registry():
                         "surface active promotions you've defined — optionally targeted to "
                         "the visitor's interests. Off = the tool returns nothing. Manage "
                         "offers via the Offers admin API/tab."},
+        # Growth tools (Phase 6 / task 045)
+        {"key": "lead_capture_enabled", "attr": "lead_capture_enabled", "type": "bool",
+         "group": "Growth Tools", "label": "Let the concierge capture leads",
+         "env": "LEAD_CAPTURE_ENABLED",
+         "description": "When ON, the concierge can use 'capture_lead' to save a visitor's "
+                        "contact details + interest to your Leads list. Off = the tool declines."},
+        {"key": "callback_requests_enabled", "attr": "callback_requests_enabled", "type": "bool",
+         "group": "Growth Tools", "label": "Let the concierge take callback requests",
+         "env": "CALLBACK_REQUESTS_ENABLED",
+         "description": "When ON, the concierge can use 'request_callback' to log a visitor's "
+                        "phone + preferred time so your team can call them back. Off = declines."},
+        {"key": "team_notifications_enabled", "attr": "team_notifications_enabled", "type": "bool",
+         "group": "Growth Tools", "label": "Let the concierge notify your team",
+         "env": "TEAM_NOTIFICATIONS_ENABLED",
+         "description": "When ON, the concierge can use 'notify_team' (and notify on new "
+                        "leads/callbacks) to email/text YOUR team. Messages only ever go to "
+                        "the destinations below — never to a visitor-supplied address."},
+        {"key": "team_notify_email", "attr": "team_notify_email", "type": "string",
+         "group": "Growth Tools", "label": "Team notification email",
+         "env": "TEAM_NOTIFY_EMAIL",
+         "description": "Where team notifications are emailed (requires Resend configured). "
+                        "Blank = no email notifications."},
+        {"key": "team_notify_sms", "attr": "team_notify_sms", "type": "string",
+         "group": "Growth Tools", "label": "Team notification SMS number",
+         "env": "TEAM_NOTIFY_SMS",
+         "description": "Where team notifications are texted (requires Twilio configured). "
+                        "Blank = no SMS notifications."},
         # Activity
         {"key": "activity_logging_enabled", "attr": "activity_logging_enabled", "type": "bool",
          "group": "Activity", "label": "Log admin-AI turns to the database",
@@ -1181,7 +1208,8 @@ _AI_INERT = {
     "redact_enabled": False, "activity_logging_enabled": False,
     "model_routing_enabled": False, "prompt_cache_enabled": False,
     "visitor_profiles_enabled": False, "newsletter_signup_enabled": False,
-    "offers_enabled": False,
+    "offers_enabled": False, "lead_capture_enabled": False,
+    "callback_requests_enabled": False, "team_notifications_enabled": False,
     "visitor_llm_max_retries": 0, "visitor_provider_fallback": False,
     "visitor_fallback_model": "", "visitor_history_token_budget": 0,
 }
@@ -4526,6 +4554,48 @@ def init_db():
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS offers_active_idx "
                 "ON offers (tenant_id, active, priority DESC);"
+            )
+
+            # LEADS + CALLBACK REQUESTS (Phase 6 / Epic D, task 045) — captured by
+            # the gated agentic-growth tools (capture_lead / request_callback). The
+            # concierge writes a row only when the relevant knob is ON; a fresh
+            # fork captures nothing. These hold operator sales data (the visitor's
+            # own contact details, by design) — super-admin reads them via the
+            # Leads / Callbacks APIs. Also in migration 0014.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS leads (
+                    id           BIGSERIAL PRIMARY KEY,
+                    tenant_id    INTEGER NOT NULL DEFAULT 1,
+                    name         TEXT NOT NULL DEFAULT '',
+                    email        TEXT NOT NULL DEFAULT '',
+                    phone        TEXT NOT NULL DEFAULT '',
+                    interest     TEXT NOT NULL DEFAULT '',
+                    message      TEXT NOT NULL DEFAULT '',
+                    source       TEXT NOT NULL DEFAULT 'ai_chat',
+                    visitor_id   VARCHAR(100) NOT NULL DEFAULT '',
+                    status       TEXT NOT NULL DEFAULT 'new',
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS leads_recent_idx
+                    ON leads (tenant_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS callback_requests (
+                    id             BIGSERIAL PRIMARY KEY,
+                    tenant_id      INTEGER NOT NULL DEFAULT 1,
+                    name           TEXT NOT NULL DEFAULT '',
+                    phone          TEXT NOT NULL DEFAULT '',
+                    preferred_time TEXT NOT NULL DEFAULT '',
+                    reason         TEXT NOT NULL DEFAULT '',
+                    visitor_id     VARCHAR(100) NOT NULL DEFAULT '',
+                    status         TEXT NOT NULL DEFAULT 'new',
+                    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS callbacks_recent_idx
+                    ON callback_requests (tenant_id, created_at DESC);
+                """
             )
     finally:
         conn.close()
@@ -11462,6 +11532,156 @@ def subscribe_newsletter(email=None, full_name=None, **_extra):
         return {"ok": False, "message": "Sorry, I couldn't complete the signup just now."}
 
 
+# Per-process outbound-notify throttle (task 045 hardening). Even though team
+# notifications only reach the operator's own address, a public visitor (once
+# the knob is on) could drive the LLM to fire many notify_team / capture_lead
+# calls per minute — flooding the inbox and, for SMS, running up real cost. We
+# cap outbound team notifications per tenant per 60s window. Configurable.
+_NOTIFY_RL_LOCK = threading.Lock()
+_NOTIFY_RL_HITS = {}   # tenant_id -> list[timestamps within the window]
+
+
+def _notify_rate_ok(tenant_id):
+    """True if another team notification is allowed for this tenant right now.
+    Sliding 60s window, cap from TEAM_NOTIFY_MAX_PER_MIN (default 10)."""
+    try:
+        cap = max(1, int(os.environ.get("TEAM_NOTIFY_MAX_PER_MIN", "10") or 10))
+    except (TypeError, ValueError):
+        cap = 10
+    now = _time.time()
+    with _NOTIFY_RL_LOCK:
+        hits = [t for t in _NOTIFY_RL_HITS.get(tenant_id, []) if now - t < 60.0]
+        if len(hits) >= cap:
+            _NOTIFY_RL_HITS[tenant_id] = hits
+            return False
+        hits.append(now)
+        _NOTIFY_RL_HITS[tenant_id] = hits
+        return True
+
+
+def _notify_team(subject, message_text):
+    """Send a team notification to the OPERATOR-configured destination(s) only
+    (task 045). The recipient is NEVER taken from the visitor/agent — only the
+    team_notify_email / team_notify_sms settings — so this can't be abused to
+    message arbitrary third parties. Returns (sent_any, channels). Fail-open:
+    a provider error on one channel is logged and skipped, never raised."""
+    channels = []
+    if not get_ai_setting("team_notifications_enabled"):
+        return False, channels
+    # Throttle outbound volume per tenant (inbox-flood / SMS-cost protection).
+    if not _notify_rate_ok(current_tenant_id()):
+        print("[notify_team] rate limit hit — skipping outbound notification")
+        return False, channels
+    subject = (subject or "AI concierge notification").strip()[:200]
+    body = (message_text or "").strip()[:4000]
+    email_to = (get_ai_setting("team_notify_email") or "").strip()
+    sms_to = (get_ai_setting("team_notify_sms") or "").strip()
+    if email_to:
+        try:
+            html_body = (
+                '<div style="font-family:Arial,sans-serif">'
+                f'<p>{html_module.escape(body).replace(chr(10), "<br>")}</p>'
+                '<hr><p style="font-size:12px;color:#6b7280">'
+                'Sent by your AI concierge.</p></div>'
+            )
+            messaging.send_email(email_to, subject, html_body, text_body=body)
+            channels.append("email")
+        except Exception as e:
+            print(f"[notify_team] email failed: {type(e).__name__}: {e}")
+    if sms_to:
+        try:
+            messaging.send_sms(sms_to, f"{subject}: {body}"[:600])
+            channels.append("sms")
+        except Exception as e:
+            print(f"[notify_team] sms failed: {type(e).__name__}: {e}")
+    return bool(channels), channels
+
+
+def capture_lead(name=None, email=None, phone=None, interest=None, message=None, **_extra):
+    """Capture a sales lead the visitor provides (Phase 6 / Epic D, task 045).
+    GATED by 'lead_capture_enabled' (default OFF, master-switch-aware). Needs at
+    least an email or phone. Stores the visitor's own contact details (operator
+    sales data) and optionally notifies the team. Never raises."""
+    try:
+        if not get_ai_setting("lead_capture_enabled"):
+            return {"ok": False, "message": "Lead capture isn't available right now."}
+        nm = (name or "").strip()[:200]
+        em = (email or "").strip().lower()[:320]
+        ph = (phone or "").strip()[:50]
+        if not em and not ph:
+            return {"ok": False, "message": "I need at least an email or phone number to save your details."}
+        if em and not _email_re_check(em):
+            return {"ok": False, "message": "That email doesn't look valid — could you double-check it?"}
+        row = execute_db(
+            "INSERT INTO leads (tenant_id, name, email, phone, interest, message, source) "
+            "VALUES (%s,%s,%s,%s,%s,%s,'ai_chat') RETURNING id",
+            (current_tenant_id(), nm, em, ph, (interest or "").strip()[:300],
+             (message or "").strip()[:4000]))
+        if not row:
+            return {"ok": False, "message": "Sorry, I couldn't save your details just now."}
+        # Best-effort team notification (its own gate; never blocks the capture).
+        try:
+            summary = (f"New lead captured:\nName: {nm or '-'}\nEmail: {em or '-'}\n"
+                       f"Phone: {ph or '-'}\nInterest: {(interest or '-')}\n"
+                       f"Message: {(message or '-')}")
+            _notify_team("New lead from your AI concierge", summary)
+        except Exception:
+            pass
+        return {"ok": True, "message": "Thanks — I've passed your details to the team. They'll be in touch."}
+    except Exception as e:
+        print(f"[capture_lead] failed: {type(e).__name__}: {e}")
+        return {"ok": False, "message": "Sorry, I couldn't save your details just now."}
+
+
+def request_callback(name=None, phone=None, preferred_time=None, reason=None, **_extra):
+    """Log a callback request (Phase 6 / Epic D, task 045). GATED by
+    'callback_requests_enabled' (default OFF, master-switch-aware). Needs a
+    phone number. Optionally notifies the team. Never raises."""
+    try:
+        if not get_ai_setting("callback_requests_enabled"):
+            return {"ok": False, "message": "Callback requests aren't available right now."}
+        nm = (name or "").strip()[:200]
+        ph = (phone or "").strip()[:50]
+        if not ph:
+            return {"ok": False, "message": "I need a phone number to arrange a callback."}
+        when = (preferred_time or "").strip()[:200]
+        why = (reason or "").strip()[:2000]
+        row = execute_db(
+            "INSERT INTO callback_requests (tenant_id, name, phone, preferred_time, reason) "
+            "VALUES (%s,%s,%s,%s,%s) RETURNING id",
+            (current_tenant_id(), nm, ph, when, why))
+        if not row:
+            return {"ok": False, "message": "Sorry, I couldn't log your callback request just now."}
+        try:
+            summary = (f"Callback requested:\nName: {nm or '-'}\nPhone: {ph}\n"
+                       f"Preferred time: {when or '-'}\nReason: {why or '-'}")
+            _notify_team("Callback request from your AI concierge", summary)
+        except Exception:
+            pass
+        return {"ok": True, "message": "Got it — I've asked the team to call you back. Thanks!"}
+    except Exception as e:
+        print(f"[request_callback] failed: {type(e).__name__}: {e}")
+        return {"ok": False, "message": "Sorry, I couldn't log your callback request just now."}
+
+
+def notify_team(subject=None, message=None, **_extra):
+    """Send a notification to the business's own team (Phase 6 / Epic D, task
+    045). GATED by 'team_notifications_enabled' (default OFF). The recipient is
+    fixed by operator config — the agent supplies only subject + message, so it
+    can't message third parties. Use sparingly (genuinely time-sensitive things
+    the team should see). Never raises."""
+    try:
+        if not get_ai_setting("team_notifications_enabled"):
+            return {"ok": False, "message": "Team notifications aren't enabled."}
+        sent, channels = _notify_team(subject, message)
+        if sent:
+            return {"ok": True, "message": "I've notified the team.", "channels": channels}
+        return {"ok": False, "message": "I couldn't reach the team right now."}
+    except Exception as e:
+        print(f"[notify_team] failed: {type(e).__name__}: {e}")
+        return {"ok": False, "message": "I couldn't reach the team right now."}
+
+
 def lookup_offers(interest=None, limit=3, **_extra):
     """Surface active promotions/deals the operator defined (Phase 6 / Epic D,
     task 044). GATED by the 'offers_enabled' AI Control knob (default OFF,
@@ -12353,6 +12573,50 @@ CHAT_TOOLS = [
         }, "required": ["email"]},
     }},
     {"type": "function", "function": {
+        "name": "capture_lead",
+        "description": (
+            "Save a visitor as a sales lead when they share their contact details "
+            "and want the team to follow up (e.g. 'have someone reach out', a quote "
+            "request). Provide whatever they gave — at least an email OR phone is "
+            "required. Only call this with the visitor's clear consent to be "
+            "contacted; never invent contact details."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string"},
+            "email": {"type": "string"},
+            "phone": {"type": "string"},
+            "interest": {"type": "string", "description": "What the visitor is interested in."},
+            "message": {"type": "string", "description": "Any extra context from the visitor."},
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "request_callback",
+        "description": (
+            "Log a request for the team to phone the visitor back. Requires a phone "
+            "number; include a preferred time and the reason if given. Only call "
+            "this when the visitor asks to be called or agrees to a callback."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string"},
+            "phone": {"type": "string"},
+            "preferred_time": {"type": "string", "description": "When the visitor prefers to be called."},
+            "reason": {"type": "string"},
+        }, "required": ["phone"]},
+    }},
+    {"type": "function", "function": {
+        "name": "notify_team",
+        "description": (
+            "Send a short notification to the business's own team for something "
+            "genuinely time-sensitive they should know (e.g. an upset customer, an "
+            "urgent request). Goes only to the team — you cannot choose a recipient. "
+            "Use sparingly; for routine follow-ups prefer capture_lead."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "subject": {"type": "string"},
+            "message": {"type": "string"},
+        }, "required": ["message"]},
+    }},
+    {"type": "function", "function": {
         "name": "lookup_offers",
         "description": (
             "Get active promotions/deals the business is currently running, so you "
@@ -12466,6 +12730,9 @@ CHAT_LOOKUP_FUNCTIONS = {
     "lookup_faq": lookup_faq,
     "lookup_knowledge_base": lookup_knowledge_base,
     "subscribe_newsletter": subscribe_newsletter,
+    "capture_lead": capture_lead,
+    "request_callback": request_callback,
+    "notify_team": notify_team,
     "lookup_offers": lookup_offers,
     "lookup_testimonials": lookup_testimonials,
     "lookup_business_info": lookup_business_info,
@@ -12500,6 +12767,9 @@ SKILL_METADATA = {
     "lookup_team":                 {"display": "Look up team members",        "category": "lookup"},
     "lookup_faq":                  {"display": "Look up FAQs",                "category": "lookup"},
     "subscribe_newsletter":        {"display": "Subscribe a visitor to the newsletter", "category": "action"},
+    "capture_lead":                {"display": "Capture a sales lead",        "category": "action"},
+    "request_callback":            {"display": "Take a callback request",     "category": "action"},
+    "notify_team":                 {"display": "Notify the team",             "category": "action"},
     "lookup_offers":               {"display": "Surface offers / deals",      "category": "lookup"},
     "lookup_testimonials":         {"display": "Look up testimonials",        "category": "lookup"},
     "lookup_business_info":        {"display": "Look up business info",       "category": "lookup"},
@@ -27194,6 +27464,58 @@ def admin_delete_offer(offer_id):
     if not row:
         return jsonify({"error": "not_found"}), 404
     return jsonify({"ok": True, "deleted": offer_id})
+
+
+# =============================================================================
+# LEADS + CALLBACKS — super-admin read APIs (task 045)
+# =============================================================================
+# Super-admin-only views of what the agentic-growth tools captured. These hold
+# visitor PII (operator sales data), so a client session is 403'd.
+
+def _iso_row(r, *date_cols):
+    d = dict(r)
+    for k in date_cols:
+        if d.get(k):
+            d[k] = d[k].isoformat()
+    return d
+
+
+@app.route("/admin/api/leads", methods=["GET"])
+@admin_required
+def admin_list_leads():
+    """Leads captured by the concierge (super-admin only). ?limit=N (max 500)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    try:
+        limit = max(1, min(int(request.args.get("limit", 100) or 100), 500))
+    except (TypeError, ValueError):
+        limit = 100
+    tid = current_tenant_id()
+    rows = query_db(
+        "SELECT id, name, email, phone, interest, message, source, status, "
+        "created_at FROM leads WHERE tenant_id=%s ORDER BY id DESC LIMIT %s",
+        (tid, limit)) or []
+    return jsonify({"leads": [_iso_row(r, "created_at") for r in rows]})
+
+
+@app.route("/admin/api/callbacks", methods=["GET"])
+@admin_required
+def admin_list_callbacks():
+    """Callback requests taken by the concierge (super-admin only)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    try:
+        limit = max(1, min(int(request.args.get("limit", 100) or 100), 500))
+    except (TypeError, ValueError):
+        limit = 100
+    tid = current_tenant_id()
+    rows = query_db(
+        "SELECT id, name, phone, preferred_time, reason, status, created_at "
+        "FROM callback_requests WHERE tenant_id=%s ORDER BY id DESC LIMIT %s",
+        (tid, limit)) or []
+    return jsonify({"callbacks": [_iso_row(r, "created_at") for r in rows]})
 
 
 @app.route("/admin/api/ai-prompts", methods=["GET"])

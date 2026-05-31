@@ -117,6 +117,17 @@ class PylegoConfig:
     # on AND has defined offers, so a fresh fork surfaces no promotions.
     offers_enabled: bool
 
+    # ---- Agentic growth tools (task 045 — Epic D) ---------------------------
+    # Three independent gates, all inert-OFF by default. `team_notify_*` are the
+    # OPERATOR-configured destinations for notify_team — the visitor/agent can
+    # NEVER specify a recipient, only the subject/message, so the tool can't be
+    # used to email/text arbitrary third parties.
+    lead_capture_enabled: bool        # capture_lead writes a leads row
+    callback_requests_enabled: bool   # request_callback writes a callback row
+    team_notifications_enabled: bool  # notify_team (+ optional notify on capture)
+    team_notify_email: str            # where notify_team emails go ("" → no email)
+    team_notify_sms: str              # where notify_team texts go ("" → no SMS)
+
     # ---- Activity logging (task 031) ----------------------------------------
     activity_logging_enabled: bool    # persist each admin-AI turn to ai_activity_log
 
@@ -188,6 +199,12 @@ def _build() -> PylegoConfig:
         newsletter_signup_enabled=_env_bool("NEWSLETTER_SIGNUP_ENABLED", False),
         # Offers — wired in 044; inert default (tool returns nothing).
         offers_enabled=_env_bool("OFFERS_ENABLED", False),
+        # Agentic growth tools — wired in 045; inert defaults (tools decline).
+        lead_capture_enabled=_env_bool("LEAD_CAPTURE_ENABLED", False),
+        callback_requests_enabled=_env_bool("CALLBACK_REQUESTS_ENABLED", False),
+        team_notifications_enabled=_env_bool("TEAM_NOTIFICATIONS_ENABLED", False),
+        team_notify_email=os.environ.get("TEAM_NOTIFY_EMAIL", "").strip(),
+        team_notify_sms=os.environ.get("TEAM_NOTIFY_SMS", "").strip(),
         # Activity logging — wired in 031 (default ON: low-volume admin turns).
         activity_logging_enabled=_env_bool("ADMIN_CHAT_ACTIVITY_LOGGING", True),
         # KB ingestion — wired in 039; inert default (inline ingestion).
