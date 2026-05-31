@@ -75,7 +75,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 041 | Epic C: prompt caching + page-gen speed | done | task/041-prompt-cache | 040 | Gate 14/14 (7 prompt-cache + routing regression); Anthropic cache_control on system prompt at _stream_round_claude (covers admin+visitor+page-gen); default-off plain-string shape, master-switch-inert; OpenAI auto-caches |
 | 042 | Epic D: visitor profile/CRM + needs capture | done | (on main) | 034 | Gate 13/13 + migration chain (0012) clean + 23 prior AI tests green; security-review: 2 fixed (bounded profiler concurrency, redact stored PII). Landed on main directly (commits e187ae4, 04b6ce7) |
 | 043 | Epic D: newsletter subscribe + self-service portal | done | task/043-newsletter | 042 | Gate 13/13 + migration chain clean; subscribe_newsletter tool (gated, consent-safe, no silent re-opt-in) + public /preferences portal (scoped HMAC token, fail-closed on insecure secret). security-review: 1 fixed (MED) |
-| 044 | Epic D: deals/offers + proactive engine | not_started | task/044-deals | 042 | |
+| 044 | Epic D: deals/offers + proactive engine | done | task/044-deals | 042 | Gate 9/9 + migration 0013 clean; offers table + gated lookup_offers tool (tag-targeted contextual surfacing) + super-admin CRUD. Drift: bespoke admin tab deferred (manageable via CRUD API now) |
 | 045 | Epic D: agent tools (capture_lead/notify_team/request_callback) | not_started | task/045-growth-tools | 042 | |
 | 046 | Epic E: visitor multi-agent intent router | not_started | task/046-visitor-personas | 045 | |
 | 047 | Epic F: book_meeting via Calendar MCP | not_started | task/047-meetings | 045 | |
