@@ -1085,6 +1085,13 @@ def _ai_control_registry():
          "env": "MODEL_ROUTING_SIMPLE_MAX_CHARS",
          "description": "A turn counts as 'simple' (eligible for the fast model) when the "
                         "user message is at most this many characters long."},
+        {"key": "prompt_cache_enabled", "attr": "prompt_cache_enabled", "type": "bool",
+         "group": "Speed / Routing", "label": "Prompt caching (Claude system prompt)",
+         "env": "PROMPT_CACHE_ENABLED",
+         "description": "When ON, the large system prompt is sent to Claude as a cached "
+                        "block so repeated turns reuse it — cheaper + faster after the "
+                        "first turn. No effect on OpenAI (it caches automatically). "
+                        "Off = system prompt sent normally."},
         # Activity
         {"key": "activity_logging_enabled", "attr": "activity_logging_enabled", "type": "bool",
          "group": "Activity", "label": "Log admin-AI turns to the database",
@@ -1144,7 +1151,7 @@ _AI_INERT = {
     "history_token_budget": 0, "history_summarize_enabled": False,
     "respcache_enabled": False, "sqlguard_enabled": False,
     "redact_enabled": False, "activity_logging_enabled": False,
-    "model_routing_enabled": False,
+    "model_routing_enabled": False, "prompt_cache_enabled": False,
     "visitor_llm_max_retries": 0, "visitor_provider_fallback": False,
     "visitor_fallback_model": "", "visitor_history_token_budget": 0,
 }
@@ -13994,6 +14001,17 @@ def _stream_round_openai(model, messages, tools, max_tokens=4096, temperature=0.
     yield ("finish", finish_reason or "stop")
 
 
+def _prompt_cache_on():
+    """Whether Anthropic prompt caching is enabled (AI Control knob, task 041).
+
+    Fail-open to OFF: any settings error leaves the request shape unchanged
+    (plain-string system prompt), so a config glitch can never alter the call."""
+    try:
+        return bool(get_ai_setting("prompt_cache_enabled"))
+    except Exception:
+        return False
+
+
 def _stream_round_claude(model, system, claude_messages, claude_tools, max_tokens=4096, temperature=0.7):
     """One Claude streaming round. Yields the same uniform event protocol
     as _stream_round_openai. Uses anthropic's messages.stream context."""
@@ -14004,7 +14022,19 @@ def _stream_round_claude(model, system, claude_messages, claude_tools, max_token
         "messages": claude_messages,
     }
     if system:
-        kwargs["system"] = system
+        # Prompt caching (task 041): when enabled, send the system prompt as a
+        # single text block tagged with cache_control. Anthropic then caches the
+        # whole static prefix (tools + system) and reuses it on later turns
+        # within its ~5-minute TTL — cheaper + lower latency on the large
+        # concierge prompt. When off, send the plain string (current behavior).
+        if _prompt_cache_on():
+            kwargs["system"] = [{
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }]
+        else:
+            kwargs["system"] = system
     if claude_tools:
         kwargs["tools"] = claude_tools
 
