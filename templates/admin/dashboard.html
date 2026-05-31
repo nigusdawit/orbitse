@@ -17090,10 +17090,18 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     /* Load all three sections on page load. They're cheap reads, so we don't
-       need to lazy-load on tab switch. */
-    loadVoiceSettings();
-    loadVoiceIntros();
-    loadVoiceUsage();
+       need to lazy-load on tab switch.
+
+       IMPORTANT: each loader is an async function. Calling them "bare" (without
+       a .catch) means any rejection — e.g. a transient network blip or a voice
+       endpoint erroring because a provider isn't configured — becomes an
+       UNHANDLED promise rejection. In the Replit preview that pops a full-screen
+       error overlay that hides the whole dashboard ("the preview isn't showing
+       it"). We swallow loader failures here so a voice read can never take the
+       admin panel down; each loader already shows its own inline error state. */
+    Promise.resolve().then(loadVoiceSettings).catch(function (e) { console.warn('voice settings load failed', e); });
+    Promise.resolve().then(loadVoiceIntros).catch(function (e) { console.warn('voice intros load failed', e); });
+    Promise.resolve().then(loadVoiceUsage).catch(function (e) { console.warn('voice usage load failed', e); });
 
     /*
     ========================================================================
