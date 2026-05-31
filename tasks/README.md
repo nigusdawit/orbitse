@@ -79,7 +79,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 045 | Epic D: agent tools (capture_lead/notify_team/request_callback) | done | task/045-growth-tools | 042 | Gate 13/13 + migration 0014 clean; 3 gated tools + leads/callbacks tables + super-admin read APIs. security-review: recipient-smuggling defense verified + 1 fixed (MED: outbound rate limit) |
 | 046 | Epic E: visitor multi-agent intent router | done | task/046-visitor-personas | 045 | Gate 12/12 + migration 0015 clean; visitor_personas table + cheap classifier + apply (tool constraint + prompt suffix + model override) wired in api_chat, default-off single-agent; super-admin CRUD. Drift: bespoke admin tab deferred (CRUD API now) |
 | 047 | Epic F: book_meeting via Calendar MCP | not_started | task/047-meetings | 045 | |
-| 048 | Epic F: request_callback + handoff summary | not_started | task/048-callback | 045 | |
+| 048 | Epic F: request_callback + handoff summary | done | task/048-callback-handoff | 045 | Gate 7/7 + migration 0016 + 25 prior tests clean; ContextVar plumbs live chat to tools, _handoff_summary on request_callback (gated default-off), stored + in team notification. No creds needed (the no-creds part of Epic F) |
 | 049 | Epic F: live AI phone call (Twilio Voice + media bridge) | not_started | task/049-live-call | 048 | |
 
 **Status legend:** not_started | in_progress | paused | blocked | awaiting_review | done
