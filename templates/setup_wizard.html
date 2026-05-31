@@ -1,567 +1,1665 @@
 <!DOCTYPE html>
-<!--
-===============================================================================
-FIRST-RUN WIZARD (Tier 3)
-===============================================================================
-Browser-based form for non-technical operators to bring a fresh install up
-to a working baseline without hand-editing JSON. Composes a template object
-on the client side and POSTs it to /setup, which calls bootstrap_install
-server-side. Reachable ONLY before the install has been bootstrapped.
-===============================================================================
--->
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
-  <meta name="robots" content="noindex, nofollow">
-  <title>Setup Wizard</title>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,100..1000&family=Playfair+Display:ital,wght@0,400..900&display=swap">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Concierge Platform — Setup Wizard</title>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@600&display=swap" rel="stylesheet">
+
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+    /* ============================================================
+       BASE & TOKENS
+       ============================================================ */
+    :root {
+      --bg:        #070c18;
+      --surface:   rgba(255,255,255,0.04);
+      --surface2:  rgba(255,255,255,0.07);
+      --border:    rgba(255,255,255,0.09);
+      --border2:   rgba(255,255,255,0.15);
+      --gold:      #c9a96e;
+      --gold-dim:  rgba(201,169,110,0.12);
+      --blue:      #4f8eff;
+      --blue-dim:  rgba(79,142,255,0.1);
+      --green:     #34d399;
+      --red:       #f87171;
+      --yellow:    #fbbf24;
+      --text:      #e2e8f0;
+      --muted:     #94a3b8;
+      --faint:     #475569;
+      --sidebar-w: 252px;
+      --bar-h:     72px;
+      --radius:    12px;
+      --tr:        0.2s ease;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
     body {
-      font-family: 'DM Sans', sans-serif;
-      background: #060b14;
-      color: #e4e4e7;
-      min-height: 100vh;
-      padding: 2rem 1rem;
-      position: relative;
-      overflow-x: hidden;
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.6;
+      overflow: hidden;
     }
-    body::before {
-      content: '';
-      position: fixed;
-      top: -40%;
-      left: -20%;
-      width: 70%;
-      height: 70%;
-      background: radial-gradient(circle, rgba(59,130,246,0.08) 0%, transparent 70%);
-      pointer-events: none;
-      z-index: 0;
+
+    /* Ambient background orbs */
+    .orb { position:fixed; border-radius:50%; pointer-events:none; z-index:0; filter:blur(80px); opacity:.16; }
+    .orb1 { width:600px;height:600px;top:-200px;left:-150px;background:radial-gradient(circle,#4f8eff,transparent 70%); }
+    .orb2 { width:500px;height:500px;bottom:-200px;right:-100px;background:radial-gradient(circle,#c9a96e,transparent 70%); }
+    .orb3 { width:400px;height:400px;top:40%;left:40%;background:radial-gradient(circle,#8b5cf6,transparent 70%); opacity:.08; }
+
+    /* ============================================================
+       LAYOUT
+       ============================================================ */
+    .layout { display:flex; height:calc(100vh - var(--bar-h)); position:relative; z-index:1; }
+
+    /* ---- Sidebar ---- */
+    .sidebar {
+      width:var(--sidebar-w); flex-shrink:0;
+      background:rgba(255,255,255,0.03);
+      border-right:1px solid var(--border);
+      display:flex; flex-direction:column;
+      overflow-y:auto; padding:24px 0 24px;
     }
-    body::after {
-      content: '';
-      position: fixed;
-      bottom: -30%;
-      right: -20%;
-      width: 60%;
-      height: 60%;
-      background: radial-gradient(circle, rgba(139,92,246,0.06) 0%, transparent 70%);
-      pointer-events: none;
-      z-index: 0;
+    .sidebar-logo { padding:0 20px 20px; border-bottom:1px solid var(--border); margin-bottom:16px; }
+    .sidebar-logo .brand { font-family:'Playfair Display',serif; font-size:15px; color:var(--gold); letter-spacing:.02em; }
+    .sidebar-logo .brand-sub { font-size:11px; color:var(--muted); margin-top:2px; }
+    .super-badge {
+      display:inline-flex; align-items:center; gap:5px;
+      padding:4px 10px; background:rgba(201,169,110,.1);
+      border:1px solid rgba(201,169,110,.28); border-radius:99px;
+      font-size:10px; font-weight:700; color:var(--gold);
+      letter-spacing:.06em; text-transform:uppercase; margin-top:10px;
     }
-    .wrap {
-      max-width: 760px;
-      margin: 0 auto;
-      position: relative;
-      z-index: 1;
+
+    /* Step list */
+    .step-list { flex:1; list-style:none; padding:0 10px; }
+    .step-item {
+      display:flex; align-items:center; gap:9px;
+      padding:8px 10px; border-radius:8px; cursor:pointer;
+      transition:var(--tr); margin-bottom:2px;
+      border:1px solid transparent;
     }
-    h1 {
-      font-family: 'Playfair Display', serif;
-      font-size: 2rem;
-      color: #fff;
-      margin-bottom: 0.5rem;
+    .step-item:hover { background:var(--surface2); }
+    .step-item.active { background:var(--gold-dim); border-color:rgba(201,169,110,.22); }
+    .step-num {
+      width:23px; height:23px; border-radius:50%;
+      background:var(--surface2); border:1px solid var(--border2);
+      display:flex; align-items:center; justify-content:center;
+      font-size:11px; font-weight:700; flex-shrink:0; color:var(--muted);
     }
-    .subtitle {
-      color: rgba(255,255,255,0.5);
-      font-size: 0.95rem;
-      margin-bottom: 2rem;
+    .step-item.active .step-num { background:var(--gold); border-color:var(--gold); color:#000; }
+    .step-item.done  .step-num  { background:rgba(52,211,153,.18); color:var(--green); border-color:rgba(52,211,153,.3); }
+    .step-icon  { font-size:14px; }
+    .step-label { font-size:12px; font-weight:500; color:var(--muted); flex:1; }
+    .step-item.active .step-label { color:var(--text); font-weight:600; }
+    .step-item.done  .step-label  { color:var(--text); }
+    .step-check { font-size:11px; color:var(--green); }
+
+    .sidebar-progress { padding:16px 20px 0; border-top:1px solid var(--border); }
+    .progress-label { font-size:11px; color:var(--muted); display:flex; justify-content:space-between; }
+    .progress-bar-track { height:4px; background:var(--surface2); border-radius:99px; margin-top:8px; }
+    .progress-bar-fill { height:100%; background:linear-gradient(90deg,var(--gold),#e8c98a); border-radius:99px; transition:width .4s ease; }
+
+    /* ---- Main content ---- */
+    .main-content { flex:1; overflow-y:auto; padding:32px 40px 20px; }
+
+    /* ============================================================
+       STEP PANELS
+       ============================================================ */
+    .step-panel { display:none; }
+    .step-panel.active { display:block; animation:fadeIn .22s ease; }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(7px)} to{opacity:1;transform:none} }
+
+    .step-heading { margin-bottom:24px; }
+    .step-heading h2 { font-family:'Playfair Display',serif; font-size:26px; color:var(--text); }
+    .step-heading p  { color:var(--muted); margin-top:5px; font-size:13.5px; }
+
+    /* ============================================================
+       UI PRIMITIVES
+       ============================================================ */
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:20px; margin-bottom:16px; }
+    .card-title { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.07em; color:var(--gold); margin-bottom:14px; display:flex; align-items:center; gap:7px; }
+
+    .info-box  { background:var(--blue-dim); border:1px solid rgba(79,142,255,.2); border-radius:8px; padding:12px 16px; margin-bottom:16px; font-size:12.5px; color:#93c5fd; }
+    .warn-box  { background:rgba(251,191,36,.07); border:1px solid rgba(251,191,36,.25); border-radius:8px; padding:12px 16px; margin-bottom:16px; font-size:12.5px; color:var(--yellow); }
+    .succ-box  { background:rgba(52,211,153,.07); border:1px solid rgba(52,211,153,.25); border-radius:8px; padding:12px 16px; margin-bottom:16px; font-size:12.5px; color:var(--green); }
+
+    /* Form fields */
+    .field-group { margin-bottom:16px; }
+    .field-row   { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
+    .field-row.cols-3 { grid-template-columns:1fr 1fr 1fr; }
+    label { display:block; font-size:11.5px; font-weight:600; color:var(--muted); margin-bottom:5px; text-transform:uppercase; letter-spacing:.05em; }
+    label .req { color:var(--gold); margin-left:2px; }
+    input[type=text],input[type=password],input[type=email],input[type=tel],input[type=url],textarea,select {
+      width:100%; background:rgba(255,255,255,.05); border:1px solid var(--border2);
+      border-radius:8px; padding:9px 12px; color:var(--text); font-size:13.5px;
+      font-family:'Inter',sans-serif; transition:border-color var(--tr); outline:none;
     }
-    section {
-      background: rgba(255,255,255,0.04);
-      backdrop-filter: blur(24px);
-      -webkit-backdrop-filter: blur(24px);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 1rem;
-      padding: 1.5rem 1.75rem;
-      margin-bottom: 1.25rem;
-      box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+    input:focus,textarea:focus,select:focus { border-color:var(--gold); background:rgba(255,255,255,.07); }
+    input.err,textarea.err { border-color:var(--red); }
+    textarea { resize:vertical; min-height:88px; }
+    select option { background:#1e2a3a; color:var(--text); }
+
+    /* Toggle */
+    .toggle-row { display:flex; align-items:center; gap:12px; margin-bottom:14px; }
+    .toggle-label { font-size:13.5px; color:var(--text); flex:1; }
+    .toggle-sub   { font-size:11.5px; color:var(--muted); }
+    .toggle { position:relative; width:44px; height:24px; flex-shrink:0; }
+    .toggle input { opacity:0; width:0; height:0; position:absolute; }
+    .toggle-track { position:absolute; inset:0; background:rgba(255,255,255,.1); border-radius:99px; cursor:pointer; transition:background var(--tr); }
+    .toggle-track::after { content:''; position:absolute; left:3px; top:3px; width:18px; height:18px; background:#fff; border-radius:50%; transition:left var(--tr); }
+    .toggle input:checked + .toggle-track { background:var(--gold); }
+    .toggle input:checked + .toggle-track::after { left:23px; }
+
+    /* Skill cards */
+    .skill-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:9px; }
+    .skill-card { background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:12px 14px; cursor:pointer; transition:var(--tr); position:relative; }
+    .skill-card:hover { border-color:var(--border2); }
+    .skill-card.enabled { border-color:rgba(201,169,110,.4); background:rgba(201,169,110,.06); }
+    .skill-card-cat  { font-size:10px; color:var(--faint); text-transform:uppercase; letter-spacing:.06em; margin-bottom:3px; }
+    .skill-card-name { font-size:12.5px; font-weight:600; color:var(--text); margin-bottom:3px; }
+    .skill-card-desc { font-size:11px; color:var(--muted); line-height:1.4; }
+    .skill-dot { width:8px; height:8px; border-radius:50%; background:var(--border2); position:absolute; top:12px; right:12px; transition:background var(--tr); }
+    .skill-card.enabled .skill-dot { background:var(--gold); }
+
+    /* Feature grid */
+    .feature-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:8px; }
+    .feat-item { display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:9px 12px; }
+    .feat-label { font-size:12.5px; color:var(--text); }
+    .feat-tier  { font-size:10px; color:var(--muted); padding:1px 6px; border-radius:4px; background:rgba(255,255,255,.06); display:inline-block; margin-top:2px; }
+
+    /* Group heading */
+    .group-heading { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:20px 0 10px; padding-bottom:6px; border-bottom:1px solid var(--border); }
+    .group-heading:first-child { margin-top:0; }
+
+    /* MCP / webhook list items */
+    .list-item { display:flex; align-items:center; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 14px; margin-bottom:8px; }
+    .list-item-name { font-size:13px; font-weight:600; flex:1; }
+    .list-item-sub  { font-size:11px; color:var(--muted); }
+    .btn-remove { background:none; border:none; color:var(--red); cursor:pointer; font-size:15px; padding:0 4px; opacity:.65; }
+    .btn-remove:hover { opacity:1; }
+
+    /* Automation preset cards */
+    .auto-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:10px; margin-bottom:16px; }
+    .auto-card { background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:14px; cursor:pointer; transition:var(--tr); position:relative; }
+    .auto-card:hover { border-color:var(--border2); }
+    .auto-card.selected { border-color:rgba(79,142,255,.45); background:var(--blue-dim); }
+    .auto-card-icon { font-size:22px; margin-bottom:8px; }
+    .auto-card-name { font-size:13px; font-weight:600; margin-bottom:4px; }
+    .auto-card-desc { font-size:11.5px; color:var(--muted); line-height:1.4; }
+    .auto-check { position:absolute; top:10px; right:10px; font-size:13px; color:var(--blue); display:none; }
+    .auto-card.selected .auto-check { display:block; }
+
+    /* Env-var rows */
+    .env-row { display:flex; align-items:flex-start; gap:14px; padding:12px 0; border-bottom:1px solid var(--border); }
+    .env-row:last-child { border-bottom:none; }
+    .env-meta { flex:1; min-width:0; }
+    .env-key  { font-size:12px; font-weight:700; font-family:monospace; color:var(--text); }
+    .env-desc { font-size:11px; color:var(--muted); margin-top:2px; }
+    .env-badge { display:inline-flex; align-items:center; gap:3px; padding:2px 7px; border-radius:4px; font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.05em; margin-top:4px; }
+    .badge-set      { background:rgba(52,211,153,.14); color:var(--green); }
+    .badge-unset    { background:rgba(255,255,255,.06); color:var(--faint); }
+    .badge-platform { background:rgba(79,142,255,.14); color:var(--blue); }
+    .env-input-wrap { width:210px; flex-shrink:0; }
+
+    /* Preset cards */
+    .preset-row { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:10px; margin-bottom:20px; }
+    .preset-card { background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:14px 10px; cursor:pointer; text-align:center; transition:var(--tr); }
+    .preset-card:hover { border-color:var(--gold); }
+    .preset-card.active { border-color:var(--gold); background:var(--gold-dim); }
+    .preset-icon { font-size:24px; margin-bottom:6px; }
+    .preset-name { font-size:12px; font-weight:600; }
+
+    /* Business hours */
+    .hours-table { width:100%; border-collapse:collapse; }
+    .hours-table td { padding:5px 8px; }
+    .hours-table td:first-child { color:var(--muted); font-size:12px; width:76px; font-weight:600; }
+
+    /* Accordion */
+    .accordion-header { display:flex; align-items:center; gap:8px; padding:12px 0; cursor:pointer; font-size:13.5px; font-weight:600; color:var(--text); border-top:1px solid var(--border); user-select:none; }
+    .accordion-header .acc-arr { color:var(--muted); transition:transform var(--tr); font-size:11px; }
+    .accordion-header.open .acc-arr { transform:rotate(90deg); }
+    .accordion-body { display:none; padding-bottom:16px; }
+    .accordion-body.open { display:block; }
+
+    /* Review grid */
+    .review-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:20px; }
+    .review-card { background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
+    .review-card-label { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin-bottom:5px; }
+    .review-card-val   { font-size:14px; font-weight:600; }
+    .review-card-val.good { color:var(--green); }
+    .review-card-val.warn { color:var(--yellow); }
+
+    /* Connector quick-connect */
+    .connector-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:10px; margin-bottom:20px; }
+    .connector-card { background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:14px; cursor:pointer; text-align:center; transition:var(--tr); }
+    .connector-card:hover { border-color:var(--blue); background:var(--blue-dim); }
+    .connector-icon { font-size:26px; margin-bottom:6px; }
+    .connector-name { font-size:12px; font-weight:600; }
+
+    /* Section pills */
+    .section-pills { display:flex; flex-wrap:wrap; gap:7px; margin-top:4px; }
+    .section-pill { display:flex; align-items:center; gap:6px; background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:5px 10px; cursor:pointer; font-size:12px; transition:var(--tr); }
+    .section-pill.enabled { border-color:rgba(52,211,153,.4); background:rgba(52,211,153,.07); color:var(--green); }
+    .section-pill .pdot { width:6px; height:6px; border-radius:50%; background:var(--faint); flex-shrink:0; transition:background var(--tr); }
+    .section-pill.enabled .pdot { background:var(--green); }
+
+    /* Code blocks */
+    code { font-family:monospace; background:rgba(255,255,255,.08); border-radius:4px; padding:1px 6px; font-size:12px; color:#a5f3fc; }
+    pre.code-block { background:rgba(0,0,0,.4); border:1px solid var(--border); border-radius:8px; padding:14px; font-family:monospace; font-size:12px; color:#a5f3fc; overflow-x:auto; margin:10px 0; white-space:pre-wrap; }
+
+    /* ============================================================
+       BOTTOM NAV BAR
+       ============================================================ */
+    .bottom-bar {
+      position:fixed; bottom:0; left:0; right:0; height:var(--bar-h);
+      background:rgba(7,12,24,.94); backdrop-filter:blur(16px);
+      border-top:1px solid var(--border); display:flex; align-items:center;
+      justify-content:space-between; padding:0 32px; z-index:100;
     }
-    section h2 {
-      font-family: 'Playfair Display', serif;
-      font-size: 1.25rem;
-      color: #fff;
-      margin-bottom: 0.25rem;
-    }
-    section .hint {
-      color: rgba(255,255,255,0.4);
-      font-size: 0.8rem;
-      margin-bottom: 1rem;
-    }
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.85rem; margin-bottom: 0.85rem; }
-    .row.full { grid-template-columns: 1fr; }
-    .field { display: flex; flex-direction: column; }
-    label {
-      display: block;
-      font-size: 0.72rem;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: rgba(255,255,255,0.55);
-      margin-bottom: 0.35rem;
-    }
-    input[type=text], input[type=email], input[type=tel], input[type=password], textarea, select {
-      width: 100%;
-      background: rgba(0,0,0,0.3);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 0.5rem;
-      padding: 0.65rem 0.8rem;
-      color: #e4e4e7;
-      font: inherit;
-      font-size: 0.92rem;
-      transition: border-color 0.15s;
-    }
-    input:focus, textarea:focus, select:focus {
-      outline: none;
-      border-color: rgba(59,130,246,0.5);
-    }
-    textarea { min-height: 70px; resize: vertical; }
-    .plan-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; }
-    .plan-tile {
-      background: rgba(0,0,0,0.25);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 0.5rem;
-      padding: 0.85rem;
-      cursor: pointer;
-      transition: border-color 0.15s, background 0.15s;
-    }
-    .plan-tile.selected { border-color: rgba(59,130,246,0.7); background: rgba(59,130,246,0.08); }
-    .plan-tile strong { display: block; color: #fff; font-size: 0.95rem; margin-bottom: 0.15rem; }
-    .plan-tile span { color: rgba(255,255,255,0.5); font-size: 0.78rem; }
-    .faq-item {
-      background: rgba(0,0,0,0.18);
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 0.5rem;
-      padding: 0.75rem;
-      margin-bottom: 0.6rem;
-      position: relative;
-    }
-    .faq-item .remove-btn {
-      position: absolute; top: 0.5rem; right: 0.5rem;
-      background: transparent; border: none; color: rgba(255,255,255,0.4);
-      cursor: pointer; font-size: 1rem; padding: 0.15rem 0.4rem;
-    }
-    .faq-item .remove-btn:hover { color: rgba(239,68,68,0.9); }
-    .add-btn {
-      background: transparent; border: 1px dashed rgba(255,255,255,0.2);
-      color: rgba(255,255,255,0.55); padding: 0.55rem 0.8rem;
-      border-radius: 0.5rem; cursor: pointer; font: inherit; font-size: 0.85rem;
-      width: 100%;
-    }
-    .add-btn:hover { border-color: rgba(59,130,246,0.5); color: rgba(59,130,246,0.9); }
-    .actions {
-      display: flex; gap: 0.75rem; margin-top: 1.5rem;
-      align-items: center; flex-wrap: wrap;
-    }
-    .submit-btn {
-      flex: 1;
-      background: linear-gradient(135deg, rgba(59,130,246,0.9), rgba(139,92,246,0.9));
-      color: #fff; border: none; padding: 0.85rem 1.5rem;
-      border-radius: 0.5rem; cursor: pointer; font: inherit; font-size: 0.95rem;
-      font-weight: 600; transition: transform 0.1s, box-shadow 0.15s;
-    }
-    .submit-btn:hover { box-shadow: 0 8px 24px rgba(59,130,246,0.3); }
-    .submit-btn:active { transform: translateY(1px); }
-    .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-    .status {
-      padding: 0.85rem 1rem; border-radius: 0.5rem;
-      font-size: 0.9rem; margin-top: 1rem;
-    }
-    .status.ok { background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.3); color: #86efac; }
-    .status.err { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; }
-    .status pre {
-      margin-top: 0.5rem; font-size: 0.78rem;
-      background: rgba(0,0,0,0.3); padding: 0.6rem; border-radius: 0.35rem;
-      overflow-x: auto; white-space: pre-wrap; word-break: break-word;
-    }
-    @media (max-width: 600px) {
-      .row { grid-template-columns: 1fr; }
-      .plan-grid { grid-template-columns: 1fr; }
+    .btn { display:inline-flex; align-items:center; gap:7px; padding:9px 20px; border-radius:8px; border:none; cursor:pointer; font-size:13.5px; font-weight:600; font-family:'Inter',sans-serif; transition:var(--tr); }
+    .btn-ghost   { background:var(--surface2); border:1px solid var(--border2); color:var(--text); }
+    .btn-ghost:hover   { background:rgba(255,255,255,.1); }
+    .btn-ghost:disabled { opacity:.3; cursor:not-allowed; }
+    .btn-primary { background:linear-gradient(135deg,#4f8eff,#7c5af6); color:#fff; }
+    .btn-primary:hover { filter:brightness(1.1); }
+    .btn-gold    { background:linear-gradient(135deg,var(--gold),#e8c98a); color:#000; font-weight:700; }
+    .btn-gold:hover    { filter:brightness(1.05); }
+    .btn-gold:disabled { opacity:.4; cursor:not-allowed; }
+    .step-dots   { display:flex; gap:6px; align-items:center; }
+    .dot { width:7px; height:7px; border-radius:50%; background:var(--surface2); border:1px solid var(--border2); cursor:pointer; transition:var(--tr); }
+    .dot.active { background:var(--gold); border-color:var(--gold); width:20px; border-radius:4px; }
+    .dot.done   { background:rgba(52,211,153,.38); border-color:transparent; }
+
+    /* ============================================================
+       SUCCESS MODAL
+       ============================================================ */
+    .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); backdrop-filter:blur(10px); z-index:200; align-items:center; justify-content:center; }
+    .modal-overlay.visible { display:flex; }
+    .modal-box { background:#0f1829; border:1px solid var(--border2); border-radius:16px; padding:36px; max-width:520px; width:90%; text-align:center; animation:fadeIn .3s ease; }
+    .modal-icon  { font-size:52px; margin-bottom:16px; }
+    .modal-title { font-family:'Playfair Display',serif; font-size:24px; margin-bottom:10px; }
+    .modal-body  { font-size:13.5px; color:var(--muted); margin-bottom:24px; line-height:1.7; }
+    .modal-body strong { color:var(--text); }
+
+    /* Misc helpers */
+    .divider { height:1px; background:var(--border); margin:20px 0; }
+    .text-muted { color:var(--muted); }
+    .text-sm  { font-size:12px; }
+    .mt-1 { margin-top:6px; }
+    .mt-2 { margin-top:12px; }
+    .verr { color:var(--red); font-size:11.5px; margin-top:4px; display:none; }
+    .verr.vis { display:block; }
+    .spinner { display:inline-block; width:16px; height:16px; border:2px solid rgba(255,255,255,.2); border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; }
+    @keyframes spin { to{transform:rotate(360deg)} }
+
+    /* Responsive collapse */
+    @media (max-width:720px) {
+      .sidebar { display:none; }
+      .field-row { grid-template-columns:1fr; }
+      .review-grid { grid-template-columns:1fr; }
+      .main-content { padding:20px 16px; }
     }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>Welcome — let's set up your install</h1>
-    <p class="subtitle">A few minutes here and your site is ready. Everything below can be edited later from the admin dashboard.</p>
 
-    <form id="wizardForm">
-      <!-- Industry preset -->
-      {% if presets %}
-      <section>
-        <h2>Start from a preset</h2>
-        <p class="hint">Pick the closest match — you can change anything below.</p>
-        <div class="row full">
-          <div class="field">
-            <label for="preset">Industry preset</label>
-            <select id="preset" data-testid="select-preset">
-              <option value="">-- start blank --</option>
-              {% for p in presets %}
-                <option value="{{ p }}">{{ p.replace('_', ' ').title() }}</option>
-              {% endfor %}
+<!-- Ambient background orbs -->
+<div class="orb orb1"></div>
+<div class="orb orb2"></div>
+<div class="orb orb3"></div>
+
+<!-- ============================================================
+     MAIN LAYOUT
+     ============================================================ -->
+<div class="layout">
+
+  <!-- ===== Left sidebar ===== -->
+  <nav class="sidebar">
+    <div class="sidebar-logo">
+      <div class="brand">AI Concierge Platform</div>
+      <div class="brand-sub">First-run provisioning</div>
+      <div class="super-badge">🔐 Super Admin Only</div>
+    </div>
+
+    <ul class="step-list" id="stepList"></ul>
+
+    <div class="sidebar-progress">
+      <div class="progress-label">
+        <span>Progress</span>
+        <span id="progressPct">0%</span>
+      </div>
+      <div class="progress-bar-track">
+        <div class="progress-bar-fill" id="progressFill" style="width:0%"></div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ===== Main content ===== -->
+  <main class="main-content" id="mainContent">
+
+    <!-- ============================================================
+         STEP 1 — Access & Security
+         ============================================================ -->
+    <div class="step-panel active" id="panel-0">
+      <div class="step-heading">
+        <h2>🔐 Access & Security</h2>
+        <p>Set your super admin credentials and optionally create a restricted client login.</p>
+      </div>
+
+      <div class="warn-box">
+        <strong>Super admin only.</strong> This wizard provisions the platform. It cannot be re-run once setup is complete — keep your passwords safe.
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔑 Super Admin Credentials</div>
+
+        <div class="field-row">
+          <div class="field-group">
+            <label>Admin Password <span class="req">*</span></label>
+            <input type="password" id="adminPassword" placeholder="Min 8 characters">
+            <div class="verr" id="e-adminPassword">Password must be at least 8 characters.</div>
+          </div>
+          <div class="field-group">
+            <label>Confirm Password <span class="req">*</span></label>
+            <input type="password" id="adminPasswordConfirm" placeholder="Re-enter password">
+            <div class="verr" id="e-adminPasswordConfirm">Passwords do not match.</div>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field-group">
+            <label>Admin Email</label>
+            <input type="email" id="adminEmail" placeholder="owner@example.com">
+            <div class="text-sm text-muted mt-1">Used for alerts, digests, and password resets.</div>
+          </div>
+          <div class="field-group">
+            <label>Admin Phone</label>
+            <input type="tel" id="adminPhone" placeholder="+1-555-0100">
+            <div class="text-sm text-muted mt-1">Optional — used for SMS alerts.</div>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label>Super Admin Key <span class="text-muted text-sm" style="text-transform:none;font-weight:400;">(optional step-up key for sensitive tabs)</span></label>
+          <input type="password" id="superAdminKey" placeholder="Leave blank to skip">
+          <div class="text-sm text-muted mt-1">When set, sensitive tabs (Developer, Secrets, Snapshot) prompt for this key as a second factor.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">👥 Client Login (Optional)</div>
+        <div class="info-box">The client login gives a restricted view of the admin — only the tabs you enable in Features &amp; Tabs. Perfect for handing off content management to a client.</div>
+
+        <div class="toggle-row">
+          <label class="toggle"><input type="checkbox" id="clientLoginEnabled"><span class="toggle-track"></span></label>
+          <div>
+            <div class="toggle-label">Enable a separate client login</div>
+            <div class="toggle-sub">Adds a second password that logs in as a restricted "client" role.</div>
+          </div>
+        </div>
+
+        <div id="clientLoginFields" style="display:none;">
+          <div class="field-row">
+            <div class="field-group">
+              <label>Client Password <span class="req">*</span></label>
+              <input type="password" id="clientPassword" placeholder="Min 8 characters">
+            </div>
+            <div class="field-group">
+              <label>Confirm Client Password</label>
+              <input type="password" id="clientPasswordConfirm" placeholder="Re-enter">
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         STEP 2 — Business & Web
+         ============================================================ -->
+    <div class="step-panel" id="panel-1">
+      <div class="step-heading">
+        <h2>🏢 Business & Web</h2>
+        <p>Set your brand identity and contact details. Pick an industry preset to pre-fill everything.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🏭 Industry Preset</div>
+        <div class="text-sm text-muted" style="margin-bottom:12px;">Pick a preset to pre-fill the fields below — you can change anything after.</div>
+        <div class="preset-row" id="presetRow"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🎨 Brand Identity</div>
+        <div class="field-row">
+          <div class="field-group">
+            <label>Business Name <span class="req">*</span></label>
+            <input type="text" id="siteName" placeholder="My Business">
+            <div class="verr" id="e-siteName">Business name is required.</div>
+          </div>
+          <div class="field-group">
+            <label>Logo Initials <span class="text-muted text-sm" style="text-transform:none;font-weight:400;">(2–3 letters)</span></label>
+            <input type="text" id="logoInitials" placeholder="MB" maxlength="3">
+          </div>
+        </div>
+        <div class="field-group">
+          <label>Site Subtitle</label>
+          <input type="text" id="siteSubtitle" placeholder="Tell visitors what you do in one line.">
+        </div>
+        <div class="field-row">
+          <div class="field-group">
+            <label>Hero Title</label>
+            <input type="text" id="heroTitle" placeholder="Welcome">
+          </div>
+          <div class="field-group">
+            <label>Hero Tagline</label>
+            <input type="text" id="heroTagline" placeholder="Your tagline goes here">
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field-group">
+            <label>Hero Image URL <span class="text-muted text-sm" style="text-transform:none;font-weight:400;">(optional)</span></label>
+            <input type="url" id="heroImageUrl" placeholder="https://...">
+          </div>
+          <div class="field-group"></div><!-- spacer -->
+        </div>
+        <div class="field-group">
+          <label>Hero Description</label>
+          <textarea id="heroDescription" rows="2" placeholder="A short paragraph about your business…"></textarea>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📍 Contact Info</div>
+        <div class="field-row">
+          <div class="field-group">
+            <label>Phone</label>
+            <input type="tel" id="bizPhone" placeholder="+1-555-0100">
+          </div>
+          <div class="field-group">
+            <label>Email</label>
+            <input type="email" id="bizEmail" placeholder="hello@example.com">
+          </div>
+        </div>
+        <div class="field-group">
+          <label>Address</label>
+          <input type="text" id="bizAddress" placeholder="123 Main St, City, State">
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🕐 Business Hours</div>
+        <table class="hours-table"><tbody id="hoursTable"></tbody></table>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🌐 Social Links</div>
+        <div class="field-row">
+          <div class="field-group"><label>Instagram</label><input type="url" id="socialInstagram" placeholder="https://instagram.com/..."></div>
+          <div class="field-group"><label>Facebook</label><input type="url" id="socialFacebook" placeholder="https://facebook.com/..."></div>
+        </div>
+        <div class="field-row">
+          <div class="field-group"><label>Twitter / X</label><input type="url" id="socialTwitter" placeholder="https://twitter.com/..."></div>
+          <div class="field-group"><label>LinkedIn</label><input type="url" id="socialLinkedin" placeholder="https://linkedin.com/..."></div>
+        </div>
+        <div class="field-row">
+          <div class="field-group"><label>YouTube</label><input type="url" id="socialYoutube" placeholder="https://youtube.com/..."></div>
+          <div class="field-group"><label>TikTok</label><input type="url" id="socialTiktok" placeholder="https://tiktok.com/..."></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         STEP 3 — Visitor AI
+         ============================================================ -->
+    <div class="step-panel" id="panel-2">
+      <div class="step-heading">
+        <h2>🤖 Visitor AI</h2>
+        <p>Configure the chatbot your site visitors interact with.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-title">💬 Chatbot</div>
+        <div class="toggle-row">
+          <label class="toggle"><input type="checkbox" id="chatbotEnabled" checked><span class="toggle-track"></span></label>
+          <div>
+            <div class="toggle-label">Enable visitor chatbot</div>
+            <div class="toggle-sub">Shows a chat button on your public site.</div>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field-group">
+            <label>Agent Name <span class="req">*</span></label>
+            <input type="text" id="agentName" placeholder="Assistant" value="Assistant">
+          </div>
+          <div class="field-group">
+            <label>Agent Role</label>
+            <input type="text" id="agentRole" placeholder="Concierge" value="Concierge">
+          </div>
+        </div>
+        <div class="field-group">
+          <label>Greeting Message</label>
+          <input type="text" id="agentGreeting" placeholder="Hi there! How can I help you today?" value="Hi there! How can I help you today?">
+        </div>
+        <div class="field-group">
+          <label>System Prompt</label>
+          <textarea id="agentSystemPrompt" rows="5" placeholder="You are a helpful concierge…">You are a helpful concierge for this business. Be concise, friendly, and ground every answer in the FAQ list and business information you have access to. If you don't know, say so and offer to take a message.</textarea>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔊 Voice Agent</div>
+        <div class="info-box">Voice requires <code>OPENAI_API_KEY</code> (set in the Secrets step). ElevenLabs TTS is optional for ultra-realistic voices and requires <code>ELEVENLABS_API_KEY</code>.</div>
+        <div class="toggle-row">
+          <label class="toggle"><input type="checkbox" id="voiceIntros"><span class="toggle-track"></span></label>
+          <div>
+            <div class="toggle-label">Welcome voice intros (UTM-targeted)</div>
+            <div class="toggle-sub">Play a pre-generated greeting when visitors arrive via tracked campaigns.</div>
+          </div>
+        </div>
+        <div class="toggle-row">
+          <label class="toggle"><input type="checkbox" id="voiceVisitor"><span class="toggle-track"></span></label>
+          <div>
+            <div class="toggle-label">Visitor voice input</div>
+            <div class="toggle-sub">Visitors can speak to the chatbot instead of typing.</div>
+          </div>
+        </div>
+        <div class="toggle-row">
+          <label class="toggle"><input type="checkbox" id="voiceAI"><span class="toggle-track"></span></label>
+          <div>
+            <div class="toggle-label">AI voice replies (streaming TTS)</div>
+            <div class="toggle-sub">The chatbot speaks responses aloud, sentence by sentence.</div>
+          </div>
+        </div>
+        <div class="field-row mt-2">
+          <div class="field-group">
+            <label>TTS Provider</label>
+            <select id="ttsProvider">
+              <option value="openai">OpenAI TTS (fast, 6 voices)</option>
+              <option value="elevenlabs">ElevenLabs (ultra-realistic)</option>
+            </select>
+          </div>
+          <div class="field-group">
+            <label>Default Voice</label>
+            <select id="defaultVoice">
+              <option value="alloy">Alloy</option>
+              <option value="echo">Echo</option>
+              <option value="fable">Fable</option>
+              <option value="onyx">Onyx</option>
+              <option value="nova">Nova</option>
+              <option value="shimmer">Shimmer</option>
             </select>
           </div>
         </div>
-      </section>
-      {% endif %}
+      </div>
+    </div>
 
-      <!-- Business basics -->
-      <section>
-        <h2>Business basics</h2>
-        <p class="hint">Shows up on every page — header, hero, footer.</p>
-        <div class="row">
-          <div class="field">
-            <label for="site_name">Business / site name *</label>
-            <input type="text" id="site_name" required data-testid="input-site-name">
-          </div>
-          <div class="field">
-            <label for="logo_initials">Logo initials</label>
-            <input type="text" id="logo_initials" maxlength="4" data-testid="input-logo-initials">
-          </div>
-        </div>
-        <div class="row full">
-          <div class="field">
-            <label for="site_subtitle">One-line subtitle</label>
-            <input type="text" id="site_subtitle" data-testid="input-site-subtitle">
-          </div>
-        </div>
-        <div class="row">
-          <div class="field">
-            <label for="hero_title">Hero title</label>
-            <input type="text" id="hero_title" data-testid="input-hero-title">
-          </div>
-          <div class="field">
-            <label for="hero_tagline">Hero tagline</label>
-            <input type="text" id="hero_tagline" data-testid="input-hero-tagline">
-          </div>
-        </div>
-        <div class="row full">
-          <div class="field">
-            <label for="hero_description">Hero description</label>
-            <textarea id="hero_description" data-testid="textarea-hero-description"></textarea>
-          </div>
-        </div>
-      </section>
+    <!-- ============================================================
+         STEP 4 — Admin AI
+         ============================================================ -->
+    <div class="step-panel" id="panel-3">
+      <div class="step-heading">
+        <h2>🧠 Admin AI</h2>
+        <p>Configure the AI assistant in your admin panel sidebar.</p>
+      </div>
 
-      <!-- Contact -->
-      <section>
-        <h2>Contact info</h2>
-        <p class="hint">Used in the footer, the chatbot, and SEO structured data.</p>
-        <div class="row">
-          <div class="field">
-            <label for="business_phone">Phone</label>
-            <input type="tel" id="business_phone" data-testid="input-phone">
-          </div>
-          <div class="field">
-            <label for="business_email">Email</label>
-            <input type="email" id="business_email" data-testid="input-email">
+      <div class="card">
+        <div class="card-title">⚡ Admin Chat</div>
+        <div class="toggle-row">
+          <label class="toggle"><input type="checkbox" id="adminChatEnabled" checked><span class="toggle-track"></span></label>
+          <div>
+            <div class="toggle-label">Enable admin AI chat</div>
+            <div class="toggle-sub">Shows a chat sidebar in your admin panel for content drafting and business tasks.</div>
           </div>
         </div>
-        <div class="row full">
-          <div class="field">
-            <label for="business_address">Address</label>
-            <input type="text" id="business_address" data-testid="input-address">
-          </div>
+        <div class="field-group mt-2">
+          <label>Admin AI System Prompt</label>
+          <textarea id="adminSystemPrompt" rows="5">You are a helpful business operations assistant for the admin of this platform. Help with content drafting, data analysis, and business strategy. Be precise and actionable.</textarea>
         </div>
-      </section>
+      </div>
 
-      <!-- Chatbot -->
-      <section>
-        <h2>Chatbot persona</h2>
-        <p class="hint">How the on-site assistant introduces itself.</p>
-        <div class="row">
-          <div class="field">
-            <label for="agent_name">Agent name</label>
-            <input type="text" id="agent_name" data-testid="input-agent-name">
+      <div class="card">
+        <div class="card-title">🔬 LLM Provider Preference</div>
+        <div class="info-box">The platform auto-selects the best available provider. You can set a preference here — it falls back to whatever API keys are configured.</div>
+        <div class="field-row">
+          <div class="field-group">
+            <label>Visitor chat preference</label>
+            <select id="llmVisitor">
+              <option value="">Auto (best available)</option>
+              <option value="openai">OpenAI GPT-4o</option>
+              <option value="anthropic">Anthropic Claude</option>
+            </select>
           </div>
-          <div class="field">
-            <label for="agent_role">Agent role</label>
-            <input type="text" id="agent_role" data-testid="input-agent-role">
-          </div>
-        </div>
-        <div class="row full">
-          <div class="field">
-            <label for="greeting">Greeting</label>
-            <input type="text" id="greeting" data-testid="input-greeting">
-          </div>
-        </div>
-        <div class="row full">
-          <div class="field">
-            <label for="system_prompt">System prompt</label>
-            <textarea id="system_prompt" data-testid="textarea-system-prompt" style="min-height:120px"></textarea>
+          <div class="field-group">
+            <label>Admin chat preference</label>
+            <select id="llmAdmin">
+              <option value="">Auto (best available)</option>
+              <option value="openai">OpenAI GPT-4o</option>
+              <option value="anthropic">Anthropic Claude</option>
+            </select>
           </div>
         </div>
-      </section>
+        <div class="toggle-row">
+          <label class="toggle"><input type="checkbox" id="kbEnabled" checked><span class="toggle-track"></span></label>
+          <div>
+            <div class="toggle-label">Enable Knowledge Base (RAG)</div>
+            <div class="toggle-sub">Admins can upload PDFs and docs; the AI cites them in answers using vector search.</div>
+          </div>
+        </div>
+      </div>
+    </div>
 
-      <!-- Plan -->
-      <section>
-        <h2>Feature plan</h2>
-        <p class="hint">Determines which features are turned on out of the box.</p>
-        <div class="plan-grid" id="planGrid">
-          <div class="plan-tile" data-plan="solo" data-testid="plan-tile-solo">
-            <strong>Solo</strong><span>Basics: site, blog, FAQ, simple chatbot.</span>
-          </div>
-          <div class="plan-tile selected" data-plan="growth" data-testid="plan-tile-growth">
-            <strong>Growth</strong><span>Solo + voice, gallery, analytics, SEO.</span>
-          </div>
-          <div class="plan-tile" data-plan="enterprise" data-testid="plan-tile-enterprise">
-            <strong>Enterprise</strong><span>Everything Growth has, plus advanced.</span>
-          </div>
-        </div>
-      </section>
+    <!-- ============================================================
+         STEP 5 — Skills
+         ============================================================ -->
+    <div class="step-panel" id="panel-4">
+      <div class="step-heading">
+        <h2>⚡ Skills</h2>
+        <p>Choose which capabilities the visitor AI can use. All are enabled by default — toggle off any you want to restrict.</p>
+      </div>
 
-      <!-- FAQs -->
-      <section>
-        <h2>Starter FAQs</h2>
-        <p class="hint">The chatbot is grounded on these. Add as many as you like; you can always edit them later.</p>
-        <div id="faqList"></div>
-        <button type="button" class="add-btn" id="addFaqBtn" data-testid="button-add-faq">+ Add another FAQ</button>
-      </section>
+      <div class="info-box">Skills are the AI's "tools" — they let it look up gallery cards, services, pricing, events, and more from your database on demand. Disabling a skill means the AI cannot access that data during conversations.</div>
 
-      <!-- Admin user -->
-      <section>
-        <h2>Owner contact</h2>
-        <p class="hint">We'll create a customer record with this email so the system can reach you.</p>
-        <div class="row">
-          <div class="field">
-            <label for="owner_name">Your name</label>
-            <input type="text" id="owner_name" data-testid="input-owner-name">
-          </div>
-          <div class="field">
-            <label for="owner_email">Your email *</label>
-            <input type="email" id="owner_email" required data-testid="input-owner-email">
-          </div>
-        </div>
-      </section>
+      <div id="skillsContainer">
+        <div class="text-sm text-muted" style="padding:16px 0;">Loading skills from database…</div>
+      </div>
 
-      <!-- Auth gate -->
-      <section>
-        <h2>Confirm</h2>
-        <p class="hint">Type your <code>ADMIN_PASSWORD</code> to authorize this setup. (Only you, the operator, know this — set in your environment.)</p>
-        <div class="row full">
-          <div class="field">
-            <label for="admin_password">Admin password *</label>
-            <input type="password" id="admin_password" required data-testid="input-admin-password">
+      <!-- Custom webhook skill accordion -->
+      <div class="accordion-header" onclick="toggleAcc(this)">
+        <span class="acc-arr">▶</span>
+        <span>Add a Custom Webhook Skill</span>
+      </div>
+      <div class="accordion-body">
+        <div class="card">
+          <div class="field-row">
+            <div class="field-group">
+              <label>Skill Name <span class="text-sm text-muted" style="text-transform:none;font-weight:400;">(lowercase, underscores)</span></label>
+              <input type="text" id="wh-name" placeholder="my_webhook_skill">
+            </div>
+            <div class="field-group">
+              <label>Description</label>
+              <input type="text" id="wh-desc" placeholder="What does this skill do?">
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field-group">
+              <label>Webhook URL</label>
+              <input type="url" id="wh-url" placeholder="https://...">
+            </div>
+            <div class="field-group">
+              <label>HTTP Method</label>
+              <select id="wh-method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option></select>
+            </div>
+          </div>
+          <button class="btn btn-ghost" onclick="addWebhookSkill()">+ Add Webhook Skill</button>
+        </div>
+        <div id="webhookSkillsList"></div>
+      </div>
+
+      <!-- Custom SQL skill accordion -->
+      <div class="accordion-header" onclick="toggleAcc(this)">
+        <span class="acc-arr">▶</span>
+        <span>Add a Custom SQL Skill</span>
+      </div>
+      <div class="accordion-body">
+        <div class="card">
+          <div class="field-row">
+            <div class="field-group">
+              <label>Skill Name</label>
+              <input type="text" id="sql-name" placeholder="my_sql_skill">
+            </div>
+            <div class="field-group">
+              <label>Description</label>
+              <input type="text" id="sql-desc" placeholder="What does this skill query?">
+            </div>
+          </div>
+          <div class="field-group">
+            <label>SQL Template</label>
+            <textarea id="sql-tmpl" rows="3" placeholder="SELECT * FROM orders WHERE status = '{{status}}' LIMIT 10;"></textarea>
+          </div>
+          <button class="btn btn-ghost" onclick="addSQLSkill()">+ Add SQL Skill</button>
+        </div>
+        <div id="sqlSkillsList"></div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         STEP 6 — MCP Servers
+         ============================================================ -->
+    <div class="step-panel" id="panel-5">
+      <div class="step-heading">
+        <h2>🔌 MCP Servers</h2>
+        <p>Connect external MCP (Model Context Protocol) servers to give the AI live access to third-party tools.</p>
+      </div>
+
+      <div class="info-box">MCP lets the AI call external tools — Notion pages, GitHub issues, Google Drive files, Slack channels, and more. You can always add or remove servers later from the MCP tab in admin.</div>
+
+      <div class="card">
+        <div class="card-title">⚡ Quick Connect</div>
+        <div class="connector-grid">
+          <div class="connector-card" onclick="quickMCP('Notion','https://mcp.notion.so','http')">
+            <div class="connector-icon">📝</div><div class="connector-name">Notion</div>
+          </div>
+          <div class="connector-card" onclick="quickMCP('GitHub','https://mcp.github.com','http')">
+            <div class="connector-icon">🐙</div><div class="connector-name">GitHub</div>
+          </div>
+          <div class="connector-card" onclick="quickMCP('Google Drive','https://mcp.googleapis.com/drive','http')">
+            <div class="connector-icon">📁</div><div class="connector-name">Google Drive</div>
+          </div>
+          <div class="connector-card" onclick="quickMCP('Slack','https://mcp.slack.com','sse')">
+            <div class="connector-icon">💬</div><div class="connector-name">Slack</div>
+          </div>
+          <div class="connector-card" onclick="quickMCP('Linear','https://mcp.linear.app','http')">
+            <div class="connector-icon">📐</div><div class="connector-name">Linear</div>
+          </div>
+          <div class="connector-card" onclick="document.getElementById('mcpForm').scrollIntoView({behavior:'smooth'})">
+            <div class="connector-icon">➕</div><div class="connector-name">Custom…</div>
           </div>
         </div>
-        <div class="actions">
-          <button type="submit" class="submit-btn" id="submitBtn" data-testid="button-submit-wizard">Run setup</button>
+      </div>
+
+      <div class="card" id="mcpForm">
+        <div class="card-title">🛠️ Add Custom MCP Server</div>
+        <div class="field-row">
+          <div class="field-group">
+            <label>Server Name</label>
+            <input type="text" id="mcp-name" placeholder="My MCP Server">
+          </div>
+          <div class="field-group">
+            <label>URL</label>
+            <input type="url" id="mcp-url" placeholder="https://mcp.example.com">
+          </div>
         </div>
-        <div id="status"></div>
-      </section>
-    </form>
+        <div class="field-row">
+          <div class="field-group">
+            <label>Transport</label>
+            <select id="mcp-transport"><option value="http">HTTP</option><option value="sse">SSE</option></select>
+          </div>
+          <div class="field-group">
+            <label>Auth Type</label>
+            <select id="mcp-auth" onchange="toggleMCPAuth()">
+              <option value="none">None</option>
+              <option value="bearer">Bearer Token</option>
+              <option value="header">Custom Header</option>
+            </select>
+          </div>
+        </div>
+        <div id="mcpAuthFields" style="display:none;">
+          <div class="field-row">
+            <div class="field-group">
+              <label>Header Name <span class="text-sm text-muted" style="text-transform:none;font-weight:400;">(for Custom Header)</span></label>
+              <input type="text" id="mcp-header" placeholder="X-API-Key">
+            </div>
+            <div class="field-group">
+              <label>Credential / Token</label>
+              <input type="password" id="mcp-cred" placeholder="sk-...">
+            </div>
+          </div>
+        </div>
+        <div class="field-group">
+          <label>Description <span class="text-sm text-muted" style="text-transform:none;font-weight:400;">(optional)</span></label>
+          <input type="text" id="mcp-desc" placeholder="What does this server provide?">
+        </div>
+        <button class="btn btn-ghost" onclick="addMCPServer()">+ Add Server</button>
+      </div>
+
+      <div id="mcpServersList">
+        <div class="text-sm text-muted">No MCP servers added yet — that's fine, you can add them later from the admin MCP tab.</div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         STEP 7 — Automations
+         ============================================================ -->
+    <div class="step-panel" id="panel-6">
+      <div class="step-heading">
+        <h2>⚙️ Automations</h2>
+        <p>Select preset automations to provision, or define custom ones. All start disabled — you activate them from the admin Automations tab.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🚀 Preset Automations</div>
+        <div class="auto-grid" id="autoGrid"></div>
+        <div class="text-sm text-muted">Selected automations will be created in your admin panel (disabled by default — activate when you're ready).</div>
+      </div>
+
+      <div class="accordion-header" onclick="toggleAcc(this)">
+        <span class="acc-arr">▶</span>
+        <span>Define a Custom Automation</span>
+      </div>
+      <div class="accordion-body">
+        <div class="card">
+          <div class="field-row">
+            <div class="field-group">
+              <label>Automation Name</label>
+              <input type="text" id="auto-name" placeholder="My Automation">
+            </div>
+            <div class="field-group">
+              <label>Trigger Type</label>
+              <select id="auto-trigger">
+                <option value="manual">Manual</option>
+                <option value="event">Event</option>
+                <option value="schedule">Schedule</option>
+              </select>
+            </div>
+          </div>
+          <div class="field-group">
+            <label>Description</label>
+            <input type="text" id="auto-desc" placeholder="What does this automation do?">
+          </div>
+          <button class="btn btn-ghost" onclick="addCustomAuto()">+ Add Custom Automation</button>
+        </div>
+        <div id="customAutoList"></div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         STEP 8 — Secrets / API Keys
+         ============================================================ -->
+    <div class="step-panel" id="panel-7">
+      <div class="step-heading">
+        <h2>🔑 Secrets & API Keys</h2>
+        <p>Provide API keys and configuration values. Leave any blank to skip — you can set them anytime from Admin → Secrets.</p>
+      </div>
+
+      <div class="warn-box">
+        <strong>How secrets are stored:</strong> Values you enter here are written to the local <code>.env</code> file and loaded immediately. They are <em>never</em> stored in the database or logs. Manage them later in Admin → Secrets.
+      </div>
+
+      <div id="secretsContainer">
+        <div class="text-sm text-muted" style="padding:16px 0;">Loading…</div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         STEP 9 — Features & Tabs
+         ============================================================ -->
+    <div class="step-panel" id="panel-8">
+      <div class="step-heading">
+        <h2>🎛️ Features & Tabs</h2>
+        <p>Choose your plan and override individual features. These control what the client role can see — the super admin always sees everything.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📦 Plan</div>
+        <div class="info-box">The plan sets a capability baseline. Use feature overrides below to fine-tune individual flags.</div>
+        <div class="field-row cols-3">
+          <div class="preset-card" id="plan-solo"       onclick="selectPlan('solo')">
+            <div class="preset-icon">🌱</div>
+            <div class="preset-name">Solo</div>
+            <div class="text-sm text-muted mt-1">Core features</div>
+          </div>
+          <div class="preset-card active" id="plan-growth"     onclick="selectPlan('growth')">
+            <div class="preset-icon">🚀</div>
+            <div class="preset-name">Growth</div>
+            <div class="text-sm text-muted mt-1">All capabilities</div>
+          </div>
+          <div class="preset-card" id="plan-enterprise" onclick="selectPlan('enterprise')">
+            <div class="preset-icon">🏢</div>
+            <div class="preset-name">Enterprise</div>
+            <div class="text-sm text-muted mt-1">All + fleet sync</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">✨ Feature Overrides</div>
+        <div class="text-sm text-muted" style="margin-bottom:14px;">These apply on top of the plan. Toggling a feature here creates an explicit override regardless of plan defaults.</div>
+        <div id="featuresContainer"><div class="text-sm text-muted">Loading…</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📐 Landing Page Sections</div>
+        <div class="text-sm text-muted" style="margin-bottom:12px;">Toggle which sections are visible on the public landing page. Click a section to enable or disable it.</div>
+        <div class="section-pills" id="pageSectionsContainer">
+          <div class="text-sm text-muted">Loading…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         STEP 10 — WordPress Plugin
+         ============================================================ -->
+    <div class="step-panel" id="panel-9">
+      <div class="step-heading">
+        <h2>🌐 WordPress Plugin</h2>
+        <p>Embed your AI Concierge in any WordPress site with single sign-on.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔌 Installation Steps</div>
+        <ol style="color:var(--text);padding-left:18px;line-height:2.4;font-size:13.5px;">
+          <li>After provisioning, go to <strong>Admin → WordPress Plugin</strong> tab to download the <code>.zip</code> file.</li>
+          <li>In WordPress, go to <strong>Plugins → Add New → Upload Plugin</strong> and upload the <code>.zip</code>.</li>
+          <li>Activate the plugin and visit <strong>Settings → AI Concierge</strong>.</li>
+          <li>Enter your <strong>Platform URL</strong> (this Repl's URL) and the <strong>Embed Key</strong> generated during provisioning.</li>
+          <li>Place a shortcode on any page or widget area.</li>
+        </ol>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📋 Shortcodes</div>
+        <pre class="code-block">[ai_concierge]                       — Full embedded platform
+[ai_concierge chat_only="true"]      — Chat widget only
+[ai_concierge gallery="true"]        — Gallery view only
+[ai_concierge section="pricing"]     — Jump to a specific section</pre>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔐 Single Sign-On (SSO)</div>
+        <div class="text-sm text-muted" style="margin-bottom:10px;">Logged-in WordPress users are automatically signed in to the concierge with their WordPress identity.</div>
+        <pre class="code-block">// In your theme's functions.php:
+add_filter('ai_concierge_sso_user', function($user) {
+    $wp = wp_get_current_user();
+    $user['email'] = $wp->user_email;
+    $user['name']  = $wp->display_name;
+    return $user;
+});</pre>
+      </div>
+
+      <div class="info-box">The <strong>Embed Key</strong> is generated when you click Provision. It will appear in <strong>Admin → WordPress Plugin</strong> after setup completes.</div>
+    </div>
+
+    <!-- ============================================================
+         STEP 11 — Review & Launch
+         ============================================================ -->
+    <div class="step-panel" id="panel-10">
+      <div class="step-heading">
+        <h2>✅ Review & Launch</h2>
+        <p>Everything looks good? Confirm your password and provision the platform.</p>
+      </div>
+
+      <div class="review-grid" id="reviewGrid"></div>
+
+      <div class="card">
+        <div class="card-title">🔐 Confirm Admin Password</div>
+        <div class="text-sm text-muted" style="margin-bottom:12px;">Re-enter your admin password to confirm and provision this install.</div>
+        <div class="field-group" style="max-width:360px;">
+          <label>Admin Password</label>
+          <input type="password" id="confirmAdminPassword" placeholder="Your admin password">
+          <div class="verr" id="e-confirmPw">Password does not match what you entered in step 1.</div>
+        </div>
+      </div>
+
+      <div class="warn-box" id="provisionErr" style="display:none;"></div>
+      <div class="succ-box"  id="provisionOk"  style="display:none;"></div>
+
+      <button class="btn btn-gold" id="provisionBtn" onclick="provisionInstall()"
+              style="padding:14px 32px;font-size:15px;width:100%;justify-content:center;margin-top:4px;">
+        🚀 Provision This Install
+      </button>
+    </div>
+
+  </main>
+</div>
+
+<!-- ============================================================
+     BOTTOM NAV BAR
+     ============================================================ -->
+<div class="bottom-bar">
+  <button class="btn btn-ghost" id="btnBack" onclick="prevStep()" disabled>← Back</button>
+  <div class="step-dots" id="dotContainer"></div>
+  <button class="btn btn-primary" id="btnNext" onclick="nextStep()">Next →</button>
+</div>
+
+<!-- ============================================================
+     SUCCESS MODAL
+     ============================================================ -->
+<div class="modal-overlay" id="successModal">
+  <div class="modal-box">
+    <div class="modal-icon">🎉</div>
+    <div class="modal-title">Platform Provisioned!</div>
+    <div class="modal-body" id="successBody">
+      Your AI Concierge Platform has been set up. Log in with your admin password to get started.
+    </div>
+    <button class="btn btn-gold" style="width:100%;justify-content:center;padding:12px;"
+            onclick="window.location.href='/admin/login'">
+      Go to Admin Login →
+    </button>
   </div>
+</div>
 
+<!-- ============================================================
+     JAVASCRIPT
+     ============================================================ -->
 <script>
-(function() {
-  const form = document.getElementById('wizardForm');
-  const presetSel = document.getElementById('preset');
-  const planGrid = document.getElementById('planGrid');
-  const faqList = document.getElementById('faqList');
-  const addFaqBtn = document.getElementById('addFaqBtn');
-  const status = document.getElementById('status');
-  const submitBtn = document.getElementById('submitBtn');
+/* ============================================================
+   STEP DEFINITIONS
+   ============================================================ */
+const STEPS = [
+  { icon:"🔐", title:"Access & Security"  },
+  { icon:"🏢", title:"Business & Web"     },
+  { icon:"🤖", title:"Visitor AI"         },
+  { icon:"🧠", title:"Admin AI"           },
+  { icon:"⚡", title:"Skills"             },
+  { icon:"🔌", title:"MCP Servers"        },
+  { icon:"⚙️", title:"Automations"        },
+  { icon:"🔑", title:"Secrets"            },
+  { icon:"🎛️", title:"Features & Tabs"   },
+  { icon:"🌐", title:"WordPress Plugin"   },
+  { icon:"✅", title:"Review & Launch"    },
+];
 
-  let chosenPlan = 'growth';
-  // Holds the most-recently-loaded preset object so buildTemplate() can
-  // overlay form-edited fields on top of the full preset (preserving
-  // sections like business_hours, voice_settings, social_links, content,
-  // etc. that the wizard form doesn't expose). Without this, those
-  // sections would be silently dropped when the form is submitted.
-  let currentPreset = null;
+/* ============================================================
+   STATE
+   ============================================================ */
+const S = {
+  step: 0,
+  catalogue: null,
+  selectedPlan: "growth",
+  mcpServers: [],
+  customWebhooks: [],
+  customSQL: [],
+  autoPresets: new Set(),
+  customAutos: [],
+  skillOverrides: {},   // {name: bool} — only toggled skills
+  featureSet: {},       // {name: bool} — individual overrides
+  pageSections: {},     // {slug: bool} — only changed sections
+  completedSteps: new Set(),
+};
 
-  // Plan tile selection
-  planGrid.querySelectorAll('.plan-tile').forEach(tile => {
-    tile.addEventListener('click', () => {
-      planGrid.querySelectorAll('.plan-tile').forEach(t => t.classList.remove('selected'));
-      tile.classList.add('selected');
-      chosenPlan = tile.getAttribute('data-plan');
+/* ============================================================
+   INDUSTRY PRESETS
+   ============================================================ */
+const PRESETS = {
+  generic:    { icon:"🏢", name:"Generic",    siteName:"My Business",             agentName:"Assistant",   agentRole:"Concierge",                greeting:"Hi there! How can I help you today?" },
+  restaurant: { icon:"🍽️", name:"Restaurant", siteName:"My Restaurant",            agentName:"Sofia",       agentRole:"Menu & Reservations Guide",  greeting:"Ciao! Ask me about our menu, hours, or reservations." },
+  hotel:      { icon:"🏨", name:"Hotel",       siteName:"My Hotel",                agentName:"Concierge",   agentRole:"Guest Experience Manager",   greeting:"Welcome! How can I make your stay exceptional?" },
+  realestate: { icon:"🏠", name:"Real Estate", siteName:"My Real Estate Agency",   agentName:"Alexia",      agentRole:"Property Advisor",           greeting:"Hello! Looking to buy, sell, or rent? Let me help." },
+  agency:     { icon:"💡", name:"Agency",      siteName:"My Creative Agency",      agentName:"Scout",       agentRole:"Project Concierge",          greeting:"Hi! Tell me about your project and I'll point you in the right direction." },
+  wellness:   { icon:"🌿", name:"Wellness",    siteName:"My Wellness Studio",      agentName:"Harmony",     agentRole:"Wellness Guide",             greeting:"Hello! How can I support your wellness journey today?" },
+};
+
+/* ============================================================
+   AUTOMATION PRESETS
+   ============================================================ */
+const AUTO_PRESETS = [
+  { id:"form_email",     icon:"📧", name:"Form → Email Alert",           desc:"Notify the admin whenever a visitor submits any form.",             trigger_type:"event",    trigger_config:{event:"form_submission"},  action_steps:[{type:"send_email",to:"{{admin_email}}",subject:"New form: {{form_name}}",body:"{{submission_data}}"}] },
+  { id:"booking_email",  icon:"📅", name:"Booking → Confirmation Email", desc:"Send a confirmation email when a service booking is confirmed.",     trigger_type:"event",    trigger_config:{event:"booking_confirmed"},action_steps:[{type:"send_email",to:"{{visitor_email}}",subject:"Your booking is confirmed!",body:"Hi {{visitor_name}}, your booking for {{service_name}} is confirmed!"}] },
+  { id:"weekly_digest",  icon:"📊", name:"Weekly AI Digest",             desc:"Email a weekly AI activity and spend summary every Monday.",         trigger_type:"schedule", trigger_config:{cron:"0 9 * * 1"},         action_steps:[{type:"send_email",to:"{{admin_email}}",subject:"Your weekly AI summary",body:"See Admin → Cost for full details."}] },
+  { id:"chat_webhook",   icon:"🔔", name:"New Chat → Webhook",           desc:"POST to a webhook whenever a visitor starts a new conversation.",    trigger_type:"event",    trigger_config:{event:"chat_started"},     action_steps:[{type:"webhook",url:"{{WEBHOOK_URL}}",method:"POST",body:{visitor_id:"{{visitor_id}}",started_at:"{{created_at}}"}}] },
+  { id:"daily_analytics",icon:"📈", name:"Daily Analytics Digest",       desc:"Email a daily snapshot of page views, chats, and form submissions.", trigger_type:"schedule", trigger_config:{cron:"0 8 * * *"},         action_steps:[{type:"send_email",to:"{{admin_email}}",subject:"Daily analytics snapshot",body:"Views: {{page_views}} | Chats: {{chat_count}} | Forms: {{form_count}}"}] },
+  { id:"review_request", icon:"⭐", name:"Post-Purchase Review Request", desc:"Ask for a review 3 days after an order is marked as paid.",          trigger_type:"event",    trigger_config:{event:"order_paid",delay_days:3}, action_steps:[{type:"send_email",to:"{{customer_email}}",subject:"How was your experience?",body:"Hi {{customer_name}},\n\nLeave a review: {{review_link}}"}] },
+];
+
+/* ============================================================
+   SIDEBAR — render step list + progress bar + dots
+   ============================================================ */
+function renderSidebar() {
+  const list = document.getElementById("stepList");
+  list.innerHTML = STEPS.map((s, i) => `
+    <li class="step-item ${i===S.step?"active":""} ${S.completedSteps.has(i)?"done":""}" onclick="goTo(${i})">
+      <div class="step-num">${S.completedSteps.has(i) ? "✓" : i+1}</div>
+      <div class="step-icon">${s.icon}</div>
+      <div class="step-label">${s.title}</div>
+    </li>
+  `).join("");
+
+  const pct = Math.round((S.step / (STEPS.length - 1)) * 100);
+  document.getElementById("progressFill").style.width = pct + "%";
+  document.getElementById("progressPct").textContent  = pct + "%";
+
+  document.getElementById("dotContainer").innerHTML = STEPS.map((_, i) => `
+    <div class="dot ${i===S.step?"active":""} ${S.completedSteps.has(i)?"done":""}" onclick="goTo(${i})"></div>
+  `).join("");
+
+  document.getElementById("btnBack").disabled = (S.step === 0);
+  document.getElementById("btnNext").style.display = (S.step === STEPS.length - 1) ? "none" : "";
+}
+
+/* ============================================================
+   NAVIGATION
+   ============================================================ */
+function goTo(n) {
+  if (n < 0 || n >= STEPS.length) return;
+  if (n > S.step && !validateStep(S.step)) return;
+  if (n > S.step) S.completedSteps.add(S.step);
+  document.getElementById("panel-" + S.step).classList.remove("active");
+  S.step = n;
+  document.getElementById("panel-" + S.step).classList.add("active");
+  document.getElementById("mainContent").scrollTop = 0;
+  if (S.step === STEPS.length - 1) buildReview();
+  renderSidebar();
+}
+function nextStep() { goTo(S.step + 1); }
+function prevStep() { goTo(S.step - 1); }
+
+/* ============================================================
+   VALIDATION
+   ============================================================ */
+function showErr(id, msg) {
+  const e = document.getElementById("e-" + id); if (e) { e.textContent = msg||e.textContent; e.classList.add("vis"); }
+  const i = document.getElementById(id); if (i) i.classList.add("err");
+  return false;
+}
+function clearErr(id) {
+  const e = document.getElementById("e-" + id); if (e) e.classList.remove("vis");
+  const i = document.getElementById(id); if (i) i.classList.remove("err");
+}
+
+function validateStep(n) {
+  let ok = true;
+  if (n === 0) {
+    clearErr("adminPassword"); clearErr("adminPasswordConfirm");
+    const pw = gv("adminPassword");
+    if (pw.length < 8)               { showErr("adminPassword","Password must be at least 8 characters."); ok=false; }
+    if (pw !== gv("adminPasswordConfirm")) { showErr("adminPasswordConfirm","Passwords do not match.");        ok=false; }
+  }
+  if (n === 1) {
+    clearErr("siteName");
+    if (!gv("siteName").trim()) { showErr("siteName","Business name is required."); ok=false; }
+  }
+  return ok;
+}
+
+/* ============================================================
+   INDUSTRY PRESETS
+   ============================================================ */
+function renderPresets() {
+  document.getElementById("presetRow").innerHTML = Object.entries(PRESETS).map(([key, p]) =>
+    `<div class="preset-card" id="preset-${key}" onclick="applyPreset('${key}')">
+       <div class="preset-icon">${p.icon}</div>
+       <div class="preset-name">${p.name}</div>
+     </div>`
+  ).join("");
+}
+
+function applyPreset(key) {
+  const p = PRESETS[key];
+  if (!p) return;
+  document.querySelectorAll(".preset-card").forEach(c => c.classList.remove("active"));
+  document.getElementById("preset-" + key)?.classList.add("active");
+  if (p.siteName)  sv("siteName",  p.siteName);
+  if (p.agentName) sv("agentName", p.agentName);
+  if (p.agentRole) sv("agentRole", p.agentRole);
+  if (p.greeting)  sv("agentGreeting", p.greeting);
+}
+
+/* ============================================================
+   HOURS TABLE
+   ============================================================ */
+const DAYS = ["mon","tue","wed","thu","fri","sat","sun"];
+const DAY_LABELS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+const DEFAULT_HOURS = { mon:"9:00 AM – 5:00 PM",tue:"9:00 AM – 5:00 PM",wed:"9:00 AM – 5:00 PM",thu:"9:00 AM – 5:00 PM",fri:"9:00 AM – 5:00 PM",sat:"Closed",sun:"Closed" };
+
+function renderHoursTable() {
+  document.getElementById("hoursTable").innerHTML = DAYS.map((d, i) =>
+    `<tr><td>${DAY_LABELS[i]}</td><td><input type="text" id="hours-${d}" value="${DEFAULT_HOURS[d]}" style="font-size:12.5px;padding:6px 10px;"></td></tr>`
+  ).join("");
+}
+
+/* ============================================================
+   CATALOGUE — skills, features, page sections, env vars
+   ============================================================ */
+async function fetchCatalogue() {
+  try {
+    const r = await fetch("/setup/catalogue");
+    if (!r.ok) return;
+    S.catalogue = await r.json();
+    renderSkills();
+    renderFeatures();
+    renderPageSections();
+    renderEnvVars();
+  } catch (e) {
+    console.warn("Catalogue fetch failed:", e);
+  }
+}
+
+/* ---- Skills grid ---- */
+function renderSkills() {
+  const cat = S.catalogue;
+  if (!cat?.skills?.length) {
+    document.getElementById("skillsContainer").innerHTML =
+      '<div class="info-box">Skills will appear here once the database is seeded on first admin login.</div>';
+    return;
+  }
+  const groups = {};
+  cat.skills.forEach(sk => { (groups[sk.category || "other"] ||= []).push(sk); });
+  let html = "";
+  for (const [grp, skills] of Object.entries(groups)) {
+    html += `<div class="group-heading">${grp}</div><div class="skill-grid">`;
+    skills.forEach(sk => {
+      const en = sk.name in S.skillOverrides ? S.skillOverrides[sk.name] : sk.enabled;
+      html += `
+        <div class="skill-card ${en?"enabled":""}" id="sk-${sk.name}" onclick="toggleSkill('${sk.name}')">
+          <div class="skill-dot"></div>
+          <div class="skill-card-cat">${sk.category||""}</div>
+          <div class="skill-card-name">${sk.display_name||sk.name}</div>
+          <div class="skill-card-desc">${(sk.description||"").substring(0,85)}${(sk.description||"").length>85?"…":""}</div>
+        </div>`;
     });
+    html += "</div>";
+  }
+  document.getElementById("skillsContainer").innerHTML = html;
+}
+
+function toggleSkill(name) {
+  const sk = S.catalogue?.skills.find(s => s.name === name);
+  const cur = name in S.skillOverrides ? S.skillOverrides[name] : (sk?.enabled ?? true);
+  S.skillOverrides[name] = !cur;
+  const card = document.getElementById("sk-" + name);
+  if (card) { card.classList.toggle("enabled", S.skillOverrides[name]); }
+}
+
+/* ---- Features grid ---- */
+function renderFeatures() {
+  const cat = S.catalogue;
+  if (!cat?.features) return;
+  const groups = {};
+  cat.features.forEach(f => { (groups[f.group] ||= []).push(f); });
+  let html = "";
+  for (const [grp, feats] of Object.entries(groups)) {
+    html += `<div class="group-heading">${grp}</div><div class="feature-grid">`;
+    feats.forEach(f => {
+      const en = f.name in S.featureSet ? S.featureSet[f.name] : f.default;
+      html += `
+        <div class="feat-item">
+          <div>
+            <div class="feat-label">${f.label}</div>
+            <div class="feat-tier">${f.tier}</div>
+          </div>
+          <label class="toggle" title="${f.name}">
+            <input type="checkbox" ${en?"checked":""} onchange="S.featureSet['${f.name}']=this.checked">
+            <span class="toggle-track"></span>
+          </label>
+        </div>`;
+    });
+    html += "</div>";
+  }
+  document.getElementById("featuresContainer").innerHTML = html;
+}
+
+/* ---- Page sections ---- */
+function renderPageSections() {
+  const cat = S.catalogue;
+  const el = document.getElementById("pageSectionsContainer");
+  if (!cat?.page_sections?.length) {
+    el.innerHTML = '<div class="text-sm text-muted">Sections will be seeded on first run.</div>';
+    return;
+  }
+  el.innerHTML = cat.page_sections.map(s => {
+    const en = s.slug in S.pageSections ? S.pageSections[s.slug] : s.enabled;
+    return `
+      <div class="section-pill ${en?"enabled":""}" id="ps-${s.slug}" onclick="toggleSection('${s.slug}')">
+        <div class="pdot"></div>
+        <span>${s.title || s.slug}</span>
+      </div>`;
+  }).join("");
+}
+
+function toggleSection(slug) {
+  const s = S.catalogue?.page_sections.find(x => x.slug === slug);
+  const cur = slug in S.pageSections ? S.pageSections[slug] : (s?.enabled ?? true);
+  S.pageSections[slug] = !cur;
+  const pill = document.getElementById("ps-" + slug);
+  if (pill) { pill.classList.toggle("enabled", S.pageSections[slug]); }
+}
+
+/* ---- Env vars / Secrets ---- */
+function renderEnvVars() {
+  const cat = S.catalogue;
+  if (!cat?.env_vars) return;
+  const groups = {};
+  cat.env_vars.forEach(v => { (groups[v.category] ||= []).push(v); });
+
+  let html = "";
+  for (const [catName, vars] of Object.entries(groups)) {
+    const label = catName.replace(/_/g," ").replace(/\b\w/g,c=>c.toUpperCase());
+    html += `<div class="card"><div class="card-title">📂 ${label}</div>`;
+    vars.forEach(ev => {
+      const src     = ev.source;
+      const badgeCls = src==="replit_secret" ? "badge-platform" : (ev.set ? "badge-set" : "badge-unset");
+      const badgeLbl = src==="replit_secret" ? "✦ Platform"     : (ev.set ? "✓ Set"     : "○ Not set");
+      html += `
+        <div class="env-row">
+          <div class="env-meta">
+            <div class="env-key">${ev.key}</div>
+            <div class="env-desc">${ev.description||""}</div>
+            <div class="env-badge ${badgeCls}">${badgeLbl}</div>
+            ${ev.url ? `<div class="text-sm mt-1"><a href="${ev.url}" target="_blank" style="color:var(--blue);">Get API key ↗</a></div>` : ""}
+          </div>
+          <div class="env-input-wrap">
+            <input type="${ev.sensitive?"password":"text"}" id="env-${ev.key}"
+              placeholder="${ev.set || src==="replit_secret" ? "Already set (leave blank to keep)" : "Paste value…"}"
+              ${src==="replit_secret" ? 'title="Platform-managed — fill only to override"' : ""}>
+          </div>
+        </div>`;
+    });
+    html += "</div>";
+  }
+  document.getElementById("secretsContainer").innerHTML = html || '<div class="text-muted text-sm">No env vars registered.</div>';
+}
+
+/* ============================================================
+   MCP SERVERS
+   ============================================================ */
+function toggleMCPAuth() {
+  const auth = document.getElementById("mcp-auth").value;
+  document.getElementById("mcpAuthFields").style.display = auth === "none" ? "none" : "";
+}
+
+function quickMCP(name, url, transport) {
+  sv("mcp-name", name); sv("mcp-url", url);
+  document.getElementById("mcp-transport").value = transport;
+  document.getElementById("mcpForm").scrollIntoView({behavior:"smooth"});
+}
+
+function addMCPServer() {
+  const name = gv("mcp-name").trim();
+  const url  = gv("mcp-url").trim();
+  if (!name || !url) { alert("Name and URL are required."); return; }
+  S.mcpServers.push({
+    name, url,
+    transport: document.getElementById("mcp-transport").value,
+    auth_type: document.getElementById("mcp-auth").value,
+    auth_header_name: gv("mcp-header").trim(),
+    auth_credential:  gv("mcp-cred").trim(),
+    description: gv("mcp-desc").trim(),
+    enabled: true, allowed_for_admin: true, allowed_for_velo: false,
+  });
+  ["mcp-name","mcp-url","mcp-desc","mcp-cred","mcp-header"].forEach(id => sv(id,""));
+  renderMCPList();
+}
+function removeMCP(i) { S.mcpServers.splice(i,1); renderMCPList(); }
+function renderMCPList() {
+  const el = document.getElementById("mcpServersList");
+  el.innerHTML = S.mcpServers.length ? S.mcpServers.map((s,i) =>
+    `<div class="list-item">
+       <div><div class="list-item-name">${s.name}</div><div class="list-item-sub">${s.url} · ${s.transport} · auth:${s.auth_type}</div></div>
+       <button class="btn-remove" onclick="removeMCP(${i})">✕</button>
+     </div>`
+  ).join("") : '<div class="text-sm text-muted">No MCP servers added yet — you can add them later from the admin MCP tab.</div>';
+}
+
+/* ============================================================
+   AUTOMATIONS
+   ============================================================ */
+function renderAutoGrid() {
+  document.getElementById("autoGrid").innerHTML = AUTO_PRESETS.map(a =>
+    `<div class="auto-card ${S.autoPresets.has(a.id)?"selected":""}" onclick="toggleAutoPreset('${a.id}')">
+       <div class="auto-check">✓</div>
+       <div class="auto-card-icon">${a.icon}</div>
+       <div class="auto-card-name">${a.name}</div>
+       <div class="auto-card-desc">${a.desc}</div>
+     </div>`
+  ).join("");
+}
+function toggleAutoPreset(id) {
+  S.autoPresets.has(id) ? S.autoPresets.delete(id) : S.autoPresets.add(id);
+  renderAutoGrid();
+}
+function addCustomAuto() {
+  const name = gv("auto-name").trim();
+  if (!name) { alert("Name is required."); return; }
+  S.customAutos.push({ name, description: gv("auto-desc").trim(), trigger_type: document.getElementById("auto-trigger").value, trigger_config:{}, action_steps:[], enabled:false });
+  sv("auto-name",""); sv("auto-desc","");
+  renderCustomAutoList();
+}
+function renderCustomAutoList() {
+  document.getElementById("customAutoList").innerHTML = S.customAutos.map((a,i) =>
+    `<div class="list-item">
+       <div><div class="list-item-name">${a.name}</div><div class="list-item-sub">Trigger: ${a.trigger_type}</div></div>
+       <button class="btn-remove" onclick="S.customAutos.splice(${i},1);renderCustomAutoList()">✕</button>
+     </div>`
+  ).join("");
+}
+
+/* ============================================================
+   CUSTOM SKILLS
+   ============================================================ */
+function addWebhookSkill() {
+  const name = gv("wh-name").trim(), url = gv("wh-url").trim();
+  if (!name || !url) { alert("Name and URL are required."); return; }
+  S.customWebhooks.push({ name, description:gv("wh-desc").trim(), url, method:document.getElementById("wh-method").value, enabled:true });
+  sv("wh-name",""); sv("wh-desc",""); sv("wh-url","");
+  renderWebhookList();
+}
+function renderWebhookList() {
+  document.getElementById("webhookSkillsList").innerHTML = S.customWebhooks.map((s,i) =>
+    `<div class="list-item">
+       <div><div class="list-item-name">${s.name}</div><div class="list-item-sub">${s.method} ${s.url}</div></div>
+       <button class="btn-remove" onclick="S.customWebhooks.splice(${i},1);renderWebhookList()">✕</button>
+     </div>`
+  ).join("");
+}
+
+function addSQLSkill() {
+  const name = gv("sql-name").trim();
+  if (!name) { alert("Name is required."); return; }
+  S.customSQL.push({ name, description:gv("sql-desc").trim(), sql_template:gv("sql-tmpl").trim(), enabled:true });
+  sv("sql-name",""); sv("sql-desc",""); sv("sql-tmpl","");
+  renderSQLList();
+}
+function renderSQLList() {
+  document.getElementById("sqlSkillsList").innerHTML = S.customSQL.map((s,i) =>
+    `<div class="list-item">
+       <div><div class="list-item-name">${s.name}</div></div>
+       <button class="btn-remove" onclick="S.customSQL.splice(${i},1);renderSQLList()">✕</button>
+     </div>`
+  ).join("");
+}
+
+/* ============================================================
+   PLAN SELECTION
+   ============================================================ */
+function selectPlan(plan) {
+  S.selectedPlan = plan;
+  ["solo","growth","enterprise"].forEach(p => document.getElementById("plan-"+p)?.classList.toggle("active", p===plan));
+}
+
+/* ============================================================
+   ACCORDION
+   ============================================================ */
+function toggleAcc(header) {
+  header.classList.toggle("open");
+  header.nextElementSibling.classList.toggle("open");
+}
+
+/* ============================================================
+   CLIENT LOGIN TOGGLE
+   ============================================================ */
+document.getElementById("clientLoginEnabled").addEventListener("change", function() {
+  document.getElementById("clientLoginFields").style.display = this.checked ? "" : "none";
+});
+
+/* ============================================================
+   REVIEW SUMMARY (step 11)
+   ============================================================ */
+function buildReview() {
+  const name  = gv("siteName") || "(not set)";
+  const agent = gv("agentName") || "Assistant";
+  const skCount  = (S.catalogue?.skills||[]).filter(sk => sk.name in S.skillOverrides ? S.skillOverrides[sk.name] : sk.enabled).length;
+  const secCount = Object.keys(collectSecrets()).length;
+  const mcpCount = S.mcpServers.length;
+  const autoCount= S.autoPresets.size + S.customAutos.length;
+  document.getElementById("reviewGrid").innerHTML = [
+    ["Business Name",   name,       name!=="(not set)"],
+    ["AI Agent",        agent,      true],
+    ["Plan",            S.selectedPlan.charAt(0).toUpperCase()+S.selectedPlan.slice(1), true],
+    ["Skills Active",   skCount ? skCount+" skills" : "All defaults", true],
+    ["API Keys Provided", secCount+" key"+(secCount!==1?"s":""), secCount>0],
+    ["MCP Servers",     mcpCount || "None", mcpCount>0],
+    ["Automations",     autoCount || "None selected", autoCount>0],
+    ["Client Login",    document.getElementById("clientLoginEnabled").checked ? "Enabled" : "Admin only", true],
+  ].map(([label, val, good]) =>
+    `<div class="review-card">
+       <div class="review-card-label">${label}</div>
+       <div class="review-card-val ${good?"good":""}">${val}</div>
+     </div>`
+  ).join("");
+}
+
+/* ============================================================
+   BUILD TEMPLATE JSON
+   ============================================================ */
+function collectSecrets() {
+  const out = {};
+  (S.catalogue?.env_vars||[]).forEach(ev => {
+    const inp = document.getElementById("env-" + ev.key);
+    if (inp?.value.trim()) out[ev.key] = inp.value.trim();
+  });
+  const ae = gv("adminEmail"), ap = gv("adminPhone");
+  if (ae) out["ADMIN_EMAIL"] = ae;
+  if (ap) out["ADMIN_PHONE"] = ap;
+  const sk = gv("superAdminKey");
+  if (sk) out["SUPER_ADMIN_KEY"] = sk;
+  return out;
+}
+
+function buildTemplate() {
+  // Business hours
+  const hours = {};
+  DAYS.forEach(d => { hours[d] = gv("hours-"+d) || "Closed"; });
+
+  // Social links (only non-empty)
+  const social = {};
+  ["instagram","facebook","twitter","linkedin","youtube","tiktok"].forEach(k => {
+    const val = gv("social" + k[0].toUpperCase() + k.slice(1));
+    if (val) social[k] = val;
   });
 
-  // FAQ management
-  function makeFaqRow(question, answer) {
-    const row = document.createElement('div');
-    row.className = 'faq-item';
-    row.innerHTML = `
-      <button type="button" class="remove-btn" title="Remove">&times;</button>
-      <div class="row full" style="margin-bottom:0.4rem">
-        <div class="field">
-          <label>Question</label>
-          <input type="text" class="faq-q" value="${(question||'').replace(/"/g,'&quot;')}">
-        </div>
-      </div>
-      <div class="row full" style="margin-bottom:0">
-        <div class="field">
-          <label>Answer</label>
-          <textarea class="faq-a">${(answer||'').replace(/</g,'&lt;')}</textarea>
-        </div>
-      </div>
-    `;
-    row.querySelector('.remove-btn').addEventListener('click', () => row.remove());
-    return row;
-  }
-  addFaqBtn.addEventListener('click', () => {
-    faqList.appendChild(makeFaqRow('', ''));
+  // Skill overrides list (only the ones the user toggled)
+  const skillList = Object.entries(S.skillOverrides).map(([name,enabled]) => ({name,enabled}));
+
+  // Automations
+  const automations = [];
+  S.autoPresets.forEach(id => {
+    const p = AUTO_PRESETS.find(a => a.id === id);
+    if (p) automations.push({name:p.name,description:p.desc,trigger_type:p.trigger_type,trigger_config:p.trigger_config,action_steps:p.action_steps,enabled:false});
   });
+  S.customAutos.forEach(a => automations.push(a));
 
-  // Industry preset loader
-  if (presetSel) {
-    presetSel.addEventListener('change', async () => {
-      const name = presetSel.value;
-      if (!name) {
-        currentPreset = null;
-        return;
-      }
-      try {
-        const r = await fetch('/setup/preset/' + encodeURIComponent(name));
-        if (!r.ok) throw new Error('Could not load preset.');
-        const data = await r.json();
-        // Stash the FULL preset so buildTemplate() can preserve sections
-        // the wizard form doesn't expose (business_hours, voice_settings,
-        // social_links, content, etc.).
-        currentPreset = data;
-        applyPreset(data);
-      } catch (e) {
-        alert('Failed to load preset: ' + e.message);
-      }
-    });
+  const tpl = {
+    settings: {
+      site_settings: {
+        site_name:        gv("siteName"),
+        site_subtitle:    gv("siteSubtitle"),
+        hero_title:       gv("heroTitle"),
+        hero_tagline:     gv("heroTagline"),
+        hero_description: gv("heroDescription"),
+        logo_initials:    gv("logoInitials"),
+        hero_image_url:   gv("heroImageUrl"),
+      },
+      business_info: {
+        business_phone:   gv("bizPhone"),
+        business_email:   gv("bizEmail"),
+        business_address: gv("bizAddress"),
+        business_hours:   hours,
+        social_links:     social,
+      },
+      chatbot_settings: {
+        enabled:       document.getElementById("chatbotEnabled").checked,
+        agent_name:    gv("agentName"),
+        agent_role:    gv("agentRole"),
+        greeting:      gv("agentGreeting"),
+        system_prompt: gv("agentSystemPrompt"),
+      },
+      voice_settings: {
+        enabled_intros:        document.getElementById("voiceIntros").checked,
+        enabled_visitor_voice: document.getElementById("voiceVisitor").checked,
+        enabled_ai_voice:      document.getElementById("voiceAI").checked,
+        tts_provider:          gv("ttsProvider"),
+        default_voice:         gv("defaultVoice"),
+      },
+    },
+    features: {
+      plan: S.selectedPlan,
+      ...(Object.keys(S.featureSet).length ? {set: S.featureSet} : {}),
+    },
+    admin_user: {
+      email: gv("adminEmail"),
+      name:  (gv("siteName")||"Site") + " Owner",
+    },
+    admin_records: {
+      ...(skillList.length          ? {agent_skills:           skillList}          : {}),
+      ...(S.mcpServers.length       ? {mcp_servers:            S.mcpServers}       : {}),
+      ...(automations.length        ? {automations:            automations}        : {}),
+      ...(S.customWebhooks.length   ? {custom_webhook_skills:  S.customWebhooks}   : {}),
+      ...(S.customSQL.length        ? {custom_sql_skills:      S.customSQL}        : {}),
+    },
+    ...(Object.keys(S.pageSections).length ? {page_sections: S.pageSections} : {}),
+  };
+
+  // Strip undefined/empty
+  return JSON.parse(JSON.stringify(tpl));
+}
+
+/* ============================================================
+   PROVISION — POST to /setup
+   ============================================================ */
+async function provisionInstall() {
+  const confirmPw = gv("confirmAdminPassword");
+  const adminPw   = gv("adminPassword");
+
+  if (confirmPw !== adminPw) {
+    document.getElementById("e-confirmPw").classList.add("vis");
+    return;
   }
+  document.getElementById("e-confirmPw").classList.remove("vis");
 
-  function applyPreset(tpl) {
-    const s = tpl.settings || {};
-    const ss = s.site_settings || {};
-    const bi = s.business_info || {};
-    const cb = s.chatbot_settings || {};
-    const setVal = (id, v) => { if (v !== undefined && v !== null) document.getElementById(id).value = v; };
-    setVal('site_name', ss.site_name);
-    setVal('site_subtitle', ss.site_subtitle);
-    setVal('hero_title', ss.hero_title);
-    setVal('hero_tagline', ss.hero_tagline);
-    setVal('hero_description', ss.hero_description);
-    setVal('logo_initials', ss.logo_initials);
-    setVal('business_phone', bi.business_phone);
-    setVal('business_email', bi.business_email);
-    setVal('business_address', bi.business_address);
-    setVal('agent_name', cb.agent_name);
-    setVal('agent_role', cb.agent_role);
-    setVal('greeting', cb.greeting);
-    setVal('system_prompt', cb.system_prompt);
-    if (tpl.admin_user) {
-      setVal('owner_name', tpl.admin_user.name);
-      setVal('owner_email', tpl.admin_user.email);
+  const btn    = document.getElementById("provisionBtn");
+  const errBox = document.getElementById("provisionErr");
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> Provisioning…';
+  errBox.style.display = "none";
+
+  const fd = new FormData();
+  fd.append("admin_password", adminPw);
+  fd.append("template_json",  JSON.stringify(buildTemplate()));
+  fd.append("secrets_json",   JSON.stringify(collectSecrets()));
+
+  const clientEnabled = document.getElementById("clientLoginEnabled").checked;
+  const clientPw      = gv("clientPassword");
+  if (clientEnabled && clientPw) fd.append("client_password", clientPw);
+
+  try {
+    const res  = await fetch("/setup", {method:"POST", body:fd});
+    const data = await res.json();
+
+    if (!res.ok || data.error) {
+      errBox.style.display = "";
+      errBox.textContent   = data.error || "Provisioning failed — check the server logs.";
+      btn.disabled = false;
+      btn.innerHTML = "🚀 Provision This Install";
+      return;
     }
-    if (tpl.features && tpl.features.plan) {
-      chosenPlan = tpl.features.plan;
-      planGrid.querySelectorAll('.plan-tile').forEach(t => {
-        t.classList.toggle('selected', t.getAttribute('data-plan') === chosenPlan);
-      });
-    }
-    faqList.innerHTML = '';
-    (tpl.faqs || []).forEach(f => {
-      faqList.appendChild(makeFaqRow(f.question || '', f.answer || ''));
-    });
+
+    // Success!
+    const written = (data.secrets_written||[]).length;
+    document.getElementById("successBody").innerHTML =
+      `Your <strong>AI Concierge Platform</strong> is ready!<br><br>` +
+      (written > 0 ? `<strong>${written} API key${written>1?"s":""}</strong> saved to <code>.env</code>.<br><br>` : "") +
+      `Log in with your <strong>admin password</strong> to complete setup from the admin panel.`;
+
+    document.getElementById("successModal").classList.add("visible");
+
+  } catch (err) {
+    errBox.style.display = "";
+    errBox.textContent   = "Network error: " + err.message;
+    btn.disabled  = false;
+    btn.innerHTML = "🚀 Provision This Install";
   }
+}
 
-  function buildTemplate() {
-    const v = id => document.getElementById(id).value.trim();
-    // Start from a deep clone of the loaded preset (or {} for blank start).
-    // This preserves preset sections the wizard form doesn't expose —
-    // business_hours, voice_settings, social_links, content.services, etc. —
-    // so picking "Restaurant" actually applies the restaurant's full config
-    // and not just the half-dozen fields the form happens to surface.
-    const tpl = currentPreset ? JSON.parse(JSON.stringify(currentPreset)) : {};
-    tpl.settings = tpl.settings || {};
-    tpl.settings.site_settings = tpl.settings.site_settings || {};
-    tpl.settings.business_info = tpl.settings.business_info || {};
-    tpl.settings.chatbot_settings = tpl.settings.chatbot_settings || {};
+/* ============================================================
+   HELPERS
+   ============================================================ */
+function gv(id) { const el=document.getElementById(id); return el?el.value:""; }
+function sv(id, val) { const el=document.getElementById(id); if(el) el.value=val; }
 
-    // Overlay form-edited site_settings fields. Empty strings are treated
-    // as "user didn't touch this field" → fall back to whatever the preset
-    // already has. The one exception is site_name, which is required and
-    // always overwrites (it's the gate value).
-    const ss = tpl.settings.site_settings;
-    ss.site_name = v('site_name');  // required
-    if (v('site_subtitle')) ss.site_subtitle = v('site_subtitle');
-    if (v('hero_title')) ss.hero_title = v('hero_title');
-    else if (!ss.hero_title) ss.hero_title = v('site_name');
-    if (v('hero_tagline')) ss.hero_tagline = v('hero_tagline');
-    if (v('hero_description')) ss.hero_description = v('hero_description');
-    if (v('logo_initials')) ss.logo_initials = v('logo_initials');
-    else if (!ss.logo_initials) ss.logo_initials = v('site_name').slice(0, 2).toUpperCase();
-
-    const bi = tpl.settings.business_info;
-    if (v('business_phone')) bi.business_phone = v('business_phone');
-    if (v('business_email')) bi.business_email = v('business_email');
-    if (v('business_address')) bi.business_address = v('business_address');
-    if (Object.keys(bi).length === 0) delete tpl.settings.business_info;
-
-    const cb = tpl.settings.chatbot_settings;
-    if (v('agent_name')) cb.agent_name = v('agent_name');
-    if (v('agent_role')) cb.agent_role = v('agent_role');
-    if (v('greeting')) cb.greeting = v('greeting');
-    if (v('system_prompt')) cb.system_prompt = v('system_prompt');
-    if (Object.keys(cb).length > 0) {
-      // Only force enabled=true if we actually have chatbot fields set.
-      if (cb.enabled === undefined) cb.enabled = true;
-    } else {
-      delete tpl.settings.chatbot_settings;
-    }
-
-    // Plan tile choice always overrides preset's features.plan
-    tpl.features = tpl.features || {};
-    tpl.features.plan = chosenPlan;
-
-    // FAQ list: the form is the source of truth (operator added/removed
-    // rows). Replace any preset-supplied list entirely.
-    const formFaqs = [];
-    faqList.querySelectorAll('.faq-item').forEach((row, i) => {
-      const q = row.querySelector('.faq-q').value.trim();
-      const a = row.querySelector('.faq-a').value.trim();
-      if (q && a) formFaqs.push({ question: q, answer: a, sort_order: i });
-    });
-    if (formFaqs.length > 0) tpl.faqs = formFaqs;
-    else if (!tpl.faqs || tpl.faqs.length === 0) delete tpl.faqs;
-
-    // Owner contact always comes from the form (it's how the operator
-    // identifies themselves; preset's admin_user is a placeholder).
-    tpl.admin_user = {
-      email: v('owner_email'),
-      name: v('owner_name'),
-    };
-
-    return tpl;
-  }
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    status.innerHTML = '';
-    const tpl = buildTemplate();
-    const fd = new FormData();
-    fd.append('admin_password', document.getElementById('admin_password').value);
-    fd.append('template_json', JSON.stringify(tpl));
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Setting up...';
-    try {
-      const r = await fetch('/setup', { method: 'POST', body: fd });
-      const data = await r.json();
-      if (!r.ok || !data.ok) {
-        const msg = data.error || 'Setup failed.';
-        const summaryDump = data.summary ? '\n\n' + JSON.stringify(data.summary, null, 2) : '';
-        status.innerHTML = `<div class="status err">${msg}${summaryDump ? '<pre>' + summaryDump + '</pre>' : ''}</div>`;
-        submitBtn.disabled = false;
-        submitBtn.textContent = 'Run setup';
-        return;
-      }
-      status.innerHTML = `<div class="status ok">Setup complete. Redirecting to admin login...</div>`;
-      setTimeout(() => { window.location.href = data.redirect || '/admin/login'; }, 1200);
-    } catch (err) {
-      status.innerHTML = `<div class="status err">Network error: ${err.message}</div>`;
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Run setup';
-    }
-  });
-
-  // Seed one empty FAQ so the section isn't empty on load
-  faqList.appendChild(makeFaqRow('', ''));
+/* ============================================================
+   INIT
+   ============================================================ */
+(async function init() {
+  renderSidebar();
+  renderPresets();
+  renderHoursTable();
+  renderAutoGrid();
+  await fetchCatalogue();
 })();
 </script>
 </body>

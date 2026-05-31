@@ -1840,7 +1840,9 @@ def bootstrap_install(params):
                          "rejected_columns": r.get("rejected_columns", [])}
                     )
 
-    # 2. Features — either apply_plan (preferred) or bulk_set.
+    # 2. Features — apply_plan sets the baseline plan; set applies per-feature
+    #    overrides on top.  The two keys may be combined: plan runs first,
+    #    then set overrides any individual flags in a second pass.
     feat_spec = template.get("features")
     if feat_spec is not None:
         if not isinstance(feat_spec, dict):
@@ -1850,36 +1852,43 @@ def bootstrap_install(params):
         elif not feat_spec:
             pass  # empty dict — treat as omitted
         else:
-            if feat_spec.get("plan"):
-                r = _safe_call(
-                    manage_features, {"action": "apply_plan", "plan": feat_spec["plan"]},
-                    lambda e: summary.update(features_error=f"exception: {e}"),
-                )
-                if r is not None:
-                    if r.get("error"):
-                        summary["features_error"] = r["error"]
-                    else:
-                        summary["features"] = {
-                            "mode": "apply_plan",
-                            "plan": feat_spec["plan"],
-                            "applied_count": r.get("count", 0),
-                        }
-            elif isinstance(feat_spec.get("set"), dict):
-                r = _safe_call(
-                    manage_features, {"action": "bulk_set", "features": feat_spec["set"]},
-                    lambda e: summary.update(features_error=f"exception: {e}"),
-                )
-                if r is not None:
-                    if r.get("error"):
-                        summary["features_error"] = r["error"]
-                    else:
-                        summary["features"] = {
-                            "mode": "bulk_set",
-                            "applied_count": r.get("count", 0),
-                            "skipped_unknown": r.get("skipped_unknown", []),
-                        }
+            if not feat_spec.get("plan") and not isinstance(feat_spec.get("set"), dict):
+                summary["features_error"] = "features must include 'plan' and/or 'set'"
             else:
-                summary["features_error"] = "features must include 'plan' or 'set'"
+                # Pass 1: apply_plan if present.
+                if feat_spec.get("plan"):
+                    r = _safe_call(
+                        manage_features, {"action": "apply_plan", "plan": feat_spec["plan"]},
+                        lambda e: summary.update(features_error=f"exception: {e}"),
+                    )
+                    if r is not None:
+                        if r.get("error"):
+                            summary["features_error"] = r["error"]
+                        else:
+                            summary["features"] = {
+                                "mode": "apply_plan",
+                                "plan": feat_spec["plan"],
+                                "applied_count": r.get("count", 0),
+                            }
+                # Pass 2: per-feature overrides on top of the plan.
+                if isinstance(feat_spec.get("set"), dict) and feat_spec["set"]:
+                    r = _safe_call(
+                        manage_features, {"action": "bulk_set", "features": feat_spec["set"]},
+                        lambda e: summary.update(features_error=f"exception: {e}"),
+                    )
+                    if r is not None:
+                        if r.get("error"):
+                            summary["features_error"] = r["error"]
+                        else:
+                            overrides_summary = {
+                                "mode": "bulk_set",
+                                "applied_count": r.get("count", 0),
+                                "skipped_unknown": r.get("skipped_unknown", []),
+                            }
+                            if summary["features"]:
+                                summary["features"]["overrides"] = overrides_summary
+                            else:
+                                summary["features"] = overrides_summary
 
     # 3. FAQs — dedupe on canonical question text so minor drift (case,
     # spacing, trailing punctuation) doesn't create duplicate rows.
@@ -2095,6 +2104,26 @@ def bootstrap_install(params):
                             else:
                                 ch_summary[ch_action] = ch_summary.get(ch_action, 0) + 1
                 summary["admin_records"][logical_key] = table_summary
+
+    # 7. Page sections — bulk enable/disable built-in sections.
+    #    Template key: {"page_sections": {"hero": true, "gallery": false, ...}}
+    #    Uses UPDATE so only existing rows are affected (safe to ignore unknowns).
+    page_sections_spec = template.get("page_sections")
+    if isinstance(page_sections_spec, dict) and page_sections_spec:
+        ps_applied = 0
+        ps_errors = []
+        for slug, enabled in page_sections_spec.items():
+            try:
+                execute_db(
+                    "UPDATE page_sections SET enabled=%s WHERE slug=%s",
+                    (bool(enabled), str(slug)),
+                )
+                ps_applied += 1
+            except Exception as exc:
+                ps_errors.append({"slug": slug, "error": str(exc)[:200]})
+        summary["page_sections"] = {"applied": ps_applied, "errors": ps_errors}
+    else:
+        summary["page_sections"] = {}
 
     summary["ok"] = (
         not summary["settings_errors"]

@@ -6398,10 +6398,117 @@ def setup_wizard_post():
             "rollback_error": rel_err,
         }), 400
 
+    # ---- Write secrets to the local .env file (before and regardless of
+    #      bootstrap outcome, since secrets are idempotent writes) --------
+    raw_secrets = request.form.get("secrets_json", "").strip()
+    secrets_written = []
+    secrets_errors = []
+    if raw_secrets:
+        try:
+            secrets_dict = _wizard_json.loads(raw_secrets)
+            if isinstance(secrets_dict, dict):
+                from env_manager import set_var, EnvManagerError
+                for skey, sval in secrets_dict.items():
+                    if sval and str(sval).strip():
+                        try:
+                            # force_override=True so setup-time values win even
+                            # if the host already has a value (e.g. Replit Secret).
+                            set_var(str(skey), str(sval).strip(), force_override=True)
+                            secrets_written.append(skey)
+                        except EnvManagerError as se:
+                            secrets_errors.append({"key": skey, "error": str(se)})
+                        except Exception as se:
+                            secrets_errors.append({"key": skey, "error": str(se)})
+        except Exception:
+            pass  # Malformed secrets_json — silently skip, not fatal.
+
+    # ---- Write CLIENT_PASSWORD if provided ----------------------------------
+    client_pw = request.form.get("client_password", "").strip()
+    if client_pw:
+        try:
+            from env_manager import set_var
+            set_var("CLIENT_PASSWORD", client_pw, force_override=True)
+        except Exception:
+            pass  # Non-fatal.
+
     return jsonify({
         "ok": True,
         "summary": summary,
+        "secrets_written": secrets_written,
+        "secrets_errors": secrets_errors,
         "redirect": url_for("admin_login"),
+    })
+
+
+@app.route("/setup/catalogue", methods=["GET"])
+def setup_wizard_catalogue():
+    """Return machine-readable catalogue for the setup wizard.
+
+    Exposes skills, features, page sections, and env-var metadata so the
+    wizard can populate its toggles client-side.  Gated by
+    _is_install_bootstrapped() — once the site is set up this 404s like
+    every other /setup route.  No admin auth required (the wizard is only
+    reachable on a brand-new, unconfigured install).
+    """
+    if _is_install_bootstrapped():
+        abort(404)
+
+    # Agent skills (builtin + any already-registered customs).
+    skills = []
+    try:
+        rows = query_db(
+            "SELECT name, display_name, description, category, builtin, enabled "
+            "FROM agent_skills ORDER BY builtin DESC, category, name"
+        )
+        skills = [dict(r) for r in rows] if rows else []
+    except Exception:
+        pass
+
+    # Feature registry (from the in-process constant).
+    features = [
+        {"name": n, "label": lbl, "tier": tier, "default": dflt, "group": grp}
+        for n, lbl, tier, dflt, grp in _FEATURE_REGISTRY
+    ]
+
+    # Page sections from DB (seeded at startup).
+    page_sections = []
+    try:
+        rows = query_db(
+            "SELECT slug, title, section_type, enabled, sort_order "
+            "FROM page_sections WHERE section_type = 'builtin' ORDER BY sort_order, slug"
+        )
+        page_sections = [dict(r) for r in rows] if rows else []
+    except Exception:
+        pass
+
+    # Env-var catalogue (metadata + current status, never values).
+    from env_manager import KNOWN_VARS, get_status
+    env_vars = []
+    try:
+        for row in get_status():
+            env_vars.append({
+                "key": row["key"],
+                "category": row["category"],
+                "level": row["level"],
+                "description": row["description"],
+                "sensitive": row["sensitive"],
+                "url": row.get("url", ""),
+                "set": row["set"],
+                "source": row["source"],
+            })
+    except Exception:
+        env_vars = [
+            {"key": v["key"], "category": v["category"], "level": v["level"],
+             "description": v["description"], "sensitive": v["sensitive"],
+             "url": v.get("url", ""), "set": False, "source": "unset"}
+            for v in KNOWN_VARS
+        ]
+
+    return jsonify({
+        "skills": skills,
+        "features": features,
+        "page_sections": page_sections,
+        "env_vars": env_vars,
     })
 
 
