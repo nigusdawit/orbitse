@@ -74,8 +74,12 @@ class PylegoConfig:
 
     # ---- Smarter context (task 028 — defaults off / current behavior) -------
     history_token_budget: int         # 0 == disabled (keep fixed-turn behavior)
+    history_summarize_enabled: bool   # task 032: summarize dropped turns vs plain drop
     respcache_enabled: bool
     respcache_threshold: float
+
+    # ---- Activity logging (task 031) ----------------------------------------
+    activity_logging_enabled: bool    # persist each admin-AI turn to ai_activity_log
 
     # ---- Safety (task 029) --------------------------------------------------
     # sqlguard/structured default OFF (they can affect behavior — they're a
@@ -113,8 +117,11 @@ def _build() -> PylegoConfig:
         admin_rate_limit_store=os.environ.get("ADMIN_CHAT_RATE_LIMIT_STORE", "postgres").strip().lower(),
         # Smarter context — wired in 028.
         history_token_budget=_env_int("ADMIN_CHAT_HISTORY_TOKEN_BUDGET", 0),
+        history_summarize_enabled=_env_bool("ADMIN_CHAT_HISTORY_SUMMARIZE", False),
         respcache_enabled=_env_bool("ADMIN_RESPCACHE_ENABLED", False),
         respcache_threshold=_env_float("ADMIN_RESPCACHE_THRESHOLD", 0.93),
+        # Activity logging — wired in 031 (default ON: low-volume admin turns).
+        activity_logging_enabled=_env_bool("ADMIN_CHAT_ACTIVITY_LOGGING", True),
         # Safety — wired in 029.
         sqlguard_enabled=_env_bool("ADMIN_SQLGUARD_ENABLED", False),
         structured_enabled=_env_bool("ADMIN_STRUCTURED_ARGS_ENABLED", False),
