@@ -34,6 +34,12 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 022 | M22 — Fleet sync (managed defaults + local override + rollout) | done | task/022-fleet-sync | 019,020 | Gate 377/377; versioned-merge managed defaults, signed bundles (replay/TOCTOU-hardened), override-of-record, feature rollout. security-review: 4 fixed |
 | 021 | M21 — Verification (browser + live-key E2E + CI) | done | task/021-real-env-verification | 011-020,022 | GitHub Actions CI + VERIFICATION.md runbook; gate 377/377, unit 71p, lint clean; browser/live-key/WP/Docker = operator runbook |
 
+## Phase 3 — Replit re-import hardening (see `PLAN` in ~/.claude/plans/serialized-floating-boot.md)
+
+| ID | Title | Status | Branch | Depends on | Parallel-with | Drift |
+|----|-------|--------|--------|------------|---------------|-------|
+| 023 | Harden monolith for clean Replit re-import (main.py + boot fixes) | in_progress | task/023-replit-import-hardening | — | — | |
+
 **Status legend:** not_started | in_progress | paused | blocked | awaiting_review | done
 
 **Concurrency note:** M1 and M2 touch disjoint files (visitor widget/chat vs admin shell) and can run
