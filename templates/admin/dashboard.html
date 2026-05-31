@@ -6603,6 +6603,14 @@ TO CUSTOMIZE THIS DASHBOARD:
         </p>
       </div>
     </div>
+    <div style="margin-bottom:10px;">
+      <label style="font-size:13px;opacity:.8;margin-right:6px;">Surface:</label>
+      <select id="ai-activity-surface" onchange="loadAiActivity()" data-testid="ai-activity-surface-filter">
+        <option value="">All</option>
+        <option value="admin">Admin AI</option>
+        <option value="visitor">Visitor AI</option>
+      </select>
+    </div>
     <div id="ai-activity-stats" style="margin-bottom:12px;opacity:.85;font-size:13px;"></div>
     <div id="ai-activity-list"><p class="empty-state">Loading activity…</p></div>
   </div>
@@ -16704,7 +16712,8 @@ TO CUSTOMIZE THIS DASHBOARD:
       if (!wrap) return;
       wrap.innerHTML = '<p class="empty-state">Loading activity…</p>';
       try {
-        const res = await fetch('/admin/api/ai-activity?limit=100');
+        const sf = (document.getElementById('ai-activity-surface') || {}).value || '';
+        const res = await fetch('/admin/api/ai-activity?limit=100' + (sf ? '&surface=' + encodeURIComponent(sf) : ''));
         if (!res.ok) {
           wrap.innerHTML = '<p class="empty-state">Only the super admin can view AI Activity.</p>';
           return;
@@ -16718,19 +16727,20 @@ TO CUSTOMIZE THIS DASHBOARD:
         }
         if (!rows.length) { wrap.innerHTML = '<p class="empty-state">No activity recorded yet.</p>'; return; }
         let html = '<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr style="text-align:left;opacity:.7;">'
-          + '<th style="padding:6px;">When</th><th>Model</th><th>Rounds</th><th>Tools</th>'
+          + '<th style="padding:6px;">When</th><th>Surface</th><th>Model</th><th>Rounds</th><th>Tools</th>'
           + '<th>Tokens</th><th>Cost</th><th>ms</th><th>Status</th><th></th></tr></thead><tbody>';
         rows.forEach((r, i) => {
           const when = r.created_at ? new Date(r.created_at).toLocaleString() : '';
           html += '<tr style="border-top:1px solid rgba(255,255,255,.06);">'
             + '<td style="padding:6px;">' + _aiPromptEsc(when) + '</td>'
+            + '<td>' + _aiPromptEsc(r.surface || 'admin') + '</td>'
             + '<td>' + _aiPromptEsc((r.provider || '') + '/' + (r.model || '')) + '</td>'
             + '<td>' + (r.rounds || 0) + '</td><td>' + (r.tool_calls || 0) + '</td>'
             + '<td>' + ((r.tokens_in || 0) + (r.tokens_out || 0)) + '</td>'
             + '<td>$' + Number(r.cost_usd || 0).toFixed(4) + '</td><td>' + (r.duration_ms || 0) + '</td>'
             + '<td>' + _aiPromptEsc(r.status || '') + '</td>'
             + '<td><button class="btn btn-secondary btn-sm" onclick="(function(){var d=document.getElementById(\'aiact-d-' + i + '\');d.style.display=(d.style.display===\'none\'?\'table-row\':\'none\');})()">view</button></td></tr>'
-            + '<tr id="aiact-d-' + i + '" style="display:none;"><td colspan="9" style="padding:10px;background:rgba(255,255,255,.03);">'
+            + '<tr id="aiact-d-' + i + '" style="display:none;"><td colspan="10" style="padding:10px;background:rgba(255,255,255,.03);">'
             + '<div style="font-size:12px;opacity:.7;">Question</div><div style="white-space:pre-wrap;margin-bottom:8px;">' + _aiPromptEsc(r.user_message || '') + '</div>'
             + '<div style="font-size:12px;opacity:.7;">Answer</div><div style="white-space:pre-wrap;">' + _aiPromptEsc(r.final_answer || '') + '</div>'
             + (r.error_text ? '<div style="color:#f88;margin-top:6px;">' + _aiPromptEsc(r.error_text) + '</div>' : '')
