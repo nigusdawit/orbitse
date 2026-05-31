@@ -71,7 +71,10 @@ KNOWN_VARS: list[dict] = [
      "description": "Postgres connection string. Embeds a password — masked.",
      "sensitive": True, "restart": True},
     {"key": "ADMIN_PASSWORD", "level": "required", "category": "Admin access",
-     "description": "Password to log in to this admin dashboard.",
+     "description": "Super-admin password — full admin panel + the Plans & Features control tab.",
+     "sensitive": True, "restart": False},
+    {"key": "CLIENT_PASSWORD", "level": "optional", "category": "Admin access",
+     "description": "Client password (optional). Logs in to a restricted admin that only sees the tabs the super admin enabled, and cannot change them. Share this with a WordPress-embedded client. Leave empty to disable the client login.",
      "sensitive": True, "restart": False},
 
     # ---- AI providers (at least one required) ----
