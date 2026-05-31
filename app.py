@@ -1065,6 +1065,26 @@ def _ai_control_registry():
          "group": "Safety", "label": "Redact secrets in activity/logs",
          "env": "ADMIN_REDACT_ENABLED",
          "description": "Mask emails/keys/phones in the observability log + stored activity. Log-only; safe to leave on."},
+        # Speed / Routing (Phase 6 / task 040) — route short, simple turns to a
+        # cheaper/faster model. Applies to BOTH admin + visitor chat. Off = every
+        # turn uses its configured default model (no change).
+        {"key": "model_routing_enabled", "attr": "model_routing_enabled", "type": "bool",
+         "group": "Speed / Routing", "label": "Route simple turns to a fast model",
+         "env": "MODEL_ROUTING_ENABLED",
+         "description": "When ON, short user messages are answered by the 'fast model' "
+                        "below instead of the default — cheaper + quicker for trivial "
+                        "lookups. Off = always use the default model."},
+        {"key": "fast_model", "attr": "fast_model", "type": "string",
+         "group": "Speed / Routing", "label": "Fast model",
+         "env": "MODEL_ROUTING_FAST_MODEL",
+         "description": "Model name used for simple turns (e.g. claude-3-5-haiku-… or "
+                        "gpt-4o-mini). Must be a model whose provider's API key is "
+                        "configured. Blank = routing does nothing."},
+        {"key": "routing_simple_max_chars", "attr": "routing_simple_max_chars", "type": "int",
+         "group": "Speed / Routing", "label": "Simple-turn length limit (chars)",
+         "env": "MODEL_ROUTING_SIMPLE_MAX_CHARS",
+         "description": "A turn counts as 'simple' (eligible for the fast model) when the "
+                        "user message is at most this many characters long."},
         # Activity
         {"key": "activity_logging_enabled", "attr": "activity_logging_enabled", "type": "bool",
          "group": "Activity", "label": "Log admin-AI turns to the database",
@@ -1124,6 +1144,7 @@ _AI_INERT = {
     "history_token_budget": 0, "history_summarize_enabled": False,
     "respcache_enabled": False, "sqlguard_enabled": False,
     "redact_enabled": False, "activity_logging_enabled": False,
+    "model_routing_enabled": False,
     "visitor_llm_max_retries": 0, "visitor_provider_fallback": False,
     "visitor_fallback_model": "", "visitor_history_token_budget": 0,
 }
@@ -13778,6 +13799,49 @@ def get_active_llm_provider():
     return ("openai", row.get("openai_model") or "gpt-4o-mini")
 
 
+def _provider_for_model(model):
+    """Infer the provider that serves a given model name. Claude/Anthropic models
+    start with 'claude'; everything else is treated as OpenAI-compatible."""
+    return "claude" if (model or "").strip().lower().startswith("claude") else "openai"
+
+
+def _route_turn_model(default_model, default_provider, message):
+    """Per-request model router (task 040 — Epic C / speed).
+
+    When model routing is enabled AND a fast model is configured AND the user's
+    message is "simple" (short), route this turn to the fast model — but ONLY if
+    that model's provider client is actually initialized (otherwise we'd break the
+    turn). In every other case return the caller's defaults unchanged.
+
+    Returns (model, provider). Default-off → identity: callers see no change.
+    Fails open: any error → the original (default_model, default_provider).
+
+    The master kill switch already forces `model_routing_enabled` to its inert
+    False via get_ai_setting, so this whole helper is a no-op when AI
+    enhancements are turned off."""
+    try:
+        if not get_ai_setting("model_routing_enabled"):
+            return (default_model, default_provider)
+        fast = (get_ai_setting("fast_model") or "").strip()
+        if not fast:
+            return (default_model, default_provider)
+        max_chars = int(get_ai_setting("routing_simple_max_chars") or 0)
+        if max_chars <= 0:
+            return (default_model, default_provider)
+        if len((message or "")) > max_chars:
+            return (default_model, default_provider)
+        # Eligible: route to the fast model, but only if its provider is available.
+        fast_provider = _provider_for_model(fast)
+        if fast_provider == "claude" and anthropic_client is None:
+            return (default_model, default_provider)
+        if fast_provider == "openai" and openai_client is None:
+            return (default_model, default_provider)
+        return (fast, fast_provider)
+    except Exception:
+        # Routing must never break a chat turn — fall back to the defaults.
+        return (default_model, default_provider)
+
+
 def _tools_for_claude(openai_tools):
     """Convert OpenAI-shaped tool schemas to Claude's input_schema shape."""
     out = []
@@ -19398,6 +19462,12 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8,
     if session_cfg.get("model"):
         model = session_cfg["model"]
 
+    # Per-request model routing (task 040): when enabled, route short/simple
+    # turns to the configured fast model. Default-off → identity (model
+    # unchanged). The fast model's provider is inferred from its name prefix.
+    model, _routed_provider = _route_turn_model(
+        model, _provider_for_model(model), user_message)
+
     # Provider = lowercased prefix check on the chosen model. Anything
     # starting with "claude" goes to Anthropic; otherwise OpenAI. If the
     # admin picks Claude but ANTHROPIC_API_KEY isn't set, fail loudly
@@ -21845,6 +21915,10 @@ def api_chat():
             # text + close the stream so they aren't left waiting.
             try:
                 provider, model = get_active_llm_provider()
+                # Per-request model routing (task 040): short/simple visitor
+                # turns can be served by the configured fast model. Default-off
+                # → identity. Guarded to only route to an available provider.
+                model, provider = _route_turn_model(model, provider, message)
                 _va["provider"] = provider
                 _va["model"] = model
             except LLMProviderUnavailable as e:

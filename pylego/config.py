@@ -84,6 +84,14 @@ class PylegoConfig:
     respcache_enabled: bool
     respcache_threshold: float
 
+    # ---- Per-request model routing (task 040 — Epic C / speed) --------------
+    # When enabled, short/simple turns are routed to a cheaper/faster model so
+    # trivial lookups don't pay for the flagship model. All inert at default:
+    # routing off → every turn uses the configured default model (no change).
+    model_routing_enabled: bool       # master toggle for routing; False → identity
+    fast_model: str                   # model name for "simple" turns ("" → no routing)
+    routing_simple_max_chars: int     # a turn is "simple" if user message length <= this
+
     # ---- Activity logging (task 031) ----------------------------------------
     activity_logging_enabled: bool    # persist each admin-AI turn to ai_activity_log
 
@@ -143,6 +151,10 @@ def _build() -> PylegoConfig:
         history_summarize_enabled=_env_bool("ADMIN_CHAT_HISTORY_SUMMARIZE", False),
         respcache_enabled=_env_bool("ADMIN_RESPCACHE_ENABLED", False),
         respcache_threshold=_env_float("ADMIN_RESPCACHE_THRESHOLD", 0.93),
+        # Per-request model routing — wired in 040; inert default (routing off).
+        model_routing_enabled=_env_bool("MODEL_ROUTING_ENABLED", False),
+        fast_model=os.environ.get("MODEL_ROUTING_FAST_MODEL", "").strip(),
+        routing_simple_max_chars=_env_int("MODEL_ROUTING_SIMPLE_MAX_CHARS", 280),
         # Activity logging — wired in 031 (default ON: low-volume admin turns).
         activity_logging_enabled=_env_bool("ADMIN_CHAT_ACTIVITY_LOGGING", True),
         # KB ingestion — wired in 039; inert default (inline ingestion).
