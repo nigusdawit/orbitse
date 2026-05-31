@@ -6314,6 +6314,30 @@ TO CUSTOMIZE THIS DASHBOARD:
       </div>
       {% endif %}
 
+      <!-- Brand Voice / Business Customization — visible to ALL admins
+           (clients included). Unlike the System Prompt above, this is NOT
+           the operator's IP: it is the client's own space to add their
+           business voice, tone, and custom rules. Whatever they type here is
+           APPENDED on top of the generic default prompt on the server, so the
+           AI keeps all of its built-in intelligence and simply also speaks in
+           the business's voice. -->
+      <div id="chatbot-brand-voice-section" style="margin-top: 1.5rem;">
+        <h3>Brand Voice / Business Customization</h3>
+        <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 1rem;">
+          Add your business's personality, tone, and any custom instructions for the AI here —
+          for example "Always be upbeat and use a friendly first-name tone", or "We are a vegan bakery,
+          never suggest non-vegan products." This is <strong>added on top of</strong> the built-in
+          assistant, so it keeps all of its smarts and simply speaks in your voice. Leave empty to use
+          the default voice.
+        </p>
+        <div class="form-row">
+          <div class="form-group" style="grid-column: 1 / -1;">
+            <label for="chatbot-brand-voice">Brand Voice Instructions</label>
+            <textarea id="chatbot-brand-voice" rows="8" placeholder="e.g. Speak warmly and concisely. We're a family-run business — emphasize personal service. Never promise same-day delivery." data-testid="input-chatbot-brand-voice" style="font-size: 0.875rem;"></textarea>
+          </div>
+        </div>
+      </div>
+
       <!--
       ====================================================================
       SCOPE TIGHTNESS — gated by feature flag `agent_scope_slider`
@@ -11433,6 +11457,9 @@ TO CUSTOMIZE THIS DASHBOARD:
            is absent and settings.system_prompt is redacted server-side. */
         const _sysPromptEl = document.getElementById('chatbot-system-prompt');
         if (_sysPromptEl) _sysPromptEl.value = settings.system_prompt || '';
+        /* Brand Voice is visible to every admin (not redacted server-side). */
+        const _brandVoiceEl = document.getElementById('chatbot-brand-voice');
+        if (_brandVoiceEl) _brandVoiceEl.value = settings.brand_voice || '';
 
         /* Convert quick_prompts array to newline-separated text */
         const prompts = settings.quick_prompts || [];
@@ -11512,6 +11539,11 @@ TO CUSTOMIZE THIS DASHBOARD:
          is belt-and-suspenders.) */
       const _sysPromptSave = document.getElementById('chatbot-system-prompt');
       if (_sysPromptSave) data.system_prompt = _sysPromptSave.value;
+
+      /* Brand Voice is client-editable — always send it (every admin has the
+         field). The server appends it on top of the default prompt. */
+      const _brandVoiceSave = document.getElementById('chatbot-brand-voice');
+      if (_brandVoiceSave) data.brand_voice = _brandVoiceSave.value;
 
       try {
         const res = await fetch('/admin/api/chatbot-settings', {
