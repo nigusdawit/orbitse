@@ -83,12 +83,21 @@ def total_tokens(messages: List[Dict[str, Any]]) -> int:
 
 
 def trim_to_budget(messages: List[Dict[str, Any]], budget: int,
-                   model: Optional[str] = None) -> List[Dict[str, Any]]:
+                   model: Optional[str] = None,
+                   summarize_fn=None) -> List[Dict[str, Any]]:
     """Return a trimmed copy of `messages` whose estimated tokens fit `budget`.
 
     Drops the oldest prior-turn messages first; preserves the system prompt and
-    the current turn; never leaves a dangling `tool` message. Returns the input
-    unchanged when budget<=0 or it already fits, or on any error (fail-open)."""
+    the current turn; never leaves a dangling `tool` message.
+
+    If `summarize_fn` is given, the dropped oldest messages are passed to it and
+    its returned text is kept as ONE compact system note in their place (so the
+    model "remembers the gist" instead of forgetting the start). If summarization
+    fails or its note wouldn't fit, we fall back to a plain drop. `summarize_fn`
+    is None by default → pure drop, identical to before.
+
+    Returns the input unchanged when budget<=0 or it already fits, or on any
+    error (fail-open)."""
     try:
         if not messages or budget is None or budget <= 0:
             return messages
@@ -102,30 +111,41 @@ def trim_to_budget(messages: List[Dict[str, Any]], budget: int,
             head = [messages[0]]
             body_start = 1
 
-        # Preserve the current turn: from the last `user` message to the end
-        # (this includes a RAG/system block injected right before it, and is the
-        # part we must never drop).
+        # Preserve the current turn: from the last `user` message to the end.
         last_user = None
         for i in range(len(messages) - 1, body_start - 1, -1):
             if isinstance(messages[i], dict) and messages[i].get("role") == "user":
                 last_user = i
                 break
         if last_user is None:
-            # No user message found — nothing safe to trim.
             return messages
         tail = messages[last_user:]
         middle = messages[body_start:last_user]
 
-        def fits(mid: List[Dict[str, Any]]) -> bool:
-            return total_tokens(head + mid + tail) <= budget
+        def fits(mid: List[Dict[str, Any]], extra: Optional[List] = None) -> bool:
+            return total_tokens(head + (extra or []) + mid + tail) <= budget
 
-        # Drop oldest middle messages until we fit; after each drop, also discard
-        # any now-leading `tool` messages so we never orphan a tool result.
-        while middle and not fits(middle):
-            middle = middle[1:]
-            while middle and isinstance(middle[0], dict) and middle[0].get("role") == "tool":
-                middle = middle[1:]
+        # Drop oldest middle messages until we fit; capture what we dropped so it
+        # can (optionally) be summarized. Drop trailing orphan `tool` messages.
+        kept = list(middle)
+        dropped: List[Dict[str, Any]] = []
+        while kept and not fits(kept):
+            dropped.append(kept.pop(0))
+            while kept and isinstance(kept[0], dict) and kept[0].get("role") == "tool":
+                dropped.append(kept.pop(0))
 
-        return head + middle + tail
+        # Optionally replace the dropped block with a single summary note.
+        if summarize_fn is not None and dropped:
+            try:
+                summary = summarize_fn(dropped)
+                if summary:
+                    note = {"role": "system",
+                            "content": "[Summary of earlier conversation]\n" + str(summary)}
+                    if fits(kept, [note]):
+                        return head + [note] + kept + tail
+            except Exception:
+                pass  # fall back to the plain drop below
+
+        return head + kept + tail
     except Exception:
         return messages  # fail-open: never break the turn over a trim error
