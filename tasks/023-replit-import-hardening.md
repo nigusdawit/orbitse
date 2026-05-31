@@ -53,7 +53,18 @@ in the approved plan: `~/.claude/plans/serialized-floating-boot.md`.
 
 ## Drift reason
 
-(blank)
+Plan asserted "migrations UNCHANGED — already correct." Running them on a fresh
+embedded Postgres falsified that: the two parallel `0005_*` migrations both
+`CREATE TABLE rag_chunks`/`rag_documents` with conflicting schemas (one with a
+`tenant_id` column, one without), so `0005_admin_chat_rag`'s
+`CREATE INDEX ... (tenant_id)` failed with "column tenant_id does not exist" on a
+clean DB — the actual root cause Replit misdiagnosed as pgvector. Fixed by making
+`0005_rag_knowledge_base` the sole owner of the shared tables (its schema is the
+one `rag.py` uses: `tenant_id`+`storage_key`+`error_text`) and dropping the
+conflicting redefinition from `0005_admin_chat_rag` (whose own tables
+`rag_chat_turns`/`admin_chat_memories` — unused anywhere in the monolith — are
+retained). Verified: migrations apply to head in either branch order; RAG schema
+intact.
 
 ## Notes
 
