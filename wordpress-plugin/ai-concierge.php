@@ -101,6 +101,117 @@ function aap_render_settings_page() {
         </table>
         <?php submit_button(); ?>
       </form>
+
+      <hr>
+      <h2>Test Connection</h2>
+      <p class="description">Checks the values in the form above against your platform
+        — no need to save first. The SSO secret is sent only from your server to the
+        platform, never exposed in the browser.</p>
+      <p>
+        <button type="button" class="button button-secondary" id="aap-test-btn">Test Connection</button>
+        <span id="aap-test-spinner" class="spinner" style="float:none;margin:0 6px;"></span>
+      </p>
+      <div id="aap-test-result"></div>
+
+      <script>
+      (function () {
+        var nonce = <?php echo wp_json_encode(wp_create_nonce('aap_test')); ?>;
+        var opt   = <?php echo wp_json_encode(AAP_OPT); ?>;
+        var btn   = document.getElementById('aap-test-btn');
+        var out   = document.getElementById('aap-test-result');
+        var spin  = document.getElementById('aap-test-spinner');
+
+        function field(name) {
+          var el = document.querySelector('[name="' + opt + '[' + name + ']"]');
+          return el ? el.value : '';
+        }
+        function row(ok, label, detail) {
+          var icon = ok === true ? '✅' : (ok === null ? '➖' : '❌');
+          return '<li style="margin:4px 0;">' + icon + ' <strong>' + label + '</strong>' +
+                 (detail ? ' — <span style="color:#555;">' + detail + '</span>' : '') + '</li>';
+        }
+        function esc(s) {
+          return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+            return ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' })[c];
+          });
+        }
+
+        btn.addEventListener('click', function () {
+          out.innerHTML = '';
+          spin.classList.add('is-active');
+          btn.disabled = true;
+
+          var data = new FormData();
+          data.append('action', 'aap_test_connection');
+          data.append('nonce', nonce);
+          data.append('api_base', field('api_base'));
+          data.append('embed_key', field('embed_key'));
+          data.append('sso_secret', field('sso_secret'));
+          data.append('tenant_id', field('tenant_id'));
+
+          fetch(ajaxurl, { method: 'POST', credentials: 'same-origin', body: data })
+            .then(function (r) { return r.json(); })
+            .then(function (res) {
+              spin.classList.remove('is-active');
+              btn.disabled = false;
+              if (!res || !res.success) {
+                out.innerHTML = '<div class="notice notice-error inline"><p>' +
+                  esc(res && res.data && res.data.message ? res.data.message : 'Test failed.') +
+                  '</p></div>';
+                return;
+              }
+              var d = res.data || {};
+              if (!d.reachable) {
+                out.innerHTML = '<div class="notice notice-error inline"><p>' +
+                  row(false, 'Platform reachable', esc(d.message || 'Could not connect.')) +
+                  '</p></div>';
+                return;
+              }
+
+              var items = '';
+              items += row(true, 'Platform reachable', esc(d.site_origin || ''));
+
+              var ekMap = {
+                valid: [true, 'key recognized'],
+                invalid: [false, 'key not found on the platform'],
+                disabled: [false, 'key exists but is disabled'],
+                missing: [null, 'no embed key entered']
+              };
+              var ek = ekMap[d.embed_key] || [false, esc(d.embed_key)];
+              items += row(ek[0], 'Embed key', ek[1]);
+
+              var oMap = {
+                allowed: [true, 'this site is on the key\u2019s allowlist'],
+                not_allowed: [false, 'add ' + esc(d.origin_value || d.site_origin || '') + ' to the embed key\u2019s allowlist'],
+                not_checked: [null, 'skipped (no valid key)']
+              };
+              var o = oMap[d.origin] || [false, esc(d.origin)];
+              items += row(o[0], 'Site origin allowed', o[1]);
+
+              var sMap = {
+                valid: [true, 'secret matches the platform'],
+                invalid: [false, 'secret does NOT match the platform\u2019s SSO_SIGNING_SECRET'],
+                not_checked: [null, 'no SSO secret entered (embedded admin disabled)'],
+                platform_not_configured: [null, 'platform has no SSO secret set']
+              };
+              var s = sMap[d.sso] || [false, esc(d.sso)];
+              items += row(s[0], 'SSO secret', s[1]);
+
+              var cls = d.ok ? 'notice-success' : 'notice-warning';
+              var head = d.ok ? 'All checks passed — you\u2019re good to go.'
+                              : 'Some checks need attention:';
+              out.innerHTML = '<div class="notice ' + cls + ' inline"><p><strong>' +
+                head + '</strong></p><ul style="margin:6px 0 6px 4px;">' + items + '</ul></div>';
+            })
+            .catch(function (e) {
+              spin.classList.remove('is-active');
+              btn.disabled = false;
+              out.innerHTML = '<div class="notice notice-error inline"><p>' +
+                esc(e && e.message ? e.message : 'Request failed.') + '</p></div>';
+            });
+        });
+      })();
+      </script>
     </div>
     <?php
 }
@@ -112,17 +223,96 @@ function aap_b64url($bin) {
     return rtrim(strtr(base64_encode($bin), '+/', '-_'), '=');
 }
 
-function aap_mint_sso_token() {
-    $secret = aap_get('sso_secret');
+/* Canonical browser-style Origin (scheme://host[:port], no path) for this site,
+ * rebuilt from home_url() so subdirectory installs still match the allowlist. */
+function aap_site_origin() {
+    $p = wp_parse_url(home_url());
+    if (empty($p['scheme']) || empty($p['host'])) { return home_url(); }
+    $origin = $p['scheme'] . '://' . $p['host'];
+    if (!empty($p['port'])) { $origin .= ':' . $p['port']; }
+    return $origin;
+}
+
+function aap_mint_sso_token($secret = null, $tid = null) {
+    // Defaults to the saved settings; the Test Connection handler passes the
+    // currently-entered (possibly unsaved) values so the operator can verify
+    // before saving.
+    $secret = ($secret !== null) ? $secret : aap_get('sso_secret');
     if (empty($secret)) { return ''; }
+    $tid = ($tid !== null) ? intval($tid) : intval(aap_get('tenant_id'));
     $payload = wp_json_encode(array(
-        'tid' => intval(aap_get('tenant_id')),
+        'tid' => $tid,
         'exp' => time() + 45,
         'jti' => bin2hex(random_bytes(16)),
     ));
     $b64 = aap_b64url($payload);
     $sig = aap_b64url(hash_hmac('sha256', $b64, $secret, true));
     return $b64 . '.' . $sig;
+}
+
+/* ---------------------------------------------------------------------------
+ * Test Connection — AJAX handler.
+ *
+ * Calls the platform's /embed/diagnostics endpoint SERVER-SIDE (so the SSO
+ * secret never leaves WordPress) with the values currently in the settings
+ * form. Reports back which of {platform reachable, embed key, origin allowlist,
+ * SSO secret} are OK so the operator can fix problems before going live.
+ * ------------------------------------------------------------------------- */
+add_action('wp_ajax_aap_test_connection', 'aap_ajax_test_connection');
+function aap_ajax_test_connection() {
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(array('message' => 'Forbidden'), 403);
+    }
+    check_ajax_referer('aap_test', 'nonce');
+
+    $api    = esc_url_raw(rtrim(trim(wp_unslash($_POST['api_base'] ?? '')), '/'));
+    $key    = sanitize_text_field(wp_unslash($_POST['embed_key'] ?? ''));
+    $secret = sanitize_text_field(wp_unslash($_POST['sso_secret'] ?? ''));
+    $tid    = max(1, intval($_POST['tenant_id'] ?? 1));
+
+    if (empty($api)) {
+        wp_send_json_error(array('message' => 'Set the Platform URL first.'), 400);
+    }
+
+    // Build the diagnostics URL. Include an SSO token only if a secret was
+    // entered, so we can verify the secret matches the platform's.
+    $url = $api . '/embed/diagnostics';
+    $qs  = array();
+    if (!empty($key)) { $qs['embed_key'] = $key; }
+    if (!empty($secret)) {
+        $tok = aap_mint_sso_token($secret, $tid);
+        if (!empty($tok)) { $qs['sso_token'] = $tok; }
+    }
+    if (!empty($qs)) { $url .= '?' . http_build_query($qs); }
+
+    // Send Origin = this site's front-end origin so the platform can check the
+    // embed key's origin allowlist exactly as a real browser request would.
+    // A browser Origin is scheme://host[:port] with NO path, so rebuild it from
+    // home_url() (which may include a subdirectory path) to avoid false fails.
+    $resp = wp_remote_get($url, array(
+        'timeout' => 10,
+        'headers' => array('Origin' => aap_site_origin()),
+    ));
+
+    if (is_wp_error($resp)) {
+        wp_send_json_success(array(
+            'reachable' => false,
+            'message'   => 'Could not reach the platform: ' . $resp->get_error_message(),
+        ));
+    }
+
+    $code = wp_remote_retrieve_response_code($resp);
+    $body = json_decode(wp_remote_retrieve_body($resp), true);
+    if ($code !== 200 || !is_array($body)) {
+        wp_send_json_success(array(
+            'reachable' => false,
+            'message'   => 'Platform returned HTTP ' . $code . ' (is the URL correct?).',
+        ));
+    }
+
+    $body['reachable']   = true;
+    $body['site_origin'] = aap_site_origin();
+    wp_send_json_success($body);
 }
 
 function aap_render_admin_page() {

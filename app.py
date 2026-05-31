@@ -5737,6 +5737,97 @@ def admin_sso():
     return redirect("/admin")
 
 
+def _sso_verify_signature_only(token):
+    """Verify an SSO token's signature + expiry WITHOUT consuming its jti.
+
+    Used only by the connection-test diagnostics endpoint so that testing the
+    connection doesn't burn a real single-use token (and doesn't establish a
+    session). Returns True/False. Never reveals the secret."""
+    import hmac as _hmac
+    secret = _SSO_SIGNING_SECRET
+    if not secret or not token or "." not in token:
+        return False
+    b64, _, sig = token.partition(".")
+    if not _hmac.compare_digest(sig, _sso_sign(b64, secret)):
+        return False
+    try:
+        payload = json.loads(_sso_b64u_decode(b64))
+    except Exception:
+        return False
+    now = _sso_time.time()
+    exp = payload.get("exp", 0)
+    if not isinstance(exp, (int, float)) or exp <= now:
+        return False
+    if exp - now > _SSO_MAX_TTL_SECONDS + 5:
+        return False
+    # Mirror the real verifier's structural checks (minus jti consumption) so a
+    # token reported "valid" here would also pass the real /admin/sso login.
+    jti, tid = payload.get("jti"), payload.get("tid")
+    if not jti or tid is None:
+        return False
+    try:
+        int(tid)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+@app.route("/embed/diagnostics", methods=["GET"])
+def embed_diagnostics():
+    """Connection test for the WordPress plugin (and any other embedder).
+
+    Validates, in one call, the three things an embed install depends on:
+      1. embed_key  — resolves to an enabled tenant key (`valid`/`invalid`/`disabled`)
+      2. origin     — the request Origin is on that key's allowlist
+                      (`allowed`/`not_allowed`/`not_checked` when no Origin sent)
+      3. sso        — if an `sso_token` is supplied, its signature verifies against
+                      the platform's SSO_SIGNING_SECRET (`valid`/`invalid`).  The
+                      jti is NOT consumed, so this is safe to run repeatedly.
+
+    Safe to expose unauthenticated: embed keys are publishable (`pk_...`) and
+    already appear in page source, so confirming validity leaks nothing; the SSO
+    check only confirms a token the caller already signed verifies — it never
+    reveals the secret."""
+    out = {
+        "platform": True,
+        "embed_key": "missing",
+        "origin": "not_checked",
+        "sso": "not_checked",
+    }
+
+    key = (request.args.get("embed_key", "")
+           or request.headers.get("X-Embed-Key", "")).strip()
+    if key:
+        from admin_ai_platform.embed_auth import (
+            _resolve_key, _origin_allowed, _request_origin)
+        row = _resolve_key(key)
+        if not row:
+            out["embed_key"] = "invalid"
+        elif not row.get("enabled"):
+            out["embed_key"] = "disabled"
+        else:
+            out["embed_key"] = "valid"
+            origin = _request_origin()
+            if origin:
+                out["origin_value"] = origin
+                out["origin"] = ("allowed"
+                                 if _origin_allowed(origin, row.get("origin_allowlist"))
+                                 else "not_allowed")
+
+    sso_token = request.args.get("sso_token", "").strip()
+    if not _SSO_SIGNING_SECRET:
+        out["sso"] = "platform_not_configured"
+    elif sso_token:
+        out["sso"] = "valid" if _sso_verify_signature_only(sso_token) else "invalid"
+
+    out["ok"] = (
+        out["embed_key"] == "valid"
+        and out["origin"] in ("allowed", "not_checked")
+        and out["sso"] in ("valid", "not_checked", "platform_not_configured")
+    )
+    return jsonify(out)
+
+
 @app.route("/admin/login", methods=["GET", "POST"])
 def admin_login():
     """
