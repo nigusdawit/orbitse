@@ -294,6 +294,16 @@
     .mt-2 { margin-top:12px; }
     .verr { color:var(--red); font-size:11.5px; margin-top:4px; display:none; }
     .verr.vis { display:block; }
+
+    /* Resume-from-saved banner */
+    .resume-banner {
+      display:none; align-items:center; gap:14px; flex-wrap:wrap;
+      background:var(--blue-dim); border:1px solid rgba(79,142,255,.3);
+      border-radius:10px; padding:14px 18px; margin-bottom:22px;
+    }
+    .resume-banner .rb-text { flex:1; min-width:200px; font-size:13px; color:#bfdbfe; }
+    .resume-banner .rb-text strong { color:#fff; }
+    .resume-banner .btn { padding:8px 16px; font-size:12.5px; }
     .spinner { display:inline-block; width:16px; height:16px; border:2px solid rgba(255,255,255,.2); border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; }
     @keyframes spin { to{transform:rotate(360deg)} }
 
@@ -341,6 +351,17 @@
 
   <!-- ===== Main content ===== -->
   <main class="main-content" id="mainContent">
+
+    <!-- ============================================================
+         RESUME-FROM-SAVED BANNER (shown only when localStorage has
+         a previously saved, in-progress wizard session)
+         ============================================================ -->
+    <div class="resume-banner" id="resumeBanner">
+      <div class="rb-text" id="resumeBannerText"></div>
+      <button class="btn btn-gold" onclick="resumeSaved()">↩ Resume</button>
+      <button class="btn btn-ghost" onclick="clearSaved()">Clear &amp; start over</button>
+    </div>
+
 
     <!-- ============================================================
          STEP 1 — Access & Security
@@ -1181,6 +1202,7 @@ function renderPresets() {
 function applyPreset(key) {
   const p = PRESETS[key];
   if (!p) return;
+  S.preset = key;
   document.querySelectorAll(".preset-card").forEach(c => c.classList.remove("active"));
   document.getElementById("preset-" + key)?.classList.add("active");
   if (p.siteName)  sv("siteName",  p.siteName);
@@ -1718,6 +1740,215 @@ function gv(id) { const el=document.getElementById(id); return el?el.value:""; }
 function sv(id, val) { const el=document.getElementById(id); if(el) el.value=val; }
 
 /* ============================================================
+   STATE PERSISTENCE  (resume a half-finished wizard)
+   ------------------------------------------------------------
+   Every change is serialised to localStorage so the super admin
+   can close the tab and resume later. Password / secret / API-key
+   fields are intentionally EXCLUDED from persistence for security.
+   ============================================================ */
+const LS_KEY = "aiConciergeSetupWizard.v1";
+
+/* Plain (non-secret) DOM fields that should survive a reload.
+   Checkboxes persist .checked; everything else persists .value.
+   Per-day business-hours inputs (hours-mon … hours-sun) are added
+   dynamically below. */
+const PERSIST_FIELDS = [
+  // Access & Security (non-secret only)
+  "adminEmail", "adminPhone", "clientLoginEnabled",
+  // Business & Web
+  "siteName", "siteSubtitle", "heroTitle", "heroTagline", "heroDescription",
+  "logoInitials", "heroImageUrl", "bizPhone", "bizEmail", "bizAddress",
+  "socialInstagram", "socialFacebook", "socialTwitter", "socialLinkedin",
+  "socialYoutube", "socialTiktok",
+  // Visitor AI
+  "agentName", "agentRole", "agentGreeting", "agentSystemPrompt", "chatbotEnabled",
+  "voiceIntros", "voiceVisitor", "voiceAI", "ttsProvider", "defaultVoice",
+  "llmVisitor",
+  // Admin AI
+  "llmAdmin", "adminSystemPrompt", "adminChatEnabled", "kbEnabled",
+];
+
+/* Secret / credential fields — NEVER written to localStorage. The
+   env-<KEY> secret inputs and the MCP auth credential are excluded
+   too (handled in collectPersistFields / saveState). */
+const SECRET_FIELDS = new Set([
+  "setupKey", "adminPassword", "adminPasswordConfirm", "confirmAdminPassword",
+  "clientPassword", "clientPasswordConfirm", "superAdminKey",
+]);
+
+let _restoring = false;   // suppress autosave while we re-hydrate the DOM
+let _pendingSaved = null;  // saved state awaiting the user's "Resume" click
+
+function collectPersistFields() {
+  const f = {};
+  PERSIST_FIELDS.forEach(id => {
+    if (SECRET_FIELDS.has(id)) return;
+    const el = document.getElementById(id);
+    if (!el) return;
+    f[id] = (el.type === "checkbox") ? el.checked : el.value;
+  });
+  DAYS.forEach(d => {
+    const el = document.getElementById("hours-" + d);
+    if (el) f["hours-" + d] = el.value;
+  });
+  return f;
+}
+
+let _saveTimer = null;
+function scheduleSave() {
+  if (_restoring) return;
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(saveState, 250);
+}
+
+/* Has the operator actually entered anything worth resuming? Prevents a
+   freshly-opened wizard (or one just cleared) from re-creating a save and
+   re-triggering the resume banner. Business-hours defaults & checkboxes are
+   ignored on purpose. */
+function hasMeaningfulState() {
+  if (S.step > 0 || S.completedSteps.size > 0) return true;
+  if (S.mcpServers.length || S.customWebhooks.length ||
+      S.customSQL.length  || S.customAutos.length) return true;
+  if (S.autoPresets.size) return true;
+  if (Object.keys(S.skillOverrides).length ||
+      Object.keys(S.featureSet).length ||
+      Object.keys(S.pageSections).length) return true;
+  if (S.preset) return true;
+  for (const id of PERSIST_FIELDS) {
+    const el = document.getElementById(id);
+    if (!el || el.type === "checkbox") continue;
+    if ((el.value || "").trim()) return true;
+  }
+  return false;
+}
+
+function saveState() {
+  if (_restoring) return;
+  if (!hasMeaningfulState()) {
+    try { localStorage.removeItem(LS_KEY); } catch (e) { /* ignore */ }
+    return;
+  }
+  try {
+    const state = {
+      v: 1,
+      step: S.step,
+      completedSteps: [...S.completedSteps],
+      selectedPlan: S.selectedPlan,
+      preset: S.preset || null,
+      // Strip auth credentials from persisted MCP servers (they are secrets)
+      mcpServers: S.mcpServers.map(m => ({ ...m, auth_credential: "" })),
+      customWebhooks: S.customWebhooks,
+      customSQL: S.customSQL,
+      autoPresets: [...S.autoPresets],
+      customAutos: S.customAutos,
+      skillOverrides: S.skillOverrides,
+      featureSet: S.featureSet,
+      pageSections: S.pageSections,
+      fields: collectPersistFields(),
+    };
+    localStorage.setItem(LS_KEY, JSON.stringify(state));
+  } catch (e) {
+    // localStorage unavailable (private mode / quota) — degrade gracefully
+    console.warn("Wizard autosave failed:", e);
+  }
+}
+
+function loadSavedState() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    return (s && typeof s === "object") ? s : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/* Show the "Resume from step N?" banner when a saved session exists. */
+function maybeShowResumeBanner() {
+  const s = loadSavedState();
+  if (!s) return;
+  _pendingSaved = s;
+  const stepIdx = Number.isInteger(s.step) ? s.step : 0;
+  const stepNum = stepIdx + 1;
+  const title   = STEPS[stepIdx]?.title || "";
+  document.getElementById("resumeBannerText").innerHTML =
+    `You have a setup in progress. Resume from <strong>step ${stepNum} — ${title}</strong>?`;
+  document.getElementById("resumeBanner").style.display = "flex";
+}
+
+function resumeSaved() {
+  if (_pendingSaved) applySavedState(_pendingSaved);
+  document.getElementById("resumeBanner").style.display = "none";
+}
+
+function clearSaved() {
+  try { localStorage.removeItem(LS_KEY); } catch (e) { /* ignore */ }
+  _pendingSaved = null;
+  document.getElementById("resumeBanner").style.display = "none";
+}
+
+/* Re-hydrate S + the DOM from a previously saved session. */
+function applySavedState(s) {
+  _restoring = true;
+  try {
+    S.step           = Number.isInteger(s.step) ? s.step : 0;
+    S.completedSteps = new Set(Array.isArray(s.completedSteps) ? s.completedSteps : []);
+    S.selectedPlan   = s.selectedPlan || S.selectedPlan;
+    if (s.preset) S.preset = s.preset;
+    S.mcpServers     = Array.isArray(s.mcpServers)     ? s.mcpServers     : [];
+    S.customWebhooks = Array.isArray(s.customWebhooks) ? s.customWebhooks : [];
+    S.customSQL      = Array.isArray(s.customSQL)      ? s.customSQL      : [];
+    S.autoPresets    = new Set(Array.isArray(s.autoPresets) ? s.autoPresets : []);
+    S.customAutos    = Array.isArray(s.customAutos)    ? s.customAutos    : [];
+    S.skillOverrides = s.skillOverrides || {};
+    S.featureSet     = s.featureSet     || {};
+    S.pageSections   = s.pageSections   || {};
+
+    // Restore plain DOM fields (secrets were never saved, so they stay blank)
+    const f = s.fields || {};
+    Object.entries(f).forEach(([id, val]) => {
+      if (SECRET_FIELDS.has(id)) return;
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (el.type === "checkbox") el.checked = !!val;
+      else el.value = (val == null ? "" : val);
+    });
+
+    // Re-render everything that derives from S / fields
+    selectPlan(S.selectedPlan);
+    if (S.preset) {
+      document.querySelectorAll(".preset-card").forEach(c => c.classList.remove("active"));
+      document.getElementById("preset-" + S.preset)?.classList.add("active");
+    }
+    renderSkills(); renderFeatures(); renderPageSections();
+    renderMCPList(); renderAutoGrid(); renderCustomAutoList();
+    renderWebhookList(); renderSQLList();
+
+    // Dependent visibility
+    document.getElementById("clientLoginFields").style.display =
+      document.getElementById("clientLoginEnabled").checked ? "" : "none";
+
+    // Switch to the saved step panel
+    document.querySelectorAll(".step-panel").forEach(p => p.classList.remove("active"));
+    let panel = document.getElementById("panel-" + S.step);
+    if (!panel) { S.step = 0; panel = document.getElementById("panel-0"); }
+    panel.classList.add("active");
+    if (S.step === STEPS.length - 1) buildReview();
+    document.getElementById("mainContent").scrollTop = 0;
+    renderSidebar();
+  } finally {
+    _restoring = false;
+  }
+  saveState();
+}
+
+/* Delegated autosave: any typing / toggling / clicking re-snapshots state. */
+document.addEventListener("input",  scheduleSave);
+document.addEventListener("change", scheduleSave);
+document.addEventListener("click",  scheduleSave);
+
+/* ============================================================
    INIT
    ============================================================ */
 (async function init() {
@@ -1726,6 +1957,9 @@ function sv(id, val) { const el=document.getElementById(id); if(el) el.value=val
   renderHoursTable();
   renderAutoGrid();
   await fetchCatalogue();
+  // After the catalogue has loaded (so re-renders have data to work with),
+  // offer to resume any previously saved, in-progress session.
+  maybeShowResumeBanner();
 })();
 </script>
 </body>
