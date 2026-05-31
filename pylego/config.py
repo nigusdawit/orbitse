@@ -142,6 +142,16 @@ class PylegoConfig:
     handoff_summary_enabled: bool
     handoff_summary_model: str         # model for the summary ("" → gpt-4o-mini)
 
+    # ---- Meetings / book_meeting (task 047 — Epic F) ------------------------
+    # Gate for the visitor book_meeting tool. Inert default OFF. The calendar
+    # push is OPTIONAL: when meeting_calendar_mcp_server names a connected MCP
+    # server, book_meeting attempts to create a real event via that server's
+    # tool; otherwise it just records the request for the team (no creds needed).
+    meetings_enabled: bool
+    meeting_default_duration_minutes: int
+    meeting_calendar_mcp_server: str   # mcp_servers.name to push events to ("" → store-only)
+    meeting_calendar_tool: str         # tool name on that server ("" → 'create_event')
+
     # ---- Activity logging (task 031) ----------------------------------------
     activity_logging_enabled: bool    # persist each admin-AI turn to ai_activity_log
 
@@ -225,6 +235,11 @@ def _build() -> PylegoConfig:
         # Handoff summary — wired in 048; inert default (no summary).
         handoff_summary_enabled=_env_bool("HANDOFF_SUMMARY_ENABLED", False),
         handoff_summary_model=os.environ.get("HANDOFF_SUMMARY_MODEL", "").strip(),
+        # Meetings — wired in 047; inert default (tool declines).
+        meetings_enabled=_env_bool("MEETINGS_ENABLED", False),
+        meeting_default_duration_minutes=_env_int("MEETING_DEFAULT_DURATION_MINUTES", 30),
+        meeting_calendar_mcp_server=os.environ.get("MEETING_CALENDAR_MCP_SERVER", "").strip(),
+        meeting_calendar_tool=os.environ.get("MEETING_CALENDAR_TOOL", "").strip(),
         # Activity logging — wired in 031 (default ON: low-volume admin turns).
         activity_logging_enabled=_env_bool("ADMIN_CHAT_ACTIVITY_LOGGING", True),
         # KB ingestion — wired in 039; inert default (inline ingestion).

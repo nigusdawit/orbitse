@@ -1174,6 +1174,28 @@ def _ai_control_registry():
          "group": "Growth Tools", "label": "Handoff summary model",
          "env": "HANDOFF_SUMMARY_MODEL",
          "description": "Model for the handoff summary (e.g. gpt-4o-mini). Blank = gpt-4o-mini."},
+        # Meetings (Phase 6 / task 047)
+        {"key": "meetings_enabled", "attr": "meetings_enabled", "type": "bool",
+         "group": "Meetings", "label": "Let the concierge book meetings",
+         "env": "MEETINGS_ENABLED",
+         "description": "When ON, the concierge can use 'book_meeting' to record a meeting "
+                        "request (name, email, requested time). If a Calendar MCP server is "
+                        "configured below it also creates a real calendar event; otherwise "
+                        "the request is saved for your team. Off = the tool declines."},
+        {"key": "meeting_default_duration_minutes", "attr": "meeting_default_duration_minutes", "type": "int",
+         "group": "Meetings", "label": "Default meeting length (minutes)",
+         "env": "MEETING_DEFAULT_DURATION_MINUTES",
+         "description": "Default duration when the visitor doesn't specify one."},
+        {"key": "meeting_calendar_mcp_server", "attr": "meeting_calendar_mcp_server", "type": "string",
+         "group": "Meetings", "label": "Calendar MCP server name",
+         "env": "MEETING_CALENDAR_MCP_SERVER",
+         "description": "Name of a connected MCP server (Connectors tab) to push events to. "
+                        "Blank = store-only (no live calendar). Requires the server to be "
+                        "connected with a create-event tool."},
+        {"key": "meeting_calendar_tool", "attr": "meeting_calendar_tool", "type": "string",
+         "group": "Meetings", "label": "Calendar create-event tool name",
+         "env": "MEETING_CALENDAR_TOOL",
+         "description": "The MCP tool on that server that creates an event. Blank = 'create_event'."},
         # Activity
         {"key": "activity_logging_enabled", "attr": "activity_logging_enabled", "type": "bool",
          "group": "Activity", "label": "Log admin-AI turns to the database",
@@ -1238,6 +1260,7 @@ _AI_INERT = {
     "offers_enabled": False, "lead_capture_enabled": False,
     "callback_requests_enabled": False, "team_notifications_enabled": False,
     "visitor_persona_router_enabled": False, "handoff_summary_enabled": False,
+    "meetings_enabled": False,
     "visitor_llm_max_retries": 0, "visitor_provider_fallback": False,
     "visitor_fallback_model": "", "visitor_history_token_budget": 0,
 }
@@ -4652,6 +4675,35 @@ def init_db():
                 );
                 CREATE INDEX IF NOT EXISTS visitor_personas_enabled_idx
                     ON visitor_personas (tenant_id, enabled, sort_order);
+                """
+            )
+
+            # MEETINGS (Phase 6 / Epic F, task 047) — meeting/booking requests the
+            # concierge takes via the gated book_meeting tool. status flows
+            # 'requested' → 'booked' (set when a connected Calendar MCP confirms
+            # an event; calendar_event_id holds the provider id). When no calendar
+            # is connected the row is simply stored as 'requested' for the team to
+            # action. Nothing is written unless the 'Meetings' knob is on. Also in
+            # migration 0017.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS meetings (
+                    id                BIGSERIAL PRIMARY KEY,
+                    tenant_id         INTEGER NOT NULL DEFAULT 1,
+                    name              TEXT NOT NULL DEFAULT '',
+                    email             TEXT NOT NULL DEFAULT '',
+                    phone             TEXT NOT NULL DEFAULT '',
+                    requested_time    TEXT NOT NULL DEFAULT '',
+                    duration_minutes  INTEGER NOT NULL DEFAULT 30,
+                    notes             TEXT NOT NULL DEFAULT '',
+                    status            TEXT NOT NULL DEFAULT 'requested',
+                    calendar_event_id TEXT NOT NULL DEFAULT '',
+                    visitor_id        VARCHAR(100) NOT NULL DEFAULT '',
+                    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS meetings_recent_idx
+                    ON meetings (tenant_id, created_at DESC);
                 """
             )
     finally:
@@ -11788,6 +11840,99 @@ def request_callback(name=None, phone=None, preferred_time=None, reason=None, **
         return {"ok": False, "message": "Sorry, I couldn't log your callback request just now."}
 
 
+def _meeting_calendar_push(name, email, requested_time, duration_minutes, notes):
+    """OPTIONAL live calendar push (task 047). When a Calendar MCP server is
+    configured (meeting_calendar_mcp_server), call its create-event tool and
+    return the created event id. Fail-open: returns "" when no server is
+    configured, the server isn't found/enabled, or the call errors — the
+    booking is still recorded as 'requested'. This is the credential-dependent
+    leg; with no connected calendar it's a no-op (store-only).
+
+    OPERATOR RUNBOOK: connect a Calendar MCP server in the Connectors tab whose
+    create-event tool accepts {summary, start, duration_minutes, attendee_email,
+    description}, then set meeting_calendar_mcp_server (+ optionally
+    meeting_calendar_tool) in AI Control."""
+    server_name = (get_ai_setting("meeting_calendar_mcp_server") or "").strip()
+    if not server_name:
+        return ""
+    tool = (get_ai_setting("meeting_calendar_tool") or "").strip() or "create_event"
+    try:
+        server = query_db(
+            "SELECT * FROM mcp_servers WHERE name=%s AND enabled=TRUE",
+            (server_name,), fetchone=True)
+        if not server:
+            print(f"[book_meeting] calendar MCP '{server_name}' not found/enabled — store-only")
+            return ""
+        result, err = _mcp_call_tool(server, tool, {
+            "summary": f"Meeting with {name or email or 'website visitor'}",
+            "start": requested_time,
+            "duration_minutes": duration_minutes,
+            "attendee_email": email,
+            "description": notes or "",
+        })
+        if err or not isinstance(result, dict):
+            print(f"[book_meeting] calendar push failed: {err}")
+            return ""
+        # Best-effort id extraction from common shapes.
+        ev = result.get("structuredContent") or {}
+        eid = (ev.get("id") or ev.get("event_id") or result.get("id") or "")
+        return str(eid)[:200]
+    except Exception as e:
+        print(f"[book_meeting] calendar push error: {type(e).__name__}: {e}")
+        return ""
+
+
+def book_meeting(name=None, email=None, requested_time=None, notes=None,
+                 duration_minutes=None, phone=None, **_extra):
+    """Book / request a meeting the visitor wants (Phase 6 / Epic F, task 047).
+    GATED by 'meetings_enabled' (default OFF, master-switch-aware). Needs an
+    email and a requested time. Records the request; if a Calendar MCP server is
+    configured it also creates a real event (status → 'booked'), else stores it
+    as 'requested' for the team. Optionally notifies the team. Never raises."""
+    try:
+        if not get_ai_setting("meetings_enabled"):
+            return {"ok": False, "message": "Meeting booking isn't available right now."}
+        nm = (name or "").strip()[:200]
+        em = (email or "").strip().lower()[:320]
+        when = (requested_time or "").strip()[:200]
+        if not em or not _email_re_check(em):
+            return {"ok": False, "message": "I need a valid email address to book a meeting."}
+        if not when:
+            return {"ok": False, "message": "What date and time would you like to meet?"}
+        try:
+            dur = int(duration_minutes) if duration_minutes else int(
+                get_ai_setting("meeting_default_duration_minutes") or 30)
+        except (TypeError, ValueError):
+            dur = 30
+        dur = max(5, min(dur, 480))
+        ph = (phone or "").strip()[:50]
+        nt = (notes or "").strip()[:2000]
+        # Optional live calendar event (fail-open to store-only).
+        event_id = _meeting_calendar_push(nm, em, when, dur, nt)
+        status = "booked" if event_id else "requested"
+        row = execute_db(
+            "INSERT INTO meetings (tenant_id, name, email, phone, requested_time, "
+            " duration_minutes, notes, status, calendar_event_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            (current_tenant_id(), nm, em, ph, when, dur, nt, status, event_id))
+        if not row:
+            return {"ok": False, "message": "Sorry, I couldn't book that just now."}
+        try:
+            summary = (f"Meeting {status}:\nName: {nm or '-'}\nEmail: {em}\n"
+                       f"Requested time: {when}\nDuration: {dur} min\nNotes: {nt or '-'}")
+            _notify_team(f"Meeting {status} via your AI concierge", summary)
+        except Exception:
+            pass
+        if status == "booked":
+            return {"ok": True, "booked": True,
+                    "message": f"You're booked for {when}. A calendar invite is on its way to {em}."}
+        return {"ok": True, "requested": True,
+                "message": f"Thanks — I've sent your meeting request for {when} to the team; they'll confirm shortly."}
+    except Exception as e:
+        print(f"[book_meeting] failed: {type(e).__name__}: {e}")
+        return {"ok": False, "message": "Sorry, I couldn't book that just now."}
+
+
 def notify_team(subject=None, message=None, **_extra):
     """Send a notification to the business's own team (Phase 6 / Epic D, task
     045). GATED by 'team_notifications_enabled' (default OFF). The recipient is
@@ -12728,6 +12873,24 @@ CHAT_TOOLS = [
         }, "required": ["phone"]},
     }},
     {"type": "function", "function": {
+        "name": "book_meeting",
+        "description": (
+            "Book or request a meeting when the visitor wants to meet/talk at a "
+            "specific time (demo, consultation, call). Requires their email and a "
+            "requested date/time — ask for both, and confirm before booking. If a "
+            "calendar is connected it creates a real event; otherwise the team "
+            "confirms. Only call this with the visitor's clear intent to meet."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string"},
+            "email": {"type": "string"},
+            "requested_time": {"type": "string", "description": "Requested date/time, e.g. 'Tue Jun 3 at 2pm ET'."},
+            "duration_minutes": {"type": "integer"},
+            "notes": {"type": "string"},
+            "phone": {"type": "string"},
+        }, "required": ["email", "requested_time"]},
+    }},
+    {"type": "function", "function": {
         "name": "notify_team",
         "description": (
             "Send a short notification to the business's own team for something "
@@ -12856,6 +13019,7 @@ CHAT_LOOKUP_FUNCTIONS = {
     "subscribe_newsletter": subscribe_newsletter,
     "capture_lead": capture_lead,
     "request_callback": request_callback,
+    "book_meeting": book_meeting,
     "notify_team": notify_team,
     "lookup_offers": lookup_offers,
     "lookup_testimonials": lookup_testimonials,
@@ -12893,6 +13057,7 @@ SKILL_METADATA = {
     "subscribe_newsletter":        {"display": "Subscribe a visitor to the newsletter", "category": "action"},
     "capture_lead":                {"display": "Capture a sales lead",        "category": "action"},
     "request_callback":            {"display": "Take a callback request",     "category": "action"},
+    "book_meeting":                {"display": "Book a meeting",              "category": "action"},
     "notify_team":                 {"display": "Notify the team",             "category": "action"},
     "lookup_offers":               {"display": "Surface offers / deals",      "category": "lookup"},
     "lookup_testimonials":         {"display": "Look up testimonials",        "category": "lookup"},
@@ -27765,6 +27930,25 @@ def admin_list_callbacks():
         "created_at FROM callback_requests WHERE tenant_id=%s ORDER BY id DESC LIMIT %s",
         (tid, limit)) or []
     return jsonify({"callbacks": [_iso_row(r, "created_at") for r in rows]})
+
+
+@app.route("/admin/api/meetings", methods=["GET"])
+@admin_required
+def admin_list_meetings():
+    """Meeting requests/bookings taken by the concierge (super-admin only)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    try:
+        limit = max(1, min(int(request.args.get("limit", 100) or 100), 500))
+    except (TypeError, ValueError):
+        limit = 100
+    tid = current_tenant_id()
+    rows = query_db(
+        "SELECT id, name, email, phone, requested_time, duration_minutes, notes, "
+        "status, calendar_event_id, created_at FROM meetings "
+        "WHERE tenant_id=%s ORDER BY id DESC LIMIT %s", (tid, limit)) or []
+    return jsonify({"meetings": [_iso_row(r, "created_at") for r in rows]})
 
 
 # =============================================================================
