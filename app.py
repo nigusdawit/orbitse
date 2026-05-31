@@ -1113,6 +1113,13 @@ def _ai_control_registry():
                         "tool to add a visitor's email to your subscribers list (with a "
                         "self-service preferences link). Off = the tool politely declines. "
                         "Previously-unsubscribed people are never silently re-subscribed."},
+        {"key": "offers_enabled", "attr": "offers_enabled", "type": "bool",
+         "group": "Visitor CRM", "label": "Let the concierge surface offers / deals",
+         "env": "OFFERS_ENABLED",
+         "description": "When ON, the visitor concierge can use the 'lookup_offers' tool to "
+                        "surface active promotions you've defined — optionally targeted to "
+                        "the visitor's interests. Off = the tool returns nothing. Manage "
+                        "offers via the Offers admin API/tab."},
         # Activity
         {"key": "activity_logging_enabled", "attr": "activity_logging_enabled", "type": "bool",
          "group": "Activity", "label": "Log admin-AI turns to the database",
@@ -1174,6 +1181,7 @@ _AI_INERT = {
     "redact_enabled": False, "activity_logging_enabled": False,
     "model_routing_enabled": False, "prompt_cache_enabled": False,
     "visitor_profiles_enabled": False, "newsletter_signup_enabled": False,
+    "offers_enabled": False,
     "visitor_llm_max_retries": 0, "visitor_provider_fallback": False,
     "visitor_fallback_model": "", "visitor_history_token_budget": 0,
 }
@@ -4486,6 +4494,38 @@ def init_db():
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS visitor_profiles_lead_idx "
                 "ON visitor_profiles (tenant_id, lead_score DESC, updated_at DESC);"
+            )
+
+            # OFFERS / DEALS (Phase 6 / Epic D, task 044) — super-admin-defined
+            # promotions the visitor concierge can surface CONTEXTUALLY via the
+            # gated `lookup_offers` tool. trigger_tags (jsonb array) lets an offer
+            # target visitors who showed matching interests; an empty array means
+            # "always eligible". active + the optional starts_at/ends_at window
+            # bound when an offer is live. Nothing is surfaced unless the 'Offers'
+            # knob is on AND the skill is enabled, so a fresh fork is unaffected.
+            # Also in migration 0013.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS offers (
+                    id            BIGSERIAL PRIMARY KEY,
+                    tenant_id     INTEGER NOT NULL DEFAULT 1,
+                    title         TEXT NOT NULL DEFAULT '',
+                    description   TEXT NOT NULL DEFAULT '',
+                    code          TEXT NOT NULL DEFAULT '',
+                    cta_url       TEXT NOT NULL DEFAULT '',
+                    trigger_tags  JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    active        BOOLEAN NOT NULL DEFAULT TRUE,
+                    starts_at     TIMESTAMPTZ,
+                    ends_at       TIMESTAMPTZ,
+                    priority      INTEGER NOT NULL DEFAULT 0,
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS offers_active_idx "
+                "ON offers (tenant_id, active, priority DESC);"
             )
     finally:
         conn.close()
@@ -11422,6 +11462,62 @@ def subscribe_newsletter(email=None, full_name=None, **_extra):
         return {"ok": False, "message": "Sorry, I couldn't complete the signup just now."}
 
 
+def lookup_offers(interest=None, limit=3, **_extra):
+    """Surface active promotions/deals the operator defined (Phase 6 / Epic D,
+    task 044). GATED by the 'offers_enabled' AI Control knob (default OFF,
+    master-switch-aware): returns [] when off, so nothing is ever surfaced
+    unless a super-admin opts in AND has live offers.
+
+    Only returns offers that are active and within their optional
+    starts_at/ends_at window. `interest` (a topic the visitor cares about)
+    biases toward offers whose trigger_tags match — but offers with NO tags
+    are always eligible (general promos). Highest priority first. Never raises."""
+    try:
+        if not get_ai_setting("offers_enabled"):
+            return []
+        try:
+            k = max(1, min(int(limit or 3), 10))
+        except Exception:
+            k = 3
+        tid = current_tenant_id()
+        rows = query_db(
+            "SELECT id, title, description, code, cta_url, trigger_tags, priority "
+            "FROM offers WHERE tenant_id=%s AND active=TRUE "
+            "  AND (starts_at IS NULL OR starts_at <= NOW()) "
+            "  AND (ends_at   IS NULL OR ends_at   >= NOW()) "
+            "ORDER BY priority DESC, id DESC", (tid,)) or []
+        want = (interest or "").strip().lower()
+        scored = []
+        for r in rows:
+            tags = [str(t).strip().lower() for t in _vp_as_list(r.get("trigger_tags"))]
+            matched = bool(tags) and bool(want) and any(
+                want in t or t in want for t in tags)
+            # A TAGGED offer is shown only when the visitor's interest matches a
+            # tag. An UNTAGGED (general) offer is always eligible. When no
+            # interest is given we surface everything active.
+            if tags and want and not matched:
+                continue
+            scored.append({
+                "title": r.get("title"),
+                "description": _trim_text(r.get("description"), 600),
+                "code": r.get("code") or None,
+                "url": r.get("cta_url") or None,
+                "_targeted": matched,
+                "_priority": int(r.get("priority") or 0),
+            })
+        # Targeted offers first, then by priority; strip internal sort keys.
+        scored.sort(key=lambda o: (o["_targeted"], o["_priority"]), reverse=True)
+        out = []
+        for o in scored[:k]:
+            o.pop("_targeted", None)
+            o.pop("_priority", None)
+            out.append(o)
+        return out
+    except Exception as e:
+        print(f"[offers] lookup failed: {type(e).__name__}: {e}")
+        return []
+
+
 def lookup_testimonials(query=None, min_rating=None, limit=5):
     """Customer reviews / testimonials. Useful for social proof."""
     sql = (
@@ -12257,6 +12353,21 @@ CHAT_TOOLS = [
         }, "required": ["email"]},
     }},
     {"type": "function", "function": {
+        "name": "lookup_offers",
+        "description": (
+            "Get active promotions/deals the business is currently running, so you "
+            "can mention a relevant offer when it genuinely helps the visitor (e.g. "
+            "they're weighing a purchase or ask about discounts). Pass `interest` "
+            "(a topic the visitor cares about) to bias toward a matching offer. "
+            "Returns title/description and an optional code + link. If it returns "
+            "nothing, don't mention any offer."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "interest": {"type": "string", "description": "A topic the visitor is interested in, to target the offer."},
+            "limit": {"type": "integer", "default": 3},
+        }},
+    }},
+    {"type": "function", "function": {
         "name": "lookup_testimonials",
         "description": "Get customer testimonials/reviews. Useful for social proof when the visitor is hesitating.",
         "parameters": {"type": "object", "properties": {
@@ -12355,6 +12466,7 @@ CHAT_LOOKUP_FUNCTIONS = {
     "lookup_faq": lookup_faq,
     "lookup_knowledge_base": lookup_knowledge_base,
     "subscribe_newsletter": subscribe_newsletter,
+    "lookup_offers": lookup_offers,
     "lookup_testimonials": lookup_testimonials,
     "lookup_business_info": lookup_business_info,
     "lookup_custom_section_items": lookup_custom_section_items,
@@ -12388,6 +12500,7 @@ SKILL_METADATA = {
     "lookup_team":                 {"display": "Look up team members",        "category": "lookup"},
     "lookup_faq":                  {"display": "Look up FAQs",                "category": "lookup"},
     "subscribe_newsletter":        {"display": "Subscribe a visitor to the newsletter", "category": "action"},
+    "lookup_offers":               {"display": "Surface offers / deals",      "category": "lookup"},
     "lookup_testimonials":         {"display": "Look up testimonials",        "category": "lookup"},
     "lookup_business_info":        {"display": "Look up business info",       "category": "lookup"},
     "lookup_custom_section_items": {"display": "Look up custom-section items","category": "lookup"},
@@ -26961,6 +27074,126 @@ def admin_list_visitor_profiles():
             "top_lead_score": int(stats.get("top") or 0),
         },
     })
+
+
+# =============================================================================
+# OFFERS / DEALS — super-admin CRUD (task 044)
+# =============================================================================
+# Super-admin-only management of the promotions the concierge can surface via
+# the gated `lookup_offers` tool. All routes are guarded by
+# _require_super_admin_role() (a client session can't read or edit offers).
+
+def _row_offer(r):
+    """Serialize an offers row for the admin API (ISO timestamps, parsed tags)."""
+    d = dict(r)
+    d["trigger_tags"] = _vp_as_list(d.get("trigger_tags"))
+    for k in ("starts_at", "ends_at", "created_at", "updated_at"):
+        if d.get(k):
+            d[k] = d[k].isoformat()
+    return d
+
+
+def _offer_payload(body):
+    """Validate + coerce an offer create/update body. Returns (fields, error).
+    Only whitelisted columns are accepted (no mass-assignment)."""
+    title = (body.get("title") or "").strip()
+    if not title:
+        return None, "title is required"
+    tags = body.get("trigger_tags")
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",")]
+    if not isinstance(tags, list):
+        tags = []
+    tags = [str(t).strip()[:80] for t in tags if str(t).strip()][:25]
+    try:
+        priority = int(body.get("priority") or 0)
+    except (TypeError, ValueError):
+        priority = 0
+    return {
+        "title": title[:300],
+        "description": (body.get("description") or "").strip()[:4000],
+        "code": (body.get("code") or "").strip()[:80],
+        "cta_url": (body.get("cta_url") or "").strip()[:1000],
+        "trigger_tags": json.dumps(tags),
+        "active": bool(body.get("active", True)),
+        "starts_at": (body.get("starts_at") or None),
+        "ends_at": (body.get("ends_at") or None),
+        "priority": priority,
+    }, ""
+
+
+@app.route("/admin/api/offers", methods=["GET"])
+@admin_required
+def admin_list_offers():
+    """List all offers for the tenant (super-admin only)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    tid = current_tenant_id()
+    rows = query_db(
+        "SELECT * FROM offers WHERE tenant_id=%s ORDER BY priority DESC, id DESC",
+        (tid,)) or []
+    return jsonify({"offers": [_row_offer(r) for r in rows]})
+
+
+@app.route("/admin/api/offers", methods=["POST"])
+@admin_required
+def admin_create_offer():
+    """Create an offer (super-admin only)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    fields, err = _offer_payload(request.get_json(silent=True) or {})
+    if err:
+        return jsonify({"error": err}), 400
+    tid = current_tenant_id()
+    row = execute_db(
+        "INSERT INTO offers (tenant_id, title, description, code, cta_url, "
+        " trigger_tags, active, starts_at, ends_at, priority) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+        (tid, fields["title"], fields["description"], fields["code"],
+         fields["cta_url"], fields["trigger_tags"], fields["active"],
+         fields["starts_at"], fields["ends_at"], fields["priority"]))
+    return jsonify({"offer": _row_offer(row)}), 201
+
+
+@app.route("/admin/api/offers/<int:offer_id>", methods=["PUT"])
+@admin_required
+def admin_update_offer(offer_id):
+    """Update an offer (super-admin only). Scoped to the tenant."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    fields, err = _offer_payload(request.get_json(silent=True) or {})
+    if err:
+        return jsonify({"error": err}), 400
+    tid = current_tenant_id()
+    row = execute_db(
+        "UPDATE offers SET title=%s, description=%s, code=%s, cta_url=%s, "
+        " trigger_tags=%s, active=%s, starts_at=%s, ends_at=%s, priority=%s, "
+        " updated_at=NOW() WHERE id=%s AND tenant_id=%s RETURNING *",
+        (fields["title"], fields["description"], fields["code"], fields["cta_url"],
+         fields["trigger_tags"], fields["active"], fields["starts_at"],
+         fields["ends_at"], fields["priority"], offer_id, tid))
+    if not row:
+        return jsonify({"error": "not_found"}), 404
+    return jsonify({"offer": _row_offer(row)})
+
+
+@app.route("/admin/api/offers/<int:offer_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_offer(offer_id):
+    """Delete an offer (super-admin only). Scoped to the tenant."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    tid = current_tenant_id()
+    row = execute_db(
+        "DELETE FROM offers WHERE id=%s AND tenant_id=%s RETURNING id",
+        (offer_id, tid))
+    if not row:
+        return jsonify({"error": "not_found"}), 404
+    return jsonify({"ok": True, "deleted": offer_id})
 
 
 @app.route("/admin/api/ai-prompts", methods=["GET"])
