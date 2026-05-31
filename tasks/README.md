@@ -67,18 +67,19 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 034 | Epic A: visitor activity tracking (surface col + obs wiring) | done | task/034-visitor-activity | 031 | |
 | 035 | Epic A: visitor reliability/context (pylego) + eval seed | done | task/035-visitor-pylego | 034 | |
 | 036 | Epic B: RAG audience scoping + doc portal | done | task/036-rag-audience | 034 | |
-| 037 | Epic B: async ingestion + hybrid retrieval | not_started | task/037-rag-async | 036 | |
-| 038 | Epic B: optional OCR ingestion | not_started | task/038-rag-ocr | 037 | |
-| 039 | Epic C: per-request model routing | not_started | task/039-model-routing | 034 | |
-| 040 | Epic C: prompt caching + page-gen speed | not_started | task/040-prompt-cache | 039 | |
-| 041 | Epic D: visitor profile/CRM + needs capture | not_started | task/041-visitor-profiles | 034 | |
-| 042 | Epic D: newsletter subscribe + self-service portal | not_started | task/042-newsletter | 041 | |
-| 043 | Epic D: deals/offers + proactive engine | not_started | task/043-deals | 041 | |
-| 044 | Epic D: agent tools (capture_lead/notify_team/request_callback) | not_started | task/044-growth-tools | 041 | |
-| 045 | Epic E: visitor multi-agent intent router | not_started | task/045-visitor-personas | 044 | |
-| 046 | Epic F: book_meeting via Calendar MCP | not_started | task/046-meetings | 044 | |
-| 047 | Epic F: request_callback + handoff summary | not_started | task/047-callback | 044 | |
-| 048 | Epic F: live AI phone call (Twilio Voice + media bridge) | not_started | task/048-live-call | 047 | |
+| 037 | Safety: master AI-enhancements kill switch | done | task/037-master-killswitch | 030 | inserted ahead of roadmap (user-requested off-switch) |
+| 038 | Epic B: async ingestion + hybrid retrieval + visitor KB tool | not_started | task/038-rag-async | 036 | |
+| 039 | Epic B: optional OCR ingestion | not_started | task/039-rag-ocr | 038 | |
+| 040 | Epic C: per-request model routing | not_started | task/040-model-routing | 034 | |
+| 041 | Epic C: prompt caching + page-gen speed | not_started | task/041-prompt-cache | 040 | |
+| 042 | Epic D: visitor profile/CRM + needs capture | not_started | task/042-visitor-profiles | 034 | |
+| 043 | Epic D: newsletter subscribe + self-service portal | not_started | task/043-newsletter | 042 | |
+| 044 | Epic D: deals/offers + proactive engine | not_started | task/044-deals | 042 | |
+| 045 | Epic D: agent tools (capture_lead/notify_team/request_callback) | not_started | task/045-growth-tools | 042 | |
+| 046 | Epic E: visitor multi-agent intent router | not_started | task/046-visitor-personas | 045 | |
+| 047 | Epic F: book_meeting via Calendar MCP | not_started | task/047-meetings | 045 | |
+| 048 | Epic F: request_callback + handoff summary | not_started | task/048-callback | 045 | |
+| 049 | Epic F: live AI phone call (Twilio Voice + media bridge) | not_started | task/049-live-call | 048 | |
 
 **Status legend:** not_started | in_progress | paused | blocked | awaiting_review | done
 

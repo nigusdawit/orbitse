@@ -48,6 +48,12 @@ def _env_float(name: str, default: float) -> float:
 
 @dataclass(frozen=True)
 class PylegoConfig:
+    # ---- Master kill switch (Phase 6 safety) --------------------------------
+    # When False, EVERY pylego enhancement reverts to pre-pylego behavior: no
+    # activity DB writes, and all behavior knobs report their inert value (even
+    # if individually enabled via DB/env). One switch to "turn it all off".
+    ai_enhancements_enabled: bool
+
     # ---- Observability (task 026) -------------------------------------------
     # Master switch for the obs wrapper. When False, observe_admin_turn is a
     # pure pass-through (zero overhead, no logging).
@@ -107,6 +113,9 @@ class PylegoConfig:
 
 def _build() -> PylegoConfig:
     return PylegoConfig(
+        # Master switch: ON by default (enhancements available). Set
+        # AI_ENHANCEMENTS_ENABLED=0 to revert everything to pre-pylego behavior.
+        ai_enhancements_enabled=_env_bool("AI_ENHANCEMENTS_ENABLED", True),
         # Observability: ON by default but local-logging only (non-disruptive).
         obs_enabled=_env_bool("PYLEGO_OBS_ENABLED", True),
         obs_local_logging=_env_bool("PYLEGO_OBS_LOCAL_LOGGING", True),
