@@ -1,0 +1,4 @@
+# voice_bridge runtime deps (kept tiny on purpose).
+# The bridge + Echo provider + the OpenAI Realtime reference provider all run on
+# just `websockets`. Other providers may add their own deps when implemented.
+websockets>=11

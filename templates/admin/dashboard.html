@@ -17077,8 +17077,8 @@ TO CUSTOMIZE THIS DASHBOARD:
         {key:'ai_summary',label:'AI summary'},{key:'status',label:'Status'}], 'callbacks');
       _crmLoad('crm-meetings', '/admin/api/meetings', [
         {key:'created_at',label:'When'},{key:'name',label:'Name'},{key:'email',label:'Email'},
-        {key:'requested_time',label:'Requested'},{key:'duration_minutes',label:'Min'},
-        {key:'status',label:'Status'}], 'meetings');
+        {key:'requested_time',label:'Requested'},{key:'start_iso',label:'Resolved (ISO)'},
+        {key:'duration_minutes',label:'Min'},{key:'status',label:'Status'}], 'meetings');
       _crmLoad('crm-voice', '/admin/api/voice-calls', [
         {key:'created_at',label:'When'},{key:'from_number',label:'From'},{key:'to_number',label:'To'},
         {key:'status',label:'Status'},{key:'summary',label:'Summary'}], 'calls');
