@@ -6557,6 +6557,190 @@ def setup_wizard_catalogue():
     })
 
 
+# -----------------------------------------------------------------------------
+# Live API-key validation for the Secrets step of the setup wizard.
+#
+# Admins paste provider API keys into step 8 of the wizard. Without feedback
+# they don't learn a key is wrong until the platform is running and a feature
+# silently fails. This helper does a cheap, read-only "ping" against each
+# provider to confirm the key authenticates BEFORE provisioning finishes.
+#
+# Contract: every branch returns a dict {"status": ..., "message": ...} where
+# status is one of:
+#   "valid"       — provider accepted the key
+#   "invalid"     — provider rejected the key (bad / revoked credential)
+#   "unsupported" — we have no ping for this key (e.g. DATABASE_URL, emails)
+#   "error"       — we couldn't reach the provider (network / timeout / 5xx)
+#
+# Validation NEVER blocks provisioning — it is purely advisory. The wizard
+# warns on failures but still lets the operator launch.
+# -----------------------------------------------------------------------------
+_VALIDATE_KEY_TIMEOUT = 8.0
+
+
+def _vk_interpret(resp, valid_codes=(200,), invalid_codes=(401, 403)):
+    """Map an HTTP response to a validation result. 2xx (or the supplied
+    valid_codes) → valid; 401/403 → invalid credential; anything else →
+    error (the key might be fine but we couldn't confirm)."""
+    code = resp.status_code
+    if code in valid_codes or 200 <= code < 300:
+        return {"status": "valid", "message": "Key verified successfully."}
+    if code in invalid_codes:
+        return {"status": "invalid", "message": "Provider rejected this key (unauthorized)."}
+    return {"status": "error",
+            "message": f"Couldn't confirm — provider returned HTTP {code}."}
+
+
+def _validate_provider_key(key, value, extra=None):
+    """Ping the matching provider for ``key`` to confirm ``value`` works.
+
+    ``extra`` carries companion fields some providers need to validate a
+    single credential (e.g. Twilio needs both the account SID and the auth
+    token). Returns a result dict — see the section header for the contract.
+    Wraps every network call so a flaky provider can never raise into the
+    request handler.
+    """
+    extra = extra or {}
+    key = (key or "").strip().upper()
+    value = (value or "").strip()
+    if not value:
+        return {"status": "error", "message": "No value provided."}
+
+    try:
+        with httpx.Client(timeout=_VALIDATE_KEY_TIMEOUT) as client:
+            if key == "OPENAI_API_KEY":
+                r = client.get("https://api.openai.com/v1/models",
+                               headers={"Authorization": f"Bearer {value}"})
+                return _vk_interpret(r)
+
+            if key == "ANTHROPIC_API_KEY":
+                r = client.get("https://api.anthropic.com/v1/models",
+                               headers={"x-api-key": value,
+                                        "anthropic-version": "2023-06-01"})
+                return _vk_interpret(r)
+
+            if key == "ELEVENLABS_API_KEY":
+                r = client.get("https://api.elevenlabs.io/v1/user",
+                               headers={"xi-api-key": value})
+                return _vk_interpret(r)
+
+            if key == "RESEND_API_KEY":
+                r = client.get("https://api.resend.com/domains",
+                               headers={"Authorization": f"Bearer {value}"})
+                return _vk_interpret(r)
+
+            if key in ("STRIPE_SECRET_KEY", "STRIPE_TEST_SECRET_KEY"):
+                r = client.get("https://api.stripe.com/v1/account",
+                               auth=(value, ""))
+                return _vk_interpret(r)
+
+            if key == "STRIPE_PUBLISHABLE_KEY" or key == "STRIPE_TEST_PUBLISHABLE_KEY":
+                # Publishable keys can't be authenticated server-side; just
+                # sanity-check the prefix so an obviously wrong paste is caught.
+                if value.startswith("pk_"):
+                    return {"status": "valid",
+                            "message": "Looks like a publishable key (format check only)."}
+                return {"status": "invalid",
+                        "message": "Publishable keys should start with 'pk_'."}
+
+            if key in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"):
+                # Twilio authenticates the SID + token as a pair. Pull the
+                # companion field from ``extra`` so verifying either input
+                # checks the whole credential.
+                if key == "TWILIO_ACCOUNT_SID":
+                    sid, token = value, (extra.get("token") or "").strip()
+                else:
+                    sid, token = (extra.get("sid") or "").strip(), value
+                if not sid or not token:
+                    return {"status": "unsupported",
+                            "message": "Enter both the Account SID and Auth Token to verify Twilio."}
+                r = client.get(
+                    f"https://api.twilio.com/2010-04-01/Accounts/{sid}.json",
+                    auth=(sid, token))
+                return _vk_interpret(r)
+
+            if key == "BRAVE_SEARCH_API_KEY":
+                r = client.get("https://api.search.brave.com/res/v1/web/search",
+                               params={"q": "ping"},
+                               headers={"X-Subscription-Token": value,
+                                        "Accept": "application/json"})
+                # Brave returns 422 for a malformed/forbidden subscription.
+                return _vk_interpret(r, invalid_codes=(401, 403, 422))
+
+            if key == "YELP_API_KEY":
+                r = client.get("https://api.yelp.com/v3/businesses/search",
+                               params={"location": "New York", "limit": 1},
+                               headers={"Authorization": f"Bearer {value}"})
+                return _vk_interpret(r)
+
+            if key == "GOOGLE_PLACES_API_KEY":
+                r = client.get(
+                    "https://maps.googleapis.com/maps/api/place/findplacefromtext/json",
+                    params={"input": "ping", "inputtype": "textquery", "key": value})
+                # Google always returns HTTP 200; the real verdict is in the
+                # JSON "status" field.
+                try:
+                    data = r.json()
+                except Exception:
+                    return {"status": "error", "message": "Unexpected response from Google."}
+                gstatus = (data.get("status") or "").upper()
+                if gstatus in ("OK", "ZERO_RESULTS"):
+                    return {"status": "valid", "message": "Key verified successfully."}
+                if gstatus in ("REQUEST_DENIED", "INVALID_REQUEST"):
+                    return {"status": "invalid",
+                            "message": data.get("error_message") or "Google rejected this key."}
+                return {"status": "error",
+                        "message": f"Couldn't confirm — Google returned '{gstatus}'."}
+
+            if key == "TRIPADVISOR_API_KEY":
+                r = client.get(
+                    "https://api.content.tripadvisor.com/api/v1/location/search",
+                    params={"key": value, "searchQuery": "ping"},
+                    headers={"Accept": "application/json"})
+                return _vk_interpret(r)
+
+    except httpx.TimeoutException:
+        return {"status": "error", "message": "Provider timed out — couldn't verify right now."}
+    except httpx.RequestError as e:
+        return {"status": "error", "message": f"Couldn't reach provider: {e.__class__.__name__}."}
+    except Exception as e:
+        return {"status": "error", "message": f"Validation failed: {e.__class__.__name__}."}
+
+    # No ping registered for this key (config values, passwords, URLs, etc.).
+    return {"status": "unsupported", "message": "This value can't be verified automatically."}
+
+
+@app.route("/setup/validate-key", methods=["GET"])
+def setup_validate_key():
+    """Live-validate a single provider API key during the setup wizard.
+
+    Pre-auth (the wizard is only reachable on a fresh install) and gated by
+    _is_install_bootstrapped() like every other /setup route, so it 404s once
+    the platform is provisioned. Read-only: it never writes the value, it just
+    pings the provider so the operator gets instant feedback. Validation is
+    advisory only and never blocks provisioning.
+    """
+    if _is_install_bootstrapped():
+        abort(404)
+
+    key = (request.args.get("key") or "").strip()
+    value = (request.args.get("value") or "").strip()
+    if not key:
+        return jsonify({"status": "error", "message": "Missing 'key' parameter."}), 400
+    if not value:
+        return jsonify({"status": "error", "message": "No value provided to verify."}), 400
+
+    # Companion fields for providers whose credential is a pair (Twilio).
+    extra = {
+        "sid": (request.args.get("sid") or "").strip(),
+        "token": (request.args.get("token") or "").strip(),
+    }
+
+    result = _validate_provider_key(key, value, extra)
+    result["key"] = key
+    return jsonify(result)
+
+
 # =============================================================================
 # SEO HELPERS — Build meta tags and structured data from database settings
 # =============================================================================
