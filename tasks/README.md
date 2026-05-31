@@ -77,7 +77,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 043 | Epic D: newsletter subscribe + self-service portal | done | task/043-newsletter | 042 | Gate 13/13 + migration chain clean; subscribe_newsletter tool (gated, consent-safe, no silent re-opt-in) + public /preferences portal (scoped HMAC token, fail-closed on insecure secret). security-review: 1 fixed (MED) |
 | 044 | Epic D: deals/offers + proactive engine | done | task/044-deals | 042 | Gate 9/9 + migration 0013 clean; offers table + gated lookup_offers tool (tag-targeted contextual surfacing) + super-admin CRUD. Drift: bespoke admin tab deferred (manageable via CRUD API now) |
 | 045 | Epic D: agent tools (capture_lead/notify_team/request_callback) | done | task/045-growth-tools | 042 | Gate 13/13 + migration 0014 clean; 3 gated tools + leads/callbacks tables + super-admin read APIs. security-review: recipient-smuggling defense verified + 1 fixed (MED: outbound rate limit) |
-| 046 | Epic E: visitor multi-agent intent router | not_started | task/046-visitor-personas | 045 | |
+| 046 | Epic E: visitor multi-agent intent router | done | task/046-visitor-personas | 045 | Gate 12/12 + migration 0015 clean; visitor_personas table + cheap classifier + apply (tool constraint + prompt suffix + model override) wired in api_chat, default-off single-agent; super-admin CRUD. Drift: bespoke admin tab deferred (CRUD API now) |
 | 047 | Epic F: book_meeting via Calendar MCP | not_started | task/047-meetings | 045 | |
 | 048 | Epic F: request_callback + handoff summary | not_started | task/048-callback | 045 | |
 | 049 | Epic F: live AI phone call (Twilio Voice + media bridge) | not_started | task/049-live-call | 048 | |
