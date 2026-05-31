@@ -58,6 +58,7 @@ _env_manager.load_env_file_into_environ()
 # because it's used in two places: prompt-time validation when listing
 # the PAGE LIBRARY, and request-time validation in the by-slug API.
 _GENERATED_PAGE_SLUG_RE = re.compile(r'^[a-z0-9][a-z0-9\-]{0,199}$')
+import contextvars
 import hashlib
 import secrets
 import threading
@@ -1161,6 +1162,18 @@ def _ai_control_registry():
          "env": "VISITOR_PERSONA_ROUTER_MODEL",
          "description": "Model for the cheap per-turn persona classifier (e.g. gpt-4o-mini). "
                         "Blank = gpt-4o-mini."},
+        # Handoff summary (Phase 6 / task 048)
+        {"key": "handoff_summary_enabled", "attr": "handoff_summary_enabled", "type": "bool",
+         "group": "Growth Tools", "label": "AI handoff summary on callback requests",
+         "env": "HANDOFF_SUMMARY_ENABLED",
+         "description": "When ON, a callback request includes a short AI summary of the chat "
+                        "(what the visitor needs + key context) for your team, stored on the "
+                        "request and added to the notification. Adds one small LLM call. "
+                        "Off = no summary (task-045 behavior)."},
+        {"key": "handoff_summary_model", "attr": "handoff_summary_model", "type": "string",
+         "group": "Growth Tools", "label": "Handoff summary model",
+         "env": "HANDOFF_SUMMARY_MODEL",
+         "description": "Model for the handoff summary (e.g. gpt-4o-mini). Blank = gpt-4o-mini."},
         # Activity
         {"key": "activity_logging_enabled", "attr": "activity_logging_enabled", "type": "bool",
          "group": "Activity", "label": "Log admin-AI turns to the database",
@@ -1224,7 +1237,7 @@ _AI_INERT = {
     "visitor_profiles_enabled": False, "newsletter_signup_enabled": False,
     "offers_enabled": False, "lead_capture_enabled": False,
     "callback_requests_enabled": False, "team_notifications_enabled": False,
-    "visitor_persona_router_enabled": False,
+    "visitor_persona_router_enabled": False, "handoff_summary_enabled": False,
     "visitor_llm_max_retries": 0, "visitor_provider_fallback": False,
     "visitor_fallback_model": "", "visitor_history_token_budget": 0,
 }
@@ -4603,6 +4616,7 @@ def init_db():
                     phone          TEXT NOT NULL DEFAULT '',
                     preferred_time TEXT NOT NULL DEFAULT '',
                     reason         TEXT NOT NULL DEFAULT '',
+                    ai_summary     TEXT NOT NULL DEFAULT '',
                     visitor_id     VARCHAR(100) NOT NULL DEFAULT '',
                     status         TEXT NOT NULL DEFAULT 'new',
                     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -11602,6 +11616,66 @@ def _notify_rate_ok(tenant_id):
         return True
 
 
+# Current visitor turn's conversation context (task 048). Set by the visitor
+# loop around tool dispatch so context-aware tools (request_callback) can build
+# an AI handoff summary, WITHOUT threading it through every tool signature.
+# A ContextVar is per-execution-context so concurrent requests stay isolated;
+# it's None outside a visitor turn (e.g. admin calls, tests) → summary skipped.
+_CHAT_TURN_CTX = contextvars.ContextVar("chat_turn_ctx", default=None)
+
+
+def _set_chat_turn_ctx(history, message, visitor_id=""):
+    """Stash the current turn's context; returns the token to reset with."""
+    return _CHAT_TURN_CTX.set({
+        "history": history or [],
+        "message": message or "",
+        "visitor_id": visitor_id or "",
+    })
+
+
+def _handoff_summary(model=None):
+    """Generate a short AI summary of the CURRENT chat turn's conversation for a
+    team handoff. Reads the turn context (_CHAT_TURN_CTX); returns "" when there's
+    no context or on any failure (fail-open — never blocks the callback)."""
+    ctx = _CHAT_TURN_CTX.get()
+    if not ctx or not openai_client:
+        return ""
+    try:
+        mdl = (model or "").strip() or "gpt-4o-mini"
+        if mdl.lower().startswith("claude"):
+            mdl = "gpt-4o-mini"
+        # Build a compact transcript from recent history + the latest message.
+        lines = []
+        for h in (ctx.get("history") or [])[-12:]:
+            role = "Visitor" if (h.get("role") != "agent") else "Concierge"
+            txt = (h.get("content") or "").strip()
+            if txt:
+                lines.append(f"{role}: {txt}")
+        if ctx.get("message"):
+            lines.append(f"Visitor: {ctx['message']}")
+        transcript = "\n".join(lines)[:6000]
+        if not transcript:
+            return ""
+        resp = openai_client.with_options(timeout=15.0).chat.completions.create(
+            model=mdl, max_tokens=180, temperature=0.2,
+            messages=[
+                {"role": "system", "content": (
+                    "Summarize this website chat for a teammate who will call the "
+                    "visitor back. 2-3 sentences: what they want, any specifics "
+                    "(dates, budget, product), and how urgent it seems. No preamble.")},
+                {"role": "user", "content": transcript},
+            ])
+        try:
+            record_chat_cost_from_response(
+                resp, surface="visitor_chat", provider="openai", model=mdl)
+        except Exception:
+            pass
+        return (resp.choices[0].message.content or "").strip()[:2000]
+    except Exception as e:
+        print(f"[handoff] summary failed: {type(e).__name__}: {e}")
+        return ""
+
+
 def _notify_team(subject, message_text):
     """Send a team notification to the OPERATOR-configured destination(s) only
     (task 045). The recipient is NEVER taken from the visitor/agent — only the
@@ -11689,15 +11763,22 @@ def request_callback(name=None, phone=None, preferred_time=None, reason=None, **
             return {"ok": False, "message": "I need a phone number to arrange a callback."}
         when = (preferred_time or "").strip()[:200]
         why = (reason or "").strip()[:2000]
+        # Task 048: optional AI handoff summary of the conversation so the team
+        # has context before calling back. Gated; fail-open to "".
+        ai_summary = ""
+        if get_ai_setting("handoff_summary_enabled"):
+            ai_summary = _handoff_summary(get_ai_setting("handoff_summary_model"))
         row = execute_db(
-            "INSERT INTO callback_requests (tenant_id, name, phone, preferred_time, reason) "
-            "VALUES (%s,%s,%s,%s,%s) RETURNING id",
-            (current_tenant_id(), nm, ph, when, why))
+            "INSERT INTO callback_requests (tenant_id, name, phone, preferred_time, "
+            " reason, ai_summary) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+            (current_tenant_id(), nm, ph, when, why, ai_summary))
         if not row:
             return {"ok": False, "message": "Sorry, I couldn't log your callback request just now."}
         try:
             summary = (f"Callback requested:\nName: {nm or '-'}\nPhone: {ph}\n"
                        f"Preferred time: {when or '-'}\nReason: {why or '-'}")
+            if ai_summary:
+                summary += f"\n\nAI summary of the chat:\n{ai_summary}"
             _notify_team("Callback request from your AI concierge", summary)
         except Exception:
             pass
@@ -22794,6 +22875,7 @@ def api_chat():
         messages, get_ai_setting("visitor_history_token_budget"), None)
 
     def generate():
+        _chat_ctx_token = None   # task 048: reset handle for the turn-context var
         try:
             # ---- Streaming tool-call loop ---------------------------------
             # Each pass through the loop opens one streaming completion. We
@@ -22853,6 +22935,11 @@ def api_chat():
             # (system) in place; fail-open leaves everything unchanged.
             model, provider, active_tools, _persona_key = _visitor_apply_persona(
                 message, model, provider, active_tools, messages)
+
+            # Task 048: expose this turn's conversation to context-aware tools
+            # (request_callback's AI handoff summary) without changing tool
+            # signatures. Reset in the finally below.
+            _chat_ctx_token = _set_chat_turn_ctx(history, message, visitor_id)
 
             # =========================================================
             # SEMANTIC RESPONSE CACHE — READ HOOK
@@ -23438,6 +23525,12 @@ def api_chat():
                     _va["final"] or full_text)
             except Exception:
                 pass
+            # Task 048: clear the per-turn conversation context.
+            if _chat_ctx_token is not None:
+                try:
+                    _CHAT_TURN_CTX.reset(_chat_ctx_token)
+                except Exception:
+                    pass
 
     return Response(
         stream_with_context(generate()),
@@ -27668,8 +27761,8 @@ def admin_list_callbacks():
         limit = 100
     tid = current_tenant_id()
     rows = query_db(
-        "SELECT id, name, phone, preferred_time, reason, status, created_at "
-        "FROM callback_requests WHERE tenant_id=%s ORDER BY id DESC LIMIT %s",
+        "SELECT id, name, phone, preferred_time, reason, ai_summary, status, "
+        "created_at FROM callback_requests WHERE tenant_id=%s ORDER BY id DESC LIMIT %s",
         (tid, limit)) or []
     return jsonify({"callbacks": [_iso_row(r, "created_at") for r in rows]})
 
