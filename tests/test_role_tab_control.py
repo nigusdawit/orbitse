@@ -109,3 +109,28 @@ def test_sso_establishes_client_role():
 def test_registry_prefixes_all_known():
     unknown = {f for _p, f in app._FEATURE_ROUTE_PREFIXES if f not in app._FEATURE_NAMES}
     assert not unknown, f"route-prefix features missing from registry: {unknown}"
+
+
+# 7 — the dashboard HTML itself hides tabs by role + flag
+def test_dashboard_html_gates_tabs_by_role():
+    # Super admin: full panel including the control tab.
+    sa = app.app.test_client(); _login(sa, ADMIN_PW)
+    sa_html = sa.get("/admin").get_data(as_text=True)
+    assert 'data-testid="tab-plans-features"' in sa_html
+    assert 'data-testid="tab-secrets"' in sa_html
+
+    # Client with a content flag OFF: that tab button is gone, and the control
+    # tab + a default-OFF sensitive tab are absent.
+    app.set_tenant_feature("events", False, tenant_id=1)
+    app.invalidate_tenant_features_cache(1)
+    try:
+        cl = app.app.test_client(); _login(cl, CLIENT_PW)
+        cl_html = cl.get("/admin").get_data(as_text=True)
+        assert 'data-testid="tab-plans-features"' not in cl_html, "client must not see the control tab"
+        assert 'data-testid="tab-secrets"' not in cl_html, "secrets defaults OFF for clients"
+        assert 'data-testid="tab-events"' not in cl_html, "disabled content tab must be hidden"
+        # A default-ON content tab the super admin didn't disable is still visible.
+        assert 'data-testid="tab-faq"' in cl_html
+    finally:
+        app.set_tenant_feature("events", True, tenant_id=1)
+        app.invalidate_tenant_features_cache(1)

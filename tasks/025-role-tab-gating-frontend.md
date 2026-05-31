@@ -43,7 +43,14 @@ sets differ as configured.
 
 ## Drift reason
 
-(blank)
+Gated tab BUTTONS only (not the 54 content panels), matching the established
+website_builder carve-out convention already in this template. Rationale: a
+hidden button removes the tab from navigation, and every tab's admin API is
+server-gated for clients (enforced + reviewed in task 024), so the data can't
+load even if a panel shell remains in the DOM. Wrapping all 54 scattered,
+deeply-nested panels would be high-risk churn for no added security boundary.
+Verified the boundary via the real /admin render (test 7) + the 024 endpoint
+guards, not just the buttons.
 
 ## Notes
 
