@@ -7069,7 +7069,7 @@ def _validate_provider_key(key, value, extra=None):
     return {"status": "unsupported", "message": "This value can't be verified automatically."}
 
 
-@app.route("/setup/validate-key", methods=["GET"])
+@app.route("/setup/validate-key", methods=["POST"])
 def setup_validate_key():
     """Live-validate a single provider API key during the setup wizard.
 
@@ -7078,12 +7078,17 @@ def setup_validate_key():
     the platform is provisioned. Read-only: it never writes the value, it just
     pings the provider so the operator gets instant feedback. Validation is
     advisory only and never blocks provisioning.
+
+    POST (not GET) on purpose: the body carries live API secrets, so it must
+    never travel in the URL where it would land in server/access logs, browser
+    history, proxy logs, or a Referer header. Credentials go in the JSON body.
     """
     if _is_install_bootstrapped():
         abort(404)
 
-    key = (request.args.get("key") or "").strip()
-    value = (request.args.get("value") or "").strip()
+    data = request.get_json(silent=True) or {}
+    key = (str(data.get("key") or "")).strip()
+    value = (str(data.get("value") or "")).strip()
     if not key:
         return jsonify({"status": "error", "message": "Missing 'key' parameter."}), 400
     if not value:
@@ -7091,8 +7096,8 @@ def setup_validate_key():
 
     # Companion fields for providers whose credential is a pair (Twilio).
     extra = {
-        "sid": (request.args.get("sid") or "").strip(),
-        "token": (request.args.get("token") or "").strip(),
+        "sid": (str(data.get("sid") or "")).strip(),
+        "token": (str(data.get("token") or "")).strip(),
     }
 
     result = _validate_provider_key(key, value, extra)

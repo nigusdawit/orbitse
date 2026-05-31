@@ -1407,14 +1407,16 @@ async function verifyKey(key) {
     return;
   }
 
-  const params = new URLSearchParams({ key, value });
+  /* Secrets go in the POST JSON body, never the URL, so they can't leak into
+     server/access logs, browser history, or a Referer header. */
+  const payload = { key, value };
   // Twilio needs both halves of the credential to validate either input.
   if (key === "TWILIO_AUTH_TOKEN") {
     const sid = (document.getElementById("env-TWILIO_ACCOUNT_SID")||{}).value || "";
-    if (sid.trim()) params.append("sid", sid.trim());
+    if (sid.trim()) payload.sid = sid.trim();
   } else if (key === "TWILIO_ACCOUNT_SID") {
     const tok = (document.getElementById("env-TWILIO_AUTH_TOKEN")||{}).value || "";
-    if (tok.trim()) params.append("token", tok.trim());
+    if (tok.trim()) payload.token = tok.trim();
   }
 
   if (btn) { btn.disabled = true; }
@@ -1422,7 +1424,11 @@ async function verifyKey(key) {
   statEl.textContent = "Checking…";
 
   try {
-    const r = await fetch("/setup/validate-key?" + params.toString());
+    const r = await fetch("/setup/validate-key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
     const data = await r.json();
     const status = data.status || "error";
     S.keyValidation[key] = status;
