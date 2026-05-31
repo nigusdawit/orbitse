@@ -2211,6 +2211,18 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
       AI Activity
     </button>
+    <button class="tab-btn" onclick="switchTab('offers', this); loadOffers();" data-testid="tab-offers">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+      Offers
+    </button>
+    <button class="tab-btn" onclick="switchTab('visitor-personas', this); loadVisitorPersonas();" data-testid="tab-visitor-personas">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      Personas
+    </button>
+    <button class="tab-btn" onclick="switchTab('crm', this); loadCrm();" data-testid="tab-crm">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+      Leads &amp; CRM
+    </button>
     {% endif %}
     {% if is_super_admin() or has_feature('chat_history') %}
     <button class="tab-btn" onclick="switchTab('chat-history', this)" data-testid="tab-chat-history">
@@ -6640,6 +6652,80 @@ TO CUSTOMIZE THIS DASHBOARD:
     <div id="ai-activity-list"><p class="empty-state">Loading activity…</p></div>
   </div>
 
+  <!--
+  ========================================================================
+  TAB: OFFERS (Phase 6 / task 044) — super-admin CRUD over promotions the
+  visitor concierge can surface via the gated lookup_offers tool.
+  ========================================================================
+  -->
+  <div id="tab-offers" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Offers &amp; Deals</h2>
+        <p style="opacity:.7;margin-top:4px;">
+          Promotions the AI concierge can surface to visitors (via the
+          <code>lookup_offers</code> tool). Turn the tool on in
+          <strong>AI Control → Visitor CRM</strong>. Tagged offers only show to
+          visitors interested in a matching topic; untagged offers are general.
+        </p>
+      </div>
+      <button class="btn-primary" onclick="newOffer()" data-testid="offer-new">+ New offer</button>
+    </div>
+    <div id="offers-list"><p class="empty-state">Loading offers…</p></div>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: VISITOR PERSONAS (Phase 6 / task 046) — super-admin CRUD over the
+  specialist agents the visitor concierge routes turns to.
+  ========================================================================
+  -->
+  <div id="tab-visitor-personas" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Visitor Personas</h2>
+        <p style="opacity:.7;margin-top:4px;">
+          Specialist agents (e.g. Sales, Support, Booking) the concierge routes
+          each visitor turn to. Each persona augments the prompt, can limit which
+          tools it may use, and can pin a model. Enable routing in
+          <strong>AI Control → Visitor Personas</strong>. Off = one general agent.
+        </p>
+      </div>
+      <button class="btn-primary" onclick="newPersona()" data-testid="persona-new">+ New persona</button>
+    </div>
+    <div id="personas-list"><p class="empty-state">Loading personas…</p></div>
+  </div>
+
+  <!--
+  ========================================================================
+  TAB: LEADS & CRM (Phase 6 / tasks 042-049) — read-only views of what the
+  agentic tools captured: leads, callbacks, meetings, voice calls, profiles.
+  ========================================================================
+  -->
+  <div id="tab-crm" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Leads &amp; CRM</h2>
+        <p style="opacity:.7;margin-top:4px;">
+          What the AI concierge captured. Each section fills only when its tool
+          is enabled in <strong>AI Control</strong>.
+        </p>
+      </div>
+      <button class="btn-secondary" onclick="loadCrm()" data-testid="crm-refresh">Refresh</button>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;" id="crm-subnav">
+      <button class="tab-btn crm-sub active" onclick="crmShow('leads', this)">Leads</button>
+      <button class="tab-btn crm-sub" onclick="crmShow('callbacks', this)">Callbacks</button>
+      <button class="tab-btn crm-sub" onclick="crmShow('meetings', this)">Meetings</button>
+      <button class="tab-btn crm-sub" onclick="crmShow('voice', this)">Voice calls</button>
+      <button class="tab-btn crm-sub" onclick="crmShow('profiles', this)">Visitor profiles</button>
+    </div>
+    <div id="crm-leads" class="crm-pane"><p class="empty-state">Loading…</p></div>
+    <div id="crm-callbacks" class="crm-pane" style="display:none;"><p class="empty-state">Loading…</p></div>
+    <div id="crm-meetings" class="crm-pane" style="display:none;"><p class="empty-state">Loading…</p></div>
+    <div id="crm-voice" class="crm-pane" style="display:none;"><p class="empty-state">Loading…</p></div>
+    <div id="crm-profiles" class="crm-pane" style="display:none;"><p class="empty-state">Loading…</p></div>
+  </div>
 
   <!--
   ========================================================================
@@ -16776,6 +16862,230 @@ TO CUSTOMIZE THIS DASHBOARD:
       } catch (e) {
         wrap.innerHTML = '<p class="empty-state">Failed to load activity.</p>';
       }
+    }
+
+    // =====================================================================
+    // PHASE 6 ADMIN TABS (task 050): Offers, Visitor Personas, Leads & CRM.
+    // All super-admin-only (the APIs 403 a client). Mutations rely on the
+    // global fetch wrapper to attach the CSRF header. Uses _aiPromptEsc +
+    // showToast (defined elsewhere in this file).
+    // =====================================================================
+    var _esc6 = (typeof _aiPromptEsc === 'function')
+      ? _aiPromptEsc
+      : function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+          return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]); }); };
+
+    // ---- Offers ---------------------------------------------------------
+    async function loadOffers() {
+      const wrap = document.getElementById('offers-list');
+      if (!wrap) return;
+      wrap.innerHTML = '<p class="empty-state">Loading offers…</p>';
+      try {
+        const res = await fetch('/admin/api/offers');
+        if (!res.ok) { wrap.innerHTML = '<p class="empty-state">Only the super admin can manage offers.</p>'; return; }
+        const data = await res.json();
+        const offers = (data && data.offers) || [];
+        wrap.innerHTML = '';
+        if (!offers.length) wrap.innerHTML = '<p class="empty-state">No offers yet. Click “New offer” to add one.</p>';
+        offers.forEach(o => wrap.appendChild(_offerCard(o)));
+      } catch (e) { wrap.innerHTML = '<p class="empty-state">Failed to load offers.</p>'; }
+    }
+
+    function _offerCard(o) {
+      o = o || {};
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.style.cssText = 'margin-bottom:14px;padding:16px;';
+      card.dataset.id = o.id || '';
+      const tags = Array.isArray(o.trigger_tags) ? o.trigger_tags.join(', ') : '';
+      card.innerHTML =
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">'
+        + '<label>Title<input type="text" class="of-title" value="' + _esc6(o.title || '') + '"></label>'
+        + '<label>Code<input type="text" class="of-code" value="' + _esc6(o.code || '') + '"></label>'
+        + '<label style="grid-column:1/3;">Description<textarea class="of-desc" rows="2">' + _esc6(o.description || '') + '</textarea></label>'
+        + '<label style="grid-column:1/3;">Call-to-action URL<input type="url" class="of-url" value="' + _esc6(o.cta_url || '') + '"></label>'
+        + '<label style="grid-column:1/3;">Trigger tags (comma-separated; blank = always eligible)<input type="text" class="of-tags" value="' + _esc6(tags) + '"></label>'
+        + '<label>Priority<input type="number" class="of-prio" value="' + _esc6(String(o.priority || 0)) + '"></label>'
+        + '<label style="align-self:end;"><input type="checkbox" class="of-active" ' + (o.active === false ? '' : 'checked') + '> Active</label>'
+        + '</div>'
+        + '<div style="margin-top:10px;display:flex;gap:8px;">'
+        + '<button class="btn btn-primary btn-sm" onclick="saveOffer(this)">Save</button>'
+        + (o.id ? '<button class="btn btn-secondary btn-sm" onclick="deleteOffer(this,' + o.id + ')">Delete</button>' : '')
+        + '</div>';
+      return card;
+    }
+
+    function newOffer() {
+      const wrap = document.getElementById('offers-list');
+      if (!wrap) return;
+      const es = wrap.querySelector('.empty-state'); if (es) es.remove();
+      wrap.insertBefore(_offerCard({}), wrap.firstChild);
+    }
+
+    async function saveOffer(btn) {
+      const card = btn.closest('.card'); if (!card) return;
+      const q = s => card.querySelector(s);
+      const payload = {
+        title: q('.of-title').value, code: q('.of-code').value,
+        description: q('.of-desc').value, cta_url: q('.of-url').value,
+        trigger_tags: q('.of-tags').value, priority: q('.of-prio').value,
+        active: q('.of-active').checked,
+      };
+      const id = card.dataset.id;
+      const url = id ? '/admin/api/offers/' + id : '/admin/api/offers';
+      try {
+        const res = await fetch(url, { method: id ? 'PUT' : 'POST',
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        const j = await res.json().catch(() => ({}));
+        if (res.ok) { showToast('Offer saved', 'success'); loadOffers(); }
+        else { showToast(j.error || 'Save failed', 'error'); }
+      } catch (e) { showToast('Save failed', 'error'); }
+    }
+
+    async function deleteOffer(btn, id) {
+      if (!confirm('Delete this offer?')) return;
+      try {
+        const res = await fetch('/admin/api/offers/' + id, { method: 'DELETE' });
+        if (res.ok) { showToast('Offer deleted', 'success'); loadOffers(); }
+        else { showToast('Delete failed', 'error'); }
+      } catch (e) { showToast('Delete failed', 'error'); }
+    }
+
+    // ---- Visitor Personas ----------------------------------------------
+    async function loadVisitorPersonas() {
+      const wrap = document.getElementById('personas-list');
+      if (!wrap) return;
+      wrap.innerHTML = '<p class="empty-state">Loading personas…</p>';
+      try {
+        const res = await fetch('/admin/api/visitor-personas');
+        if (!res.ok) { wrap.innerHTML = '<p class="empty-state">Only the super admin can manage personas.</p>'; return; }
+        const data = await res.json();
+        const personas = (data && data.personas) || [];
+        wrap.innerHTML = '';
+        if (!personas.length) wrap.innerHTML = '<p class="empty-state">No personas yet. Click “New persona” to add one.</p>';
+        personas.forEach(p => wrap.appendChild(_personaCard(p)));
+      } catch (e) { wrap.innerHTML = '<p class="empty-state">Failed to load personas.</p>'; }
+    }
+
+    function _personaCard(p) {
+      p = p || {};
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.style.cssText = 'margin-bottom:14px;padding:16px;';
+      card.dataset.id = p.id || '';
+      const tools = Array.isArray(p.tool_names) ? p.tool_names.join(', ') : '';
+      card.innerHTML =
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">'
+        + '<label>Key (a-z0-9_)<input type="text" class="pe-key" value="' + _esc6(p.persona_key || '') + '"' + (p.id ? '' : '') + '></label>'
+        + '<label>Label<input type="text" class="pe-label" value="' + _esc6(p.label || '') + '"></label>'
+        + '<label style="grid-column:1/3;">Instructions appended to the system prompt<textarea class="pe-suffix" rows="3">' + _esc6(p.prompt_suffix || '') + '</textarea></label>'
+        + '<label style="grid-column:1/3;">Allowed tools (comma-separated tool names; blank = all)<input type="text" class="pe-tools" value="' + _esc6(tools) + '"></label>'
+        + '<label>Model (blank = default)<input type="text" class="pe-model" value="' + _esc6(p.model || '') + '"></label>'
+        + '<label>Sort order<input type="number" class="pe-sort" value="' + _esc6(String(p.sort_order || 0)) + '"></label>'
+        + '<label style="align-self:end;"><input type="checkbox" class="pe-enabled" ' + (p.enabled === false ? '' : 'checked') + '> Enabled</label>'
+        + '</div>'
+        + '<div style="margin-top:10px;display:flex;gap:8px;">'
+        + '<button class="btn btn-primary btn-sm" onclick="savePersona(this)">Save</button>'
+        + (p.id ? '<button class="btn btn-secondary btn-sm" onclick="deletePersona(this,' + p.id + ')">Delete</button>' : '')
+        + '</div>';
+      return card;
+    }
+
+    function newPersona() {
+      const wrap = document.getElementById('personas-list');
+      if (!wrap) return;
+      const es = wrap.querySelector('.empty-state'); if (es) es.remove();
+      wrap.insertBefore(_personaCard({}), wrap.firstChild);
+    }
+
+    async function savePersona(btn) {
+      const card = btn.closest('.card'); if (!card) return;
+      const q = s => card.querySelector(s);
+      const payload = {
+        persona_key: q('.pe-key').value, label: q('.pe-label').value,
+        prompt_suffix: q('.pe-suffix').value, tool_names: q('.pe-tools').value,
+        model: q('.pe-model').value, sort_order: q('.pe-sort').value,
+        enabled: q('.pe-enabled').checked,
+      };
+      const id = card.dataset.id;
+      const url = id ? '/admin/api/visitor-personas/' + id : '/admin/api/visitor-personas';
+      try {
+        const res = await fetch(url, { method: id ? 'PUT' : 'POST',
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        const j = await res.json().catch(() => ({}));
+        if (res.ok) { showToast('Persona saved', 'success'); loadVisitorPersonas(); }
+        else { showToast(j.error || 'Save failed', 'error'); }
+      } catch (e) { showToast('Save failed', 'error'); }
+    }
+
+    async function deletePersona(btn, id) {
+      if (!confirm('Delete this persona?')) return;
+      try {
+        const res = await fetch('/admin/api/visitor-personas/' + id, { method: 'DELETE' });
+        if (res.ok) { showToast('Persona deleted', 'success'); loadVisitorPersonas(); }
+        else { showToast('Delete failed', 'error'); }
+      } catch (e) { showToast('Delete failed', 'error'); }
+    }
+
+    // ---- Leads & CRM (read-only multi-pane) -----------------------------
+    function crmShow(which, btn) {
+      document.querySelectorAll('#crm-subnav .crm-sub').forEach(b => b.classList.remove('active'));
+      if (btn) btn.classList.add('active');
+      ['leads','callbacks','meetings','voice','profiles'].forEach(k => {
+        const el = document.getElementById('crm-' + k);
+        if (el) el.style.display = (k === which) ? 'block' : 'none';
+      });
+    }
+
+    function _crmTable(rows, cols) {
+      if (!rows || !rows.length) return '<p class="empty-state">Nothing here yet.</p>';
+      let h = '<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr style="text-align:left;opacity:.7;">';
+      cols.forEach(c => { h += '<th style="padding:6px;">' + _esc6(c.label) + '</th>'; });
+      h += '</tr></thead><tbody>';
+      rows.forEach(r => {
+        h += '<tr style="border-top:1px solid rgba(255,255,255,.06);">';
+        cols.forEach(c => {
+          let v = r[c.key];
+          if (/_at$/.test(c.key) && v) v = new Date(v).toLocaleString();
+          if (Array.isArray(v)) v = v.join(', ');
+          h += '<td style="padding:6px;">' + _esc6(v == null ? '' : String(v)) + '</td>';
+        });
+        h += '</tr>';
+      });
+      return h + '</tbody></table>';
+    }
+
+    async function _crmLoad(paneId, url, cols, rowsKey) {
+      const el = document.getElementById(paneId);
+      if (!el) return;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) { el.innerHTML = '<p class="empty-state">Super admin only.</p>'; return; }
+        const data = await res.json();
+        el.innerHTML = _crmTable((data && data[rowsKey]) || [], cols);
+      } catch (e) { el.innerHTML = '<p class="empty-state">Failed to load.</p>'; }
+    }
+
+    function loadCrm() {
+      _crmLoad('crm-leads', '/admin/api/leads', [
+        {key:'created_at',label:'When'},{key:'name',label:'Name'},{key:'email',label:'Email'},
+        {key:'phone',label:'Phone'},{key:'interest',label:'Interest'},{key:'message',label:'Message'},
+        {key:'status',label:'Status'}], 'leads');
+      _crmLoad('crm-callbacks', '/admin/api/callbacks', [
+        {key:'created_at',label:'When'},{key:'name',label:'Name'},{key:'phone',label:'Phone'},
+        {key:'preferred_time',label:'Preferred time'},{key:'reason',label:'Reason'},
+        {key:'ai_summary',label:'AI summary'},{key:'status',label:'Status'}], 'callbacks');
+      _crmLoad('crm-meetings', '/admin/api/meetings', [
+        {key:'created_at',label:'When'},{key:'name',label:'Name'},{key:'email',label:'Email'},
+        {key:'requested_time',label:'Requested'},{key:'duration_minutes',label:'Min'},
+        {key:'status',label:'Status'}], 'meetings');
+      _crmLoad('crm-voice', '/admin/api/voice-calls', [
+        {key:'created_at',label:'When'},{key:'from_number',label:'From'},{key:'to_number',label:'To'},
+        {key:'status',label:'Status'},{key:'summary',label:'Summary'}], 'calls');
+      _crmLoad('crm-profiles', '/admin/api/visitor-profiles', [
+        {key:'updated_at',label:'Updated'},{key:'visitor_id',label:'Visitor'},
+        {key:'interests',label:'Interests'},{key:'needs',label:'Needs'},
+        {key:'lead_score',label:'Lead score'},{key:'summary',label:'Summary'}], 'profiles');
     }
 
     async function adminFetch(url, options) {
