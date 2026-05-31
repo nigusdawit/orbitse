@@ -39,7 +39,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | ID | Title | Status | Branch | Depends on | Parallel-with | Drift |
 |----|-------|--------|--------|------------|---------------|-------|
 | 023 | Harden monolith for clean Replit re-import (main.py + boot fixes) | done | task/023-replit-import-hardening | — | — | |
-| 024 | Two-role admin (super-admin/client) — backend: roles, gating, registry | in_progress | task/024-two-role-auth-backend | — | — | |
+| 024 | Two-role admin (super-admin/client) — backend: roles, gating, registry | done | task/024-two-role-auth-backend | — | — | |
 | 025 | Two-role admin — frontend: per-tab role+flag gating + verify | not_started | task/025-role-tab-gating-frontend | 024 | — | |
 
 **Status legend:** not_started | in_progress | paused | blocked | awaiting_review | done
