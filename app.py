@@ -17742,7 +17742,8 @@ def _admin_tool_lookup_knowledge_base(query=None, top_k=None, **_extra):
     try:
         chunks = rag.retrieve(q, top_k=k,
                               tenant_id=current_tenant_id(),
-                              session_id="admin_chat_kb_tool") or []
+                              session_id="admin_chat_kb_tool",
+                              surface="admin") or []
     except Exception as e:
         return {"error": f"KB retrieval failed: {str(e)[:200]}",
                 "rows": [], "count": 0}
@@ -19450,7 +19451,8 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8,
             _kb_chunks = rag.retrieve(user_message,
                                       top_k=rag.TOP_K_DEFAULT,
                                       tenant_id=current_tenant_id(),
-                                      session_id=session_id)
+                                      session_id=session_id,
+                                      surface="admin")
             if _kb_chunks:
                 _kb_block = rag.format_chunks_for_prompt(_kb_chunks)
                 if _kb_block:
@@ -20354,6 +20356,26 @@ def admin_kb_list():
         tenant_id=current_tenant_id())})
 
 
+@app.route("/admin/api/kb/<int:doc_id>/audience", methods=["PUT"])
+@admin_required
+def admin_kb_set_audience(doc_id):
+    """Set which AI(s) a document serves: visitor | admin | both. Super-admin
+    only — controls whether the visitor concierge and/or the admin AI can
+    retrieve this document (Phase 6 / Epic B doc-assignment portal)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    body = request.get_json(silent=True) or {}
+    audience = (body.get("audience") or "").strip().lower()
+    if audience not in rag.VALID_AUDIENCES:
+        return jsonify({"error": "invalid_audience",
+                        "allowed": list(rag.VALID_AUDIENCES)}), 400
+    ok = rag.set_audience(doc_id, tenant_id=current_tenant_id(), audience=audience)
+    if not ok:
+        return jsonify({"error": "not_found"}), 404
+    return jsonify({"id": doc_id, "audience": audience})
+
+
 @app.route("/admin/api/kb/upload", methods=["POST"])
 @admin_required
 def admin_kb_upload():
@@ -20497,7 +20519,8 @@ def admin_kb_preview():
     chunks = rag.retrieve(q,
                           tenant_id=current_tenant_id(),
                           top_k=int(body.get("top_k") or rag.TOP_K_DEFAULT),
-                          session_id="kb_preview") or []
+                          session_id="kb_preview",
+                          surface="admin") or []
     return jsonify({"chunks": chunks})
 
 

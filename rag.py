@@ -492,12 +492,17 @@ def reindex_document(doc_id: int, *,
 
 def retrieve(query: str, *, tenant_id: int,
              top_k: int = TOP_K_DEFAULT,
-             session_id: str = "") -> List[dict]:
-    """Embed `query` and return the top-K nearest chunks across all
-    documents owned by `tenant_id`. Each result dict:
+             session_id: str = "", surface: str = None) -> List[dict]:
+    """Embed `query` and return the top-K nearest chunks across documents owned
+    by `tenant_id`. Each result dict:
 
         {"chunk_id": int, "document_id": int, "filename": str,
          "page_number": int, "content_text": str, "score": float}
+
+    `surface` scopes by document audience (Phase 6):
+        "admin"   → docs with audience in ('admin','both')
+        "visitor" → docs with audience in ('visitor','both')
+        None      → no audience filter (back-compat).
 
     `score` is 1 - cosine_distance, so higher = more similar. Returns
     [] on empty query / embedding failure / no documents."""
@@ -515,6 +520,12 @@ def retrieve(query: str, *, tenant_id: int,
     if not vecs:
         return []
     vec_lit = _vec_literal(vecs[0])
+    # Audience filter — parametrized; unknown/None surface → no filter.
+    _aud_sql, _aud_params = "", []
+    if surface == "admin":
+        _aud_sql, _aud_params = "AND d.audience IN ('admin','both') ", []
+    elif surface == "visitor":
+        _aud_sql, _aud_params = "AND d.audience IN ('visitor','both') ", []
     try:
         rows = _query_db(
             "SELECT c.id AS chunk_id, c.document_id, "
@@ -523,10 +534,10 @@ def retrieve(query: str, *, tenant_id: int,
             "       d.filename "
             "FROM rag_chunks c "
             "JOIN rag_documents d ON d.id = c.document_id "
-            "WHERE d.tenant_id = %s AND d.status = 'ready' "
+            "WHERE d.tenant_id = %s AND d.status = 'ready' " + _aud_sql +
             "ORDER BY c.embedding <=> %s::vector "
             "LIMIT %s",
-            (vec_lit, int(tenant_id), vec_lit, k),
+            tuple([vec_lit, int(tenant_id)] + _aud_params + [vec_lit, k]),
         ) or []
     except Exception as e:
         print(f"[rag] retrieve query failed: {e}")
@@ -593,6 +604,7 @@ def list_documents(*, tenant_id: int) -> List[dict]:
     rows = _query_db(
         "SELECT id, filename, mime, size_bytes, page_count, "
         "       chunk_count, token_count, status, error_text, "
+        "       COALESCE(audience, 'both') AS audience, "
         "       indexed_at, created_at "
         "FROM rag_documents WHERE tenant_id=%s "
         "ORDER BY created_at DESC",
@@ -607,6 +619,25 @@ def list_documents(*, tenant_id: int) -> List[dict]:
                 d[k] = v.isoformat()
         out.append(d)
     return out
+
+
+VALID_AUDIENCES = ("visitor", "admin", "both")
+
+
+def set_audience(doc_id: int, *, tenant_id: int, audience: str) -> bool:
+    """Set which AI(s) a document is visible to: 'visitor' | 'admin' | 'both'.
+    Tenant-scoped. Returns False on an invalid audience or a row that isn't this
+    tenant's (so the route can 400/404). Phase 6 / Epic B."""
+    if _execute_db is None:
+        return False
+    aud = (audience or "").strip().lower()
+    if aud not in VALID_AUDIENCES:
+        return False
+    row = _execute_db(
+        "UPDATE rag_documents SET audience=%s WHERE id=%s AND tenant_id=%s "
+        "RETURNING id",
+        (aud, int(doc_id), int(tenant_id)))
+    return bool(row)
 
 
 def delete_document(doc_id: int, *, tenant_id: int) -> bool:

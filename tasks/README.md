@@ -66,7 +66,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 |----|-------|--------|--------|------------|-------|
 | 034 | Epic A: visitor activity tracking (surface col + obs wiring) | done | task/034-visitor-activity | 031 | |
 | 035 | Epic A: visitor reliability/context (pylego) + eval seed | done | task/035-visitor-pylego | 034 | |
-| 036 | Epic B: RAG audience scoping + doc portal | not_started | task/036-rag-audience | 034 | |
+| 036 | Epic B: RAG audience scoping + doc portal | done | task/036-rag-audience | 034 | |
 | 037 | Epic B: async ingestion + hybrid retrieval | not_started | task/037-rag-async | 036 | |
 | 038 | Epic B: optional OCR ingestion | not_started | task/038-rag-ocr | 037 | |
 | 039 | Epic C: per-request model routing | not_started | task/039-model-routing | 034 | |

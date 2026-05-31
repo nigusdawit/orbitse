@@ -5023,18 +5023,27 @@ TO CUSTOMIZE THIS DASHBOARD:
         list.innerHTML = '<div style="color:var(--admin-text-muted); padding:1rem;">No documents yet. Upload a PDF to get started.</div>';
         return;
       }
-      let html = '<table style="width:100%; border-collapse:collapse; font-size:.85rem;"><thead><tr style="background:var(--admin-card); text-align:left;"><th style="padding:.4rem;">Filename</th><th style="padding:.4rem;">Pages</th><th style="padding:.4rem;">Chunks</th><th style="padding:.4rem;">Status</th><th style="padding:.4rem;"></th></tr></thead><tbody>';
+      let html = '<table style="width:100%; border-collapse:collapse; font-size:.85rem;"><thead><tr style="background:var(--admin-card); text-align:left;"><th style="padding:.4rem;">Filename</th><th style="padding:.4rem;">Pages</th><th style="padding:.4rem;">Chunks</th><th style="padding:.4rem;">Status</th><th style="padding:.4rem;">Used by</th><th style="padding:.4rem;"></th></tr></thead><tbody>';
       for (const d of docs) {
         const statusColor = d.status === 'ready' ? 'var(--admin-text)'
                           : d.status === 'error' ? '#b91c1c'
                           : d.status === 'empty' ? '#a16207'
                           : 'var(--admin-text-muted)';
         const errTitle = d.error_text ? ` title="${adminChatAttrEscape(d.error_text)}"` : '';
+        const aud = d.audience || 'both';
+        const _sel = v => (aud === v ? ' selected' : '');
         html += `<tr style="border-top:1px solid var(--admin-border);">
           <td style="padding:.4rem;" data-testid="text-kb-filename-${d.id}">${adminChatEscape(d.filename)}</td>
           <td style="padding:.4rem; text-align:right;">${d.page_count || 0}</td>
           <td style="padding:.4rem; text-align:right;">${d.chunk_count || 0}</td>
           <td style="padding:.4rem; color:${statusColor};"${errTitle}>${adminChatEscape(d.status || '')}</td>
+          <td style="padding:.4rem;">
+            <select onchange="adminChatKBSetAudience(${d.id}, this.value)" data-testid="select-kb-audience-${d.id}">
+              <option value="both"${_sel('both')}>Both AIs</option>
+              <option value="visitor"${_sel('visitor')}>Visitor only</option>
+              <option value="admin"${_sel('admin')}>Admin only</option>
+            </select>
+          </td>
           <td style="padding:.4rem; text-align:right; white-space:nowrap;">
             <button class="acm-btn" onclick="adminChatKBReindex(${d.id})" data-testid="button-kb-reindex-${d.id}">↻ Reindex</button>
             <button class="acm-btn" onclick="adminChatKBDelete(${d.id})" data-testid="button-kb-delete-${d.id}" style="color:#b91c1c;">✕ Delete</button>
@@ -5046,6 +5055,18 @@ TO CUSTOMIZE THIS DASHBOARD:
     } catch(e) {
       list.innerHTML = '<div style="color:#b91c1c; padding:1rem;">Failed to load.</div>';
     }
+  }
+  async function adminChatKBSetAudience(id, audience) {
+    // Super-admin only (route enforces). Sets which AI(s) retrieve this doc.
+    try {
+      const r = await fetch('/admin/api/kb/' + id + '/audience', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audience: audience }),
+      });
+      if (r.ok) { showToast('Document audience updated', 'success'); }
+      else if (r.status === 403) { showToast('Only the super admin can change document audience', 'error'); }
+      else { showToast('Could not update audience', 'error'); }
+    } catch (e) { showToast('Could not update audience', 'error'); }
   }
   async function adminChatKBUpload() {
     const input = document.getElementById('admin-chat-kb-file');
