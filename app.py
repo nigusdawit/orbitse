@@ -5883,6 +5883,219 @@ def plugin_download(filename):
     return resp
 
 
+# =============================================================================
+# WORDPRESS PLUGIN MANAGEMENT  (super-admin tab)
+# =============================================================================
+# A super-admin-only surface to: publish new plugin versions (bump + build the
+# zip/manifest), read the keys a client needs for setup (platform URL, embed key,
+# tenant id, SSO secret), and mint shareable onboarding links so a client can
+# self-serve the download + step-by-step install instructions at /plugin/onboard.
+import secrets as _wp_secrets
+
+
+def _wp_plugin_versions():
+    """(source_version, released_version) — the version in the plugin source vs.
+    the version currently published in plugin_dist/manifest.json (None if no
+    release has been built yet)."""
+    source_version = None
+    try:
+        import scripts.build_plugin as _bp
+        source_version = _bp.read_version()
+    except Exception as e:
+        print(f"[wp-plugin] could not read source version: {e}")
+    released = None
+    manifest_path = os.path.join(_PLUGIN_DIST_DIR, "manifest.json")
+    if os.path.exists(manifest_path):
+        try:
+            with open(manifest_path) as f:
+                released = (json.load(f) or {}).get("version")
+        except Exception:
+            pass
+    return source_version, released
+
+
+@app.route("/admin/api/wp-plugin/status", methods=["GET"])
+@admin_required
+def wp_plugin_status():
+    """Snapshot for the WP Plugin tab: versions, whether a release/SSO secret is
+    configured, the canonical platform URL, and the tenant list (for the key +
+    onboarding-link generators)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    source_version, released = _wp_plugin_versions()
+    tenants = query_db("SELECT id, name FROM tenants ORDER BY id") or []
+    has_release = os.path.exists(os.path.join(_PLUGIN_DIST_DIR, "manifest.json"))
+    return jsonify({
+        "source_version": source_version,
+        "released_version": released,
+        "has_release": has_release,
+        "update_available": bool(source_version and released and source_version != released),
+        "sso_configured": bool(_SSO_SIGNING_SECRET),
+        "platform_url": _public_base_url() or (request.url_root.rstrip("/") if request else ""),
+        "tenants": tenants,
+        "zip_name": "ai-concierge.zip",
+    })
+
+
+@app.route("/admin/api/wp-plugin/build", methods=["POST"])
+@admin_required
+def wp_plugin_build():
+    """Publish a release. Optionally bump the version first, then (re)build the
+    zip + manifest into plugin_dist/. NOTE: this writes to the project files —
+    in the Replit workspace that persists via checkpoints; a deployed instance
+    needs a republish to pick up the new release."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    d = request.get_json(silent=True) or {}
+    new_version = (d.get("version") or "").strip()
+    try:
+        import importlib
+        import scripts.build_plugin as _bp
+        importlib.reload(_bp)  # pick up any prior in-process edits
+        bumped = None
+        if new_version:
+            old, new = _bp.bump_version(new_version)
+            bumped = {"old": old, "new": new}
+        info = _bp.build()
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        print(f"[wp-plugin] build failed: {e}")
+        return jsonify({"error": "Build failed. Check the server logs."}), 500
+    return jsonify({"ok": True, "bumped": bumped, "version": info["version"],
+                    "file_count": info["file_count"], "files": info["files"]})
+
+
+@app.route("/admin/api/wp-plugin/sso-secret", methods=["GET"])
+@admin_required
+def wp_plugin_sso_secret():
+    """Reveal the SSO signing secret to the super admin so they can paste it into
+    a client's plugin settings. Gated to super_admin only; never exposed to a
+    client SSO session or the public."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    return jsonify({"configured": bool(_SSO_SIGNING_SECRET),
+                    "secret": _SSO_SIGNING_SECRET or ""})
+
+
+def _wp_onboard_url(token):
+    base = _public_base_url() or (request.url_root.rstrip("/") if request else "")
+    return f"{base}/plugin/onboard/{token}"
+
+
+@app.route("/admin/api/wp-plugin/onboarding-links", methods=["GET"])
+@admin_required
+def wp_onboarding_links_list():
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    rows = query_db("SELECT * FROM wp_onboarding_links ORDER BY id DESC") or []
+    for r in rows:
+        r["url"] = _wp_onboard_url(r["token"])
+    return jsonify({"links": rows})
+
+
+@app.route("/admin/api/wp-plugin/onboarding-links", methods=["POST"])
+@admin_required
+def wp_onboarding_links_create():
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    d = request.get_json(silent=True) or {}
+    token = _wp_secrets.token_urlsafe(24)
+
+    # Tenant must exist — otherwise the link would prefill a meaningless id.
+    try:
+        tenant_id = int(d.get("tenant_id") or 1)
+    except (TypeError, ValueError):
+        return jsonify({"error": "tenant_id must be a number"}), 400
+    if not query_db("SELECT id FROM tenants WHERE id=%s", (tenant_id,), fetchone=True):
+        return jsonify({"error": "Unknown tenant"}), 400
+
+    # Embed key is optional, but if supplied it must exist, be enabled, and
+    # belong to the same tenant — a mismatched key produces a broken widget.
+    embed_key = (d.get("embed_key") or "").strip()
+    if embed_key:
+        key_row = query_db(
+            "SELECT id, enabled FROM tenant_embed_keys WHERE embed_key=%s AND tenant_id=%s",
+            (embed_key, tenant_id), fetchone=True)
+        if not key_row:
+            return jsonify({"error": "Embed key not found for this tenant"}), 400
+        if key_row.get("enabled") is False:
+            return jsonify({"error": "Embed key is disabled"}), 400
+
+    # Parse include_sso strictly so a JSON string like "false" can't be coerced
+    # to True and accidentally embed the GLOBAL SSO secret in a public page.
+    include_sso = d.get("include_sso", False)
+    if not isinstance(include_sso, bool):
+        return jsonify({"error": "include_sso must be true or false"}), 400
+
+    expires_days = d.get("expires_days")
+    expires_at = None
+    if expires_days:
+        try:
+            days = max(1, int(expires_days))
+            expires_at = datetime.utcnow() + timedelta(days=days)
+        except (TypeError, ValueError):
+            expires_at = None
+    row = execute_db(
+        "INSERT INTO wp_onboarding_links (token, tenant_id, label, embed_key, "
+        " include_sso, expires_at) VALUES (%s,%s,%s,%s,%s,%s) RETURNING *",
+        (token, tenant_id, (d.get("label") or "").strip(),
+         embed_key, include_sso, expires_at))
+    row["url"] = _wp_onboard_url(row["token"])
+    return jsonify(row), 201
+
+
+@app.route("/admin/api/wp-plugin/onboarding-links/<int:lid>", methods=["DELETE"])
+@admin_required
+def wp_onboarding_links_revoke(lid):
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    execute_db("UPDATE wp_onboarding_links SET revoked=TRUE WHERE id=%s", (lid,))
+    return jsonify({"success": True})
+
+
+@app.route("/plugin/onboard/<token>", methods=["GET"])
+def plugin_onboard(token):
+    """Public, no-login client onboarding page. Resolves a shareable token and
+    renders the plugin download + the client's pre-filled setup values + install
+    instructions. Bad/expired/revoked tokens get a friendly error page."""
+    row = query_db("SELECT * FROM wp_onboarding_links WHERE token=%s",
+                   (token,), fetchone=True) if token else None
+    valid = bool(row) and not row.get("revoked")
+    if valid and row.get("expires_at"):
+        try:
+            if row["expires_at"] < datetime.utcnow():
+                valid = False
+        except TypeError:
+            pass
+    if not valid:
+        return render_template("plugin_onboard.html", valid=False), 404
+    execute_db("UPDATE wp_onboarding_links SET view_count=view_count+1, "
+               "last_viewed_at=NOW() WHERE id=%s", (row["id"],))
+    _, released = _wp_plugin_versions()
+    base = _public_base_url() or (request.url_root.rstrip("/") if request else "")
+    sso_secret = _SSO_SIGNING_SECRET if (row.get("include_sso") and _SSO_SIGNING_SECRET) else ""
+    return render_template(
+        "plugin_onboard.html",
+        valid=True,
+        label=row.get("label") or "",
+        platform_url=base,
+        embed_key=row.get("embed_key") or "",
+        tenant_id=row.get("tenant_id") or 1,
+        sso_secret=sso_secret,
+        include_sso=bool(row.get("include_sso")),
+        sso_configured=bool(_SSO_SIGNING_SECRET),
+        version=released,
+        download_url=f"{base}/plugin/download/ai-concierge.zip",
+    )
+
+
 @app.route("/admin/login", methods=["GET", "POST"])
 def admin_login():
     """

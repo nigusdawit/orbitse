@@ -1315,6 +1315,25 @@ CREATE TABLE IF NOT EXISTS rate_buckets (
     window_start  BIGINT NOT NULL,
     count         INTEGER NOT NULL DEFAULT 0
 );
+
+-- Shareable WordPress onboarding links. The super admin generates one of these
+-- per client; the client opens /plugin/onboard/<token> (no login) to download
+-- the plugin zip and copy their pre-filled setup values + instructions. The SSO
+-- secret is GLOBAL, so it is embedded in the page ONLY when include_sso is TRUE
+-- (opt-in, with a warning) — otherwise the super admin shares it securely.
+CREATE TABLE IF NOT EXISTS wp_onboarding_links (
+    id              SERIAL PRIMARY KEY,
+    token           TEXT UNIQUE NOT NULL,
+    tenant_id       INTEGER NOT NULL DEFAULT 1,
+    label           TEXT NOT NULL DEFAULT '',
+    embed_key       TEXT NOT NULL DEFAULT '',
+    include_sso     BOOLEAN NOT NULL DEFAULT FALSE,
+    expires_at      TIMESTAMP,
+    revoked         BOOLEAN NOT NULL DEFAULT FALSE,
+    view_count      INTEGER NOT NULL DEFAULT 0,
+    last_viewed_at  TIMESTAMP,
+    created_at      TIMESTAMP DEFAULT NOW()
+);
 """
 
 # Seeds — singletons + default tenant + reference prices. All idempotent.

@@ -2350,6 +2350,11 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l9 4.5v11L12 22l-9-4.5v-11L12 2z"/><path d="M3 6.5L12 11l9-4.5"/><line x1="12" y1="22" x2="12" y2="11"/></svg>
       Plans &amp; Features
     </button>
+    {# WP Plugin — super admin ONLY: publish releases, keys, shareable client links. #}
+    <button class="tab-btn" onclick="switchTab('wp-plugin', this); loadWpPlugin();" data-testid="tab-wp-plugin">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 7h2a2 2 0 0 1 2 2v2"/><path d="M10 7H8a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2"/><path d="M12 3v8"/><path d="m9 8 3 3 3-3"/></svg>
+      WP Plugin
+    </button>
     {% endif %}
     {% if is_super_admin() or has_feature('cost_dashboard') %}
     <button class="tab-btn" onclick="switchTab('cost', this); loadCost();" data-testid="tab-cost">
@@ -10497,6 +10502,164 @@ TO CUSTOMIZE THIS DASHBOARD:
           <tr><td colspan="6" class="empty-state">Loading…</td></tr>
         </tbody>
       </table>
+    </div>
+  </div>
+
+  <!-- ====================================================================
+       WP PLUGIN TAB — super admin: publish releases, keys, client links
+       ==================================================================== -->
+  <div id="tab-wp-plugin" class="tab-content">
+    <style>
+      #tab-wp-plugin .wp-card { background:var(--admin-card); border:1px solid var(--admin-border);
+        border-radius:10px; padding:1.25rem 1.5rem; margin-bottom:1.25rem; }
+      #tab-wp-plugin .wp-h3 { margin:0 0 0.75rem; font-size:1.05rem; }
+      #tab-wp-plugin .wp-grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:0.75rem; }
+      #tab-wp-plugin .wp-row { display:flex; gap:0.75rem; }
+      #tab-wp-plugin .wp-field { margin-bottom:0.85rem; }
+      #tab-wp-plugin .wp-label { display:block; font-size:0.72rem; text-transform:uppercase;
+        letter-spacing:0.05em; color:var(--admin-text-muted); margin-bottom:0.3rem; }
+      #tab-wp-plugin .wp-input { width:100%; background:var(--admin-bg); border:1px solid var(--admin-border);
+        color:var(--admin-text); border-radius:8px; padding:0.55rem 0.7rem; font-size:0.9rem; }
+      #tab-wp-plugin .wp-copyrow { display:flex; gap:0.5rem; }
+      #tab-wp-plugin .wp-copyrow .wp-input { font-family:ui-monospace,Menlo,monospace; font-size:0.82rem; }
+      #tab-wp-plugin .wp-hint { font-size:0.82rem; color:var(--admin-text-muted); line-height:1.5; margin:0.4rem 0 0; }
+      #tab-wp-plugin .wp-stat { background:var(--admin-bg); border:1px solid var(--admin-border);
+        border-radius:8px; padding:0.75rem 1rem; }
+      #tab-wp-plugin .wp-stat .k { font-size:0.72rem; text-transform:uppercase; color:var(--admin-text-muted); }
+      #tab-wp-plugin .wp-stat .v { font-size:1.25rem; font-weight:700; margin-top:0.2rem; }
+      #tab-wp-plugin .wp-badge { display:inline-block; font-size:0.7rem; padding:0.1rem 0.5rem; border-radius:99px;
+        vertical-align:middle; }
+      #tab-wp-plugin .wp-badge.ok { background:rgba(76,175,80,0.15); color:#7bd685; }
+      #tab-wp-plugin .wp-badge.warn { background:rgba(201,169,110,0.15); color:var(--admin-accent,#c9a96e); }
+      #tab-wp-plugin .wp-check { display:flex; gap:0.6rem; align-items:flex-start; margin-top:0.85rem;
+        font-size:0.88rem; cursor:pointer; }
+      #tab-wp-plugin .wp-check input { margin-top:0.2rem; }
+      #tab-wp-plugin .wp-item { display:flex; gap:0.75rem; align-items:center; justify-content:space-between;
+        padding:0.7rem 0.9rem; border:1px solid var(--admin-border); border-radius:8px; margin-bottom:0.5rem;
+        background:var(--admin-bg); flex-wrap:wrap; }
+      #tab-wp-plugin .wp-item code { font-size:0.8rem; word-break:break-all; }
+      #tab-wp-plugin .wp-item .wp-actions { display:flex; gap:0.4rem; flex-wrap:wrap; }
+    </style>
+    <div class="content-header">
+      <h2>WordPress Plugin</h2>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <span id="wp-plugin-updated" style="font-size:0.8125rem; color:var(--admin-text-muted);"></span>
+        <button class="btn-secondary" onclick="loadWpPlugin()" data-testid="button-wp-plugin-refresh">Refresh</button>
+      </div>
+    </div>
+    <p style="color:var(--admin-text-muted); max-width:680px; margin-top:-0.5rem;">
+      Manage the WordPress plugin your clients install: publish a new version,
+      grab the keys a client needs, and create a one-click setup link you can
+      send them.
+    </p>
+
+    <!-- Release management -->
+    <div class="wp-card">
+      <h3 class="wp-h3">📦 Release</h3>
+      <div id="wp-release-info" class="wp-grid2">
+        <div class="empty-state">Loading…</div>
+      </div>
+      <div class="wp-row" style="margin-top:1rem; align-items:flex-end;">
+        <div style="flex:0 0 auto;">
+          <label class="wp-label">New version (optional)</label>
+          <input type="text" id="wp-new-version" class="wp-input" placeholder="e.g. 1.2.0" style="width:160px;">
+        </div>
+        <button class="btn-primary" id="wp-build-btn" onclick="wpBuild()" data-testid="button-wp-build">
+          Publish / Rebuild
+        </button>
+        <span id="wp-build-status" style="font-size:0.85rem; color:var(--admin-text-muted);"></span>
+      </div>
+      <p class="wp-hint">Leave the version blank to just rebuild the download from
+        the current source. Enter a higher version to publish an update — installed
+        sites will then see WordPress's “Update” button automatically.
+        <strong>Tip:</strong> after publishing, re-publish your platform so the new
+        plugin file ships with it.</p>
+    </div>
+
+    <!-- Setup keys -->
+    <div class="wp-card">
+      <h3 class="wp-h3">🔑 Setup keys</h3>
+      <p class="wp-hint" style="margin-top:0;">These are the values a client enters
+        under <code>Settings → AI Concierge</code> in their WordPress site.</p>
+      <div class="wp-field">
+        <label class="wp-label">Platform URL</label>
+        <div class="wp-copyrow">
+          <input type="text" id="wp-platform-url" class="wp-input" readonly>
+          <button class="btn-secondary" onclick="wpCopy('wp-platform-url', this)">Copy</button>
+        </div>
+      </div>
+      <div class="wp-field">
+        <label class="wp-label">SSO Secret <span id="wp-sso-badge" class="wp-badge"></span></label>
+        <div class="wp-copyrow">
+          <input type="text" id="wp-sso-secret" class="wp-input" value="••••••••••••••••" readonly>
+          <button class="btn-secondary" id="wp-sso-reveal" onclick="wpRevealSso(this)">Reveal</button>
+          <button class="btn-secondary" onclick="wpCopy('wp-sso-secret', this)">Copy</button>
+        </div>
+        <p class="wp-hint">Shared, confidential. Lets the client manage the
+          concierge from inside WordPress. Share it privately — never post it
+          publicly.</p>
+      </div>
+    </div>
+
+    <!-- Embed keys -->
+    <div class="wp-card">
+      <h3 class="wp-h3">🪪 Embed keys</h3>
+      <p class="wp-hint" style="margin-top:0;">Each client gets a publishable embed
+        key (safe to appear in page source). It ties the widget to a client and
+        their allowed website(s).</p>
+      <div class="wp-row" style="align-items:flex-end; flex-wrap:wrap;">
+        <div style="flex:1 1 180px;">
+          <label class="wp-label">Label</label>
+          <input type="text" id="wp-key-label" class="wp-input" placeholder="e.g. Acme Hotel">
+        </div>
+        <div style="flex:1 1 240px;">
+          <label class="wp-label">Allowed website(s), comma-separated</label>
+          <input type="text" id="wp-key-origins" class="wp-input" placeholder="https://acme.com, https://www.acme.com">
+        </div>
+        <button class="btn-primary" onclick="wpCreateKey()" data-testid="button-wp-create-key">Generate key</button>
+      </div>
+      <div id="wp-keys-list" style="margin-top:1rem;">
+        <div class="empty-state">Loading…</div>
+      </div>
+    </div>
+
+    <!-- Shareable onboarding links -->
+    <div class="wp-card">
+      <h3 class="wp-h3">🔗 Client setup links</h3>
+      <p class="wp-hint" style="margin-top:0;">Create a link to send a client. They
+        open it to download the plugin and copy their settings — with full
+        instructions. No login required for them.</p>
+      <div class="wp-row" style="align-items:flex-end; flex-wrap:wrap;">
+        <div style="flex:1 1 150px;">
+          <label class="wp-label">Client / label</label>
+          <input type="text" id="wp-link-label" class="wp-input" placeholder="e.g. Acme Hotel">
+        </div>
+        <div style="flex:0 0 auto;">
+          <label class="wp-label">Tenant</label>
+          <select id="wp-link-tenant" class="wp-input" style="min-width:140px;"></select>
+        </div>
+        <div style="flex:1 1 200px;">
+          <label class="wp-label">Embed key</label>
+          <select id="wp-link-key" class="wp-input"></select>
+        </div>
+        <div style="flex:0 0 auto;">
+          <label class="wp-label">Expires (days)</label>
+          <input type="number" id="wp-link-expires" class="wp-input" min="1" placeholder="never" style="width:110px;">
+        </div>
+      </div>
+      <label class="wp-check">
+        <input type="checkbox" id="wp-link-sso">
+        <span>Include the SSO secret in this link
+          <span class="wp-hint" style="display:block; margin:0;">Convenient, but anyone
+          with the link can configure SSO. Leave off and share the secret separately
+          for best security.</span></span>
+      </label>
+      <div style="margin-top:0.75rem;">
+        <button class="btn-primary" onclick="wpCreateLink()" data-testid="button-wp-create-link">Create setup link</button>
+      </div>
+      <div id="wp-links-list" style="margin-top:1rem;">
+        <div class="empty-state">Loading…</div>
+      </div>
     </div>
   </div>
 
@@ -23908,6 +24071,247 @@ TO CUSTOMIZE THIS DASHBOARD:
     a row per feature with an on/off toggle. Toggling fires PATCH which
     busts the in-process cache so the change is live immediately.
     */
+    // ===================================================================
+    // WP PLUGIN TAB — publish releases, setup keys, client onboarding links
+    // ===================================================================
+    let __wpTenants = [];
+    let __wpEmbedKeys = [];
+
+    async function loadWpPlugin() {
+      if (!await _superAdminGuard('tab-wp-plugin', loadWpPlugin)) return;
+      const updated = document.getElementById('wp-plugin-updated');
+      try {
+        const res = await fetch('/admin/api/wp-plugin/status', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const d = await res.json();
+        __wpTenants = d.tenants || [];
+        // Release card
+        const upd = d.update_available
+          ? '<span class="wp-badge warn">unpublished changes</span>'
+          : (d.has_release ? '<span class="wp-badge ok">up to date</span>' : '');
+        document.getElementById('wp-release-info').innerHTML = `
+          <div class="wp-stat"><div class="k">Source version</div>
+            <div class="v">${escapeHTML(d.source_version || '—')}</div></div>
+          <div class="wp-stat"><div class="k">Published version</div>
+            <div class="v">${escapeHTML(d.released_version || '—')} ${upd}</div></div>`;
+        // Setup keys
+        document.getElementById('wp-platform-url').value = d.platform_url || '';
+        const badge = document.getElementById('wp-sso-badge');
+        if (d.sso_configured) {
+          badge.className = 'wp-badge ok'; badge.textContent = 'configured';
+          document.getElementById('wp-sso-reveal').disabled = false;
+        } else {
+          badge.className = 'wp-badge warn'; badge.textContent = 'not set';
+          document.getElementById('wp-sso-secret').value = '(SSO_SIGNING_SECRET not set)';
+          document.getElementById('wp-sso-reveal').disabled = true;
+        }
+        // Tenant dropdown for onboarding links
+        const tsel = document.getElementById('wp-link-tenant');
+        tsel.innerHTML = __wpTenants.map(t =>
+          `<option value="${t.id}">${escapeHTML(t.name || ('Tenant #' + t.id))}</option>`).join('')
+          || '<option value="1">Tenant #1</option>';
+        if (updated) updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      } catch (e) {
+        console.error('wp-plugin load failed', e);
+        document.getElementById('wp-release-info').innerHTML =
+          '<div class="empty-state" style="color:#ef4444;">Could not load: ' + escapeHTML(String(e.message || e)) + '</div>';
+      }
+      loadWpEmbedKeys();
+      loadWpLinks();
+    }
+
+    async function wpBuild() {
+      const btn = document.getElementById('wp-build-btn');
+      const status = document.getElementById('wp-build-status');
+      const version = document.getElementById('wp-new-version').value.trim();
+      if (version && !confirm('Publish plugin version ' + version + '? Installed sites will be offered this as an update.')) return;
+      btn.disabled = true; status.textContent = 'Building…';
+      try {
+        const res = await fetch('/admin/api/wp-plugin/build', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ version: version || undefined })
+        });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.error || ('HTTP ' + res.status));
+        status.textContent = '';
+        document.getElementById('wp-new-version').value = '';
+        showToast && showToast('Plugin published (v' + d.version + ', ' + d.file_count + ' files)', 'success');
+        loadWpPlugin();
+      } catch (e) {
+        status.textContent = '';
+        showToast && showToast('Build failed: ' + (e.message || e), 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function wpRevealSso(btn) {
+      const input = document.getElementById('wp-sso-secret');
+      // Toggle back to masked if already revealed.
+      if (btn.dataset.revealed === '1') {
+        input.value = '••••••••••••••••'; btn.textContent = 'Reveal'; btn.dataset.revealed = '';
+        return;
+      }
+      try {
+        const res = await fetch('/admin/api/wp-plugin/sso-secret', { credentials: 'same-origin' });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.error || ('HTTP ' + res.status));
+        if (!d.configured || !d.secret) {
+          showToast && showToast('SSO secret is not set on the server', 'error'); return;
+        }
+        input.value = d.secret; btn.textContent = 'Hide'; btn.dataset.revealed = '1';
+      } catch (e) {
+        showToast && showToast('Could not reveal: ' + (e.message || e), 'error');
+      }
+    }
+
+    function wpCopy(id, btn) {
+      const el = document.getElementById(id);
+      if (!el || !el.value) return;
+      const done = () => { const o = btn.textContent; btn.textContent = 'Copied ✓';
+        setTimeout(() => { btn.textContent = o; }, 1400); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(el.value).then(done, () => {
+          el.select(); try { document.execCommand('copy'); done(); } catch (e) {} });
+      } else {
+        el.select(); try { document.execCommand('copy'); done(); } catch (e) {}
+      }
+    }
+
+    async function loadWpEmbedKeys() {
+      const wrap = document.getElementById('wp-keys-list');
+      try {
+        const res = await fetch('/admin/api/embed-keys', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const d = await res.json();
+        __wpEmbedKeys = d.keys || [];
+        // Fill the onboarding-link embed-key dropdown.
+        const ksel = document.getElementById('wp-link-key');
+        ksel.innerHTML = '<option value="">— none —</option>' + __wpEmbedKeys.map(k =>
+          `<option value="${escapeHTML(k.embed_key)}">${escapeHTML(k.label || k.embed_key)}</option>`).join('');
+        if (!__wpEmbedKeys.length) {
+          wrap.innerHTML = '<div class="empty-state">No embed keys yet. Generate one above.</div>';
+          return;
+        }
+        wrap.innerHTML = __wpEmbedKeys.map(k => `
+          <div class="wp-item">
+            <div style="min-width:0;">
+              <strong>${escapeHTML(k.label || '(unlabeled)')}</strong>
+              ${k.enabled === false ? '<span class="wp-badge warn">disabled</span>' : ''}
+              <div><code>${escapeHTML(k.embed_key)}</code></div>
+            </div>
+            <div class="wp-actions">
+              <button class="btn-secondary btn-sm" onclick="wpCopyText('${escapeHTML(k.embed_key)}', this)">Copy</button>
+            </div>
+          </div>`).join('');
+      } catch (e) {
+        wrap.innerHTML = '<div class="empty-state" style="color:#ef4444;">Could not load keys: ' + escapeHTML(String(e.message || e)) + '</div>';
+      }
+    }
+
+    function wpCopyText(text, btn) {
+      const done = () => { const o = btn.textContent; btn.textContent = 'Copied ✓';
+        setTimeout(() => { btn.textContent = o; }, 1400); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, () => {});
+      }
+    }
+
+    async function wpCreateKey() {
+      const label = document.getElementById('wp-key-label').value.trim();
+      const originsRaw = document.getElementById('wp-key-origins').value.trim();
+      const origins = originsRaw ? originsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+      try {
+        const res = await fetch('/admin/api/embed-keys', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ label: label, origin_allowlist: origins })
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        document.getElementById('wp-key-label').value = '';
+        document.getElementById('wp-key-origins').value = '';
+        showToast && showToast('Embed key generated', 'success');
+        loadWpEmbedKeys();
+      } catch (e) {
+        showToast && showToast('Could not create key: ' + (e.message || e), 'error');
+      }
+    }
+
+    async function loadWpLinks() {
+      const wrap = document.getElementById('wp-links-list');
+      try {
+        const res = await fetch('/admin/api/wp-plugin/onboarding-links', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const d = await res.json();
+        const links = (d.links || []).filter(l => !l.revoked);
+        if (!links.length) {
+          wrap.innerHTML = '<div class="empty-state">No setup links yet.</div>'; return;
+        }
+        wrap.innerHTML = links.map(l => {
+          const exp = l.expires_at ? ('expires ' + new Date(l.expires_at).toLocaleDateString()) : 'no expiry';
+          const views = (l.view_count || 0) + ' view' + ((l.view_count === 1) ? '' : 's');
+          const sso = l.include_sso ? '<span class="wp-badge warn">includes SSO secret</span>' : '';
+          return `
+          <div class="wp-item">
+            <div style="min-width:0;">
+              <strong>${escapeHTML(l.label || '(no label)')}</strong> ${sso}
+              <div><code>${escapeHTML(l.url)}</code></div>
+              <div class="wp-hint" style="margin-top:0.2rem;">${exp} · ${views}</div>
+            </div>
+            <div class="wp-actions">
+              <button class="btn-secondary btn-sm" onclick="wpCopyText('${escapeHTML(l.url)}', this)">Copy link</button>
+              <a class="btn-secondary btn-sm" href="${escapeHTML(l.url)}" target="_blank" rel="noopener">Open</a>
+              <button class="btn-secondary btn-sm" onclick="wpRevokeLink(${l.id})">Revoke</button>
+            </div>
+          </div>`;
+        }).join('');
+      } catch (e) {
+        wrap.innerHTML = '<div class="empty-state" style="color:#ef4444;">Could not load links: ' + escapeHTML(String(e.message || e)) + '</div>';
+      }
+    }
+
+    async function wpCreateLink() {
+      const label = document.getElementById('wp-link-label').value.trim();
+      const tenant_id = parseInt(document.getElementById('wp-link-tenant').value, 10) || 1;
+      const embed_key = document.getElementById('wp-link-key').value;
+      const expRaw = document.getElementById('wp-link-expires').value.trim();
+      const include_sso = document.getElementById('wp-link-sso').checked;
+      if (include_sso && !confirm('This link will contain the SSO secret. Anyone with the link can configure SSO. Continue?')) return;
+      const body = { label, tenant_id, embed_key, include_sso };
+      if (expRaw) body.expires_days = parseInt(expRaw, 10);
+      try {
+        const res = await fetch('/admin/api/wp-plugin/onboarding-links', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const rd = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(rd.error || ('HTTP ' + res.status));
+        document.getElementById('wp-link-label').value = '';
+        document.getElementById('wp-link-expires').value = '';
+        document.getElementById('wp-link-sso').checked = false;
+        showToast && showToast('Setup link created', 'success');
+        loadWpLinks();
+      } catch (e) {
+        showToast && showToast('Could not create link: ' + (e.message || e), 'error');
+      }
+    }
+
+    async function wpRevokeLink(id) {
+      if (!confirm('Revoke this setup link? It will stop working immediately.')) return;
+      try {
+        const res = await fetch('/admin/api/wp-plugin/onboarding-links/' + id, {
+          method: 'DELETE', credentials: 'same-origin'
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        showToast && showToast('Link revoked', 'success');
+        loadWpLinks();
+      } catch (e) {
+        showToast && showToast('Could not revoke: ' + (e.message || e), 'error');
+      }
+    }
+
     async function loadPlansFeatures() {
       if (!await _superAdminGuard('tab-plans-features', loadPlansFeatures)) return;
       const tenantCard = document.getElementById('plans-features-tenant-card');
