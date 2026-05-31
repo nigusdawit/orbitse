@@ -82,6 +82,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 048 | Epic F: request_callback + handoff summary | done | task/048-callback-handoff | 045 | Gate 7/7 + migration 0016 + 25 prior tests clean; ContextVar plumbs live chat to tools, _handoff_summary on request_callback (gated default-off), stored + in team notification. No creds needed (the no-creds part of Epic F) |
 | 049 | Epic F: live AI phone call (Twilio Voice + media bridge) | done | task/049-live-call | 048 | Gate 10/10 + migration 0018 clean; Twilio Voice webhooks + voice_calls table + gating + TwiML (Stream→wss when configured). security-review: 1 fixed (HIGH: fail-closed without auth token). Live media bridge = operator runbook |
 | 050 | Phase 6 admin dashboard tabs (Offers, Personas, Leads & CRM) | done | task/050-phase6-admin-tabs | 042-049 | Gate 2/2 (render markers + role gating); super-admin CRUD UI for offers/personas + read-only Leads & CRM multi-pane (leads/callbacks/meetings/voice/profiles). node --check clean, dep-free |
+| 051 | Epic F activation (book_meeting ISO datetime + voice media bridge) | done | task/051-epicf-activation | 047,049 | Gate 13/13 meetings (+migration 0019) + 8/8 voice_bridge; book_meeting validates a model-supplied RFC3339 start before any calendar push (else store-only); provider-flexible voice_bridge/ (echo + openai realtime + slots), live server/call = operator runbook |
 
 **Status legend:** not_started | in_progress | paused | blocked | awaiting_review | done
 
