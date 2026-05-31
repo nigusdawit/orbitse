@@ -81,6 +81,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 047 | Epic F: book_meeting via Calendar MCP | done | task/047-meetings | 045 | Gate 11/11 + migration 0017 clean; book_meeting tool + meetings table + gating + team notify; optional calendar-MCP push hook (live push = operator runbook, store-only without creds) |
 | 048 | Epic F: request_callback + handoff summary | done | task/048-callback-handoff | 045 | Gate 7/7 + migration 0016 + 25 prior tests clean; ContextVar plumbs live chat to tools, _handoff_summary on request_callback (gated default-off), stored + in team notification. No creds needed (the no-creds part of Epic F) |
 | 049 | Epic F: live AI phone call (Twilio Voice + media bridge) | done | task/049-live-call | 048 | Gate 10/10 + migration 0018 clean; Twilio Voice webhooks + voice_calls table + gating + TwiML (Stream→wss when configured). security-review: 1 fixed (HIGH: fail-closed without auth token). Live media bridge = operator runbook |
+| 050 | Phase 6 admin dashboard tabs (Offers, Personas, Leads & CRM) | done | task/050-phase6-admin-tabs | 042-049 | Gate 2/2 (render markers + role gating); super-admin CRUD UI for offers/personas + read-only Leads & CRM multi-pane (leads/callbacks/meetings/voice/profiles). node --check clean, dep-free |
 
 **Status legend:** not_started | in_progress | paused | blocked | awaiting_review | done
 
