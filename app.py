@@ -1178,11 +1178,12 @@ def _ai_activity_persist(record):
         if not get_ai_setting("activity_logging_enabled"):
             return
         execute_db(
-            "INSERT INTO ai_activity_log (tenant_id, session_id, model, provider, "
+            "INSERT INTO ai_activity_log (tenant_id, surface, session_id, model, provider, "
             "rounds, tool_calls, tokens_in, tokens_out, cost_usd, duration_ms, "
             "status, error_text, user_message, final_answer) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (current_tenant_id(), record.get("session_id"), record.get("model"),
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (current_tenant_id(), (record.get("surface") or "admin"),
+             record.get("session_id"), record.get("model"),
              record.get("provider"), int(record.get("rounds") or 0),
              int(record.get("tool_calls") or 0), int(record.get("tokens_in") or 0),
              int(record.get("tokens_out") or 0), float(record.get("cost_usd") or 0),
@@ -4321,6 +4322,7 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS ai_activity_log (
                     id            BIGSERIAL PRIMARY KEY,
                     tenant_id     INTEGER NOT NULL DEFAULT 1,
+                    surface       TEXT NOT NULL DEFAULT 'admin',
                     session_id    TEXT,
                     model         TEXT,
                     provider      TEXT,
@@ -21681,6 +21683,13 @@ def api_chat():
             full_text = ""        # all visible reply tokens, every round
             tool_logs = []        # observability — what lookups ran
             max_rounds = 4
+            # Phase 6: per-turn activity accumulator → ai_activity_log (surface
+            # 'visitor'). Pre-initialized so the finally can always log even if
+            # we bail early. Tracked only; never affects the reply.
+            _va = {"started": _time.time(), "model": "", "provider": "",
+                   "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0,
+                   "rounds": 0, "tools": 0, "status": "ok", "error": "",
+                   "final": "", "question": message}
 
             # Pick the active LLM provider (OpenAI or Claude). Both go
             # through _stream_round_* generators that emit the same uniform
@@ -21692,9 +21701,14 @@ def api_chat():
             # text + close the stream so they aren't left waiting.
             try:
                 provider, model = get_active_llm_provider()
+                _va["provider"] = provider
+                _va["model"] = model
             except LLMProviderUnavailable as e:
-                msg = ("Sorry, the chat agent is temporarily unavailable: "
-                       + str(e))
+                _va["status"] = "provider_unavailable"
+                _va["error"] = str(e)[:500]
+                _va["final"] = ("Sorry, the chat agent is temporarily unavailable: "
+                                + str(e))
+                msg = _va["final"]
                 yield f"data: {json.dumps({'type': 'token', 'content': msg})}\n\n"
                 yield f"data: {json.dumps({'type': 'text', 'content': msg})}\n\n"
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
@@ -21857,6 +21871,7 @@ def api_chat():
                 round_text = ""
                 tcs = []   # completed tool calls this round
                 finish_reason = None
+                _va["rounds"] = _round_idx + 1
 
                 if provider == "claude":
                     sys_str, claude_msgs = _messages_for_claude(messages)
@@ -21898,10 +21913,21 @@ def api_chat():
                             total_tokens=u.get("total_tokens"),
                             usage_known=u.get("usage_known", True),
                         )
+                        # Phase 6: accumulate for the activity row (tracking only).
+                        try:
+                            _pt = int(u.get("prompt_tokens") or 0)
+                            _ct = int(u.get("completion_tokens") or 0)
+                            _va["tokens_in"] += _pt
+                            _va["tokens_out"] += _ct
+                            _va["cost_usd"] += _admin_chat_estimate_cost_usd(
+                                u.get("provider", provider), u.get("model", model), _pt, _ct)
+                        except Exception:
+                            pass
                     elif kind == "finish":
                         finish_reason = event[1]
 
                 full_text += round_text
+                _va["tools"] += len(tcs)
 
                 # If the model wants to call tools, execute them and loop.
                 # Otherwise the response is final — break out and parse it.
@@ -22091,6 +22117,7 @@ def api_chat():
                     print(f"[chat] presentation_active: stripping '{act}' command so deck can resume")
                     cmd = None
             if reply:
+                _va["final"] = reply
                 yield f"data: {json.dumps({'type': 'text', 'content': reply})}\n\n"
             if cmd:
                 yield f"data: {json.dumps({'type': 'command', 'command': cmd})}\n\n"
@@ -22214,7 +22241,37 @@ def api_chat():
         except Exception as e:
             import traceback
             traceback.print_exc()
+            _va["status"] = "error"
+            _va["error"] = f"{type(e).__name__}: {e}"[:500]
             yield f"data: {json.dumps({'type': 'error', 'content': 'Connection issue. Please try again.'})}\n\n"
+        finally:
+            # Phase 6: log this visitor turn to ai_activity_log (surface
+            # 'visitor'). Reuses the obs redaction + _ai_activity_persist sink.
+            # Tracking only — fully guarded so it can never affect the stream.
+            try:
+                _redact_on = get_ai_setting("redact_enabled")
+                def _rd(t):
+                    if not _redact_on or not t:
+                        return t
+                    try:
+                        from pylego import redact as _rk
+                        return _rk.redact_text(t)
+                    except Exception:
+                        return t
+                _ai_activity_persist({
+                    "surface": "visitor",
+                    "session_id": session_id,
+                    "model": _va["model"], "provider": _va["provider"],
+                    "rounds": _va["rounds"], "tool_calls": _va["tools"],
+                    "tokens_in": _va["tokens_in"], "tokens_out": _va["tokens_out"],
+                    "cost_usd": round(_va["cost_usd"], 6),
+                    "duration_ms": int((_time.time() - _va["started"]) * 1000),
+                    "status": _va["status"], "error_text": _rd(_va["error"]),
+                    "user_message": _rd(_va["question"]),
+                    "final_answer": _rd(_va["final"] or full_text),
+                })
+            except Exception:
+                pass
 
     return Response(
         stream_with_context(generate()),
@@ -26206,11 +26263,18 @@ def admin_list_ai_activity():
     except (TypeError, ValueError):
         limit = 100
     limit = max(1, min(limit, 500))
+    # Optional surface filter: admin | visitor | (anything else = all).
+    surface = (request.args.get("surface") or "").strip().lower()
+    where, params = "", []
+    if surface in ("admin", "visitor"):
+        where = "WHERE surface = %s "
+        params = [surface]
     rows = query_db(
-        "SELECT id, session_id, model, provider, rounds, tool_calls, tokens_in, "
-        "tokens_out, cost_usd, duration_ms, status, error_text, user_message, "
-        "final_answer, created_at FROM ai_activity_log ORDER BY id DESC LIMIT %s",
-        (limit,)) or []
+        "SELECT id, surface, session_id, model, provider, rounds, tool_calls, "
+        "tokens_in, tokens_out, cost_usd, duration_ms, status, error_text, "
+        "user_message, final_answer, created_at FROM ai_activity_log "
+        + where + "ORDER BY id DESC LIMIT %s",
+        tuple(params + [limit])) or []
     out = []
     for r in rows:
         d = dict(r)
@@ -26219,8 +26283,8 @@ def admin_list_ai_activity():
         out.append(d)
     stats = query_db(
         "SELECT COUNT(*) AS n, COALESCE(SUM(cost_usd),0) AS cost, "
-        "COALESCE(SUM(tokens_in+tokens_out),0) AS tokens FROM ai_activity_log",
-        fetchone=True) or {}
+        "COALESCE(SUM(tokens_in+tokens_out),0) AS tokens FROM ai_activity_log "
+        + where, tuple(params), fetchone=True) or {}
     return jsonify({
         "activity": out,
         "stats": {
