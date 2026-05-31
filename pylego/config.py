@@ -111,6 +111,12 @@ class PylegoConfig:
     # turns this on, so a fresh fork never silently captures email signups.
     newsletter_signup_enabled: bool
 
+    # ---- Offers / deals (task 044 — Epic D) ---------------------------------
+    # Gate for the visitor `lookup_offers` tool (contextual promo surfacing).
+    # Inert default OFF: the tool returns nothing until a super-admin turns it
+    # on AND has defined offers, so a fresh fork surfaces no promotions.
+    offers_enabled: bool
+
     # ---- Activity logging (task 031) ----------------------------------------
     activity_logging_enabled: bool    # persist each admin-AI turn to ai_activity_log
 
@@ -180,6 +186,8 @@ def _build() -> PylegoConfig:
         visitor_profiles_model=os.environ.get("VISITOR_PROFILES_MODEL", "").strip(),
         # Newsletter signup — wired in 043; inert default (tool declines).
         newsletter_signup_enabled=_env_bool("NEWSLETTER_SIGNUP_ENABLED", False),
+        # Offers — wired in 044; inert default (tool returns nothing).
+        offers_enabled=_env_bool("OFFERS_ENABLED", False),
         # Activity logging — wired in 031 (default ON: low-volume admin turns).
         activity_logging_enabled=_env_bool("ADMIN_CHAT_ACTIVITY_LOGGING", True),
         # KB ingestion — wired in 039; inert default (inline ingestion).
