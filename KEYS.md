@@ -32,6 +32,12 @@ tab** (`/admin/api/secrets/set`) at runtime.
 | `ADMIN_PASSWORD` | Admin panel password | **Defaults to `admin` if unset** — boot warns about it. Always override. |
 | At least one LLM key (below) | The chatbot needs a provider | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`. |
 
+> **pgvector required.** The Postgres pointed to by `DATABASE_URL` must have the
+> **`vector` (pgvector)** extension available (RAG + semantic-cache migrations
+> create `vector(1536)` columns). On Replit, enable pgvector on the database
+> before first boot. If it's genuinely unavailable, boot fails with a clear
+> message; set `SKIP_ALEMBIC=1` to start without those features.
+
 ## 2. AI providers (at least one required)
 
 | Env var | Feature |

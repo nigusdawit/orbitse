@@ -550,8 +550,20 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 # OpenAI client — uses Replit AI Integrations environment variables.
 # These are automatically set when the OpenAI integration is installed and
 # are used for chat completions (which the proxy supports).
+#
+# Boot resilience: newer versions of the `openai` SDK raise at *construction*
+# time if `api_key` is empty/None (they no longer defer the check to the first
+# request). On a fresh deploy — e.g. a brand-new Replit import where the AI
+# integration hasn't been wired yet — that turned a missing key into a hard
+# import crash, so the app couldn't even start to show its admin UI. We instead
+# pass an explicit, obviously-fake sentinel when no real key is present: the
+# client object constructs (no import crash), every existing `openai_client.*`
+# call site keeps working unchanged, and an actual API call fails later with a
+# clean 401 that the per-call error handling already surfaces as "AI not
+# configured." Configure AI_INTEGRATIONS_OPENAI_API_KEY to enable real calls.
+_AI_PROXY_KEY = os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY", "").strip()
 openai_client = OpenAI(
-    api_key=os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY", ""),
+    api_key=_AI_PROXY_KEY or "sk-not-configured",
     base_url=os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL", "https://api.openai.com/v1"),
 )
 
@@ -20398,7 +20410,7 @@ def api_chat():
                 try:
                     ua = request.headers.get("User-Agent", "")
                     device = "mobile" if any(m in ua.lower() for m in ["mobile", "android", "iphone"]) else "desktop"
-                    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+                    ip = (request.headers.get("X-Forwarded-For", request.remote_addr or "") or "").split(",")[0].strip()[:45]
 
                     # Look up an existing conversation by session_id.
                     # Since session_id is unique per page load, this naturally
@@ -27376,7 +27388,7 @@ def api_partial_save(slug):
 
     form_data = data.get("fields", {})
     ua_string = request.headers.get("User-Agent", "")
-    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+    ip = (request.headers.get("X-Forwarded-For", request.remote_addr or "") or "").split(",")[0].strip()[:45]
     browser, os_name, device = _parse_ua(ua_string)
 
     existing = query_db(
@@ -27488,7 +27500,7 @@ def api_submit_form(slug):
         }), 400
 
     ua_string = request.headers.get("User-Agent", "")
-    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+    ip = (request.headers.get("X-Forwarded-For", request.remote_addr or "") or "").split(",")[0].strip()[:45]
     browser, os_name, device = _parse_ua(ua_string)
 
     session_id = data.get("session_id", "")
@@ -27651,7 +27663,7 @@ def api_track_pageview():
     ua_string = request.headers.get("User-Agent", "")
     browser, os_name, device = _parse_ua(ua_string)
 
-    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+    ip = (request.headers.get("X-Forwarded-For", request.remote_addr or "") or "").split(",")[0].strip()[:45]
 
     row = execute_db(
         """INSERT INTO page_views
@@ -30876,7 +30888,7 @@ def api_service_booking_partial(slug):
         return jsonify({"error": "Could not register booking form"}), 500
 
     ua_string = request.headers.get("User-Agent", "")
-    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+    ip = (request.headers.get("X-Forwarded-For", request.remote_addr or "") or "").split(",")[0].strip()[:45]
     browser, os_name, device = _parse_ua(ua_string)
 
     existing = query_db(
@@ -31056,7 +31068,7 @@ def api_book_service(slug):
         form_id = _ensure_service_booking_form(svc_dict)
         if form_id:
             ua_string = request.headers.get("User-Agent", "")
-            ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+            ip = (request.headers.get("X-Forwarded-For", request.remote_addr or "") or "").split(",")[0].strip()[:45]
             browser, os_name, device = _parse_ua(ua_string)
             session_id = (data.get("session_id") or "").strip()
             payload = _booking_submission_payload(svc_dict, booking_dict, data, addons)

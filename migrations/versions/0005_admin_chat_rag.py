@@ -6,38 +6,36 @@ Create Date: 2026-05-17
 
 What this adds
 --------------
-Three pgvector-backed tables that together power the admin-chat RAG /
-memory feature set:
+pgvector-backed tables for the admin-chat RAG / memory feature set.
 
-1. rag_documents + rag_chunks
-   Knowledge-base files the admin uploads (PDF / DOCX / PPTX / CSV /
-   TXT). One row per source file in rag_documents, N rows per file in
-   rag_chunks (each chunk has its own 1536-dim embedding from
-   text-embedding-3-small).
+NOTE: rag_documents + rag_chunks (the uploaded-knowledge-base tables) are owned
+by the sibling revision 0005_rag_knowledge_base, NOT this one — see the comment
+in upgrade(). This revision originally redefined them with a conflicting schema,
+which broke a fresh `alembic upgrade head`. It now creates only:
 
-2. rag_chat_turns
+1. rag_chat_turns
    Cross-chat recall. Every persisted admin chat user/assistant turn is
    re-embedded into this table so the agent can pull in snippets from
    previous sessions when the per-session "Recall past chats" toggle is
    on. Kept SEPARATE from rag_chunks so KB retrieval and chat-history
    retrieval can run with different top-k and different filters.
 
-3. admin_chat_memories
+2. admin_chat_memories
    ChatGPT-style auto-memory: short facts extracted from prior turns
    ("user prefers X", "their business is Y") that get injected as a
    system block on every new chat. Dedupe by content_hash so the
    extractor can run on every turn without producing duplicate rows.
 
-All three tables use the existing tenant_id pattern (INTEGER NOT NULL
-DEFAULT 1, FK to tenants). The pgvector extension was already enabled
-by 0003_ai_response_cache, so we don't re-CREATE EXTENSION here — but
-we guard with IF NOT EXISTS in case this migration ever runs against a
+Both tables use the existing tenant_id pattern (INTEGER NOT NULL
+DEFAULT 1). The pgvector extension was already enabled by
+0003_ai_response_cache, so we don't re-CREATE EXTENSION here — but we
+guard with IF NOT EXISTS in case this migration ever runs against a
 fresh DB where 0003's CREATE EXTENSION failed silently.
 
 Index strategy
 --------------
-ivfflat for the chunk + chat_turn embedding columns (consistent with
-the existing semantic_cache index pattern). Memories are usually under
+ivfflat for the chat_turn embedding column (consistent with the
+existing semantic_cache index pattern). Memories are usually under
 1000 rows so a plain b-tree on (tenant_id, last_used_at) is enough; we
 order memory injection by recency × relevance in Python, not in SQL.
 """
@@ -59,74 +57,20 @@ def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
     # ---- 1. Knowledge-base documents + chunks --------------------------
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS rag_documents (
-            id              SERIAL      PRIMARY KEY,
-            tenant_id       INTEGER     NOT NULL DEFAULT 1
-                                        REFERENCES tenants(id) ON DELETE CASCADE,
-            filename        TEXT        NOT NULL,
-            mime            TEXT        NOT NULL DEFAULT '',
-            size_bytes      BIGINT      NOT NULL DEFAULT 0,
-            page_count      INTEGER     NOT NULL DEFAULT 0,
-            chunk_count     INTEGER     NOT NULL DEFAULT 0,
-            status          TEXT        NOT NULL DEFAULT 'indexing',
-                            -- 'indexing' | 'ready' | 'failed'
-            error_message   TEXT        DEFAULT NULL,
-            source_path     TEXT        DEFAULT NULL,
-            source_mtime    DOUBLE PRECISION DEFAULT NULL,
-            indexed_at      TIMESTAMPTZ DEFAULT NULL,
-            created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-        """
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS rag_documents_tenant_idx "
-        "ON rag_documents (tenant_id, created_at DESC);"
-    )
-
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS rag_chunks (
-            id              BIGSERIAL   PRIMARY KEY,
-            document_id     INTEGER     NOT NULL
-                                        REFERENCES rag_documents(id) ON DELETE CASCADE,
-            tenant_id       INTEGER     NOT NULL DEFAULT 1,
-            chunk_index     INTEGER     NOT NULL,
-            page_number     INTEGER     DEFAULT NULL,
-            content_text    TEXT        NOT NULL,
-            token_count     INTEGER     NOT NULL DEFAULT 0,
-            embedding       vector(1536),
-            created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-        """
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS rag_chunks_doc_idx "
-        "ON rag_chunks (document_id, chunk_index);"
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS rag_chunks_tenant_idx "
-        "ON rag_chunks (tenant_id);"
-    )
-    # IVFFlat cosine index — matches the semantic_cache pattern (lists=100
-    # is a fine starting point for our expected corpus size of a few
-    # thousand chunks; pgvector recommends sqrt(rows) once you scale).
-    op.execute(
-        """
-        DO $$
-        BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM pg_class WHERE relname = 'rag_chunks_embedding_idx'
-            ) THEN
-                CREATE INDEX rag_chunks_embedding_idx
-                    ON rag_chunks
-                    USING ivfflat (embedding vector_cosine_ops)
-                    WITH (lists = 100);
-            END IF;
-        END$$;
-        """
-    )
+    # INTENTIONALLY OMITTED. rag_documents + rag_chunks are owned exclusively
+    # by the sibling revision 0005_rag_knowledge_base (both 0005_* migrations
+    # branched off 0004 in parallel). This revision USED to also
+    # `CREATE TABLE IF NOT EXISTS` those two with a *different* schema
+    # (rag_chunks WITH a tenant_id column, rag_documents with
+    # error_message/source_path instead of storage_key/error_text). Because
+    # both used IF NOT EXISTS, whichever branch ran first won, the other's
+    # CREATE no-op'd, and then this revision's `CREATE INDEX ... (tenant_id)`
+    # blew up with "column tenant_id does not exist" on a fresh DB — breaking
+    # the very first import. The monolith's RAG code (rag.py) uses the
+    # rag_knowledge_base schema (tenant_id + storage_key + error_text), and
+    # nothing in the monolith uses the tenant_id index this revision tried to
+    # add, so we let rag_knowledge_base be the single owner of those tables.
+    # rag_chat_turns + admin_chat_memories below remain this revision's own.
 
     # ---- 2. Chat-turn recall (cross-chat semantic memory) --------------
     op.execute(
@@ -216,7 +160,8 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute("DROP TABLE IF EXISTS admin_chat_memories;")
     op.execute("DROP TABLE IF EXISTS rag_chat_turns;")
-    op.execute("DROP TABLE IF EXISTS rag_chunks;")
-    op.execute("DROP TABLE IF EXISTS rag_documents;")
+    # rag_chunks + rag_documents are owned by 0005_rag_knowledge_base — that
+    # revision's downgrade drops them; this one must not (it no longer creates
+    # them, see upgrade()).
     # Do NOT drop the vector extension — semantic_cache + future migrations
     # depend on it. The extension is shared infra.

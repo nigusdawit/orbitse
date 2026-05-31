@@ -4399,8 +4399,42 @@ TO CUSTOMIZE THIS DASHBOARD:
   // <head> and wraps window.fetch so every state-changing /admin/* request
   // carries the X-CSRF-Token header. Existing fetch() call sites need no
   // changes — the wrapper transparently adds the header before delegating.
-  // On 403 csrf_failed responses we surface a friendly toast and force a
-  // page reload so the user picks up a fresh token.
+  // On 403 csrf_failed responses we surface a non-navigating banner prompting
+  // the user to refresh manually. We deliberately do NOT call
+  // window.location.reload() here: inside Replit's preview iframe, a
+  // programmatic reload/navigation from within the frame trips Replit's webview
+  // "uncaught exception" overlay, which looks like the app crashed. A
+  // user-initiated click on the banner does the refresh instead, which the
+  // iframe allows.
+  // Inject (once) a fixed banner telling the user their session token expired
+  // and offering a Refresh button. The button calls window.location.reload()
+  // from a real user gesture, which Replit's iframe permits — unlike a
+  // programmatic reload, which trips the webview overlay. Idempotent: a second
+  // call while the banner is showing is a no-op.
+  function showCsrfRefreshBanner() {
+    if (document.getElementById('csrf-refresh-banner')) return;
+    var bar = document.createElement('div');
+    bar.id = 'csrf-refresh-banner';
+    bar.setAttribute('role', 'alert');
+    bar.style.cssText =
+      'position:fixed;top:0;left:0;right:0;z-index:99999;' +
+      'background:#b91c1c;color:#fff;padding:10px 16px;font-size:14px;' +
+      'display:flex;align-items:center;justify-content:center;gap:12px;' +
+      'box-shadow:0 2px 8px rgba(0,0,0,.25);font-family:inherit;';
+    var msg = document.createElement('span');
+    msg.textContent = 'Your session security token expired. Refresh to continue.';
+    var btn = document.createElement('button');
+    btn.textContent = 'Refresh';
+    btn.setAttribute('data-testid', 'button-csrf-refresh');
+    btn.style.cssText =
+      'background:#fff;color:#b91c1c;border:0;border-radius:6px;' +
+      'padding:5px 14px;font-weight:600;cursor:pointer;';
+    btn.addEventListener('click', function () { window.location.reload(); });
+    bar.appendChild(msg);
+    bar.appendChild(btn);
+    document.body.appendChild(bar);
+  }
+
   (function installCsrfFetchWrapper() {
     const meta = document.querySelector('meta[name="csrf-token"]');
     const TOKEN = meta ? (meta.getAttribute('content') || '') : '';
@@ -4435,8 +4469,8 @@ TO CUSTOMIZE THIS DASHBOARD:
             const cloned = res.clone();
             cloned.json().then(function(j) {
               if (j && j.csrf_failed) {
-                console.warn('[csrf] token rejected — reloading');
-                setTimeout(function() { window.location.reload(); }, 250);
+                console.warn('[csrf] token rejected — prompting manual refresh');
+                showCsrfRefreshBanner();
               }
             }).catch(function() {});
           }
