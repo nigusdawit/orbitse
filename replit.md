@@ -942,6 +942,133 @@ A new "Developer" admin tab combining (a) an embedded **runbook** of "when you c
 
 - **What this does NOT do**: it does NOT change any database schema (zero new tables, zero migrations, zero ALTER); it does NOT auto-refresh the snapshot or auto-fire any probe (only the explicit Refresh button + each "Test now" button trigger network); it does NOT cache probe results across requests (each "Test now" hits the provider live so a freshly-rotated key surfaces immediately, and a freshly-broken integration isn't masked by stale state); it does NOT allow arbitrary recipients for test-email / test-sms (deliberately pinned to `ADMIN_EMAIL` / `ADMIN_PHONE` so a leaked admin session can't relay outbound spam); it does NOT modify `package.json` or its scripts (none added/changed); and it does NOT introduce any new background thread or scheduled task (every probe is request-scoped, terminating with the response).
 
+## Client Mode + Embeddable Widget + WordPress SSO (Tier 11 — May 2026)
+
+This tier turns the single production platform into a **client-shippable product**
+without forking the codebase. The same `app.py` now (a) hides the operator-only
+website-builder surface behind a feature flag so a client install only sees the AI
+concierge, (b) serves the chatbot as a **cross-origin embeddable widget** any
+third-party site can paste in, and (c) lets a WordPress plugin **single-sign-on**
+the client straight into the hosted admin from inside wp-admin. Motivation: the
+extraction-into-a-blueprint-package experiment (`admin_ai_platform/`) felt like a
+fresh, unproven codebase; the monolith is the tested, production-ready one — so we
+keep shipping the monolith and just **toggle off what clients don't get**. No new
+runtime dependencies; all changes live in `app.py` plus copied static assets.
+
+- **`website_builder` feature flag + `CLIENT_MODE` env (the carve-out).** A new
+  registry entry `("website_builder", "Website builder (themes/pages/SEO/sections)",
+  "solo", True, "Website")` was added to `_FEATURE_REGISTRY` (defaults **ON**, so
+  the operator's own install is unchanged). Right after `_FEATURE_DEFAULTS` is built,
+  a `CLIENT_MODE` block flips operator-only features off **by default** when the env
+  var is truthy:
+  ```python
+  _OPERATOR_ONLY_FEATURES = ("website_builder",)
+  _CLIENT_MODE = os.environ.get("CLIENT_MODE", "").strip().lower() in ("1","true","yes","on")
+  if _CLIENT_MODE:
+      for _f in _OPERATOR_ONLY_FEATURES:
+          _FEATURE_DEFAULTS[_f] = False
+  ```
+  The enforcement is purely at the route layer via `_FEATURE_ROUTE_PREFIXES`: the
+  website-builder admin prefixes — `theme`, `curated-font-pairs`, `site-settings`,
+  `page-sections`, `pages`, `custom-sections`, `section-visibility`, `seo`,
+  `social-links`, `sphere-images`, `sphere-settings`, `video-gallery`, `podcast`,
+  `reorder` — are all mapped to `"website_builder"`, so the existing
+  `_enforce_feature_flags()` before_request returns **403 (admin) / 404 (anon GET)**
+  when the flag is off. **Deliberately NOT gated** (left on for clients because the
+  AI references them, or because they're a separate product surface):
+  `blog`/`team`/`faq`/`testimonials`/`experiences`/`pricing`/`business-info` and
+  `/admin/api/marketing` (Marketing Insights). A per-tenant DB override in
+  `tenant_features` still wins over the default either way, so an operator can turn
+  the builder back on for a specific client without changing env.
+
+- **Cross-origin embeddable widget (publishable keys + scoped CORS).** A new
+  `tenant_embed_keys` table (created in `init_db()` alongside `feature_addons`)
+  stores per-client **publishable** keys: `tenant_id`, `embed_key` (the `pk_...`
+  string the client pastes into their site), `label`, and `origin_allowlist`
+  (JSONB array of allowed origins; `["*"]` allowed only for test keys). The embed
+  layer lives right after `admin_required` (~line 5278): `_EMBEDDABLE_PREFIXES`
+  whitelists which API paths a keyed cross-origin request may reach (the public
+  chat + chatbot-settings surface — never the admin API), and a
+  `@app.before_request _embed_auth` / `@app.after_request _embed_cors` pair
+  resolves the `X-Embed-Key` header, checks the request `Origin` against that key's
+  allowlist, and echoes the **exact** origin back in `Access-Control-Allow-Origin`
+  (never `*`). A bad key or a non-allowlisted origin → **403**; a request with **no**
+  key (same-origin / first-party) is left completely unchanged (200, no CORS
+  headers) so the operator's own site is unaffected. **CORS preflight is handled
+  specially**: `OPTIONS` requests do NOT carry the `X-Embed-Key` header, so the
+  preflight branch answers permissively (echo `Origin`, `Access-Control-Allow-Methods:
+  GET, POST, OPTIONS`, `Access-Control-Allow-Headers: Content-Type, X-Embed-Key`,
+  **204**) WITHOUT trying to resolve a key — the actual follow-up GET/POST still
+  enforces key+origin. (This preflight gap was caught by a live cross-origin browser
+  test: the browser fired only the OPTIONS and never the real request, because the
+  original code tried to resolve the absent key during preflight and produced no
+  CORS headers.)
+
+- **Loader + widget static assets.** `GET /embed/loader.js` serves the small
+  bootstrap script a client pastes via `<script src=".../embed/loader.js"
+  data-embed-key="pk_..." data-api-base="https://...">`. `GET /widget/<path:filename>`
+  serves the widget bundle from an **allowlist** (`{chat-ui.js, chat-ui.css,
+  voice.js}` only — any other filename 404s, so it can't be used to read arbitrary
+  files). Those three assets were copied into `embed/widget/` (from the
+  `admin_ai_platform/web/` reference) so the loader's cross-origin fetches resolve.
+  `GET/POST/PUT/DELETE /admin/api/embed-keys` is the operator CRUD for minting and
+  revoking client keys (all `@admin_required`, POSTs covered by the existing CSRF
+  middleware).
+
+- **WordPress-embedded admin SSO (`/admin/sso`).** Lets the WP plugin drop the
+  hosted per-tenant admin into a wp-admin iframe without the client re-entering a
+  password. Plugin (PHP) and platform (Python) share a confidential
+  `SSO_SIGNING_SECRET` (never sent to the browser) and a **byte-identical** token
+  scheme: `payload = {"tid", "exp", "jti"}`, `b64 = base64url(json(payload))` (no
+  padding), `sig = base64url(HMAC-SHA256(b64, secret))`, `token = b64 + "." + sig`.
+  `_sso_verify_token` does a constant-time signature check, requires `exp` in the
+  future AND lifetime ≤ ~60s (rejects long-lived tokens even if correctly signed),
+  and enforces **single-use** via the new `sso_used_jtis` table
+  (`INSERT ... ON CONFLICT (jti) DO NOTHING RETURNING jti` — a replay claims nothing
+  and is rejected). `GET /admin/sso?token=...` returns **302 → /admin** on success
+  (setting `session["admin_logged_in"]=True`), **503** if no signing secret is
+  configured, and **403** on a forged / expired / replayed token. (The extracted
+  reference implementation is `admin_ai_platform/sso.py` — same scheme, same
+  constants; the monolith carries its own copy of the helpers inline.)
+
+- **New env vars.** `CLIENT_MODE` (truthy → operator-only features default off) and
+  `SSO_SIGNING_SECRET` (HMAC secret shared with the WP plugin; SSO returns 503 until
+  it's set). Both belong in the host environment / Secrets tab, not the DB.
+
+- **Per-install key reference: `KEYS.md`** (repo root) documents, for each install,
+  where every kind of key lives: **provider keys** (OpenAI/Anthropic/Twilio/etc.) =
+  server env vars; **embed keys** = rows in `tenant_embed_keys` (publishable,
+  origin-restricted, safe to expose in client HTML); **DB-stored secrets** =
+  Fernet-encrypted with a key derived from `FLASK_SECRET_KEY` (so that var must stay
+  stable across restarts or encrypted credentials become unreadable); plus a
+  provisioning checklist and the two operator decisions (whose provider keys a client
+  install uses, and keeping `FLASK_SECRET_KEY` constant).
+
+- **Verification.** Because the monolith boots in-sandbox against an embedded
+  Postgres (`pgserver` under `uv run --python 3.12`), the whole carve-out + embed +
+  SSO surface is exercised by `_carveout_probe.py` (a temporary probe, deleted after
+  use, that asserted **25/25**): registry wiring, builder routes 403/404 when the
+  flag is OFF and NOT feature-blocked when ON, AI/chat routes never gated by
+  `website_builder`, keyed-allowlisted-origin allowed with the CORS header echoed,
+  non-allowlisted-origin / invalid-key → 403, no-key same-origin unchanged, preflight
+  answered 204, loader + widget assets served (and `/widget/secrets.py` → 404),
+  embed-keys admin route requires auth, and the full SSO matrix (valid → 302 +
+  session, replay → 403, forged → 403, expired → 403). `_monolith_preview.py` boots
+  the monolith on :5056 (seeding embed key `pk_preview` with allowlist `["*"]`, an
+  enabled chatbot, and a sample gallery card) and serves `embed-test.html` from a
+  SECOND origin on :8099 so the widget can be loaded cross-origin in a real browser
+  (verified end-to-end via Claude-in-Chrome: widget mounts in a Shadow DOM, greeting
+  + gallery load, `POST /api/chat` reaches the SSE stream — only the reply itself
+  needs `OPENAI_API_KEY`).
+
+- **What this does NOT do.** It does NOT delete or rename any existing route, table,
+  or feature — clients get a *subset* of the same app, gated at the edge, not a
+  stripped fork. It does NOT change the operator's own install unless `CLIENT_MODE`
+  is set (every operator-only default stays ON). It does NOT open CORS with `*` for
+  real keys (origin is always echoed from the per-key allowlist). It does NOT store
+  any new secret in the DB (embed keys are publishable; the SSO secret is env-only).
+  And it does NOT add a background thread, scheduled task, or new pip dependency.
+
 ## How to Edit Content
 
 1. Go to `/admin` in your browser (password: set via ADMIN_PASSWORD env var, default "admin")
@@ -1153,6 +1280,13 @@ templates/
     dashboard.html              — Admin panel (content management, SEO, blog, analytics)
     login.html                  — Admin login page
   blog_post.html                — Individual blog post page template
+embed/
+  widget/
+    chat-ui.js                  — Embeddable widget bundle (served via /widget/<file>)
+    chat-ui.css                 — Embeddable widget styles
+    voice.js                    — Optional voice add-on for the widget
+embed-test.html                 — Cross-origin test page (loads loader.js from a 2nd origin)
+KEYS.md                         — Per-install key reference (provider/embed/DB-secret keys)
 chat-ui-kit/                    — Standalone sellable chat UI template package
   chat-ui.css                   — Chat widget styles (frosted glass, responsive)
   chat-ui.html                  — HTML partial (chat bar, panels, canvas, split-screen)

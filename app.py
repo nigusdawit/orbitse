@@ -2181,6 +2181,28 @@ def init_db():
                     note         TEXT        NOT NULL DEFAULT '',
                     UNIQUE(tenant_id, feature_name)
                 );
+
+                -- Publishable per-client embed keys for the cross-origin widget.
+                -- origin_allowlist is a JSONB array of allowed page origins; the
+                -- embed before_request validates the request Origin against it.
+                CREATE TABLE IF NOT EXISTS tenant_embed_keys (
+                    id               SERIAL PRIMARY KEY,
+                    tenant_id        INTEGER NOT NULL DEFAULT 1 REFERENCES tenants(id) ON DELETE CASCADE,
+                    embed_key        VARCHAR(64) UNIQUE NOT NULL,
+                    label            TEXT NOT NULL DEFAULT '',
+                    origin_allowlist JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    enabled          BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at       TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_tenant_embed_keys_key
+                    ON tenant_embed_keys (embed_key);
+
+                -- Single-use SSO token jti ledger (WordPress-embedded admin).
+                -- A token's jti is recorded on first use so it can't be replayed.
+                CREATE TABLE IF NOT EXISTS sso_used_jtis (
+                    jti         VARCHAR(64) PRIMARY KEY,
+                    expires_at  TIMESTAMP NOT NULL
+                );
             """)
 
             # Seed the voice_settings singleton row (idempotent)
@@ -3946,6 +3968,11 @@ def init_db():
 
 # (feature_name, human_label, plan_tier_required, default_enabled, group)
 _FEATURE_REGISTRY = [
+    # Website builder (the public marketing-site editor surface). Turn this OFF
+    # for "client" installs that only want the AI concierge + its admin — the
+    # before_request hook then 403s every website-builder admin route. Defaults
+    # ON so existing operator installs are completely unaffected.
+    ("website_builder",      "Website builder (themes/pages/SEO/sections)", "solo", True, "Website"),
     # Core (always on for paid plans)
     ("site_themes",          "Site Themes",                  "solo",       True,  "Design"),
     ("site_designs",         "Multi-Homepage Designs",       "growth",     True,  "Design"),
@@ -3969,6 +3996,17 @@ _FEATURE_REGISTRY = [
 ]
 _FEATURE_NAMES = {row[0] for row in _FEATURE_REGISTRY}
 _FEATURE_DEFAULTS = {row[0]: row[3] for row in _FEATURE_REGISTRY}
+
+# CLIENT_MODE — a one-switch "this install is a client, not the operator" flag.
+# When truthy, operator-only features default OFF, so a fresh client install has
+# the website-builder surface disabled with no manual toggling. Operators leave
+# CLIENT_MODE unset → every default stays exactly as before (fully unaffected).
+# Per-tenant overrides in the Plans & Features tab still win over these defaults.
+_OPERATOR_ONLY_FEATURES = ("website_builder",)
+_CLIENT_MODE = os.environ.get("CLIENT_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+if _CLIENT_MODE:
+    for _f in _OPERATOR_ONLY_FEATURES:
+        _FEATURE_DEFAULTS[_f] = False
 
 # Per-process cache of {(tenant_id, feature_name): enabled_bool, expires_at}.
 # Tiny TTL so flag flips become visible quickly across requests without
@@ -4162,6 +4200,26 @@ _FEATURE_ROUTE_PREFIXES = [
     ("/api/generated-pages",       "generated_pages"),
     ("/api/presentations/",        "presentations"),
     ("/api/voice/",                "voice"),
+    # Website-builder (marketing-site editor) admin routes — gated as a unit by
+    # the `website_builder` flag so a client install has the whole site-builder
+    # surface disabled at the route layer while keeping the AI concierge admin.
+    # NOTE: deliberately EXCLUDES AI-referenced content the concierge reads
+    # (blog/team/faq/testimonials/experiences/pricing/business-info) and
+    # /admin/api/marketing (= Marketing Insights, an AI feature).
+    ("/admin/api/theme",             "website_builder"),
+    ("/admin/api/curated-font-pairs", "website_builder"),
+    ("/admin/api/site-settings",     "website_builder"),
+    ("/admin/api/page-sections",     "website_builder"),
+    ("/admin/api/pages",             "website_builder"),
+    ("/admin/api/custom-sections",   "website_builder"),
+    ("/admin/api/section-visibility", "website_builder"),
+    ("/admin/api/seo",               "website_builder"),
+    ("/admin/api/social-links",      "website_builder"),
+    ("/admin/api/sphere-images",     "website_builder"),
+    ("/admin/api/sphere-settings",   "website_builder"),
+    ("/admin/api/video-gallery",     "website_builder"),
+    ("/admin/api/podcast",           "website_builder"),
+    ("/admin/api/reorder",           "website_builder"),
     # Public ingress for the automations webhook trigger. We DO gate this
     # one — if a tenant turns Automations off, third-party services hitting
     # the saved hook URL should get a 404 (not silently consume the post).
@@ -5225,6 +5283,289 @@ def admin_required(f):
             return redirect(url_for("admin_login"))
         return f(*args, **kwargs)
     return decorated_function
+
+
+# =============================================================================
+# EMBED / CROSS-ORIGIN WIDGET  (client distribution layer)
+# =============================================================================
+# Lets a client drop the chat widget on their OWN third-party site via a
+# publishable per-client embed key (origin-allowlisted). A request with NO key
+# is treated as first-party / same-origin (the operator's own site) and passes
+# through UNCHANGED — so existing installs behave exactly as before. A keyed
+# cross-origin request must carry an Origin in the key's allowlist and gets
+# scoped CORS headers (never '*').
+import secrets as _embed_secrets
+from urllib.parse import urlparse as _embed_urlparse
+
+_EMBEDDABLE_PREFIXES = (
+    "/api/chat", "/api/chatbot-settings", "/api/voice/", "/api/forms/",
+    "/api/gallery-cards", "/api/products", "/api/services", "/api/presentations/",
+)
+
+
+def _embed_is_embeddable(path):
+    return any(path.startswith(p) for p in _EMBEDDABLE_PREFIXES)
+
+
+def _embed_request_origin():
+    origin = (request.headers.get("Origin") or "").strip()
+    if origin:
+        return origin
+    ref = (request.headers.get("Referer") or "").strip()
+    if ref:
+        try:
+            p = _embed_urlparse(ref)
+            if p.scheme and p.netloc:
+                return f"{p.scheme}://{p.netloc}"
+        except Exception:
+            pass
+    return ""
+
+
+def _embed_resolve_key(key):
+    if not key:
+        return None
+    try:
+        return query_db(
+            "SELECT tenant_id, origin_allowlist, enabled FROM tenant_embed_keys "
+            "WHERE embed_key = %s", (key,), fetchone=True)
+    except Exception:
+        return None
+
+
+def _embed_origin_allowed(origin, allowlist):
+    if not origin:
+        return False
+    al = allowlist if isinstance(allowlist, list) else []
+    if isinstance(allowlist, str):
+        try:
+            al = json.loads(allowlist)
+        except Exception:
+            al = []
+    if "*" in al:
+        return True
+    return origin in al
+
+
+def _embed_apply_cors(resp, key):
+    origin = _embed_request_origin()
+    if not origin:
+        return
+    row = _embed_resolve_key((key or "").strip())
+    if row and _embed_origin_allowed(origin, row.get("origin_allowlist")):
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        existing_vary = resp.headers.get("Vary", "")
+        if "origin" not in existing_vary.lower():
+            resp.headers["Vary"] = (existing_vary + ", Origin").lstrip(", ") if existing_vary else "Origin"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Embed-Key"
+        resp.headers["Access-Control-Max-Age"] = "600"
+
+
+@app.before_request
+def _embed_auth():
+    from flask import g
+    path = request.path or ""
+    if not _embed_is_embeddable(path):
+        return None
+    key = (request.headers.get("X-Embed-Key", "") or request.args.get("embed_key", "")).strip()
+    origin = _embed_request_origin()
+    if request.method == "OPTIONS":
+        # CORS preflight requests do NOT carry custom headers (no X-Embed-Key),
+        # so we can't resolve/validate the key here. Preflight is only a
+        # capability check — answer it permissively (echo the requesting origin +
+        # the allowed methods/headers). The ACTUAL request still enforces the
+        # embed key + origin allowlist below, and only an allowed request gets
+        # CORS on its real response (via the after_request hook).
+        resp = make_response("", 204)
+        if origin:
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Vary"] = "Origin"
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Embed-Key"
+            resp.headers["Access-Control-Max-Age"] = "600"
+        return resp
+    if key:
+        row = _embed_resolve_key(key)
+        if not row or not row.get("enabled"):
+            return jsonify({"error": "invalid embed key"}), 403
+        if origin and not _embed_origin_allowed(origin, row.get("origin_allowlist")):
+            return jsonify({"error": "origin not allowed for this embed key"}), 403
+        g._embed_keyed = True
+        g._embed_key = key
+    # No key → treat as first-party / same-origin; behavior is unchanged.
+    return None
+
+
+@app.after_request
+def _embed_cors(resp):
+    from flask import g
+    if getattr(g, "_embed_keyed", False):
+        _embed_apply_cors(resp, getattr(g, "_embed_key", ""))
+    return resp
+
+
+@app.route("/embed/loader.js", methods=["GET"])
+def embed_loader_js():
+    """Serve the cross-origin Shadow-DOM widget loader. Script tags need no CORS;
+    served with a JS content type + a short cache."""
+    embed_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "embed")
+    resp = send_from_directory(embed_dir, "loader.js")
+    resp.headers["Content-Type"] = "text/javascript"
+    resp.headers["Cache-Control"] = "public, max-age=300"
+    return resp
+
+
+_WIDGET_ALLOWED = {"chat-ui.js", "chat-ui.css", "voice.js"}
+
+
+@app.route("/widget/<path:filename>", methods=["GET"])
+def embed_widget_asset(filename):
+    """Serve the embeddable widget assets the loader pulls (chat-ui.js/css,
+    voice.js). Loaded cross-origin via <script>/<link>, which need no CORS."""
+    if filename not in _WIDGET_ALLOWED:
+        abort(404)
+    widget_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "embed", "widget")
+    resp = send_from_directory(widget_dir, filename)
+    if filename.endswith(".js"):
+        resp.headers["Content-Type"] = "text/javascript"
+    elif filename.endswith(".css"):
+        resp.headers["Content-Type"] = "text/css"
+    resp.headers["Cache-Control"] = "public, max-age=300"
+    return resp
+
+
+@app.route("/admin/api/embed-keys", methods=["GET"])
+@admin_required
+def admin_list_embed_keys():
+    rows = query_db("SELECT * FROM tenant_embed_keys WHERE tenant_id = %s ORDER BY id DESC",
+                    (current_tenant_id(),))
+    return jsonify({"keys": rows or []})
+
+
+@app.route("/admin/api/embed-keys", methods=["POST"])
+@admin_required
+def admin_create_embed_key():
+    d = request.get_json() or {}
+    key = "pk_" + _embed_secrets.token_urlsafe(24)
+    row = execute_db(
+        "INSERT INTO tenant_embed_keys (tenant_id, embed_key, label, origin_allowlist) "
+        "VALUES (%s, %s, %s, %s::jsonb) RETURNING *",
+        (current_tenant_id(), key, d.get("label", ""), json.dumps(d.get("origin_allowlist", []))))
+    return jsonify(row), 201
+
+
+@app.route("/admin/api/embed-keys/<int:kid>", methods=["PUT"])
+@admin_required
+def admin_update_embed_key(kid):
+    d = request.get_json() or {}
+    sets, vals = [], []
+    if "label" in d:
+        sets.append("label = %s")
+        vals.append(d["label"])
+    if "origin_allowlist" in d:
+        sets.append("origin_allowlist = %s::jsonb")
+        vals.append(json.dumps(d["origin_allowlist"]))
+    if "enabled" in d:
+        sets.append("enabled = %s")
+        vals.append(bool(d["enabled"]))
+    if not sets:
+        return jsonify({"error": "No fields"}), 400
+    vals.extend([kid, current_tenant_id()])
+    row = execute_db(
+        "UPDATE tenant_embed_keys SET " + ", ".join(sets)
+        + " WHERE id = %s AND tenant_id = %s RETURNING *", tuple(vals))
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(row)
+
+
+@app.route("/admin/api/embed-keys/<int:kid>", methods=["DELETE"])
+@admin_required
+def admin_delete_embed_key(kid):
+    execute_db("DELETE FROM tenant_embed_keys WHERE id = %s AND tenant_id = %s",
+               (kid, current_tenant_id()))
+    return jsonify({"success": True})
+
+
+# ---- WordPress-embedded admin SSO ----------------------------------------
+# The WP plugin mints a single-use, short-lived HMAC token (the identical scheme
+# below) with the shared SSO_SIGNING_SECRET and iframes /admin/sso?token=...; we
+# verify it, establish the admin session, and redirect into /admin. Token format
+# (PHP and Python agree exactly): payload {tid, exp, jti} → b64url(json) +
+# "." + b64url(HMAC-SHA256(b64, secret)). No secret configured → SSO disabled.
+import time as _sso_time
+
+_SSO_SIGNING_SECRET = os.environ.get("SSO_SIGNING_SECRET", "").strip()
+_SSO_MAX_TTL_SECONDS = 60
+
+
+def _sso_b64u_decode(s):
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s + pad)
+
+
+def _sso_sign(b64_payload, secret):
+    import hmac as _hmac
+    return base64.urlsafe_b64encode(
+        _hmac.new(secret.encode("utf-8"), b64_payload.encode("ascii"),
+                  hashlib.sha256).digest()).rstrip(b"=").decode("ascii")
+
+
+def _sso_claim_jti(jti, exp):
+    """Record the jti once (single-use). Returns True only if THIS call claimed
+    it. Fails open to allowing the login if the DB is briefly unavailable."""
+    try:
+        row = execute_db(
+            "INSERT INTO sso_used_jtis (jti, expires_at) VALUES (%s, to_timestamp(%s)) "
+            "ON CONFLICT (jti) DO NOTHING RETURNING jti", (jti, exp))
+        return row is not None
+    except Exception as e:
+        print(f"[sso] jti claim failed (allowing): {e}")
+        return True
+
+
+def _sso_verify_token(token):
+    """Return the tenant_id for a valid, unused, unexpired token, else None.
+    Constant-time signature check; rejects expired / over-long / replayed tokens."""
+    import hmac as _hmac
+    secret = _SSO_SIGNING_SECRET
+    if not secret or not token or "." not in token:
+        return None
+    b64, _, sig = token.partition(".")
+    if not _hmac.compare_digest(sig, _sso_sign(b64, secret)):
+        return None
+    try:
+        payload = json.loads(_sso_b64u_decode(b64))
+    except Exception:
+        return None
+    now = _sso_time.time()
+    exp = payload.get("exp", 0)
+    if not isinstance(exp, (int, float)) or exp <= now:
+        return None
+    if exp - now > _SSO_MAX_TTL_SECONDS + 5:
+        return None
+    jti, tid = payload.get("jti"), payload.get("tid")
+    if not jti or tid is None:
+        return None
+    if not _sso_claim_jti(jti, exp):
+        return None
+    return int(tid)
+
+
+@app.route("/admin/sso", methods=["GET"])
+def admin_sso():
+    """Single-use SSO entry for the WordPress-embedded admin iframe. Verifies the
+    plugin's signed token, establishes the admin session, and redirects to /admin.
+    403 on a missing/forged/expired/replayed token."""
+    if not _SSO_SIGNING_SECRET:
+        return jsonify({"error": "SSO is not configured"}), 503
+    tid = _sso_verify_token(request.args.get("token", ""))
+    if tid is None:
+        return jsonify({"error": "invalid or expired SSO token"}), 403
+    session["admin_logged_in"] = True
+    session.permanent = True
+    return redirect("/admin")
 
 
 @app.route("/admin/login", methods=["GET", "POST"])
