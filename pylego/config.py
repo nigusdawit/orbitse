@@ -152,6 +152,16 @@ class PylegoConfig:
     meeting_calendar_mcp_server: str   # mcp_servers.name to push events to ("" → store-only)
     meeting_calendar_tool: str         # tool name on that server ("" → 'create_event')
 
+    # ---- Live AI phone call (task 049 — Epic F) -----------------------------
+    # Gate for the Twilio Voice webhook routing inbound calls to the AI. Inert
+    # default OFF → the webhook politely declines. The live media bridge needs a
+    # public wss endpoint (voice_wss_url) streaming to a realtime voice model —
+    # the credential/infra leg, deferred to an operator runbook. With no wss set,
+    # the call gets a spoken fallback message (no media bridge).
+    live_call_enabled: bool
+    voice_wss_url: str                 # wss:// media-stream endpoint ("" → spoken fallback)
+    voice_greeting: str                # greeting spoken before connecting
+
     # ---- Activity logging (task 031) ----------------------------------------
     activity_logging_enabled: bool    # persist each admin-AI turn to ai_activity_log
 
@@ -240,6 +250,11 @@ def _build() -> PylegoConfig:
         meeting_default_duration_minutes=_env_int("MEETING_DEFAULT_DURATION_MINUTES", 30),
         meeting_calendar_mcp_server=os.environ.get("MEETING_CALENDAR_MCP_SERVER", "").strip(),
         meeting_calendar_tool=os.environ.get("MEETING_CALENDAR_TOOL", "").strip(),
+        # Live AI phone call — wired in 049; inert default (webhook declines).
+        live_call_enabled=_env_bool("LIVE_CALL_ENABLED", False),
+        voice_wss_url=os.environ.get("VOICE_WSS_URL", "").strip(),
+        voice_greeting=os.environ.get(
+            "VOICE_GREETING", "Hello! Connecting you to our AI assistant.").strip(),
         # Activity logging — wired in 031 (default ON: low-volume admin turns).
         activity_logging_enabled=_env_bool("ADMIN_CHAT_ACTIVITY_LOGGING", True),
         # KB ingestion — wired in 039; inert default (inline ingestion).
