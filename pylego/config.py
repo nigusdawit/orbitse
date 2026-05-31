@@ -77,8 +77,13 @@ class PylegoConfig:
     respcache_enabled: bool
     respcache_threshold: float
 
-    # ---- Safety (task 029 — defaults off / current behavior) ----------------
+    # ---- Safety (task 029) --------------------------------------------------
+    # sqlguard/structured default OFF (they can affect behavior — they're a
+    # stricter layer on top of the monolith's existing guards). redact defaults
+    # ON because it only sanitizes observability output (logs/traces) — it can
+    # never change app behavior, responses, or stored data, so it's safe-by-default.
     sqlguard_enabled: bool
+    structured_enabled: bool
     redact_enabled: bool
 
     @property
@@ -112,7 +117,8 @@ def _build() -> PylegoConfig:
         respcache_threshold=_env_float("ADMIN_RESPCACHE_THRESHOLD", 0.93),
         # Safety — wired in 029.
         sqlguard_enabled=_env_bool("ADMIN_SQLGUARD_ENABLED", False),
-        redact_enabled=_env_bool("ADMIN_REDACT_ENABLED", False),
+        structured_enabled=_env_bool("ADMIN_STRUCTURED_ARGS_ENABLED", False),
+        redact_enabled=_env_bool("ADMIN_REDACT_ENABLED", True),  # log-only → safe default-on
     )
 
 

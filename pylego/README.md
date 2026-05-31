@@ -23,10 +23,10 @@ propagate. See `PLAN_ADMIN_AI.md`.
 | `ratelimit.py` | `@altay/rate-limit` | ✅ task 027 — fixed-window limiter, Postgres (cluster-wide) or memory store, fail-open. Default off. |
 | `history.py` | `@altay/chat-history` | ✅ task 028 — token-aware trim (tiktoken or chars/4 fallback); budget 0 = off; never orphans a tool msg. |
 | `respcache.py` | `@altay/semantic-response-cache` | ✅ task 028 — semantic cache; admin wiring stores ONLY no-tool answers (never stale data); PII-guarded; default off. |
-| `sqlguard.py` | `@altay/sql-guardrail` | ⏳ task 029. |
-| `redact.py` | `@altay/pii-redact` | ⏳ task 029. |
-| `structured.py` | `@altay/structured-llm` | ⏳ task 029. |
-| `action_queue.py` | `@altay/admin-action-queue` | ⏳ task 029. |
+| `sqlguard.py` | `@altay/sql-guardrail` | ✅ task 029 — independent read-only SQL validator; wired as an OPTIONAL extra gate on the admin SQL tool (default off; stricter-only). |
+| `redact.py` | `@altay/pii-redact` | ✅ task 029 — PII/secret redactor; wired to sanitize obs log/trace `error_text` (default ON — log-only, can't disturb behavior). |
+| `structured.py` | `@altay/structured-llm` | ✅ task 029 — tool-arg parse + retry-with-feedback (tested module; opt-in, unwired by default). |
+| `action_queue.py` | `@altay/admin-action-queue` | ✅ task 029 — approval status-machine + idempotency-key helpers (tested module; the live flow already has statuses). |
 
 ## Config
 

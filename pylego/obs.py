@@ -169,7 +169,17 @@ def _emit(meta: Dict[str, Any], tally: _TurnTally, started: float, status: str) 
             **tally.as_dict(),
         }
         if tally.errored and tally.error_text:
-            record["error_text"] = tally.error_text
+            # Redact secrets/PII from the exception text before it lands in logs
+            # or a trace (an LLM/provider error can echo an API key or email).
+            # log-only → safe; enabled by default. Lazy import keeps obs light.
+            err_text = tally.error_text
+            if cfg.redact_enabled:
+                try:
+                    from . import redact
+                    err_text = redact.redact_text(err_text)
+                except Exception:
+                    pass
+            record["error_text"] = err_text
 
         if cfg.obs_local_logging:
             _log.info("admin_chat_turn %s", json.dumps(record, default=str))

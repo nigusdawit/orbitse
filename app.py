@@ -13821,6 +13821,18 @@ def _admin_tool_run_sql(sql=None, **_):
     safe, err = _admin_safe_sql(sql or "")
     if err:
         return {"error": err}
+    # Optional pylego defense-in-depth: an independent read-only-SQL validator
+    # layered ON TOP of _admin_safe_sql. Disabled by default; when enabled it
+    # can only REJECT more (never permit more), so turning it on can't open a
+    # hole. The execution below also pins transaction_read_only regardless.
+    try:
+        if _pylego_config.get_config().sqlguard_enabled:
+            from pylego import sqlguard as _sg
+            _ok, _reason = _sg.check(safe)
+            if not _ok:
+                return {"error": f"Blocked by SQL guard: {_reason}"}
+    except Exception:
+        pass  # fail-open to the already-validated `safe` query
     conn = None
     try:
         conn = get_db()
