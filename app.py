@@ -1004,6 +1004,14 @@ def _ai_control_registry():
     """Ordered catalog of tunable knobs. `attr` is the pylego.config field that
     supplies the env/default fallback; `type` drives coercion + the UI control."""
     return [
+        # Master kill switch — one toggle to disable ALL AI enhancements.
+        {"key": "ai_enhancements_enabled", "attr": "ai_enhancements_enabled", "type": "bool",
+         "group": "Master", "label": "AI enhancements (master switch)",
+         "env": "AI_ENHANCEMENTS_ENABLED",
+         "description": "Master ON/OFF. When OFF, every enhancement below reverts to "
+                        "pre-pylego behavior: no activity logging, no retries/fallback/"
+                        "trim/cache/sqlguard — the agents behave exactly as before. Leave "
+                        "ON normally; flip OFF if anything misbehaves."},
         # Reliability
         {"key": "llm_timeout", "attr": "llm_timeout_seconds", "type": "float",
          "group": "Reliability", "label": "LLM call timeout (seconds)",
@@ -1099,13 +1107,44 @@ def _ai_control_coerce(type_, raw):
     return str(raw)
 
 
+# Inert ("off") value for each behavior knob — what get_ai_setting returns when
+# the master switch is OFF, regardless of any DB/env override. Knobs not listed
+# here fall back to their pylego.config default (their amount-only knobs like
+# rate_limit_max don't matter when their enable flag is forced off).
+_AI_INERT = {
+    "llm_timeout": 0.0, "llm_max_retries": 0, "provider_fallback": False,
+    "fallback_model": "", "rate_limit_enabled": False,
+    "history_token_budget": 0, "history_summarize_enabled": False,
+    "respcache_enabled": False, "sqlguard_enabled": False,
+    "redact_enabled": False, "activity_logging_enabled": False,
+    "visitor_llm_max_retries": 0, "visitor_provider_fallback": False,
+    "visitor_fallback_model": "", "visitor_history_token_budget": 0,
+}
+
+
+def _ai_enhancements_enabled():
+    """Master switch state (DB > env > default True). Cheap — same cached getter."""
+    try:
+        return bool(get_ai_setting("ai_enhancements_enabled"))
+    except Exception:
+        return True
+
+
 def get_ai_setting(key):
     """Effective value of an AI Control knob: DB override if set, else the
     pylego.config (env→default) value. TTL-cached; never raises (falls back to
-    the env/default layer on any DB error)."""
+    the env/default layer on any DB error).
+
+    MASTER KILL SWITCH: when ai_enhancements_enabled is OFF, every OTHER knob
+    reports its inert value (table above), so the whole pylego layer reverts to
+    pre-pylego behavior with one toggle — even overriding DB/env settings."""
     spec = _AI_CONTROL_BY_KEY.get(key)
     if spec is None:
         raise KeyError(f"unknown AI control key: {key}")
+    if key != "ai_enhancements_enabled" and not _ai_enhancements_enabled():
+        if key in _AI_INERT:
+            return _AI_INERT[key]
+        return getattr(_pylego_config.get_config(), spec["attr"])
     now = _time.time()
     cached = _AI_CONTROL_CACHE.get(key)
     if cached is not None and cached[1] > now:
