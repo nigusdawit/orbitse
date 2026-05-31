@@ -1147,6 +1147,20 @@ def _ai_control_registry():
          "env": "TEAM_NOTIFY_SMS",
          "description": "Where team notifications are texted (requires Twilio configured). "
                         "Blank = no SMS notifications."},
+        # Visitor persona router (Phase 6 / task 046)
+        {"key": "visitor_persona_router_enabled", "attr": "visitor_persona_router_enabled", "type": "bool",
+         "group": "Visitor Personas", "label": "Route visitors to specialist personas",
+         "env": "VISITOR_PERSONA_ROUTER_ENABLED",
+         "description": "When ON, each visitor turn is classified into one of the personas "
+                        "you define (e.g. Sales / Support / Booking) — each with its own "
+                        "instructions, allowed tools, and optional model. Off = one general "
+                        "agent with all enabled tools (current behavior). Manage personas "
+                        "via the Visitor Personas admin API/tab."},
+        {"key": "visitor_persona_router_model", "attr": "visitor_persona_router_model", "type": "string",
+         "group": "Visitor Personas", "label": "Persona classifier model",
+         "env": "VISITOR_PERSONA_ROUTER_MODEL",
+         "description": "Model for the cheap per-turn persona classifier (e.g. gpt-4o-mini). "
+                        "Blank = gpt-4o-mini."},
         # Activity
         {"key": "activity_logging_enabled", "attr": "activity_logging_enabled", "type": "bool",
          "group": "Activity", "label": "Log admin-AI turns to the database",
@@ -1210,6 +1224,7 @@ _AI_INERT = {
     "visitor_profiles_enabled": False, "newsletter_signup_enabled": False,
     "offers_enabled": False, "lead_capture_enabled": False,
     "callback_requests_enabled": False, "team_notifications_enabled": False,
+    "visitor_persona_router_enabled": False,
     "visitor_llm_max_retries": 0, "visitor_provider_fallback": False,
     "visitor_fallback_model": "", "visitor_history_token_budget": 0,
 }
@@ -4595,6 +4610,34 @@ def init_db():
                 );
                 CREATE INDEX IF NOT EXISTS callbacks_recent_idx
                     ON callback_requests (tenant_id, created_at DESC);
+                """
+            )
+
+            # VISITOR PERSONAS (Phase 6 / Epic E, task 046) — super-admin-defined
+            # specialist agents (sales / support / booking / …) the visitor
+            # concierge can route a turn to. Each persona augments the system
+            # prompt (prompt_suffix), constrains the tool set (tool_names jsonb;
+            # [] = all tools), and may pin a model. A cheap classifier picks the
+            # persona per turn ONLY when the 'visitor_persona_router_enabled' knob
+            # is on; off = single-agent behavior (unchanged). Also migration 0015.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS visitor_personas (
+                    id            BIGSERIAL PRIMARY KEY,
+                    tenant_id     INTEGER NOT NULL DEFAULT 1,
+                    persona_key   VARCHAR(40) NOT NULL,
+                    label         TEXT NOT NULL DEFAULT '',
+                    prompt_suffix TEXT NOT NULL DEFAULT '',
+                    tool_names    JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    model         TEXT NOT NULL DEFAULT '',
+                    enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+                    sort_order    INTEGER NOT NULL DEFAULT 0,
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (tenant_id, persona_key)
+                );
+                CREATE INDEX IF NOT EXISTS visitor_personas_enabled_idx
+                    ON visitor_personas (tenant_id, enabled, sort_order);
                 """
             )
     finally:
@@ -21803,6 +21846,111 @@ def _visitor_profile_update_async(tenant_id, visitor_id, user_message, final_ans
         print(f"[crm] profile async dispatch skipped: {type(e).__name__}: {e}")
 
 
+# =============================================================================
+# VISITOR PERSONA ROUTER  (Phase 6 / Epic E — task 046)
+# =============================================================================
+# Multi-agent intent routing for the public concierge, mirroring the admin
+# persona router. A cheap classifier picks one super-admin-defined persona per
+# turn; the persona augments the system prompt, constrains the tool set, and may
+# pin a model. Entirely gated by 'visitor_persona_router_enabled' (default OFF →
+# single-agent behavior). Fail-open: any error leaves the turn unconstrained.
+
+VISITOR_PERSONA_ROUTER_PROMPT = (
+    "You are a routing classifier for a website's AI concierge. Read the "
+    "visitor's latest message and pick the single best persona to handle it "
+    "from: {options}. Reply ONLY as JSON: {\"persona\": \"<key>\"}. If none "
+    "clearly fits, use \"general\"."
+)
+
+
+def _visitor_load_personas(tenant_id):
+    """Active personas for the tenant, keyed by persona_key (lowercased).
+    Empty when none are defined/enabled. Fail-open to {}."""
+    try:
+        rows = query_db(
+            "SELECT persona_key, label, prompt_suffix, tool_names, model "
+            "FROM visitor_personas WHERE tenant_id=%s AND enabled=TRUE "
+            "ORDER BY sort_order, id", (tenant_id,)) or []
+    except Exception:
+        rows = []
+    out = {}
+    for r in rows:
+        k = (r.get("persona_key") or "").strip().lower()
+        if k and k != "general":
+            out[k] = r
+    return out
+
+
+def _visitor_classify_persona(message, persona_keys, model=None):
+    """Cheap JSON-mode classifier → a persona key from persona_keys, else
+    'general'. Fail-open to 'general' (router never breaks a turn)."""
+    if not openai_client or not (message or "").strip() or not persona_keys:
+        return "general"
+    mdl = (model or "").strip() or "gpt-4o-mini"
+    if mdl.lower().startswith("claude"):
+        mdl = "gpt-4o-mini"  # classifier uses OpenAI JSON mode
+    options = ", ".join(sorted(set(list(persona_keys) + ["general"])))
+    sys = VISITOR_PERSONA_ROUTER_PROMPT.replace("{options}", options)
+    try:
+        resp = openai_client.with_options(timeout=15.0).chat.completions.create(
+            model=mdl, response_format={"type": "json_object"},
+            max_tokens=40, temperature=0.0,
+            messages=[{"role": "system", "content": sys},
+                      {"role": "user", "content": (message or "")[:1000]}])
+        try:
+            record_chat_cost_from_response(
+                resp, surface="visitor_chat", provider="openai", model=mdl)
+        except Exception:
+            pass
+        data = json.loads(resp.choices[0].message.content or "{}")
+        key = (data.get("persona") or "general").strip().lower()
+        return key if key in persona_keys else "general"
+    except Exception as e:
+        print(f"[persona] classify failed: {type(e).__name__}: {e}")
+        return "general"
+
+
+def _visitor_apply_persona(message, model, provider, active_tools, messages):
+    """When the router is enabled, classify the turn and apply the chosen
+    persona: constrain the tool list, append its prompt_suffix to the system
+    message (mutated in place), and optionally pin its model (only if that
+    provider's client is available). Returns
+    (model, provider, active_tools, persona_key). Fail-open → inputs unchanged,
+    persona_key 'general'."""
+    try:
+        if not get_ai_setting("visitor_persona_router_enabled"):
+            return model, provider, active_tools, "general"
+        personas = _visitor_load_personas(current_tenant_id())
+        if not personas:
+            return model, provider, active_tools, "general"
+        key = _visitor_classify_persona(
+            message, set(personas.keys()),
+            get_ai_setting("visitor_persona_router_model"))
+        p = personas.get(key)
+        if not p:
+            return model, provider, active_tools, "general"
+        # Tool subset — empty tool_names means "all tools" (no constraint).
+        allowed = {str(t).strip() for t in _vp_as_list(p.get("tool_names")) if str(t).strip()}
+        if allowed:
+            active_tools = [t for t in active_tools
+                            if ((t.get("function") or {}).get("name") or "") in allowed]
+        # Prompt augmentation (mutate the system message in place).
+        suffix = (p.get("prompt_suffix") or "").strip()
+        if suffix and messages and messages[0].get("role") == "system":
+            messages[0]["content"] = (messages[0].get("content") or "") + "\n\n" + suffix
+        # Optional per-persona model override (only if its provider is available).
+        pm = (p.get("model") or "").strip()
+        if pm:
+            pp = _provider_for_model(pm)
+            if (pp == "claude" and anthropic_client is not None) or \
+               (pp == "openai" and openai_client is not None):
+                model, provider = pm, pp
+        return model, provider, active_tools, key
+    except Exception as e:
+        print(f"[persona] apply skipped: {type(e).__name__}: {e}")
+        return model, provider, active_tools, "general"
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """
@@ -22697,6 +22845,14 @@ def api_chat():
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
             active_tools = get_active_chat_tools()
+
+            # Phase 6 (046): visitor persona router. When enabled, classify this
+            # turn into a super-admin-defined persona and constrain tools +
+            # augment the system prompt (+ optional model). Default-off → no
+            # change (single agent, all enabled tools). Mutates `messages[0]`
+            # (system) in place; fail-open leaves everything unchanged.
+            model, provider, active_tools, _persona_key = _visitor_apply_persona(
+                message, model, provider, active_tools, messages)
 
             # =========================================================
             # SEMANTIC RESPONSE CACHE — READ HOOK
@@ -27516,6 +27672,127 @@ def admin_list_callbacks():
         "FROM callback_requests WHERE tenant_id=%s ORDER BY id DESC LIMIT %s",
         (tid, limit)) or []
     return jsonify({"callbacks": [_iso_row(r, "created_at") for r in rows]})
+
+
+# =============================================================================
+# VISITOR PERSONAS — super-admin CRUD (task 046)
+# =============================================================================
+# Super-admin-only management of the specialist personas the visitor concierge
+# can route to. Guarded by _require_super_admin_role(); a client session is 403'd.
+
+def _row_persona(r):
+    d = dict(r)
+    d["tool_names"] = _vp_as_list(d.get("tool_names"))
+    for k in ("created_at", "updated_at"):
+        if d.get(k):
+            d[k] = d[k].isoformat()
+    return d
+
+
+def _persona_payload(body):
+    """Validate + coerce a persona create/update body. Returns (fields, error).
+    persona_key is a slug; 'general' is reserved (it's the implicit fallback)."""
+    key = (body.get("persona_key") or "").strip().lower()
+    if not re.match(r"^[a-z0-9_]{1,40}$", key or ""):
+        return None, "persona_key must be 1-40 chars of a-z, 0-9, underscore"
+    if key == "general":
+        return None, "'general' is reserved (it is the implicit fallback persona)"
+    tools = body.get("tool_names")
+    if isinstance(tools, str):
+        tools = [t.strip() for t in tools.split(",")]
+    if not isinstance(tools, list):
+        tools = []
+    tools = [str(t).strip()[:80] for t in tools if str(t).strip()][:50]
+    try:
+        sort_order = int(body.get("sort_order") or 0)
+    except (TypeError, ValueError):
+        sort_order = 0
+    return {
+        "persona_key": key,
+        "label": (body.get("label") or "").strip()[:120],
+        "prompt_suffix": (body.get("prompt_suffix") or "").strip()[:8000],
+        "tool_names": json.dumps(tools),
+        "model": (body.get("model") or "").strip()[:120],
+        "enabled": bool(body.get("enabled", True)),
+        "sort_order": sort_order,
+    }, ""
+
+
+@app.route("/admin/api/visitor-personas", methods=["GET"])
+@admin_required
+def admin_list_visitor_personas():
+    """List the tenant's visitor personas (super-admin only)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    tid = current_tenant_id()
+    rows = query_db(
+        "SELECT * FROM visitor_personas WHERE tenant_id=%s "
+        "ORDER BY sort_order, id", (tid,)) or []
+    return jsonify({"personas": [_row_persona(r) for r in rows]})
+
+
+@app.route("/admin/api/visitor-personas", methods=["POST"])
+@admin_required
+def admin_create_visitor_persona():
+    """Create a visitor persona (super-admin only)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    fields, err = _persona_payload(request.get_json(silent=True) or {})
+    if err:
+        return jsonify({"error": err}), 400
+    tid = current_tenant_id()
+    # Reject a duplicate key for this tenant (the UNIQUE constraint would 500).
+    if query_db("SELECT 1 FROM visitor_personas WHERE tenant_id=%s AND persona_key=%s",
+                (tid, fields["persona_key"]), fetchone=True):
+        return jsonify({"error": "persona_key already exists"}), 409
+    row = execute_db(
+        "INSERT INTO visitor_personas (tenant_id, persona_key, label, prompt_suffix, "
+        " tool_names, model, enabled, sort_order) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+        "RETURNING *",
+        (tid, fields["persona_key"], fields["label"], fields["prompt_suffix"],
+         fields["tool_names"], fields["model"], fields["enabled"], fields["sort_order"]))
+    return jsonify({"persona": _row_persona(row)}), 201
+
+
+@app.route("/admin/api/visitor-personas/<int:persona_id>", methods=["PUT"])
+@admin_required
+def admin_update_visitor_persona(persona_id):
+    """Update a visitor persona (super-admin only). Tenant-scoped."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    fields, err = _persona_payload(request.get_json(silent=True) or {})
+    if err:
+        return jsonify({"error": err}), 400
+    tid = current_tenant_id()
+    row = execute_db(
+        "UPDATE visitor_personas SET persona_key=%s, label=%s, prompt_suffix=%s, "
+        " tool_names=%s, model=%s, enabled=%s, sort_order=%s, updated_at=NOW() "
+        "WHERE id=%s AND tenant_id=%s RETURNING *",
+        (fields["persona_key"], fields["label"], fields["prompt_suffix"],
+         fields["tool_names"], fields["model"], fields["enabled"],
+         fields["sort_order"], persona_id, tid))
+    if not row:
+        return jsonify({"error": "not_found"}), 404
+    return jsonify({"persona": _row_persona(row)})
+
+
+@app.route("/admin/api/visitor-personas/<int:persona_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_visitor_persona(persona_id):
+    """Delete a visitor persona (super-admin only). Tenant-scoped."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    tid = current_tenant_id()
+    row = execute_db(
+        "DELETE FROM visitor_personas WHERE id=%s AND tenant_id=%s RETURNING id",
+        (persona_id, tid))
+    if not row:
+        return jsonify({"error": "not_found"}), 404
+    return jsonify({"ok": True, "deleted": persona_id})
 
 
 @app.route("/admin/api/ai-prompts", methods=["GET"])
