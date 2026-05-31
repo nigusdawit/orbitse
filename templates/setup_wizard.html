@@ -358,15 +358,23 @@
       <div class="card">
         <div class="card-title">🔑 Super Admin Credentials</div>
 
+        <div class="field-group">
+          <label>Authorization Key <span class="req">*</span></label>
+          <input type="password" id="setupKey" placeholder="Current ADMIN_PASSWORD (default: admin)">
+          <div class="text-sm text-muted mt-1">On a fresh install this is <code>admin</code>. If you pre-set <code>ADMIN_PASSWORD</code> in your environment, use that value.</div>
+          <div class="verr" id="e-setupKey">Authorization key is required.</div>
+        </div>
+
         <div class="field-row">
           <div class="field-group">
-            <label>Admin Password <span class="req">*</span></label>
+            <label>New Admin Password <span class="req">*</span></label>
             <input type="password" id="adminPassword" placeholder="Min 8 characters">
+            <div class="text-sm text-muted mt-1">This replaces the current password after provisioning.</div>
             <div class="verr" id="e-adminPassword">Password must be at least 8 characters.</div>
           </div>
           <div class="field-group">
-            <label>Confirm Password <span class="req">*</span></label>
-            <input type="password" id="adminPasswordConfirm" placeholder="Re-enter password">
+            <label>Confirm New Password <span class="req">*</span></label>
+            <input type="password" id="adminPasswordConfirm" placeholder="Re-enter new password">
             <div class="verr" id="e-adminPasswordConfirm">Passwords do not match.</div>
           </div>
         </div>
@@ -1144,10 +1152,12 @@ function clearErr(id) {
 function validateStep(n) {
   let ok = true;
   if (n === 0) {
-    clearErr("adminPassword"); clearErr("adminPasswordConfirm");
+    clearErr("setupKey"); clearErr("adminPassword"); clearErr("adminPasswordConfirm");
+    const sk = gv("setupKey");
+    if (!sk)                               { showErr("setupKey","Authorization key is required."); ok=false; }
     const pw = gv("adminPassword");
-    if (pw.length < 8)               { showErr("adminPassword","Password must be at least 8 characters."); ok=false; }
-    if (pw !== gv("adminPasswordConfirm")) { showErr("adminPasswordConfirm","Passwords do not match.");        ok=false; }
+    if (pw.length < 8)                     { showErr("adminPassword","New password must be at least 8 characters."); ok=false; }
+    if (pw !== gv("adminPasswordConfirm")) { showErr("adminPasswordConfirm","Passwords do not match."); ok=false; }
   }
   if (n === 1) {
     clearErr("siteName");
@@ -1574,15 +1584,18 @@ function buildTemplate() {
     question: f.question, answer: f.answer, sort_order: f.sort_order || (i+1),
   }));
 
-  // Admin chat settings (step 4)
-  const adminChatSettings = {};
-  const adminPrompt = gv("adminSystemPrompt");
-  if (adminPrompt) adminChatSettings.system_prompt = adminPrompt;
-  const llmV = gv("llmVisitor"), llmA = gv("llmAdmin");
-  if (llmV) adminChatSettings.visitor_llm_provider = llmV;
-  if (llmA) adminChatSettings.admin_llm_provider    = llmA;
-  adminChatSettings.admin_chat_enabled = document.getElementById("adminChatEnabled").checked;
-  adminChatSettings.kb_enabled         = document.getElementById("kbEnabled").checked;
+  // Agent/LLM provider prefs (step 4) → agent_provider_settings (registered in _SETTINGS_TABLES).
+  // admin_chat_enabled and kb_enabled are toggle-only and not persisted via
+  // the settings API — the operator can flip them from the admin panel after
+  // provisioning.  Admin system prompt goes into chatbot_settings.system_prompt
+  // only if the visitor chatbot system_prompt field is empty, so we leave it
+  // separate and skip it from the template to avoid overwriting the visitor
+  // chatbot's curated system prompt.
+  const llmV = gv("llmVisitor");
+  const llmA = gv("llmAdmin");
+  const agentProviderSettings = {};
+  if (llmV) agentProviderSettings.provider      = llmV;
+  if (llmA) agentProviderSettings.openai_model  = llmA;   // maps to admin model preference
 
   const tpl = {
     settings: {
@@ -1617,8 +1630,12 @@ function buildTemplate() {
         tts_provider:          gv("ttsProvider"),
         default_voice:         gv("defaultVoice"),
       },
-      // Admin AI config — stored under admin_settings in site_settings table
-      admin_settings: adminChatSettings,
+      // LLM provider preference — agent_provider_settings IS registered in
+      // _SETTINGS_TABLES (fields: provider, openai_model, claude_model).
+      // Only emit if at least one field was set by the operator.
+      ...(Object.keys(agentProviderSettings).length
+          ? { agent_provider_settings: agentProviderSettings }
+          : {}),
     },
     faqs,
     features: {
@@ -1647,15 +1664,6 @@ function buildTemplate() {
    PROVISION — POST to /setup
    ============================================================ */
 async function provisionInstall() {
-  const confirmPw = gv("confirmAdminPassword");
-  const adminPw   = gv("adminPassword");
-
-  if (confirmPw !== adminPw) {
-    document.getElementById("e-confirmPw").classList.add("vis");
-    return;
-  }
-  document.getElementById("e-confirmPw").classList.remove("vis");
-
   const btn    = document.getElementById("provisionBtn");
   const errBox = document.getElementById("provisionErr");
   btn.disabled = true;
@@ -1663,7 +1671,10 @@ async function provisionInstall() {
   errBox.style.display = "none";
 
   const fd = new FormData();
-  fd.append("admin_password", adminPw);
+  // setup_key authenticates against the current ADMIN_PASSWORD; admin_password
+  // is the new credential that will be written after successful bootstrap.
+  fd.append("setup_key",      gv("setupKey"));
+  fd.append("admin_password", gv("adminPassword"));
   fd.append("template_json",  JSON.stringify(buildTemplate()));
   fd.append("secrets_json",   JSON.stringify(collectSecrets()));
 

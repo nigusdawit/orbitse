@@ -6284,10 +6284,14 @@ def setup_wizard_preset(name):
 
 @app.route("/setup", methods=["POST"])
 def setup_wizard_post():
+    # Declare before any use — Python requires global at top of function scope.
+    global ADMIN_PASSWORD
+
     if _is_install_bootstrapped():
         abort(404)
 
-    # Rate-limit the setup endpoint to prevent rapid automated submissions.
+    # Rate-limit the setup endpoint — same budget as /admin/login so brute-
+    # forcing the setup_key doesn't get a separate free attempt pool.
     ip = _client_ip()
     allowed, retry_after = _login_throttle_check(ip)
     if not allowed:
@@ -6296,15 +6300,22 @@ def setup_wizard_post():
             "retry_after": retry_after,
         }), 429
 
-    # The setup wizard sets the admin password — it does not authenticate
-    # against the current one (which on a fresh install defaults to "admin").
-    # The _is_install_bootstrapped() gate above is the access control here.
-    # We only validate that the chosen password meets the minimum length.
+    # setup_key authenticates the operator against the CURRENT ADMIN_PASSWORD
+    # (defaults to "admin" on a fresh install — operators should pre-set
+    # ADMIN_PASSWORD in the environment before deploying to production).
+    setup_key = request.form.get("setup_key", "")
+    if setup_key != ADMIN_PASSWORD:
+        _login_throttle_record_failure(ip)
+        return jsonify({"error": "Invalid setup authorization key."}), 401
+    _login_throttle_clear(ip)
+
+    # admin_password is the NEW password the wizard will write.  Required and
+    # must be at least 8 characters.  It is a separate field from setup_key so
+    # the operator can authenticate with the old password and change it in one
+    # atomic provisioning step.
     pw = request.form.get("admin_password", "")
     if len(pw) < 8:
-        _login_throttle_record_failure(ip)
-        return jsonify({"error": "Admin password must be at least 8 characters."}), 400
-    _login_throttle_clear(ip)
+        return jsonify({"error": "New admin password must be at least 8 characters."}), 400
 
     raw_tpl = request.form.get("template_json", "").strip()
     if not raw_tpl:
@@ -6429,16 +6440,31 @@ def setup_wizard_post():
     #      super-admin credential for all future logins.  Must happen after
     #      bootstrap so a partial failure doesn't leave a new password without
     #      a working install.  Reload the module-level variable so the current
-    #      worker process doesn't need a restart to use the new credential. ----
+    #      worker process doesn't need a restart to use the new credential.
+    #
+    #      FATAL: if the write fails the install is in an inconsistent state
+    #      (bootstrapped flag set, but no usable credential written).  Release
+    #      the bootstrap claim so the operator can re-run setup after fixing
+    #      the env_manager problem (e.g. file-permission issue). ----
     try:
         from env_manager import set_var as _sv
         _sv("ADMIN_PASSWORD", pw, force_override=True)
         secrets_written.append("ADMIN_PASSWORD")
         # Reload module-level cache so the current process accepts the new pw.
-        global ADMIN_PASSWORD
         ADMIN_PASSWORD = pw
     except Exception as _pw_err:
-        secrets_errors.append({"key": "ADMIN_PASSWORD", "error": str(_pw_err)})
+        released, rel_err = _release_claim()
+        return jsonify({
+            "ok": False,
+            "error": f"Could not persist admin password: {_pw_err}. "
+                     "Setup has been rolled back — fix the env_manager error "
+                     "and re-run the wizard.",
+            "rollback_failed": not released,
+            "manual_recovery_sql": (
+                "UPDATE site_settings SET installation_bootstrapped_at = NULL WHERE id = 1;"
+            ) if not released else None,
+            "rollback_error": rel_err,
+        }), 500
 
     # ---- Write CLIENT_PASSWORD if provided ----------------------------------
     client_pw = request.form.get("client_password", "").strip()
