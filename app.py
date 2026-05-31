@@ -9370,7 +9370,11 @@ def api_chatbot_settings():
     settings = query_db("SELECT * FROM chatbot_settings WHERE id = 1", fetchone=True)
     if not settings:
         return jsonify({"enabled": False})
-    return jsonify(settings)
+    # Prompt privacy: the public site never needs the prompt wording, so it is
+    # never exposed here (this endpoint is unauthenticated).
+    out = dict(settings)
+    out.pop("system_prompt", None)
+    return jsonify(out)
 
 
 # =============================================================================
@@ -19465,6 +19469,12 @@ def admin_chat_session_get(session_id):
     # Surface the default system prompt as a hint so the editor can
     # show "currently using the default — start typing to override".
     cfg["default_system_prompt"] = ADMIN_CHAT_SYSTEM_PROMPT
+    # Prompt privacy: the admin AI's prompt is the operator's IP too. Clients
+    # (non super-admin) still get a working admin assistant but must never see
+    # its prompt wording — strip both the per-session override and the default.
+    if not _is_super_admin():
+        cfg.pop("system_prompt_override", None)
+        cfg.pop("default_system_prompt", None)
     return jsonify(cfg)
 
 
@@ -19491,7 +19501,9 @@ def admin_chat_session_patch(session_id):
     if "model" in data:
         sets.append("model=%s")
         args.append((data.get("model") or "").strip()[:120])
-    if "system_prompt_override" in data:
+    if "system_prompt_override" in data and _is_super_admin():
+        # Prompt privacy: only the super-admin may set the admin AI's prompt.
+        # A client's attempt to write it is silently ignored.
         sets.append("system_prompt_override=%s")
         args.append((data.get("system_prompt_override") or ""))
     if "disabled_tools" in data:
@@ -19518,8 +19530,13 @@ def admin_chat_session_patch(session_id):
         f"WHERE session_id=%s",
         tuple(args),
     )
-    return jsonify({"ok": True,
-                    "session": _admin_chat_get_or_create_session(sid, "admin")})
+    _sess = _admin_chat_get_or_create_session(sid, "admin")
+    # Prompt privacy: redact the admin AI prompt from the PATCH response so a
+    # client can't read it back by patching some harmless field.
+    if not _is_super_admin():
+        _sess.pop("system_prompt_override", None)
+        _sess.pop("default_system_prompt", None)
+    return jsonify({"ok": True, "session": _sess})
 
 
 # =============================================================================
@@ -19825,6 +19842,11 @@ def admin_chat_session_export(session_id):
         if hasattr(m.get("created_at"), "isoformat"):
             m["created_at"] = m["created_at"].isoformat()
     cfg = _admin_chat_get_or_create_session(sid, "admin")
+    # Prompt privacy: never let the admin AI prompt leave via an export for a
+    # client — strip it from both the JSON body and the Markdown section below.
+    if not _is_super_admin():
+        cfg.pop("system_prompt_override", None)
+        cfg.pop("default_system_prompt", None)
     fname_base = (cfg.get("title") or sid).strip().replace("/", "-")[:80] or sid
     if fmt == "json":
         body = json.dumps({"session": cfg, "messages": msgs},
@@ -25255,6 +25277,12 @@ def admin_get_chatbot():
     """GET the current chatbot settings + feature visibility flags."""
     settings = query_db("SELECT * FROM chatbot_settings WHERE id = 1", fetchone=True) or {}
     out = dict(settings)
+    # Prompt privacy: the raw system prompt is the operator's IP. A client
+    # (non super-admin) gets a fully working AI but must never see the prompt
+    # text, so we redact it from the payload here. This server-side strip is
+    # the REAL boundary — hiding the textarea in the template is only cosmetic.
+    if not _is_super_admin():
+        out.pop("system_prompt", None)
     # Surface feature visibility so the UI can hide gated controls without a
     # second round-trip. The frontend uses _features.agent_scope_slider to
     # decide whether to render the Scope Tightness slider.
@@ -25288,6 +25316,7 @@ def admin_update_chatbot():
     # the prompt matters here; agent_name / greeting / mode don't change
     # what the AI should answer with.
     _prev_prompt = ""
+    _prev_row = {}
     try:
         _prev_row = query_db(
             "SELECT system_prompt FROM chatbot_settings WHERE id = 1",
@@ -25296,6 +25325,13 @@ def admin_update_chatbot():
         _prev_prompt = (_prev_row.get("system_prompt") or "").strip()
     except Exception:
         _prev_prompt = ""
+    # Prompt privacy: only the super-admin may change the prompt text. A client
+    # save keeps whatever prompt is already stored (we ignore their value)
+    # rather than blanking it — this is the write-side half of the boundary.
+    if _is_super_admin():
+        _system_prompt_value = data.get("system_prompt", "")
+    else:
+        _system_prompt_value = (_prev_row.get("system_prompt") or "")
     settings = execute_db(
         """UPDATE chatbot_settings SET
              enabled = %s, mode = %s, agent_name = %s, agent_role = %s,
@@ -25314,7 +25350,7 @@ def admin_update_chatbot():
             json.dumps(data.get("quick_prompts", [])),
             data.get("api_endpoint", "/api/chat"),
             data.get("embed_code", ""),
-            data.get("system_prompt", ""),
+            _system_prompt_value,
             scope_in,
         )
     )
@@ -25322,7 +25358,7 @@ def admin_update_chatbot():
     # changed so old cache rows (generated under the OLD prompt) stop
     # being served.  Best-effort — never block the settings save on it.
     try:
-        _new_prompt = (data.get("system_prompt") or "").strip()
+        _new_prompt = (_system_prompt_value or "").strip()
         if _new_prompt != _prev_prompt:
             _v = semantic_cache.bump_content_version()
             print(
@@ -25331,7 +25367,12 @@ def admin_update_chatbot():
             )
     except Exception as _bv_e:
         print(f"[chatbot-settings] cache bump failed: {_bv_e}")
-    return jsonify(settings)
+    # Prompt privacy: the RETURNING * row carries the prompt text — redact it
+    # from the response for clients so a save can't be used to read it.
+    out = dict(settings) if settings else {}
+    if not _is_super_admin():
+        out.pop("system_prompt", None)
+    return jsonify(out)
 
 
 # --------------- Default System Prompt (public read for admin pre-fill) ------
@@ -25340,6 +25381,10 @@ def admin_update_chatbot():
 @admin_required
 def admin_get_default_prompt():
     """GET the hardcoded default system prompt so the admin can pre-fill."""
+    # Prompt privacy: the default prompt is part of the operator's IP too —
+    # only the super-admin may read it.
+    if not _is_super_admin():
+        return jsonify({"error": "forbidden"}), 403
     return jsonify({"system_prompt": SYSTEM_PROMPT})
 
 

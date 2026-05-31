@@ -4327,8 +4327,10 @@ TO CUSTOMIZE THIS DASHBOARD:
               <option value="claude-sonnet-4-5">Claude Sonnet 4.5</option>
             </optgroup>
           </select>
+          {% if is_super_admin() %}
           <button class="acm-btn" onclick="adminChatOpenPromptEditor()" title="System prompt for this conversation"
                   data-testid="button-admin-chat-prompt">⚙ Prompt</button>
+          {% endif %}
           <button class="acm-btn" onclick="adminChatOpenSkills()" title="Tools available to this conversation"
                   data-testid="button-admin-chat-skills">🧰 Skills</button>
           <!-- Task #79: Knowledge Base panel — upload docs the AI can cite -->
@@ -6290,7 +6292,10 @@ TO CUSTOMIZE THIS DASHBOARD:
         </div>
       </div>
 
-      <!-- AI System Prompt Editor -->
+      <!-- AI System Prompt Editor — super-admin only. The prompt wording is
+           the operator's IP; clients keep every other chatbot control but
+           never see or edit this. Server also redacts/locks it (real boundary). -->
+      {% if is_super_admin() %}
       <div id="chatbot-system-prompt-section">
         <h3 style="margin-top: 1.5rem;">AI System Prompt</h3>
         <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 1rem;">
@@ -6307,6 +6312,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           <button class="btn btn-secondary btn-sm" onclick="loadDefaultSystemPrompt()" data-testid="button-load-default-prompt">Load Default Prompt</button>
         </div>
       </div>
+      {% endif %}
 
       <!--
       ====================================================================
@@ -11423,7 +11429,10 @@ TO CUSTOMIZE THIS DASHBOARD:
         document.getElementById('chatbot-greeting').value = settings.greeting || '';
         document.getElementById('chatbot-api-endpoint').value = settings.api_endpoint || '/api/chat';
         document.getElementById('chatbot-embed-code').value = settings.embed_code || '';
-        document.getElementById('chatbot-system-prompt').value = settings.system_prompt || '';
+        /* Prompt editor only renders for super-admin; for clients the element
+           is absent and settings.system_prompt is redacted server-side. */
+        const _sysPromptEl = document.getElementById('chatbot-system-prompt');
+        if (_sysPromptEl) _sysPromptEl.value = settings.system_prompt || '';
 
         /* Convert quick_prompts array to newline-separated text */
         const prompts = settings.quick_prompts || [];
@@ -11495,9 +11504,14 @@ TO CUSTOMIZE THIS DASHBOARD:
         quick_prompts: quickPrompts,
         api_endpoint: document.getElementById('chatbot-api-endpoint').value,
         embed_code: document.getElementById('chatbot-embed-code').value,
-        system_prompt: document.getElementById('chatbot-system-prompt').value,
         agent_scope_tightness: (document.getElementById('chatbot-scope-tightness') || {}).value || 'balanced'
       };
+
+      /* Only the super-admin has the prompt editor; only then do we send the
+         prompt. (The server also ignores prompt writes from clients, so this
+         is belt-and-suspenders.) */
+      const _sysPromptSave = document.getElementById('chatbot-system-prompt');
+      if (_sysPromptSave) data.system_prompt = _sysPromptSave.value;
 
       try {
         const res = await fetch('/admin/api/chatbot-settings', {
