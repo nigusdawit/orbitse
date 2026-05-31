@@ -91,6 +91,11 @@ class PylegoConfig:
     model_routing_enabled: bool       # master toggle for routing; False → identity
     fast_model: str                   # model name for "simple" turns ("" → no routing)
     routing_simple_max_chars: int     # a turn is "simple" if user message length <= this
+    # task 041: Anthropic prompt caching on the big static system prompt. When
+    # on, the system prompt is sent as a cache_control block so repeated turns
+    # reuse it (cheaper + faster). Inert default OFF (system sent as a plain
+    # string = current request shape). OpenAI caches automatically — no knob.
+    prompt_cache_enabled: bool
 
     # ---- Activity logging (task 031) ----------------------------------------
     activity_logging_enabled: bool    # persist each admin-AI turn to ai_activity_log
@@ -155,6 +160,7 @@ def _build() -> PylegoConfig:
         model_routing_enabled=_env_bool("MODEL_ROUTING_ENABLED", False),
         fast_model=os.environ.get("MODEL_ROUTING_FAST_MODEL", "").strip(),
         routing_simple_max_chars=_env_int("MODEL_ROUTING_SIMPLE_MAX_CHARS", 280),
+        prompt_cache_enabled=_env_bool("PROMPT_CACHE_ENABLED", False),
         # Activity logging — wired in 031 (default ON: low-volume admin turns).
         activity_logging_enabled=_env_bool("ADMIN_CHAT_ACTIVITY_LOGGING", True),
         # KB ingestion — wired in 039; inert default (inline ingestion).
