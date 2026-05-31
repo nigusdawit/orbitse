@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Concierge embed — cross-origin test page</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 48px auto;
+           padding: 0 20px; color: #222; line-height: 1.5; }
+    code { background:#f3f3f3; padding:1px 5px; border-radius:4px; }
+    .note { color:#666; font-size:14px; }
+  </style>
+</head>
+<body>
+  <h1>Client site (simulated)</h1>
+  <p>This page stands in for a <strong>client's own third-party website</strong>.
+  It embeds the AI concierge widget via the loader snippet — exactly what a real
+  client would paste in. If everything is wired, a chat launcher appears in the
+  bottom-right corner; open it and send a message.</p>
+  <p class="note">Config comes from the URL: <code>?api=&lt;monolith-origin&gt;&amp;key=&lt;embed-key&gt;</code>.
+  Defaults: <code>http://127.0.0.1:5056</code> / <code>pk_preview</code>.</p>
+
+  <script>
+    // Mount the loader the way a client's <script> tag would, but read api-base
+    // + embed key from the query string so this test page is reusable.
+    var q = new URLSearchParams(location.search);
+    var api = (q.get("api") || "http://127.0.0.1:5056").replace(/\/$/, "");
+    var key = q.get("key") || "pk_preview";
+    var s = document.createElement("script");
+    s.src = api + "/embed/loader.js";
+    s.setAttribute("data-embed-key", key);
+    s.setAttribute("data-api-base", api);
+    s.onerror = function () {
+      document.body.insertAdjacentHTML("beforeend",
+        '<p style="color:#c00"><b>loader.js failed to load</b> from ' + api +
+        ' — is the monolith running and is /embed/loader.js served?</p>');
+    };
+    document.body.appendChild(s);
+  </script>
+</body>
+</html>
