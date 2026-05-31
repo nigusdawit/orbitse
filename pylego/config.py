@@ -128,6 +128,13 @@ class PylegoConfig:
     team_notify_email: str            # where notify_team emails go ("" → no email)
     team_notify_sms: str              # where notify_team texts go ("" → no SMS)
 
+    # ---- Visitor persona router (task 046 — Epic E) -------------------------
+    # When enabled, a cheap classifier routes each visitor turn to a super-admin
+    # -defined persona (specialist agent) that constrains tools + augments the
+    # prompt (+ optional model). Inert default OFF → single-agent behavior.
+    visitor_persona_router_enabled: bool
+    visitor_persona_router_model: str  # classifier model ("" → gpt-4o-mini)
+
     # ---- Activity logging (task 031) ----------------------------------------
     activity_logging_enabled: bool    # persist each admin-AI turn to ai_activity_log
 
@@ -205,6 +212,9 @@ def _build() -> PylegoConfig:
         team_notifications_enabled=_env_bool("TEAM_NOTIFICATIONS_ENABLED", False),
         team_notify_email=os.environ.get("TEAM_NOTIFY_EMAIL", "").strip(),
         team_notify_sms=os.environ.get("TEAM_NOTIFY_SMS", "").strip(),
+        # Visitor persona router — wired in 046; inert default (single agent).
+        visitor_persona_router_enabled=_env_bool("VISITOR_PERSONA_ROUTER_ENABLED", False),
+        visitor_persona_router_model=os.environ.get("VISITOR_PERSONA_ROUTER_MODEL", "").strip(),
         # Activity logging — wired in 031 (default ON: low-volume admin turns).
         activity_logging_enabled=_env_bool("ADMIN_CHAT_ACTIVITY_LOGGING", True),
         # KB ingestion — wired in 039; inert default (inline ingestion).
