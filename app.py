@@ -3978,6 +3978,21 @@ def init_db():
                     ON stripe_product_sync (mode);
                 """
             )
+
+            # AI EDITABLE PROMPTS — one row per editable system prompt. Seeded
+            # with current defaults by sync_ai_prompts() at boot; super-admin
+            # edits land here and are served from an in-memory cache.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ai_prompts (
+                    id          SERIAL PRIMARY KEY,
+                    prompt_key  TEXT UNIQUE NOT NULL,
+                    content     TEXT NOT NULL DEFAULT '',
+                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_by  TEXT
+                );
+                """
+            )
     finally:
         conn.close()
 
@@ -17838,6 +17853,278 @@ ADMIN_CHAT_SYSTEM_PROMPT = (
 
 
 # =============================================================================
+# AI EDITABLE PROMPTS  (DB-backed, super-admin editable, in-memory cached)
+# =============================================================================
+# Every system prompt the platform sends to the LLM has a hardcoded default
+# (the SYSTEM_PROMPT / ADMIN_CHAT_SYSTEM_PROMPT constants above, plus the three
+# lifted just below). On boot, sync_ai_prompts() copies each default into the
+# `ai_prompts` table IF that row is missing, so the super-admin editor is always
+# PRE-FILLED with the live wording (never an empty box).
+#
+# PERFORMANCE: get_prompt() serves text from a process-level cache that is
+# loaded ONCE (lazily, on first use). There is therefore NO per-request
+# database round-trip — it is just as fast as referencing the constant directly.
+# The cache is only refreshed when a super-admin SAVES an edit (the save/reset
+# endpoints call _invalidate_prompt_cache()). Editing is locked to the
+# super-admin role; see the /admin/api/ai-prompts endpoints further below.
+
+# --- Prompts lifted out of their functions so they can serve as defaults here.
+#     Editing these in the admin UI overrides them; "Reset" restores them. ---
+
+# Live slide narration (presentation mode). Mirrors the in-function default.
+SLIDE_NARRATION_PROMPT = (
+    "You are presenting this slide LIVE to a real audience. The "
+    "slide image is attached — your audience is looking at it "
+    "right now while you speak. Your job is to SPEAK THE "
+    "SUBSTANCE of the slide, not describe the slide.\n"
+    "\n"
+    "STYLE — confident human presenter, not a narrator:\n"
+    "  - Speak ABOUT the topic, not ABOUT the slide. Never refer "
+    "to the slide as an object.\n"
+    "  - When the slide poses a question, ASK the question and "
+    "answer it. When it lists items, name the one or two that "
+    "matter most and say WHY — never read the whole list.\n"
+    "  - Use specifics from the image: real product names, real "
+    "numbers, real examples. Vague marketing words ('powerful', "
+    "'transformative', 'remarkable', 'truly', 'unlock', 'journey', "
+    "'the key is consistency') are forbidden — be concrete or "
+    "stay silent on that point.\n"
+    "  - 2-3 sentences, 30-60 words. Conversational, plain "
+    "language, contractions OK. No filler, no recap, no "
+    "transitions to other slides.\n"
+    "\n"
+    "BANNED OPENERS AND PHRASES (do not use these or close "
+    "variants — they are the giveaway that an AI wrote the "
+    "script):\n"
+    "  'This slide …', 'On this slide …', 'In this slide …', "
+    "'Here we see …', 'Here you see …', 'As we …' (any form: "
+    "explore / delve / look at / wrap up / conclude / move into), "
+    "'Let's …', 'Let me …', 'Now we …', 'Today we …' (except on "
+    "slide 1), 'Moving on', 'Next up', 'I'd like to talk about', "
+    "'I want to …', 'we will …', 'you can see', 'as shown', "
+    "'depicted here', 'illustrated here', 'pictured here'.\n"
+    "\n"
+    "BAD vs GOOD examples:\n"
+    "  BAD:  'This slide poses a powerful question about identity.'\n"
+    "  GOOD: 'What would you change about yourself if you could? "
+    "That gap between who you are and who you want to be is "
+    "exactly where the work starts.'\n"
+    "\n"
+    "  BAD:  'As we delve into the tools, the apps highlighted "
+    "here offer binaural audio and sleep tracking.'\n"
+    "  GOOD: 'Two apps stand out: Brain.fm for binaural focus "
+    "sessions, and Insight Timer for guided theta meditations. "
+    "Both run offline, which matters when you're trying to stay "
+    "off your phone.'\n"
+    "\n"
+    "  BAD:  'As we wrap up, remember theta sync is a personal "
+    "journey — find what truly resonates with you.'\n"
+    "  GOOD: 'Pick one practice this week — ten minutes of "
+    "binaural beats before bed, or a single guided session "
+    "tomorrow morning. One rep beats a perfect plan.'\n"
+    "\n"
+    "Output ONLY the spoken sentences. No markdown, no emoji, no "
+    "quote marks around the script, no labels, no preamble."
+)
+
+# SEO metadata generator. Mirrors the in-function default.
+SEO_SUGGEST_PROMPT = (
+    "You are an SEO expert. Based on the website content provided, "
+    "generate optimized SEO metadata. Respond with ONLY a JSON object "
+    "(no markdown, no code fences) containing exactly these fields:\n"
+    '  "meta_title": (max 60 characters, compelling and keyword-rich,'
+    " include the site/brand name when natural),\n"
+    '  "meta_description": (max 160 characters, action-oriented summary'
+    " that mentions what the business actually does),\n"
+    '  "keywords": (comma-separated, max 10 relevant keywords drawn'
+    " from the site's own services, products, and topics)\n"
+    "Make them compelling, search-engine friendly, and specific to the business."
+)
+
+# Admin persona router (cheap classifier). The {options} token is replaced at
+# call time with the live persona list — keep it in any edited version.
+PERSONA_ROUTER_PROMPT = (
+    "You are a routing classifier. Pick the single persona that "
+    "best matches the admin's request from this list: {options}"
+    ". Reply ONLY as JSON: {\"persona\": \"<key>\", "
+    "\"reason\": \"<one short sentence>\"}. Persona meanings:\n"
+    "  research — questions about facts, comparisons, lookups, "
+    "external info\n"
+    "  data_analyst — questions about counts, metrics, trends, "
+    "logs, analytics\n"
+    "  code — schema, SQL, migrations, integrations, debugging, "
+    "developer tasks\n"
+    "  creative — writing copy, naming, design suggestions, blog "
+    "drafts, marketing\n"
+    "  ops — orders, bookings, messages, automations, day-to-day "
+    "tenant operations\n"
+    "  general — anything that doesn't clearly fit above"
+)
+
+# Process-level cache. Loaded once from the ai_prompts table; refreshed only on
+# a super-admin save. Guarded by a lock so concurrent first-requests load once.
+_PROMPT_CACHE = {}
+_PROMPT_CACHE_LOADED = False
+_PROMPT_CACHE_LOCK = threading.Lock()
+
+
+def _ai_prompt_registry():
+    """Ordered catalog of every editable prompt: stable key, UI metadata, and a
+    callable that returns its hardcoded default. Built lazily so it can safely
+    reference both module-level and scraper constants regardless of import
+    order. To expose a new prompt in the editor, add one entry here and route
+    its call site through get_prompt(key, DEFAULT)."""
+    return [
+        {
+            "key": "visitor_system",
+            "label": "Visitor Concierge — System Prompt",
+            "category": "Visitor Chat",
+            "description": "The core brain of the public website chatbot — its "
+                           "persona, rules, and command formats. Keep the "
+                           "{THEME_PLACEHOLDER} token; it is replaced with the "
+                           "site's live theme on every turn.",
+            "default": lambda: SYSTEM_PROMPT,
+        },
+        {
+            "key": "admin_assistant",
+            "label": "Admin Assistant — System Prompt",
+            "category": "Admin Chat",
+            "description": "The system prompt for the admin-side assistant "
+                           "(and its spawned sub-agents) that helps the owner "
+                           "run the site.",
+            "default": lambda: ADMIN_CHAT_SYSTEM_PROMPT,
+        },
+        {
+            "key": "presentation_narration",
+            "label": "Live Slide Narration",
+            "category": "Presentations",
+            "description": "Instructs the AI how to speak each slide aloud "
+                           "during a live presentation.",
+            "default": lambda: SLIDE_NARRATION_PROMPT,
+        },
+        {
+            "key": "seo_suggest",
+            "label": "SEO Metadata Generator",
+            "category": "SEO",
+            "description": "Used by the SEO tab's 'Generate with AI' button to "
+                           "draft meta title, description, and keywords.",
+            "default": lambda: SEO_SUGGEST_PROMPT,
+        },
+        {
+            "key": "persona_router",
+            "label": "Admin Persona Router (classifier)",
+            "category": "Admin Chat",
+            "description": "Cheap classifier that picks which admin persona "
+                           "should answer. MUST keep the {options} token — it "
+                           "is replaced with the live persona list.",
+            "default": lambda: PERSONA_ROUTER_PROMPT,
+        },
+        {
+            "key": "scraper_url_intro",
+            "label": "Web Scraper — URL Extraction",
+            "category": "Web Scraper",
+            "description": "System intro when the scraper extracts structured "
+                           "data from a fetched web page's text.",
+            "default": lambda: getattr(scraper, "SCRAPER_URL_INTRO", ""),
+        },
+        {
+            "key": "scraper_objective_intro",
+            "label": "Web Scraper — Objective Extraction",
+            "category": "Web Scraper",
+            "description": "System intro when the scraper extracts structured "
+                           "data from research notes to satisfy an objective.",
+            "default": lambda: getattr(scraper, "SCRAPER_OBJECTIVE_INTRO", ""),
+        },
+        {
+            "key": "scraper_research",
+            "label": "Web Scraper — Research Assistant",
+            "category": "Web Scraper",
+            "description": "System prompt for the scraper's fallback research "
+                           "assistant when live web browsing is unavailable.",
+            "default": lambda: getattr(scraper, "SCRAPER_RESEARCH_PROMPT", ""),
+        },
+    ]
+
+
+def _ai_prompt_defaults():
+    """Resolve {key: default_text} for every registered prompt. Defensive: a
+    broken default getter yields '' rather than crashing the whole map."""
+    out = {}
+    for item in _ai_prompt_registry():
+        try:
+            out[item["key"]] = item["default"]() or ""
+        except Exception as _e:
+            print(f"[prompts] default resolve failed for {item.get('key')}: {_e}")
+            out[item["key"]] = ""
+    return out
+
+
+def _load_prompt_cache():
+    """Load all stored prompt overrides into the process cache exactly once."""
+    global _PROMPT_CACHE_LOADED
+    with _PROMPT_CACHE_LOCK:
+        if _PROMPT_CACHE_LOADED:
+            return
+        cache = {}
+        try:
+            rows = query_db("SELECT prompt_key, content FROM ai_prompts")
+            for r in rows or []:
+                cache[r["prompt_key"]] = r.get("content") or ""
+        except Exception as e:
+            # Table may not exist yet on a brand-new DB before init/seed — that
+            # is fine, get_prompt() simply falls back to the hardcoded default.
+            print(f"[prompts] cache load skipped: {e}")
+        _PROMPT_CACHE.clear()
+        _PROMPT_CACHE.update(cache)
+        _PROMPT_CACHE_LOADED = True
+
+
+def get_prompt(key, default=None):
+    """Return the active text for prompt *key*: a super-admin's saved edit if
+    one exists, otherwise the hardcoded default. Served from an in-memory cache,
+    so this is effectively free at request time (no DB round-trip)."""
+    if not _PROMPT_CACHE_LOADED:
+        _load_prompt_cache()
+    val = _PROMPT_CACHE.get(key)
+    if val and val.strip():
+        return val
+    if default is not None:
+        return default
+    return _ai_prompt_defaults().get(key, "")
+
+
+def _invalidate_prompt_cache():
+    """Force the next get_prompt() to reload from the DB. Called after a save.
+
+    Takes the same lock _load_prompt_cache() uses so an invalidation can never
+    be lost to a load that is reading the DB at the same moment: because the
+    whole load (including its DB read) runs inside the lock, this call blocks
+    until that load finishes and then clears the flag — guaranteeing the very
+    next get_prompt() re-reads the freshly saved rows."""
+    global _PROMPT_CACHE_LOADED
+    with _PROMPT_CACHE_LOCK:
+        _PROMPT_CACHE_LOADED = False
+        _PROMPT_CACHE.clear()
+
+
+def sync_ai_prompts():
+    """Pre-fill the ai_prompts table with the current default for any missing
+    key. Never overwrites an existing row, so admin edits survive restarts and
+    future code updates. Called once at boot from main._bootstrap()."""
+    defaults = _ai_prompt_defaults()
+    for key, content in defaults.items():
+        try:
+            execute_db(
+                "INSERT INTO ai_prompts (prompt_key, content) VALUES (%s, %s) "
+                "ON CONFLICT (prompt_key) DO NOTHING",
+                (key, content),
+            )
+        except Exception as e:
+            print(f"[prompts] seed failed for {key}: {e}")
+    _invalidate_prompt_cache()
+
+
+# =============================================================================
 # Task #80 — Admin chat multimodal + persona router + parallel subagents.
 #
 # Three independent additions, all admin-only:
@@ -17935,21 +18222,10 @@ def _admin_classify_persona(user_message, model="gpt-4o-mini"):
     if not (user_message or "").strip():
         return ("general", "empty input")
     options = ", ".join(ADMIN_CHAT_PERSONAS.keys())
-    sys = ("You are a routing classifier. Pick the single persona that "
-           "best matches the admin's request from this list: " + options +
-           ". Reply ONLY as JSON: {\"persona\": \"<key>\", "
-           "\"reason\": \"<one short sentence>\"}. Persona meanings:\n"
-           "  research — questions about facts, comparisons, lookups, "
-           "external info\n"
-           "  data_analyst — questions about counts, metrics, trends, "
-           "logs, analytics\n"
-           "  code — schema, SQL, migrations, integrations, debugging, "
-           "developer tasks\n"
-           "  creative — writing copy, naming, design suggestions, blog "
-           "drafts, marketing\n"
-           "  ops — orders, bookings, messages, automations, day-to-day "
-           "tenant operations\n"
-           "  general — anything that doesn't clearly fit above")
+    # Editable from the admin "AI Prompts" tab (key: persona_router); the
+    # {options} token is filled with the live persona list.
+    sys = get_prompt("persona_router", PERSONA_ROUTER_PROMPT).replace(
+        "{options}", options)
     try:
         resp = openai_client.chat.completions.create(
             model=model,
@@ -18197,7 +18473,7 @@ def _admin_run_subagent_once(parent_session_id, sub_task, persona,
         _is_claude = False
 
     persona_meta = ADMIN_CHAT_PERSONAS[persona_key]
-    sys_text = (ADMIN_CHAT_SYSTEM_PROMPT
+    sys_text = (get_prompt("admin_assistant", ADMIN_CHAT_SYSTEM_PROMPT)
                 + persona_meta.get("prompt_suffix", "")
                 + "\n\nYou are a focused SUB-AGENT spawned by the main "
                   "admin assistant to solve ONE narrow task. Answer "
@@ -18688,7 +18964,7 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8,
     if session_cfg.get("system_prompt_override"):
         _admin_sys = session_cfg["system_prompt_override"]
     else:
-        _admin_sys = ADMIN_CHAT_SYSTEM_PROMPT
+        _admin_sys = get_prompt("admin_assistant", ADMIN_CHAT_SYSTEM_PROMPT)
         try:
             _admin_sys = _admin_sys + _compose_scope_paragraph()
         except Exception as _e:
@@ -20125,8 +20401,9 @@ def api_chat():
     if not isinstance(presentation_slide, dict):
         presentation_slide = None
 
-    # Use database system prompt if available, otherwise fall back to hardcoded
-    active_prompt = SYSTEM_PROMPT
+    # Base prompt: super-admin's saved edit (key: visitor_system) if any, else
+    # the hardcoded SYSTEM_PROMPT. Served from cache, so no per-request DB hit.
+    active_prompt = get_prompt("visitor_system", SYSTEM_PROMPT)
     _brand_voice = ""
     try:
         cs = query_db(
@@ -22450,60 +22727,8 @@ def admin_generate_narration(pid):
     # presenter to it. Banning them by name and showing the
     # rewritten alternative is the only thing that reliably moves
     # output style for gpt-4o-mini.
-    sys_msg = (
-        "You are presenting this slide LIVE to a real audience. The "
-        "slide image is attached — your audience is looking at it "
-        "right now while you speak. Your job is to SPEAK THE "
-        "SUBSTANCE of the slide, not describe the slide.\n"
-        "\n"
-        "STYLE — confident human presenter, not a narrator:\n"
-        "  - Speak ABOUT the topic, not ABOUT the slide. Never refer "
-        "to the slide as an object.\n"
-        "  - When the slide poses a question, ASK the question and "
-        "answer it. When it lists items, name the one or two that "
-        "matter most and say WHY — never read the whole list.\n"
-        "  - Use specifics from the image: real product names, real "
-        "numbers, real examples. Vague marketing words ('powerful', "
-        "'transformative', 'remarkable', 'truly', 'unlock', 'journey', "
-        "'the key is consistency') are forbidden — be concrete or "
-        "stay silent on that point.\n"
-        "  - 2-3 sentences, 30-60 words. Conversational, plain "
-        "language, contractions OK. No filler, no recap, no "
-        "transitions to other slides.\n"
-        "\n"
-        "BANNED OPENERS AND PHRASES (do not use these or close "
-        "variants — they are the giveaway that an AI wrote the "
-        "script):\n"
-        "  'This slide …', 'On this slide …', 'In this slide …', "
-        "'Here we see …', 'Here you see …', 'As we …' (any form: "
-        "explore / delve / look at / wrap up / conclude / move into), "
-        "'Let's …', 'Let me …', 'Now we …', 'Today we …' (except on "
-        "slide 1), 'Moving on', 'Next up', 'I'd like to talk about', "
-        "'I want to …', 'we will …', 'you can see', 'as shown', "
-        "'depicted here', 'illustrated here', 'pictured here'.\n"
-        "\n"
-        "BAD vs GOOD examples:\n"
-        "  BAD:  'This slide poses a powerful question about identity.'\n"
-        "  GOOD: 'What would you change about yourself if you could? "
-        "That gap between who you are and who you want to be is "
-        "exactly where the work starts.'\n"
-        "\n"
-        "  BAD:  'As we delve into the tools, the apps highlighted "
-        "here offer binaural audio and sleep tracking.'\n"
-        "  GOOD: 'Two apps stand out: Brain.fm for binaural focus "
-        "sessions, and Insight Timer for guided theta meditations. "
-        "Both run offline, which matters when you're trying to stay "
-        "off your phone.'\n"
-        "\n"
-        "  BAD:  'As we wrap up, remember theta sync is a personal "
-        "journey — find what truly resonates with you.'\n"
-        "  GOOD: 'Pick one practice this week — ten minutes of "
-        "binaural beats before bed, or a single guided session "
-        "tomorrow morning. One rep beats a perfect plan.'\n"
-        "\n"
-        "Output ONLY the spoken sentences. No markdown, no emoji, no "
-        "quote marks around the script, no labels, no preamble."
-    )
+    # Editable from the admin "AI Prompts" tab (key: presentation_narration).
+    sys_msg = get_prompt("presentation_narration", SLIDE_NARRATION_PROMPT)
 
     def _strip_image(content_list):
         """Return a copy of multimodal content with image_url parts
@@ -25105,18 +25330,8 @@ def admin_generate_seo():
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "You are an SEO expert. Based on the website content provided, "
-                        "generate optimized SEO metadata. Respond with ONLY a JSON object "
-                        "(no markdown, no code fences) containing exactly these fields:\n"
-                        '  "meta_title": (max 60 characters, compelling and keyword-rich,'
-                        " include the site/brand name when natural),\n"
-                        '  "meta_description": (max 160 characters, action-oriented summary'
-                        " that mentions what the business actually does),\n"
-                        '  "keywords": (comma-separated, max 10 relevant keywords drawn'
-                        " from the site's own services, products, and topics)\n"
-                        "Make them compelling, search-engine friendly, and specific to the business."
-                    )
+                    # Editable from the admin "AI Prompts" tab (key: seo_suggest).
+                    "content": get_prompt("seo_suggest", SEO_SUGGEST_PROMPT)
                 },
                 {
                     "role": "user",
@@ -25414,6 +25629,123 @@ def admin_update_chatbot():
     if not _is_super_admin():
         out.pop("system_prompt", None)
     return jsonify(out)
+
+
+# =============================================================================
+# AI PROMPTS — super-admin editor (DB-backed, cached)
+# =============================================================================
+# These endpoints back the admin "AI Prompts" tab. ALL of them are locked to
+# the super-admin role: the tab is hidden from clients in the template, but the
+# real boundary is _require_super_admin_role() here so a client session can
+# never read or change prompt wording even by calling the API directly.
+
+@app.route("/admin/api/ai-prompts", methods=["GET"])
+@admin_required
+def admin_list_ai_prompts():
+    """Return every editable prompt with its current text, its hardcoded
+    default, and whether the stored text still matches that default."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    # Current stored values (keyed by prompt_key).
+    stored = {}
+    try:
+        for r in (query_db("SELECT prompt_key, content, updated_at, updated_by "
+                           "FROM ai_prompts") or []):
+            stored[r["prompt_key"]] = r
+    except Exception as e:
+        print(f"[ai-prompts] list read failed: {e}")
+    defaults = _ai_prompt_defaults()
+    items = []
+    for meta in _ai_prompt_registry():
+        key = meta["key"]
+        default_text = defaults.get(key, "")
+        row = stored.get(key) or {}
+        content = row.get("content")
+        if content is None or not str(content).strip():
+            # Not seeded yet (brand-new DB before the boot seed ran) — show the
+            # default so the editor is never empty.
+            content = default_text
+        updated_at = row.get("updated_at")
+        items.append({
+            "key": key,
+            "label": meta["label"],
+            "category": meta["category"],
+            "description": meta["description"],
+            "content": content,
+            "is_default": (str(content).strip() == str(default_text).strip()),
+            "updated_at": updated_at.isoformat() if updated_at else None,
+            "updated_by": row.get("updated_by"),
+        })
+    return jsonify({"prompts": items})
+
+
+@app.route("/admin/api/ai-prompts/<key>", methods=["PUT"])
+@admin_required
+def admin_update_ai_prompt(key):
+    """Save new text for one prompt. Upserts the row and refreshes the cache so
+    the change is live everywhere on the very next AI call."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    valid_keys = {m["key"] for m in _ai_prompt_registry()}
+    if key not in valid_keys:
+        return jsonify({"error": "unknown_prompt_key"}), 404
+    data = request.get_json(silent=True) or {}
+    content = data.get("content")
+    if content is None:
+        return jsonify({"error": "missing_content"}), 400
+    content = str(content)
+    if not content.strip():
+        return jsonify({"error": "empty_content",
+                        "message": "Prompt text cannot be blank. Use Reset to "
+                                   "restore the default."}), 400
+    who = session.get("admin_username") or session.get("admin_role") or "super_admin"
+    try:
+        execute_db(
+            "INSERT INTO ai_prompts (prompt_key, content, updated_at, updated_by) "
+            "VALUES (%s, %s, NOW(), %s) "
+            "ON CONFLICT (prompt_key) DO UPDATE SET "
+            "content = EXCLUDED.content, updated_at = NOW(), "
+            "updated_by = EXCLUDED.updated_by",
+            (key, content, who),
+        )
+    except Exception as e:
+        print(f"[ai-prompts] save failed for {key}: {e}")
+        return jsonify({"error": "save_failed"}), 500
+    _invalidate_prompt_cache()
+    default_text = _ai_prompt_defaults().get(key, "")
+    return jsonify({"ok": True, "key": key,
+                    "is_default": (content.strip() == str(default_text).strip())})
+
+
+@app.route("/admin/api/ai-prompts/<key>/reset", methods=["POST"])
+@admin_required
+def admin_reset_ai_prompt(key):
+    """Restore one prompt to its current hardcoded default and refresh cache."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    valid_keys = {m["key"] for m in _ai_prompt_registry()}
+    if key not in valid_keys:
+        return jsonify({"error": "unknown_prompt_key"}), 404
+    default_text = _ai_prompt_defaults().get(key, "")
+    who = session.get("admin_username") or session.get("admin_role") or "super_admin"
+    try:
+        execute_db(
+            "INSERT INTO ai_prompts (prompt_key, content, updated_at, updated_by) "
+            "VALUES (%s, %s, NOW(), %s) "
+            "ON CONFLICT (prompt_key) DO UPDATE SET "
+            "content = EXCLUDED.content, updated_at = NOW(), "
+            "updated_by = EXCLUDED.updated_by",
+            (key, default_text, who),
+        )
+    except Exception as e:
+        print(f"[ai-prompts] reset failed for {key}: {e}")
+        return jsonify({"error": "reset_failed"}), 500
+    _invalidate_prompt_cache()
+    return jsonify({"ok": True, "key": key, "content": default_text,
+                    "is_default": True})
 
 
 # --------------- Default System Prompt (public read for admin pre-fill) ------
@@ -39986,4 +40318,7 @@ if __name__ == "__main__":
     # only lives in admin_chat_messages, so the new sidebar shows
     # pre-existing conversations on first boot after this upgrade.
     _backfill_admin_chat_sessions()
+    # Pre-fill the ai_prompts table with current defaults so the super-admin
+    # "AI Prompts" editor is never empty (mirrors main._bootstrap()).
+    sync_ai_prompts()
     app.run(host="0.0.0.0", port=5000, debug=True)

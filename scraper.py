@@ -733,6 +733,36 @@ def looks_js_only(cleaned_text: str) -> bool:
 # AI EXTRACTION
 # =============================================================================
 
+# --- Editable system prompts (defaults; overridable from the admin UI) -------
+# These mirror the wording used below and are registered in app.py's prompt
+# registry. They are resolved at call time via _get_prompt() so a super-admin
+# can edit them without touching code. Defined here (not imported from app) to
+# avoid a circular import — app imports scraper at module load time.
+SCRAPER_OBJECTIVE_INTRO = (
+    "You are extracting structured data to satisfy an objective. "
+    "Use the research notes provided. Stay strictly factual."
+)
+SCRAPER_URL_INTRO = (
+    "You are extracting structured data from a public web page's text content. "
+    "Stay strictly factual — never invent values."
+)
+SCRAPER_RESEARCH_PROMPT = (
+    "You are a research assistant. Web browsing is unavailable, "
+    "so answer from training knowledge. Be concise and factual. "
+    "If you don't know something, say so."
+)
+
+
+def _get_prompt(key, default):
+    """Resolve an admin-editable prompt by key, falling back to *default*.
+    Imports app lazily so this module stays import-safe (app imports scraper)."""
+    try:
+        from app import get_prompt as _gp
+        return _gp(key, default)
+    except Exception:
+        return default
+
+
 def _build_schema_prompt(target_shape: str, custom_schema: dict | None) -> str:
     """Render the per-shape contract into a compact instruction the model can follow."""
     shape = TARGET_SHAPES.get(target_shape)
@@ -887,20 +917,14 @@ def extract_with_ai(
     schema_prompt = _build_schema_prompt(target_shape, custom_schema)
 
     if source_kind == "objective":
-        intro = (
-            "You are extracting structured data to satisfy an objective. "
-            "Use the research notes provided. Stay strictly factual."
-        )
+        intro = _get_prompt("scraper_objective_intro", SCRAPER_OBJECTIVE_INTRO)
         user_prompt = (
             f"OBJECTIVE: {source_label}\n\n"
             f"RESEARCH NOTES (from web search):\n{source_text}\n\n"
             f"{schema_prompt}"
         )
     else:
-        intro = (
-            "You are extracting structured data from a public web page's text content. "
-            "Stay strictly factual — never invent values."
-        )
+        intro = _get_prompt("scraper_url_intro", SCRAPER_URL_INTRO)
         user_prompt = (
             f"SOURCE URL: {source_label}\n\n"
             f"PAGE TEXT (already stripped of scripts and styles):\n{source_text}\n\n"
@@ -1000,11 +1024,7 @@ def research_objective(
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "You are a research assistant. Web browsing is unavailable, "
-                        "so answer from training knowledge. Be concise and factual. "
-                        "If you don't know something, say so."
-                    ),
+                    "content": _get_prompt("scraper_research", SCRAPER_RESEARCH_PROMPT),
                 },
                 {"role": "user", "content": objective},
             ],

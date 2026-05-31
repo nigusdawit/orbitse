@@ -100,6 +100,8 @@ def _bootstrap() -> None:
         _app.sync_custom_skills_to_agent_skills()
         # 5. Seed admin_chat_sessions for legacy message-only session ids.
         _app._backfill_admin_chat_sessions()
+        # 6. Pre-fill the editable AI prompt table with current defaults.
+        _app.sync_ai_prompts()
     except Exception as exc:  # noqa: BLE001 — we re-raise; this only reshapes the message.
         if _looks_like_missing_pgvector(exc):
             raise RuntimeError(

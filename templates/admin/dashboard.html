@@ -2198,6 +2198,12 @@ TO CUSTOMIZE THIS DASHBOARD:
       Chatbot
     </button>
     {% endif %}
+    {% if is_super_admin() %}
+    <button class="tab-btn" onclick="switchTab('ai-prompts', this); loadAiPrompts();" data-testid="tab-ai-prompts">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+      AI Prompts
+    </button>
+    {% endif %}
     {% if is_super_admin() or has_feature('chat_history') %}
     <button class="tab-btn" onclick="switchTab('chat-history', this)" data-testid="tab-chat-history">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
@@ -6529,6 +6535,35 @@ TO CUSTOMIZE THIS DASHBOARD:
           <tr><td colspan="6" class="empty-state">Loading...</td></tr>
         </tbody>
       </table>
+    </div>
+  </div>
+
+
+  <!--
+  ========================================================================
+  AI PROMPTS TAB (super-admin only)
+  ========================================================================
+  Lets the super admin edit every AI system prompt the platform uses
+  (visitor concierge, admin assistant, slide narration, SEO generator,
+  persona router, web scraper intros). Each prompt is pre-filled from the
+  current built-in default, stored in the ai_prompts table, and served from
+  an in-memory cache so editing them adds zero per-request database latency.
+  A "Reset to default" button restores the latest built-in wording.
+  -->
+  <div id="tab-ai-prompts" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>AI Prompts</h2>
+        <p style="opacity:.7;margin-top:4px;">
+          Edit the instructions that steer every AI feature on the platform.
+          Changes go live on the next AI reply — no restart needed. Each prompt
+          starts from the built-in default; use <strong>Reset to default</strong>
+          to restore it.
+        </p>
+      </div>
+    </div>
+    <div id="ai-prompts-list">
+      <p class="empty-state">Loading prompts…</p>
     </div>
   </div>
 
@@ -10987,6 +11022,128 @@ TO CUSTOMIZE THIS DASHBOARD:
       const overlay = document.getElementById('sidebar-overlay');
       if (sidebar) sidebar.classList.remove('open');
       if (overlay) overlay.classList.remove('active');
+    }
+
+
+    /*
+    ========================================================================
+    AI PROMPTS (super-admin only)
+    ========================================================================
+    Loads every editable AI prompt from /admin/api/ai-prompts and renders a
+    card per prompt with a textarea, a Default/Customized badge, a Save button
+    (PUT) and a Reset button (POST .../reset). The backend locks all three
+    endpoints to the super-admin role, so a client session that somehow opened
+    this tab would just see an "only the super admin" message.
+    */
+    function _aiPromptEsc(s) {
+      const d = document.createElement('div');
+      d.textContent = (s == null ? '' : String(s));
+      return d.innerHTML;
+    }
+
+    function _aiPromptBadge(isDefault) {
+      return isDefault
+        ? '<span style="font-size:11px;font-weight:600;padding:3px 9px;border-radius:999px;'
+          + 'background:rgba(255,255,255,.08);color:#cbd5e1;border:1px solid rgba(255,255,255,.15);">Default</span>'
+        : '<span style="font-size:11px;font-weight:600;padding:3px 9px;border-radius:999px;'
+          + 'background:rgba(201,169,110,.18);color:#c9a96e;border:1px solid rgba(201,169,110,.4);">Customized</span>';
+    }
+
+    async function loadAiPrompts() {
+      const wrap = document.getElementById('ai-prompts-list');
+      if (!wrap) return;
+      wrap.innerHTML = '<p class="empty-state">Loading prompts…</p>';
+      try {
+        const res = await fetch('/admin/api/ai-prompts');
+        if (!res.ok) {
+          wrap.innerHTML = '<p class="empty-state">Only the super admin can view and edit AI prompts.</p>';
+          return;
+        }
+        const data = await res.json();
+        const prompts = (data && data.prompts) || [];
+        if (!prompts.length) {
+          wrap.innerHTML = '<p class="empty-state">No editable prompts found.</p>';
+          return;
+        }
+        wrap.innerHTML = '';
+        prompts.forEach(p => {
+          const card = document.createElement('div');
+          card.className = 'card';
+          card.style.marginBottom = '20px';
+          card.style.padding = '20px';
+          card.innerHTML =
+            '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">'
+            +   '<div>'
+            +     '<h3 style="margin:0 0 4px;">' + _aiPromptEsc(p.label) + '</h3>'
+            +     '<div style="font-size:12px;opacity:.6;">' + _aiPromptEsc(p.category)
+            +       ' · key: <code>' + _aiPromptEsc(p.key) + '</code></div>'
+            +   '</div>'
+            +   '<div id="aiprompt-badge-' + _aiPromptEsc(p.key) + '">' + _aiPromptBadge(p.is_default) + '</div>'
+            + '</div>'
+            + '<p style="font-size:13px;opacity:.75;margin:8px 0 10px;">' + _aiPromptEsc(p.description || '') + '</p>'
+            + '<textarea id="aiprompt-ta-' + _aiPromptEsc(p.key) + '" rows="10" '
+            +   'style="width:100%;font-family:monospace;font-size:12px;line-height:1.5;"></textarea>'
+            + '<div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;">'
+            +   '<button class="btn btn-primary" onclick="saveAiPrompt(\'' + p.key + '\')">Save</button>'
+            +   '<button class="btn btn-secondary" onclick="resetAiPrompt(\'' + p.key + '\')">Reset to default</button>'
+            + '</div>';
+          wrap.appendChild(card);
+          /* Set the textarea value via .value (not innerHTML) so special
+             characters in the prompt are never interpreted as markup. */
+          const ta = document.getElementById('aiprompt-ta-' + p.key);
+          if (ta) ta.value = p.content || '';
+        });
+      } catch (e) {
+        wrap.innerHTML = '<p class="empty-state">Failed to load prompts.</p>';
+      }
+    }
+
+    async function saveAiPrompt(key) {
+      const ta = document.getElementById('aiprompt-ta-' + key);
+      if (!ta) return;
+      const content = ta.value;
+      if (!content.trim()) {
+        showToast('Prompt cannot be empty. Use Reset to restore the default.', 'error');
+        return;
+      }
+      try {
+        const res = await fetch('/admin/api/ai-prompts/' + encodeURIComponent(key), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          showToast(data.message || 'Save failed', 'error');
+          return;
+        }
+        const badge = document.getElementById('aiprompt-badge-' + key);
+        if (badge) badge.innerHTML = _aiPromptBadge(data.is_default);
+        showToast('Prompt saved — live on the next AI reply.', 'success');
+      } catch (e) {
+        showToast('Save failed', 'error');
+      }
+    }
+
+    async function resetAiPrompt(key) {
+      if (!confirm('Restore this prompt to the built-in default? Your custom text will be replaced.')) return;
+      try {
+        const res = await fetch('/admin/api/ai-prompts/' + encodeURIComponent(key) + '/reset', {
+          method: 'POST'
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          showToast('Reset failed', 'error');
+          return;
+        }
+        const ta = document.getElementById('aiprompt-ta-' + key);
+        if (ta) ta.value = data.content || '';
+        const badge = document.getElementById('aiprompt-badge-' + key);
+        if (badge) badge.innerHTML = _aiPromptBadge(true);
+        showToast('Prompt reset to default.', 'success');
+      } catch (e) {
+        showToast('Reset failed', 'error');
+      }
     }
 
 

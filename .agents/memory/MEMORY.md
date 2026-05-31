@@ -1,2 +1,3 @@
 - [Adding tables — _DDL vs Alembic](schema-ddl-vs-alembic.md) — new DB tables need an Alembic migration; the legacy schema.py `_DDL` silently fails partway on existing DBs so appended tables never get created.
+- [Dual boot entrypoints](boot-entrypoints.md) — boot-time seeding/sync must be added to BOTH main._bootstrap() and app.py __main__; write-invalidated caches must take the loader's lock.
 - [query_db fetchone gotcha](query-db-fetchone.md) — query_db returns a LIST by default; single-row callers using row.get(...) need fetchone=True or it raises and is often silently swallowed.
