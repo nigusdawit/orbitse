@@ -1196,6 +1196,24 @@ def _ai_control_registry():
          "group": "Meetings", "label": "Calendar create-event tool name",
          "env": "MEETING_CALENDAR_TOOL",
          "description": "The MCP tool on that server that creates an event. Blank = 'create_event'."},
+        # Live AI phone call (Phase 6 / task 049)
+        {"key": "live_call_enabled", "attr": "live_call_enabled", "type": "bool",
+         "group": "Live Call", "label": "Route inbound phone calls to the AI",
+         "env": "LIVE_CALL_ENABLED",
+         "description": "When ON, your Twilio Voice number's webhook routes inbound calls to "
+                        "the AI. Requires a public media-stream endpoint below for a real "
+                        "conversation; without it the caller hears a fallback message. Off = "
+                        "the webhook politely declines. (Operator runbook: point your Twilio "
+                        "Voice number at /webhooks/twilio/voice.)"},
+        {"key": "voice_wss_url", "attr": "voice_wss_url", "type": "string",
+         "group": "Live Call", "label": "Voice media-stream endpoint (wss://)",
+         "env": "VOICE_WSS_URL",
+         "description": "Public wss:// endpoint bridging Twilio media streams to a realtime "
+                        "voice model. Blank = spoken fallback message (no live AI voice)."},
+        {"key": "voice_greeting", "attr": "voice_greeting", "type": "string",
+         "group": "Live Call", "label": "Spoken greeting",
+         "env": "VOICE_GREETING",
+         "description": "Greeting spoken to the caller before connecting."},
         # Activity
         {"key": "activity_logging_enabled", "attr": "activity_logging_enabled", "type": "bool",
          "group": "Activity", "label": "Log admin-AI turns to the database",
@@ -1260,7 +1278,7 @@ _AI_INERT = {
     "offers_enabled": False, "lead_capture_enabled": False,
     "callback_requests_enabled": False, "team_notifications_enabled": False,
     "visitor_persona_router_enabled": False, "handoff_summary_enabled": False,
-    "meetings_enabled": False,
+    "meetings_enabled": False, "live_call_enabled": False,
     "visitor_llm_max_retries": 0, "visitor_provider_fallback": False,
     "visitor_fallback_model": "", "visitor_history_token_budget": 0,
 }
@@ -4704,6 +4722,32 @@ def init_db():
                 );
                 CREATE INDEX IF NOT EXISTS meetings_recent_idx
                     ON meetings (tenant_id, created_at DESC);
+                """
+            )
+
+            # VOICE CALLS (Phase 6 / Epic F, task 049) — one row per inbound
+            # Twilio Voice call routed to the AI concierge. The live media bridge
+            # (Twilio <Stream> ↔ a realtime voice model) is the credential/infra
+            # leg, deferred to an operator runbook; this table + the webhooks log
+            # and track calls so the feature is observable. Nothing happens unless
+            # the 'live_call_enabled' knob is on. Also in migration 0018.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS voice_calls (
+                    id            BIGSERIAL PRIMARY KEY,
+                    tenant_id     INTEGER NOT NULL DEFAULT 1,
+                    call_sid      VARCHAR(64) NOT NULL DEFAULT '',
+                    from_number   TEXT NOT NULL DEFAULT '',
+                    to_number     TEXT NOT NULL DEFAULT '',
+                    status        TEXT NOT NULL DEFAULT 'initiated',
+                    summary       TEXT NOT NULL DEFAULT '',
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS voice_calls_recent_idx
+                    ON voice_calls (tenant_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS voice_calls_sid_idx
+                    ON voice_calls (call_sid);
                 """
             )
     finally:
@@ -42364,6 +42408,109 @@ def webhook_twilio_inbound():
         )
     # Twilio expects TwiML in the response. Empty <Response/> = no auto-reply.
     return Response("<Response/>", mimetype="application/xml")
+
+
+# --- PUBLIC: Twilio Voice (live AI phone call — task 049) -------------------
+# Inbound-call webhook + status callback. Signature-verified like the SMS
+# webhooks. The live media bridge (Twilio <Connect><Stream> ↔ a realtime voice
+# model over wss) is the credential/infra leg — deferred to an operator runbook;
+# point your Twilio Voice number's webhook at /webhooks/twilio/voice and set
+# voice_wss_url to your media-stream endpoint. With no wss configured, callers
+# get a spoken fallback. Everything is gated by 'live_call_enabled'.
+
+def _twiml(inner):
+    return Response(f'<?xml version="1.0" encoding="UTF-8"?><Response>{inner}</Response>',
+                    mimetype="text/xml")
+
+
+def _twilio_auth_configured():
+    """True when TWILIO_AUTH_TOKEN is set. verify_twilio_signature FAILS OPEN
+    without it (handy for SMS dev), but the voice endpoints have side effects +
+    route real calls, so they FAIL CLOSED when it's missing — a misconfigured
+    host can't be used to spoof calls / status."""
+    return bool((os.environ.get("TWILIO_AUTH_TOKEN") or "").strip())
+
+
+@app.route("/webhooks/twilio/voice", methods=["POST"])
+def webhook_twilio_voice():
+    """Inbound Twilio Voice webhook. Returns TwiML. When live calling is enabled
+    AND a media-stream endpoint is configured, connect the call to the streaming
+    voice bot; otherwise speak a fallback. Logs a voice_calls row."""
+    form = request.form.to_dict(flat=True)
+    sig = request.headers.get("X-Twilio-Signature", "")
+    # Fail CLOSED if Twilio auth isn't configured (signature check would
+    # otherwise fail-open and let anyone spoof a call). Voice has side effects.
+    if not _twilio_auth_configured():
+        return _twiml("<Reject/>")
+    if not messaging.verify_twilio_signature(request.url, form, sig):
+        return _twiml("<Reject/>")
+    esc = lambda s: html_module.escape(str(s or ""), quote=True)
+    if not get_ai_setting("live_call_enabled"):
+        # Politely decline — feature off.
+        return _twiml("<Say>Sorry, live calling is not available right now. "
+                      "Goodbye.</Say><Hangup/>")
+    # Log the inbound call (best-effort; never block the TwiML response).
+    try:
+        execute_db(
+            "INSERT INTO voice_calls (tenant_id, call_sid, from_number, to_number, status) "
+            "VALUES (%s,%s,%s,%s,'in-progress')",
+            (current_tenant_id(), (form.get("CallSid") or "")[:64],
+             form.get("From") or "", form.get("To") or ""))
+    except Exception as e:
+        print(f"[voice] call log failed: {type(e).__name__}: {e}")
+    greeting = (get_ai_setting("voice_greeting") or "").strip() or "Hello!"
+    wss = (get_ai_setting("voice_wss_url") or "").strip()
+    if wss and wss.lower().startswith("wss://"):
+        # Live media bridge — stream the call to the realtime voice model.
+        return _twiml(
+            f"<Say>{esc(greeting)}</Say>"
+            f'<Connect><Stream url="{esc(wss)}"/></Connect>')
+    # No media endpoint configured → spoken fallback (no live AI voice yet).
+    return _twiml(
+        f"<Say>{esc(greeting)}</Say>"
+        "<Say>Our live assistant is not fully set up yet. Please leave us a "
+        "message after the tone, or contact us through our website.</Say>"
+        "<Hangup/>")
+
+
+@app.route("/webhooks/twilio/voice-status", methods=["POST"])
+def webhook_twilio_voice_status():
+    """Twilio Voice status callback — updates the call's status."""
+    form = request.form.to_dict(flat=True)
+    sig = request.headers.get("X-Twilio-Signature", "")
+    if not _twilio_auth_configured():
+        return Response("<Response/>", status=401, mimetype="text/xml")
+    if not messaging.verify_twilio_signature(request.url, form, sig):
+        return Response("<Response/>", status=401, mimetype="text/xml")
+    sid = (form.get("CallSid") or "")[:64]
+    status = (form.get("CallStatus") or "").strip()[:40]
+    if sid and status:
+        try:
+            execute_db(
+                "UPDATE voice_calls SET status=%s, updated_at=NOW() "
+                "WHERE call_sid=%s", (status, sid))
+        except Exception as e:
+            print(f"[voice] status update failed: {type(e).__name__}: {e}")
+    return Response("<Response/>", mimetype="text/xml")
+
+
+@app.route("/admin/api/voice-calls", methods=["GET"])
+@admin_required
+def admin_list_voice_calls():
+    """Inbound AI voice calls (super-admin only)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    try:
+        limit = max(1, min(int(request.args.get("limit", 100) or 100), 500))
+    except (TypeError, ValueError):
+        limit = 100
+    tid = current_tenant_id()
+    rows = query_db(
+        "SELECT id, call_sid, from_number, to_number, status, summary, created_at "
+        "FROM voice_calls WHERE tenant_id=%s ORDER BY id DESC LIMIT %s",
+        (tid, limit)) or []
+    return jsonify({"calls": [_iso_row(r, "created_at") for r in rows]})
 
 
 # --- PUBLIC: unsubscribe ----------------------------------------------------
