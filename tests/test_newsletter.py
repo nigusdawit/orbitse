@@ -186,6 +186,21 @@ def test_portal_unsubscribe_then_resubscribe():
         _wipe(addr)
 
 
+def test_portal_fails_closed_on_insecure_secret(monkeypatch):
+    """If no real signing secret is configured, the portal must fail CLOSED
+    (503) rather than serve a surface whose tokens are forgeable."""
+    addr = "failclosed@example.com"
+    sid = _seed(addr)
+    try:
+        monkeypatch.setattr(messaging, "signing_secret_is_insecure", lambda: True)
+        c = app.app.test_client()
+        tok = messaging.make_prefs_token(sid)
+        assert c.get(f"/preferences?token={tok}").status_code == 503
+        assert c.post("/preferences", data={"token": tok, "action": "unsubscribe"}).status_code == 503
+    finally:
+        _wipe(addr)
+
+
 # ---- registry / skills ------------------------------------------------------
 
 def test_tool_registered():

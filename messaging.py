@@ -211,6 +211,24 @@ def _signing_secret() -> bytes:
     return hashlib.sha256(secret.encode("utf-8")).digest()
 
 
+def signing_secret_is_insecure() -> bool:
+    """True when no real signing secret is configured and `_signing_secret()`
+    would fall back to the built-in dev placeholder — meaning every HMAC token
+    is forgeable. Callers guarding a SENSITIVE token surface (the preferences
+    portal exposes a subscriber's email/phone + lets it edit opt-ins) should
+    fail CLOSED when this returns True, so a misconfigured host can't be used to
+    enumerate/modify subscribers with a self-minted token."""
+    if os.environ.get("FLASK_SECRET_KEY", "").strip():
+        return False
+    try:
+        with open(".flask_secret", "r") as f:
+            if f.read().strip():
+                return False
+    except FileNotFoundError:
+        pass
+    return True
+
+
 def make_unsubscribe_token(subscriber_id: int) -> str:
     payload = f"{int(subscriber_id)}".encode("utf-8")
     sig = hmac.new(_signing_secret(), payload, hashlib.sha256).digest()

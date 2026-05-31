@@ -41375,9 +41375,21 @@ def _prefs_page(*, message="", sub=None, token="", done=False) -> str:
     )
 
 
+def _prefs_portal_unavailable():
+    """Fail-closed response when the signing secret is the insecure dev
+    fallback (tokens would be forgeable — see signing_secret_is_insecure)."""
+    return Response(
+        _prefs_page(message="The preferences portal isn't available on this "
+                            "server right now. Please contact us to update your "
+                            "preferences."),
+        status=503, mimetype="text/html")
+
+
 @app.route("/preferences", methods=["GET"])
 def public_preferences():
     """Show a subscriber their current contact preferences (signed token)."""
+    if messaging.signing_secret_is_insecure():
+        return _prefs_portal_unavailable()
     token = request.args.get("token") or ""
     sub_id = messaging.parse_prefs_token(token)
     if not sub_id:
@@ -41395,6 +41407,8 @@ def public_preferences():
 @app.route("/preferences", methods=["POST"])
 def public_preferences_post():
     """Apply a subscriber's preference changes (signed token in the form)."""
+    if messaging.signing_secret_is_insecure():
+        return _prefs_portal_unavailable()
     token = request.form.get("token") or ""
     sub_id = messaging.parse_prefs_token(token)
     if not sub_id:
