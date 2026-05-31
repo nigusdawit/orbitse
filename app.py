@@ -42423,6 +42423,14 @@ def _twiml(inner):
                     mimetype="text/xml")
 
 
+def _twilio_auth_configured():
+    """True when TWILIO_AUTH_TOKEN is set. verify_twilio_signature FAILS OPEN
+    without it (handy for SMS dev), but the voice endpoints have side effects +
+    route real calls, so they FAIL CLOSED when it's missing — a misconfigured
+    host can't be used to spoof calls / status."""
+    return bool((os.environ.get("TWILIO_AUTH_TOKEN") or "").strip())
+
+
 @app.route("/webhooks/twilio/voice", methods=["POST"])
 def webhook_twilio_voice():
     """Inbound Twilio Voice webhook. Returns TwiML. When live calling is enabled
@@ -42430,6 +42438,10 @@ def webhook_twilio_voice():
     voice bot; otherwise speak a fallback. Logs a voice_calls row."""
     form = request.form.to_dict(flat=True)
     sig = request.headers.get("X-Twilio-Signature", "")
+    # Fail CLOSED if Twilio auth isn't configured (signature check would
+    # otherwise fail-open and let anyone spoof a call). Voice has side effects.
+    if not _twilio_auth_configured():
+        return _twiml("<Reject/>")
     if not messaging.verify_twilio_signature(request.url, form, sig):
         return _twiml("<Reject/>")
     esc = lambda s: html_module.escape(str(s or ""), quote=True)
@@ -42466,6 +42478,8 @@ def webhook_twilio_voice_status():
     """Twilio Voice status callback — updates the call's status."""
     form = request.form.to_dict(flat=True)
     sig = request.headers.get("X-Twilio-Signature", "")
+    if not _twilio_auth_configured():
+        return Response("<Response/>", status=401, mimetype="text/xml")
     if not messaging.verify_twilio_signature(request.url, form, sig):
         return Response("<Response/>", status=401, mimetype="text/xml")
     sid = (form.get("CallSid") or "")[:64]

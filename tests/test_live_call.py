@@ -37,10 +37,28 @@ def _post_voice(c, **form):
 
 def test_bad_signature_rejected(monkeypatch):
     _reset()
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "tok")  # auth configured
     monkeypatch.setattr(messaging, "verify_twilio_signature", lambda *a, **k: False)
     c = app.app.test_client()
     r = _post_voice(c, CallSid="CA1", From="+15551112222", To="+15553334444")
     assert "<Reject" in r.get_data(as_text=True)
+
+
+def test_fail_closed_without_auth_token(monkeypatch):
+    """When TWILIO_AUTH_TOKEN is unset, the voice webhook must FAIL CLOSED
+    (reject) even with the feature enabled — the signature check fails open."""
+    _reset()
+    app.set_ai_setting("live_call_enabled", True)
+    app.set_ai_setting("voice_wss_url", "wss://bridge.example.com/media")
+    app._invalidate_ai_control()
+    monkeypatch.delenv("TWILIO_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(messaging, "verify_twilio_signature", lambda *a, **k: True)
+    try:
+        c = app.app.test_client()
+        body = _post_voice(c, CallSid="CA-noauth", From="+1", To="+2").get_data(as_text=True)
+        assert "<Reject" in body and "<Stream" not in body
+    finally:
+        _reset()
 
 
 # ---- gating -----------------------------------------------------------------
