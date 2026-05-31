@@ -5083,8 +5083,12 @@ TO CUSTOMIZE THIS DASHBOARD:
         status.textContent = '✗ ' + (data.error || 'Upload failed');
         return;
       }
-      const res = data.result || {};
-      status.textContent = `✓ Indexed ${res.chunk_count || 0} chunks across ${res.page_count || 0} pages.`;
+      if (data.queued) {
+        status.textContent = '✓ Queued — indexing in the background. It will appear below shortly.';
+      } else {
+        const res = data.result || {};
+        status.textContent = `✓ Indexed ${res.chunk_count || 0} chunks across ${res.page_count || 0} pages.`;
+      }
       input.value = '';
       await adminChatKBReload();
     } catch(e) {

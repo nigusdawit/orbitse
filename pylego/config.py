@@ -87,6 +87,12 @@ class PylegoConfig:
     # ---- Activity logging (task 031) ----------------------------------------
     activity_logging_enabled: bool    # persist each admin-AI turn to ai_activity_log
 
+    # ---- Knowledge base ingestion (Phase 6 / task 039) ----------------------
+    # When True, KB uploads run the extract+chunk+embed pipeline in a background
+    # thread (upload returns immediately); when False (default) it runs inline as
+    # before. Lets a client drop many large docs without blocking the request.
+    async_ingestion_enabled: bool
+
     # ---- Visitor AI reliability/context (Phase 6 / task 035) ----------------
     # Separate from the admin knobs because the visitor endpoint is public +
     # higher-volume. All inert at default (= current visitor behavior).
@@ -139,6 +145,8 @@ def _build() -> PylegoConfig:
         respcache_threshold=_env_float("ADMIN_RESPCACHE_THRESHOLD", 0.93),
         # Activity logging — wired in 031 (default ON: low-volume admin turns).
         activity_logging_enabled=_env_bool("ADMIN_CHAT_ACTIVITY_LOGGING", True),
+        # KB ingestion — wired in 039; inert default (inline ingestion).
+        async_ingestion_enabled=_env_bool("KB_ASYNC_INGESTION", False),
         # Visitor reliability/context — wired in 035; inert defaults.
         visitor_llm_max_retries=_env_int("VISITOR_CHAT_LLM_MAX_RETRIES", 0),
         visitor_provider_fallback_enabled=_env_bool("VISITOR_CHAT_PROVIDER_FALLBACK", False),

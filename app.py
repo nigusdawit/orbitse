@@ -1070,6 +1070,13 @@ def _ai_control_registry():
          "group": "Activity", "label": "Log admin-AI turns to the database",
          "env": "ADMIN_CHAT_ACTIVITY_LOGGING",
          "description": "Persist each admin-AI turn (for the AI Activity tab). Turn off to stop recording."},
+        # Knowledge base (Phase 6)
+        {"key": "async_ingestion_enabled", "attr": "async_ingestion_enabled", "type": "bool",
+         "group": "Knowledge Base", "label": "Async document ingestion",
+         "env": "KB_ASYNC_INGESTION",
+         "description": "Process KB uploads in the background so big/bulk uploads "
+                        "don't block the request. Off = ingest inline (the doc is "
+                        "ready when upload returns)."},
         # Visitor AI (Phase 6) — separate knobs for the public concierge.
         {"key": "visitor_llm_max_retries", "attr": "visitor_llm_max_retries", "type": "int",
          "group": "Visitor AI", "label": "Visitor: max retries on transient errors",
@@ -20461,17 +20468,44 @@ def admin_kb_set_audience(doc_id):
     return jsonify({"id": doc_id, "audience": audience})
 
 
+def _kb_do_ingest(fname, data, mimetype, tenant_id):
+    """Full KB ingest: extract+chunk+embed (rag.ingest_document) then persist the
+    bytes to storage + patch storage_key/source_mtime. Returns the ingest result
+    dict. Self-contained (no Flask request context) so it's safe to call inline
+    OR from the async ingestion daemon thread. Never raises out (storage failure
+    is logged; chunks are already in place)."""
+    res = rag.ingest_document(
+        fname, data, tenant_id=tenant_id,
+        mime=(mimetype or "")[:120], storage_key="", session_id="kb_upload")
+    if "id" not in res:
+        return res
+    doc_id = int(res["id"])
+    try:
+        key = _kb_storage_subpath(doc_id, fname)
+        storage.get_storage().write_bytes(key, data, content_type=mimetype or None)
+        mtime = None
+        try:
+            full = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "uploads", key)
+            if os.path.exists(full):
+                mtime = os.path.getmtime(full)
+        except Exception:
+            mtime = None
+        execute_db(
+            "UPDATE rag_documents SET storage_key=%s, source_mtime=%s WHERE id=%s",
+            (key, mtime, doc_id))
+    except Exception as e:
+        print(f"[kb] storage save failed for doc {doc_id}: {e}")
+    return res
+
+
 @app.route("/admin/api/kb/upload", methods=["POST"])
 @admin_required
 def admin_kb_upload():
-    """POST multipart/form-data with field `file=<...>`. Streams the
-    file into storage, then runs the full extract+chunk+embed pipeline
-    inline (small files finish in <2s; larger files block the request
-    for up to ~30s — the sidebar shows an "Uploading…" spinner). We
-    deliberately do NOT background this: the admin almost always
-    expects the doc to be ready by the time the request returns, and
-    moving to a worker queue would add infrastructure for a feature
-    that's rarely run on huge corpora."""
+    """POST multipart/form-data with field `file=<...>`. Validates + reads the
+    file, then runs the extract+chunk+embed pipeline either inline (default) or
+    in a background thread when async ingestion is enabled (task 039). The KB
+    sidebar polls /admin/api/kb/list to reflect status."""
     up = request.files.get("file")
     if not up or not up.filename:
         return jsonify({"error": "no file uploaded"}), 400
@@ -20485,44 +20519,24 @@ def admin_kb_upload():
         return jsonify({"error": "empty file"}), 400
     if len(data) > rag.MAX_FILE_BYTES:
         return jsonify({"error": "file exceeds 25 MB cap"}), 413
+    mimetype = up.mimetype
+    tid = current_tenant_id()
 
-    # We need the inserted row's id BEFORE we can compute the final
-    # storage key (which prefixes with id to avoid collisions), so we
-    # ingest with an empty storage_key, then PATCH it after persisting
-    # to disk. That UPDATE also pins the source_mtime for the nightly
-    # reindex tick to compare against.
-    res = rag.ingest_document(
-        fname, data,
-        tenant_id=current_tenant_id(),
-        mime=(up.mimetype or "")[:120],
-        storage_key="",
-        session_id="kb_upload",
-    )
+    # Async ingestion (task 039): when enabled, run the heavy extract+chunk+embed
+    # in a daemon thread and return 202 immediately — the doc shows up in the KB
+    # list (status indexing → ready) as the thread progresses. Default OFF →
+    # inline, so the doc is ready by the time the request returns (prior behavior).
+    if get_ai_setting("async_ingestion_enabled"):
+        import threading
+        threading.Thread(target=_kb_do_ingest,
+                         args=(fname, data, mimetype, tid),
+                         name=f"kb-ingest-{fname[:40]}", daemon=True).start()
+        return jsonify({"ok": True, "queued": True, "filename": fname}), 202
+
+    res = _kb_do_ingest(fname, data, mimetype, tid)
     if "id" not in res:
         return jsonify(res), 500
-    doc_id = int(res["id"])
-    try:
-        key = _kb_storage_subpath(doc_id, fname)
-        storage.get_storage().write_bytes(key, data,
-                                          content_type=up.mimetype or None)
-        # Capture mtime so the nightly tick can detect future edits.
-        mtime = None
-        try:
-            full = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "uploads", key)
-            if os.path.exists(full):
-                mtime = os.path.getmtime(full)
-        except Exception:
-            mtime = None
-        execute_db(
-            "UPDATE rag_documents SET storage_key=%s, source_mtime=%s "
-            "WHERE id=%s",
-            (key, mtime, doc_id))
-    except Exception as e:
-        # File saved -> chunks already in place; just log. Worst case
-        # the reindex button won't have a source to re-read from.
-        print(f"[kb] storage save failed for doc {doc_id}: {e}")
-    return jsonify({"ok": True, "document_id": doc_id,
+    return jsonify({"ok": True, "document_id": int(res["id"]),
                     "filename": fname, "result": res})
 
 
