@@ -81,6 +81,14 @@ class PylegoConfig:
     # ---- Activity logging (task 031) ----------------------------------------
     activity_logging_enabled: bool    # persist each admin-AI turn to ai_activity_log
 
+    # ---- Visitor AI reliability/context (Phase 6 / task 035) ----------------
+    # Separate from the admin knobs because the visitor endpoint is public +
+    # higher-volume. All inert at default (= current visitor behavior).
+    visitor_llm_max_retries: int
+    visitor_provider_fallback_enabled: bool
+    visitor_fallback_model: str
+    visitor_history_token_budget: int
+
     # ---- Safety (task 029) --------------------------------------------------
     # sqlguard/structured default OFF (they can affect behavior — they're a
     # stricter layer on top of the monolith's existing guards). redact defaults
@@ -122,6 +130,11 @@ def _build() -> PylegoConfig:
         respcache_threshold=_env_float("ADMIN_RESPCACHE_THRESHOLD", 0.93),
         # Activity logging — wired in 031 (default ON: low-volume admin turns).
         activity_logging_enabled=_env_bool("ADMIN_CHAT_ACTIVITY_LOGGING", True),
+        # Visitor reliability/context — wired in 035; inert defaults.
+        visitor_llm_max_retries=_env_int("VISITOR_CHAT_LLM_MAX_RETRIES", 0),
+        visitor_provider_fallback_enabled=_env_bool("VISITOR_CHAT_PROVIDER_FALLBACK", False),
+        visitor_fallback_model=os.environ.get("VISITOR_CHAT_FALLBACK_MODEL", "").strip(),
+        visitor_history_token_budget=_env_int("VISITOR_CHAT_HISTORY_TOKEN_BUDGET", 0),
         # Safety — wired in 029.
         sqlguard_enabled=_env_bool("ADMIN_SQLGUARD_ENABLED", False),
         structured_enabled=_env_bool("ADMIN_STRUCTURED_ARGS_ENABLED", False),

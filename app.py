@@ -1062,6 +1062,23 @@ def _ai_control_registry():
          "group": "Activity", "label": "Log admin-AI turns to the database",
          "env": "ADMIN_CHAT_ACTIVITY_LOGGING",
          "description": "Persist each admin-AI turn (for the AI Activity tab). Turn off to stop recording."},
+        # Visitor AI (Phase 6) — separate knobs for the public concierge.
+        {"key": "visitor_llm_max_retries", "attr": "visitor_llm_max_retries", "type": "int",
+         "group": "Visitor AI", "label": "Visitor: max retries on transient errors",
+         "env": "VISITOR_CHAT_LLM_MAX_RETRIES",
+         "description": "Extra attempts when the visitor LLM stream fails transiently. 0 = none."},
+        {"key": "visitor_provider_fallback", "attr": "visitor_provider_fallback_enabled", "type": "bool",
+         "group": "Visitor AI", "label": "Visitor: provider fallback",
+         "env": "VISITOR_CHAT_PROVIDER_FALLBACK",
+         "description": "Fall back to the other provider if the visitor's primary can't start."},
+        {"key": "visitor_fallback_model", "attr": "visitor_fallback_model", "type": "string",
+         "group": "Visitor AI", "label": "Visitor: fallback model",
+         "env": "VISITOR_CHAT_FALLBACK_MODEL",
+         "description": "Model on the other provider for visitor fallback. Blank = no fallback."},
+        {"key": "visitor_history_token_budget", "attr": "visitor_history_token_budget", "type": "int",
+         "group": "Visitor AI", "label": "Visitor: history token budget",
+         "env": "VISITOR_CHAT_HISTORY_TOKEN_BUDGET",
+         "description": "Trim old visitor turns to fit this many tokens. 0 = off."},
     ]
 
 
@@ -21665,6 +21682,11 @@ def api_chat():
         )})
 
     messages.append({"role": "user", "content": message})
+    # Phase 6 (035): optional token-aware history trim for the visitor. Default
+    # budget 0 → identity (no change). Keeps the system prompt + current turn,
+    # never orphans a tool message. Fail-open inside trim_to_budget.
+    messages = _pylego_history.trim_to_budget(
+        messages, get_ai_setting("visitor_history_token_budget"), None)
 
     def generate():
         try:
@@ -21873,16 +21895,33 @@ def api_chat():
                 finish_reason = None
                 _va["rounds"] = _round_idx + 1
 
+                # Phase 6 (035): build provider openers + wrap with pylego
+                # reliable_round for retry-before-first-token + optional fallback.
+                # Default config (0 retries, no fallback) → a single opener, i.e.
+                # byte-identical to the prior direct dispatch.
+                def _v_open_claude(_m):
+                    _ss, _cm = _messages_for_claude(messages)
+                    return _stream_round_claude(_m, _ss, _cm, _tools_for_claude(active_tools))
+
+                def _v_open_openai(_m):
+                    return _stream_round_openai(_m, messages, active_tools)
+
+                _v_fb_on = get_ai_setting("visitor_provider_fallback")
+                _v_fb_model = get_ai_setting("visitor_fallback_model")
                 if provider == "claude":
-                    sys_str, claude_msgs = _messages_for_claude(messages)
-                    claude_tools = _tools_for_claude(active_tools)
-                    round_iter = _stream_round_claude(
-                        model, sys_str, claude_msgs, claude_tools
-                    )
+                    _v_openers = [lambda: _v_open_claude(model)]
+                    if (_v_fb_on and _v_fb_model
+                            and not _v_fb_model.lower().startswith("claude")
+                            and openai_client is not None):
+                        _v_openers.append(lambda: _v_open_openai(_v_fb_model))
                 else:
-                    round_iter = _stream_round_openai(
-                        model, messages, active_tools
-                    )
+                    _v_openers = [lambda: _v_open_openai(model)]
+                    if (_v_fb_on and _v_fb_model
+                            and _v_fb_model.lower().startswith("claude")
+                            and anthropic_client is not None):
+                        _v_openers.append(lambda: _v_open_claude(_v_fb_model))
+                round_iter = _pylego_router.reliable_round(
+                    _v_openers, max_retries=get_ai_setting("visitor_llm_max_retries"))
 
                 for event in round_iter:
                     kind = event[0]
