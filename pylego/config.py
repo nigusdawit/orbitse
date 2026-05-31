@@ -97,6 +97,14 @@ class PylegoConfig:
     # string = current request shape). OpenAI caches automatically — no knob.
     prompt_cache_enabled: bool
 
+    # ---- Visitor CRM / profiles (task 042 — Epic D) -------------------------
+    # When enabled, a fail-open background updater extracts soft signals
+    # (interests/needs/lead_score/consent) from each visitor turn and upserts a
+    # visitor_profiles row. Inert default OFF → no extra LLM call, table stays
+    # empty, visitor chat behaves exactly as before.
+    visitor_profiles_enabled: bool
+    visitor_profiles_model: str       # model for the tiny extraction call ("" → use the default)
+
     # ---- Activity logging (task 031) ----------------------------------------
     activity_logging_enabled: bool    # persist each admin-AI turn to ai_activity_log
 
@@ -161,6 +169,9 @@ def _build() -> PylegoConfig:
         fast_model=os.environ.get("MODEL_ROUTING_FAST_MODEL", "").strip(),
         routing_simple_max_chars=_env_int("MODEL_ROUTING_SIMPLE_MAX_CHARS", 280),
         prompt_cache_enabled=_env_bool("PROMPT_CACHE_ENABLED", False),
+        # Visitor CRM — wired in 042; inert default (no profiling).
+        visitor_profiles_enabled=_env_bool("VISITOR_PROFILES_ENABLED", False),
+        visitor_profiles_model=os.environ.get("VISITOR_PROFILES_MODEL", "").strip(),
         # Activity logging — wired in 031 (default ON: low-volume admin turns).
         activity_logging_enabled=_env_bool("ADMIN_CHAT_ACTIVITY_LOGGING", True),
         # KB ingestion — wired in 039; inert default (inline ingestion).

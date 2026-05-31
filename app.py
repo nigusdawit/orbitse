@@ -1092,6 +1092,20 @@ def _ai_control_registry():
                         "block so repeated turns reuse it — cheaper + faster after the "
                         "first turn. No effect on OpenAI (it caches automatically). "
                         "Off = system prompt sent normally."},
+        # Visitor CRM (Phase 6 / task 042) — accumulate per-visitor signals.
+        {"key": "visitor_profiles_enabled", "attr": "visitor_profiles_enabled", "type": "bool",
+         "group": "Visitor CRM", "label": "Build visitor profiles (interests / needs / lead score)",
+         "env": "VISITOR_PROFILES_ENABLED",
+         "description": "When ON, after each visitor turn a small background call extracts "
+                        "the visitor's interests, needs, a 0-100 lead score, and any "
+                        "marketing-consent signal, and saves them to a per-visitor profile. "
+                        "Adds one small LLM call per turn (runs in the background, never "
+                        "delays the reply). Off = no profiling, no extra call."},
+        {"key": "visitor_profiles_model", "attr": "visitor_profiles_model", "type": "string",
+         "group": "Visitor CRM", "label": "Profile-extraction model",
+         "env": "VISITOR_PROFILES_MODEL",
+         "description": "Model used for the tiny profile-extraction call (e.g. gpt-4o-mini). "
+                        "Blank = use the visitor chat's default model."},
         # Activity
         {"key": "activity_logging_enabled", "attr": "activity_logging_enabled", "type": "bool",
          "group": "Activity", "label": "Log admin-AI turns to the database",
@@ -1152,6 +1166,7 @@ _AI_INERT = {
     "respcache_enabled": False, "sqlguard_enabled": False,
     "redact_enabled": False, "activity_logging_enabled": False,
     "model_routing_enabled": False, "prompt_cache_enabled": False,
+    "visitor_profiles_enabled": False,
     "visitor_llm_max_retries": 0, "visitor_provider_fallback": False,
     "visitor_fallback_model": "", "visitor_history_token_budget": 0,
 }
@@ -4434,6 +4449,36 @@ def init_db():
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS ai_activity_log_recent_idx "
                 "ON ai_activity_log (created_at DESC);"
+            )
+
+            # VISITOR PROFILES (Phase 6 / Epic D, task 042) — one row per stable
+            # visitor_id, accumulating the soft signals the concierge picks up
+            # over time: interests/needs (jsonb tag arrays), a 0-100 lead_score,
+            # a marketing-consent flag, and a short rolling summary. Written by a
+            # gated, fail-open background updater after each visitor turn (the
+            # 'Visitor CRM' AI Control knob); empty/no-op when the knob is off, so
+            # a fresh fork behaves exactly as before. Also in migration 0012.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS visitor_profiles (
+                    id           BIGSERIAL PRIMARY KEY,
+                    tenant_id    INTEGER NOT NULL DEFAULT 1,
+                    visitor_id   VARCHAR(100) NOT NULL,
+                    interests    JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    needs        JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    lead_score   INTEGER NOT NULL DEFAULT 0,
+                    consent      BOOLEAN NOT NULL DEFAULT FALSE,
+                    summary      TEXT NOT NULL DEFAULT '',
+                    turns        INTEGER NOT NULL DEFAULT 0,
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (tenant_id, visitor_id)
+                );
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS visitor_profiles_lead_idx "
+                "ON visitor_profiles (tenant_id, lead_score DESC, updated_at DESC);"
             )
     finally:
         conn.close()
@@ -21071,6 +21116,180 @@ def admin_chat_action_reject(action_id):
     return jsonify({"ok": True, "status": "rejected"})
 
 
+# =============================================================================
+# VISITOR CRM / PROFILES  (Phase 6 / Epic D — task 042)
+# =============================================================================
+# After each visitor turn, OPTIONALLY (gated by the 'Visitor CRM' AI Control
+# knob) extract soft signals — interests, needs, a 0-100 lead score, a
+# marketing-consent flag, and a one-line summary — and merge them into a
+# per-visitor profile row. Everything here is:
+#   * gated + master-switch-aware (get_ai_setting('visitor_profiles_enabled')),
+#   * fully fail-open (an error only prints; it NEVER touches the chat reply),
+#   * run in a background daemon thread so it can't add latency to the stream.
+# When the knob is off, none of this runs and visitor_profiles stays empty.
+
+def _vp_normalize_signals(data):
+    """Coerce the raw extraction dict into a safe, bounded shape. Pure; total."""
+    def _taglist(v):
+        out = []
+        if isinstance(v, list):
+            for x in v:
+                s = str(x).strip()[:80]
+                if s and s not in out:
+                    out.append(s)
+        return out[:25]
+    try:
+        score = int(data.get("lead_score") or 0)
+    except Exception:
+        score = 0
+    score = max(0, min(100, score))
+    return {
+        "interests": _taglist(data.get("interests")),
+        "needs": _taglist(data.get("needs")),
+        "lead_score": score,
+        "consent": bool(data.get("consent")),
+        "summary": str(data.get("summary") or "").strip()[:500],
+    }
+
+
+def _vp_as_list(v):
+    """JSONB may come back as a parsed list (psycopg2) or, defensively, a JSON
+    string. Always return a list."""
+    if isinstance(v, list):
+        return v
+    if isinstance(v, str) and v:
+        try:
+            parsed = json.loads(v)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
+
+
+def _vp_merge_tags(old, new):
+    """Union two tag lists preserving order, capped so a profile can't grow
+    without bound."""
+    out = []
+    for x in list(old or []) + list(new or []):
+        s = str(x).strip()[:80]
+        if s and s not in out:
+            out.append(s)
+    return out[:50]
+
+
+def _extract_visitor_signals(user_message, final_answer, model=None):
+    """Tiny structured extraction of CRM signals from ONE visitor turn, via
+    OpenAI JSON mode. Returns the normalized signals dict, or None on any
+    failure / when OpenAI isn't configured. Never raises.
+
+    Deliberately uses OpenAI (JSON mode) for a cheap, schema-reliable parse; if
+    a Claude model is configured for this knob we fall back to a small OpenAI
+    model for this one call rather than add a second SDK path."""
+    try:
+        if openai_client is None:
+            return None
+        mdl = (model or "").strip() or "gpt-4o-mini"
+        if mdl.lower().startswith("claude"):
+            mdl = "gpt-4o-mini"
+        system = (
+            "You extract CRM signals from one turn of a website visitor's chat "
+            "with a business's AI concierge. Return ONLY a JSON object with keys: "
+            "interests (array of short topic tags the visitor showed interest in), "
+            "needs (array of short phrases describing what the visitor wants), "
+            "lead_score (integer 0-100 estimating buying intent), "
+            "consent (boolean: did the visitor explicitly agree to be contacted "
+            "or subscribe?), summary (one short sentence about this visitor). "
+            "Use [], 0, false, or \"\" when unknown. Do not invent contact details."
+        )
+        content = (f"Visitor said: {user_message or ''}\n\n"
+                   f"Concierge replied: {final_answer or ''}")[:4000]
+        resp = openai_client.with_options(timeout=20.0).chat.completions.create(
+            model=mdl,
+            response_format={"type": "json_object"},
+            max_tokens=300,
+            temperature=0,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": content},
+            ],
+        )
+        raw = (resp.choices[0].message.content or "{}")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+        return _vp_normalize_signals(data)
+    except Exception as e:
+        print(f"[crm] signal extraction skipped: {type(e).__name__}: {e}")
+        return None
+
+
+def _visitor_profile_upsert(tenant_id, visitor_id, signals):
+    """Merge `signals` into the visitor's profile row: union interests + needs,
+    keep the MAX lead_score seen, make consent sticky (once true, stays true),
+    take the latest summary, bump the turn counter. Fail-open."""
+    if not visitor_id or not signals:
+        return
+    try:
+        vid = str(visitor_id)[:100]
+        row = query_db(
+            "SELECT interests, needs, lead_score, consent FROM visitor_profiles "
+            "WHERE tenant_id=%s AND visitor_id=%s", (tenant_id, vid), fetchone=True)
+        if row:
+            interests = _vp_merge_tags(_vp_as_list(row.get("interests")), signals["interests"])
+            needs = _vp_merge_tags(_vp_as_list(row.get("needs")), signals["needs"])
+            lead = max(int(row.get("lead_score") or 0), signals["lead_score"])
+            consent = bool(row.get("consent")) or signals["consent"]
+        else:
+            interests, needs = signals["interests"], signals["needs"]
+            lead, consent = signals["lead_score"], signals["consent"]
+        execute_db(
+            "INSERT INTO visitor_profiles "
+            "(tenant_id, visitor_id, interests, needs, lead_score, consent, summary, turns) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,1) "
+            "ON CONFLICT (tenant_id, visitor_id) DO UPDATE SET "
+            "  interests=EXCLUDED.interests, needs=EXCLUDED.needs, "
+            "  lead_score=EXCLUDED.lead_score, consent=EXCLUDED.consent, "
+            "  summary=EXCLUDED.summary, turns=visitor_profiles.turns+1, "
+            "  updated_at=NOW() RETURNING id",
+            (tenant_id, vid, json.dumps(interests), json.dumps(needs),
+             lead, consent, signals["summary"]))
+    except Exception as e:
+        print(f"[crm] profile upsert skipped: {type(e).__name__}: {e}")
+
+
+def _visitor_profile_update(tenant_id, visitor_id, user_message, final_answer, model=None):
+    """Synchronous extract+upsert core (the part the background thread runs).
+    Exposed separately so it's deterministically unit-testable. Fail-open."""
+    try:
+        sig = _extract_visitor_signals(user_message, final_answer, model)
+        if sig:
+            _visitor_profile_upsert(tenant_id, visitor_id, sig)
+    except Exception as e:
+        print(f"[crm] profile update skipped: {type(e).__name__}: {e}")
+
+
+def _visitor_profile_update_async(tenant_id, visitor_id, user_message, final_answer):
+    """Gate + spawn the profile updater on a daemon thread. Returns immediately;
+    never affects the chat response. No-op when disabled / no visitor_id.
+
+    The master kill switch already forces visitor_profiles_enabled to its inert
+    False via get_ai_setting, so this whole path is dead when AI enhancements
+    are turned off."""
+    try:
+        if not visitor_id:
+            return
+        if not get_ai_setting("visitor_profiles_enabled"):
+            return
+        model = get_ai_setting("visitor_profiles_model")
+        threading.Thread(
+            target=_visitor_profile_update,
+            args=(tenant_id, visitor_id, user_message, final_answer, model),
+            daemon=True,
+        ).start()
+    except Exception as e:
+        print(f"[crm] profile async dispatch skipped: {type(e).__name__}: {e}")
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """
@@ -21114,6 +21333,9 @@ def api_chat():
     # session_id is unique per page load — each refresh starts a new conversation.
     # Together they let the admin track both individual conversations and returning visitors.
     visitor_id = data.get("visitor_id", "")
+    # Capture the tenant id in the request scope so the background CRM updater
+    # (task 042), which runs outside request context, has it. Constant (1) today.
+    _vp_tenant_id = current_tenant_id()
     # presentation_active=True means the visitor is currently watching a deck
     # in the overlay player and just typed a side question. We must answer in
     # the chat bubble only — no new views, no page generation, no scrolls,
@@ -22535,6 +22757,16 @@ def api_chat():
                     "user_message": _rd(_va["question"]),
                     "final_answer": _rd(_va["final"] or full_text),
                 })
+            except Exception:
+                pass
+            # Visitor CRM (task 042): update the per-visitor profile in the
+            # background (gated by the 'Visitor CRM' knob; no-op when off).
+            # Uses the raw (un-redacted) text since it goes to our own profile
+            # store, not the activity log; fully fail-open.
+            try:
+                _visitor_profile_update_async(
+                    _vp_tenant_id, visitor_id, _va["question"],
+                    _va["final"] or full_text)
             except Exception:
                 pass
 
@@ -26556,6 +26788,47 @@ def admin_list_ai_activity():
             "count": int(stats.get("n") or 0),
             "cost_usd": round(float(stats.get("cost") or 0), 6),
             "tokens": int(stats.get("tokens") or 0),
+        },
+    })
+
+
+@app.route("/admin/api/visitor-profiles", methods=["GET"])
+@admin_required
+def admin_list_visitor_profiles():
+    """Visitor CRM profiles (task 042), highest lead-score first. Super-admin
+    only — these accumulate visitor signals (interests/needs/lead/consent).
+    ?limit=N (default 100, max 500). Empty until the 'Visitor CRM' knob is on."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    try:
+        limit = int(request.args.get("limit", 100) or 100)
+    except (TypeError, ValueError):
+        limit = 100
+    limit = max(1, min(limit, 500))
+    tid = current_tenant_id()
+    rows = query_db(
+        "SELECT id, visitor_id, interests, needs, lead_score, consent, summary, "
+        "turns, created_at, updated_at FROM visitor_profiles "
+        "WHERE tenant_id=%s ORDER BY lead_score DESC, updated_at DESC LIMIT %s",
+        (tid, limit)) or []
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["interests"] = _vp_as_list(d.get("interests"))
+        d["needs"] = _vp_as_list(d.get("needs"))
+        for k in ("created_at", "updated_at"):
+            if d.get(k):
+                d[k] = d[k].isoformat()
+        out.append(d)
+    stats = query_db(
+        "SELECT COUNT(*) AS n, COALESCE(MAX(lead_score),0) AS top "
+        "FROM visitor_profiles WHERE tenant_id=%s", (tid,), fetchone=True) or {}
+    return jsonify({
+        "profiles": out,
+        "stats": {
+            "count": int(stats.get("n") or 0),
+            "top_lead_score": int(stats.get("top") or 0),
         },
     })
 
