@@ -42,6 +42,15 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 024 | Two-role admin (super-admin/client) — backend: roles, gating, registry | done | task/024-two-role-auth-backend | — | — | |
 | 025 | Two-role admin — frontend: per-tab role+flag gating + verify | done | task/025-role-tab-gating-frontend | 024 | — | |
 
+## Phase 4 — Admin AI hardening (pylego ports; see `PLAN_ADMIN_AI.md`)
+
+| ID | Title | Status | Branch | Depends on | Parallel-with | Drift |
+|----|-------|--------|--------|------------|---------------|-------|
+| 026 | pylego foundation + Observability + Evals | done | task/026-pylego-observability-evals | — | — | |
+| 027 | pylego Reliability (llm_router fallback/retry/timeout + rate limit) | not_started | task/027-pylego-reliability | 026 | — | |
+| 028 | pylego Smarter context (token-trim + semantic response cache) | not_started | task/028-pylego-context | 027 | — | |
+| 029 | pylego Safety (sqlguard + redact + structured args + action-queue) | not_started | task/029-pylego-safety | 028 | — | |
+
 **Status legend:** not_started | in_progress | paused | blocked | awaiting_review | done
 
 **Concurrency note:** M1 and M2 touch disjoint files (visitor widget/chat vs admin shell) and can run

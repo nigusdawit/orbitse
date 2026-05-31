@@ -895,6 +895,12 @@ semantic_cache.init_module(openai_client, query_db, execute_db)
 # this early in boot so the deferred wiring is safe.
 import rag  # noqa: E402 — must come after openai_client + DB helpers
 
+# pylego.obs — strictly-additive observability for the Admin AI. The wrapper is
+# a pure pass-through when disabled and fail-open always (it can never alter or
+# break a chat turn). See pylego/obs.py. Importing it only pulls in stdlib
+# (langfuse is lazy-loaded later, and only if keys are set).
+from pylego import obs as _pylego_obs  # noqa: E402
+
 
 # =============================================================================
 # ENCRYPTION — used to store external data-source credentials at rest
@@ -19274,9 +19280,12 @@ def _admin_chat_run_loop(session_id, user_message, max_rounds=8):
     callers that don't speak SSE (curl tests, server-to-server, etc.)."""
     final_text = ""
     tool_trace = []
+    _obs_meta = {"session_id": session_id, "persona": None}
     try:
-        for evt in _admin_chat_stream_loop(
-                session_id, user_message, max_rounds=max_rounds):
+        for evt in _pylego_obs.observe_admin_turn(
+                _obs_meta,
+                _admin_chat_stream_loop(
+                    session_id, user_message, max_rounds=max_rounds)):
             t = evt.get("type")
             if t == "tool_end":
                 tool_trace.append(evt.get("tool") or {})
@@ -19350,11 +19359,16 @@ def admin_agent_chat_stream():
         return _cap
 
     def generate():
+        # Wrap the loop's event generator with pylego observability. This is a
+        # pass-through: every event is yielded unchanged; obs only records a
+        # trace on the side and can never break the stream.
+        _obs_meta = {"session_id": session_id, "persona": persona_override}
+        _loop = _admin_chat_stream_loop(
+            session_id, message,
+            attachment_ids=attachment_ids,
+            persona_override=persona_override)
         try:
-            for evt in _admin_chat_stream_loop(
-                    session_id, message,
-                    attachment_ids=attachment_ids,
-                    persona_override=persona_override):
+            for evt in _pylego_obs.observe_admin_turn(_obs_meta, _loop):
                 yield f"data: {json.dumps(evt)}\n\n"
         except Exception:
             import traceback
