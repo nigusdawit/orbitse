@@ -64,3 +64,56 @@ The Replit *cloud* copy and this git repo have diverged before (Replit Agent
 patched boot issues only in its cloud copy). The fixes above port those into git
 so a fresh import is clean. Keep git as the source of truth; have Replit pull
 rather than hand-editing in the cloud.
+
+## Phase 6 visitor-AI program — COMPLETE (tasks 034–050)
+
+The whole Phase 6 roadmap landed on `main` (NOT yet pushed to origin — pending
+a manual push). Every feature is **gated default-off, master-kill-switch-aware
+(AI_ENHANCEMENTS_ENABLED), tracked, and super-admin-managed** via the AI Control
+registry + DB-backed `ai_control_settings`. New tables live in BOTH `init_db()`
+and Alembic (migrations **0012–0018**) so a fresh client fork is consistent
+either way; the chain applies clean 0001→0018.
+
+Shipped: model routing (040) · prompt caching (041) · visitor CRM profiles (042)
+· newsletter + `/preferences` portal (043) · offers engine (044) ·
+capture_lead/request_callback/notify_team (045) · visitor persona router (046) ·
+book_meeting (047) · callback AI handoff summary (048) · live-call scaffolding
+(049) · super-admin admin tabs for all of it (050: Offers, Personas, Leads&CRM).
+
+131 unit/integration tests (embedded Postgres via pgserver) — all green.
+
+### Operator runbook — credential-dependent legs (built as scaffolding)
+
+These features run store-only / decline until their creds are supplied:
+
+- **Meetings (047) live calendar push:** connect a Calendar MCP server in the
+  Connectors tab whose create-event tool accepts
+  `{summary,start,duration_minutes,attendee_email,description}`, then set
+  AI Control → Meetings → `meeting_calendar_mcp_server` (+ `meeting_calendar_tool`).
+  Without it, `book_meeting` records requests as `status='requested'`.
+- **Live phone call (049):** point your Twilio **Voice** number's webhook at
+  `POST /webhooks/twilio/voice` (status callback `/webhooks/twilio/voice-status`),
+  set `VOICE_WSS_URL` to a public wss media-stream bridge endpoint, enable
+  `live_call_enabled`. **`TWILIO_AUTH_TOKEN` is MANDATORY** — the voice webhooks
+  FAIL CLOSED (reject) without it (the SMS webhooks fail open for dev; voice does
+  not, by design, because it has side effects + routes real calls). Without a wss
+  endpoint the caller hears a spoken fallback.
+- **Team notifications (045):** set AI Control → Growth Tools → `team_notify_email`
+  / `team_notify_sms` (requires Resend / Twilio configured). Outbound is capped
+  per tenant per minute via `TEAM_NOTIFY_MAX_PER_MIN` (default 10).
+
+### Security notes (from per-task security-review)
+
+- `/preferences` portal + voice webhooks FAIL CLOSED when the relevant secret
+  (`FLASK_SECRET_KEY` / `TWILIO_AUTH_TOKEN`) is unset — a misconfigured host
+  can't be used to forge capability tokens or spoof calls.
+- `notify_team` can ONLY message the operator-configured destination (the agent
+  supplies subject/message, never a recipient).
+- Visitor-profile summaries/tags are PII-redacted before storage.
+
+### Still outstanding (intentionally not done this session)
+
+- **Push `main` to origin** — all Phase 6 work is local-only.
+- **7 missing Python ports** in `~/lego/packages-py/` (typed_config,
+  langfuse_client, eval_harness, llm_router, rate_limit, pii_redact,
+  structured_llm) — independent of this app.
