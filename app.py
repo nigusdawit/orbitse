@@ -2276,11 +2276,14 @@ def init_db():
             cur.execute("SELECT setval('tenants_id_seq', (SELECT GREATEST(MAX(id), 1) FROM tenants))")
 
             # Bulk-seed tenant_features for tenant id=1: every name registered
-            # in _FEATURE_REGISTRY gets enabled=its_default (True for all
-            # current entries). ON CONFLICT DO NOTHING preserves any state an
-            # admin has already toggled — we only fill in missing rows. This
-            # makes /admin/api/tenant/features return a complete grid on first
-            # load instead of relying solely on the lazy-touch path.
+            # in _FEATURE_REGISTRY gets enabled=its_default (most default True,
+            # but the sensitive owner tabs — secrets/developer/performance/
+            # snapshot/fleet/llm_provider/stripe — default False so a client
+            # doesn't see them until the super admin opts in). ON CONFLICT DO
+            # NOTHING preserves any state an admin has already toggled — we only
+            # fill in missing rows. This makes /admin/api/tenant/features return
+            # a complete grid on first load instead of relying solely on the
+            # lazy-touch path.
             for _fname, _label, _tier, _default, _grp in _FEATURE_REGISTRY:
                 cur.execute(
                     "INSERT INTO tenant_features (tenant_id, feature_name, enabled, note) "
