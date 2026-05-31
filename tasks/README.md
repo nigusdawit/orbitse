@@ -38,7 +38,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 
 | ID | Title | Status | Branch | Depends on | Parallel-with | Drift |
 |----|-------|--------|--------|------------|---------------|-------|
-| 023 | Harden monolith for clean Replit re-import (main.py + boot fixes) | in_progress | task/023-replit-import-hardening | — | — | |
+| 023 | Harden monolith for clean Replit re-import (main.py + boot fixes) | done | task/023-replit-import-hardening | — | — | |
 
 **Status legend:** not_started | in_progress | paused | blocked | awaiting_review | done
 
