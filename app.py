@@ -544,6 +544,15 @@ if ADMIN_PASSWORD == "admin":
         flush=True,
     )
 
+# Client password — the SECOND admin credential (optional). When set, logging in
+# with it establishes the "client" role: a restricted admin that only sees the
+# tabs the super admin (ADMIN_PASSWORD) left enabled, and can never reach the
+# feature-toggle endpoints or the Plans & Features control tab. Left unset →
+# there is no client login and behavior is exactly as before (single super-admin
+# login). This is the credential shared with a WordPress-embedded client; the
+# WP SSO entry (/admin/sso) also establishes the client role. See _is_super_admin.
+CLIENT_PASSWORD = os.environ.get("CLIENT_PASSWORD", "").strip()
+
 # Database connection string from environment variable
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -4005,6 +4014,48 @@ _FEATURE_REGISTRY = [
     ("analytics",            "Analytics dashboard",          "growth",     True,  "Analytics"),
     ("cost_dashboard",       "Cost transparency dashboard",  "growth",     True,  "Analytics"),
     ("weekly_digest",        "Weekly AI activity digest",    "growth",     True,  "Analytics"),
+
+    # ---- Per-tab visibility flags (added for super-admin/client tab control) ----
+    # One on/off switch per admin tab that previously had no flag. These drive
+    # which tabs a CLIENT login sees; the super admin bypasses gating and always
+    # sees every tab. Defaults below apply ONLY to the client.
+    #
+    # Client-safe content/AI tabs — default ON (a client sees them unless the
+    # super admin turns them off).
+    ("business_info",        "Business info",                "solo",       True,  "Content"),
+    ("gallery_cards",        "Gallery cards",                "solo",       True,  "Content"),
+    ("experiences",          "Experiences",                  "solo",       True,  "Content"),
+    ("pricing",              "Pricing",                      "solo",       True,  "Content"),
+    ("testimonials",         "Testimonials",                 "solo",       True,  "Content"),
+    ("team",                 "Team",                         "solo",       True,  "Content"),
+    ("faq",                  "FAQ",                          "solo",       True,  "Content"),
+    ("blog",                 "Blog",                         "solo",       True,  "Content"),
+    ("events",               "Events",                       "solo",       True,  "Content"),
+    ("services",             "Services",                     "solo",       True,  "Content"),
+    ("media",                "Media library",                "solo",       True,  "Content"),
+    ("scraper",              "Web scraper",                  "growth",     True,  "Content"),
+    ("products",             "Products",                     "solo",       True,  "Store"),
+    ("orders",               "Orders",                       "solo",       True,  "Store"),
+    ("reviews",              "Reviews (destinations/requests/insights)", "growth", True, "Reviews"),
+    ("dashboards",           "Custom dashboards",            "growth",     True,  "Insights"),
+    ("marketing_insights",   "Marketing insights",           "growth",     True,  "Insights"),
+    ("admin_chat",           "Admin AI chat",                "solo",       True,  "AI"),
+    ("chatbot",              "Chatbot settings",             "solo",       True,  "AI"),
+    ("knowledge_cache",      "Knowledge cache (RAG)",        "growth",     True,  "AI"),
+    ("skills",               "Skills registry",              "growth",     True,  "AI"),
+    ("custom_skills",        "Custom skills",                "growth",     True,  "AI"),
+    ("recent_changes",       "Recent changes log",           "solo",       True,  "System"),
+    #
+    # Sensitive owner tabs — default OFF for clients (a client doesn't see them
+    # until the super admin explicitly enables them). The super admin always
+    # sees them. Several are ALSO behind the SUPER_ADMIN_KEY unlock-key step-up.
+    ("secrets",              "Secrets / env vars",           "solo",       False, "System"),
+    ("developer",            "Developer console",            "growth",     False, "System"),
+    ("performance",          "Performance tools",            "growth",     False, "System"),
+    ("snapshot",             "Snapshot / clone",             "growth",     False, "System"),
+    ("fleet",                "Fleet sync / VELO",            "enterprise", False, "System"),
+    ("llm_provider",         "LLM provider selector",        "growth",     False, "AI"),
+    ("stripe",               "Stripe / billing config",      "growth",     False, "Billing"),
 ]
 _FEATURE_NAMES = {row[0] for row in _FEATURE_REGISTRY}
 _FEATURE_DEFAULTS = {row[0]: row[3] for row in _FEATURE_REGISTRY}
@@ -4232,11 +4283,65 @@ _FEATURE_ROUTE_PREFIXES = [
     ("/admin/api/video-gallery",     "website_builder"),
     ("/admin/api/podcast",           "website_builder"),
     ("/admin/api/reorder",           "website_builder"),
+    # ---- Per-tab content/store/AI/system gating (super-admin/client control) ----
+    # One entry per tab flag added to the registry above, so a CLIENT whose flag
+    # is off gets the standard feature_disabled response on the tab's admin API.
+    # The super admin bypasses all of this (see _enforce_feature_flags). Prefixes
+    # are exact enough to avoid startswith collisions (note the trailing slash on
+    # /admin/api/chat/ so it does NOT catch chat-history or chatbot-settings).
+    ("/admin/api/business-info",   "business_info"),
+    ("/admin/api/gallery-cards",   "gallery_cards"),
+    ("/admin/api/experiences",     "experiences"),
+    ("/admin/api/pricing",         "pricing"),
+    ("/admin/api/testimonials",    "testimonials"),
+    ("/admin/api/team",            "team"),
+    ("/admin/api/faq",             "faq"),
+    ("/admin/api/blog",            "blog"),
+    ("/admin/api/events",          "events"),
+    ("/admin/api/event-rsvps",     "events"),
+    ("/admin/api/services",        "services"),
+    ("/admin/api/media",           "media"),
+    ("/admin/api/scrape",          "scraper"),   # scrape-jobs / scrape-schedules / scraper-settings
+    ("/admin/api/products",        "products"),
+    ("/admin/api/orders",          "orders"),
+    ("/admin/api/reviews",         "reviews"),
+    ("/admin/api/dashboards",      "dashboards"),
+    ("/admin/api/marketing",       "marketing_insights"),
+    ("/admin/api/chat/",           "admin_chat"),     # trailing slash: admin AI chat only
+    ("/admin/api/chatbot-settings", "chatbot"),
+    ("/admin/api/kb/",             "knowledge_cache"),
+    ("/admin/api/skills",          "skills"),
+    ("/admin/api/llm-provider",    "llm_provider"),
+    ("/admin/api/stripe",          "stripe"),
+    ("/admin/api/snapshots",       "snapshot"),
+    # Sensitive owner tabs that ALSO sit behind the SUPER_ADMIN_KEY unlock-key.
+    # The feature flag (default OFF for clients) gates tab visibility + gives a
+    # clean feature_disabled before the unlock check; the unlock-key remains the
+    # second factor for the super admin.
+    ("/admin/api/secrets",         "secrets"),
+    ("/admin/api/devconsole",      "developer"),
+    ("/admin/api/performance",     "performance"),
+
     # Public ingress for the automations webhook trigger. We DO gate this
     # one — if a tenant turns Automations off, third-party services hitting
     # the saved hook URL should get a 404 (not silently consume the post).
     ("/automations/hook/",         "automations"),
 ]
+
+# Startup safety net: every feature referenced by a route-prefix gate MUST exist
+# in the registry. tenant_has_feature() fails OPEN on unknown names, so a typo in
+# a prefix→feature mapping would silently leave a (possibly sensitive) tab's API
+# reachable by clients. Fail loudly at import instead.
+_unknown_prefix_features = sorted(
+    {feature for _prefix, feature in _FEATURE_ROUTE_PREFIXES if feature not in _FEATURE_NAMES}
+)
+if _unknown_prefix_features:
+    raise RuntimeError(
+        "_FEATURE_ROUTE_PREFIXES references features not in _FEATURE_REGISTRY: "
+        + ", ".join(_unknown_prefix_features)
+        + " — add them to the registry (they would otherwise fail OPEN and leave "
+        "the tab's API reachable by clients)."
+    )
 
 
 @app.before_request
@@ -4251,6 +4356,13 @@ def _enforce_feature_flags():
     GET requests get a friendlier 404 so we don't expose feature
     structure to public visitors poking at the site.
     """
+    # The super admin (platform owner) manages everything and is never gated by
+    # feature flags — they see and use every tab regardless of flag state. This
+    # bypass is SAFE for anon/public traffic because _is_super_admin() requires a
+    # logged-in session (anonymous visitors and client sessions fall through to
+    # the normal gating below).
+    if _is_super_admin():
+        return None
     try:
         path = request.path or ""
     except Exception:
@@ -5297,6 +5409,44 @@ def admin_required(f):
     return decorated_function
 
 
+def _is_super_admin():
+    """True only for a logged-in session whose role is super_admin.
+
+    The role lives server-side in the signed Flask session (set at login /
+    SSO), so it can't be forged client-side. Two non-obvious rules:
+
+    * MUST be logged-in. We deliberately AND on `admin_logged_in` so that an
+      anonymous/public request (which has no session role) returns False — the
+      `"super_admin"` default below is only ever reached by a session that is
+      already logged in. This matters because `_enforce_feature_flags` early-
+      returns for super-admins; if anon callers defaulted to super_admin the
+      feature gates (incl. the anon-GET 404-leak guard and the public
+      automations-webhook gate) would stop applying to the public.
+    * Missing role defaults to super_admin — back-compat for sessions that were
+      established before roles existed (those are the operator's own).
+
+    Drives: feature-flag bypass (super admin sees/uses everything), the
+    Plans & Features tab, and the feature-toggle endpoint guard. Distinct from
+    the SUPER_ADMIN_KEY unlock-key step-up, which stays as-is.
+    """
+    if not session.get("admin_logged_in"):
+        return False
+    return session.get("admin_role", "super_admin") == "super_admin"
+
+
+def _require_super_admin_role():
+    """Return a 403 JSON response if the session is not the super-admin role,
+    else None. Used to hard-gate the feature-control endpoints so a client
+    session can never change what it was granted (the template hiding the tab
+    is cosmetic; THIS is the real boundary)."""
+    if not _is_super_admin():
+        return jsonify({
+            "error": "super_admin_role_required",
+            "message": "Only the super admin can manage feature visibility.",
+        }), 403
+    return None
+
+
 # =============================================================================
 # EMBED / CROSS-ORIGIN WIDGET  (client distribution layer)
 # =============================================================================
@@ -5576,6 +5726,10 @@ def admin_sso():
     if tid is None:
         return jsonify({"error": "invalid or expired SSO token"}), 403
     session["admin_logged_in"] = True
+    # The WordPress plugin embeds the hosted admin FOR THE CLIENT, so an SSO
+    # login is always the restricted client role — never super_admin. The
+    # platform owner logs in directly with ADMIN_PASSWORD instead.
+    session["admin_role"] = "client"
     session.permanent = True
     return redirect("/admin")
 
@@ -5603,9 +5757,20 @@ def admin_login():
             )
             return resp, 429, {"Retry-After": str(retry_after)}
         password = request.form.get("password", "")
+        # Two credentials, one form. ADMIN_PASSWORD → super_admin (full panel +
+        # control tab); CLIENT_PASSWORD → client (only enabled tabs). super_admin
+        # wins if the two passwords happen to be equal. We always overwrite
+        # admin_role on success so a shared browser can't carry a stale role from
+        # a previous login of the other kind.
+        role = None
         if password == ADMIN_PASSWORD:
+            role = "super_admin"
+        elif CLIENT_PASSWORD and password == CLIENT_PASSWORD:
+            role = "client"
+        if role is not None:
             _login_throttle_clear(ip)
             session["admin_logged_in"] = True
+            session["admin_role"] = role
             session.permanent = True
             return redirect(url_for("admin_dashboard"))
         else:
@@ -5623,6 +5788,7 @@ def admin_logout():
     if session.get("super_admin_unlocked_at"):
         _audit_super_admin("auto_lock", "logout")
     session.pop("admin_logged_in", None)
+    session.pop("admin_role", None)
     session.pop("_csrf_token", None)
     session.pop("super_admin_unlocked_at", None)
     return redirect(url_for("admin_login"))
@@ -20554,6 +20720,7 @@ def admin_dashboard():
     return render_template(
         "admin/dashboard.html",
         has_feature=tenant_has_feature,
+        is_super_admin=_is_super_admin,
     )
 
 
@@ -38708,6 +38875,13 @@ def _unsubscribe_page(message: str) -> str:
 @admin_required
 def admin_list_tenant_features():
     """Return every known feature + on/off state + plan tier + addon flag."""
+    # HARD boundary: only the super admin manages feature visibility. A client
+    # session is logged-in (passes @admin_required) but must never read or change
+    # the feature roster — this is what stops a client from re-granting itself
+    # tabs by hitting the API directly, independent of the hidden UI tab.
+    _guard = _require_super_admin_role()
+    if _guard is not None:
+        return _guard
     try:
         tid = current_tenant_id()
         # Pull plan + tenant info so the UI can show "you're on the Growth plan".
@@ -38739,6 +38913,11 @@ def admin_list_tenant_features():
 @admin_required
 def admin_toggle_tenant_feature(name):
     """Flip one feature on/off. Body: {"enabled": bool, "note"?: str}."""
+    # HARD boundary: super admin only (see admin_list_tenant_features). Without
+    # this in-handler check a client could PATCH its own flags via curl.
+    _guard = _require_super_admin_role()
+    if _guard is not None:
+        return _guard
     body = request.get_json(silent=True) or {}
     if "enabled" not in body:
         return jsonify({"error": "missing_field", "field": "enabled"}), 400
