@@ -105,6 +105,12 @@ class PylegoConfig:
     visitor_profiles_enabled: bool
     visitor_profiles_model: str       # model for the tiny extraction call ("" → use the default)
 
+    # ---- Newsletter signup (task 043 — Epic D) ------------------------------
+    # Gate for the visitor `subscribe_newsletter` agent tool. Inert default OFF:
+    # the tool exists in the registry but politely declines until a super-admin
+    # turns this on, so a fresh fork never silently captures email signups.
+    newsletter_signup_enabled: bool
+
     # ---- Activity logging (task 031) ----------------------------------------
     activity_logging_enabled: bool    # persist each admin-AI turn to ai_activity_log
 
@@ -172,6 +178,8 @@ def _build() -> PylegoConfig:
         # Visitor CRM — wired in 042; inert default (no profiling).
         visitor_profiles_enabled=_env_bool("VISITOR_PROFILES_ENABLED", False),
         visitor_profiles_model=os.environ.get("VISITOR_PROFILES_MODEL", "").strip(),
+        # Newsletter signup — wired in 043; inert default (tool declines).
+        newsletter_signup_enabled=_env_bool("NEWSLETTER_SIGNUP_ENABLED", False),
         # Activity logging — wired in 031 (default ON: low-volume admin turns).
         activity_logging_enabled=_env_bool("ADMIN_CHAT_ACTIVITY_LOGGING", True),
         # KB ingestion — wired in 039; inert default (inline ingestion).

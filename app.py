@@ -1106,6 +1106,13 @@ def _ai_control_registry():
          "env": "VISITOR_PROFILES_MODEL",
          "description": "Model used for the tiny profile-extraction call (e.g. gpt-4o-mini). "
                         "Blank = use the visitor chat's default model."},
+        {"key": "newsletter_signup_enabled", "attr": "newsletter_signup_enabled", "type": "bool",
+         "group": "Visitor CRM", "label": "Let the concierge subscribe visitors to the newsletter",
+         "env": "NEWSLETTER_SIGNUP_ENABLED",
+         "description": "When ON, the visitor concierge can use the 'subscribe_newsletter' "
+                        "tool to add a visitor's email to your subscribers list (with a "
+                        "self-service preferences link). Off = the tool politely declines. "
+                        "Previously-unsubscribed people are never silently re-subscribed."},
         # Activity
         {"key": "activity_logging_enabled", "attr": "activity_logging_enabled", "type": "bool",
          "group": "Activity", "label": "Log admin-AI turns to the database",
@@ -1166,7 +1173,7 @@ _AI_INERT = {
     "respcache_enabled": False, "sqlguard_enabled": False,
     "redact_enabled": False, "activity_logging_enabled": False,
     "model_routing_enabled": False, "prompt_cache_enabled": False,
-    "visitor_profiles_enabled": False,
+    "visitor_profiles_enabled": False, "newsletter_signup_enabled": False,
     "visitor_llm_max_retries": 0, "visitor_provider_fallback": False,
     "visitor_fallback_model": "", "visitor_history_token_budget": 0,
 }
@@ -11356,6 +11363,65 @@ def lookup_knowledge_base(query=None, limit=6, **_extra):
     ]
 
 
+def subscribe_newsletter(email=None, full_name=None, **_extra):
+    """Visitor newsletter signup (Phase 6 / Epic D, task 043).
+
+    Adds the visitor's email to the `subscribers` list and returns a
+    self-service preferences link. GATED by the 'newsletter_signup_enabled' AI
+    Control knob (default OFF, master-switch-aware): when off the tool declines,
+    so a fresh fork never silently captures signups.
+
+    Consent-safe: a person who PREVIOUSLY UNSUBSCRIBED is never silently
+    re-opted-in — they're handed their preferences link to opt back in
+    themselves. Already-subscribed people are a no-op (idempotent). Validates
+    the email; never raises (returns a structured {ok, message} the agent
+    relays to the visitor)."""
+    try:
+        if not get_ai_setting("newsletter_signup_enabled"):
+            return {"ok": False, "message": "Newsletter signup isn't available right now."}
+        addr = (email or "").strip().lower()
+        if not _email_re_check(addr):
+            return {"ok": False, "message": "I need a valid email address to subscribe you."}
+        name = (full_name or "").strip()[:200]
+        tid = current_tenant_id()  # noqa: F841 — reserved for when subscribers is tenant-scoped
+        existing = query_db(
+            "SELECT id, opt_in, unsubscribed_at FROM subscribers "
+            "WHERE LOWER(email)=%s LIMIT 1", (addr,), fetchone=True)
+        if existing:
+            sid = existing["id"]
+            # Respect a prior opt-out: do NOT flip them back on automatically.
+            if existing.get("unsubscribed_at") or not existing.get("opt_in"):
+                return {
+                    "ok": True, "already": True, "resubscribe": True,
+                    "manage_url": _prefs_url(sid),
+                    "message": ("It looks like you previously unsubscribed. You can "
+                                "re-subscribe and manage your preferences here: "
+                                + _prefs_url(sid)),
+                }
+            return {
+                "ok": True, "already": True,
+                "manage_url": _prefs_url(sid),
+                "message": ("You're already subscribed! You can manage your "
+                            "preferences here: " + _prefs_url(sid)),
+            }
+        row = execute_db(
+            "INSERT INTO subscribers (email, full_name, list_name, source, "
+            " opt_in, opt_in_email) VALUES (%s,%s,'newsletter','ai_chat',TRUE,TRUE) "
+            "RETURNING id", (addr, name))
+        sid = row["id"] if row else None
+        if not sid:
+            return {"ok": False, "message": "Sorry, I couldn't complete the signup just now."}
+        return {
+            "ok": True, "subscribed": True,
+            "manage_url": _prefs_url(sid),
+            "message": ("You're subscribed — thank you! You can update or cancel "
+                        "your preferences anytime here: " + _prefs_url(sid)),
+        }
+    except Exception as e:
+        print(f"[newsletter] subscribe failed: {type(e).__name__}: {e}")
+        return {"ok": False, "message": "Sorry, I couldn't complete the signup just now."}
+
+
 def lookup_testimonials(query=None, min_rating=None, limit=5):
     """Customer reviews / testimonials. Useful for social proof."""
     sql = (
@@ -12177,6 +12243,20 @@ CHAT_TOOLS = [
         }, "required": ["query"]},
     }},
     {"type": "function", "function": {
+        "name": "subscribe_newsletter",
+        "description": (
+            "Subscribe a visitor to the business's newsletter / mailing list when "
+            "they ASK to sign up or clearly agree to receive updates. Requires their "
+            "email address — ask for it first if you don't have it, and confirm they "
+            "want to subscribe. Returns a self-service link they can use to manage or "
+            "cancel. Do NOT call this speculatively or without the visitor's consent."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "email": {"type": "string", "description": "The visitor's email address."},
+            "full_name": {"type": "string", "description": "The visitor's name, if known."},
+        }, "required": ["email"]},
+    }},
+    {"type": "function", "function": {
         "name": "lookup_testimonials",
         "description": "Get customer testimonials/reviews. Useful for social proof when the visitor is hesitating.",
         "parameters": {"type": "object", "properties": {
@@ -12274,6 +12354,7 @@ CHAT_LOOKUP_FUNCTIONS = {
     "lookup_team": lookup_team,
     "lookup_faq": lookup_faq,
     "lookup_knowledge_base": lookup_knowledge_base,
+    "subscribe_newsletter": subscribe_newsletter,
     "lookup_testimonials": lookup_testimonials,
     "lookup_business_info": lookup_business_info,
     "lookup_custom_section_items": lookup_custom_section_items,
@@ -12306,6 +12387,7 @@ SKILL_METADATA = {
     "lookup_blog":                 {"display": "Look up blog posts",          "category": "lookup"},
     "lookup_team":                 {"display": "Look up team members",        "category": "lookup"},
     "lookup_faq":                  {"display": "Look up FAQs",                "category": "lookup"},
+    "subscribe_newsletter":        {"display": "Subscribe a visitor to the newsletter", "category": "action"},
     "lookup_testimonials":         {"display": "Look up testimonials",        "category": "lookup"},
     "lookup_business_info":        {"display": "Look up business info",       "category": "lookup"},
     "lookup_custom_section_items": {"display": "Look up custom-section items","category": "lookup"},
@@ -41229,6 +41311,117 @@ def _unsubscribe_page(message: str) -> str:
         f'<div class="card"><h1>Unsubscribe</h1><p>{message}</p></div>'
         '</body></html>'
     )
+
+
+# =============================================================================
+# SELF-SERVICE PREFERENCES PORTAL  (Phase 6 / Epic D — task 043)
+# =============================================================================
+# A public, token-signed page where a subscriber manages their own contact
+# preferences (email / SMS opt-in) or unsubscribes entirely. The token is an
+# HMAC capability scoped to one subscriber id (messaging.make_prefs_token) — no
+# login, no session, so the global /admin CSRF guard doesn't apply (the token
+# IS the capability, exactly like the existing /unsubscribe link).
+
+def _prefs_url(subscriber_id: int) -> str:
+    base = _public_base_url() or ""
+    return f"{base}/preferences?token={messaging.make_prefs_token(subscriber_id)}"
+
+
+def _prefs_page(*, message="", sub=None, token="", done=False) -> str:
+    """Render the preferences page. When `sub` is None we show an error card.
+    Escapes all subscriber-derived text."""
+    esc = lambda s: html_module.escape(str(s or ""), quote=True)
+    head = (
+        '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+        '<title>Email preferences</title><style>'
+        'body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#0f172a;color:#e4e4e7;'
+        'min-height:100vh;display:flex;align-items:center;justify-content:center;margin:0;padding:1.5rem}'
+        '.card{max-width:480px;width:100%;background:rgba(255,255,255,0.05);'
+        'border:1px solid rgba(255,255,255,0.08);padding:2rem;border-radius:0.75rem}'
+        'h1{font-size:1.25rem;margin:0 0 0.5rem 0}p{color:rgba(255,255,255,0.7)}'
+        'label{display:flex;align-items:center;gap:0.6rem;margin:0.9rem 0;cursor:pointer}'
+        'button{margin-top:1rem;padding:0.6rem 1rem;border-radius:0.5rem;border:none;cursor:pointer;'
+        'font-size:0.95rem}.save{background:#6366f1;color:#fff}.unsub{background:transparent;'
+        'color:#f87171;border:1px solid rgba(248,113,113,0.4);margin-left:0.5rem}'
+        '.muted{font-size:0.8rem;color:rgba(255,255,255,0.45)}'
+        '</style></head><body><div class="card">'
+    )
+    tail = '</div></body></html>'
+    if sub is None:
+        return head + '<h1>Email preferences</h1><p>' + esc(message or "Invalid or expired link.") + '</p>' + tail
+    note = f'<p style="color:#34d399">{esc(message)}</p>' if (message and done) else ''
+    email_checked = "checked" if sub.get("opt_in_email") else ""
+    sms_checked = "checked" if sub.get("opt_in_sms") else ""
+    has_phone = bool((sub.get("phone") or "").strip())
+    sms_row = (
+        f'<label><input type="checkbox" name="opt_in_sms" {sms_checked}> Text messages (SMS)</label>'
+        if has_phone else ''
+    )
+    return (
+        head
+        + '<h1>Your email preferences</h1>'
+        + f'<p>Managing preferences for <strong>{esc(sub.get("email"))}</strong></p>'
+        + note
+        + f'<form method="POST" action="/preferences">'
+        + f'<input type="hidden" name="token" value="{esc(token)}">'
+        + f'<label><input type="checkbox" name="opt_in_email" {email_checked}> Email updates &amp; newsletter</label>'
+        + sms_row
+        + '<div><button class="save" type="submit" name="action" value="save">Save preferences</button>'
+        + '<button class="unsub" type="submit" name="action" value="unsubscribe">Unsubscribe from everything</button></div>'
+        + '<p class="muted">You received this link because you subscribed. We never share your address.</p>'
+        + '</form>'
+        + tail
+    )
+
+
+@app.route("/preferences", methods=["GET"])
+def public_preferences():
+    """Show a subscriber their current contact preferences (signed token)."""
+    token = request.args.get("token") or ""
+    sub_id = messaging.parse_prefs_token(token)
+    if not sub_id:
+        return Response(_prefs_page(message="This preferences link is invalid or expired."),
+                        status=400, mimetype="text/html")
+    row = query_db(
+        "SELECT id, email, phone, opt_in, opt_in_email, opt_in_sms "
+        "FROM subscribers WHERE id=%s", (sub_id,), fetchone=True)
+    if not row:
+        return Response(_prefs_page(message="We couldn't find that subscription."),
+                        status=404, mimetype="text/html")
+    return Response(_prefs_page(sub=row, token=token), mimetype="text/html")
+
+
+@app.route("/preferences", methods=["POST"])
+def public_preferences_post():
+    """Apply a subscriber's preference changes (signed token in the form)."""
+    token = request.form.get("token") or ""
+    sub_id = messaging.parse_prefs_token(token)
+    if not sub_id:
+        return Response(_prefs_page(message="This preferences link is invalid or expired."),
+                        status=400, mimetype="text/html")
+    action = (request.form.get("action") or "save").strip().lower()
+    if action == "unsubscribe":
+        opt_email, opt_sms = False, False
+    else:
+        # Unchecked checkboxes are simply absent from the form post.
+        opt_email = request.form.get("opt_in_email") is not None
+        opt_sms = request.form.get("opt_in_sms") is not None
+    master = bool(opt_email or opt_sms)
+    row = execute_db(
+        "UPDATE subscribers SET opt_in=%s, opt_in_email=%s, opt_in_sms=%s, "
+        "  unsubscribed_at = CASE WHEN %s THEN NULL "
+        "                         ELSE COALESCE(unsubscribed_at, NOW()) END, "
+        "  updated_at = NOW() "
+        "WHERE id=%s RETURNING id, email, phone, opt_in, opt_in_email, opt_in_sms",
+        (master, opt_email, opt_sms, master, sub_id))
+    if not row:
+        return Response(_prefs_page(message="We couldn't find that subscription."),
+                        status=404, mimetype="text/html")
+    msg = ("You've been unsubscribed from everything."
+           if not master else "Your preferences have been saved.")
+    return Response(_prefs_page(sub=row, token=token, message=msg, done=True),
+                    mimetype="text/html")
 
 
 # =============================================================================
