@@ -47,7 +47,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | ID | Title | Status | Branch | Depends on | Parallel-with | Drift |
 |----|-------|--------|--------|------------|---------------|-------|
 | 026 | pylego foundation + Observability + Evals | done | task/026-pylego-observability-evals | — | — | |
-| 027 | pylego Reliability (llm_router fallback/retry/timeout + rate limit) | not_started | task/027-pylego-reliability | 026 | — | |
+| 027 | pylego Reliability (llm_router fallback/retry/timeout + rate limit) | done | task/027-pylego-reliability | 026 | — | |
 | 028 | pylego Smarter context (token-trim + semantic response cache) | not_started | task/028-pylego-context | 027 | — | |
 | 029 | pylego Safety (sqlguard + redact + structured args + action-queue) | not_started | task/029-pylego-safety | 028 | — | |
 

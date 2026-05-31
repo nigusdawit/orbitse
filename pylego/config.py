@@ -59,13 +59,18 @@ class PylegoConfig:
     langfuse_secret_key: str
     langfuse_base_url: str
 
-    # ---- Reliability (task 027 — defined now, defaults are no-ops) ----------
-    llm_timeout_seconds: float        # per-call timeout applied by llm_router
-    llm_max_retries: int              # bounded retry on transient errors
-    provider_fallback_enabled: bool   # OpenAI<->Claude fallback chain
+    # ---- Reliability (task 027) — ALL default to no-op / current behavior ----
+    # Each of these is inert at its default value: timeout 0 = "use SDK default"
+    # (no change), retries 0 = "no extra attempts" (current behavior), fallback
+    # off, rate limit off. Operators opt in via env for production.
+    llm_timeout_seconds: float        # per-call timeout; <=0 → unchanged (SDK default)
+    llm_max_retries: int              # extra attempts on transient stream-open errors; 0 → none
+    provider_fallback_enabled: bool   # try the other provider if the primary fails to open
+    admin_chat_fallback_model: str    # model name to use for the fallback provider ("" → no fallback)
     admin_rate_limit_enabled: bool
     admin_rate_limit_max: int         # requests per window
     admin_rate_limit_window_seconds: int
+    admin_rate_limit_store: str       # "postgres" (cluster-wide) | "memory" (per-process)
 
     # ---- Smarter context (task 028 — defaults off / current behavior) -------
     history_token_budget: int         # 0 == disabled (keep fixed-turn behavior)
@@ -92,13 +97,15 @@ def _build() -> PylegoConfig:
         langfuse_secret_key=os.environ.get("LANGFUSE_SECRET_KEY", "").strip(),
         langfuse_base_url=os.environ.get(
             "LANGFUSE_BASE_URL", "https://cloud.langfuse.com").strip(),
-        # Reliability — wired in 027; safe defaults mean "current behavior".
-        llm_timeout_seconds=_env_float("ADMIN_CHAT_LLM_TIMEOUT", 60.0),
-        llm_max_retries=_env_int("ADMIN_CHAT_LLM_MAX_RETRIES", 2),
+        # Reliability — wired in 027; defaults are INERT (= current behavior).
+        llm_timeout_seconds=_env_float("ADMIN_CHAT_LLM_TIMEOUT", 0.0),     # 0 → SDK default
+        llm_max_retries=_env_int("ADMIN_CHAT_LLM_MAX_RETRIES", 0),         # 0 → no extra attempts
         provider_fallback_enabled=_env_bool("ADMIN_CHAT_PROVIDER_FALLBACK", False),
+        admin_chat_fallback_model=os.environ.get("ADMIN_CHAT_FALLBACK_MODEL", "").strip(),
         admin_rate_limit_enabled=_env_bool("ADMIN_CHAT_RATE_LIMIT_ENABLED", False),
         admin_rate_limit_max=_env_int("ADMIN_CHAT_RATE_LIMIT_MAX", 60),
         admin_rate_limit_window_seconds=_env_int("ADMIN_CHAT_RATE_LIMIT_WINDOW", 60),
+        admin_rate_limit_store=os.environ.get("ADMIN_CHAT_RATE_LIMIT_STORE", "postgres").strip().lower(),
         # Smarter context — wired in 028.
         history_token_budget=_env_int("ADMIN_CHAT_HISTORY_TOKEN_BUDGET", 0),
         respcache_enabled=_env_bool("ADMIN_RESPCACHE_ENABLED", False),
