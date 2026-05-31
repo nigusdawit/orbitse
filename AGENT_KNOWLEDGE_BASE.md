@@ -199,6 +199,13 @@ CDNs in `public/index.html` and `templates/admin/dashboard.html` — there is **
 | `ADMIN_PHONE` | Admin SMS recipient | Optional |
 | `PUBLIC_BASE_URL` | Used to build absolute links (Stripe success URLs, review short links, webhook URLs) | Recommended in deploy |
 
+### Client mode / embed / WordPress SSO (May 2026)
+
+| Var | Purpose | Required? |
+| --- | --- | --- |
+| `CLIENT_MODE` | Truthy (`1`/`true`/`yes`/`on`) flips operator-only features (currently `website_builder`) to **default off**, so a client install only sees the AI concierge. Unset on the operator's own install. | Per client install |
+| `SSO_SIGNING_SECRET` | HMAC-SHA256 secret shared (byte-identical scheme) with the WordPress plugin for `/admin/sso` single-sign-on tokens. `/admin/sso` returns 503 until set. Never exposed to the browser. | Only if using WP SSO |
+
 ### AI providers
 
 | Var | Gates |
@@ -969,6 +976,7 @@ Source of truth: `_FEATURE_REGISTRY` in `app.py`. Each entry is
 
 | Feature | Plan tier | Default | Group |
 | --- | --- | --- | --- |
+| `website_builder` | solo | on | Website |
 | `site_themes` | solo | on | Design |
 | `site_designs` | growth | on | Design |
 | `deck_launch` | growth | on | AI |
@@ -987,6 +995,18 @@ Source of truth: `_FEATURE_REGISTRY` in `app.py`. Each entry is
 | `weekly_digest` | growth | on | Analytics |
 
 Plus the master kill-switch `voice_settings.premium_enabled` for paid voice providers.
+
+**Client carve-out (`CLIENT_MODE` env, May 2026).** `website_builder` is the first
+member of `_OPERATOR_ONLY_FEATURES`. It defaults **on** (operator installs are
+unchanged), but when `CLIENT_MODE` is truthy (`1`/`true`/`yes`/`on`) a block right
+after `_FEATURE_DEFAULTS` flips every operator-only feature's default to **off**, so
+a client install only sees the AI concierge — the website-builder admin surface
+(themes/pages/SEO/sections/etc.) is gated off at the route layer. A per-tenant
+`tenant_features` override still wins over the default, so an operator can re-enable
+the builder for a specific client without changing env. The AI-referenced content
+surfaces (`blog`/`team`/`faq`/`testimonials`/`experiences`/`pricing`/`business-info`)
+and Marketing Insights (`/admin/api/marketing`) are deliberately **left on** for
+clients.
 
 ### How "off" behaves
 
@@ -1011,6 +1031,7 @@ A `before_request` hook (`_enforce_feature_flags`) checks `request.path` against
 | `/api/presentations/` | `presentations` |
 | `/api/voice/` | `voice` |
 | `/automations/hook/` | `automations` |
+| `/admin/api/theme`, `/admin/api/curated-font-pairs`, `/admin/api/site-settings`, `/admin/api/page-sections`, `/admin/api/pages`, `/admin/api/custom-sections`, `/admin/api/section-visibility`, `/admin/api/seo`, `/admin/api/social-links`, `/admin/api/sphere-images`, `/admin/api/sphere-settings`, `/admin/api/video-gallery`, `/admin/api/podcast`, `/admin/api/reorder` | `website_builder` |
 
 When the flag is off:
 
@@ -1109,6 +1130,10 @@ fail and surface a friendly error** — don't gate new functionality on those fe
 
 - **`replit.md`** — the living changelog / feature-by-feature architecture detail (~86 KB).
   Search it (`rg "Feature Name" replit.md`) when you need the long-form story behind a feature.
+- **`KEYS.md`** — per-install key reference: where provider keys (server env), embed keys
+  (`tenant_embed_keys` rows, publishable + origin-restricted), and DB-stored secrets
+  (Fernet from `FLASK_SECRET_KEY`) live, plus the provisioning checklist. Read before
+  standing up a new client install.
 - **`GUIDE.md`** — non-developer walkthrough of the admin dashboard.
 - **`TEMPLATE_OVERVIEW.md`** — short feature overview (originally written when this was
   hospitality-flavored). Light on detail; this file supersedes it for agents.
@@ -1138,6 +1163,17 @@ disagree with what the code actually does. **Trust the code.** Reconcile here wh
   / `vite.config.*`" guardrails listed in [§26](#26-conventions-an-agent-must-follow-when-editing)
   are inherited from the platform-wide Fullstack-JS skill and will only matter if those files are
   added later.
+- **Embed / WordPress-SSO surface (May 2026).** The cross-origin embeddable widget and the
+  WordPress single-sign-on layer live **inline in `app.py`** (not in a separate module): the
+  `tenant_embed_keys` + `sso_used_jtis` tables (created in `init_db()`), the
+  `_embed_auth` before_request / `_embed_cors` after_request pair (scoped CORS — origin echoed
+  from each key's allowlist, never `*`; preflight `OPTIONS` answered 204 without resolving the
+  key), `/embed/loader.js`, `/widget/<file>` (allowlist `{chat-ui.js, chat-ui.css, voice.js}`),
+  `/admin/api/embed-keys` CRUD, and `/admin/sso` (HMAC token verify → 302 /admin; 503 if
+  `SSO_SIGNING_SECRET` unset; 403 forged/expired/replayed). The standalone
+  `admin_ai_platform/` package is the *reference* implementation of this surface, not what the
+  live app loads. New env vars: `CLIENT_MODE`, `SSO_SIGNING_SECRET`. Full long-form story:
+  `replit.md` → "Client Mode + Embeddable Widget + WordPress SSO (Tier 11 — May 2026)".
 - **Admin "Tabs"** list in `replit.md` predates several newer tabs (Cost, Plans & Features, Custom
   Dashboards, MCP Connectors, Custom Skills, Marketing Insights, Site Designs, Themes,
   Subscribers/Templates/Campaigns, Automations, Reviews split, Voice Agent, Services, Events,
