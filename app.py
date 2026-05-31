@@ -21128,6 +21128,36 @@ def admin_chat_action_reject(action_id):
 #   * run in a background daemon thread so it can't add latency to the stream.
 # When the knob is off, none of this runs and visitor_profiles stays empty.
 
+# Bounded concurrency for the background profiler so a flood of visitor turns
+# (when the knob is ON) can't spawn unbounded daemon threads / LLM calls. At
+# capacity we simply skip profiling for that turn (best-effort, fail-open).
+# Configurable via env; small default suits the low steady-state volume.
+def _vp_parse_concurrency():
+    try:
+        return max(1, int(os.environ.get("VISITOR_PROFILES_MAX_CONCURRENCY", "4") or 4))
+    except (TypeError, ValueError):
+        return 4
+
+
+_VP_MAX_CONCURRENCY = _vp_parse_concurrency()
+_VP_SEM = threading.Semaphore(_VP_MAX_CONCURRENCY)
+
+
+def _vp_redact(text):
+    """Best-effort PII redaction for STORED CRM fields. Unlike the activity log
+    (whose redaction is a toggle), this always runs: visitor_profiles is a PII
+    store, and a visitor can volunteer an email/phone in free text that the
+    extractor may echo into the summary/tags. Fail-open to the original text so
+    a redactor error never blocks a profile write."""
+    if not text:
+        return text
+    try:
+        from pylego import redact as _rk
+        return _rk.redact_text(text)
+    except Exception:
+        return text
+
+
 def _vp_normalize_signals(data):
     """Coerce the raw extraction dict into a safe, bounded shape. Pure; total."""
     def _taglist(v):
@@ -21242,6 +21272,11 @@ def _visitor_profile_upsert(tenant_id, visitor_id, signals):
         else:
             interests, needs = signals["interests"], signals["needs"]
             lead, consent = signals["lead_score"], signals["consent"]
+        # Redact any volunteered PII (email/phone/keys) before it lands in the
+        # store — defense in depth on top of the "don't invent contacts" prompt.
+        interests = [_vp_redact(t) for t in interests]
+        needs = [_vp_redact(t) for t in needs]
+        summary = _vp_redact(signals["summary"])
         execute_db(
             "INSERT INTO visitor_profiles "
             "(tenant_id, visitor_id, interests, needs, lead_score, consent, summary, turns) "
@@ -21252,7 +21287,7 @@ def _visitor_profile_upsert(tenant_id, visitor_id, signals):
             "  summary=EXCLUDED.summary, turns=visitor_profiles.turns+1, "
             "  updated_at=NOW() RETURNING id",
             (tenant_id, vid, json.dumps(interests), json.dumps(needs),
-             lead, consent, signals["summary"]))
+             lead, consent, summary))
     except Exception as e:
         print(f"[crm] profile upsert skipped: {type(e).__name__}: {e}")
 
@@ -21281,11 +21316,24 @@ def _visitor_profile_update_async(tenant_id, visitor_id, user_message, final_ans
         if not get_ai_setting("visitor_profiles_enabled"):
             return
         model = get_ai_setting("visitor_profiles_model")
-        threading.Thread(
-            target=_visitor_profile_update,
-            args=(tenant_id, visitor_id, user_message, final_answer, model),
-            daemon=True,
-        ).start()
+        # Bounded concurrency: drop this turn's profiling if we're already at
+        # the cap, rather than spawn an unbounded thread / LLM call. Best-effort.
+        if not _VP_SEM.acquire(blocking=False):
+            print("[crm] profiler at capacity — skipping profiling for this turn")
+            return
+
+        def _run():
+            try:
+                _visitor_profile_update(tenant_id, visitor_id, user_message,
+                                        final_answer, model)
+            finally:
+                _VP_SEM.release()
+
+        try:
+            threading.Thread(target=_run, daemon=True).start()
+        except Exception:
+            _VP_SEM.release()   # never leak a permit if the thread won't start
+            raise
     except Exception as e:
         print(f"[crm] profile async dispatch skipped: {type(e).__name__}: {e}")
 

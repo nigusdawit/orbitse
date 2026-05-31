@@ -241,6 +241,38 @@ def test_route_blocks_client_session():
     assert r.status_code == 403
 
 
+# ---- security hardening (from the security-review) -------------------------
+
+def test_upsert_redacts_volunteered_pii():
+    """A visitor's email/phone echoed into the summary/tags must be redacted
+    before it lands in the store (visitor_profiles is a PII store)."""
+    vid = "vp-pii"
+    _wipe(vid)
+    tid = app.current_tenant_id()
+    try:
+        app._visitor_profile_upsert(tid, vid, {
+            "interests": ["reach me at jane@example.com"],
+            "needs": ["call 415-555-1212"],
+            "lead_score": 40, "consent": True,
+            "summary": "Contact jane@example.com or 415-555-1212.",
+        })
+        row = app.query_db(
+            "SELECT interests, needs, summary FROM visitor_profiles "
+            "WHERE tenant_id=%s AND visitor_id=%s", (tid, vid), fetchone=True)
+        blob = (row["summary"] + " " + " ".join(app._vp_as_list(row["interests"]))
+                + " " + " ".join(app._vp_as_list(row["needs"]))).lower()
+        assert "jane@example.com" not in blob
+        assert "415-555-1212" not in blob
+    finally:
+        _wipe(vid)
+
+
+def test_concurrency_cap_is_bounded():
+    """The profiler concurrency cap is a positive int (bounds thread spawn)."""
+    assert isinstance(app._VP_MAX_CONCURRENCY, int)
+    assert app._VP_MAX_CONCURRENCY >= 1
+
+
 # ---- registry ---------------------------------------------------------------
 
 def test_knobs_in_registry():
