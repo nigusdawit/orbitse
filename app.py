@@ -18903,7 +18903,7 @@ def admin_chat_sessions_create():
     localStorage id can ask for one and get a clean conversation."""
     data = request.get_json(silent=True) or {}
     mode = (data.get("mode") or "admin")[:20]
-    sid = "admin_" + os.urandom(6).hex() + str(int(time.time()))[-6:]
+    sid = "admin_" + os.urandom(6).hex() + str(int(_time.time()))[-6:]
     title = (data.get("title") or "").strip()[:200]
     execute_db(
         "INSERT INTO admin_chat_sessions (session_id, mode, title) "
