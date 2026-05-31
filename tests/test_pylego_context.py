@@ -53,6 +53,41 @@ def test_estimate_tokens_monotonic():
     assert H.estimate_tokens("a" * 400) >= H.estimate_tokens("a" * 40)
 
 
+def test_summarize_fn_replaces_dropped_block():
+    m = _msgs()
+    calls = {"dropped": None}
+
+    def summarize(dropped):
+        calls["dropped"] = dropped
+        return "- recap point one\n- recap point two"
+
+    out = H.trim_to_budget(m, 120, summarize_fn=summarize)
+    assert calls["dropped"], "summarize_fn should receive the dropped messages"
+    # A summary system note is present in place of the dropped middle.
+    joined = " ".join(str(x.get("content", "")) for x in out)
+    assert "Summary of earlier conversation" in joined
+    assert "recap point one" in joined
+    assert out[0]["role"] == "system" and out[-1]["content"] == "CURRENT question"
+
+
+def test_summarize_fn_failure_falls_back_to_plain_drop():
+    m = _msgs()
+
+    def boom(dropped):
+        raise RuntimeError("summarizer down")
+
+    out = H.trim_to_budget(m, 120, summarize_fn=boom)
+    joined = " ".join(str(x.get("content", "")) for x in out)
+    assert "Summary of earlier conversation" not in joined   # fell back to drop
+    assert out[0]["role"] == "system" and out[-1]["content"] == "CURRENT question"
+    assert H.total_tokens(out) <= H.total_tokens(m)
+
+
+def test_summarize_none_is_identical_to_plain_drop():
+    m = _msgs()
+    assert H.trim_to_budget(m, 120) == H.trim_to_budget(m, 120, summarize_fn=None)
+
+
 # ---- respcache --------------------------------------------------------------
 
 def _embed(text):

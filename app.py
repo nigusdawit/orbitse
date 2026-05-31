@@ -932,6 +932,42 @@ def _admin_respcache_embed(text):
     return list(resp.data[0].embedding)
 
 
+def _admin_history_summarize(dropped_messages):
+    """Summarize the OLDEST dropped admin-chat turns into a short recap (cheap
+    model) so a long thread keeps its gist instead of forgetting the start. Used
+    by pylego.history.trim_to_budget only when 'Summarize dropped history' is on.
+    Returns a short string, or '' on any failure (history then falls back to a
+    plain drop). Never raises out."""
+    try:
+        parts = []
+        for m in dropped_messages or []:
+            role = m.get("role")
+            content = m.get("content")
+            if isinstance(content, list):  # multimodal — keep text parts only
+                content = " ".join(
+                    str(p.get("text", "")) for p in content
+                    if isinstance(p, dict) and p.get("type") == "text")
+            if role in ("user", "assistant") and content:
+                parts.append(f"{role}: {content}")
+        transcript = "\n".join(parts)[:6000]
+        if not transcript.strip():
+            return ""
+        resp = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content":
+                 "Summarize this earlier portion of an admin assistant conversation "
+                 "in 3-5 terse bullet points capturing decisions made, facts "
+                 "established, and any open threads. No preamble, no markdown headers."},
+                {"role": "user", "content": transcript},
+            ],
+            max_tokens=300, temperature=0.2)
+        return (resp.choices[0].message.content or "").strip()
+    except Exception as e:
+        print(f"[admin_chat] history summarize failed (falling back to drop): {e}")
+        return ""
+
+
 def _get_admin_respcache():
     """Lazily build the process-wide admin response cache from the LIVE AI
     Control settings (DB > env > default). Rebuilt when a setting changes (the
@@ -19424,8 +19460,11 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8,
     #    answered WITHOUT tools (a static/how-to answer), serve it and skip the
     #    LLM entirely. Cache is disabled by default; data-dependent questions are
     #    never stored (see the store step after the loop), so they never hit here.
+    _summarize_fn = (_admin_history_summarize
+                     if get_ai_setting("history_summarize_enabled") else None)
     messages = _pylego_history.trim_to_budget(
-        messages, get_ai_setting("history_token_budget"), model)
+        messages, get_ai_setting("history_token_budget"), model,
+        summarize_fn=_summarize_fn)
     _respcache = _get_admin_respcache()
     _cached_answer = _respcache.lookup(user_message)
     if _cached_answer:
