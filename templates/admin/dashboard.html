@@ -2898,34 +2898,38 @@ TO CUSTOMIZE THIS DASHBOARD:
   content_studio_enabled / visual_content_enabled / autopublish_enabled.
   -->
   <div id="tab-content-studio" class="tab-content">
-    <div class="content-header">
-      <h2>Content Studio</h2>
-      <div style="display:flex; gap:0.5rem;">
-        <button class="btn btn-secondary" onclick="loadContentStudio()">Refresh</button>
+    <div class="gx-head">
+      <div>
+        <h2 class="gx-title">Content Studio</h2>
+        <p class="gx-sub">Turn a research report into content — generate drafts, review &amp; edit them,
+          attach visuals, then publish through your channels.</p>
+      </div>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-ghost" onclick="loadContentStudio()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+          Refresh</button>
       </div>
     </div>
 
-    <div class="card" style="padding:1rem; margin-bottom:1.25rem;">
-      <h3 style="margin:0 0 .6rem;">Generate content from a report</h3>
-      <div style="display:flex; gap:.6rem; flex-wrap:wrap; align-items:flex-end;">
-        <div>
-          <label style="display:block; font-size:13px; color:#cbd5e1; margin-bottom:4px;">Report ID</label>
-          <input id="cs-gen-report" class="form-input" style="width:110px;" placeholder="e.g. 12" />
-        </div>
-        <div style="flex:1; min-width:240px;">
-          <label style="display:block; font-size:13px; color:#cbd5e1; margin-bottom:4px;">Content types</label>
-          <div id="cs-gen-types" style="display:flex; gap:.6rem; flex-wrap:wrap; font-size:13px; color:#cbd5e1;"></div>
-        </div>
+    <div class="gx-card" style="margin-bottom:1.5rem;">
+      <div class="gx-card-h"><span class="gx-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></span> Generate content from a report</div>
+      <div style="display:flex; gap:1.1rem; flex-wrap:wrap; align-items:flex-start;">
+        <div class="gx-field" style="margin-bottom:0;"><label class="gx-label">Report ID</label>
+          <input id="cs-gen-report" class="gx-input" style="width:120px;" placeholder="e.g. 12" /></div>
+        <div class="gx-field" style="flex:1; min-width:260px; margin-bottom:0;"><label class="gx-label">Content types</label>
+          <div id="cs-gen-types" style="display:flex; gap:.7rem; flex-wrap:wrap; font-size:.85rem; color:var(--admin-text);"></div></div>
       </div>
-      <label style="display:block; font-size:13px; color:#cbd5e1; margin:8px 0 4px;">Extra instructions / tone (optional)</label>
-      <input id="cs-gen-instructions" class="form-input" placeholder="e.g. friendly, concise" />
-      <button class="btn btn-primary" style="margin-top:.6rem;" onclick="csGenerate()">Generate drafts</button>
-      <span id="cs-gen-status" style="margin-left:.6rem; color:#94a3b8; font-size:13px;"></span>
+      <div class="gx-field" style="margin-top:.9rem;"><label class="gx-label">Extra instructions / tone (optional)</label>
+        <input id="cs-gen-instructions" class="gx-input" placeholder="e.g. friendly, concise" /></div>
+      <div class="gx-foot">
+        <button class="gx-btn gx-btn-primary" onclick="csGenerate()">Generate drafts</button>
+        <span id="cs-gen-status" class="gx-hint"></span>
+      </div>
     </div>
 
-    <div style="display:flex; gap:.6rem; align-items:center; margin-bottom:.6rem;">
-      <h3 style="margin:0;">Drafts</h3>
-      <select id="cs-filter-status" class="form-input" style="width:auto;" onchange="csLoadDrafts()">
+    <div style="display:flex; gap:.8rem; align-items:center; margin-bottom:.75rem;">
+      <h3 class="gx-section-h" style="margin:0;">Drafts</h3>
+      <select id="cs-filter-status" class="gx-input" style="width:auto; padding:.35rem .6rem;" onchange="csLoadDrafts()">
         <option value="">All statuses</option>
         <option value="draft">Draft</option>
         <option value="approved">Approved</option>
@@ -2933,20 +2937,19 @@ TO CUSTOMIZE THIS DASHBOARD:
         <option value="published">Published</option>
       </select>
     </div>
-    <div id="cs-drafts-list" style="display:flex; flex-direction:column; gap:.5rem;"></div>
-    <div id="cs-draft-detail" style="display:none; margin-top:1rem;"></div>
+    <div id="cs-drafts-list" class="gx-list"></div>
+    <div id="cs-draft-detail" class="gx-detail" style="display:none; margin-top:1rem;"></div>
 
-    <hr style="border-color:rgba(255,255,255,.1); margin:1.5rem 0;" />
-    <div style="display:flex; gap:.6rem; align-items:center;">
-      <h3 style="margin:0;">Publish capabilities</h3>
-      <button class="btn btn-secondary" onclick="csShowCapForm()">Add capability</button>
-      <span id="cs-cap-python-note" style="color:#94a3b8; font-size:12px;"></span>
+    <div style="display:flex; gap:.8rem; align-items:center; margin:1.75rem 0 .75rem;">
+      <h3 class="gx-section-h" style="margin:0;">Publish capabilities</h3>
+      <button class="gx-btn gx-btn-ghost" onclick="csShowCapForm()" style="padding:.35rem .7rem; font-size:.8rem;">+ Add capability</button>
+      <span id="cs-cap-python-note" class="gx-hint" style="font-size:.75rem;"></span>
     </div>
-    <div id="cs-cap-form" style="display:none;" class="card"></div>
-    <div id="cs-cap-list" style="display:flex; flex-direction:column; gap:.5rem; margin-top:.6rem;"></div>
+    <div id="cs-cap-form" style="display:none; margin-bottom:.7rem;" class="gx-card"></div>
+    <div id="cs-cap-list" class="gx-list"></div>
 
-    <h3 style="margin:1.25rem 0 .6rem;">Recent publishes</h3>
-    <div id="cs-publish-log" style="display:flex; flex-direction:column; gap:.35rem;"></div>
+    <h3 class="gx-section-h" style="margin:1.75rem 0 .75rem;">Recent publishes</h3>
+    <div id="cs-publish-log" style="display:flex; flex-direction:column; gap:.4rem;"></div>
   </div>
 
   <div id="tab-dashboards" class="tab-content">
@@ -12125,20 +12128,24 @@ TO CUSTOMIZE THIS DASHBOARD:
       }
       csLoadDrafts(); csLoadCaps(); csLoadLog();
     }
+    function csBadgeMod(s){ s=String(s||'').toLowerCase();
+      if(s==='approved'||s==='published') return 'gx-badge-ok';
+      if(s==='rejected') return 'gx-badge-err';
+      return ''; }
     async function csLoadDrafts(){
       const wrap=document.getElementById('cs-drafts-list'); if(!wrap) return;
       const st=(document.getElementById('cs-filter-status').value||'');
-      wrap.innerHTML='<div style="color:#94a3b8;">Loading…</div>';
+      wrap.innerHTML='<div class="gx-empty">Loading…</div>';
       try{
         const j=await _rceGet('/admin/api/content/drafts'+(st?('?status='+encodeURIComponent(st)):''));
         const ds=j.drafts||[];
-        if(!ds.length){ wrap.innerHTML='<div style="color:#94a3b8;">No drafts.</div>'; return; }
+        if(!ds.length){ wrap.innerHTML='<div class="gx-empty">No drafts yet — generate some from a report above.</div>'; return; }
         wrap.innerHTML=ds.map(function(d){ return ''
-          +'<div class="card" style="padding:.6rem; cursor:pointer;" onclick="csOpenDraft('+d.id+')">'
-          +'<div style="display:flex; justify-content:space-between; gap:1rem;"><strong>'+_rceEsc(d.title||('Draft #'+d.id))+'</strong>'
-          +'<span style="font-size:12px; color:#94a3b8;">'+_rceEsc(d.content_type||'')+' · '+_rceEsc(d.status||'')+'</span></div></div>';
+          +'<div class="gx-row" onclick="csOpenDraft('+d.id+')">'
+          +'<div class="gx-row-top"><span class="gx-row-title">'+_rceEsc(d.title||('Draft #'+d.id))+'</span>'
+          +'<span class="gx-badge '+csBadgeMod(d.status)+'">'+_rceEsc(d.content_type||'')+' · '+_rceEsc(d.status||'')+'</span></div></div>';
         }).join('');
-      }catch(e){ wrap.innerHTML='<div style="color:#f87171;">Could not load drafts.</div>'; }
+      }catch(e){ wrap.innerHTML='<div class="gx-empty" style="color:var(--admin-danger);">Could not load drafts.</div>'; }
     }
     async function csGenerate(){
       const rid=(document.getElementById('cs-gen-report').value||'').trim();
@@ -12153,35 +12160,35 @@ TO CUSTOMIZE THIS DASHBOARD:
     function csHideDraft(){ const d=document.getElementById('cs-draft-detail'); if(d) d.style.display='none'; }
     async function csOpenDraft(id){
       const d=document.getElementById('cs-draft-detail');
-      d.style.display='block'; d.innerHTML='<div style="color:#94a3b8;">Loading…</div>';
+      d.style.display='block'; d.innerHTML='<div class="gx-empty">Loading…</div>';
       try{
         const r=await _rceGet('/admin/api/content/drafts/'+id);
         const caps=await _rceGet('/admin/api/publish/capabilities').catch(function(){ return {capabilities:[]}; });
         const capOpts=(caps.capabilities||[]).map(function(c){ return '<option value="'+c.id+'">'+_rceEsc(c.name)+' ('+_rceEsc(c.kind)+')'+(c.enabled?'':' [disabled]')+'</option>'; }).join('');
-        d.innerHTML='<div class="card" style="padding:1rem;">'
-          +'<div style="display:flex; justify-content:space-between; align-items:flex-start;"><h3 style="margin:0;">Draft #'+r.id+' · '+_rceEsc(r.content_type||'')+'</h3>'
-          +'<button class="btn btn-secondary" onclick="csHideDraft()">Close</button></div>'
-          +'<input id="cs-d-title" class="form-input" value="'+_rceEsc(r.title||'')+'" style="margin:.5rem 0;" />'
-          +'<textarea id="cs-d-body" class="form-input" rows="10">'+_rceEsc(r.body||'')+'</textarea>'
-          +'<div style="display:flex; gap:.5rem; margin-top:.6rem; flex-wrap:wrap;">'
-          +'<button class="btn btn-primary" onclick="csSaveDraft('+r.id+')">Save</button>'
-          +'<button class="btn btn-secondary" onclick="csApprove('+r.id+')">Approve</button>'
-          +'<button class="btn btn-secondary" onclick="csReject('+r.id+')">Reject</button>'
-          +'<span id="cs-d-status" style="color:#94a3b8; font-size:13px; align-self:center;">Status: '+_rceEsc(r.status||'')+'</span></div>'
-          +'<hr style="border-color:rgba(255,255,255,.1); margin:.8rem 0;"/>'
+        d.innerHTML='<div class="gx-card">'
+          +'<div class="gx-detail-head"><h3>Draft #'+r.id+' · '+_rceEsc(r.content_type||'')+'</h3>'
+          +'<button class="gx-btn gx-btn-ghost" onclick="csHideDraft()">Close</button></div>'
+          +'<div class="gx-field" style="margin-top:.8rem;"><label class="gx-label">Title</label><input id="cs-d-title" class="gx-input" value="'+_rceEsc(r.title||'')+'" /></div>'
+          +'<div class="gx-field"><label class="gx-label">Body</label><textarea id="cs-d-body" class="gx-input" rows="10">'+_rceEsc(r.body||'')+'</textarea></div>'
+          +'<div class="gx-foot">'
+          +'<button class="gx-btn gx-btn-primary" onclick="csSaveDraft('+r.id+')">Save</button>'
+          +'<button class="gx-btn" onclick="csApprove('+r.id+')">Approve</button>'
+          +'<button class="gx-btn" onclick="csReject('+r.id+')">Reject</button>'
+          +'<span id="cs-d-status" class="gx-hint">Status: '+_rceEsc(r.status||'')+'</span></div>'
+          +'<h4>Visuals</h4>'
           +'<div style="display:flex; gap:.5rem; align-items:flex-end; flex-wrap:wrap;">'
-          +'<select id="cs-v-type" class="form-input" style="width:auto;"><option value="image">Image</option><option value="diagram">Diagram</option><option value="clip">Clip</option></select>'
-          +'<input id="cs-v-brief" class="form-input" placeholder="Brief for the visual" style="flex:1; min-width:200px;" />'
-          +'<button class="btn btn-secondary" onclick="csGenVisual('+r.id+')">Generate visual</button></div>'
-          +'<div id="cs-v-list" style="margin-top:.5rem;"></div>'
-          +'<hr style="border-color:rgba(255,255,255,.1); margin:.8rem 0;"/>'
+          +'<select id="cs-v-type" class="gx-input" style="width:auto;"><option value="image">Image</option><option value="diagram">Diagram</option><option value="clip">Clip</option></select>'
+          +'<input id="cs-v-brief" class="gx-input" placeholder="Brief for the visual" style="flex:1; min-width:200px;" />'
+          +'<button class="gx-btn" onclick="csGenVisual('+r.id+')">Generate visual</button></div>'
+          +'<div id="cs-v-list" style="margin-top:.6rem;"></div>'
+          +'<h4>Publish</h4>'
           +'<div style="display:flex; gap:.5rem; align-items:flex-end; flex-wrap:wrap;">'
-          +'<select id="cs-pub-cap" class="form-input" style="width:auto;">'+(capOpts||'<option value="">No capabilities</option>')+'</select>'
-          +'<button class="btn btn-primary" onclick="csPublish('+r.id+')">Publish</button>'
-          +'<span id="cs-pub-status" style="color:#94a3b8; font-size:13px; align-self:center;"></span></div>'
+          +'<select id="cs-pub-cap" class="gx-input" style="width:auto;">'+(capOpts||'<option value="">No capabilities</option>')+'</select>'
+          +'<button class="gx-btn gx-btn-primary" onclick="csPublish('+r.id+')">Publish</button>'
+          +'<span id="cs-pub-status" class="gx-hint"></span></div>'
           +'</div>';
         csLoadAssets(r.id);
-      }catch(e){ d.innerHTML='<div style="color:#f87171;">Could not load draft.</div>'; }
+      }catch(e){ d.innerHTML='<div class="gx-empty" style="color:var(--admin-danger);">Could not load draft.</div>'; }
     }
     async function csSaveDraft(id){
       const r=await _rcePost('/admin/api/content/drafts/'+id, {title:document.getElementById('cs-d-title').value, body:document.getElementById('cs-d-body').value});
@@ -12234,27 +12241,27 @@ TO CUSTOMIZE THIS DASHBOARD:
         if(note) note.textContent = j.python_allowed? '' : '(python capabilities are disabled on this deployment)';
         const cs=j.capabilities||[];
         wrap.innerHTML = cs.length? cs.map(function(c){ return ''
-          +'<div class="card" style="padding:.6rem; display:flex; justify-content:space-between; align-items:center;">'
-          +'<span>'+_rceEsc(c.name)+' <span style="color:#94a3b8; font-size:12px;">('+_rceEsc(c.kind)+')</span></span>'
-          +'<span style="display:flex; gap:.5rem; align-items:center;">'
-          +'<label style="font-size:12px; color:#cbd5e1;"><input type="checkbox" '+(c.enabled?'checked':'')+' onchange="csToggleCap('+c.id+', this.checked)"> enabled</label>'
-          +'<button class="btn btn-secondary" style="padding:2px 8px;" onclick="csDeleteCap('+c.id+')">Delete</button></span></div>';
-        }).join('') : '<div style="color:#94a3b8;">No capabilities yet.</div>';
-      }catch(e){ wrap.innerHTML='<div style="color:#f87171;">Could not load capabilities.</div>'; }
+          +'<div class="gx-row" style="cursor:default;"><div class="gx-row-top">'
+          +'<span class="gx-row-title">'+_rceEsc(c.name)+' <span class="gx-hint">('+_rceEsc(c.kind)+')</span></span>'
+          +'<span style="display:flex; gap:.8rem; align-items:center;">'
+          +'<label class="gx-hint" style="display:inline-flex; gap:.35rem; align-items:center;"><input type="checkbox" '+(c.enabled?'checked':'')+' onchange="csToggleCap('+c.id+', this.checked)"> enabled</label>'
+          +'<button class="gx-btn" style="padding:.25rem .65rem; font-size:.78rem;" onclick="csDeleteCap('+c.id+')">Delete</button></span></div></div>';
+        }).join('') : '<div class="gx-empty">No capabilities yet — add one to publish drafts.</div>';
+      }catch(e){ wrap.innerHTML='<div class="gx-empty" style="color:var(--admin-danger);">Could not load capabilities.</div>'; }
     }
     function csHideCapForm(){ const f=document.getElementById('cs-cap-form'); if(f) f.style.display='none'; }
     function csShowCapForm(){
       const f=document.getElementById('cs-cap-form');
-      f.style.display='block'; f.style.padding='1rem';
-      f.innerHTML='<h4 style="margin:0 0 .5rem;">New capability</h4>'
-        +'<input id="cs-cap-name" class="form-input" placeholder="Name" style="margin-bottom:.4rem;" />'
-        +'<select id="cs-cap-kind" class="form-input" style="margin-bottom:.4rem;"><option value="webhook">webhook</option><option value="http_api">http_api</option><option value="mcp">mcp</option><option value="python">python</option></select>'
-        +'<div style="font-size:12px; color:#94a3b8; margin-bottom:4px;">Config (JSON). webhook/http_api need a url; mcp needs server_id+tool; python needs a command list (operator-defined).</div>'
-        +'<textarea id="cs-cap-config" class="form-input" rows="3"></textarea>'
-        +'<div style="margin-top:.5rem; display:flex; gap:.5rem;">'
-        +'<button class="btn btn-primary" onclick="csCreateCap()">Create</button>'
-        +'<button class="btn btn-secondary" onclick="csHideCapForm()">Cancel</button>'
-        +'<span id="cs-cap-status" style="color:#94a3b8; font-size:13px; align-self:center;"></span></div>';
+      f.style.display='block';
+      f.innerHTML='<div class="gx-card-h" style="margin-bottom:.9rem;">New capability</div>'
+        +'<div class="gx-field"><label class="gx-label">Name</label><input id="cs-cap-name" class="gx-input" placeholder="e.g. Post to Slack" /></div>'
+        +'<div class="gx-field"><label class="gx-label">Kind</label><select id="cs-cap-kind" class="gx-input"><option value="webhook">webhook</option><option value="http_api">http_api</option><option value="mcp">mcp</option><option value="python">python</option></select></div>'
+        +'<div class="gx-field"><label class="gx-label">Config (JSON)</label>'
+        +'<div class="gx-hint" style="margin-bottom:.4rem;">webhook/http_api need a url; mcp needs server_id+tool; python needs a command list (operator-defined).</div>'
+        +'<textarea id="cs-cap-config" class="gx-input" rows="3"></textarea></div>'
+        +'<div class="gx-foot"><button class="gx-btn gx-btn-primary" onclick="csCreateCap()">Create</button>'
+        +'<button class="gx-btn gx-btn-ghost" onclick="csHideCapForm()">Cancel</button>'
+        +'<span id="cs-cap-status" class="gx-hint"></span></div>';
     }
     async function csCreateCap(){
       const st=document.getElementById('cs-cap-status');
