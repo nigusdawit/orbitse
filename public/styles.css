@@ -4359,7 +4359,20 @@ body.theme-accent-gradient .section-divider {
   border-radius: 9999px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
   transition: border-color var(--transition-fast), background var(--transition-fast);
+  /* Admin-controllable chat-pill size. --chat-pill-scale is injected by
+     the server (and updated live on save) — 1.0 = 100%. Using `zoom`
+     scales the whole pill (avatar, text, input, buttons) uniformly. The
+     expanded panel resets this below so only the pill is affected. */
+  zoom: var(--chat-pill-scale, 1);
 }
+
+/* When the chat is expanded into the full panel, keep it at native size
+   so the pill-size control never distorts the open conversation view. */
+.chatbot-container.expanded .chatbot-bar { zoom: 1; }
+
+/* The floating launcher button (hidden-until-button placement) scales
+   with the same control so the entry point matches the pill size. */
+.chatbot-launcher { zoom: var(--chat-pill-scale, 1); }
 
 .chatbot-bar:hover {
   border-color: rgba(201, 169, 110, 0.4);

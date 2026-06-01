@@ -7834,6 +7834,16 @@ TO CUSTOMIZE THIS DASHBOARD:
                  oninput="document.getElementById('theme-ui-scale-val').textContent=Math.round(parseFloat(this.value)*100)+'%';updateThemePreview()"
                  data-testid="input-theme-ui-scale">
         </div>
+        <div class="form-group">
+          <label for="theme-chat-pill-scale">
+            Chat pill size
+            <span id="theme-chat-pill-scale-val" style="float:right;color:var(--admin-text-muted);">100%</span>
+          </label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Sizes the floating chat pill only. Lower = smaller pill, higher = bigger. 100% = default. Doesn't affect the open chat panel.</span>
+          <input type="range" id="theme-chat-pill-scale" min="0.7" max="1.4" step="0.05" value="1.0"
+                 oninput="document.getElementById('theme-chat-pill-scale-val').textContent=Math.round(parseFloat(this.value)*100)+'%';updateThemePreview()"
+                 data-testid="input-theme-chat-pill-scale">
+        </div>
       </div>
 
       <!-- ============================================================
@@ -13272,6 +13282,8 @@ TO CUSTOMIZE THIS DASHBOARD:
                   v => parseFloat(v).toFixed(2) + 's');
         setSlider('theme-ui-scale', data.theme_ui_scale,
                   v => Math.round(parseFloat(v) * 100) + '%');
+        setSlider('theme-chat-pill-scale', data.theme_chat_pill_scale,
+                  v => Math.round(parseFloat(v) * 100) + '%');
 
         // Surface-treatment pickers (Task #62 / items 3, 5, 12, 13).
         // Each defaults to its documented value when the column is
@@ -13335,6 +13347,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         theme_radius_rem:       parseFloat(document.getElementById('theme-radius-rem').value),
         theme_transition_sec:   parseFloat(document.getElementById('theme-transition-sec').value),
         theme_ui_scale:         parseFloat(document.getElementById('theme-ui-scale').value),
+        theme_chat_pill_scale:  parseFloat(document.getElementById('theme-chat-pill-scale').value),
         // Brand-identity fields (Task #61).
         theme_accent_secondary: document.getElementById('theme-accent-secondary').value,
         theme_accent_gradient:  document.getElementById('theme-accent-gradient').checked,
@@ -13394,6 +13407,7 @@ TO CUSTOMIZE THIS DASHBOARD:
         theme_radius_rem: 1.0,
         theme_transition_sec: 0.6,
         theme_ui_scale: 1.0,
+        theme_chat_pill_scale: 1.0,
         // Clear brand-identity overrides too (Task #61). Logo image
         // is intentionally cleared — admin can re-pick from the media
         // library if they want to keep the same one.

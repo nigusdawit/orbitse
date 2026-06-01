@@ -8183,6 +8183,12 @@ def _build_theme_vars_style():
         # so there's no resize flash on load.
         ui_scale = _f("theme_ui_scale", 1.0)
         ui_scale = max(0.5, min(1.5, ui_scale))
+        # Chat-pill size factor — scoped to the chatbot pill/launcher only
+        # (see the .chatbot-bar / .chatbot-launcher zoom rules in styles.css
+        # which read this var). Clamped 0.7–1.4 so the pill stays tappable
+        # and readable. 1.0 = 100%.
+        chat_pill_scale = _f("theme_chat_pill_scale", 1.0)
+        chat_pill_scale = max(0.7, min(1.4, chat_pill_scale))
         # Personality (Task #64 / item 11) — admin-picked progress-bar
         # color. When empty we deliberately OMIT the variable so the
         # CSS fallback chain (var(--scroll-progress-color, var(--color-
@@ -8216,6 +8222,7 @@ def _build_theme_vars_style():
             f"--ease-active:{ease_active};"
             f"--space-scale:{density_scale};"
             f"--ui-scale:{ui_scale};"
+            f"--chat-pill-scale:{chat_pill_scale};"
             f"--section-frame-inset:{frame_inset}px;"
             # Personality (Task #64 / item 11) — scroll-progress bar color.
             # Only emitted when admin set a custom hex; otherwise the CSS
@@ -29963,6 +29970,7 @@ def _resolve_active_theme():
                theme_cursor_mode, theme_scroll_progress,
                theme_scroll_progress_color, theme_nav_style,
                theme_chatbot_placement, theme_ui_scale,
+               theme_chat_pill_scale,
                active_theme_id
         FROM site_settings WHERE id = 1
     """, fetchone=True) or {}
@@ -30037,7 +30045,8 @@ def _resolve_active_theme():
     # NUMERIC columns come back as Decimal — coerce to float so JSON
     # serialization works and the frontend can do math on them directly.
     for k in ("theme_loading_bg_alpha", "theme_radius_rem",
-              "theme_transition_sec", "theme_ui_scale"):
+              "theme_transition_sec", "theme_ui_scale",
+              "theme_chat_pill_scale"):
         if settings.get(k) is not None:
             try: settings[k] = float(settings[k])
             except Exception: pass
@@ -30048,6 +30057,13 @@ def _resolve_active_theme():
     except (TypeError, ValueError):
         _scale = 1.0
     settings["theme_ui_scale"] = max(0.5, min(1.5, _scale))
+    # Chat-pill size factor — same idea, scoped to the chatbot pill.
+    # Clamp 0.7–1.4 so it stays usable (tap target / readability). 1.0 = 100%.
+    try:
+        _pill = float(settings.get("theme_chat_pill_scale"))
+    except (TypeError, ValueError):
+        _pill = 1.0
+    settings["theme_chat_pill_scale"] = max(0.7, min(1.4, _pill))
     if settings.get("theme_glass_blur_px") is not None:
         try: settings["theme_glass_blur_px"] = int(settings["theme_glass_blur_px"])
         except Exception: pass
@@ -30143,6 +30159,9 @@ def admin_update_theme():
     # Overall-size (zoom) factor — 1.0 = 100%; clamped 0.5–1.5 so a stray
     # slider value can't shrink the site to nothing or blow it up.
     ui_scale      = _num("theme_ui_scale",         1.0,  0.5, 1.5, float)
+    # Chat-pill size factor — 1.0 = 100%; clamped 0.7–1.4 so the pill
+    # stays tappable and readable.
+    chat_pill_scale = _num("theme_chat_pill_scale", 1.0, 0.7, 1.4, float)
 
     # Brand-identity fields (Task #61 / items 2,4,17,18). Logo mode is
     # restricted to a known enum so a malformed payload can't break the
@@ -30240,6 +30259,7 @@ def admin_update_theme():
              theme_cursor_mode = %s, theme_scroll_progress = %s,
              theme_scroll_progress_color = %s, theme_nav_style = %s,
              theme_chatbot_placement = %s, theme_ui_scale = %s,
+             theme_chat_pill_scale = %s,
              updated_at = NOW()
            WHERE id = 1 RETURNING *""",
         (
@@ -30258,6 +30278,7 @@ def admin_update_theme():
             density, frame_inset, header_align, hero_layout,
             cursor_mode, scroll_progress, scroll_progress_color,
             nav_style, chatbot_placement, ui_scale,
+            chat_pill_scale,
         )
     )
 

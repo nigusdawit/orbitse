@@ -4867,6 +4867,10 @@ async function loadAndApplyTheme() {
        the --ui-scale custom property here re-zooms the whole site live
        after an admin save (no page reload needed). 1.0 = 100%. */
     setNumVar('theme_ui_scale',         '--ui-scale',         '');
+    /* Chat-pill size factor. The .chatbot-bar / .chatbot-launcher CSS
+       rules read `var(--chat-pill-scale,1)`, so updating it here re-sizes
+       the chat pill live after an admin save (no reload). 1.0 = 100%. */
+    setNumVar('theme_chat_pill_scale',  '--chat-pill-scale',  '');
 
     /* Derive --color-bg-rgb from theme_bg so any rgba() that reads it
        (loading-screen tint) re-tints when the bg color changes. */
