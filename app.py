@@ -2612,6 +2612,10 @@ def init_db():
                     description         TEXT         NOT NULL DEFAULT '',
                     sql_template        TEXT         NOT NULL DEFAULT '',
                     args_schema_json    JSONB        DEFAULT '{"type":"object","properties":{},"required":[]}'::jsonb,
+                    -- Datahub (task 056): which data source this query runs
+                    -- against. 0 = the app's own DB; other ids reference
+                    -- external_data_connections. Default 0 = prior behavior.
+                    connection_id       INTEGER      NOT NULL DEFAULT 0,
                     enabled             BOOLEAN      NOT NULL DEFAULT false,
                     created_at          TIMESTAMP    DEFAULT NOW(),
                     updated_at          TIMESTAMP    DEFAULT NOW()
@@ -13996,7 +14000,7 @@ def _exec_custom_sql(name, args):
         return {"error": "SQL skill not configured (no sql_skill_id)"}, 0
     try:
         sk = query_db(
-            "SELECT id, name, sql_template, enabled "
+            "SELECT id, name, sql_template, enabled, connection_id "
             "FROM custom_sql_skills WHERE id = %s",
             (int(sid),), fetchone=True,
         )
@@ -14026,6 +14030,27 @@ def _exec_custom_sql(name, args):
     st_err = _admin_sql_secret_table_check(sql_text)
     if st_err:
         return {"error": st_err}, 0
+    # Datahub (task 056): a skill bound to an external connection runs against
+    # that database (read-only, params bound) instead of the app's own DB.
+    _conn_id = int(sk.get("connection_id") or 0)
+    if _conn_id != 0:
+        url, derr = _dh_postgres_url(_conn_id)
+        if derr:
+            return {"error": derr}, 0
+        try:
+            res = _run_external_postgres(url, sql_text, max_rows=100,
+                                         params=(args or None))
+        except Exception as e:
+            print(f"[custom_sql] external skill failed (conn {_conn_id}): "
+                  f"{type(e).__name__}: {e}")
+            return {"error": "The saved query could not run against its connection."}, 0
+        cols = res.get("columns", [])
+        rows = res.get("rows", [])
+        sens = {i for i, c in enumerate(cols) if _is_sensitive_key(c)}
+        if sens:
+            rows = [[(_REDACTED_PLACEHOLDER if i in sens else v)
+                     for i, v in enumerate(r)] for r in rows]
+        return {"columns": cols, "rows": rows, "count": len(rows)}, len(rows)
     try:
         conn = get_db(); conn.autocommit = False
         rows = []
@@ -16030,6 +16055,45 @@ def _admin_tool_define_schema(connection_id=0, table=None, **_):
     drafts appear in the Datahub tab marked 'AI-suggested · review' for the
     super-admin to confirm/edit. Read-only against the data."""
     return _dh_ai_define(connection_id=connection_id, table=table)
+
+
+def _admin_tool_save_query(name=None, sql=None, description=None,
+                           connection_id=0, args_schema=None, **_):
+    """Save a SELECT query as a reusable named SQL skill. Created DISABLED so a
+    super-admin reviews + enables it in the Skills tab before it can run. The
+    query is validated read-only; connection_id 0 = the app's own DB."""
+    nm = (name or "").strip().lower()
+    if not _SKILL_NAME_RE.match(nm or ""):
+        return {"error": "name must be lowercase letters/digits/underscores and start with a letter."}
+    sql_t = (sql or "").strip()
+    stripped = sql_t.rstrip(";").strip()
+    if not stripped:
+        return {"error": "sql is required."}
+    if ";" in stripped:
+        return {"error": "SQL must be a single statement (no semicolons)."}
+    if not _re.match(r"^\s*(WITH|SELECT)\b", stripped, _re.IGNORECASE):
+        return {"error": "Only SELECT / WITH queries can be saved."}
+    if query_db("SELECT 1 FROM custom_sql_skills WHERE name=%s", (nm,), fetchone=True):
+        return {"error": f"A SQL skill named '{nm}' already exists."}
+    schema = args_schema if isinstance(args_schema, dict) else \
+        {"type": "object", "properties": {}, "required": []}
+    try:
+        cid = int(connection_id or 0)
+    except (TypeError, ValueError):
+        cid = 0
+    row = execute_db(
+        "INSERT INTO custom_sql_skills (name, description, sql_template, "
+        " args_schema_json, connection_id, enabled) "
+        "VALUES (%s,%s,%s,%s::jsonb,%s,FALSE) RETURNING id",
+        (nm, (description or "").strip()[:2000], sql_t[:8000],
+         json.dumps(schema), cid))
+    try:
+        sync_custom_skills_to_agent_skills()
+    except Exception:
+        pass
+    return {"ok": True, "skill": nm, "id": (row["id"] if row else None),
+            "enabled": False,
+            "note": "Saved as a DISABLED skill — enable it in the Skills tab to make it live."}
 
 
 def _admin_tool_list_skills():
@@ -18801,6 +18865,7 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_inspect_connection":     _admin_tool_inspect_connection,
     "admin_query_connection":       _admin_tool_query_connection,
     "admin_define_schema":          _admin_tool_define_schema,
+    "admin_save_query":             _admin_tool_save_query,
     "admin_list_skills":            _admin_tool_list_skills,
     "admin_recent_visitor_chats":   _admin_tool_recent_visitor_chats,
     "admin_recent_orders":          _admin_tool_recent_orders,
@@ -18971,6 +19036,18 @@ ADMIN_TOOLS = [
         {"type": "object",
          "properties": {"connection_id": {"type": "integer", "default": 0},
                         "table": {"type": "string"}}}),
+    _admin_tool_schema(
+        "admin_save_query",
+        "Save a SELECT query as a reusable named SQL skill (e.g. for a repetitive "
+        "report). Created DISABLED — it appears in the Skills tab for the "
+        "super-admin to review + enable before it can run. connection_id 0 = this "
+        "site's DB; other ids are external connections. Use snake_case for name.",
+        {"type": "object",
+         "properties": {"name": {"type": "string"},
+                        "sql": {"type": "string", "description": "A single SELECT statement."},
+                        "description": {"type": "string"},
+                        "connection_id": {"type": "integer", "default": 0}},
+         "required": ["name", "sql"]}),
     _admin_tool_schema(
         "admin_list_skills",
         "List every AI skill (visitor agent tool) with its on/off state."),
@@ -26472,6 +26549,11 @@ def _normalize_sql_skill_payload(data, *, partial=False):
         v = data.get("enabled")
         out["enabled"] = (v.strip().lower() in ("true", "1", "yes", "on")
                           if isinstance(v, str) else bool(v))
+    if "connection_id" in data:
+        try:
+            out["connection_id"] = int(data.get("connection_id") or 0)
+        except (TypeError, ValueError):
+            return None, "connection_id must be an integer"
     return out, None
 
 
@@ -26503,12 +26585,13 @@ def admin_custom_sql_create():
     try:
         row = execute_db(
             "INSERT INTO custom_sql_skills "
-            "(name, description, sql_template, args_schema_json, enabled) "
-            "VALUES (%s, %s, %s, %s::jsonb, %s) RETURNING *",
+            "(name, description, sql_template, args_schema_json, connection_id, enabled) "
+            "VALUES (%s, %s, %s, %s::jsonb, %s, %s) RETURNING *",
             (
                 cleaned["name"], cleaned["description"],
                 cleaned["sql_template"],
                 json.dumps(cleaned.get("args_schema_json") or {}),
+                int(cleaned.get("connection_id") or 0),
                 cleaned.get("enabled", True),
             ),
         )
@@ -26535,7 +26618,7 @@ def admin_custom_sql_update(rid):
     _admin_snapshot_row("custom_sql_skills", rid, None,
                         "Edited from admin dashboard")
     sets, params = [], []
-    for k in ("description", "sql_template", "enabled"):
+    for k in ("description", "sql_template", "enabled", "connection_id"):
         if k in cleaned:
             sets.append(f"{k} = %s"); params.append(cleaned[k])
     if "args_schema_json" in cleaned:
@@ -37582,7 +37665,8 @@ def _strip_sql_comments(q):
     return q.strip()
 
 
-def _run_external_postgres(connection_url, query, max_rows=500, timeout_ms=5000):
+def _run_external_postgres(connection_url, query, max_rows=500, timeout_ms=5000,
+                           params=None):
     cleaned = _strip_sql_comments(query or "")
     if not _SELECT_ONLY_RE.match(cleaned):
         raise ValueError("Only SELECT (or WITH) queries are allowed.")
@@ -37598,7 +37682,7 @@ def _run_external_postgres(connection_url, query, max_rows=500, timeout_ms=5000)
         conn.set_session(readonly=True, autocommit=False)
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("SET statement_timeout = %s", (int(timeout_ms),))
-            cur.execute(query)
+            cur.execute(query, params)   # params bound by psycopg2 (never interpolated)
             if not cur.description:
                 conn.rollback()
                 return {"columns": [], "rows": []}
