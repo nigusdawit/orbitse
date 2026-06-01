@@ -16274,6 +16274,19 @@ def _dh_spec_to_static_widget(spec):
     return wt, {"data": data}
 
 
+def _admin_tool_gather_sources(urls=None, topic=None, ingest_kb=False, **_):
+    """Gather web pages into the Research Hub's Sources layer (full text), under
+    a new draft research report. Gated by the Research Hub toggle. Provide a list
+    of URLs; optionally a topic + whether to also add them to the knowledge base.
+    Read-only against the web (SSRF-guarded). Returns a summary + report_id."""
+    if isinstance(urls, str):
+        urls = [urls]
+    if not isinstance(urls, list) or not urls:
+        return {"error": "Provide a list of URLs to gather."}
+    return _rce_gather_into_report([str(u) for u in urls][:20],
+                                   topic=(topic or ""), ingest_kb=bool(ingest_kb))
+
+
 def _admin_tool_create_dashboard(name=None, description=None, widgets=None, **_):
     """Create a persistent dashboard (appears in the Custom Dashboards tab) with
     widgets. Each widget is either {name, chart:{...}} (a static chart you've
@@ -19085,6 +19098,7 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_inspect_connection":     _admin_tool_inspect_connection,
     "admin_query_connection":       _admin_tool_query_connection,
     "admin_define_schema":          _admin_tool_define_schema,
+    "gather_sources":               _admin_tool_gather_sources,
     "admin_save_query":             _admin_tool_save_query,
     "render_chart":                 _admin_tool_render_chart,
     "admin_create_dashboard":       _admin_tool_create_dashboard,
@@ -19247,6 +19261,18 @@ ADMIN_TOOLS = [
                         "sql": {"type": "string",
                                 "description": "A single SELECT statement."}},
          "required": ["sql"]}),
+    _admin_tool_schema(
+        "gather_sources",
+        "Fetch one or more web pages into the Research Hub as source material "
+        "(full text), under a new draft research report. Use when the owner wants "
+        "to collect references for research or content. Provide `urls` (a list), "
+        "optionally `topic` and `ingest_kb` (also add to the knowledge base). "
+        "Read-only; requires the Research Hub to be enabled.",
+        {"type": "object",
+         "properties": {"urls": {"type": "array", "items": {"type": "string"}},
+                        "topic": {"type": "string"},
+                        "ingest_kb": {"type": "boolean"}},
+         "required": ["urls"]}),
     _admin_tool_schema(
         "admin_define_schema",
         "DRAFT the Datahub data dictionary for a connection: inspect + sample it "
@@ -40410,6 +40436,120 @@ def _scrape_get_render_enabled() -> bool:
     return bool((row or {}).get("scraper_render_enabled")) if row else False
 
 
+# =============================================================================
+# RESEARCH & CONTENT ENGINE — Gather (Phase 8 / task 063)
+# =============================================================================
+# Pull one or many URLs into the Sources layer (research_sources), reusing the
+# scraper module's SSRF-guarded fetch + readable-text extraction + headless
+# render fallback. Full-text mode (vs the legacy structured push to gallery/
+# pricing). Gated by research_hub_enabled. Dedup by content hash. Rate-limited.
+
+def _rce_title_from_html(body, fallback=""):
+    try:
+        m = _re_admin.search(r"<title[^>]*>(.*?)</title>", body or "",
+                             _re_admin.IGNORECASE | _re_admin.DOTALL)
+        if m:
+            return _re_admin.sub(r"\s+", " ", m.group(1)).strip()[:300]
+    except Exception:
+        pass
+    return (fallback or "")[:300]
+
+
+def _rce_gather_url(url, disallowed=None):
+    """Fetch + extract readable text for ONE url (SSRF-guarded by scraper.fetch_url;
+    headless render fallback when enabled). Returns {ok, url, title, text, error}."""
+    try:
+        dis = disallowed if disallowed is not None else _scrape_get_disallowed_domains()
+        fetched = scraper.fetch_url(url, disallowed_domains=dis)
+        if not fetched.get("ok"):
+            return {"ok": False, "url": url, "error": fetched.get("error", "fetch failed")}
+        body = fetched.get("body") or ""
+        ctype = fetched.get("content_type", "")
+        text = scraper.clean_html(body, ctype)
+        if (not text or scraper.looks_js_only(text)) and _scrape_get_render_enabled():
+            rendered = scraper.fetch_url_rendered(url, disallowed_domains=dis)
+            if rendered.get("ok"):
+                body = rendered.get("body") or body
+                text = scraper.clean_html(body, rendered.get("content_type", ""))
+        title = _rce_title_from_html(body, fallback=fetched.get("final_url", url))
+        return {"ok": True, "url": fetched.get("final_url", url),
+                "title": title, "text": text or ""}
+    except Exception as e:
+        return {"ok": False, "url": url, "error": f"{type(e).__name__}: {e}"}
+
+
+def _rce_gather(urls, *, report_id=None, ingest_kb=False, max_urls=None):
+    """Gather several urls into research_sources under `report_id`. Dedup by
+    content hash within the report. Returns a summary. Caps to
+    research_max_sources (cost) unless max_urls overrides. Rate-limited."""
+    import hashlib as _hl
+    tid = current_tenant_id()
+    try:
+        cap = int(max_urls) if max_urls else int(get_ai_setting("research_max_sources") or 8)
+    except (TypeError, ValueError):
+        cap = 8
+    seen_hashes = set()
+    gathered = skipped = errors = 0
+    dis = _scrape_get_disallowed_domains()
+    for i, u in enumerate([str(x).strip() for x in (urls or []) if str(x).strip()][:cap]):
+        if i:
+            try:
+                _time.sleep(0.4)   # be polite between fetches
+            except Exception:
+                pass
+        r = _rce_gather_url(u, disallowed=dis)
+        if not r.get("ok"):
+            errors += 1
+            continue
+        text = (r.get("text") or "").strip()
+        h = _hl.sha256(text.encode("utf-8", "ignore")).hexdigest() if text else ""
+        if h and h in seen_hashes:
+            skipped += 1
+            continue
+        if h:
+            seen_hashes.add(h)
+        try:
+            execute_db(
+                "INSERT INTO research_sources (tenant_id, report_id, source_type, "
+                " url, title, content_text, content_hash, fetched_at) "
+                "VALUES (%s,%s,'web',%s,%s,%s,%s,NOW())",
+                (tid, report_id, r.get("url", u)[:2000], r.get("title", "")[:300],
+                 text[:200000], h))
+            gathered += 1
+            if ingest_kb:
+                try:
+                    rag.ingest_document(
+                        (r.get("title") or r.get("url") or "source")[:200] + ".txt",
+                        text.encode("utf-8", "ignore"), tenant_id=tid,
+                        storage_key="", mime="text/plain", source_mtime=None,
+                        session_id="research_gather")
+                except Exception as _ke:
+                    print(f"[gather] KB ingest skipped: {type(_ke).__name__}: {_ke}")
+        except Exception as e:
+            print(f"[gather] store failed: {type(e).__name__}: {e}")
+            errors += 1
+    return {"gathered": gathered, "skipped": skipped, "errors": errors}
+
+
+def _rce_gather_into_report(urls, *, topic="", ingest_kb=False):
+    """Create a draft report shell + gather urls into it. Returns the summary +
+    report_id. Gated by research_hub_enabled (master-switch-aware)."""
+    if not get_ai_setting("research_hub_enabled"):
+        return {"error": "The Research Hub is turned off."}
+    urls = [u for u in (urls or []) if str(u).strip()]
+    if not urls:
+        return {"error": "No URLs to gather."}
+    tid = current_tenant_id()
+    row = execute_db(
+        "INSERT INTO research_reports (tenant_id, topic, status, created_by) "
+        "VALUES (%s,%s,'draft','gather') RETURNING id",
+        (tid, (topic or "Gathered sources")[:300]))
+    rid = row["id"] if row else None
+    summary = _rce_gather(urls, report_id=rid, ingest_kb=bool(ingest_kb))
+    summary["report_id"] = rid
+    return summary
+
+
 def _scrape_serialize_job(row: dict) -> dict:
     """Convert a DB row into a JSON-friendly dict for the UI."""
     if not row:
@@ -44332,6 +44472,27 @@ def admin_list_research_reports():
         "model, created_at, updated_at FROM research_reports "
         "WHERE tenant_id=%s ORDER BY id DESC LIMIT %s", (tid, limit)) or []
     return jsonify({"reports": [_rce_report_row(r) for r in rows]})
+
+
+@app.route("/admin/api/research/gather", methods=["POST"])
+@admin_required
+def admin_research_gather():
+    """Gather URLs into the Sources layer under a new draft report (super-admin).
+    Backs the Research Hub 'Add sources' action. Gated by research_hub_enabled."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    b = request.get_json(silent=True) or {}
+    urls = b.get("urls")
+    if isinstance(urls, str):
+        urls = [u.strip() for u in urls.replace(",", "\n").splitlines()]
+    if not isinstance(urls, list) or not [u for u in urls if str(u).strip()]:
+        return jsonify({"error": "Provide one or more URLs."}), 400
+    result = _rce_gather_into_report(
+        [str(u) for u in urls][:20], topic=(b.get("topic") or ""),
+        ingest_kb=bool(b.get("ingest_kb")))
+    status = 200 if "error" not in result else 400
+    return jsonify(result), status
 
 
 @app.route("/admin/api/research/reports/<int:rid>", methods=["GET"])
