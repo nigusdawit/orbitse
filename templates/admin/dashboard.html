@@ -31,7 +31,15 @@ TO CUSTOMIZE THIS DASHBOARD:
 
 ===============================================================================
 -->
-<html lang="en" data-admin-theme="{{ appearance.mode if appearance else 'dark' }}">
+<html lang="en"
+      data-admin-theme="{{ appearance.mode if appearance else 'dark' }}"
+      data-admin-density="{{ appearance.density if appearance else 'comfortable' }}"
+      data-admin-surface="{{ appearance.surface if appearance else 'glass' }}"
+      data-admin-sidebar="{{ appearance.sidebar if appearance else 'comfortable' }}"
+      data-admin-font="{{ appearance.font_family if appearance else 'sans' }}"
+      data-admin-fontscale="{{ appearance.font_scale if appearance else 'md' }}"
+      {% if appearance and appearance.high_contrast %}data-admin-contrast="high"{% endif %}
+      {% if appearance and appearance.reduce_motion %}data-admin-motion="reduce"{% endif %}>
 <head>
   <meta charset="UTF-8">
   <!-- interactive-widget=resizes-content keeps fixed elements above the mobile keyboard -->
@@ -2400,6 +2408,62 @@ TO CUSTOMIZE THIS DASHBOARD:
     html[data-admin-motion="reduce"] .gx-drawer,
     html[data-admin-motion="reduce"] .gx-drawer-backdrop{ transition:none; }
     html[data-admin-motion="reduce"] .gx-skeleton::after{ animation:none; }
+    html[data-admin-motion="reduce"] *{ animation-duration:.001ms !important; transition-duration:.001ms !important; }
+
+    /* ================================================================== */
+    /* APPEARANCE VARIANTS (task 073) — density / type / family / surface  */
+    /* / sidebar / a11y, all keyed off data-* attrs on <html> set server-  */
+    /* side (no-flash) and live-updated by the Appearance customizer JS.   */
+    /* ================================================================== */
+    /* Density → spacing scale (drives every --admin-space-* token). */
+    html[data-admin-density="compact"]{ --admin-space-scale:.82; }
+    html[data-admin-density="spacious"]{ --admin-space-scale:1.18; }
+    /* UI font scale (drives every --admin-fs-* token in the gx kit). */
+    html[data-admin-fontscale="sm"]{ --admin-font-scale:.92; }
+    html[data-admin-fontscale="lg"]{ --admin-font-scale:1.12; }
+    /* UI font family. */
+    html[data-admin-font="inter"]{ --admin-ui-font:'Inter','DM Sans',-apple-system,sans-serif; --admin-head-font:'Inter','DM Sans',sans-serif; }
+    html[data-admin-font="system"]{ --admin-ui-font:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; --admin-head-font:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
+    html[data-admin-font="serif-head"]{ --admin-head-font:var(--font-serif); --admin-ui-font:var(--font-sans); }
+    body{ font-family:var(--admin-ui-font); }
+    .gx-title, .gx-drawer-head h3, .section-header-admin h2, .admin-header h1, .content-header h2{ font-family:var(--admin-head-font); }
+
+    /* Surface style — "glass" is the default (slider-driven). "solid" makes
+       surfaces near-opaque and drops the blur; "minimal" is flat (no blur,
+       no shadow, hairline). These bundle over the Glassiness/Blur sliders, so
+       the customizer disables those sliders unless surface = glass. */
+    html[data-admin-surface="solid"]{ --admin-glass:.93; }
+    html[data-admin-surface="solid"] .gx-card, html[data-admin-surface="solid"] .gx-stat,
+    html[data-admin-surface="solid"] .gx-row, html[data-admin-surface="solid"] .gx-table-wrap,
+    html[data-admin-surface="solid"] .card, html[data-admin-surface="solid"] .gx-drawer-head,
+    html[data-admin-surface="solid"] .gx-drawer-foot{ -webkit-backdrop-filter:none; backdrop-filter:none; }
+    html[data-admin-surface="minimal"]{ --admin-glass:1; --admin-shadow:0 1px 2px rgba(0,0,0,.18); }
+    html[data-admin-surface="minimal"] .gx-card, html[data-admin-surface="minimal"] .gx-stat,
+    html[data-admin-surface="minimal"] .gx-row, html[data-admin-surface="minimal"] .gx-table-wrap,
+    html[data-admin-surface="minimal"] .card, html[data-admin-surface="minimal"] .form-panel,
+    html[data-admin-surface="minimal"] .kpi-card, html[data-admin-surface="minimal"] .overview-panel{
+      -webkit-backdrop-filter:none !important; backdrop-filter:none !important; box-shadow:none !important; }
+
+    /* Sidebar width modes — .sidebar is the nav rail; .tab-btn = "svg + text".
+       icon-only hides labels via font-size:0 (the svg keeps its explicit size). */
+    html[data-admin-sidebar="compact"] .sidebar{ width:188px; }
+    html[data-admin-sidebar="icons"] .sidebar{ width:66px; overflow:visible; }
+    html[data-admin-sidebar="icons"] .sidebar .sidebar-group-label,
+    html[data-admin-sidebar="icons"] .sidebar .sidebar-section-heading,
+    html[data-admin-sidebar="icons"] .sidebar #gx-nav-search-wrap{ display:none; }
+    html[data-admin-sidebar="icons"] .sidebar .tab-btn{ font-size:0; justify-content:center; gap:0; padding-left:0; padding-right:0; position:relative; }
+    html[data-admin-sidebar="icons"] .sidebar .tab-btn svg{ width:20px; height:20px; }
+
+    /* High-contrast a11y bundle — stronger text + borders + focus. */
+    html[data-admin-contrast="high"]{ --admin-text-muted:rgba(255,255,255,.82); --admin-border:rgba(255,255,255,.3); --admin-border-light:rgba(255,255,255,.45); }
+    html[data-admin-contrast="high"][data-admin-theme="light"]{ --admin-text:#0a1120; --admin-text-muted:rgba(0,0,0,.74); --admin-border:rgba(0,0,0,.34); --admin-border-light:rgba(0,0,0,.5); }
+    html[data-admin-contrast="high"] .gx-card, html[data-admin-contrast="high"] .gx-input,
+    html[data-admin-contrast="high"] .gx-table-wrap, html[data-admin-contrast="high"] .gx-row{ border-width:1.5px; }
+
+    /* Keyboard focus rings everywhere (a11y baseline, both themes). */
+    .gx-btn:focus-visible, .gx-input:focus-visible, .gx-subtab:focus-visible,
+    .gx-icon-btn:focus-visible, .tab-btn:focus-visible, .gx-seg button:focus-visible,
+    .gx-drawer-close:focus-visible{ outline:2px solid var(--admin-accent); outline-offset:2px; }
   </style>
   <script>window.__ADMIN_APPEARANCE__ = {{ appearance|tojson }};</script>
 </head>
@@ -2971,42 +3035,147 @@ TO CUSTOMIZE THIS DASHBOARD:
   via PUT /admin/api/admin-appearance. Reuses .card/.btn classes so it picks
   up the theme. The public/visitor site is unaffected.
   -->
+  <style>
+    /* Appearance customizer layout (task 073) — controls + sticky live preview. */
+    .ap-layout{ display:grid; grid-template-columns:minmax(0,1fr) 380px; gap:1.3rem; align-items:start; }
+    @media(max-width:1100px){ .ap-layout{ grid-template-columns:1fr; } }
+    .ap-controls{ display:flex; flex-direction:column; gap:1rem; min-width:0; }
+    .ap-preview{ position:sticky; top:84px; }
+    @media(max-width:1100px){ .ap-preview{ position:static; } }
+    .ap-color{ width:100%; height:40px; border:1px solid var(--admin-border); border-radius:10px; background:var(--admin-field); cursor:pointer; padding:3px; }
+    .ap-range{ width:100%; accent-color:var(--admin-accent); }
+    .ap-val{ float:right; color:var(--admin-text); font-weight:600; }
+    .ap-check{ display:flex; align-items:center; gap:.55rem; font-size:var(--admin-fs-2); color:var(--admin-text); margin-top:.6rem; cursor:pointer; }
+    .ap-check input{ accent-color:var(--admin-accent); width:16px; height:16px; }
+    .ap-presets{ display:grid; grid-template-columns:repeat(2,1fr); gap:.6rem; }
+    .ap-preset{ display:flex; align-items:center; gap:.55rem; padding:.55rem .7rem; border:1px solid var(--admin-border); border-radius:12px; background:var(--admin-surface); cursor:pointer; font-size:var(--admin-fs-2); color:var(--admin-text); font-family:inherit; text-align:left; }
+    .ap-preset:hover{ border-color:var(--admin-accent); }
+    .ap-preset .sw{ width:26px; height:26px; border-radius:8px; flex-shrink:0; box-shadow:0 1px 4px rgba(0,0,0,.2); }
+    .ap-seg-wrap .gx-seg{ flex-wrap:wrap; }
+  </style>
   <div id="tab-appearance" class="tab-content">
-    <div class="content-header">
-      <h2>Appearance</h2>
-      <div style="display:flex; gap:.5rem;">
-        <button class="btn btn-secondary" onclick="apReset()">Reset to defaults</button>
-        <button class="btn btn-primary" onclick="apSave()">Save</button>
+    <div class="gx-head">
+      <div>
+        <h2 class="gx-title">Appearance</h2>
+        <p class="gx-sub">Reshape the admin panel's look. Changes preview live; <b>Save</b> applies them for every admin. The public/visitor site is never affected.</p>
+      </div>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-ghost" onclick="apReset()">Reset</button>
+        <button class="gx-btn gx-btn-primary" onclick="apSave()">Save</button>
       </div>
     </div>
-    <p style="color:var(--admin-text-muted); margin:0 0 1rem; max-width:60ch;">
-      Customize the admin panel's glassmorphic theme. Changes preview live; Save
-      applies them for everyone. The public/visitor site is not affected.</p>
-    <div class="card" style="padding:1.25rem; max-width:660px;">
-      <label style="display:block; font-size:12.5px; color:var(--admin-text-muted); margin-bottom:6px;">Mode</label>
-      <div style="display:flex; gap:.5rem; margin-bottom:1.1rem;">
-        <button class="btn btn-secondary" onclick="apSetMode('light')">Light</button>
-        <button class="btn btn-secondary" onclick="apSetMode('dark')">Dark</button>
-      </div>
-      <div style="display:flex; gap:1.6rem; flex-wrap:wrap; margin-bottom:1.1rem;">
-        <div>
-          <label style="display:block; font-size:12.5px; color:var(--admin-text-muted); margin-bottom:6px;">Accent</label>
-          <input type="color" id="ap-accent" oninput="apLive('accent', this.value)" style="width:56px; height:38px; border:1px solid var(--admin-border); border-radius:10px; background:none; cursor:pointer;">
+
+    <div class="ap-layout">
+      <div class="ap-controls">
+        <!-- Presets -->
+        <div class="gx-card">
+          <div class="gx-card-h"><span class="gx-ico">🎨</span>Theme presets</div>
+          <div class="ap-presets" id="ap-presets"></div>
         </div>
-        <div>
-          <label style="display:block; font-size:12.5px; color:var(--admin-text-muted); margin-bottom:6px;">Accent 2 (gradient)</label>
-          <input type="color" id="ap-accent2" oninput="apLive('accent2', this.value)" style="width:56px; height:38px; border:1px solid var(--admin-border); border-radius:10px; background:none; cursor:pointer;">
+
+        <!-- Color & mode -->
+        <div class="gx-card ap-seg-wrap">
+          <div class="gx-card-h"><span class="gx-ico">◐</span>Color &amp; mode</div>
+          <div class="gx-field"><label class="gx-label">Mode</label>
+            <div class="gx-seg" data-ap-seg="mode">
+              <button type="button" data-val="light" onclick="apSet('mode','light')">Light</button>
+              <button type="button" data-val="dark"  onclick="apSet('mode','dark')">Dark</button>
+            </div>
+          </div>
+          <div class="gx-grid-fields">
+            <div class="gx-field"><label class="gx-label">Accent</label>
+              <input type="color" id="ap-accent" class="ap-color" oninput="apLive('accent',this.value)"></div>
+            <div class="gx-field"><label class="gx-label">Accent 2 (gradient)</label>
+              <input type="color" id="ap-accent2" class="ap-color" oninput="apLive('accent2',this.value)"></div>
+          </div>
         </div>
+
+        <!-- Surface & shape -->
+        <div class="gx-card ap-seg-wrap">
+          <div class="gx-card-h"><span class="gx-ico">▢</span>Surface &amp; shape</div>
+          <div class="gx-field"><label class="gx-label">Surface style</label>
+            <div class="gx-seg" data-ap-seg="surface">
+              <button type="button" data-val="glass"   onclick="apSet('surface','glass')">Glass</button>
+              <button type="button" data-val="solid"   onclick="apSet('surface','solid')">Solid</button>
+              <button type="button" data-val="minimal" onclick="apSet('surface','minimal')">Minimal</button>
+            </div>
+          </div>
+          <label class="gx-label" style="margin-top:.9rem">Corner radius <span id="ap-radius-v" class="ap-val"></span></label>
+          <input type="range" id="ap-radius" class="ap-range" min="0" max="28" step="1" oninput="apLive('radius',this.value)">
+          <label class="gx-label" style="margin-top:.9rem">Blur <span id="ap-blur-v" class="ap-val"></span></label>
+          <input type="range" id="ap-blur" class="ap-range" min="0" max="40" step="1" oninput="apLive('blur',this.value)">
+          <label class="gx-label" style="margin-top:.9rem">Glassiness <span id="ap-glass-v" class="ap-val"></span></label>
+          <input type="range" id="ap-glass" class="ap-range" min="20" max="95" step="1" oninput="apLive('glass',this.value)">
+          <label class="gx-label" style="margin-top:.9rem">Background glow <span id="ap-glow-v" class="ap-val"></span></label>
+          <input type="range" id="ap-glow" class="ap-range" min="0" max="100" step="1" oninput="apLive('glow',this.value)">
+          <div class="gx-hint" style="margin-top:.55rem">Blur &amp; glassiness apply to the <b>Glass</b> surface style.</div>
+        </div>
+
+        <!-- Density & type -->
+        <div class="gx-card ap-seg-wrap">
+          <div class="gx-card-h"><span class="gx-ico">⇿</span>Density &amp; type</div>
+          <div class="gx-field"><label class="gx-label">Density</label>
+            <div class="gx-seg" data-ap-seg="density">
+              <button type="button" data-val="compact"     onclick="apSet('density','compact')">Compact</button>
+              <button type="button" data-val="comfortable" onclick="apSet('density','comfortable')">Comfortable</button>
+              <button type="button" data-val="spacious"    onclick="apSet('density','spacious')">Spacious</button>
+            </div>
+          </div>
+          <div class="gx-field"><label class="gx-label">Text size</label>
+            <div class="gx-seg" data-ap-seg="font_scale">
+              <button type="button" data-val="sm" onclick="apSet('font_scale','sm')">Small</button>
+              <button type="button" data-val="md" onclick="apSet('font_scale','md')">Medium</button>
+              <button type="button" data-val="lg" onclick="apSet('font_scale','lg')">Large</button>
+            </div>
+          </div>
+          <div class="gx-field" style="margin-bottom:0"><label class="gx-label">Font family</label>
+            <div class="gx-seg" data-ap-seg="font_family">
+              <button type="button" data-val="sans"       onclick="apSet('font_family','sans')">DM Sans</button>
+              <button type="button" data-val="inter"      onclick="apSet('font_family','inter')">Inter</button>
+              <button type="button" data-val="system"     onclick="apSet('font_family','system')">System</button>
+              <button type="button" data-val="serif-head" onclick="apSet('font_family','serif-head')">Serif heads</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Navigation & accessibility -->
+        <div class="gx-card ap-seg-wrap">
+          <div class="gx-card-h"><span class="gx-ico">☰</span>Navigation &amp; accessibility</div>
+          <div class="gx-field" style="margin-bottom:.4rem"><label class="gx-label">Sidebar</label>
+            <div class="gx-seg" data-ap-seg="sidebar">
+              <button type="button" data-val="comfortable" onclick="apSet('sidebar','comfortable')">Comfortable</button>
+              <button type="button" data-val="compact"     onclick="apSet('sidebar','compact')">Compact</button>
+              <button type="button" data-val="icons"       onclick="apSet('sidebar','icons')">Icons</button>
+            </div>
+          </div>
+          <label class="ap-check"><input type="checkbox" id="ap-contrast" onchange="apToggle('high_contrast',this.checked)"> High contrast</label>
+          <label class="ap-check"><input type="checkbox" id="ap-motion" onchange="apToggle('reduce_motion',this.checked)"> Reduce motion</label>
+        </div>
+
+        <div class="gx-hint" id="ap-status" style="min-height:1.2em"></div>
       </div>
-      <label style="display:block; font-size:12.5px; color:var(--admin-text-muted); margin:.6rem 0 4px;">Blur <span id="ap-blur-v" style="float:right;"></span></label>
-      <input type="range" id="ap-blur" min="0" max="40" step="1" oninput="apLive('blur', this.value)" style="width:100%;">
-      <label style="display:block; font-size:12.5px; color:var(--admin-text-muted); margin:.8rem 0 4px;">Corner radius <span id="ap-radius-v" style="float:right;"></span></label>
-      <input type="range" id="ap-radius" min="0" max="28" step="1" oninput="apLive('radius', this.value)" style="width:100%;">
-      <label style="display:block; font-size:12.5px; color:var(--admin-text-muted); margin:.8rem 0 4px;">Glassiness <span id="ap-glass-v" style="float:right;"></span></label>
-      <input type="range" id="ap-glass" min="20" max="95" step="1" oninput="apLive('glass', this.value)" style="width:100%;">
-      <label style="display:block; font-size:12.5px; color:var(--admin-text-muted); margin:.8rem 0 4px;">Background glow <span id="ap-glow-v" style="float:right;"></span></label>
-      <input type="range" id="ap-glow" min="0" max="100" step="1" oninput="apLive('glow', this.value)" style="width:100%;">
-      <div style="margin-top:1rem;"><span id="ap-status" style="color:var(--admin-text-muted); font-size:13px;"></span></div>
+
+      <!-- Live preview cluster -->
+      <aside class="ap-preview">
+        <div class="gx-section-h">Live preview</div>
+        <div class="gx-card">
+          <div class="gx-card-h"><span class="gx-ico">★</span>Sample surface</div>
+          <div class="gx-stats" style="margin-bottom:1rem; grid-template-columns:1fr 1fr;">
+            <div class="gx-stat"><div class="gx-stat-label">Revenue</div><div class="gx-stat-value">$4.2k</div><div class="gx-stat-delta up">▲ 12%</div></div>
+            <div class="gx-stat"><div class="gx-stat-label">Orders</div><div class="gx-stat-value">38</div></div>
+          </div>
+          <div class="gx-field"><label class="gx-label">Sample input</label><input class="gx-input" value="Hello world"></div>
+          <div class="gx-foot" style="margin-top:.6rem">
+            <button type="button" class="gx-btn gx-btn-primary">Primary</button>
+            <button type="button" class="gx-btn">Secondary</button>
+            <span class="gx-badge gx-badge-ok">OK</span>
+            <span class="gx-badge gx-badge-run">Busy</span>
+          </div>
+          <div class="gx-table-wrap" style="margin-top:1rem"><table class="gx-table"><thead><tr><th>Name</th><th>Status</th></tr></thead>
+            <tbody><tr><td>Spa Day</td><td><span class="gx-badge gx-badge-ok">Active</span></td></tr>
+            <tr><td>Tasting</td><td><span class="gx-badge">Draft</span></td></tr></tbody></table></div>
+        </div>
+      </aside>
     </div>
   </div>
 
@@ -12186,9 +12355,21 @@ TO CUSTOMIZE THIS DASHBOARD:
     already injected the saved values as inline :root vars for a no-flash load;
     this just syncs the controls + the header toggle and handles changes.
     */
-    var AP = Object.assign(
-      {mode:'dark', accent:'#6c8cff', accent2:'#9a7cff', blur:18, radius:16, glass:0.55, glow:0.5},
-      (window.__ADMIN_APPEARANCE__ || {}));
+    var _AP_DEFAULTS = {mode:'dark', accent:'#6c8cff', accent2:'#9a7cff', blur:18, radius:16, glass:0.55, glow:0.5,
+      density:'comfortable', font_scale:'md', font_family:'sans', surface:'glass',
+      sidebar:'comfortable', high_contrast:false, reduce_motion:false};
+    var AP = Object.assign({}, _AP_DEFAULTS, (window.__ADMIN_APPEARANCE__ || {}));
+
+    // Curated one-click presets (task 073) — set accent/accent2/surface/mode together.
+    var AP_PRESETS = {
+      'indigo-glass':  {label:'Indigo Glass',  accent:'#6c8cff', accent2:'#9a7cff', surface:'glass',   mode:'dark'},
+      'slate-solid':   {label:'Slate Solid',   accent:'#7c8da6', accent2:'#b6c2d6', surface:'solid',   mode:'dark'},
+      'emerald-glass': {label:'Emerald',       accent:'#10b981', accent2:'#34d399', surface:'glass',   mode:'dark'},
+      'rose-glass':    {label:'Rose',          accent:'#f43f5e', accent2:'#fb7185', surface:'glass',   mode:'dark'},
+      'amber-light':   {label:'Amber Light',   accent:'#f59e0b', accent2:'#fbbf24', surface:'glass',   mode:'light'},
+      'minimal-light': {label:'Minimal Light', accent:'#3b82f6', accent2:'#6366f1', surface:'minimal', mode:'light'}
+    };
+
     function _apTxt(id, t){ var e=document.getElementById(id); if(e) e.textContent=t; }
     function _apSyncToggleIcon(){
       var dark = document.documentElement.getAttribute('data-admin-theme') !== 'light';
@@ -12206,8 +12387,33 @@ TO CUSTOMIZE THIS DASHBOARD:
       r.style.setProperty('--admin-radius', AP.radius+'px');
       r.style.setProperty('--admin-glass', (+AP.glass).toFixed(2));
       r.style.setProperty('--admin-glow', (+AP.glow).toFixed(2));
+      // expanded controls → data-attrs that the CSS variants react to.
+      r.setAttribute('data-admin-density', AP.density);
+      r.setAttribute('data-admin-fontscale', AP.font_scale);
+      r.setAttribute('data-admin-font', AP.font_family);
+      r.setAttribute('data-admin-surface', AP.surface);
+      r.setAttribute('data-admin-sidebar', AP.sidebar);
+      if(AP.high_contrast) r.setAttribute('data-admin-contrast','high'); else r.removeAttribute('data-admin-contrast');
+      if(AP.reduce_motion) r.setAttribute('data-admin-motion','reduce'); else r.removeAttribute('data-admin-motion');
       _apSyncToggleIcon();
+      _apSyncSegs();
       if (window.adminRecolorCharts) window.adminRecolorCharts();
+    }
+    // Reflect AP state on the segmented controls + toggles in the panel, and
+    // grey out the glass/blur sliders unless surface = glass (they're bundled
+    // into the Solid/Minimal surface styles otherwise).
+    function _apSyncSegs(){
+      document.querySelectorAll('#tab-appearance [data-ap-seg]').forEach(function(grp){
+        var key=grp.getAttribute('data-ap-seg');
+        grp.querySelectorAll('button').forEach(function(b){
+          b.classList.toggle('active', String(b.getAttribute('data-val'))===String(AP[key]));
+        });
+      });
+      var hc=document.getElementById('ap-contrast'); if(hc) hc.checked=!!AP.high_contrast;
+      var rm=document.getElementById('ap-motion');   if(rm) rm.checked=!!AP.reduce_motion;
+      var glassOnly=(AP.surface==='glass');
+      ['ap-blur','ap-glass'].forEach(function(id){ var e=document.getElementById(id);
+        if(e){ e.disabled=!glassOnly; e.style.opacity=glassOnly?'':'.4'; }});
     }
     function apInitControls(){
       var g=function(i){return document.getElementById(i);};
@@ -12217,6 +12423,8 @@ TO CUSTOMIZE THIS DASHBOARD:
       if(g('ap-radius')) { g('ap-radius').value = AP.radius; _apTxt('ap-radius-v', AP.radius+'px'); }
       if(g('ap-glass'))  { var gp=Math.round(AP.glass*100); g('ap-glass').value = gp; _apTxt('ap-glass-v', gp+'%'); }
       if(g('ap-glow'))   { var gw=Math.round(AP.glow*100);  g('ap-glow').value  = gw; _apTxt('ap-glow-v', gw+'%'); }
+      apRenderPresets();
+      _apSyncSegs();
     }
     function apLive(key, raw){
       if(key==='accent')       AP.accent  = raw;
@@ -12226,6 +12434,25 @@ TO CUSTOMIZE THIS DASHBOARD:
       else if(key==='glass')  { AP.glass  = (+raw)/100; _apTxt('ap-glass-v', raw+'%'); }
       else if(key==='glow')   { AP.glow   = (+raw)/100; _apTxt('ap-glow-v', raw+'%'); }
       apApply();
+    }
+    // Enum/segment setter (density, font_scale, font_family, surface, sidebar).
+    function apSet(key, val){ AP[key]=val; apApply(); apPersist(true); }
+    // Boolean a11y toggle (high_contrast, reduce_motion).
+    function apToggle(key, on){ AP[key]=!!on; apApply(); apPersist(true); }
+    // Apply a curated preset, then sync controls + save.
+    function apPreset(id){
+      var p=AP_PRESETS[id]; if(!p) return;
+      AP.accent=p.accent; AP.accent2=p.accent2; AP.surface=p.surface; AP.mode=p.mode;
+      apApply(); apInitControls(); apPersist(true); _apTxt('ap-status','Applied the "'+p.label+'" preset.');
+    }
+    function apRenderPresets(){
+      var host=document.getElementById('ap-presets'); if(!host) return;
+      host.innerHTML = Object.keys(AP_PRESETS).map(function(id){
+        var p=AP_PRESETS[id];
+        return '<button type="button" class="ap-preset" onclick="apPreset(\''+id+'\')">'
+          + '<span class="sw" style="background:linear-gradient(135deg,'+p.accent+','+p.accent2+')"></span>'
+          + '<span>'+p.label+'</span></button>';
+      }).join('');
     }
     function apSetMode(m){ AP.mode = m; apApply(); apPersist(true); }
     function adminToggleTheme(){ AP.mode = (AP.mode==='light' ? 'dark' : 'light'); apApply(); apPersist(true); }
@@ -12239,7 +12466,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
     function apSave(){ apPersist(false); }
     function apReset(){
-      AP = {mode:'dark', accent:'#6c8cff', accent2:'#9a7cff', blur:18, radius:16, glass:0.55, glow:0.5};
+      AP = Object.assign({}, _AP_DEFAULTS);
       apApply(); apInitControls(); apPersist(false);
     }
     document.addEventListener('DOMContentLoaded', function(){ apInitControls(); _apSyncToggleIcon(); });
