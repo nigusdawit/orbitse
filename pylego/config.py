@@ -152,6 +152,21 @@ class PylegoConfig:
     meeting_calendar_mcp_server: str   # mcp_servers.name to push events to ("" → store-only)
     meeting_calendar_tool: str         # tool name on that server ("" → 'create_event')
 
+    # ---- Research & Content Engine (Phase 8 / task 062) ---------------------
+    # All inert-OFF by default so a fresh fork is unaffected. research_hub gates
+    # the gathered-sources + Deep Research; content_studio gates generation;
+    # visual_content gates image/diagram/clip generation; autopublish lets
+    # trusted content types publish without the manual review step (off = always
+    # draft → approve). research_max_sources caps Deep Research fan-out (cost).
+    research_hub_enabled: bool
+    content_studio_enabled: bool
+    visual_content_enabled: bool
+    autopublish_enabled: bool
+    research_max_sources: int
+    research_model: str        # model for synthesis ("" → default)
+    content_model: str         # model for content generation ("" → default)
+    image_model: str           # visual model id ("" → provider default)
+
     # ---- Live AI phone call (task 049 — Epic F) -----------------------------
     # Gate for the Twilio Voice webhook routing inbound calls to the AI. Inert
     # default OFF → the webhook politely declines. The live media bridge needs a
@@ -250,6 +265,15 @@ def _build() -> PylegoConfig:
         meeting_default_duration_minutes=_env_int("MEETING_DEFAULT_DURATION_MINUTES", 30),
         meeting_calendar_mcp_server=os.environ.get("MEETING_CALENDAR_MCP_SERVER", "").strip(),
         meeting_calendar_tool=os.environ.get("MEETING_CALENDAR_TOOL", "").strip(),
+        # Research & Content Engine — wired in Phase 8; inert defaults.
+        research_hub_enabled=_env_bool("RESEARCH_HUB_ENABLED", False),
+        content_studio_enabled=_env_bool("CONTENT_STUDIO_ENABLED", False),
+        visual_content_enabled=_env_bool("VISUAL_CONTENT_ENABLED", False),
+        autopublish_enabled=_env_bool("AUTOPUBLISH_ENABLED", False),
+        research_max_sources=_env_int("RESEARCH_MAX_SOURCES", 8),
+        research_model=os.environ.get("RESEARCH_MODEL", "").strip(),
+        content_model=os.environ.get("CONTENT_MODEL", "").strip(),
+        image_model=os.environ.get("IMAGE_MODEL", "").strip(),
         # Live AI phone call — wired in 049; inert default (webhook declines).
         live_call_enabled=_env_bool("LIVE_CALL_ENABLED", False),
         voice_wss_url=os.environ.get("VOICE_WSS_URL", "").strip(),
