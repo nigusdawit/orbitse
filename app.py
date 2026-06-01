@@ -4954,6 +4954,29 @@ def init_db():
                     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
+
+                -- Visual assets (Phase 8 / task 066): images, diagrams, and
+                -- clips generated for a content draft. Scaffold: a pluggable
+                -- provider fills url/storage_key/status; the no-spend default
+                -- just records the plan (status='planned').
+                CREATE TABLE IF NOT EXISTS content_assets (
+                    id           BIGSERIAL PRIMARY KEY,
+                    tenant_id    INTEGER NOT NULL DEFAULT 1,
+                    draft_id     BIGINT REFERENCES content_drafts(id) ON DELETE CASCADE,
+                    report_id    BIGINT REFERENCES research_reports(id) ON DELETE SET NULL,
+                    asset_type   TEXT NOT NULL DEFAULT 'image',
+                    provider     TEXT NOT NULL DEFAULT 'placeholder',
+                    prompt       TEXT NOT NULL DEFAULT '',
+                    spec         JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    storage_key  TEXT NOT NULL DEFAULT '',
+                    url          TEXT NOT NULL DEFAULT '',
+                    status       TEXT NOT NULL DEFAULT 'planned',
+                    created_by   TEXT NOT NULL DEFAULT '',
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS content_assets_draft_idx
+                    ON content_assets (draft_id);
                 """
             )
     finally:
@@ -16320,6 +16343,21 @@ def _admin_tool_generate_content(report_id=None, content_types=None,
         extra=(instructions or ""), tone=(tone or ""))
 
 
+def _admin_tool_generate_visual(draft_id=None, asset_type=None, brief=None,
+                                report_id=None, provider=None, **_):
+    """Generate a visual asset (image / diagram / clip) for a content draft. By
+    default this only PLANS the asset (no spend) — diagrams produce Mermaid
+    source, clips a storyboard, images a placeholder unless a real provider is
+    chosen. The asset can then be embedded into the draft. Gated by the Visual
+    Content toggle. Returns the created asset."""
+    at = (asset_type or "image").strip().lower()
+    if draft_id in (None, "") and report_id in (None, ""):
+        return {"error": "Provide a draft_id (or report_id) for the visual."}
+    return _rce_create_visual(draft_id=draft_id, report_id=report_id,
+                              asset_type=at, brief=(brief or ""),
+                              provider=(provider or None))
+
+
 def _admin_tool_create_dashboard(name=None, description=None, widgets=None, **_):
     """Create a persistent dashboard (appears in the Custom Dashboards tab) with
     widgets. Each widget is either {name, chart:{...}} (a static chart you've
@@ -19134,6 +19172,7 @@ ADMIN_TOOL_FUNCTIONS = {
     "gather_sources":               _admin_tool_gather_sources,
     "run_research":                 _admin_tool_run_research,
     "generate_content":             _admin_tool_generate_content,
+    "generate_visual":              _admin_tool_generate_visual,
     "admin_save_query":             _admin_tool_save_query,
     "render_chart":                 _admin_tool_render_chart,
     "admin_create_dashboard":       _admin_tool_create_dashboard,
@@ -19338,6 +19377,21 @@ ADMIN_TOOLS = [
                         "instructions": {"type": "string"},
                         "tone": {"type": "string"}},
          "required": ["report_id", "content_types"]}),
+    _admin_tool_schema(
+        "generate_visual",
+        "Generate a visual asset for a content draft: asset_type 'image', "
+        "'diagram' (Mermaid), or 'clip' (storyboard). By default it only PLANS "
+        "the asset with no spend; pass provider='openai_image' to actually render "
+        "an image. After generating, the asset can be embedded into the draft. "
+        "Requires Visual Content to be enabled.",
+        {"type": "object",
+         "properties": {"draft_id": {"type": "integer"},
+                        "report_id": {"type": "integer"},
+                        "asset_type": {"type": "string",
+                                       "enum": ["image", "diagram", "clip"]},
+                        "brief": {"type": "string"},
+                        "provider": {"type": "string"}},
+         "required": ["asset_type"]}),
     _admin_tool_schema(
         "admin_define_schema",
         "DRAFT the Datahub data dictionary for a connection: inspect + sample it "
@@ -40994,6 +41048,288 @@ def _rce_draft_full_row(r):
     return _iso_row(d, "created_at", "updated_at")
 
 
+# =============================================================================
+# RESEARCH & CONTENT ENGINE — Visual content scaffold (Phase 8 / task 066)
+# =============================================================================
+# Generate images / diagrams / clips for a content draft, stitch them, and embed
+# them back into the draft body. SCAFFOLD: pixel/video generation is pluggable
+# via a provider registry; the default 'placeholder' provider records the plan
+# WITHOUT spending (status='planned'). Diagrams render from Mermaid source (an
+# LLM writes it); clips are storyboarded only (rendering deferred). Real
+# generators drop in later. Everything is gated by visual_content_enabled.
+
+RCE_ASSET_TYPES = ("image", "diagram", "clip")
+
+
+def _rce_visual_model():
+    """The image model knob (used by real image providers)."""
+    return (get_ai_setting("image_model") or "").strip() or "gpt-image-1"
+
+
+def _rce_asset_row(r):
+    """Serialize a content_assets row (parse spec jsonb, ISO the dates)."""
+    if not r:
+        return None
+    d = dict(r)
+    if isinstance(d.get("spec"), str):
+        try:
+            d["spec"] = json.loads(d["spec"])
+        except Exception:
+            d["spec"] = {}
+    return _iso_row(d, "created_at", "updated_at")
+
+
+# --- pluggable providers -----------------------------------------------------
+# A provider is callable(prompt, spec) -> {status, url, storage_key, spec}.
+# It must NEVER raise; on error it returns {"status": "failed", ...}.
+
+def _rce_vp_placeholder(prompt, spec):
+    """No-spend default: record the plan only (nothing rendered yet)."""
+    return {"status": "planned", "url": "", "storage_key": "",
+            "spec": {**(spec or {}), "note": "placeholder — no generator configured"}}
+
+
+def _rce_vp_openai_image(prompt, spec):
+    """Opt-in real image generation via the direct OpenAI client. Returns a
+    'ready' asset with a URL, or 'failed' (never raises)."""
+    if not openai_direct_client:
+        return {"status": "failed", "error": "OpenAI image client not configured."}
+    size = (spec or {}).get("size") or "1024x1024"
+    try:
+        res = openai_direct_client.images.generate(
+            model=_rce_visual_model(), prompt=(prompt or "")[:4000], size=size, n=1)
+        url = ""
+        try:
+            url = res.data[0].url or ""
+        except Exception:
+            url = ""
+        return {"status": "ready" if url else "planned", "url": url,
+                "storage_key": "", "spec": {**(spec or {}), "size": size}}
+    except Exception as e:
+        print(f"[visual] openai image failed: {type(e).__name__}: {e}")
+        return {"status": "failed", "error": "Image generation failed."}
+
+
+RCE_VISUAL_PROVIDERS = {
+    "placeholder": _rce_vp_placeholder,
+    "openai_image": _rce_vp_openai_image,
+}
+
+
+def _rce_resolve_image_provider(provider):
+    """Pick an image provider. Default is the no-spend placeholder; real
+    providers are strictly opt-in (cost guard)."""
+    name = (provider or "").strip().lower() or "placeholder"
+    fn = RCE_VISUAL_PROVIDERS.get(name)
+    if not fn:
+        name, fn = "placeholder", _rce_vp_placeholder
+    return name, fn
+
+
+# --- per-type planners (LLM writes the spec; stub-testable) ------------------
+
+def _rce_plan_diagram(brief, ctx=""):
+    """LLM → Mermaid diagram source. Returns {mermaid, title} or {} on failure."""
+    if not openai_client:
+        return {}
+    mdl = _rce_text_model(knob="content_model")
+    try:
+        resp = openai_client.with_options(timeout=40.0).chat.completions.create(
+            model=mdl, response_format={"type": "json_object"},
+            max_tokens=800, temperature=0.3,
+            messages=[{"role": "system", "content":
+                       ("Produce a Mermaid.js diagram for the request. Return ONLY "
+                        '{"mermaid": str, "title": str}. The mermaid value must be '
+                        "valid Mermaid source (flowchart/sequence/etc.).")},
+                      {"role": "user",
+                       "content": f"{brief}\n\nCONTEXT:\n{(ctx or '')[:4000]}"}])
+        _rce_record_cost(resp, mdl)
+        data = json.loads(resp.choices[0].message.content or "{}")
+        m = str(data.get("mermaid") or "").strip()
+        return ({"mermaid": m[:8000], "title": str(data.get("title") or "")[:200]}
+                if m else {})
+    except Exception as e:
+        print(f"[visual] diagram plan failed: {type(e).__name__}: {e}")
+        return {}
+
+
+def _rce_plan_clip(brief, ctx=""):
+    """LLM → a short storyboard. SCAFFOLD: stored as a spec, never auto-rendered.
+    Returns {scenes:[{text,visual}], title} or {}."""
+    if not openai_client:
+        return {}
+    mdl = _rce_text_model(knob="content_model")
+    try:
+        resp = openai_client.with_options(timeout=40.0).chat.completions.create(
+            model=mdl, response_format={"type": "json_object"},
+            max_tokens=900, temperature=0.4,
+            messages=[{"role": "system", "content":
+                       ("Produce a short video storyboard (4-8 scenes) for the "
+                        'request. Return ONLY {"scenes": [{"text": str, "visual": '
+                        'str}], "title": str}.')},
+                      {"role": "user",
+                       "content": f"{brief}\n\nCONTEXT:\n{(ctx or '')[:4000]}"}])
+        _rce_record_cost(resp, mdl)
+        data = json.loads(resp.choices[0].message.content or "{}")
+        scenes = [{"text": str(s.get("text") or "")[:500],
+                   "visual": str(s.get("visual") or "")[:500]}
+                  for s in (data.get("scenes") or []) if isinstance(s, dict)][:12]
+        return ({"scenes": scenes, "title": str(data.get("title") or "")[:200]}
+                if scenes else {})
+    except Exception as e:
+        print(f"[visual] clip plan failed: {type(e).__name__}: {e}")
+        return {}
+
+
+def _rce_create_visual(*, draft_id=None, report_id=None, asset_type="image",
+                       brief="", prompt="", provider=None, size=None):
+    """Plan + generate one visual asset and record it in content_assets. Gated by
+    visual_content_enabled. Default image provider is the no-spend placeholder;
+    diagrams render from Mermaid; clips are storyboarded (planned). Returns the
+    asset row dict or {"error": ...}."""
+    if not get_ai_setting("visual_content_enabled"):
+        return {"error": "Visual content is turned off."}
+    at = (asset_type or "image").strip().lower()
+    if at not in RCE_ASSET_TYPES:
+        return {"error": f"asset_type must be one of {RCE_ASSET_TYPES}."}
+    tid = current_tenant_id()
+    did = rid = None
+    ctx = ""
+    if draft_id not in (None, ""):
+        try:
+            did = int(draft_id)
+        except (TypeError, ValueError):
+            did = None
+        if did:
+            d = query_db("SELECT id, title, body, source_report_id FROM content_drafts "
+                         "WHERE id=%s AND tenant_id=%s", (did, tid), fetchone=True)
+            if not d:
+                return {"error": "Draft not found."}
+            rid = d.get("source_report_id")
+            ctx = f"{d.get('title') or ''}\n{(d.get('body') or '')[:2000]}"
+    if report_id not in (None, ""):
+        try:
+            rid = int(report_id)
+        except (TypeError, ValueError):
+            pass
+    pr = (prompt or brief or "").strip()
+    spec = {}
+    if size:
+        spec["size"] = str(size)[:20]
+    # Plan + generate per type.
+    if at == "diagram":
+        spec = {**spec, **_rce_plan_diagram(brief or pr, ctx)}
+        pname = "mermaid"
+        result = {"status": "ready" if spec.get("mermaid") else "planned",
+                  "url": "", "storage_key": "", "spec": spec}
+        pr = pr or spec.get("title") or "diagram"
+    elif at == "clip":
+        spec = {**spec, **_rce_plan_clip(brief or pr, ctx)}
+        pname = "storyboard"
+        result = {"status": "planned", "url": "", "storage_key": "", "spec": spec}
+        pr = pr or spec.get("title") or "clip"
+    else:  # image
+        pname, pfn = _rce_resolve_image_provider(provider)
+        result = pfn(pr or "image", spec)
+    row = execute_db(
+        "INSERT INTO content_assets (tenant_id, draft_id, report_id, asset_type, "
+        " provider, prompt, spec, storage_key, url, status, created_by) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,'content_studio') RETURNING id",
+        (tid, did, rid, at, pname, pr[:4000],
+         json.dumps(result.get("spec") or spec or {}),
+         (result.get("storage_key") or "")[:500], (result.get("url") or "")[:2000],
+         result.get("status", "planned")))
+    aid = row["id"] if row else None
+    out = _rce_asset_row(query_db("SELECT * FROM content_assets WHERE id=%s",
+                                  (aid,), fetchone=True))
+    if result.get("error"):
+        out["error_detail"] = result["error"]
+    return out
+
+
+def _rce_stitch_assets(draft_id, asset_ids, *, title=""):
+    """SCAFFOLD: record a 'clip' asset that references existing assets to be
+    stitched into a video (status='planned'; rendering deferred). Gated by
+    visual_content_enabled. Returns the new asset row or {"error": ...}."""
+    if not get_ai_setting("visual_content_enabled"):
+        return {"error": "Visual content is turned off."}
+    tid = current_tenant_id()
+    try:
+        did = int(draft_id)
+    except (TypeError, ValueError):
+        return {"error": "A valid draft_id is required."}
+    ids = []
+    for a in (asset_ids or []):
+        try:
+            ids.append(int(a))
+        except (TypeError, ValueError):
+            pass
+    if not ids:
+        return {"error": "Provide asset_ids to stitch."}
+    rows = query_db("SELECT id FROM content_assets WHERE tenant_id=%s AND id = ANY(%s)",
+                    (tid, ids)) or []
+    found = [r["id"] for r in rows]
+    if not found:
+        return {"error": "No matching assets found."}
+    spec = {"source_asset_ids": found,
+            "note": "stitch scaffold — rendering deferred"}
+    row = execute_db(
+        "INSERT INTO content_assets (tenant_id, draft_id, asset_type, provider, "
+        " prompt, spec, status, created_by) VALUES "
+        "(%s,%s,'clip','stitch',%s,%s::jsonb,'planned','content_studio') RETURNING id",
+        (tid, did, (title or "Stitched clip")[:4000], json.dumps(spec)))
+    aid = row["id"] if row else None
+    return _rce_asset_row(query_db("SELECT * FROM content_assets WHERE id=%s",
+                                   (aid,), fetchone=True))
+
+
+def _rce_asset_markdown(a):
+    """Render an asset as a Markdown/embeddable snippet for a draft body."""
+    at = a.get("asset_type")
+    spec = a.get("spec")
+    if isinstance(spec, str):
+        try:
+            spec = json.loads(spec)
+        except Exception:
+            spec = {}
+    title = (a.get("prompt") or at or "asset")[:120]
+    if at == "image" and a.get("url"):
+        return f"![{title}]({a['url']})"
+    if at == "diagram" and (spec or {}).get("mermaid"):
+        return "```mermaid\n" + spec["mermaid"] + "\n```"
+    # planned / not-yet-rendered → an inert placeholder comment
+    return f"<!-- {at} asset #{a.get('id')} pending: {title} -->"
+
+
+def _rce_embed_asset(draft_id, asset_id):
+    """Embed an asset into a draft body (appends a Markdown snippet) and links the
+    asset to the draft. Gated by visual_content_enabled. Returns {ok, ...} or
+    {"error": ...}."""
+    if not get_ai_setting("visual_content_enabled"):
+        return {"error": "Visual content is turned off."}
+    tid = current_tenant_id()
+    try:
+        did, aid = int(draft_id), int(asset_id)
+    except (TypeError, ValueError):
+        return {"error": "Valid draft_id and asset_id are required."}
+    d = query_db("SELECT id, body FROM content_drafts WHERE id=%s AND tenant_id=%s",
+                 (did, tid), fetchone=True)
+    if not d:
+        return {"error": "Draft not found."}
+    a = query_db("SELECT * FROM content_assets WHERE id=%s AND tenant_id=%s",
+                 (aid, tid), fetchone=True)
+    if not a:
+        return {"error": "Asset not found."}
+    snippet = _rce_asset_markdown(a)
+    new_body = ((d.get("body") or "").rstrip() + "\n\n" + snippet + "\n")[:100000]
+    execute_db("UPDATE content_drafts SET body=%s, updated_at=NOW() "
+               "WHERE id=%s AND tenant_id=%s", (new_body, did, tid))
+    execute_db("UPDATE content_assets SET draft_id=%s, updated_at=NOW() "
+               "WHERE id=%s AND tenant_id=%s", (did, aid, tid))
+    return {"ok": True, "draft_id": did, "asset_id": aid,
+            "embedded": snippet[:200]}
+
+
 def _scrape_serialize_job(row: dict) -> dict:
     """Convert a DB row into a JSON-friendly dict for the UI."""
     """Convert a DB row into a JSON-friendly dict for the UI."""
@@ -45098,6 +45434,78 @@ def admin_update_content_draft(did):
     updated = query_db("SELECT * FROM content_drafts WHERE id=%s AND tenant_id=%s",
                        (did, tid), fetchone=True)
     return jsonify(_rce_draft_full_row(updated))
+
+
+@app.route("/admin/api/content/assets", methods=["GET"])
+@admin_required
+def admin_list_content_assets():
+    """List visual assets, optionally filtered by ?draft_id= / ?report_id=
+    (super-admin only)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    tid = current_tenant_id()
+    where, params = ["tenant_id=%s"], [tid]
+    for col, arg in (("draft_id", "draft_id"), ("report_id", "report_id")):
+        v = request.args.get(arg)
+        if v:
+            try:
+                params.append(int(v))
+                where.append(f"{col}=%s")
+            except (TypeError, ValueError):
+                pass
+    rows = query_db("SELECT * FROM content_assets WHERE " + " AND ".join(where) +
+                    " ORDER BY id DESC LIMIT 200", tuple(params)) or []
+    return jsonify({"assets": [_rce_asset_row(r) for r in rows]})
+
+
+@app.route("/admin/api/content/visual/generate", methods=["POST"])
+@admin_required
+def admin_content_visual_generate():
+    """Generate a visual asset for a draft/report (super-admin). Gated by
+    visual_content_enabled."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    b = request.get_json(silent=True) or {}
+    at = (b.get("asset_type") or "image").strip().lower()
+    if b.get("draft_id") in (None, "") and b.get("report_id") in (None, ""):
+        return jsonify({"error": "Provide draft_id or report_id."}), 400
+    result = _rce_create_visual(
+        draft_id=b.get("draft_id"), report_id=b.get("report_id"), asset_type=at,
+        brief=(b.get("brief") or ""), prompt=(b.get("prompt") or ""),
+        provider=(b.get("provider") or None), size=(b.get("size") or None))
+    return jsonify(result), (200 if "error" not in result else 400)
+
+
+@app.route("/admin/api/content/visual/stitch", methods=["POST"])
+@admin_required
+def admin_content_visual_stitch():
+    """Stitch existing assets into a (planned) clip — scaffold (super-admin)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    b = request.get_json(silent=True) or {}
+    if b.get("draft_id") in (None, ""):
+        return jsonify({"error": "Provide draft_id."}), 400
+    result = _rce_stitch_assets(b.get("draft_id"), b.get("asset_ids") or [],
+                                title=(b.get("title") or ""))
+    return jsonify(result), (200 if "error" not in result else 400)
+
+
+@app.route("/admin/api/content/visual/embed", methods=["POST"])
+@admin_required
+def admin_content_visual_embed():
+    """Embed an asset into a draft body (super-admin). Gated by
+    visual_content_enabled."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    b = request.get_json(silent=True) or {}
+    if b.get("draft_id") in (None, "") or b.get("asset_id") in (None, ""):
+        return jsonify({"error": "Provide draft_id and asset_id."}), 400
+    result = _rce_embed_asset(b.get("draft_id"), b.get("asset_id"))
+    return jsonify(result), (200 if "error" not in result else 400)
 
 
 # --- PUBLIC: unsubscribe ----------------------------------------------------
