@@ -6019,8 +6019,6 @@ TO CUSTOMIZE THIS DASHBOARD:
     adminChatAttachSaveChart(wrap, spec);
   }
 
-  // Placeholder until task 058 wires persistence; defined no-op-safe so 057
-  // works standalone.
   function adminChatAttachSaveChart(wrap, spec) {
     if (typeof window.__adminSaveChartToDashboard !== 'function') return;
     const btn = document.createElement('button');
@@ -6030,6 +6028,24 @@ TO CUSTOMIZE THIS DASHBOARD:
     btn.onclick = () => window.__adminSaveChartToDashboard(spec, btn);
     wrap.appendChild(btn);
   }
+
+  // Datahub (task 058): persist a chat chart as a static widget on a dashboard.
+  // The global fetch wrapper adds the X-CSRF-Token header for /admin POSTs.
+  window.__adminSaveChartToDashboard = async function (spec, btn) {
+    const name = prompt('Save to a dashboard named:', 'AI Charts');
+    if (name === null) return;
+    const orig = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const r = await fetch('/admin/api/datahub/save-chart', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spec: spec, dashboard_name: name })
+      });
+      if (r.ok) { btn.textContent = 'Saved ✓'; }
+      else { btn.disabled = false; btn.textContent = orig; }
+    } catch (e) { btn.disabled = false; btn.textContent = orig; }
+  };
 
   async function adminChatSend() {
     const input = document.getElementById('admin-chat-input');
