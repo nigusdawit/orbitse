@@ -15890,6 +15890,9 @@ def _admin_tool_inspect_connection(connection_id=0, table=None, **_):
     + example queries). With `table`: that table's columns + their descriptions,
     semantic types, sensitivity, and sample values. Read-only. The AI should call
     this before querying so its SQL matches the real (annotated) schema."""
+    guard = _admin_tool_superadmin_guard()   # Datahub is a super-admin-only surface
+    if guard:
+        return guard
     try:
         cid = int(connection_id or 0)
     except (TypeError, ValueError):
@@ -15993,6 +15996,9 @@ def _admin_tool_query_connection(connection_id=0, sql=None, **_):
     DB). Same guardrails as admin_run_sql, applied to external connections too:
     single statement, no writes/DDL, row + time caps, auto-rollback. The decrypted
     connection URL never reaches the model."""
+    guard = _admin_tool_superadmin_guard()   # Datahub is a super-admin-only surface
+    if guard:
+        return guard
     try:
         cid = int(connection_id or 0)
     except (TypeError, ValueError):
@@ -16220,6 +16226,9 @@ def _admin_tool_define_schema(connection_id=0, table=None, **_):
     """Have the assistant DRAFT the Datahub semantic layer for a connection. The
     drafts appear in the Datahub tab marked 'AI-suggested · review' for the
     super-admin to confirm/edit. Read-only against the data."""
+    guard = _admin_tool_superadmin_guard()   # Datahub is a super-admin-only surface
+    if guard:
+        return guard
     return _dh_ai_define(connection_id=connection_id, table=table)
 
 
@@ -16313,15 +16322,15 @@ def _dh_spec_to_static_widget(spec):
     return wt, {"data": data}
 
 
-def _rce_tool_role_guard():
-    """Server-side role boundary for the super-admin-only Research/Content AI
-    tools. Returns an error dict if the CURRENT request is an authenticated
-    non-super-admin (client) session, else None. Request-context-safe: outside a
-    request (system/automation/tests, which are trusted server-side callers) it
-    returns None. The HTTP routes enforce the same boundary with
-    _require_super_admin_role(); this closes the same gap on the AI-tool surface
-    (the admin chat is only @admin_required, so a client session can reach tools
-    unless they self-check)."""
+def _admin_tool_superadmin_guard():
+    """Server-side role boundary for super-admin-only admin AI tools (Research/
+    Content + Datahub schema/connection tools). Returns an error dict if the
+    CURRENT request is an authenticated non-super-admin (client) session, else
+    None. Request-context-safe: outside a request (system/automation/tests, which
+    are trusted server-side callers) it returns None. The HTTP routes enforce the
+    same boundary with _require_super_admin_role(); this closes the same gap on
+    the AI-tool surface (the admin chat is only @admin_required, so a client
+    session can reach tools unless they self-check)."""
     try:
         from flask import has_request_context
         if not has_request_context():
@@ -16339,7 +16348,7 @@ def _admin_tool_gather_sources(urls=None, topic=None, ingest_kb=False, **_):
     a new draft research report. Gated by the Research Hub toggle. Provide a list
     of URLs; optionally a topic + whether to also add them to the knowledge base.
     Read-only against the web (SSRF-guarded). Returns a summary + report_id."""
-    guard = _rce_tool_role_guard()
+    guard = _admin_tool_superadmin_guard()
     if guard:
         return guard
     if isinstance(urls, str):
@@ -16356,7 +16365,7 @@ def _admin_tool_run_research(question=None, topic=None, seed_urls=None,
     the Research Hub's Sources layer, and write a cited synthesis report (summary
     + key points + citations). Optionally pass seed_urls to include. Read-only;
     gated by the Research Hub toggle. Returns the report_id + a result summary."""
-    guard = _rce_tool_role_guard()
+    guard = _admin_tool_superadmin_guard()
     if guard:
         return guard
     if isinstance(seed_urls, str):
@@ -16375,7 +16384,7 @@ def _admin_tool_generate_content(report_id=None, content_types=None,
     content_type (e.g. blog, social, linkedin, newsletter, email, faq, summary)
     in the Content Studio for the owner to review before publishing. Read-only on
     the report; gated by the Content Studio toggle. Returns the created drafts."""
-    guard = _rce_tool_role_guard()
+    guard = _admin_tool_superadmin_guard()
     if guard:
         return guard
     if isinstance(content_types, str):
@@ -16396,7 +16405,7 @@ def _admin_tool_generate_visual(draft_id=None, asset_type=None, brief=None,
     source, clips a storyboard, images a placeholder unless a real provider is
     chosen. The asset can then be embedded into the draft. Gated by the Visual
     Content toggle. Returns the created asset."""
-    guard = _rce_tool_role_guard()
+    guard = _admin_tool_superadmin_guard()
     if guard:
         return guard
     at = (asset_type or "image").strip().lower()
@@ -16413,7 +16422,7 @@ def _admin_tool_publish_content(draft_id=None, capability_id=None, **_):
     you cannot create one or change its configuration/command. Auto-publish must
     be enabled by the owner; otherwise the draft stays ready for manual publish.
     Returns the publish result (logged)."""
-    guard = _rce_tool_role_guard()
+    guard = _admin_tool_superadmin_guard()
     if guard:
         return guard
     if draft_id in (None, "") or capability_id in (None, ""):
@@ -23268,6 +23277,15 @@ def admin_chat_action_get(action_id):
            methods=["POST"])
 @admin_required
 def admin_chat_action_approve(action_id):
+    # Approving executes the queued write (insert/update/delete/SQL/automation/
+    # MCP change). The chat surface is only @admin_required, but executing a
+    # change is a super-admin power ("a client session can never change what it
+    # was granted") — so a lower-trust client can propose, but only the operator
+    # can approve. This is the chokepoint that neutralizes every propose_* tool
+    # for non-super-admins.
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
     # Atomic claim: only ONE concurrent caller can flip pending->approved.
     # The intermediate 'approved' status acts as a lock so a duplicate
     # approve, or a simultaneous reject, will see "no longer pending"
