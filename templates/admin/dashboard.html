@@ -2025,6 +2025,9 @@ TO CUSTOMIZE THIS DASHBOARD:
       --admin-blur: blur({{ appearance.blur }}px);
       --admin-blur-heavy: blur({{ (appearance.blur|float * 1.7)|round(1) }}px);
       --admin-radius: {{ appearance.radius }}px;
+      /* alias: several components (Admin Chat, etc.) reference --admin-card; map
+         it to the glass surface so they aren't transparent/broken. */
+      --admin-card: var(--admin-surface);
     }
   </style>
   <style id="admin-glass-theme">
@@ -2218,6 +2221,23 @@ TO CUSTOMIZE THIS DASHBOARD:
     .gx-summary{ color:var(--admin-text); font-size:.97rem; line-height:1.75; white-space:pre-wrap; margin:.4rem 0 0; }
     .gx-detail-head{ display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; }
     .gx-detail-head h3{ margin:0; font-size:1.15rem; font-weight:700; color:var(--admin-text); }
+
+    /* ---- Admin Chat shell → glass (task 072 rebuild) ---- */
+    .admin-chat-side, .admin-chat-header, #admin-chat-messages{
+      border-radius:var(--admin-radius) !important; box-shadow:var(--admin-shadow);
+      -webkit-backdrop-filter:var(--admin-blur); backdrop-filter:var(--admin-blur); }
+    .admin-chat-side{ background:var(--admin-surface) !important; padding:.85rem !important; }
+    #admin-chat-messages{ background:var(--admin-surface) !important; }
+    .admin-chat-header{ background:var(--admin-surface) !important; padding:.7rem .85rem !important; }
+    .admin-chat-session-item.active{ background:color-mix(in srgb, var(--admin-accent) 16%, transparent) !important;
+      border-color:color-mix(in srgb, var(--admin-accent) 32%, transparent) !important; }
+    .admin-chat-session-item.active .acs-title{ color:var(--admin-accent); }
+    .admin-chat-header select, .admin-chat-header button.acm-btn{ background:var(--admin-field) !important; border-radius:9px !important; }
+    .admin-chat-header button.acm-btn:hover{ border-color:var(--admin-accent) !important; color:var(--admin-accent) !important; }
+    .admin-chat-header button.acm-btn.active{ background:color-mix(in srgb, var(--admin-accent) 18%, transparent) !important; color:var(--admin-accent) !important; border-color:color-mix(in srgb, var(--admin-accent) 32%, transparent) !important; }
+    /* chat bubbles: assistant = glass surface, user = accent-tinted */
+    .chat-msg-assistant, .admin-chat-bubble-assistant{ background:var(--admin-surface) !important; border:1px solid var(--admin-border) !important; border-radius:14px !important; }
+    .chat-msg-user, .admin-chat-bubble-user{ background:color-mix(in srgb, var(--admin-accent) 14%, transparent) !important; border:1px solid color-mix(in srgb, var(--admin-accent) 26%, transparent) !important; border-radius:14px !important; }
   </style>
   <script>window.__ADMIN_APPEARANCE__ = {{ appearance|tojson }};</script>
 </head>
