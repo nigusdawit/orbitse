@@ -2091,6 +2091,51 @@ TO CUSTOMIZE THIS DASHBOARD:
     html[data-admin-theme="light"] .admin-header a:hover{ color:var(--admin-text) !important; }
     /* ---- range sliders pick up the accent ---- */
     #tab-appearance input[type="range"]{ accent-color:var(--admin-accent); width:100%; }
+
+    /* ================= POLISH PASS (task 072) ================= */
+    /* ---- Phase A: floating glass shell (sidebar + header become inset rounded cards) ---- */
+    .admin-layout{ gap:14px; padding:0 14px 14px; }
+    .admin-header{ margin:14px 14px 0; border:1px solid var(--admin-border);
+      border-bottom:1px solid var(--admin-border); border-radius:var(--admin-radius);
+      box-shadow:var(--admin-shadow); top:14px; }
+    .sidebar{ border-right:none; border:1px solid var(--admin-border);
+      border-radius:var(--admin-radius); box-shadow:var(--admin-shadow);
+      top:86px; height:calc(100vh - 100px); }
+    .admin-main{ min-width:0; }
+
+    /* ---- Phase B: unify radius + Material elevation across glass surfaces ---- */
+    .card, .kpi-card, .overview-panel, .feature-tile, .admin-row-card, .form-panel,
+    .rte-container, .admin-modal-panel, .db-modal-card, .super-admin-lock-overlay{
+      border-radius:var(--admin-radius); box-shadow:var(--admin-shadow);
+    }
+    /* active nav = tonal accent pill */
+    .tab-btn{ border-radius:0 999px 999px 0; margin-right:10px; }
+    .tab-btn:hover{ background:color-mix(in srgb, var(--admin-accent) 10%, transparent); color:var(--admin-text); }
+    .tab-btn.active{ background:color-mix(in srgb, var(--admin-accent) 18%, transparent) !important;
+      color:var(--admin-accent) !important; border-left-color:var(--admin-accent) !important; }
+    /* toggles + rte-toggle + kpi pill follow the accent (were green/blue) */
+    .toggle-switch input:checked + .toggle-slider{ background:color-mix(in srgb, var(--admin-accent) 32%, transparent); border-color:var(--admin-accent); }
+    .toggle-switch input:checked + .toggle-slider::before{ background:var(--admin-accent); }
+    .rte-btn-toggle.active{ background:color-mix(in srgb, var(--admin-accent) 22%, transparent); color:var(--admin-accent); border-color:color-mix(in srgb, var(--admin-accent) 35%, transparent); }
+    .kpi-card .kpi-pill{ background:color-mix(in srgb, var(--admin-accent) 16%, transparent); color:var(--admin-accent); border-color:color-mix(in srgb, var(--admin-accent) 30%, transparent); }
+    /* table header tint via tokens (was hardcoded white-alpha) */
+    .data-table th{ background:color-mix(in srgb, var(--admin-text) 5%, transparent); }
+
+    /* ---- Phase C: light-mode overrides for hardcoded-dark literals ---- */
+    html[data-admin-theme="light"] .form-group select option,
+    html[data-admin-theme="light"] .form-group select optgroup,
+    html[data-admin-theme="light"] .db-modal-body select option{ background:#ffffff; color:var(--admin-text); }
+    html[data-admin-theme="light"] .form-group select option:checked{ background:color-mix(in srgb, var(--admin-accent) 22%, #ffffff); color:#0e1626; }
+    html[data-admin-theme="light"] .db-modal-card,
+    html[data-admin-theme="light"] .admin-modal-panel{ background:rgba(255,255,255,.96); }
+    html[data-admin-theme="light"] .db-modal{ background:rgba(20,30,60,.35); }
+    html[data-admin-theme="light"] .form-panel h1,
+    html[data-admin-theme="light"] .form-panel h2,
+    html[data-admin-theme="light"] .form-panel h3,
+    html[data-admin-theme="light"] .form-panel h4{ color:var(--admin-text) !important; }
+    html[data-admin-theme="light"] .rte-btn{ color:var(--admin-text-muted) !important; }
+    html[data-admin-theme="light"] .rte-btn:hover,
+    html[data-admin-theme="light"] .rte-btn-toggle.active{ color:var(--admin-accent) !important; }
   </style>
   <script>window.__ADMIN_APPEARANCE__ = {{ appearance|tojson }};</script>
 </head>
