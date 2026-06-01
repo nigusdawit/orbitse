@@ -15890,13 +15890,17 @@ def _admin_tool_inspect_connection(connection_id=0, table=None, **_):
     + example queries). With `table`: that table's columns + their descriptions,
     semantic types, sensitivity, and sample values. Read-only. The AI should call
     this before querying so its SQL matches the real (annotated) schema."""
-    guard = _admin_tool_superadmin_guard()   # Datahub is a super-admin-only surface
-    if guard:
-        return guard
     try:
         cid = int(connection_id or 0)
     except (TypeError, ValueError):
         cid = 0
+    if cid != 0:
+        # Reading an EXTERNAL connection is super-admin-only (mirrors the
+        # super-admin /admin/api/datahub/* + external-connections routes). The
+        # app's own DB (cid 0) stays open — same boundary as admin_describe_table.
+        guard = _admin_tool_superadmin_guard()
+        if guard:
+            return guard
     ann = _dh_annotations(cid)
     tbl_desc = {t["table_name"]: t for t in ann["tables"]}
     col_desc = {}
@@ -15996,15 +16000,17 @@ def _admin_tool_query_connection(connection_id=0, sql=None, **_):
     DB). Same guardrails as admin_run_sql, applied to external connections too:
     single statement, no writes/DDL, row + time caps, auto-rollback. The decrypted
     connection URL never reaches the model."""
-    guard = _admin_tool_superadmin_guard()   # Datahub is a super-admin-only surface
-    if guard:
-        return guard
     try:
         cid = int(connection_id or 0)
     except (TypeError, ValueError):
         cid = 0
     if cid == 0:
-        return _admin_tool_run_sql(sql=sql)   # in-process safe path (+ redaction)
+        return _admin_tool_run_sql(sql=sql)   # app DB — same boundary as admin_run_sql
+    # Querying an EXTERNAL connection is super-admin-only (mirrors the super-admin
+    # /admin/api/datahub/* + external-connections routes).
+    guard = _admin_tool_superadmin_guard()
+    if guard:
+        return guard
     kind, url, err = _dh_sql_connection(cid)
     if err:
         return {"error": err}
@@ -16237,6 +16243,12 @@ def _admin_tool_save_query(name=None, sql=None, description=None,
     """Save a SELECT query as a reusable named SQL skill. Created DISABLED so a
     super-admin reviews + enables it in the Skills tab before it can run. The
     query is validated read-only; connection_id 0 = the app's own DB."""
+    # AI-driven creation of a persistent SQL skill is a super-admin power (the
+    # skill defines a query that later runs with DB access). The /admin/api/
+    # custom-sql CRUD route is a separate, admin-level surface.
+    guard = _admin_tool_superadmin_guard()
+    if guard:
+        return guard
     nm = (name or "").strip().lower()
     if not _SKILL_NAME_RE.match(nm or ""):
         return {"error": "name must be lowercase letters/digits/underscores and start with a letter."}
@@ -16436,6 +16448,12 @@ def _admin_tool_create_dashboard(name=None, description=None, widgets=None, **_)
     computed) or {name, widget_type, source_type, source_config} (builtin metric
     / external_postgres query / etc.). Display-only; the super-admin can edit or
     delete it in the tab."""
+    # AI-driven creation of a persistent dashboard is a super-admin power (a
+    # widget can carry an external_postgres source). The /datahub/save-chart
+    # sibling is super-admin; the /admin/api/dashboards CRUD route is admin-level.
+    guard = _admin_tool_superadmin_guard()
+    if guard:
+        return guard
     nm = (name or "").strip()
     if not nm:
         return {"error": "name is required"}

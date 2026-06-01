@@ -13,29 +13,50 @@ ADMIN_PW = os.environ.get("ADMIN_PASSWORD", "admin")
 CLIENT_PW = os.environ.get("CLIENT_PASSWORD", "")
 
 
-def test_datahub_tools_block_client_role():
-    """The Datahub tools mirror super-admin-only /admin/api/datahub/* routes."""
+def test_datahub_write_tools_block_client_role():
+    """AI-driven Datahub WRITES (semantic layer / SQL skill / dashboard) are
+    super-admin-only, regardless of connection."""
     with app.app.test_request_context("/"):
         from flask import session as s
         s["admin_logged_in"] = True
         s["admin_role"] = "client"
         for fn, kw in (
             (app._admin_tool_define_schema, {"connection_id": 0}),
-            (app._admin_tool_inspect_connection, {"connection_id": 0}),
-            (app._admin_tool_query_connection, {"connection_id": 0, "sql": "SELECT 1"}),
+            (app._admin_tool_save_query, {"name": "q1", "sql": "SELECT 1"}),
+            (app._admin_tool_create_dashboard, {"name": "D", "widgets": []}),
         ):
             out = fn(**kw)
             assert "super-admin" in (out.get("error") or ""), f"{fn.__name__} not gated"
         # a super-admin session is NOT blocked by the role guard
         s["admin_role"] = "super_admin"
-        out = app._admin_tool_inspect_connection(connection_id=0)
+        out = app._admin_tool_define_schema(connection_id=0)
         assert "super-admin" not in (out.get("error") or "")
+
+
+def test_external_connection_reads_block_client_but_app_db_open():
+    """Reading an EXTERNAL connection (cid != 0) is super-admin-only; the app's
+    own DB (cid 0) stays open to the client business assistant — same boundary
+    as the already-open admin_run_sql / admin_describe_table."""
+    with app.app.test_request_context("/"):
+        from flask import session as s
+        s["admin_logged_in"] = True
+        s["admin_role"] = "client"
+        # external connection → blocked
+        assert "super-admin" in (
+            app._admin_tool_inspect_connection(connection_id=999).get("error") or "")
+        assert "super-admin" in (
+            app._admin_tool_query_connection(connection_id=999, sql="SELECT 1").get("error") or "")
+        # app DB (cid 0) → NOT a role refusal
+        assert "super-admin" not in (
+            app._admin_tool_query_connection(connection_id=0, sql="SELECT 1 AS one").get("error") or "")
+        assert "super-admin" not in (
+            app._admin_tool_inspect_connection(connection_id=0).get("error") or "")
 
 
 def test_datahub_tools_allowed_outside_request_context():
     """System/automation/test callers (no request context) are trusted — the
     guard must not block direct calls (so existing Datahub tests still work)."""
-    out = app._admin_tool_inspect_connection(connection_id=0)
+    out = app._admin_tool_define_schema(connection_id=0)
     assert "super-admin" not in (out.get("error") or "")
 
 
