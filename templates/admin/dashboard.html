@@ -10399,55 +10399,36 @@ TO CUSTOMIZE THIS DASHBOARD:
   ========================================================================
   -->
   <div id="tab-videos" class="tab-content">
-    <div class="section-header-admin">
+    <div class="gx-head">
       <div>
-        <h2>Video Gallery</h2>
-        <p>Curate a grid of videos. Each one plays in a lightbox on the public site. Enable the "Video Gallery" section in Page Layout to show it.</p>
+        <h2 class="gx-title">Video Gallery</h2>
+        <p class="gx-sub">Curate a grid of videos. Each one plays in a lightbox on the public site. Enable the "Video Gallery" section in Page Layout to show it.</p>
       </div>
-      <button class="btn btn-primary" onclick="showVideoGalleryForm()" data-testid="button-new-video">+ New Video</button>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-primary" onclick="showVideoGalleryForm()" data-testid="button-new-video">+ New Video</button>
+      </div>
     </div>
 
-    <div id="video-form-panel" style="display:none; padding:1rem; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:8px; margin-bottom:1rem;">
-      <h3 id="video-form-title" style="margin-top:0;">New Video</h3>
+    <div id="video-form-panel" style="display:none;">
       <input type="hidden" id="video-form-id">
-      <div class="form-row">
-        <div class="form-group">
-          <label for="video-title">Title</label>
-          <input type="text" id="video-title" data-testid="input-video-title">
-        </div>
-        <div class="form-group">
-          <label for="video-sort-order">Sort Order</label>
-          <input type="number" id="video-sort-order" value="0" data-testid="input-video-sort">
-        </div>
+      <div class="gx-grid-fields">
+        <div class="gx-field col-2"><label class="gx-label" for="video-title">Title<span class="gx-req">*</span></label>
+          <input class="gx-input" type="text" id="video-title" data-testid="input-video-title"></div>
+        <div class="gx-field"><label class="gx-label" for="video-sort-order">Sort order</label>
+          <input class="gx-input" type="number" id="video-sort-order" value="0" data-testid="input-video-sort"></div>
       </div>
-      <div class="form-row">
-        <div class="form-group" style="grid-column:1/-1;">
-          <label for="video-url">Video URL</label>
-          <div style="display:flex; gap:0.5rem;">
-            <input type="url" id="video-url" placeholder="/uploads/clip.mp4" style="flex:1;" data-testid="input-video-url">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'video-url', mediaType:'video'})" data-testid="button-pick-video-url">Pick</button>
-          </div>
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group" style="grid-column:1/-1;">
-          <label for="video-thumb">Thumbnail Image URL</label>
-          <div style="display:flex; gap:0.5rem;">
-            <input type="url" id="video-thumb" placeholder="https://…" style="flex:1;" data-testid="input-video-thumb">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'video-thumb', mediaType:'image'})" data-testid="button-pick-video-thumb">Pick</button>
-          </div>
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group" style="grid-column:1/-1;">
-          <label for="video-description">Description</label>
-          <textarea id="video-description" rows="2" data-testid="input-video-description"></textarea>
-        </div>
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-secondary" onclick="hideVideoGalleryForm()" data-testid="button-cancel-video">Cancel</button>
-        <button class="btn btn-primary" onclick="saveVideoGallery()" data-testid="button-save-video">Save</button>
-      </div>
+      <div class="gx-field"><label class="gx-label" for="video-url">Video URL<span class="gx-req">*</span></label>
+        <div class="gx-media-field">
+          <input class="gx-input" type="url" id="video-url" placeholder="/uploads/clip.mp4" data-testid="input-video-url">
+          <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'video-url', mediaType:'video'})" data-testid="button-pick-video-url">🎬</button>
+        </div></div>
+      <div class="gx-field"><label class="gx-label" for="video-thumb">Thumbnail image URL</label>
+        <div class="gx-media-field">
+          <input class="gx-input" type="url" id="video-thumb" placeholder="https://…" data-testid="input-video-thumb">
+          <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'video-thumb', mediaType:'image'})" data-testid="button-pick-video-thumb">🖼</button>
+        </div></div>
+      <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="video-description">Description</label>
+        <textarea class="gx-input" id="video-description" rows="3" data-testid="input-video-description"></textarea></div>
     </div>
 
     <table class="data-table" id="video-gallery-table">
@@ -10466,59 +10447,38 @@ TO CUSTOMIZE THIS DASHBOARD:
   ========================================================================
   -->
   <div id="tab-podcast" class="tab-content">
-    <div class="section-header-admin">
+    <div class="gx-head">
       <div>
-        <h2>Podcast Episodes</h2>
-        <p>Add audio episodes that play on the public site. Enable the "Podcast" section in Page Layout to show it.</p>
+        <h2 class="gx-title">Podcast Episodes</h2>
+        <p class="gx-sub">Add audio episodes that play on the public site. Enable the "Podcast" section in Page Layout to show it.</p>
       </div>
-      <button class="btn btn-primary" onclick="showPodcastForm()" data-testid="button-new-podcast">+ New Episode</button>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-primary" onclick="showPodcastForm()" data-testid="button-new-podcast">+ New Episode</button>
+      </div>
     </div>
 
-    <div id="podcast-form-panel" style="display:none; padding:1rem; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:8px; margin-bottom:1rem;">
-      <h3 id="podcast-form-title" style="margin-top:0;">New Episode</h3>
+    <div id="podcast-form-panel" style="display:none;">
       <input type="hidden" id="podcast-form-id">
-      <div class="form-row">
-        <div class="form-group">
-          <label for="podcast-title">Title</label>
-          <input type="text" id="podcast-title" data-testid="input-podcast-title">
-        </div>
-        <div class="form-group">
-          <label for="podcast-episode-number">Episode #</label>
-          <input type="number" id="podcast-episode-number" data-testid="input-podcast-number">
-        </div>
-        <div class="form-group">
-          <label for="podcast-sort-order">Sort Order</label>
-          <input type="number" id="podcast-sort-order" value="0" data-testid="input-podcast-sort">
-        </div>
+      <div class="gx-grid-fields">
+        <div class="gx-field col-2"><label class="gx-label" for="podcast-title">Title<span class="gx-req">*</span></label>
+          <input class="gx-input" type="text" id="podcast-title" data-testid="input-podcast-title"></div>
+        <div class="gx-field"><label class="gx-label" for="podcast-episode-number">Episode #</label>
+          <input class="gx-input" type="number" id="podcast-episode-number" data-testid="input-podcast-number"></div>
+        <div class="gx-field"><label class="gx-label" for="podcast-sort-order">Sort order</label>
+          <input class="gx-input" type="number" id="podcast-sort-order" value="0" data-testid="input-podcast-sort"></div>
       </div>
-      <div class="form-row">
-        <div class="form-group" style="grid-column:1/-1;">
-          <label for="podcast-audio">Audio URL (mp3/wav/ogg)</label>
-          <div style="display:flex; gap:0.5rem;">
-            <input type="url" id="podcast-audio" placeholder="/uploads/episode.mp3" style="flex:1;" data-testid="input-podcast-audio">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'podcast-audio', mediaType:'audio'})" data-testid="button-pick-podcast-audio">Pick</button>
-          </div>
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group" style="grid-column:1/-1;">
-          <label for="podcast-cover">Cover Image URL</label>
-          <div style="display:flex; gap:0.5rem;">
-            <input type="url" id="podcast-cover" placeholder="https://…" style="flex:1;" data-testid="input-podcast-cover">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'podcast-cover', mediaType:'image'})" data-testid="button-pick-podcast-cover">Pick</button>
-          </div>
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group" style="grid-column:1/-1;">
-          <label for="podcast-description">Description</label>
-          <textarea id="podcast-description" rows="3" data-testid="input-podcast-description"></textarea>
-        </div>
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-secondary" onclick="hidePodcastForm()" data-testid="button-cancel-podcast">Cancel</button>
-        <button class="btn btn-primary" onclick="savePodcast()" data-testid="button-save-podcast">Save</button>
-      </div>
+      <div class="gx-field"><label class="gx-label" for="podcast-audio">Audio URL <span class="gx-hint">(mp3 / wav / ogg)</span><span class="gx-req">*</span></label>
+        <div class="gx-media-field">
+          <input class="gx-input" type="url" id="podcast-audio" placeholder="/uploads/episode.mp3" data-testid="input-podcast-audio">
+          <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'podcast-audio', mediaType:'audio'})" data-testid="button-pick-podcast-audio">🎵</button>
+        </div></div>
+      <div class="gx-field"><label class="gx-label" for="podcast-cover">Cover image URL</label>
+        <div class="gx-media-field">
+          <input class="gx-input" type="url" id="podcast-cover" placeholder="https://…" data-testid="input-podcast-cover">
+          <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'podcast-cover', mediaType:'image'})" data-testid="button-pick-podcast-cover">🖼</button>
+        </div></div>
+      <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="podcast-description">Description</label>
+        <textarea class="gx-input" id="podcast-description" rows="3" data-testid="input-podcast-description"></textarea></div>
     </div>
 
     <table class="data-table" id="podcast-table">
@@ -15499,29 +15459,27 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     function showVideoGalleryForm() {
-      document.getElementById('video-form-panel').style.display = 'block';
-      document.getElementById('video-form-title').textContent = 'New Video';
       document.getElementById('video-form-id').value = '';
       document.getElementById('video-title').value = '';
       document.getElementById('video-url').value = '';
       document.getElementById('video-thumb').value = '';
       document.getElementById('video-description').value = '';
       document.getElementById('video-sort-order').value = '0';
+      const p = document.getElementById('video-form-panel'); p.style.display = '';
+      gxOpenDrawer('New video', p, { onSave: saveVideoGallery, saveLabel: 'Save video' });
     }
 
-    function hideVideoGalleryForm() {
-      document.getElementById('video-form-panel').style.display = 'none';
-    }
+    function hideVideoGalleryForm() { gxCloseDrawer(); }
 
     function editVideoGallery(v) {
-      document.getElementById('video-form-panel').style.display = 'block';
-      document.getElementById('video-form-title').textContent = 'Edit: ' + (v.title || '(untitled)');
       document.getElementById('video-form-id').value = v.id;
       document.getElementById('video-title').value = v.title || '';
       document.getElementById('video-url').value = v.video_url || '';
       document.getElementById('video-thumb').value = v.thumbnail_url || '';
       document.getElementById('video-description').value = v.description || '';
       document.getElementById('video-sort-order').value = v.sort_order || 0;
+      const p = document.getElementById('video-form-panel'); p.style.display = '';
+      gxOpenDrawer('Edit: ' + (v.title || 'video'), p, { onSave: saveVideoGallery, saveLabel: 'Save video' });
     }
 
     async function saveVideoGallery() {
@@ -15597,8 +15555,6 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     function showPodcastForm() {
-      document.getElementById('podcast-form-panel').style.display = 'block';
-      document.getElementById('podcast-form-title').textContent = 'New Episode';
       document.getElementById('podcast-form-id').value = '';
       document.getElementById('podcast-title').value = '';
       document.getElementById('podcast-episode-number').value = '';
@@ -15606,15 +15562,13 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('podcast-cover').value = '';
       document.getElementById('podcast-description').value = '';
       document.getElementById('podcast-sort-order').value = '0';
+      const p = document.getElementById('podcast-form-panel'); p.style.display = '';
+      gxOpenDrawer('New episode', p, { onSave: savePodcast, saveLabel: 'Save episode' });
     }
 
-    function hidePodcastForm() {
-      document.getElementById('podcast-form-panel').style.display = 'none';
-    }
+    function hidePodcastForm() { gxCloseDrawer(); }
 
     function editPodcast(e) {
-      document.getElementById('podcast-form-panel').style.display = 'block';
-      document.getElementById('podcast-form-title').textContent = 'Edit: ' + (e.title || '(untitled)');
       document.getElementById('podcast-form-id').value = e.id;
       document.getElementById('podcast-title').value = e.title || '';
       document.getElementById('podcast-episode-number').value = e.episode_number || '';
@@ -15622,6 +15576,8 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('podcast-cover').value = e.cover_image || '';
       document.getElementById('podcast-description').value = e.description || '';
       document.getElementById('podcast-sort-order').value = e.sort_order || 0;
+      const p = document.getElementById('podcast-form-panel'); p.style.display = '';
+      gxOpenDrawer('Edit: ' + (e.title || 'episode'), p, { onSave: savePodcast, saveLabel: 'Save episode' });
     }
 
     async function savePodcast() {
