@@ -111,9 +111,26 @@ These features run store-only / decline until their creds are supplied:
   supplies subject/message, never a recipient).
 - Visitor-profile summaries/tags are PII-redacted before storage.
 
-### Still outstanding (intentionally not done this session)
+### Epic F activation + review push + lego (done 2026-05-31)
 
-- **Push `main` to origin** — all Phase 6 work is local-only.
-- **7 missing Python ports** in `~/lego/packages-py/` (typed_config,
-  langfuse_client, eval_harness, llm_router, rate_limit, pii_redact,
-  structured_llm) — independent of this app.
+- **book_meeting (051)** now validates a model-supplied RFC 3339 `start_iso`
+  (migration 0019) before any calendar push — no more free-text to a calendar
+  API; store-only otherwise.
+- **`voice_bridge/`** — a standalone, provider-flexible Python media bridge
+  (Twilio Media Streams ↔ realtime voice). Backends: `echo` (no creds, default),
+  `openai` (Realtime), plus slots for others. Run `python -m voice_bridge.bridge`;
+  see `voice_bridge/README.md`. Not imported by the Flask app.
+- **Review push:** all Phase 6 work (incl. 051) is on branch
+  `review/phase6-visitor-ai` (origin) with **PR #1** open against `main`.
+  `origin/main` is deliberately UNTOUCHED — Replit assesses, then merges.
+  Local `main` carries the same commits (not pushed to `origin/main`).
+- **lego:** the 7 missing Python ports (typed_config, langfuse_client,
+  eval_harness, llm_router, rate_limit, pii_redact, structured_llm) are built +
+  tested (51 tests, ruff clean) and committed to the **lego repo's `main`**
+  (`~/lego`, separate repo) — stdlib-only ports of `pylego/`.
+
+### Still outstanding
+
+- Nothing required. Optional future work: a real provider backend for
+  `voice_bridge/` beyond echo/openai (Deepgram/Gemini), and live E2E with real
+  Twilio Voice + Calendar creds (operator runbook above).
