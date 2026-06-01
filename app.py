@@ -23357,12 +23357,25 @@ def api_chat():
                 # reliable_round for retry-before-first-token + optional fallback.
                 # Default config (0 retries, no fallback) → a single opener, i.e.
                 # byte-identical to the prior direct dispatch.
+                # A full generatePage response is a complete HTML page wrapped
+                # in a command JSON block — easily more than the old 4096-token
+                # default. When the round hit that cap mid-page the command JSON
+                # never closed, so the front-end kept the "Building" indicator
+                # spinning forever and the page never finished. A generous cap
+                # lets the whole page stream out. 16000 stays within the OpenAI
+                # gpt-4o family output limit (16384) and is well under Claude's.
+                _VISITOR_ROUND_MAX_TOKENS = 16000
+
                 def _v_open_claude(_m):
                     _ss, _cm = _messages_for_claude(messages)
-                    return _stream_round_claude(_m, _ss, _cm, _tools_for_claude(active_tools))
+                    return _stream_round_claude(
+                        _m, _ss, _cm, _tools_for_claude(active_tools),
+                        max_tokens=_VISITOR_ROUND_MAX_TOKENS)
 
                 def _v_open_openai(_m):
-                    return _stream_round_openai(_m, messages, active_tools)
+                    return _stream_round_openai(
+                        _m, messages, active_tools,
+                        max_tokens=_VISITOR_ROUND_MAX_TOKENS)
 
                 _v_fb_on = get_ai_setting("visitor_provider_fallback")
                 _v_fb_model = get_ai_setting("visitor_fallback_model")

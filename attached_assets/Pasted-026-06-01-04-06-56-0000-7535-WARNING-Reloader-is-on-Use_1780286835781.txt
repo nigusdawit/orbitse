@@ -1,0 +1,49 @@
+026-06-01 04:06:56 +0000] [7535] [WARNING] Reloader is on. Use in development only!
+[2026-06-01 04:06:56 +0000] [7524] [INFO] Control socket listening at /home/runn[2026-06-01 04:06:56 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:57 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:57 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:57 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:57 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:57 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:57 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:57 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:57 +0000] [7524] [INFO] Handling signal: winch
+[db pool] initialised (min=2, max=20)
+[2026-06-01 04:06:57 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:57 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:57 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:58 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:58 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:58 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:58 +0000] [7524] [INFO] Handling signal: winch
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+[alembic] migrations up to date
+[2026-06-01 04:06:58 +0000] [7524] [INFO] Handling signal: winch
+[messaging] background scheduler started
+[velo] VELO_MASTER_URL not set — skipping master registration.
+[2026-06-01 04:06:58 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:58 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:58 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:58 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:59 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:59 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:59 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:59 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:06:59 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:07:00 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:07:00 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:07:00 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:07:00 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:07:00 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:07:00 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:07:01 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:07:01 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:07:01 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:07:01 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:07:01 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:07:02 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:07:02 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:07:02 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:07:02 +0000] [7524] [INFO] Handling signal: winch
+[2026-06-01 04:07:02 +0000] [7524] [INFO] Handling signal: winch

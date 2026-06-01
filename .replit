@@ -15,7 +15,7 @@ PORT = "5000"
 
 [deployment]
 deploymentTarget = "autoscale"
-run = ["gunicorn", "--bind", "0.0.0.0:5000", "main:app"]
+run = ["gunicorn", "--bind=0.0.0.0:5000", "--worker-class", "gthread", "--threads", "8", "--timeout", "300", "main:app"]
 publicDir = "dist/public"
 
 [workflows]
@@ -39,7 +39,7 @@ outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "gunicorn --bind 0.0.0.0:5000 --reuse-port --reload main:app"
+args = "gunicorn --bind 0.0.0.0:5000 --reuse-port --reload --worker-class gthread --threads 8 --timeout 300 main:app"
 waitForPort = 5000
 
 [agent]

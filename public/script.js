@@ -6460,6 +6460,24 @@ async function chatSendStreaming(message, wasCollapsed) {
       }
     }
 
+    /* Safety net for an interrupted page build: we started rendering an
+       immersive page live during streaming, but never ended up with a
+       complete generatePage/generateHTML command (e.g. the model's output
+       was cut off at the token limit, leaving the command JSON unclosed and
+       unparseable). Without this, the "Building" indicator would spin
+       forever. Finalize the partial page so the indicator clears and let the
+       visitor know it was cut short so they can ask again. */
+    const _completedPageCmd = pendingCommand &&
+      (pendingCommand.action === 'generatePage' || pendingCommand.action === 'generateHTML');
+    if (pageStreamStarted && !_completedPageCmd) {
+      if (isImmersivePageStreaming()) {
+        finishImmersivePageStreaming();
+        resetImmersiveStreamState();
+      }
+      pageStreamStarted = false;
+      chatAddMessage('agent', "That page got cut off before it finished building. Could you ask me to try again?");
+    }
+
     /* Determine if this response navigates to a gallery card */
     const isNavigate = pendingCommand && pendingCommand.action === 'navigate';
     const isSubmitForm = pendingCommand && pendingCommand.action === 'submitForm';

@@ -1,0 +1,59 @@
+[2026-06-01 03:49:51 +0000] [6512] [INFO] Starting gunicorn 26.0.0
+[2026-06-01 03:49:51 +0000] [6512] [INFO] Listening at:  (6512)
+[2026-06-01 03:49:51 +0000] [6512] [INFO] Using worker: sync
+[2026-06-01 03:49:51 +0000] [6523] [INFO] Booting worker with pid: 6523
+[2026-06-01 03:49:51 +0000] [6523] [WARNING] Reloader is on. Use in development only!
+[2026-06-01 03:49:51 +0000] [6512] [INFO] Control socket listening at /home/runner/.gunicorn/gunicorn.ctl
+[db pool] initialised (min=2, max=20)
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+[alembic] migrations up to date
+[messaging] background scheduler started
+[velo] VELO_MASTER_URL not set — skipping master registration.
+[chat] cache skip (tool_driven) q='Build me a custom page comparing your top 3 services with pr'
+[2026-06-01 03:51:03 +0000] [6512] [CRITICAL] WORKER TIMEOUT (pid:6523)
+[2026-06-01 03:51:04 +0000] [6637] [INFO] Booting worker with pid: 6637
+[2026-06-01 03:51:04 +0000] [6512] [INFO] Control socket listening at /home/runner/.gunicorn/gunicorn.ctl
+[2026-06-01 03:51:04 +0000] [6637] [WARNING] Reloader is on. Use in development only!
+[db pool] initialised (min=2, max=20)
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+[alembic] migrations up to date
+[messaging] background scheduler started
+[velo] VELO_MASTER_URL not set — skipping master registration.
+[2026-06-01 03:55:59 +0000] [6512] [CRITICAL] WORKER TIMEOUT (pid:6637)
+[2026-06-01 03:55:59 +0000] [6689] [INFO] Booting worker with pid: 6689
+[2026-06-01 03:55:59 +0000] [6512] [INFO] Control socket listening at /home/runner/.gunicorn/gunicorn.ctl
+[2026-06-01 03:55:59 +0000] [6689] [WARNING] Reloader is on. Use in development only!
+[db pool] initialised (min=2, max=20)
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+[alembic] migrations up to date
+[messaging] background scheduler started
+[velo] VELO_MASTER_URL not set — skipping master registration.
+[2026-06-01 03:59:39 +0000] [6512] [CRITICAL] WORKER TIMEOUT (pid:6689)
+[2026-06-01 03:59:39 +0000] [6858] [INFO] Booting worker with pid: 6858
+[2026-06-01 03:59:39 +0000] [6512] [INFO] Control socket listening at /home/runner/.gunicorn/gunicorn.ctl
+[2026-06-01 03:59:39 +0000] [6858] [WARNING] Reloader is on. Use in development only!
+[db pool] initialised (min=2, max=20)
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+[alembic] migrations up to date
+[messaging] background scheduler started
+[velo] VELO_MASTER_URL not set — skipping master registration.
+[2026-06-01 04:01:04 +0000] [6512] [CRITICAL] WORKER TIMEOUT (pid:6858)
+[2026-06-01 04:01:04 +0000] [7177] [INFO] Booting worker with pid: 7177
+[2026-06-01 04:01:04 +0000] [7177] [WARNING] Reloader is on. Use in development only!
+[2026-06-01 04:01:04 +0000] [6512] [INFO] Control socket listening at /home/runner/.gunicorn/gunicorn.ctl
+[db pool] initialised (min=2, max=20)
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+[alembic] migrations up to date
+[messaging] background scheduler started
+[velo] VELO_MASTER_URL not set — skipping master registration.
+[2026-06-01 04:05:21 +0000] [6512] [INFO] Handling signal: winch
+[2026-06-01 04:05:21 +0000] [6512] [INFO] Handling signal: winch
+[2026-06-01 04:05:21 +0000] [6512] [INFO] Handling signal: winch
+[2026-06-01 04:05:21 +0000] [6512] [INFO] Handling signal: winch
+[2026-06-01 04:05:48 +0000] [6512] [INFO] Handling signal: winch
+[2026-06-01 04:05:49 +0000] [6512] [INFO] Handling signal: winch
