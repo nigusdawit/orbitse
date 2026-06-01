@@ -16096,6 +16096,41 @@ def _admin_tool_save_query(name=None, sql=None, description=None,
             "note": "Saved as a DISABLED skill — enable it in the Skills tab to make it live."}
 
 
+def _admin_tool_render_chart(spec=None, type=None, title=None, labels=None,
+                             values=None, value=None, label=None,
+                             columns=None, rows=None, **_):
+    """Render a chart / KPI / table inline in the chat. Accepts a `spec` object
+    or the individual fields. Returns a normalized, bounded spec; the chat UI
+    draws it with Chart.js (line/bar) or as a KPI/table card. Display-only — it
+    reads no data itself, so the model passes the numbers it already computed."""
+    s = spec if isinstance(spec, dict) else {}
+    ctype = str(s.get("type") or type or "bar").strip().lower()
+    if ctype not in ("line", "bar", "kpi", "table"):
+        ctype = "bar"
+    out = {"type": ctype, "title": str(s.get("title") or title or "")[:200]}
+    if ctype in ("line", "bar"):
+        labs = s.get("labels") if isinstance(s.get("labels"), list) else labels
+        vals = s.get("values") if isinstance(s.get("values"), list) else values
+        out["labels"] = [str(x)[:60] for x in (labs or [])][:200]
+        clean = []
+        for v in (vals or [])[:200]:
+            try:
+                clean.append(float(v))
+            except (TypeError, ValueError):
+                clean.append(0.0)
+        out["values"] = clean
+    elif ctype == "kpi":
+        out["value"] = _jsonable(s.get("value", value))
+        out["label"] = str(s.get("label") or label or "")[:120]
+    else:  # table
+        cols = s.get("columns") if isinstance(s.get("columns"), list) else columns
+        rws = s.get("rows") if isinstance(s.get("rows"), list) else rows
+        out["columns"] = [str(c)[:60] for c in (cols or [])][:20]
+        out["rows"] = [[_jsonable(v) for v in (r or [])][:20]
+                       for r in (rws or [])][:100]
+    return {"ok": True, "chart": out}
+
+
 def _admin_tool_list_skills():
     rows = query_db(
         "SELECT name, display_name, category, builtin, enabled, description "
@@ -18866,6 +18901,7 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_query_connection":       _admin_tool_query_connection,
     "admin_define_schema":          _admin_tool_define_schema,
     "admin_save_query":             _admin_tool_save_query,
+    "render_chart":                 _admin_tool_render_chart,
     "admin_list_skills":            _admin_tool_list_skills,
     "admin_recent_visitor_chats":   _admin_tool_recent_visitor_chats,
     "admin_recent_orders":          _admin_tool_recent_orders,
@@ -19036,6 +19072,24 @@ ADMIN_TOOLS = [
         {"type": "object",
          "properties": {"connection_id": {"type": "integer", "default": 0},
                         "table": {"type": "string"}}}),
+    _admin_tool_schema(
+        "render_chart",
+        "Draw a chart, KPI, or table INLINE in this chat to visualize data you've "
+        "computed (e.g. from admin_run_sql / admin_query_connection). Pass the "
+        "numbers you already have — this does not read data. type is "
+        "line|bar|kpi|table. For line/bar give labels[] + values[]; for kpi give "
+        "value + label; for table give columns[] + rows[][]. Add a short title.",
+        {"type": "object",
+         "properties": {
+             "type": {"type": "string", "enum": ["line", "bar", "kpi", "table"]},
+             "title": {"type": "string"},
+             "labels": {"type": "array", "items": {"type": "string"}},
+             "values": {"type": "array", "items": {"type": "number"}},
+             "value": {"type": ["number", "string"]},
+             "label": {"type": "string"},
+             "columns": {"type": "array", "items": {"type": "string"}},
+             "rows": {"type": "array", "items": {"type": "array"}}},
+         "required": ["type"]}),
     _admin_tool_schema(
         "admin_save_query",
         "Save a SELECT query as a reusable named SQL skill (e.g. for a repetitive "
@@ -21657,6 +21711,17 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8,
                         "error": log.get("error", ""),
                     },
                 }
+                # Datahub (task 057): when the assistant calls render_chart,
+                # emit the FULL (untruncated) chart spec as a dedicated event so
+                # the chat UI can draw it inline with Chart.js.
+                if tc["name"] == "render_chart":
+                    try:
+                        _parsed = json.loads(result_str)
+                        _chart = _parsed.get("chart") if isinstance(_parsed, dict) else None
+                        if _chart:
+                            yield {"type": "chart", "spec": _chart}
+                    except Exception:
+                        pass
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
