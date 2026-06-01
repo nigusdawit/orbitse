@@ -15817,6 +15817,221 @@ def _admin_tool_query_connection(connection_id=0, sql=None, **_):
             "row_count": len(rows), "truncated": len(rows) == 100}
 
 
+# =============================================================================
+# DATAHUB — AI auto-define (task 055)
+# =============================================================================
+# The assistant introspects + samples a connection, then DRAFTS the semantic
+# layer (table/column descriptions, semantic types, relationships, example
+# queries). Drafts are written ai_generated=true, reviewed=false; a row a
+# super-admin has already REVIEWED is never overwritten. Sampled values have
+# secret-named columns masked before they're shown to the LLM.
+
+def _dh_table_names(cid, url):
+    if cid == 0:
+        return [t["table_name"] for t in (query_db(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema='public' AND table_type='BASE TABLE' "
+            "ORDER BY table_name") or [])]
+    res = _run_external_postgres(
+        url, "SELECT table_name FROM information_schema.tables "
+             "WHERE table_schema='public' ORDER BY table_name", max_rows=500)
+    return [r[0] for r in res.get("rows", [])]
+
+
+def _dh_table_columns(cid, url, table):
+    if cid == 0:
+        rows = query_db(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name=%s ORDER BY ordinal_position",
+            (table,)) or []
+        return [{"column": r["column_name"], "type": r["data_type"]} for r in rows]
+    _lit = "'" + str(table).replace("'", "''") + "'"
+    res = _run_external_postgres(
+        url, "SELECT column_name, data_type FROM information_schema.columns "
+             f"WHERE table_schema='public' AND table_name={_lit} "
+             "ORDER BY ordinal_position", max_rows=500)
+    return [{"column": r[0], "type": r[1]} for r in res.get("rows", [])]
+
+
+def _dh_sample_rows(cid, url, table, cols, limit=3):
+    """A few read-only sample rows for LLM context, with secret-named columns
+    masked. Returns [] on any failure (sampling is best-effort)."""
+    colnames = [c["column"] for c in cols]
+    try:
+        if cid == 0:
+            ident = 'public."' + str(table).replace('"', '""') + '"'
+            rows = query_db(f"SELECT * FROM {ident} LIMIT %s", (limit,)) or []
+            out = []
+            for r in rows:
+                out.append({k: (_REDACTED_PLACEHOLDER if _is_sensitive_key(k)
+                                else _jsonable(v)) for k, v in dict(r).items()})
+            return out
+        ident = '"' + str(table).replace('"', '""') + '"'
+        res = _run_external_postgres(url, f"SELECT * FROM {ident} LIMIT {int(limit)}",
+                                     max_rows=limit)
+        cset = res.get("columns", [])
+        out = []
+        for row in res.get("rows", []):
+            d = {}
+            for i, c in enumerate(cset):
+                d[c] = _REDACTED_PLACEHOLDER if _is_sensitive_key(c) else row[i]
+            out.append(d)
+        return out
+    except Exception:
+        return []
+
+
+def _dh_llm_draft(schema_blob, model=None):
+    """Ask the LLM (OpenAI JSON mode) to draft annotations from schema+samples.
+    Returns the parsed dict or None. Never raises."""
+    if not openai_client:
+        return None
+    mdl = (model or "").strip() or "gpt-4o-mini"
+    if mdl.lower().startswith("claude"):
+        mdl = "gpt-4o-mini"
+    system = (
+        "You are a data analyst documenting a database for a SQL assistant. "
+        "Given tables with columns, types, and a few sample rows, return ONLY a "
+        "JSON object: {\"tables\":[{\"table\":str,\"description\":str,"
+        "\"is_sensitive\":bool}], \"columns\":[{\"table\":str,\"column\":str,"
+        "\"description\":str,\"semantic_type\":str,\"is_sensitive\":bool}], "
+        "\"relationships\":[{\"from_table\":str,\"from_column\":str,"
+        "\"to_table\":str,\"to_column\":str,\"description\":str}], "
+        "\"examples\":[{\"question\":str,\"sql\":str}]}. semantic_type is a short "
+        "tag like id, email, phone, currency, timestamp, enum, url, name, foreign_key. "
+        "Infer relationships from *_id naming. Write concise, business-meaningful "
+        "descriptions. SQL examples must be read-only SELECTs. Mark is_sensitive "
+        "true for PII/secrets."
+    )
+    try:
+        resp = openai_client.with_options(timeout=40.0).chat.completions.create(
+            model=mdl, response_format={"type": "json_object"},
+            max_tokens=2000, temperature=0.1,
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": json.dumps(schema_blob)[:14000]}])
+        try:
+            record_chat_cost_from_response(resp, surface="admin_chat",
+                                           provider="openai", model=mdl)
+        except Exception:
+            pass
+        data = json.loads(resp.choices[0].message.content or "{}")
+        return data if isinstance(data, dict) else None
+    except Exception as e:
+        print(f"[datahub] AI define draft failed: {type(e).__name__}: {e}")
+        return None
+
+
+def _dh_write_drafts(cid, data):
+    """Upsert AI drafts, preserving any reviewed=true rows. Returns counts."""
+    n_t = n_c = n_r = n_e = 0
+    for t in (data.get("tables") or [])[:100]:
+        tn = str(t.get("table") or "").strip()
+        if not tn:
+            continue
+        r = execute_db(
+            "INSERT INTO db_table_annotations (connection_id, table_name, description, "
+            " is_sensitive, ai_generated, reviewed) VALUES (%s,%s,%s,%s,TRUE,FALSE) "
+            "ON CONFLICT (connection_id, table_name) DO UPDATE SET "
+            "  description=EXCLUDED.description, is_sensitive=EXCLUDED.is_sensitive, "
+            "  ai_generated=TRUE, updated_at=NOW() "
+            "WHERE db_table_annotations.reviewed=FALSE RETURNING id",
+            (cid, tn, str(t.get("description") or "").strip()[:2000],
+             bool(t.get("is_sensitive"))))
+        n_t += 1 if r else 0
+    for c in (data.get("columns") or [])[:1000]:
+        tn = str(c.get("table") or "").strip()
+        cn = str(c.get("column") or "").strip()
+        if not tn or not cn:
+            continue
+        r = execute_db(
+            "INSERT INTO db_column_annotations (connection_id, table_name, column_name, "
+            " description, semantic_type, is_sensitive, ai_generated, reviewed) "
+            "VALUES (%s,%s,%s,%s,%s,%s,TRUE,FALSE) "
+            "ON CONFLICT (connection_id, table_name, column_name) DO UPDATE SET "
+            "  description=EXCLUDED.description, semantic_type=EXCLUDED.semantic_type, "
+            "  is_sensitive=EXCLUDED.is_sensitive, ai_generated=TRUE, updated_at=NOW() "
+            "WHERE db_column_annotations.reviewed=FALSE RETURNING id",
+            (cid, tn, cn, str(c.get("description") or "").strip()[:2000],
+             str(c.get("semantic_type") or "").strip()[:40], bool(c.get("is_sensitive"))))
+        n_c += 1 if r else 0
+    for rel in (data.get("relationships") or [])[:100]:
+        try:
+            r = execute_db(
+                "INSERT INTO db_relationships (connection_id, from_table, from_column, "
+                " to_table, to_column, description, ai_generated, reviewed) "
+                "VALUES (%s,%s,%s,%s,%s,%s,TRUE,FALSE) "
+                "ON CONFLICT (connection_id, from_table, from_column, to_table, to_column) "
+                "DO NOTHING RETURNING id",
+                (cid, str(rel.get("from_table") or "")[:200], str(rel.get("from_column") or "")[:200],
+                 str(rel.get("to_table") or "")[:200], str(rel.get("to_column") or "")[:200],
+                 str(rel.get("description") or "")[:500]))
+            n_r += 1 if r else 0
+        except Exception:
+            pass
+    for ex in (data.get("examples") or [])[:10]:
+        q = str(ex.get("question") or "").strip()
+        sql = str(ex.get("sql") or "").strip()
+        if not q or not sql:
+            continue
+        # Dedupe by question so re-running define doesn't pile up duplicates.
+        if query_db("SELECT 1 FROM db_query_examples WHERE connection_id=%s AND question=%s",
+                    (cid, q[:500]), fetchone=True):
+            continue
+        execute_db(
+            "INSERT INTO db_query_examples (connection_id, question, sql, ai_generated, reviewed) "
+            "VALUES (%s,%s,%s,TRUE,FALSE)", (cid, q[:500], sql[:4000]))
+        n_e += 1
+    return {"tables": n_t, "columns": n_c, "relationships": n_r, "examples": n_e}
+
+
+def _dh_ai_define(connection_id=0, table=None, model=None, max_tables=12):
+    """Draft the semantic layer for a connection (or one table). Writes drafts
+    (ai_generated=true, reviewed=false), never overwriting reviewed rows. Returns
+    a summary or {"error": ...}."""
+    if not openai_client:
+        return {"error": "AI is not configured (no OpenAI key)."}
+    try:
+        cid = int(connection_id or 0)
+    except (TypeError, ValueError):
+        cid = 0
+    url, err = _dh_postgres_url(cid)
+    if err:
+        return {"error": err}
+    try:
+        names = _dh_table_names(cid, url)
+    except Exception as e:
+        print(f"[datahub] define introspect failed (conn {cid}): {type(e).__name__}: {e}")
+        return {"error": "Could not read the database schema."}
+    if table:
+        names = [n for n in names if n == table]
+    truncated = len(names) > max_tables
+    names = names[:max_tables]
+    if not names:
+        return {"error": "No tables found to define."}
+    schema_blob = []
+    for n in names:
+        try:
+            cols = _dh_table_columns(cid, url, n)
+        except Exception:
+            cols = []
+        schema_blob.append({"table": n, "columns": cols,
+                            "samples": _dh_sample_rows(cid, url, n, cols, limit=3)})
+    data = _dh_llm_draft(schema_blob, model)
+    if not data:
+        return {"error": "The AI could not draft definitions right now."}
+    counts = _dh_write_drafts(cid, data)
+    return {"connection_id": cid, "tables_scanned": len(names),
+            "truncated": truncated, "drafted": counts,
+            "note": "Drafts are marked AI-suggested and need super-admin review."}
+
+
+def _admin_tool_define_schema(connection_id=0, table=None, **_):
+    """Have the assistant DRAFT the Datahub semantic layer for a connection. The
+    drafts appear in the Datahub tab marked 'AI-suggested · review' for the
+    super-admin to confirm/edit. Read-only against the data."""
+    return _dh_ai_define(connection_id=connection_id, table=table)
+
+
 def _admin_tool_list_skills():
     rows = query_db(
         "SELECT name, display_name, category, builtin, enabled, description "
@@ -18585,6 +18800,7 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_run_sql":                _admin_tool_run_sql,
     "admin_inspect_connection":     _admin_tool_inspect_connection,
     "admin_query_connection":       _admin_tool_query_connection,
+    "admin_define_schema":          _admin_tool_define_schema,
     "admin_list_skills":            _admin_tool_list_skills,
     "admin_recent_visitor_chats":   _admin_tool_recent_visitor_chats,
     "admin_recent_orders":          _admin_tool_recent_orders,
@@ -18744,6 +18960,17 @@ ADMIN_TOOLS = [
                         "sql": {"type": "string",
                                 "description": "A single SELECT statement."}},
          "required": ["sql"]}),
+    _admin_tool_schema(
+        "admin_define_schema",
+        "DRAFT the Datahub data dictionary for a connection: inspect + sample it "
+        "and write AI-suggested table/column descriptions, semantic types, "
+        "relationships, and example queries. connection_id 0 = this site's DB. "
+        "Pass a `table` to define just one. The drafts appear in the Datahub tab "
+        "marked 'AI-suggested · review' for the super-admin to confirm or edit. "
+        "Read-only against the data.",
+        {"type": "object",
+         "properties": {"connection_id": {"type": "integer", "default": 0},
+                        "table": {"type": "string"}}}),
     _admin_tool_schema(
         "admin_list_skills",
         "List every AI skill (visitor agent tool) with its on/off state."),
@@ -37696,6 +37923,21 @@ def admin_datahub_add_example(cid):
         (cid, b["question"].strip()[:500], b["sql"].strip()[:4000],
          (b.get("notes") or "").strip()[:1000]))
     return jsonify({"ok": True, "id": row["id"] if row else None})
+
+
+@app.route("/admin/api/datahub/<int:cid>/ai-define", methods=["POST"])
+@admin_required
+def admin_datahub_ai_define(cid):
+    """Run the AI auto-define for a connection (the '✨ Auto-define' button).
+    Writes AI-suggested drafts; super-admin reviews them. Super-admin only."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    b = request.get_json(silent=True) or {}
+    table = (b.get("table") or "").strip() or None
+    result = _dh_ai_define(connection_id=cid, table=table)
+    status = 200 if "error" not in result else 502
+    return jsonify(result), status
 
 
 @app.route("/admin/api/datahub/annotation/<kind>/<int:rid>", methods=["DELETE"])
