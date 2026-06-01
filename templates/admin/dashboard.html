@@ -71,6 +71,30 @@ TO CUSTOMIZE THIS DASHBOARD:
       --admin-blur-heavy: blur(32px);
       --font-sans: 'DM Sans', -apple-system, sans-serif;
       --font-serif: 'Playfair Display', Georgia, serif;
+      /* Admin font tokens — the Appearance "Typography" control swaps these. */
+      --admin-ui-font: var(--font-sans);
+      --admin-head-font: var(--font-serif);
+      /* Spacing scale — density-aware. The Appearance "Density" control sets
+         --admin-space-scale (compact .85 / comfortable 1 / spacious 1.15);
+         every gx-* component derives its padding/gaps from these so density
+         retunes the whole admin at once. Defaults below = no change. */
+      --admin-space-scale: 1;
+      --admin-space-1: calc(0.25rem * var(--admin-space-scale));
+      --admin-space-2: calc(0.5rem  * var(--admin-space-scale));
+      --admin-space-3: calc(0.75rem * var(--admin-space-scale));
+      --admin-space-4: calc(1rem    * var(--admin-space-scale));
+      --admin-space-5: calc(1.5rem  * var(--admin-space-scale));
+      --admin-space-6: calc(2rem    * var(--admin-space-scale));
+      /* Type scale — the Appearance "Typography" control sets --admin-font-scale
+         (S .92 / M 1 / L 1.12). New gx-* components size text from these. */
+      --admin-font-scale: 1;
+      --admin-fs-0: calc(0.72rem * var(--admin-font-scale));
+      --admin-fs-1: calc(0.82rem * var(--admin-font-scale));
+      --admin-fs-2: calc(0.9rem  * var(--admin-font-scale));
+      --admin-fs-3: calc(1rem    * var(--admin-font-scale));
+      --admin-fs-4: calc(1.25rem * var(--admin-font-scale));
+      --admin-fs-5: calc(1.55rem * var(--admin-font-scale));
+      --admin-fs-6: calc(2rem    * var(--admin-font-scale));
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -2260,6 +2284,122 @@ TO CUSTOMIZE THIS DASHBOARD:
     html[data-admin-theme="light"] .rte-preview h2, html[data-admin-theme="light"] .rte-preview h3{ color:var(--admin-text); }
     html[data-admin-theme="light"] .rte-editor blockquote,
     html[data-admin-theme="light"] .rte-preview blockquote{ color:var(--admin-text-muted); }
+
+    /* ================================================================== */
+    /* PHASE-0 KIT EXTENSIONS (task 073) — shared components the per-tab    */
+    /* redesign applies everywhere: drawer, fieldset, media-field, states,  */
+    /* toolbar, subtabs, responsive table, segmented control, stepper.      */
+    /* All theme-aware via --admin-* tokens; density/type via the scales.   */
+    /* ================================================================== */
+
+    /* ---- gx-drawer: one right slide-over for all add/edit forms ---- */
+    .gx-drawer-backdrop{ position:fixed; inset:0; background:rgba(0,0,0,.45); -webkit-backdrop-filter:blur(2px); backdrop-filter:blur(2px);
+      z-index:200; opacity:0; pointer-events:none; transition:opacity .2s ease; }
+    .gx-drawer-backdrop.open{ opacity:1; pointer-events:auto; }
+    .gx-drawer{ position:fixed; top:0; right:0; height:100vh; width:min(560px,94vw); background:var(--admin-bg);
+      border-left:1px solid var(--admin-border-light); box-shadow:-20px 0 60px rgba(0,0,0,.4); z-index:201;
+      transform:translateX(100%); transition:transform .24s cubic-bezier(.4,0,.2,1); display:flex; flex-direction:column; }
+    .gx-drawer.open{ transform:none; }
+    .gx-drawer-head{ display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:var(--admin-space-4) var(--admin-space-5);
+      border-bottom:1px solid var(--admin-border); position:sticky; top:0; background:var(--admin-surface);
+      -webkit-backdrop-filter:var(--admin-blur); backdrop-filter:var(--admin-blur); }
+    .gx-drawer-head h3{ margin:0; font-size:var(--admin-fs-4); font-weight:700; color:var(--admin-text); }
+    .gx-drawer-close{ background:transparent; border:none; color:var(--admin-text-muted); font-size:1.5rem; line-height:1; cursor:pointer; padding:.1rem .5rem; border-radius:8px; }
+    .gx-drawer-close:hover{ background:var(--admin-surface-hover); color:var(--admin-text); }
+    .gx-drawer-body{ flex:1; overflow-y:auto; padding:var(--admin-space-5); }
+    .gx-drawer-foot{ display:flex; align-items:center; justify-content:flex-end; gap:.6rem; padding:var(--admin-space-4) var(--admin-space-5);
+      border-top:1px solid var(--admin-border); position:sticky; bottom:0; background:var(--admin-surface);
+      -webkit-backdrop-filter:var(--admin-blur); backdrop-filter:var(--admin-blur); }
+
+    /* ---- gx-fieldset / gx-section: chunked, titled field groups ---- */
+    .gx-fieldset{ border:1px solid var(--admin-border); border-radius:var(--admin-radius); padding:var(--admin-space-4) var(--admin-space-5);
+      margin-bottom:var(--admin-space-4); background:color-mix(in srgb, var(--admin-surface) 55%, transparent); }
+    .gx-fieldset-h{ font-size:var(--admin-fs-1); font-weight:700; color:var(--admin-text); margin:0 0 var(--admin-space-4); display:flex; align-items:center; gap:.5rem; }
+    .gx-grid-fields{ display:grid; grid-template-columns:1fr 1fr; gap:var(--admin-space-4) var(--admin-space-4); }
+    .gx-grid-fields .gx-field{ margin-bottom:0; }
+    .gx-grid-fields .gx-field.col-2{ grid-column:1 / -1; }
+    @media(max-width:640px){ .gx-grid-fields{ grid-template-columns:1fr; } }
+    .gx-help{ display:inline-flex; align-items:center; justify-content:center; width:15px; height:15px; border-radius:50%;
+      border:1px solid var(--admin-border-light); color:var(--admin-text-muted); font-size:10px; font-weight:700; cursor:help; vertical-align:middle; }
+    .gx-req{ color:var(--admin-danger); margin-left:.2rem; }
+
+    /* ---- gx-media-field: collapses URL + Pick + Upload + preview ---- */
+    .gx-media-field{ display:flex; align-items:center; gap:.5rem; }
+    .gx-media-field .gx-input{ flex:1; min-width:0; }
+    .gx-media-thumb{ width:42px; height:42px; border-radius:9px; object-fit:cover; border:1px solid var(--admin-border); background:var(--admin-field); flex-shrink:0; }
+    .gx-icon-btn{ display:inline-flex; align-items:center; justify-content:center; width:38px; height:38px; border-radius:9px;
+      border:1px solid var(--admin-border); background:var(--admin-surface); color:var(--admin-text-muted); cursor:pointer; flex-shrink:0; font-family:inherit; }
+    .gx-icon-btn:hover{ color:var(--admin-accent); border-color:var(--admin-accent); }
+
+    /* ---- states: skeleton / rich empty / error / alert ---- */
+    .gx-skeleton{ position:relative; overflow:hidden; background:var(--admin-field); border-radius:8px; }
+    .gx-skeleton::after{ content:""; position:absolute; inset:0; transform:translateX(-100%);
+      background:linear-gradient(90deg, transparent, color-mix(in srgb, var(--admin-text) 9%, transparent), transparent); animation:gx-shimmer 1.3s infinite; }
+    @keyframes gx-shimmer{ 100%{ transform:translateX(100%); } }
+    .gx-skel-line{ height:.8rem; margin:.55rem 0; }
+    .gx-skel-card{ height:84px; border-radius:var(--admin-radius); }
+    .gx-empty-rich{ display:flex; flex-direction:column; align-items:center; gap:.55rem; padding:2.4rem 1.6rem; text-align:center; color:var(--admin-text-muted); }
+    .gx-empty-rich .gx-empty-ico{ width:44px; height:44px; opacity:.5; }
+    .gx-empty-rich h4{ color:var(--admin-text); font-size:var(--admin-fs-3); margin:0; }
+    .gx-error{ display:flex; align-items:center; gap:.6rem; padding:.85rem 1.05rem; border-radius:12px; font-size:var(--admin-fs-2);
+      color:#fca5a5; background:color-mix(in srgb,#f87171 12%,transparent); border:1px solid color-mix(in srgb,#f87171 32%,transparent); }
+    .gx-alert{ display:flex; align-items:flex-start; gap:.6rem; padding:.85rem 1.05rem; border-radius:12px; font-size:var(--admin-fs-2); line-height:1.5; }
+    .gx-alert-warn{ color:#fcd34d; background:color-mix(in srgb,#fbbf24 12%,transparent); border:1px solid color-mix(in srgb,#fbbf24 32%,transparent); }
+    .gx-alert-info{ color:var(--admin-accent); background:color-mix(in srgb,var(--admin-accent) 12%,transparent); border:1px solid color-mix(in srgb,var(--admin-accent) 30%,transparent); }
+
+    /* ---- gx-toolbar: grouped header actions w/ separators ---- */
+    .gx-toolbar{ display:flex; align-items:center; gap:.4rem; flex-wrap:wrap; }
+    .gx-toolbar-group{ display:flex; align-items:center; gap:.3rem; }
+    .gx-toolbar-group + .gx-toolbar-group{ border-left:1px solid var(--admin-border); padding-left:.55rem; margin-left:.2rem; }
+
+    /* ---- gx-subtabs: one secondary-tab style (crm/hubs/forms/etc.) ---- */
+    .gx-subtabs{ display:flex; gap:.25rem; border-bottom:1px solid var(--admin-border); margin-bottom:1.3rem; flex-wrap:wrap; }
+    .gx-subtab{ background:transparent; border:none; border-bottom:2px solid transparent; color:var(--admin-text-muted);
+      padding:.6rem .9rem; font-size:var(--admin-fs-2); font-weight:600; cursor:pointer; font-family:inherit; margin-bottom:-1px; }
+    .gx-subtab:hover{ color:var(--admin-text); }
+    .gx-subtab.active{ color:var(--admin-accent); border-bottom-color:var(--admin-accent); }
+
+    /* ---- gx-table: responsive table (sticky head, hover, low-prio hide) ---- */
+    .gx-table-wrap{ border:1px solid var(--admin-border); border-radius:var(--admin-radius); overflow:hidden; background:var(--admin-surface);
+      -webkit-backdrop-filter:var(--admin-blur); backdrop-filter:var(--admin-blur); }
+    .gx-table-wrap.scroll{ overflow-x:auto; }
+    .gx-table{ width:100%; border-collapse:collapse; font-size:var(--admin-fs-2); }
+    .gx-table th{ text-align:left; font-size:var(--admin-fs-0); text-transform:uppercase; letter-spacing:.04em; color:var(--admin-text-muted);
+      font-weight:700; padding:.7rem .9rem; border-bottom:1px solid var(--admin-border); background:color-mix(in srgb,var(--admin-text) 4%,transparent); position:sticky; top:0; }
+    .gx-table td{ padding:.75rem .9rem; border-bottom:1px solid var(--admin-border); color:var(--admin-text); vertical-align:middle; }
+    .gx-table tr:last-child td{ border-bottom:none; }
+    .gx-table tbody tr{ transition:background .12s; }
+    .gx-table tbody tr:hover{ background:color-mix(in srgb,var(--admin-text) 5%,transparent); }
+    @media(max-width:720px){ .gx-table [data-prio="low"]{ display:none; } }
+
+    /* ---- gx-stat extras (delta / icon) — gx-stats/gx-stat already exist ---- */
+    .gx-stat-delta{ font-size:var(--admin-fs-1); font-weight:600; margin-top:.35rem; }
+    .gx-stat-delta.up{ color:#34d399; } .gx-stat-delta.down{ color:#f87171; }
+    .gx-stat-ico{ float:right; color:var(--admin-accent); opacity:.85; }
+
+    /* ---- gx-seg: segmented control (mode toggles, etc.) ---- */
+    .gx-seg{ display:inline-flex; background:var(--admin-field); border:1px solid var(--admin-border); border-radius:10px; padding:3px; gap:2px; }
+    .gx-seg button{ border:none; background:transparent; color:var(--admin-text-muted); padding:.45rem .9rem; border-radius:8px;
+      font-size:var(--admin-fs-2); font-weight:600; cursor:pointer; font-family:inherit; }
+    .gx-seg button.active{ background:var(--admin-surface); color:var(--admin-accent); box-shadow:0 1px 4px rgba(0,0,0,.15); }
+
+    /* ---- gx-stepper: linear workflow indicator ---- */
+    .gx-stepper{ display:flex; align-items:center; gap:.5rem; margin-bottom:1.4rem; flex-wrap:wrap; }
+    .gx-step{ display:flex; align-items:center; gap:.5rem; color:var(--admin-text-muted); font-size:var(--admin-fs-2); }
+    .gx-step-n{ width:24px; height:24px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-size:.75rem; font-weight:700; border:1px solid var(--admin-border); background:var(--admin-surface); }
+    .gx-step.active{ color:var(--admin-text); } .gx-step.active .gx-step-n{ background:linear-gradient(135deg,var(--admin-accent),var(--admin-accent-2)); color:#fff; border:none; }
+    .gx-step.done .gx-step-n{ background:color-mix(in srgb,var(--admin-accent) 20%,transparent); color:var(--admin-accent); border-color:transparent; }
+    .gx-step-sep{ flex:1; min-width:18px; height:1px; background:var(--admin-border); }
+
+    /* Reduce-motion: honor the OS setting (the Appearance a11y toggle adds
+       html[data-admin-motion="reduce"] in Phase 1 for an explicit override). */
+    @media (prefers-reduced-motion: reduce){
+      .gx-drawer, .gx-drawer-backdrop{ transition:none; }
+      .gx-skeleton::after{ animation:none; }
+    }
+    html[data-admin-motion="reduce"] .gx-drawer,
+    html[data-admin-motion="reduce"] .gx-drawer-backdrop{ transition:none; }
+    html[data-admin-motion="reduce"] .gx-skeleton::after{ animation:none; }
   </style>
   <script>window.__ADMIN_APPEARANCE__ = {{ appearance|tojson }};</script>
 </head>
@@ -11942,6 +12082,70 @@ TO CUSTOMIZE THIS DASHBOARD:
       const div = document.createElement('div');
       div.textContent = str || '';
       return div.innerHTML;
+    }
+
+    // =====================================================================
+    // gx-drawer (task 073) — ONE right slide-over host for every add/edit
+    // form. gxOpenDrawer(title, content, {onSave, saveLabel, cancelLabel})
+    // mounts content into a sticky-header / scroll-body / sticky-footer
+    // drawer. Existing show*Form() functions move their field markup here
+    // instead of toggling an inline .form-panel. Esc / backdrop / ✕ close it.
+    // =====================================================================
+    function gxEnsureDrawer() {
+      let bd = document.getElementById('gx-drawer-backdrop');
+      if (bd) return bd;
+      bd = document.createElement('div');
+      bd.id = 'gx-drawer-backdrop';
+      bd.className = 'gx-drawer-backdrop';
+      bd.innerHTML =
+        '<aside class="gx-drawer" id="gx-drawer" role="dialog" aria-modal="true" aria-labelledby="gx-drawer-title">'
+        + '<div class="gx-drawer-head"><h3 id="gx-drawer-title"></h3>'
+        + '<button type="button" class="gx-drawer-close" aria-label="Close" onclick="gxCloseDrawer()">&times;</button></div>'
+        + '<div class="gx-drawer-body" id="gx-drawer-body"></div>'
+        + '<div class="gx-drawer-foot" id="gx-drawer-foot"></div></aside>';
+      document.body.appendChild(bd);
+      // Click on the dim backdrop (not the panel) closes.
+      bd.addEventListener('click', function (e) { if (e.target === bd) gxCloseDrawer(); });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && bd.classList.contains('open')) gxCloseDrawer();
+      });
+      return bd;
+    }
+    function gxOpenDrawer(title, content, opts) {
+      opts = opts || {};
+      const bd = gxEnsureDrawer();
+      document.getElementById('gx-drawer-title').textContent = title || '';
+      const body = document.getElementById('gx-drawer-body');
+      body.innerHTML = '';
+      if (typeof content === 'string') body.innerHTML = content;
+      else if (content) body.appendChild(content);   // a live DOM node (keeps listeners)
+      const foot = document.getElementById('gx-drawer-foot');
+      foot.innerHTML = '';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'gx-btn gx-btn-ghost';
+      cancel.textContent = opts.cancelLabel || 'Cancel';
+      cancel.onclick = gxCloseDrawer;
+      foot.appendChild(cancel);
+      if (opts.onSave) {
+        const save = document.createElement('button');
+        save.type = 'button';
+        save.className = 'gx-btn gx-btn-primary';
+        save.textContent = opts.saveLabel || 'Save';
+        save.onclick = function () { opts.onSave(); };
+        foot.appendChild(save);
+      }
+      requestAnimationFrame(function () {
+        bd.classList.add('open');
+        const d = document.getElementById('gx-drawer'); if (d) d.classList.add('open');
+      });
+      const first = body.querySelector('input,select,textarea,button');
+      if (first) { try { first.focus(); } catch (e) {} }
+    }
+    function gxCloseDrawer() {
+      const bd = document.getElementById('gx-drawer-backdrop'); if (!bd) return;
+      bd.classList.remove('open');
+      const d = document.getElementById('gx-drawer'); if (d) d.classList.remove('open');
     }
 
     function switchTab(tabId, btn) {
