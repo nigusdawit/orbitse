@@ -9835,7 +9835,9 @@ def robots_txt():
     if not base_url:
         base_url = request.url_root.rstrip("/")
 
-    # Standard robots.txt — allow all crawlers, point to sitemap
+    # Standard robots.txt — allow all crawlers, point to sitemap.
+    # The "# llms.txt:" line is a courtesy pointer for AI agents to the
+    # plain-language site map at /llms.txt (an emerging convention).
     content = (
         "User-agent: *\n"
         "Allow: /\n"
@@ -9845,8 +9847,85 @@ def robots_txt():
         "Disallow: /api/\n"
         "\n"
         f"Sitemap: {base_url}/sitemap.xml\n"
+        f"# llms.txt: {base_url}/llms.txt\n"
     )
     return Response(content, mimetype="text/plain")
+
+
+# =============================================================
+# PUBLIC — LLMS.TXT (AI-agent discoverability)
+# =============================================================
+
+@app.route("/llms.txt")
+def llms_txt():
+    """
+    GET /llms.txt
+    A plain-language, Markdown index of the site aimed at AI agents and
+    LLM-powered crawlers (an emerging convention, like robots.txt but for
+    LLMs). It lists the site identity plus every PUBLISHED page and blog
+    post with a one-line summary and absolute URL, so an agent can discover
+    and cite the most useful content without crawling the whole site.
+
+    Only published content is listed — drafts/archived pages never appear.
+    """
+    settings = query_db("SELECT * FROM site_settings WHERE id = 1",
+                        fetchone=True) or {}
+    site_name = (settings.get("site_name") or "My Site").strip() or "My Site"
+    description = (
+        (settings.get("seo_meta_description") or "").strip()
+        or (settings.get("hero_description") or "").strip()
+    )
+
+    # Resolve the canonical origin for absolute links (same rule as robots).
+    base_url = (settings.get("seo_canonical_url") or "").strip().rstrip("/")
+    if not base_url:
+        base_url = request.url_root.rstrip("/")
+
+    lines = [f"# {site_name}"]
+    if description:
+        lines.append("")
+        lines.append(f"> {description}")
+    lines.append("")
+    lines.append(f"- [Home]({base_url}/): The main {site_name} website.")
+
+    # --- Published AI-generated pages -----------------------------------
+    pages = query_db(
+        "SELECT title, slug, summary FROM generated_pages "
+        "WHERE status = 'published' ORDER BY updated_at DESC NULLS LAST, "
+        "created_at DESC"
+    ) or []
+    if pages:
+        lines.append("")
+        lines.append("## Pages")
+        for p in pages:
+            ptitle = (p.get("title") or "Untitled Page").strip()
+            psummary = (p.get("summary") or "").strip()
+            entry = f"- [{ptitle}]({base_url}/page/{p['slug']})"
+            if psummary:
+                entry += f": {psummary[:160]}"
+            lines.append(entry)
+
+    # --- Published blog posts (best-effort; table may be absent) ---------
+    try:
+        posts = query_db(
+            "SELECT title, slug, excerpt FROM blog_posts "
+            "WHERE status = 'published' ORDER BY published_at DESC NULLS LAST, "
+            "created_at DESC"
+        ) or []
+    except Exception:
+        posts = []
+    if posts:
+        lines.append("")
+        lines.append("## Blog")
+        for b in posts:
+            btitle = (b.get("title") or "Untitled Post").strip()
+            bexcerpt = (b.get("excerpt") or "").strip()
+            entry = f"- [{btitle}]({base_url}/blog/{b['slug']})"
+            if bexcerpt:
+                entry += f": {bexcerpt[:160]}"
+            lines.append(entry)
+
+    return Response("\n".join(lines) + "\n", mimetype="text/plain")
 
 
 # =============================================================
@@ -30853,6 +30932,146 @@ def api_generated_page_by_slug(slug):
     })
 
 
+def _generated_page_base_url():
+    """Resolve the canonical site origin for absolute URLs in <head>.
+
+    Prefers the admin-configured SEO canonical URL (Admin → SEO), and falls
+    back to the host the request came in on. Returned without a trailing
+    slash so callers can append paths cleanly.
+    """
+    settings = query_db(
+        "SELECT seo_canonical_url FROM site_settings WHERE id = 1",
+        fetchone=True,
+    ) or {}
+    base = (settings.get("seo_canonical_url") or "").strip().rstrip("/")
+    if not base:
+        base = request.url_root.rstrip("/")
+    return base
+
+
+def _build_generated_page_seo_head(page):
+    """Build the SEO <head> markup for a PUBLISHED AI-generated page.
+
+    This runs only when a published page is served at /page/<slug> — it does
+    NOT touch how the AI generates or previews a page (the draft HTML is
+    stored untouched; these tags are layered on at publish/serve time). It
+    adds everything a thin auto-page was missing for search + AI crawlers:
+      • <title> (brand-suffixed) + meta description
+      • robots directive + canonical URL (the page's own /page/<slug> URL)
+      • Open Graph + Twitter Card tags (rich social/agent previews)
+      • JSON-LD Article structured data (datePublished/Modified, publisher)
+      • favicon links
+
+    All values cascade from the page row first, then site-wide SEO settings,
+    so a page with a good summary gets a good description automatically and
+    everything stays industry-agnostic.
+
+    Returns a ready-to-insert HTML string (already escaped).
+    """
+    settings = query_db("SELECT * FROM site_settings WHERE id = 1",
+                         fetchone=True) or {}
+    site_name = (settings.get("site_name") or "My Site").strip() or "My Site"
+
+    # --- Title: page title, suffixed with the brand for attribution -------
+    raw_title = (page.get("title") or "Untitled Page").strip() or "Untitled Page"
+    title = raw_title
+    if site_name and site_name.lower() not in raw_title.lower():
+        title = f"{raw_title} | {site_name}"
+
+    # --- Description: page summary → stripped body text → site default ----
+    description = (page.get("summary") or "").strip()
+    if not description:
+        description = _curation_strip_html(page.get("html") or "")
+    if not description:
+        description = (settings.get("seo_meta_description") or "").strip()
+    # Search engines display ~155–160 chars; trim cleanly on a word boundary.
+    description = description[:300].strip()
+    if len(description) > 160:
+        cut = description[:160].rsplit(" ", 1)[0]
+        description = (cut or description[:160]).rstrip(" .,;:") + "…"
+
+    # --- URLs: canonical + og:url point at THIS page (not the homepage) ---
+    base_url = _generated_page_base_url()
+    page_url = f"{base_url}/page/{page['slug']}"
+
+    # --- Social share image: site-wide image → packaged default ----------
+    og_image = (settings.get("seo_og_image") or "").strip() or "/ai_concierge.png"
+    if og_image.startswith("/") and base_url:
+        # OG/Twitter want absolute URLs to render the preview card reliably.
+        og_image = base_url + og_image
+
+    robots = (settings.get("seo_robots") or "").strip() or "index, follow"
+    twitter_handle = (settings.get("seo_twitter_handle") or "").strip()
+
+    # --- Dates for the Article schema ------------------------------------
+    def _iso(dt):
+        try:
+            return dt.isoformat()
+        except Exception:
+            return ""
+    published_iso = _iso(page.get("created_at"))
+    modified_iso = _iso(page.get("updated_at")) or published_iso
+
+    # --- JSON-LD Article structured data ---------------------------------
+    article_ld = {
+        "@context": "https://schema.org",
+        "@type": "Article",
+        "headline": raw_title[:110],
+        "description": description,
+        "url": page_url,
+        "mainEntityOfPage": page_url,
+        "image": og_image,
+        "author": {"@type": "Organization", "name": site_name},
+        "publisher": {
+            "@type": "Organization",
+            "name": site_name,
+            "logo": {"@type": "ImageObject", "url": og_image},
+        },
+    }
+    if published_iso:
+        article_ld["datePublished"] = published_iso
+    if modified_iso:
+        article_ld["dateModified"] = modified_iso
+
+    lines = []
+    lines.append('    <!-- SEO meta — layered on at publish/serve time, not at generation -->')
+    lines.append(f'    <title>{_esc(title)}</title>')
+    lines.append(f'    <meta name="description" content="{_esc(description)}">')
+    lines.append(f'    <meta name="robots" content="{_esc(robots)}">')
+    lines.append(f'    <link rel="canonical" href="{_esc(page_url)}">')
+    lines.append('    <link rel="icon" type="image/png" href="/ai_concierge.png">')
+    lines.append('    <link rel="apple-touch-icon" href="/ai_concierge.png">')
+    # Open Graph
+    lines.append(f'    <meta property="og:title" content="{_esc(raw_title)}">')
+    lines.append(f'    <meta property="og:description" content="{_esc(description)}">')
+    lines.append('    <meta property="og:type" content="article">')
+    lines.append(f'    <meta property="og:url" content="{_esc(page_url)}">')
+    lines.append(f'    <meta property="og:image" content="{_esc(og_image)}">')
+    lines.append(f'    <meta property="og:site_name" content="{_esc(site_name)}">')
+    # Twitter Card
+    lines.append('    <meta name="twitter:card" content="summary_large_image">')
+    lines.append(f'    <meta name="twitter:title" content="{_esc(raw_title)}">')
+    lines.append(f'    <meta name="twitter:description" content="{_esc(description)}">')
+    lines.append(f'    <meta name="twitter:image" content="{_esc(og_image)}">')
+    if twitter_handle:
+        handle = twitter_handle if twitter_handle.startswith("@") else f"@{twitter_handle}"
+        lines.append(f'    <meta name="twitter:site" content="{_esc(handle)}">')
+    # JSON-LD — json.dumps produces valid JSON but does NOT neutralise an
+    # embedded "</script>", which could break out of this <script> tag and
+    # inject markup. Escape the HTML-significant chars as JSON unicode
+    # escapes (still valid JSON, no longer HTML-significant) to prevent XSS
+    # from a malicious page title/summary.
+    json_ld = json.dumps(article_ld, ensure_ascii=False, indent=2)
+    json_ld = (json_ld.replace("<", "\\u003c")
+                      .replace(">", "\\u003e")
+                      .replace("&", "\\u0026"))
+    lines.append('    <script type="application/ld+json">')
+    lines.append(json_ld)
+    lines.append('    </script>')
+
+    return "\n".join(lines)
+
+
 @app.route("/page/<slug>")
 def public_generated_page(slug):
     """GET /page/<slug> — Render a published AI-generated page."""
@@ -30872,12 +31091,22 @@ def public_generated_page(slug):
         )
     except Exception:
         pass
+    # Build the SEO <head> at serve time (published pages only — drafts 404
+    # above). Wrapped defensively so an SEO build hiccup can never stop the
+    # page itself from rendering.
+    try:
+        seo_head = _build_generated_page_seo_head(page)
+    except Exception as _seo_e:
+        print(f"[generated-page] SEO head build failed: {_seo_e}")
+        _safe_title = (page.get('title') or 'Page').replace('&', '&amp;') \
+            .replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+        seo_head = f'    <title>{_safe_title}</title>'
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{page['title'].replace('&','&amp;').replace('<','&lt;').replace('>','&gt;').replace('"','&quot;')}</title>
+{seo_head}
     <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=DM+Sans:wght@300;400;500;700&display=swap" rel="stylesheet">
     <style>
         body {{ margin: 0; padding: 0; background: #060b14; color: #e4e4e7; font-family: 'DM Sans', sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; }}
