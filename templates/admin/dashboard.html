@@ -5961,6 +5961,76 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
   }
 
+  // Datahub (task 057): render an assistant-built chart/KPI/table inline in the
+  // chat transcript. line/bar use Chart.js (loaded globally); kpi/table are
+  // simple cards. A "Save to dashboard" button (task 058) lets it persist.
+  let __adminChartSeq = 0;
+  function adminChatRenderChart(container, spec) {
+    if (!container || !spec) return;
+    const type = (spec.type || 'bar');
+    const title = adminChatEscape(spec.title || '');
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'max-width:80%;background:var(--admin-card);border:1px solid var(--admin-border);border-radius:.6rem;padding:.75rem 1rem;margin:.35rem 0;';
+    let inner = title ? `<div style="font-weight:600;margin-bottom:.5rem;">${title}</div>` : '';
+    if (type === 'kpi') {
+      inner += `<div style="font-size:1.8rem;font-weight:700;">${adminChatEscape(String(spec.value ?? ''))}</div>`
+             + `<div style="color:var(--admin-text-muted);font-size:.85rem;">${adminChatEscape(spec.label || '')}</div>`;
+      wrap.innerHTML = inner;
+    } else if (type === 'table') {
+      const cols = spec.columns || [];
+      let t = '<div style="overflow:auto;"><table style="width:100%;border-collapse:collapse;font-size:.85rem;"><thead><tr>';
+      cols.forEach(c => { t += `<th style="text-align:left;border-bottom:1px solid var(--admin-border);padding:.3rem .5rem;">${adminChatEscape(String(c))}</th>`; });
+      t += '</tr></thead><tbody>';
+      (spec.rows || []).slice(0, 100).forEach(r => {
+        t += '<tr>';
+        (r || []).forEach(v => { t += `<td style="border-bottom:1px solid var(--admin-border);padding:.3rem .5rem;">${adminChatEscape(String(v ?? ''))}</td>`; });
+        t += '</tr>';
+      });
+      t += '</tbody></table></div>';
+      wrap.innerHTML = inner + t;
+    } else {
+      // line / bar
+      const cid = 'admin-chat-chart-' + (++__adminChartSeq);
+      inner += `<div style="position:relative;height:240px;"><canvas id="${cid}"></canvas></div>`;
+      wrap.innerHTML = inner;
+      container.appendChild(wrap);
+      try {
+        if (window.Chart) {
+          const ctx = document.getElementById(cid).getContext('2d');
+          new Chart(ctx, {
+            type: type === 'line' ? 'line' : 'bar',
+            data: { labels: spec.labels || [], datasets: [{
+              label: spec.title || '', data: spec.values || [],
+              borderColor: '#4a6cf7',
+              backgroundColor: type === 'line' ? 'rgba(74,108,247,0.15)' : '#4a6cf7',
+              fill: type === 'line', tension: 0.3, pointRadius: 2 }] },
+            options: { responsive: true, maintainAspectRatio: false,
+                       plugins: { legend: { display: false } } }
+          });
+        } else {
+          wrap.insertAdjacentHTML('beforeend', '<div style="color:var(--admin-text-muted);font-size:.8rem;">(chart library not loaded)</div>');
+        }
+      } catch (e) {}
+      // "Save to dashboard" affordance (wired in task 058).
+      adminChatAttachSaveChart(wrap, spec);
+      return;
+    }
+    container.appendChild(wrap);
+    adminChatAttachSaveChart(wrap, spec);
+  }
+
+  // Placeholder until task 058 wires persistence; defined no-op-safe so 057
+  // works standalone.
+  function adminChatAttachSaveChart(wrap, spec) {
+    if (typeof window.__adminSaveChartToDashboard !== 'function') return;
+    const btn = document.createElement('button');
+    btn.textContent = '＋ Save to dashboard';
+    btn.className = 'acm-btn';
+    btn.style.cssText = 'margin-top:.5rem;font-size:.8rem;';
+    btn.onclick = () => window.__adminSaveChartToDashboard(spec, btn);
+    wrap.appendChild(btn);
+  }
+
   async function adminChatSend() {
     const input = document.getElementById('admin-chat-input');
     const sendBtn = document.getElementById('admin-chat-send-btn');
@@ -6158,6 +6228,10 @@ TO CUSTOMIZE THIS DASHBOARD:
                   toolBox.insertAdjacentHTML('beforeend',
                     adminChatActionCard(proposal.action_id, proposal.preview));
                 }
+                adminChatScrollDown();
+              } else if (evt.type === 'chart' && evt.spec) {
+                // Datahub (task 057): the assistant drew a chart/KPI/table inline.
+                try { adminChatRenderChart(toolBox, evt.spec); } catch (e) {}
                 adminChatScrollDown();
               } else if (evt.type === 'usage' && evt.usage) {
                 // Per-round token + cost badge appended under bubble.
