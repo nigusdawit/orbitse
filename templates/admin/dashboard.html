@@ -4325,88 +4325,66 @@ TO CUSTOMIZE THIS DASHBOARD:
   and one card in the highlights grid on the landing page.
   -->
   <div id="tab-cards" class="tab-content">
-    <div class="section-header-admin">
+    <div class="gx-head">
       <div>
-        <h2>Gallery Cards</h2>
-        <p>Manage the slides shown in the Explore gallery and the Highlights grid.</p>
+        <h2 class="gx-title">Gallery Cards</h2>
+        <p class="gx-sub">Manage the slides shown in the Explore gallery and the Highlights grid.</p>
       </div>
-      <button class="btn btn-primary" onclick="showCardForm()" data-testid="button-add-card">+ Add Card</button>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-primary" onclick="showCardForm()" data-testid="button-add-card">+ Add card</button>
+      </div>
     </div>
 
-    <!-- Card form (hidden by default, shown when adding/editing) -->
-    <div id="card-form-panel" class="form-panel" style="display:none;">
-      <h3 id="card-form-title">Add New Card</h3>
+    <!-- Card form — mounted into the gx-drawer by showCardForm()/editCard().
+         Field IDs + data-testids are unchanged so saveCard()/tests still work;
+         only the layout is regrouped into fieldsets. -->
+    <div id="card-form-panel" style="display:none;">
       <input type="hidden" id="card-form-id">
-      <div class="form-row">
-        <div class="form-group">
-          <label for="card-slug">Slug (URL-friendly ID)</label>
-          <input type="text" id="card-slug" placeholder="master-suite" data-testid="input-card-slug">
-        </div>
-        <div class="form-group">
-          <label for="card-title">Title</label>
-          <input type="text" id="card-title" placeholder="Master Suite" data-testid="input-card-title">
-        </div>
-        <div class="form-group">
-          <label for="card-subtitle">Subtitle</label>
-          <input type="text" id="card-subtitle" placeholder="Private Terrace & Ocean Views" data-testid="input-card-subtitle">
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label for="card-category">Category</label>
-          <select id="card-category" data-testid="select-card-category">
-            <option value="property">Property</option>
-            <option value="rooms">Featured</option>
-            <option value="amenities">Amenities</option>
-            <option value="dining">Dining</option>
-            <option value="experiences">Experiences</option>
-            <option value="location">Location</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label for="card-price">Price (optional)</label>
-          <input type="text" id="card-price" placeholder="From $1,800/night" data-testid="input-card-price">
-        </div>
-        <div class="form-group">
-          <label for="card-sort-order">Sort Order</label>
-          <input type="number" id="card-sort-order" placeholder="1" value="0" data-testid="input-card-sort">
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Basics</div>
+        <div class="gx-grid-fields">
+          <div class="gx-field"><label class="gx-label" for="card-title">Title<span class="gx-req">*</span></label>
+            <input class="gx-input" type="text" id="card-title" placeholder="Master Suite" data-testid="input-card-title"></div>
+          <div class="gx-field"><label class="gx-label" for="card-slug">Slug</label>
+            <input class="gx-input" type="text" id="card-slug" placeholder="master-suite" data-testid="input-card-slug"></div>
+          <div class="gx-field"><label class="gx-label" for="card-subtitle">Subtitle</label>
+            <input class="gx-input" type="text" id="card-subtitle" placeholder="Private Terrace & Ocean Views" data-testid="input-card-subtitle"></div>
+          <div class="gx-field"><label class="gx-label" for="card-category">Category</label>
+            <select class="gx-input" id="card-category" data-testid="select-card-category">
+              <option value="property">Property</option>
+              <option value="rooms">Featured</option>
+              <option value="amenities">Amenities</option>
+              <option value="dining">Dining</option>
+              <option value="experiences">Experiences</option>
+              <option value="location">Location</option>
+            </select></div>
+          <div class="gx-field"><label class="gx-label" for="card-price">Price (optional)</label>
+            <input class="gx-input" type="text" id="card-price" placeholder="From $1,800/night" data-testid="input-card-price"></div>
+          <div class="gx-field"><label class="gx-label" for="card-sort-order">Sort order</label>
+            <input class="gx-input" type="number" id="card-sort-order" placeholder="1" value="0" data-testid="input-card-sort"></div>
         </div>
       </div>
-      <div class="form-row">
-        <div class="form-group" style="grid-column: 1 / -1;">
-          <label for="card-image">Image URL</label>
-          <div style="display: flex; gap: 0.5rem;">
-            <input type="url" id="card-image" placeholder="https://images.unsplash.com/..." data-testid="input-card-image" style="flex:1;">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'card-image', mediaType:'image'})" data-testid="button-pick-card-image">Pick</button>
-            <button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('card-image')" data-testid="button-upload-card-image">Upload</button>
-          </div>
-        </div>
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Media</div>
+        <div class="gx-field"><label class="gx-label" for="card-image">Image URL</label>
+          <div class="gx-media-field">
+            <input class="gx-input" type="url" id="card-image" placeholder="https://images.unsplash.com/..." data-testid="input-card-image">
+            <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'card-image', mediaType:'image'})" data-testid="button-pick-card-image">🖼</button>
+            <button type="button" class="gx-icon-btn" title="Upload" onclick="uploadImageFor('card-image')" data-testid="button-upload-card-image">⤴</button>
+          </div></div>
+        <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="card-video">Video URL <span class="gx-hint">(optional — overrides image)</span></label>
+          <div class="gx-media-field">
+            <input class="gx-input" type="url" id="card-video" placeholder="/uploads/clip.mp4" data-testid="input-card-video">
+            <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'card-video', mediaType:'video'})" data-testid="button-pick-card-video">🎬</button>
+            <button type="button" class="gx-icon-btn" title="Clear" onclick="document.getElementById('card-video').value=''" data-testid="button-clear-card-video">✕</button>
+          </div></div>
       </div>
-      <div class="form-row">
-        <div class="form-group" style="grid-column: 1 / -1;">
-          <label for="card-video">Video URL <span style="color:var(--admin-text-muted); font-weight:normal;">(optional — overrides image)</span></label>
-          <div style="display: flex; gap: 0.5rem;">
-            <input type="url" id="card-video" placeholder="/uploads/clip.mp4" data-testid="input-card-video" style="flex:1;">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'card-video', mediaType:'video'})" data-testid="button-pick-card-video">Pick</button>
-            <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('card-video').value=''" data-testid="button-clear-card-video">Clear</button>
-          </div>
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group" style="grid-column: 1 / -1;">
-          <label for="card-description">Description</label>
-          <textarea id="card-description" rows="3" placeholder="A description of this space..." data-testid="input-card-description"></textarea>
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group" style="grid-column: 1 / -1;">
-          <label for="card-details">Details (one per line — these appear as bullet points)</label>
-          <textarea id="card-details" rows="4" placeholder="King bed with Italian linens&#10;Private ocean-view terrace&#10;Walk-in rain shower" data-testid="input-card-details"></textarea>
-        </div>
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-secondary" onclick="hideCardForm()" data-testid="button-cancel-card">Cancel</button>
-        <button class="btn btn-primary" onclick="saveCard()" data-testid="button-save-card">Save Card</button>
+      <div class="gx-fieldset" style="margin-bottom:0">
+        <div class="gx-fieldset-h">Content</div>
+        <div class="gx-field"><label class="gx-label" for="card-description">Description</label>
+          <textarea class="gx-input" id="card-description" rows="3" placeholder="A description of this space..." data-testid="input-card-description"></textarea></div>
+        <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="card-details">Details <span class="gx-hint">(one per line — shown as bullet points)</span></label>
+          <textarea class="gx-input" id="card-details" rows="4" placeholder="King bed with Italian linens&#10;Private ocean-view terrace&#10;Walk-in rain shower" data-testid="input-card-details"></textarea></div>
       </div>
     </div>
 
@@ -13105,30 +13083,26 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     /** Show the card form for adding a new card */
     function showCardForm() {
-      document.getElementById('card-form-panel').style.display = 'block';
-      document.getElementById('card-form-title').textContent = 'Add New Card';
       document.getElementById('card-form-id').value = '';
       document.getElementById('card-slug').value = '';
       document.getElementById('card-title').value = '';
       document.getElementById('card-subtitle').value = '';
-      document.getElementById('card-category').value = 'featured';
+      document.getElementById('card-category').value = 'property';
       document.getElementById('card-price').value = '';
       document.getElementById('card-sort-order').value = '0';
       document.getElementById('card-image').value = '';
       document.getElementById('card-video').value = '';
       document.getElementById('card-description').value = '';
       document.getElementById('card-details').value = '';
+      const p = document.getElementById('card-form-panel'); p.style.display = '';
+      gxOpenDrawer('Add gallery card', p, { onSave: saveCard, saveLabel: 'Save card' });
     }
 
-    /** Hide the card form */
-    function hideCardForm() {
-      document.getElementById('card-form-panel').style.display = 'none';
-    }
+    /** Hide the card form (closes the drawer) */
+    function hideCardForm() { gxCloseDrawer(); }
 
-    /** Populate the card form for editing an existing card */
+    /** Populate the card form for editing an existing card, then open the drawer */
     function editCard(card) {
-      document.getElementById('card-form-panel').style.display = 'block';
-      document.getElementById('card-form-title').textContent = 'Edit Card: ' + card.title;
       document.getElementById('card-form-id').value = card.id;
       document.getElementById('card-slug').value = card.slug;
       document.getElementById('card-title').value = card.title;
@@ -13139,10 +13113,11 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('card-image').value = card.image_url;
       document.getElementById('card-video').value = card.video_url || '';
       document.getElementById('card-description').value = card.description;
-
       /* Convert details array back to newline-separated text */
       const details = Array.isArray(card.details) ? card.details : [];
       document.getElementById('card-details').value = details.join('\n');
+      const p = document.getElementById('card-form-panel'); p.style.display = '';
+      gxOpenDrawer('Edit card: ' + (card.title || ''), p, { onSave: saveCard, saveLabel: 'Save card' });
     }
 
     /** Save a card (create new or update existing) */
