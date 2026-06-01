@@ -38052,6 +38052,19 @@ def admin_datahub_get_annotations(cid):
     return jsonify(_dh_annotations(cid))
 
 
+@app.route("/admin/api/datahub/<int:cid>/schema", methods=["GET"])
+@admin_required
+def admin_datahub_schema(cid):
+    """Physical schema MERGED with saved annotations, for the Datahub tab's
+    browser. ?table=<name> returns that table's columns; otherwise an overview
+    (tables + relationships + examples). Super-admin only."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    table = (request.args.get("table") or "").strip() or None
+    return jsonify(_admin_tool_inspect_connection(cid, table=table))
+
+
 @app.route("/admin/api/datahub/<int:cid>/table-annotation", methods=["PUT"])
 @admin_required
 def admin_datahub_upsert_table(cid):
