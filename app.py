@@ -15619,6 +15619,185 @@ def _admin_tool_run_sql(sql=None, **_):
             except Exception: pass
 
 
+# =============================================================================
+# DATAHUB — connection-aware introspection + read-only query (task 054)
+# =============================================================================
+# Let the Business Assistant inspect + query ANY connected database (the app's
+# own = connection 0, or an external_data_connections row) using the semantic
+# layer (task 053) as context. The decrypted connection URL NEVER reaches the
+# model — it only passes a connection_id. Everything is read-only and
+# double-guarded (_admin_safe_sql + the read-only session in
+# _run_external_postgres).
+
+def _dh_postgres_url(connection_id):
+    """Return (url, error). url is None for connection 0 (the app's own DB, which
+    is queried via the in-process safe path). For an external id, decrypt its
+    Postgres URL. REST connections / unknown ids return an error."""
+    cid = int(connection_id or 0)
+    if cid == 0:
+        return None, None
+    row = query_db("SELECT kind, encrypted_config FROM external_data_connections "
+                   "WHERE id=%s", (cid,), fetchone=True)
+    if not row:
+        return None, f"Connection {cid} not found."
+    if row["kind"] != "postgres":
+        return None, "That connection is a REST API, not a SQL database — can't run SQL on it."
+    try:
+        return decrypt_secret(row["encrypted_config"]), None
+    except Exception:
+        return None, "Could not read the connection's configuration."
+
+
+def _admin_tool_inspect_connection(connection_id=0, table=None, **_):
+    """Introspect a connection's schema MERGED with the saved semantic layer.
+    Without `table`: an overview (table names + their descriptions + relationships
+    + example queries). With `table`: that table's columns + their descriptions,
+    semantic types, sensitivity, and sample values. Read-only. The AI should call
+    this before querying so its SQL matches the real (annotated) schema."""
+    try:
+        cid = int(connection_id or 0)
+    except (TypeError, ValueError):
+        cid = 0
+    ann = _dh_annotations(cid)
+    tbl_desc = {t["table_name"]: t for t in ann["tables"]}
+    col_desc = {}
+    for cdef in ann["columns"]:
+        col_desc.setdefault(cdef["table_name"], {})[cdef["column_name"]] = cdef
+
+    # Resolve the physical schema for the connection.
+    url, err = _dh_postgres_url(cid)
+    if err:
+        return {"error": err}
+    if not table:
+        # Overview: table list (+ descriptions). Keep it bounded.
+        if cid == 0:
+            names = [t["table_name"] for t in (query_db(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema='public' AND table_type='BASE TABLE' "
+                "ORDER BY table_name") or [])]
+        else:
+            res = _run_external_postgres(
+                url, "SELECT table_name FROM information_schema.tables "
+                     "WHERE table_schema='public' ORDER BY table_name", max_rows=500)
+            names = [r[0] for r in res.get("rows", [])]
+        tables = []
+        for n in names[:200]:
+            d = tbl_desc.get(n) or {}
+            tables.append({"table": n, "description": d.get("description", ""),
+                           "is_sensitive": bool(d.get("is_sensitive")),
+                           "reviewed": bool(d.get("reviewed"))})
+        return {"connection_id": cid, "tables": tables,
+                "relationships": [{k: r[k] for k in ("from_table", "from_column",
+                                   "to_table", "to_column", "description")}
+                                  for r in ann["relationships"]],
+                "examples": [{"question": e["question"], "sql": e["sql"],
+                              "notes": e.get("notes", "")} for e in ann["examples"]],
+                "hint": "Call again with a `table` to see its columns + meanings."}
+    # Single-table column detail.
+    tname = str(table)
+    if cid == 0:
+        cols = query_db(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name=%s ORDER BY ordinal_position",
+            (tname,)) or []
+        cols = [{"column": c["column_name"], "type": c["data_type"]} for c in cols]
+    else:
+        _lit = "'" + tname.replace("'", "''") + "'"   # safe SQL string literal
+        res = _run_external_postgres(
+            url, "SELECT column_name, data_type FROM information_schema.columns "
+                 f"WHERE table_schema='public' AND table_name={_lit} "
+                 "ORDER BY ordinal_position", max_rows=500)
+        cols = [{"column": r[0], "type": r[1]} for r in res.get("rows", [])]
+    if not cols:
+        return {"error": f"Table '{tname}' not found on connection {cid}."}
+    cmap = col_desc.get(tname, {})
+    for c in cols:
+        d = cmap.get(c["column"]) or {}
+        c["description"] = d.get("description", "")
+        c["semantic_type"] = d.get("semantic_type", "")
+        c["is_sensitive"] = bool(d.get("is_sensitive"))
+    return {"connection_id": cid, "table": tname,
+            "table_description": (tbl_desc.get(tname) or {}).get("description", ""),
+            "columns": cols}
+
+
+def _dh_admin_context(max_tables=40, max_examples=8):
+    """Compact, prompt-ready summary of the APP DB's REVIEWED semantic layer
+    (connection 0) — table meanings, relationships, example queries — so the
+    Business Assistant understands the schema up front. Returns "" when nothing
+    has been reviewed yet (so it's a pure no-op until the Datahub is used).
+    Only REVIEWED rows are injected — AI-drafted-but-unreviewed rows are not
+    treated as ground truth."""
+    try:
+        tabs = query_db(
+            "SELECT table_name, description FROM db_table_annotations "
+            "WHERE connection_id=0 AND reviewed=TRUE AND description<>'' "
+            "ORDER BY table_name LIMIT %s", (max_tables,)) or []
+        rels = query_db(
+            "SELECT from_table, from_column, to_table, to_column, description "
+            "FROM db_relationships WHERE connection_id=0 AND reviewed=TRUE "
+            "ORDER BY from_table LIMIT 40") or []
+        exs = query_db(
+            "SELECT question, sql FROM db_query_examples "
+            "WHERE connection_id=0 AND reviewed=TRUE ORDER BY id DESC LIMIT %s",
+            (max_examples,)) or []
+        if not tabs and not rels and not exs:
+            return ""
+        lines = ["DATA DICTIONARY (this site's database — admin-reviewed). Use "
+                 "these meanings when writing SQL; call admin_inspect_connection "
+                 "for column-level detail:"]
+        for t in tabs:
+            lines.append(f"  - {t['table_name']}: {t['description']}")
+        if rels:
+            lines.append("Relationships:")
+            for r in rels:
+                lines.append(f"  - {r['from_table']}.{r['from_column']} -> "
+                             f"{r['to_table']}.{r['to_column']}"
+                             + (f" ({r['description']})" if r.get('description') else ""))
+        if exs:
+            lines.append("Example queries:")
+            for e in exs:
+                lines.append(f"  Q: {e['question']}\n  SQL: {e['sql']}")
+        return "\n".join(lines)[:6000]
+    except Exception:
+        return ""
+
+
+def _admin_tool_query_connection(connection_id=0, sql=None, **_):
+    """Run a READ-ONLY SELECT/WITH query against a connection (0 = the app's own
+    DB). Same guardrails as admin_run_sql, applied to external connections too:
+    single statement, no writes/DDL, row + time caps, auto-rollback. The decrypted
+    connection URL never reaches the model."""
+    try:
+        cid = int(connection_id or 0)
+    except (TypeError, ValueError):
+        cid = 0
+    if cid == 0:
+        return _admin_tool_run_sql(sql=sql)   # in-process safe path (+ redaction)
+    url, err = _dh_postgres_url(cid)
+    if err:
+        return {"error": err}
+    safe, serr = _admin_safe_sql(sql or "")   # read-only / single-statement / keyword guard
+    if serr:
+        return {"error": serr}
+    try:
+        if get_ai_setting("sqlguard_enabled"):
+            from pylego import sqlguard as _sg
+            _ok, _reason = _sg.check(safe)
+            if not _ok:
+                return {"error": f"Blocked by SQL guard: {_reason}"}
+    except Exception:
+        pass
+    try:
+        res = _run_external_postgres(url, safe, max_rows=100, timeout_ms=5000)
+    except Exception as e:
+        return {"error": f"Query error: {str(e)[:300]}"}
+    return {"connection_id": cid, "sql": safe,
+            "columns": res.get("columns", []), "rows": res.get("rows", []),
+            "row_count": len(res.get("rows", [])),
+            "truncated": len(res.get("rows", [])) == 100}
+
+
 def _admin_tool_list_skills():
     rows = query_db(
         "SELECT name, display_name, category, builtin, enabled, description "
@@ -18385,6 +18564,8 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_list_tables":            _admin_tool_list_tables,
     "admin_describe_table":         _admin_tool_describe_table,
     "admin_run_sql":                _admin_tool_run_sql,
+    "admin_inspect_connection":     _admin_tool_inspect_connection,
+    "admin_query_connection":       _admin_tool_query_connection,
     "admin_list_skills":            _admin_tool_list_skills,
     "admin_recent_visitor_chats":   _admin_tool_recent_visitor_chats,
     "admin_recent_orders":          _admin_tool_recent_orders,
@@ -18519,6 +18700,29 @@ ADMIN_TOOLS = [
         "For WRITES, use admin_propose_* instead.",
         {"type": "object",
          "properties": {"sql": {"type": "string",
+                                "description": "A single SELECT statement."}},
+         "required": ["sql"]}),
+    _admin_tool_schema(
+        "admin_inspect_connection",
+        "Inspect a connected database's schema MERGED with its saved "
+        "descriptions (the Datahub semantic layer). connection_id 0 = this "
+        "site's own database; other ids are external connections. Call with no "
+        "`table` for an overview (tables + meanings + relationships + example "
+        "queries), then with a `table` for that table's columns + meanings. "
+        "ALWAYS inspect before querying a connection so your SQL matches the "
+        "real, annotated schema.",
+        {"type": "object",
+         "properties": {"connection_id": {"type": "integer", "default": 0},
+                        "table": {"type": "string"}}}),
+    _admin_tool_schema(
+        "admin_query_connection",
+        "Run a READ-ONLY SQL query (SELECT / WITH) against a connected database. "
+        "connection_id 0 = this site's own database; other ids are external "
+        "connections. Same guardrails as admin_run_sql (no writes/DDL, single "
+        "statement, row + time caps). Use admin_inspect_connection first.",
+        {"type": "object",
+         "properties": {"connection_id": {"type": "integer", "default": 0},
+                        "sql": {"type": "string",
                                 "description": "A single SELECT statement."}},
          "required": ["sql"]}),
     _admin_tool_schema(
@@ -20808,6 +21012,15 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8,
         except Exception as _e:
             print(f"[scope] admin prompt compose failed: {_e}")
     messages = [{"role": "system", "content": _admin_sys}]
+    # Datahub (task 054): inject the app DB's admin-reviewed data dictionary as a
+    # second system note so the assistant writes correct SQL. No-op (empty) until
+    # the Datahub has reviewed annotations, so this changes nothing by default.
+    try:
+        _dh_ctx = _dh_admin_context()
+        if _dh_ctx:
+            messages.append({"role": "system", "content": _dh_ctx})
+    except Exception:
+        pass
     for h in history:
         r = h.get("role")
         if r == "assistant" and h.get("tool_calls_json"):
