@@ -286,7 +286,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     .section-header-admin h2 {
       font-family: var(--font-serif);
       font-size: 1.5rem;
-      color: #fff;
+      color: var(--admin-text);
     }
 
     .section-header-admin p {
@@ -2238,6 +2238,28 @@ TO CUSTOMIZE THIS DASHBOARD:
     /* chat bubbles: assistant = glass surface, user = accent-tinted */
     .chat-msg-assistant, .admin-chat-bubble-assistant{ background:var(--admin-surface) !important; border:1px solid var(--admin-border) !important; border-radius:14px !important; }
     .chat-msg-user, .admin-chat-bubble-user{ background:color-mix(in srgb, var(--admin-accent) 14%, transparent) !important; border:1px solid color-mix(in srgb, var(--admin-accent) 26%, transparent) !important; border-radius:14px !important; }
+
+    /* ---- Roll the bar onto SHARED legacy classes → uplifts all standard
+       CRUD/settings tabs at once (.form-panel / .form-group / .btn / .data-table). ---- */
+    .form-panel{ padding:1.4rem 1.45rem; }
+    .form-group label{ font-size:.72rem; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--admin-text-muted); }
+    .form-group input, .form-group select, .form-group textarea, .form-input{ border-radius:10px; }
+    .form-group input:focus, .form-group select:focus, .form-group textarea:focus{
+      border-color:var(--admin-accent) !important;
+      box-shadow:0 0 0 3px color-mix(in srgb, var(--admin-accent) 25%, transparent) !important; }
+    .btn{ border-radius:10px; padding:.55rem .95rem; font-weight:600; }
+    .data-table th{ font-size:.72rem; letter-spacing:.04em; }
+    .data-table tr:hover td{ background:color-mix(in srgb, var(--admin-text) 5%, transparent); }
+
+    /* RTE content surfaces (blog / page-layout editors) hardcode #fff headings +
+       rgba-white body text — invisible on a light editor. Re-point to tokens in
+       light only (dark base is already correct). */
+    html[data-admin-theme="light"] .rte-editor,
+    html[data-admin-theme="light"] .rte-preview,
+    html[data-admin-theme="light"] .rte-editor h2, html[data-admin-theme="light"] .rte-editor h3,
+    html[data-admin-theme="light"] .rte-preview h2, html[data-admin-theme="light"] .rte-preview h3{ color:var(--admin-text); }
+    html[data-admin-theme="light"] .rte-editor blockquote,
+    html[data-admin-theme="light"] .rte-preview blockquote{ color:var(--admin-text-muted); }
   </style>
   <script>window.__ADMIN_APPEARANCE__ = {{ appearance|tojson }};</script>
 </head>
