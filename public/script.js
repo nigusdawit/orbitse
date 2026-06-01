@@ -5840,20 +5840,20 @@ function setupBuiltinChat() {
   const isAvatarImage = avatarVal.startsWith('/') || avatarVal.startsWith('http');
   document.querySelectorAll('#chatbot-avatar, #chatbot-panel-avatar, #split-chat-avatar, #side-chat-avatar').forEach(el => {
     if (isAvatarImage) {
-      el.innerHTML = `<img src="${avatarVal}" alt="AI Concierge" class="chatbot-avatar-img">`;
+      el.innerHTML = `<img src="${avatarVal}" alt="AI Assistant" class="chatbot-avatar-img">`;
     } else {
       el.textContent = avatarVal;
     }
   });
 
   /* Update agent name across all locations */
-  const agentName = chatSettings.agent_name || 'Marco';
+  const agentName = chatSettings.agent_name || 'AI Assistant';
   document.querySelectorAll('#chatbot-agent-name, #chatbot-panel-name, #split-chat-name, #side-chat-name').forEach(el => {
     el.textContent = agentName;
   });
 
   /* Update agent role across all locations */
-  const agentRole = chatSettings.agent_role || 'Concierge';
+  const agentRole = chatSettings.agent_role || 'Assistant';
   document.querySelectorAll('#chatbot-agent-role, #chatbot-panel-role, #split-chat-role, #side-chat-role').forEach(el => {
     el.textContent = agentRole;
   });

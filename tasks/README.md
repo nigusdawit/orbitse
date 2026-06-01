@@ -83,6 +83,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 049 | Epic F: live AI phone call (Twilio Voice + media bridge) | done | task/049-live-call | 048 | Gate 10/10 + migration 0018 clean; Twilio Voice webhooks + voice_calls table + gating + TwiML (Stream→wss when configured). security-review: 1 fixed (HIGH: fail-closed without auth token). Live media bridge = operator runbook |
 | 050 | Phase 6 admin dashboard tabs (Offers, Personas, Leads & CRM) | done | task/050-phase6-admin-tabs | 042-049 | Gate 2/2 (render markers + role gating); super-admin CRUD UI for offers/personas + read-only Leads & CRM multi-pane (leads/callbacks/meetings/voice/profiles). node --check clean, dep-free |
 | 051 | Epic F activation (book_meeting ISO datetime + voice media bridge) | done | task/051-epicf-activation | 047,049 | Gate 13/13 meetings (+migration 0019) + 8/8 voice_bridge; book_meeting validates a model-supplied RFC3339 start before any calendar push (else store-only); provider-flexible voice_bridge/ (echo + openai realtime + slots), live server/call = operator runbook |
+| 052 | Make public sections industry-agnostic (Task #9) | done | task/052-neutral-copy | — | Gate 8/8 + migration 0023 (neutralizes live rows still on old defaults) verified on injected old data; neutralized section nav, landing headers, chat persona (Marco/Concierge), system prompt, blog seed, quick prompts across app.py + index.html + script.js. Layout/schema untouched |
 
 **Status legend:** not_started | in_progress | paused | blocked | awaiting_review | done
 

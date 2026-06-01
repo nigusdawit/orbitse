@@ -1779,7 +1779,7 @@ def init_db():
                     agent_role    TEXT NOT NULL DEFAULT 'Assistant',
                     agent_avatar  TEXT NOT NULL DEFAULT 'A',
                     greeting      TEXT NOT NULL DEFAULT 'Welcome! I''m your AI assistant. How can I help you today?',
-                    quick_prompts JSONB DEFAULT '["Browse our gallery", "Tell me more", "What do you offer?", "Show me pricing"]'::jsonb,
+                    quick_prompts JSONB DEFAULT '["Browse our offerings", "Tell me more", "What do you offer?", "Show me pricing"]'::jsonb,
                     api_endpoint  TEXT NOT NULL DEFAULT '/api/chat',
                     embed_code    TEXT NOT NULL DEFAULT '',
                     system_prompt TEXT NOT NULL DEFAULT '',
@@ -2773,7 +2773,7 @@ def init_db():
                     greeting, quick_prompts, api_endpoint, embed_code)
                 VALUES (1, false, 'builtin', 'AI Assistant', 'Assistant', 'A',
                     'Welcome! I''m your AI assistant. How can I help you today?',
-                    '["Browse our gallery", "Tell me more", "What do you offer?", "Show me pricing"]'::jsonb,
+                    '["Browse our offerings", "Tell me more", "What do you offer?", "Show me pricing"]'::jsonb,
                     '/api/chat', '')
                 ON CONFLICT (id) DO NOTHING
             """)
@@ -3673,8 +3673,8 @@ def init_db():
             if section_count == 0:
                 built_in_sections = [
                     ('hero',         'Hero',            'built_in', 'hero',         0, True),
-                    ('highlights',   'Gallery Highlights', 'built_in', 'highlights', 1, True),
-                    ('experiences',  'Experiences & Pricing', 'built_in', 'experiences', 2, True),
+                    ('highlights',   'Highlights',      'built_in', 'highlights', 1, True),
+                    ('experiences',  'Offerings & Pricing', 'built_in', 'experiences', 2, True),
                     ('testimonials', 'Testimonials',    'built_in', 'testimonials', 3, False),
                     ('team',         'Our Team',        'built_in', 'team',         4, False),
                     ('faq',          'FAQ',             'built_in', 'faq',          5, False),
@@ -3782,7 +3782,7 @@ def init_db():
                         'The Art of First Impressions: Why Every Detail Matters',
                         'How thoughtful design transforms ordinary moments into lasting memories',
                         'First impressions are formed in milliseconds, yet their impact endures for years. Discover how attention to detail — from the warmth of a greeting to the subtlety of ambient lighting — shapes the way people experience your space and your brand.',
-                        '<p>First impressions are formed in milliseconds, yet their impact endures for years. Whether you are welcoming a guest into a boutique hotel, greeting a client at your office, or launching a new product online, the initial moment of contact sets the tone for everything that follows.</p>
+                        '<p>First impressions are formed in milliseconds, yet their impact endures for years. Whether you are greeting a customer in person, meeting a client at your office, or launching a new product online, the initial moment of contact sets the tone for everything that follows.</p>
 
 <h2>The Science Behind First Impressions</h2>
 <p>Research in cognitive psychology shows that people make judgments about trustworthiness, competence, and likability within the first seven seconds of an encounter. These snap judgments are remarkably persistent — once formed, they color every subsequent interaction.</p>
@@ -9388,7 +9388,7 @@ def _render_hero_fragment(mode):
         '<p id="hero-description" class="hero-description" data-testid="text-hero-description">Loading...</p>'
         '<div class="hero-buttons">'
         '<button class="btn-secondary" onclick="showGallery()" '
-        'aria-label="Explore the gallery" data-testid="button-explore-gallery">Explore Gallery</button>'
+        'aria-label="Browse highlights" data-testid="button-explore-gallery">Browse Highlights</button>'
         '<button id="btn-sphere-view" class="btn-secondary" onclick="showSphereView()" '
         'aria-label="Open immersive sphere view" data-testid="button-explore-sphere" style="display:none;">'
         '&#x2728; Immersive View</button>'
@@ -10608,7 +10608,7 @@ def api_chatbot_settings():
 # This sample system prompt teaches an AI agent how to control the website.
 # Copy and customize this when connecting to your own AI provider.
 SYSTEM_PROMPT = """
-You are an intelligent, warm, and knowledgeable concierge for this website.
+You are an intelligent, warm, and knowledgeable assistant for this website.
 You have deep knowledge of everything this business offers — its offerings,
 services, products, pricing, and details. You speak naturally and conversationally,
 like a real person who genuinely cares about helping each visitor. Adapt your tone to
@@ -10620,8 +10620,8 @@ descriptions from the site data below.
 ═══════════════════════════════════════════════════════════════════════
 SCOPE — HELP GENEROUSLY, ONLY BLOCK ZERO-CORRELATION REQUESTS
 ═══════════════════════════════════════════════════════════════════════
-You are a concierge for THIS specific business — but think of yourself
-as a great human concierge or front-desk expert. A great concierge
+You are an assistant for THIS specific business — but think of yourself
+as a great human assistant or knowledgeable expert. A great assistant
 doesn't say "sorry, I only know about this one thing." They help with
 anything a customer might reasonably wonder about while exploring,
 choosing, or using what the business offers — related needs, nearby
@@ -10631,7 +10631,7 @@ of a product or service, helpful context, and practical tips.
 DEFAULT POSTURE — HELP. Lean strongly toward answering. If there's
 even a little plausible connection between the visitor's question and
 what this business offers (or their decision to become a customer),
-HELP. Don't overthink "is this on-topic." If a real concierge would
+HELP. Don't overthink "is this on-topic." If a real assistant would
 entertain the question, you should too.
 
 ANCHOR FIRST, THEN FLOW OUTWARD. Use the site data below as your
@@ -10650,14 +10650,14 @@ whatever the industry:
   - Logistics around becoming a customer → location, hours, booking,
     pricing, getting started, and what happens next — all fair game.
 
-A great concierge would also share light, relevant general knowledge
+A great assistant would also share light, relevant general knowledge
 to be helpful when it connects to the visitor's needs. If you
 genuinely don't know something specific, say so briefly and offer to
 help with what you DO know about this business.
 
 ONLY BLOCK ZERO-CORRELATION REQUESTS. The bar for declining is high.
 Decline only when the request has no plausible connection AT ALL to
-the visitor's experience here or to anything a concierge would
+the visitor's experience here or to anything a helpful assistant would
 reasonably help with. The narrow no-go list:
 
   - Programming, coding, debugging, technical how-tos
@@ -10677,7 +10677,7 @@ EXAMPLES (note how generously the bar swings toward helping):
       Want me to show you what we offer?"
 
   "What's the best option for someone in my situation?"
-    → HELP. This is core concierge territory. Ask a quick clarifying
+    → HELP. This is core territory. Ask a quick clarifying
       question if needed, then recommend the best-fit offering and
       explain why, or offer to put together a comparison page.
 
@@ -10690,7 +10690,7 @@ EXAMPLES (note how generously the bar swings toward helping):
       interested in, and point to anything related the business offers.
 
   "Where are you located?" / "What are your hours?" / "How do I get started?"
-    → HELP. Standard concierge questions — answer directly.
+    → HELP. Standard questions — answer directly.
 
   "Tell me a joke."
     → SOFT DECLINE. Reply: "Ha — not really my thing. But I do know
@@ -28033,9 +28033,9 @@ def admin_update_chatbot():
         (
             data.get("enabled", False),
             data.get("mode", "builtin"),
-            data.get("agent_name", "Marco"),
-            data.get("agent_role", "Concierge"),
-            data.get("agent_avatar", "M"),
+            data.get("agent_name", "AI Assistant"),
+            data.get("agent_role", "Assistant"),
+            data.get("agent_avatar", "A"),
             data.get("greeting", ""),
             json.dumps(data.get("quick_prompts", [])),
             data.get("api_endpoint", "/api/chat"),
