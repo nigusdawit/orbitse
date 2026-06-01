@@ -99,6 +99,19 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 060 | Datahub follow-ups: is_sensitive toggle + live-verify | done | task/060-datahub-followups | 059 | Column-editor sensitive checkbox (persists); live browser pass of the tab; also fixed Connect-a-database (prompt→modal) |
 | 061 | Multi-DB connectors (MySQL + "Any database URL") | done | task/061-multidb-connectors | 059 | Gate 8/8 (+47 combined); Postgres keeps psycopg2, MySQL+generic via SQLAlchemy (pymysql); kind-aware run/introspect dispatch for datahub + dashboard widgets; connections shared across both surfaces; modal kind dropdown. Live MySQL = operator step |
 
+## Phase 8 — Research & Content Engine (refactor the weak scraper into deep research + a content studio; all super-admin-gated, default-off, additive)
+
+| ID | Title | Status | Branch | Depends on | Drift |
+|----|-------|--------|--------|------------|-------|
+| 062 | Foundation: Sources/reports/drafts/capabilities schema + knobs + read APIs | done | task/062-research-content-foundation | — | Gate 6/6 + migration 0026; 4 tables; AI Control group "Research & Content" (8 knobs, all default-off + master-switch); read APIs for reports(+sources) & drafts |
+| 063 | Gather: multi-source fetch into the Sources layer | done | task/063-research-gather | 062 | Gate 8/8; reuses scraper SSRF-guarded fetch + render fallback; content-hash dedup; rate-limited; gather_sources tool + POST /admin/api/research/gather; gated by research_hub_enabled |
+| 064 | Deep Research: fan-out → fetch → cited synthesis | not_started | task/064-deep-research | 063 | |
+| 065 | Content Studio (text): one report → many drafts, review-gated | not_started | task/065-content-studio-text | 062 | |
+| 066 | Visual content scaffold: image/diagram/clip gen + stitch + embed | not_started | task/066-visual-content | 065 | |
+| 067 | Publish capabilities registry + auto-post (mcp/webhook/http_api/python) | not_started | task/067-publish-capabilities | 062 | |
+| 068 | Automation links: triggers → research/generate/publish actions | not_started | task/068-automation-links | 064,065,067 | |
+| 069 | Research Hub + Content Studio tabs (UI) | not_started | task/069-rce-tabs | 064,065 | |
+
 **Status legend:** not_started | in_progress | paused | blocked | awaiting_review | done
 
 **Concurrency note:** M1 and M2 touch disjoint files (visitor widget/chat vs admin shell) and can run
