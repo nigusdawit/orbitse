@@ -3291,6 +3291,76 @@ def init_db():
                 );
                 CREATE INDEX IF NOT EXISTS idx_widgets_dashboard
                     ON dashboard_widgets (dashboard_id);
+
+                -- =========================================================
+                -- DATAHUB — semantic layer (Phase 7 / task 053)
+                -- =========================================================
+                -- Human/AI descriptions of a data source's schema so the
+                -- Business Assistant writes correct SQL. connection_id 0 means
+                -- THE APP'S OWN database; any other id references an
+                -- external_data_connections row. ai_generated/reviewed drive the
+                -- "AI-suggested · review" UX: the assistant drafts rows
+                -- (ai_generated=true, reviewed=false) and a super-admin edits
+                -- what's wrong (manual save → reviewed=true). Also migration 0024.
+                CREATE TABLE IF NOT EXISTS db_table_annotations (
+                    id            BIGSERIAL PRIMARY KEY,
+                    connection_id INTEGER NOT NULL DEFAULT 0,
+                    table_name    TEXT NOT NULL,
+                    description   TEXT NOT NULL DEFAULT '',
+                    is_sensitive  BOOLEAN NOT NULL DEFAULT FALSE,
+                    ai_generated  BOOLEAN NOT NULL DEFAULT FALSE,
+                    reviewed      BOOLEAN NOT NULL DEFAULT FALSE,
+                    updated_by    TEXT NOT NULL DEFAULT '',
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (connection_id, table_name)
+                );
+
+                CREATE TABLE IF NOT EXISTS db_column_annotations (
+                    id            BIGSERIAL PRIMARY KEY,
+                    connection_id INTEGER NOT NULL DEFAULT 0,
+                    table_name    TEXT NOT NULL,
+                    column_name   TEXT NOT NULL,
+                    description   TEXT NOT NULL DEFAULT '',
+                    semantic_type TEXT NOT NULL DEFAULT '',
+                    is_sensitive  BOOLEAN NOT NULL DEFAULT FALSE,
+                    sample_values JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    ai_generated  BOOLEAN NOT NULL DEFAULT FALSE,
+                    reviewed      BOOLEAN NOT NULL DEFAULT FALSE,
+                    updated_by    TEXT NOT NULL DEFAULT '',
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (connection_id, table_name, column_name)
+                );
+                CREATE INDEX IF NOT EXISTS idx_dh_cols
+                    ON db_column_annotations (connection_id, table_name);
+
+                CREATE TABLE IF NOT EXISTS db_relationships (
+                    id            BIGSERIAL PRIMARY KEY,
+                    connection_id INTEGER NOT NULL DEFAULT 0,
+                    from_table    TEXT NOT NULL,
+                    from_column   TEXT NOT NULL,
+                    to_table      TEXT NOT NULL,
+                    to_column     TEXT NOT NULL,
+                    description   TEXT NOT NULL DEFAULT '',
+                    ai_generated  BOOLEAN NOT NULL DEFAULT FALSE,
+                    reviewed      BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (connection_id, from_table, from_column, to_table, to_column)
+                );
+
+                CREATE TABLE IF NOT EXISTS db_query_examples (
+                    id            BIGSERIAL PRIMARY KEY,
+                    connection_id INTEGER NOT NULL DEFAULT 0,
+                    question      TEXT NOT NULL DEFAULT '',
+                    sql           TEXT NOT NULL DEFAULT '',
+                    notes         TEXT NOT NULL DEFAULT '',
+                    ai_generated  BOOLEAN NOT NULL DEFAULT FALSE,
+                    reviewed      BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_dh_examples
+                    ON db_query_examples (connection_id);
             """)
 
             # =============================================================
@@ -37227,6 +37297,188 @@ def admin_test_external_connection(cid):
             })
     except Exception as e:
         return jsonify({"success": False, "message": str(e)[:240]}), 200
+
+
+# =============================================================================
+# DATAHUB — semantic layer CRUD (Phase 7 / task 053)
+# =============================================================================
+# Super-admin-only management of the data dictionary the Business Assistant uses
+# to understand a connected database. connection_id 0 = the app's own DB; other
+# ids reference external_data_connections. The assistant DRAFTS these (task 055,
+# ai_generated=true/reviewed=false); a super-admin edits what's wrong here (a
+# manual save marks the row reviewed=true). All routes guard super-admin.
+
+DH_APP_CONNECTION_ID = 0  # sentinel: the platform's own database
+
+
+def _dh_list_connections():
+    """All data sources for the Datahub: the app's own DB (id 0) + every
+    external_data_connections row. Never exposes the encrypted config."""
+    out = [{"id": DH_APP_CONNECTION_ID, "name": "This site's database",
+            "kind": "internal", "builtin": True}]
+    rows = query_db("SELECT id, name, kind FROM external_data_connections "
+                    "ORDER BY name") or []
+    for r in rows:
+        out.append({"id": r["id"], "name": r["name"], "kind": r["kind"],
+                    "builtin": False})
+    return out
+
+
+def _dh_annotations(connection_id):
+    """The full semantic layer for one connection (tables, columns,
+    relationships, examples) as plain dicts."""
+    cid = int(connection_id)
+    def _iso(rows):
+        out = []
+        for r in (rows or []):
+            d = dict(r)
+            for k in ("created_at", "updated_at"):
+                if d.get(k):
+                    d[k] = d[k].isoformat()
+            out.append(d)
+        return out
+    return {
+        "tables": _iso(query_db(
+            "SELECT * FROM db_table_annotations WHERE connection_id=%s "
+            "ORDER BY table_name", (cid,))),
+        "columns": _iso(query_db(
+            "SELECT * FROM db_column_annotations WHERE connection_id=%s "
+            "ORDER BY table_name, column_name", (cid,))),
+        "relationships": _iso(query_db(
+            "SELECT * FROM db_relationships WHERE connection_id=%s "
+            "ORDER BY from_table", (cid,))),
+        "examples": _iso(query_db(
+            "SELECT * FROM db_query_examples WHERE connection_id=%s "
+            "ORDER BY id DESC", (cid,))),
+    }
+
+
+@app.route("/admin/api/datahub/connections", methods=["GET"])
+@admin_required
+def admin_datahub_connections():
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    return jsonify({"connections": _dh_list_connections()})
+
+
+@app.route("/admin/api/datahub/<int:cid>/annotations", methods=["GET"])
+@admin_required
+def admin_datahub_get_annotations(cid):
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    return jsonify(_dh_annotations(cid))
+
+
+@app.route("/admin/api/datahub/<int:cid>/table-annotation", methods=["PUT"])
+@admin_required
+def admin_datahub_upsert_table(cid):
+    """Upsert a table-level description. A manual save here marks the row
+    reviewed=true, ai_generated=false (a human owns it now)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    b = request.get_json(silent=True) or {}
+    table = (b.get("table_name") or "").strip()
+    if not table:
+        return jsonify({"error": "table_name required"}), 400
+    who = (session.get("admin_user") or "super_admin")
+    row = execute_db(
+        "INSERT INTO db_table_annotations (connection_id, table_name, description, "
+        " is_sensitive, ai_generated, reviewed, updated_by) "
+        "VALUES (%s,%s,%s,%s,FALSE,TRUE,%s) "
+        "ON CONFLICT (connection_id, table_name) DO UPDATE SET "
+        "  description=EXCLUDED.description, is_sensitive=EXCLUDED.is_sensitive, "
+        "  ai_generated=FALSE, reviewed=TRUE, updated_by=EXCLUDED.updated_by, "
+        "  updated_at=NOW() RETURNING id",
+        (cid, table, (b.get("description") or "").strip()[:2000],
+         bool(b.get("is_sensitive")), str(who)[:120]))
+    return jsonify({"ok": True, "id": row["id"] if row else None})
+
+
+@app.route("/admin/api/datahub/<int:cid>/column-annotation", methods=["PUT"])
+@admin_required
+def admin_datahub_upsert_column(cid):
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    b = request.get_json(silent=True) or {}
+    table = (b.get("table_name") or "").strip()
+    col = (b.get("column_name") or "").strip()
+    if not table or not col:
+        return jsonify({"error": "table_name and column_name required"}), 400
+    who = (session.get("admin_user") or "super_admin")
+    samples = b.get("sample_values")
+    if not isinstance(samples, list):
+        samples = []
+    row = execute_db(
+        "INSERT INTO db_column_annotations (connection_id, table_name, column_name, "
+        " description, semantic_type, is_sensitive, sample_values, ai_generated, "
+        " reviewed, updated_by) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,FALSE,TRUE,%s) "
+        "ON CONFLICT (connection_id, table_name, column_name) DO UPDATE SET "
+        "  description=EXCLUDED.description, semantic_type=EXCLUDED.semantic_type, "
+        "  is_sensitive=EXCLUDED.is_sensitive, sample_values=EXCLUDED.sample_values, "
+        "  ai_generated=FALSE, reviewed=TRUE, updated_by=EXCLUDED.updated_by, "
+        "  updated_at=NOW() RETURNING id",
+        (cid, table, col, (b.get("description") or "").strip()[:2000],
+         (b.get("semantic_type") or "").strip()[:40], bool(b.get("is_sensitive")),
+         json.dumps([str(s)[:200] for s in samples][:10]), str(who)[:120]))
+    return jsonify({"ok": True, "id": row["id"] if row else None})
+
+
+@app.route("/admin/api/datahub/<int:cid>/relationship", methods=["POST"])
+@admin_required
+def admin_datahub_add_relationship(cid):
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    b = request.get_json(silent=True) or {}
+    req = ["from_table", "from_column", "to_table", "to_column"]
+    if not all((b.get(k) or "").strip() for k in req):
+        return jsonify({"error": "from/to table+column required"}), 400
+    row = execute_db(
+        "INSERT INTO db_relationships (connection_id, from_table, from_column, "
+        " to_table, to_column, description, ai_generated, reviewed) "
+        "VALUES (%s,%s,%s,%s,%s,%s,FALSE,TRUE) "
+        "ON CONFLICT (connection_id, from_table, from_column, to_table, to_column) "
+        "DO UPDATE SET description=EXCLUDED.description, reviewed=TRUE RETURNING id",
+        (cid, b["from_table"].strip(), b["from_column"].strip(),
+         b["to_table"].strip(), b["to_column"].strip(),
+         (b.get("description") or "").strip()[:500]))
+    return jsonify({"ok": True, "id": row["id"] if row else None})
+
+
+@app.route("/admin/api/datahub/<int:cid>/example", methods=["POST"])
+@admin_required
+def admin_datahub_add_example(cid):
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    b = request.get_json(silent=True) or {}
+    if not (b.get("question") or "").strip() or not (b.get("sql") or "").strip():
+        return jsonify({"error": "question and sql required"}), 400
+    row = execute_db(
+        "INSERT INTO db_query_examples (connection_id, question, sql, notes, "
+        " ai_generated, reviewed) VALUES (%s,%s,%s,%s,FALSE,TRUE) RETURNING id",
+        (cid, b["question"].strip()[:500], b["sql"].strip()[:4000],
+         (b.get("notes") or "").strip()[:1000]))
+    return jsonify({"ok": True, "id": row["id"] if row else None})
+
+
+@app.route("/admin/api/datahub/annotation/<kind>/<int:rid>", methods=["DELETE"])
+@admin_required
+def admin_datahub_delete(kind, rid):
+    """Delete one semantic-layer row. kind ∈ table|column|relationship|example."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    tbl = {"table": "db_table_annotations", "column": "db_column_annotations",
+           "relationship": "db_relationships", "example": "db_query_examples"}.get(kind)
+    if not tbl:
+        return jsonify({"error": "unknown kind"}), 400
+    execute_db(f"DELETE FROM {tbl} WHERE id=%s", (rid,))
+    return jsonify({"ok": True})
 
 
 # ----- Dashboards CRUD -----------------------------------------------------
