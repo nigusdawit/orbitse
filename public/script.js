@@ -6349,8 +6349,12 @@ async function chatSendStreaming(message, wasCollapsed) {
               /* Inside the command block — try to live-render a generatePage
                  or generateHTML command's HTML field as it streams in. */
               if (!pageStreamStarted &&
-                  /\{"action"\s*:\s*"(generatePage|generateHTML)"/i.test(tokenText) &&
-                  /"html"\s*:\s*"/i.test(tokenText)) {
+                  /\{"action"\s*:\s*"(generatePage|generateHTML)"/i.test(tokenText)) {
+                /* Open the "Building…" overlay the INSTANT we know this is a
+                   page command — don't wait for the (often long) text preamble
+                   or the "html" field to start streaming. The visitor sees
+                   progress immediately. The HTML extraction below simply no-ops
+                   until the "html" field actually begins arriving. */
                 pageStreamStarted = true;
                 openImmersivePageStreaming();
                 openSidePanel();
@@ -6371,6 +6375,13 @@ async function chatSendStreaming(message, wasCollapsed) {
                     const delta = extracted.value.substring(pageStreamWritten, safeEnd);
                     appendImmersivePageStreaming(delta);
                     pageStreamWritten = safeEnd;
+                  }
+                  /* The whole html field has now streamed in and been flushed
+                     to the iframe. Mark the live render complete so the command
+                     handler knows it can trust the streamed page and skip the
+                     one-shot fallback. */
+                  if (extracted.complete && _immersiveStream) {
+                    _immersiveStream.completed = true;
                   }
                 }
               }
@@ -7657,7 +7668,7 @@ function executeCommand(cmd) {
            which writes the full HTML straight into the iframe document so the
            page always appears. */
         const st = _immersiveStream;
-        const delivered = !!(st && st.ready && st.written > 0);
+        const delivered = !!(st && st.ready && st.completed && st.written > 0);
         finishImmersivePageStreaming();
         resetImmersiveStreamState();
         if (!delivered && (cmd.html || '').trim()) {
@@ -9175,6 +9186,9 @@ function openImmersivePageStreaming() {
     written: 0,   /* total chars actually queued for the iframe — lets the
                      command handler tell whether the live render produced
                      anything, and fall back to a one-shot render if not. */
+    completed: false,  /* set true once the entire html field has streamed in
+                          and been flushed — distinguishes a fully-rendered
+                          live page from one that stalled mid-stream. */
     token: 'tok_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10)
   };
 
