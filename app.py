@@ -16303,6 +16303,23 @@ def _admin_tool_run_research(question=None, topic=None, seed_urls=None,
                              seed_urls=seeds, ingest_kb=bool(ingest_kb))
 
 
+def _admin_tool_generate_content(report_id=None, content_types=None,
+                                 instructions=None, tone=None, **_):
+    """Generate content from a research report. Produces one DRAFT per requested
+    content_type (e.g. blog, social, linkedin, newsletter, email, faq, summary)
+    in the Content Studio for the owner to review before publishing. Read-only on
+    the report; gated by the Content Studio toggle. Returns the created drafts."""
+    if isinstance(content_types, str):
+        content_types = [content_types]
+    if report_id is None:
+        return {"error": "Provide the report_id to generate content from."}
+    if not isinstance(content_types, list) or not content_types:
+        return {"error": "Provide content_types (a list, e.g. ['blog','social'])."}
+    return _rce_generate_from_report(
+        report_id, [str(t) for t in content_types][:12],
+        extra=(instructions or ""), tone=(tone or ""))
+
+
 def _admin_tool_create_dashboard(name=None, description=None, widgets=None, **_):
     """Create a persistent dashboard (appears in the Custom Dashboards tab) with
     widgets. Each widget is either {name, chart:{...}} (a static chart you've
@@ -19116,6 +19133,7 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_define_schema":          _admin_tool_define_schema,
     "gather_sources":               _admin_tool_gather_sources,
     "run_research":                 _admin_tool_run_research,
+    "generate_content":             _admin_tool_generate_content,
     "admin_save_query":             _admin_tool_save_query,
     "render_chart":                 _admin_tool_render_chart,
     "admin_create_dashboard":       _admin_tool_create_dashboard,
@@ -19305,6 +19323,21 @@ ADMIN_TOOLS = [
                         "seed_urls": {"type": "array", "items": {"type": "string"}},
                         "ingest_kb": {"type": "boolean"}},
          "required": ["question"]}),
+    _admin_tool_schema(
+        "generate_content",
+        "Generate content from a research report (the report_id from run_research "
+        "or the Research Hub). Creates one DRAFT per content_type for the owner to "
+        "review before publishing. Built-in content_types: blog, social, linkedin, "
+        "newsletter, email, faq, summary (custom types also work). Optionally pass "
+        "`instructions` and `tone`. Requires Content Studio to be enabled.",
+        {"type": "object",
+         "properties": {"report_id": {"type": "integer",
+                                      "description": "The research report to base content on."},
+                        "content_types": {"type": "array", "items": {"type": "string"},
+                                          "description": "e.g. ['blog','social','email']"},
+                        "instructions": {"type": "string"},
+                        "tone": {"type": "string"}},
+         "required": ["report_id", "content_types"]}),
     _admin_tool_schema(
         "admin_define_schema",
         "DRAFT the Datahub data dictionary for a connection: inspect + sample it "
@@ -40596,10 +40629,12 @@ def _rce_gather_into_report(urls, *, topic="", ingest_kb=False):
 # JSON mode (same path as the Datahub auto-define), so it's stub-testable with
 # no spend and degrades to a clear error when no key is configured.
 
-def _rce_text_model(model=None):
-    """Resolve the research/synthesis model. We call OpenAI in JSON mode, so a
-    'claude*' value maps to the OpenAI default (mirrors _dh_llm_draft)."""
-    mdl = (model or get_ai_setting("research_model") or "").strip() or "gpt-4o-mini"
+def _rce_text_model(model=None, *, knob="research_model"):
+    """Resolve a research/content model. We call OpenAI in JSON mode, so a
+    'claude*' value maps to the OpenAI default (mirrors _dh_llm_draft). `knob`
+    selects which AI Control setting supplies the default (research_model or
+    content_model)."""
+    mdl = (model or get_ai_setting(knob) or "").strip() or "gpt-4o-mini"
     if mdl.lower().startswith("claude"):
         mdl = "gpt-4o-mini"
     return mdl
@@ -40793,7 +40828,174 @@ def _rce_run_research(question, *, topic="", seed_urls=None, ingest_kb=False,
         return {"error": "Research run failed.", "report_id": rid}
 
 
+# =============================================================================
+# RESEARCH & CONTENT ENGINE — Content Studio (text) (Phase 8 / task 065)
+# =============================================================================
+# Turn a research report (the cited synthesis) into many pieces of content. Each
+# generated piece lands in content_drafts as status='draft' — REVIEW-GATED: a
+# super-admin approves/edits before anything publishes (auto-publish wiring comes
+# later, in the capabilities task). Gated by content_studio_enabled. Content
+# types are a configurable registry so the super-admin can add more later.
+
+# Built-in content types. Each: label (UI), instruction (appended to the system
+# prompt), max_tokens (cost/length cap). Extend RCE_CONTENT_TYPES to add types.
+RCE_CONTENT_TYPES = {
+    "blog":          {"label": "Blog post",
+                      "instruction": "Write an engaging, well-structured blog post "
+                      "(title + 4-8 short paragraphs with subheadings as Markdown).",
+                      "max_tokens": 2000},
+    "social":        {"label": "Social post",
+                      "instruction": "Write one punchy social media post (<= 280 "
+                      "characters in the body) with up to 3 relevant hashtags.",
+                      "max_tokens": 400},
+    "linkedin":      {"label": "LinkedIn post",
+                      "instruction": "Write a professional LinkedIn post (a strong "
+                      "hook, 2-4 short paragraphs, a closing question).",
+                      "max_tokens": 700},
+    "newsletter":    {"label": "Newsletter",
+                      "instruction": "Write a friendly email-newsletter section "
+                      "(subject as the title, 3-5 short paragraphs in the body).",
+                      "max_tokens": 1500},
+    "email":         {"label": "Email",
+                      "instruction": "Write a concise outreach/announcement email "
+                      "(subject as the title, greeting, 2-3 short paragraphs, sign-off).",
+                      "max_tokens": 900},
+    "faq":           {"label": "FAQ",
+                      "instruction": "Write 5-8 frequently-asked questions with "
+                      "concise answers, formatted as Markdown Q/A pairs in the body.",
+                      "max_tokens": 1500},
+    "summary":       {"label": "Executive summary",
+                      "instruction": "Write a tight executive summary (3-5 sentences) "
+                      "capturing the key takeaways.",
+                      "max_tokens": 600},
+}
+
+
+def _rce_content_type_spec(content_type):
+    """Resolve a content-type key to its spec, falling back to a generic one so
+    unknown/custom types still produce something sensible."""
+    key = (content_type or "").strip().lower()
+    spec = RCE_CONTENT_TYPES.get(key)
+    if spec:
+        return key, spec
+    return (key or "custom"), {
+        "label": (key or "content").replace("_", " ").title(),
+        "instruction": f"Write a piece of '{key or 'content'}' content.",
+        "max_tokens": 1200}
+
+
+def _rce_report_for_content(report_id):
+    """Load a report's synthesis as a compact context block for generation, or
+    (None, error). Tenant-scoped."""
+    tid = current_tenant_id()
+    r = query_db("SELECT topic, question, summary, key_points, citations "
+                 "FROM research_reports WHERE id=%s AND tenant_id=%s",
+                 (report_id, tid), fetchone=True)
+    if not r:
+        return None, "Report not found."
+    summary = (r.get("summary") or "").strip()
+    if not summary:
+        return None, "That report has no synthesis yet — run research first."
+    kps = _vp_as_list(r.get("key_points"))
+    cites = _vp_as_list(r.get("citations"))
+    ctx = [f"TOPIC: {r.get('topic') or ''}"]
+    if r.get("question"):
+        ctx.append(f"QUESTION: {r.get('question')}")
+    ctx.append(f"SUMMARY:\n{summary[:8000]}")
+    if kps:
+        ctx.append("KEY POINTS:\n" + "\n".join(f"- {str(k)[:300]}" for k in kps[:20]))
+    if cites:
+        ctx.append("SOURCES:\n" + "\n".join(
+            f"- {(c.get('title') or c.get('url') or '')[:200]} ({c.get('url') or ''})"
+            for c in cites[:20] if isinstance(c, dict)))
+    return "\n\n".join(ctx)[:12000], None
+
+
+def _rce_generate_one(report_ctx, content_type, *, extra="", model=None, tone=""):
+    """LLM-generate one piece of content from the report context. Returns
+    {title, body, meta} or None (never raises)."""
+    if not openai_client:
+        return None
+    key, spec = _rce_content_type_spec(content_type)
+    mdl = _rce_text_model(model, knob="content_model")
+    system = (
+        "You are an expert content writer for a business. Using ONLY the research "
+        "context provided (do not invent facts), produce the requested content. "
+        f"{spec['instruction']} "
+        + (f"Tone: {tone}. " if tone else "")
+        + (f"Extra guidance: {extra}. " if extra else "")
+        + 'Return ONLY a JSON object: {"title": str, "body": str}.')
+    try:
+        resp = openai_client.with_options(timeout=60.0).chat.completions.create(
+            model=mdl, response_format={"type": "json_object"},
+            max_tokens=int(spec.get("max_tokens", 1200)), temperature=0.6,
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": report_ctx[:12000]}])
+        _rce_record_cost(resp, mdl)
+        data = json.loads(resp.choices[0].message.content or "{}")
+        if not isinstance(data, dict):
+            return None
+        return {"title": str(data.get("title") or "").strip()[:300],
+                "body": str(data.get("body") or "").strip(),
+                "meta": {"content_type": key, "model": mdl, "label": spec["label"]}}
+    except Exception as e:
+        print(f"[content] generate failed ({content_type}): {type(e).__name__}: {e}")
+        return None
+
+
+def _rce_generate_from_report(report_id, content_types, *, extra="", tone="",
+                              model=None):
+    """Generate one draft per requested content type from a report. Drafts are
+    saved status='draft' (REVIEW-GATED). Gated by content_studio_enabled. Returns
+    {drafts:[...], errors:int} or {"error": ...}."""
+    if not get_ai_setting("content_studio_enabled"):
+        return {"error": "Content Studio is turned off."}
+    if not openai_client:
+        return {"error": "AI is not configured (no OpenAI key)."}
+    try:
+        rid = int(report_id)
+    except (TypeError, ValueError):
+        return {"error": "A valid report_id is required."}
+    types = [str(t).strip().lower() for t in (content_types or []) if str(t).strip()]
+    if not types:
+        return {"error": "Provide at least one content_type."}
+    types = types[:12]   # cost cap per batch
+    ctx, err = _rce_report_for_content(rid)
+    if err:
+        return {"error": err}
+    tid = current_tenant_id()
+    drafts, errors = [], 0
+    for ct in types:
+        piece = _rce_generate_one(ctx, ct, extra=extra, tone=tone, model=model)
+        if not piece:
+            errors += 1
+            continue
+        key = piece["meta"]["content_type"]
+        row = execute_db(
+            "INSERT INTO content_drafts (tenant_id, content_type, title, body, "
+            " meta, source_report_id, status, created_by) "
+            "VALUES (%s,%s,%s,%s,%s::jsonb,%s,'draft','content_studio') RETURNING id",
+            (tid, key, piece["title"][:300], piece["body"][:100000],
+             json.dumps(piece["meta"]), rid))
+        drafts.append({"draft_id": (row["id"] if row else None),
+                       "content_type": key, "title": piece["title"],
+                       "status": "draft"})
+    return {"drafts": drafts, "errors": errors, "report_id": rid}
+
+
+def _rce_draft_full_row(r):
+    """Serialize a content_drafts row (incl. body + meta) for the review UI."""
+    d = dict(r)
+    if isinstance(d.get("meta"), str):
+        try:
+            d["meta"] = json.loads(d["meta"])
+        except Exception:
+            d["meta"] = {}
+    return _iso_row(d, "created_at", "updated_at")
+
+
 def _scrape_serialize_job(row: dict) -> dict:
+    """Convert a DB row into a JSON-friendly dict for the UI."""
     """Convert a DB row into a JSON-friendly dict for the UI."""
     if not row:
         return {}
@@ -44807,6 +45009,95 @@ def admin_list_content_drafts():
         f"WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT %s",
         tuple(params + [limit])) or []
     return jsonify({"drafts": [_iso_row(r, "created_at", "updated_at") for r in rows]})
+
+
+@app.route("/admin/api/content/types", methods=["GET"])
+@admin_required
+def admin_list_content_types():
+    """The available content types for the Content Studio (super-admin only)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    return jsonify({"types": [{"key": k, "label": v["label"]}
+                              for k, v in RCE_CONTENT_TYPES.items()]})
+
+
+@app.route("/admin/api/content/generate", methods=["POST"])
+@admin_required
+def admin_content_generate():
+    """Generate content drafts from a research report (super-admin). Backs the
+    Content Studio 'Generate' action. Gated by content_studio_enabled."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    b = request.get_json(silent=True) or {}
+    cts = b.get("content_types")
+    if isinstance(cts, str):
+        cts = [c.strip() for c in cts.replace(",", "\n").splitlines() if c.strip()]
+    if b.get("report_id") in (None, "") or not isinstance(cts, list) or \
+            not [c for c in cts if str(c).strip()]:
+        return jsonify({"error": "Provide report_id and content_types."}), 400
+    result = _rce_generate_from_report(
+        b.get("report_id"), [str(c) for c in cts][:12],
+        extra=(b.get("instructions") or ""), tone=(b.get("tone") or ""))
+    return jsonify(result), (200 if "error" not in result else 400)
+
+
+@app.route("/admin/api/content/drafts/<int:did>", methods=["GET"])
+@admin_required
+def admin_get_content_draft(did):
+    """One content draft incl. body + meta (super-admin only)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    tid = current_tenant_id()
+    row = query_db("SELECT * FROM content_drafts WHERE id=%s AND tenant_id=%s",
+                   (did, tid), fetchone=True)
+    if not row:
+        return jsonify({"error": "not_found"}), 404
+    return jsonify(_rce_draft_full_row(row))
+
+
+# Statuses a super-admin can move a draft between during review.
+_RCE_DRAFT_STATUSES = ("draft", "approved", "rejected", "published")
+
+
+@app.route("/admin/api/content/drafts/<int:did>", methods=["POST"])
+@admin_required
+def admin_update_content_draft(did):
+    """Review a content draft: edit title/body and/or change status
+    (draft→approved/rejected). The review gate before anything is published.
+    Super-admin only."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    tid = current_tenant_id()
+    row = query_db("SELECT id FROM content_drafts WHERE id=%s AND tenant_id=%s",
+                   (did, tid), fetchone=True)
+    if not row:
+        return jsonify({"error": "not_found"}), 404
+    b = request.get_json(silent=True) or {}
+    sets, params = [], []
+    if "title" in b:
+        sets.append("title=%s")
+        params.append(str(b.get("title") or "")[:300])
+    if "body" in b:
+        sets.append("body=%s")
+        params.append(str(b.get("body") or "")[:100000])
+    if "status" in b:
+        st = str(b.get("status") or "").strip().lower()
+        if st not in _RCE_DRAFT_STATUSES:
+            return jsonify({"error": f"status must be one of {_RCE_DRAFT_STATUSES}"}), 400
+        sets.append("status=%s")
+        params.append(st)
+    if not sets:
+        return jsonify({"error": "Nothing to update."}), 400
+    sets.append("updated_at=NOW()")
+    execute_db(f"UPDATE content_drafts SET {', '.join(sets)} WHERE id=%s AND tenant_id=%s",
+               tuple(params + [did, tid]))
+    updated = query_db("SELECT * FROM content_drafts WHERE id=%s AND tenant_id=%s",
+                       (did, tid), fetchone=True)
+    return jsonify(_rce_draft_full_row(updated))
 
 
 # --- PUBLIC: unsubscribe ----------------------------------------------------
