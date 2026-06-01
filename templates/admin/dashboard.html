@@ -9596,133 +9596,86 @@ TO CUSTOMIZE THIS DASHBOARD:
        published + cancelled events.
   -->
   <div id="tab-events" class="tab-content">
-    <div class="section-header-admin">
+    <div class="gx-head">
       <div>
-        <h2>Events</h2>
-        <p>Create and manage upcoming events. Visitors can RSVP from the public event page.</p>
+        <h2 class="gx-title">Events</h2>
+        <p class="gx-sub">Create and manage upcoming events. Visitors can RSVP from the public event page.</p>
       </div>
-      <button class="btn btn-primary" onclick="showEventForm()" data-testid="button-add-event">+ New Event</button>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-primary" onclick="showEventForm()" data-testid="button-add-event">+ New Event</button>
+      </div>
     </div>
 
-    <!-- Event form (hidden by default) -->
-    <div id="event-form-panel" class="form-panel" style="display:none;">
-      <h3 id="event-form-title">New Event</h3>
+    <!-- Event form — mounted into the gx-drawer; conditional price rows keep their IDs. -->
+    <div id="event-form-panel" style="display:none;">
       <input type="hidden" id="event-form-id">
-
-      <div class="form-row">
-        <div class="form-group">
-          <label for="event-title">Title</label>
-          <input type="text" id="event-title" placeholder="Summer Workshop" data-testid="input-event-title" oninput="autoGenerateEventSlug()">
-        </div>
-        <div class="form-group">
-          <label for="event-slug">Slug (URL-friendly)</label>
-          <input type="text" id="event-slug" placeholder="summer-workshop" data-testid="input-event-slug">
-        </div>
-      </div>
-
-      <div class="form-row">
-        <div class="form-group">
-          <label for="event-start">Start date &amp; time</label>
-          <input type="datetime-local" id="event-start" data-testid="input-event-start">
-        </div>
-        <div class="form-group">
-          <label for="event-end">End date &amp; time (optional)</label>
-          <input type="datetime-local" id="event-end" data-testid="input-event-end">
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Event</div>
+        <div class="gx-grid-fields">
+          <div class="gx-field"><label class="gx-label" for="event-title">Title<span class="gx-req">*</span></label>
+            <input class="gx-input" type="text" id="event-title" placeholder="Summer Workshop" data-testid="input-event-title" oninput="autoGenerateEventSlug()"></div>
+          <div class="gx-field"><label class="gx-label" for="event-slug">Slug</label>
+            <input class="gx-input" type="text" id="event-slug" placeholder="summer-workshop" data-testid="input-event-slug"></div>
+          <div class="gx-field col-2"><label class="gx-label" for="event-location">Location</label>
+            <input class="gx-input" type="text" id="event-location" placeholder="123 Main St, or 'Online'" data-testid="input-event-location"></div>
         </div>
       </div>
-
-      <div class="form-row">
-        <div class="form-group">
-          <label for="event-location">Location</label>
-          <input type="text" id="event-location" placeholder="123 Main St, or 'Online'" data-testid="input-event-location">
-        </div>
-        <div class="form-group">
-          <label for="event-price">Price label (display text)</label>
-          <input type="text" id="event-price" placeholder="Free, $25, etc." value="Free" data-testid="input-event-price">
-          <small style="color:rgba(255,255,255,0.5); font-size:0.78rem;">Shown on listing cards. Auto-filled from price mode below if left blank.</small>
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Schedule</div>
+        <div class="gx-grid-fields">
+          <div class="gx-field"><label class="gx-label" for="event-start">Start date &amp; time<span class="gx-req">*</span></label>
+            <input class="gx-input" type="datetime-local" id="event-start" data-testid="input-event-start"></div>
+          <div class="gx-field"><label class="gx-label" for="event-end">End date &amp; time (optional)</label>
+            <input class="gx-input" type="datetime-local" id="event-end" data-testid="input-event-end"></div>
         </div>
       </div>
-
-      <!-- Payment configuration -->
-      <div class="form-row">
-        <div class="form-group">
-          <label for="event-price-mode">Price mode</label>
-          <select id="event-price-mode" data-testid="select-event-price-mode" onchange="updateEventPriceModeUI()">
-            <option value="free">Free (RSVP only)</option>
-            <option value="paid">Paid ticket (Stripe Checkout)</option>
-            <option value="donation">Suggested donation (pay what you wish)</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label for="event-currency">Currency</label>
-          <select id="event-currency" data-testid="select-event-currency">
-            <option value="usd">USD</option>
-            <option value="eur">EUR</option>
-            <option value="gbp">GBP</option>
-            <option value="cad">CAD</option>
-            <option value="aud">AUD</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="form-row" id="event-paid-row" style="display:none;">
-        <div class="form-group">
-          <label for="event-price-amount">Ticket price</label>
-          <input type="number" id="event-price-amount" min="0" step="0.01" placeholder="25.00" data-testid="input-event-price-amount">
-          <small style="color:rgba(255,255,255,0.5); font-size:0.78rem;">Charged per ticket. Visitor selects # of tickets when reserving.</small>
-        </div>
-        <div class="form-group"></div>
-      </div>
-
-      <div class="form-row" id="event-donation-row" style="display:none;">
-        <div class="form-group">
-          <label for="event-min-donation">Minimum donation (optional)</label>
-          <input type="number" id="event-min-donation" min="0" step="0.01" placeholder="5.00" data-testid="input-event-min-donation">
-          <small style="color:rgba(255,255,255,0.5); font-size:0.78rem;">Leave blank to allow any amount.</small>
-        </div>
-        <div class="form-group"></div>
-      </div>
-
-      <div class="form-row">
-        <div class="form-group">
-          <label for="event-capacity">Capacity (leave empty for unlimited)</label>
-          <input type="number" id="event-capacity" placeholder="50" min="0" data-testid="input-event-capacity">
-        </div>
-        <div class="form-group">
-          <label for="event-status">Status</label>
-          <select id="event-status" data-testid="select-event-status">
-            <option value="draft">Draft (admin only)</option>
-            <option value="published" selected>Published</option>
-            <option value="cancelled">Cancelled</option>
-          </select>
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Pricing</div>
+        <div class="gx-grid-fields">
+          <div class="gx-field"><label class="gx-label" for="event-price-mode">Price mode</label>
+            <select class="gx-input" id="event-price-mode" data-testid="select-event-price-mode" onchange="updateEventPriceModeUI()">
+              <option value="free">Free (RSVP only)</option>
+              <option value="paid">Paid ticket (Stripe Checkout)</option>
+              <option value="donation">Suggested donation (pay what you wish)</option>
+            </select></div>
+          <div class="gx-field"><label class="gx-label" for="event-currency">Currency</label>
+            <select class="gx-input" id="event-currency" data-testid="select-event-currency">
+              <option value="usd">USD</option><option value="eur">EUR</option><option value="gbp">GBP</option><option value="cad">CAD</option><option value="aud">AUD</option>
+            </select></div>
+          <div class="gx-field"><label class="gx-label" for="event-price">Price label</label>
+            <input class="gx-input" type="text" id="event-price" placeholder="Free, $25, etc." value="Free" data-testid="input-event-price">
+            <span class="gx-hint">Shown on cards. Auto-filled from price mode if left blank.</span></div>
+          <div class="gx-field" id="event-paid-row" style="display:none;"><label class="gx-label" for="event-price-amount">Ticket price</label>
+            <input class="gx-input" type="number" id="event-price-amount" min="0" step="0.01" placeholder="25.00" data-testid="input-event-price-amount">
+            <span class="gx-hint">Charged per ticket.</span></div>
+          <div class="gx-field" id="event-donation-row" style="display:none;"><label class="gx-label" for="event-min-donation">Minimum donation (optional)</label>
+            <input class="gx-input" type="number" id="event-min-donation" min="0" step="0.01" placeholder="5.00" data-testid="input-event-min-donation">
+            <span class="gx-hint">Leave blank to allow any amount.</span></div>
         </div>
       </div>
-
-      <div class="form-row">
-        <div class="form-group">
-          <label for="event-sort-order">Sort Order</label>
-          <input type="number" id="event-sort-order" placeholder="0" value="0" data-testid="input-event-sort">
-        </div>
-        <div class="form-group">
-          <label for="event-image">Cover Image URL</label>
-          <div style="display: flex; gap: 0.5rem;">
-            <input type="url" id="event-image" placeholder="https://images.unsplash.com/..." data-testid="input-event-image" style="flex:1;">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'event-image', mediaType:'image'})" data-testid="button-pick-event-image">Pick</button>
-            <button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('event-image')" data-testid="button-upload-event-image">Upload</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="form-row">
-        <div class="form-group" style="grid-column: 1 / -1;">
-          <label for="event-description">Description</label>
-          <textarea id="event-description" rows="5" placeholder="Tell people what to expect at this event..." data-testid="input-event-description"></textarea>
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Settings &amp; media</div>
+        <div class="gx-grid-fields">
+          <div class="gx-field"><label class="gx-label" for="event-capacity">Capacity <span class="gx-hint">(empty = unlimited)</span></label>
+            <input class="gx-input" type="number" id="event-capacity" placeholder="50" min="0" data-testid="input-event-capacity"></div>
+          <div class="gx-field"><label class="gx-label" for="event-status">Status</label>
+            <select class="gx-input" id="event-status" data-testid="select-event-status">
+              <option value="draft">Draft (admin only)</option><option value="published" selected>Published</option><option value="cancelled">Cancelled</option>
+            </select></div>
+          <div class="gx-field"><label class="gx-label" for="event-sort-order">Sort order</label>
+            <input class="gx-input" type="number" id="event-sort-order" placeholder="0" value="0" data-testid="input-event-sort"></div>
+          <div class="gx-field"><label class="gx-label" for="event-image">Cover image URL</label>
+            <div class="gx-media-field">
+              <input class="gx-input" type="url" id="event-image" placeholder="https://images.unsplash.com/..." data-testid="input-event-image">
+              <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'event-image', mediaType:'image'})" data-testid="button-pick-event-image">🖼</button>
+              <button type="button" class="gx-icon-btn" title="Upload" onclick="uploadImageFor('event-image')" data-testid="button-upload-event-image">⤴</button>
+            </div></div>
         </div>
       </div>
-
-      <div class="form-actions">
-        <button class="btn btn-secondary" onclick="hideEventForm()" data-testid="button-cancel-event">Cancel</button>
-        <button class="btn btn-primary" onclick="saveEvent()" data-testid="button-save-event">Save Event</button>
+      <div class="gx-fieldset" style="margin-bottom:0">
+        <div class="gx-fieldset-h">Description</div>
+        <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="event-description">Description</label>
+          <textarea class="gx-input" id="event-description" rows="5" placeholder="Tell people what to expect at this event..." data-testid="input-event-description"></textarea></div>
       </div>
     </div>
 
@@ -10498,78 +10451,57 @@ TO CUSTOMIZE THIS DASHBOARD:
   Manage storefront products (CRUD), inventory adjustments, active toggle.
   -->
   <div id="tab-products" class="tab-content">
-    <div class="section-header-admin">
+    <div class="gx-head">
       <div>
-        <h2>Products</h2>
-        <p>Sell physical or digital goods. Enable the "Store" section in Page Layout to show the storefront publicly.</p>
+        <h2 class="gx-title">Products</h2>
+        <p class="gx-sub">Sell physical or digital goods. Enable the "Store" section in Page Layout to show the storefront publicly.</p>
         <p id="products-stripe-status" style="margin:0.5rem 0 0; font-size:0.85rem;"></p>
       </div>
-      <button class="btn btn-primary" onclick="showProductForm()" data-testid="button-new-product">+ New Product</button>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-primary" onclick="showProductForm()" data-testid="button-new-product">+ New Product</button>
+      </div>
     </div>
 
-    <div id="product-form-panel" style="display:none; padding:1rem; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:8px; margin-bottom:1rem;">
-      <h3 id="product-form-title" style="margin-top:0;">New Product</h3>
+    <div id="product-form-panel" style="display:none;">
       <input type="hidden" id="product-form-id">
-      <div class="form-row">
-        <div class="form-group">
-          <label for="product-name">Name</label>
-          <input type="text" id="product-name" data-testid="input-product-name">
-        </div>
-        <div class="form-group">
-          <label for="product-slug">Slug</label>
-          <input type="text" id="product-slug" placeholder="auto-from-name" data-testid="input-product-slug">
-        </div>
-        <div class="form-group">
-          <label for="product-sort-order">Sort Order</label>
-          <input type="number" id="product-sort-order" value="0" data-testid="input-product-sort">
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Details</div>
+        <div class="gx-grid-fields">
+          <div class="gx-field col-2"><label class="gx-label" for="product-name">Name<span class="gx-req">*</span></label>
+            <input class="gx-input" type="text" id="product-name" data-testid="input-product-name"></div>
+          <div class="gx-field"><label class="gx-label" for="product-slug">Slug <span class="gx-hint">(auto from name)</span></label>
+            <input class="gx-input" type="text" id="product-slug" placeholder="auto-from-name" data-testid="input-product-slug"></div>
+          <div class="gx-field"><label class="gx-label" for="product-sort-order">Sort order</label>
+            <input class="gx-input" type="number" id="product-sort-order" value="0" data-testid="input-product-sort"></div>
         </div>
       </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label for="product-price">Price</label>
-          <input type="number" id="product-price" step="0.01" min="0" placeholder="29.99" data-testid="input-product-price">
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Pricing &amp; inventory</div>
+        <div class="gx-grid-fields">
+          <div class="gx-field"><label class="gx-label" for="product-price">Price<span class="gx-req">*</span></label>
+            <input class="gx-input" type="number" id="product-price" step="0.01" min="0" placeholder="29.99" data-testid="input-product-price"></div>
+          <div class="gx-field"><label class="gx-label" for="product-currency">Currency</label>
+            <select class="gx-input" id="product-currency" data-testid="input-product-currency">
+              <option value="USD">USD ($)</option><option value="EUR">EUR (€)</option><option value="GBP">GBP (£)</option>
+              <option value="CAD">CAD</option><option value="AUD">AUD</option><option value="JPY">JPY (¥)</option>
+            </select></div>
+          <div class="gx-field"><label class="gx-label" for="product-stock">Stock</label>
+            <input class="gx-input" type="number" id="product-stock" value="0" min="0" data-testid="input-product-stock"></div>
         </div>
-        <div class="form-group">
-          <label for="product-currency">Currency</label>
-          <input type="text" id="product-currency" value="USD" maxlength="3" data-testid="input-product-currency">
-        </div>
-        <div class="form-group">
-          <label for="product-stock">Stock</label>
-          <input type="number" id="product-stock" value="0" min="0" data-testid="input-product-stock">
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group" style="grid-column:1/-1;">
-          <label for="product-image">Image URL</label>
-          <div style="display:flex; gap:0.5rem;">
-            <input type="url" id="product-image" placeholder="https://…" style="flex:1;" data-testid="input-product-image">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'product-image', mediaType:'image'})" data-testid="button-pick-product-image">Pick</button>
-          </div>
+        <div class="gx-foot" style="margin-top:.4rem; gap:1.4rem">
+          <label class="ap-check" style="margin:0"><input type="checkbox" id="product-active" checked data-testid="input-product-active"> Active (visible on storefront)</label>
+          <label class="ap-check" style="margin:0"><input type="checkbox" id="product-track-inventory" checked data-testid="input-product-track-inventory"> Track inventory (mark sold out at 0)</label>
         </div>
       </div>
-      <div class="form-row">
-        <div class="form-group" style="grid-column:1/-1;">
-          <label for="product-description">Description</label>
-          <textarea id="product-description" rows="3" data-testid="input-product-description"></textarea>
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label style="display:flex; align-items:center; gap:0.5rem;">
-            <input type="checkbox" id="product-active" checked data-testid="input-product-active">
-            <span>Active (visible on storefront)</span>
-          </label>
-        </div>
-        <div class="form-group">
-          <label style="display:flex; align-items:center; gap:0.5rem;">
-            <input type="checkbox" id="product-track-inventory" checked data-testid="input-product-track-inventory">
-            <span>Track inventory (mark sold out at 0)</span>
-          </label>
-        </div>
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-secondary" onclick="hideProductForm()" data-testid="button-cancel-product">Cancel</button>
-        <button class="btn btn-primary" onclick="saveProduct()" data-testid="button-save-product">Save</button>
+      <div class="gx-fieldset" style="margin-bottom:0">
+        <div class="gx-fieldset-h">Media &amp; description</div>
+        <div class="gx-field"><label class="gx-label" for="product-image">Image URL</label>
+          <div class="gx-media-field">
+            <input class="gx-input" type="url" id="product-image" placeholder="https://…" data-testid="input-product-image">
+            <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'product-image', mediaType:'image'})" data-testid="button-pick-product-image">🖼</button>
+          </div></div>
+        <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="product-description">Description</label>
+          <textarea class="gx-input" id="product-description" rows="3" data-testid="input-product-description"></textarea></div>
       </div>
     </div>
 
@@ -15688,7 +15620,6 @@ TO CUSTOMIZE THIS DASHBOARD:
     function escapeAttr(s) { return escapeHtmlAdmin(s); }
 
     function showProductForm() {
-      document.getElementById('product-form-title').textContent = 'New Product';
       document.getElementById('product-form-id').value = '';
       document.getElementById('product-name').value = '';
       document.getElementById('product-slug').value = '';
@@ -15700,14 +15631,14 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('product-description').value = '';
       document.getElementById('product-active').checked = true;
       document.getElementById('product-track-inventory').checked = true;
-      document.getElementById('product-form-panel').style.display = 'block';
+      const p = document.getElementById('product-form-panel'); p.style.display = '';
+      gxOpenDrawer('New product', p, { onSave: saveProduct, saveLabel: 'Save product' });
     }
-    function hideProductForm() { document.getElementById('product-form-panel').style.display = 'none'; }
+    function hideProductForm() { gxCloseDrawer(); }
 
     function editProduct(id) {
       const p = _productsCache.find(x => x.id === id);
       if (!p) return;
-      document.getElementById('product-form-title').textContent = 'Edit Product';
       document.getElementById('product-form-id').value = p.id;
       document.getElementById('product-name').value = p.name || '';
       document.getElementById('product-slug').value = p.slug || '';
@@ -15719,7 +15650,8 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('product-description').value = p.description || '';
       document.getElementById('product-active').checked = !!p.active;
       document.getElementById('product-track-inventory').checked = p.track_inventory !== false;
-      document.getElementById('product-form-panel').style.display = 'block';
+      const panel = document.getElementById('product-form-panel'); panel.style.display = '';
+      gxOpenDrawer('Edit: ' + (p.name || 'product'), panel, { onSave: saveProduct, saveLabel: 'Save product' });
     }
 
     async function saveProduct() {
@@ -17501,8 +17433,6 @@ TO CUSTOMIZE THIS DASHBOARD:
 
     /** Show the event form for adding a new event with empty fields. */
     function showEventForm() {
-      document.getElementById('event-form-panel').style.display = 'block';
-      document.getElementById('event-form-title').textContent = 'New Event';
       document.getElementById('event-form-id').value = '';
       document.getElementById('event-title').value = '';
       document.getElementById('event-slug').value = '';
@@ -17520,11 +17450,11 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('event-price-amount').value = '';
       document.getElementById('event-min-donation').value = '';
       updateEventPriceModeUI();
+      const p = document.getElementById('event-form-panel'); p.style.display = '';
+      gxOpenDrawer('New event', p, { onSave: saveEvent, saveLabel: 'Save event' });
     }
 
-    function hideEventForm() {
-      document.getElementById('event-form-panel').style.display = 'none';
-    }
+    function hideEventForm() { gxCloseDrawer(); }
 
     function autoGenerateEventSlug() {
       const title = document.getElementById('event-title').value;
@@ -17533,8 +17463,6 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     function editEvent(ev) {
-      document.getElementById('event-form-panel').style.display = 'block';
-      document.getElementById('event-form-title').textContent = 'Edit: ' + ev.title;
       document.getElementById('event-form-id').value = ev.id;
       document.getElementById('event-title').value = ev.title || '';
       document.getElementById('event-slug').value = ev.slug || '';
@@ -17552,6 +17480,8 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('event-price-amount').value = centsToDollarStr(ev.price_amount);
       document.getElementById('event-min-donation').value = centsToDollarStr(ev.min_donation);
       updateEventPriceModeUI();
+      const p = document.getElementById('event-form-panel'); p.style.display = '';
+      gxOpenDrawer('Edit: ' + (ev.title || 'event'), p, { onSave: saveEvent, saveLabel: 'Save event' });
     }
 
     async function saveEvent() {
