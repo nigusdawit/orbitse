@@ -16131,6 +16131,64 @@ def _admin_tool_render_chart(spec=None, type=None, title=None, labels=None,
     return {"ok": True, "chart": out}
 
 
+def _dh_spec_to_static_widget(spec):
+    """Convert a render_chart-style spec into (widget_type, source_config) for a
+    'static' dashboard widget (data stored verbatim, no execution)."""
+    s = spec if isinstance(spec, dict) else {}
+    wt = str(s.get("type") or "bar").lower()
+    if wt not in ("kpi", "table", "line", "bar"):
+        wt = "bar"
+    if wt in ("line", "bar"):
+        data = {"labels": s.get("labels") or [], "values": s.get("values") or []}
+    elif wt == "kpi":
+        data = {"value": s.get("value"), "label": s.get("label") or ""}
+    else:
+        data = {"columns": s.get("columns") or [], "rows": s.get("rows") or []}
+    return wt, {"data": data}
+
+
+def _admin_tool_create_dashboard(name=None, description=None, widgets=None, **_):
+    """Create a persistent dashboard (appears in the Custom Dashboards tab) with
+    widgets. Each widget is either {name, chart:{...}} (a static chart you've
+    computed) or {name, widget_type, source_type, source_config} (builtin metric
+    / external_postgres query / etc.). Display-only; the super-admin can edit or
+    delete it in the tab."""
+    nm = (name or "").strip()
+    if not nm:
+        return {"error": "name is required"}
+    d = execute_db("INSERT INTO dashboards (name, description) VALUES (%s,%s) "
+                   "RETURNING id", (nm[:160], (description or "").strip()[:1000]))
+    did = d["id"] if d else None
+    if not did:
+        return {"error": "Could not create the dashboard."}
+    made = 0
+    for i, w in enumerate((widgets or [])[:20]):
+        if not isinstance(w, dict):
+            continue
+        wname = str(w.get("name") or f"Widget {i + 1}")[:160]
+        if isinstance(w.get("chart"), dict):
+            wt, sc = _dh_spec_to_static_widget(w["chart"])
+            st = "static"
+        else:
+            wt = str(w.get("widget_type") or "kpi").lower()
+            if wt not in ("kpi", "table", "line", "bar"):
+                wt = "kpi"
+            st = str(w.get("source_type") or "builtin")
+            if st not in ("builtin", "internal_db", "external_postgres",
+                          "external_rest", "static"):
+                st = "builtin"
+            sc = w.get("source_config") or {}
+        execute_db(
+            "INSERT INTO dashboard_widgets (dashboard_id, name, widget_type, "
+            " source_type, source_config, sort_order) "
+            "VALUES (%s,%s,%s,%s,%s::jsonb,%s)",
+            (did, wname, wt, st, json.dumps(sc), i))
+        made += 1
+    return {"ok": True, "dashboard_id": did, "widgets": made,
+            "note": f"Created dashboard '{nm}' with {made} widget(s) — it's in "
+                    "the Custom Dashboards tab."}
+
+
 def _admin_tool_list_skills():
     rows = query_db(
         "SELECT name, display_name, category, builtin, enabled, description "
@@ -18902,6 +18960,7 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_define_schema":          _admin_tool_define_schema,
     "admin_save_query":             _admin_tool_save_query,
     "render_chart":                 _admin_tool_render_chart,
+    "admin_create_dashboard":       _admin_tool_create_dashboard,
     "admin_list_skills":            _admin_tool_list_skills,
     "admin_recent_visitor_chats":   _admin_tool_recent_visitor_chats,
     "admin_recent_orders":          _admin_tool_recent_orders,
@@ -19072,6 +19131,20 @@ ADMIN_TOOLS = [
         {"type": "object",
          "properties": {"connection_id": {"type": "integer", "default": 0},
                         "table": {"type": "string"}}}),
+    _admin_tool_schema(
+        "admin_create_dashboard",
+        "Create a PERSISTENT dashboard that appears in the Custom Dashboards tab. "
+        "Provide a name and a list of widgets. Each widget is either "
+        "{name, chart:{type,title,labels,values|value,label|columns,rows}} for a "
+        "static chart you computed, or {name, widget_type, source_type, "
+        "source_config} for a live source (builtin metric or external_postgres "
+        "{connection_id, query}). Use this when the owner wants to KEEP a view; "
+        "use render_chart for a one-off inline chart.",
+        {"type": "object",
+         "properties": {"name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "widgets": {"type": "array", "items": {"type": "object"}}},
+         "required": ["name"]}),
     _admin_tool_schema(
         "render_chart",
         "Draw a chart, KPI, or table INLINE in this chat to visualize data you've "
@@ -38074,6 +38147,39 @@ def admin_datahub_add_example(cid):
     return jsonify({"ok": True, "id": row["id"] if row else None})
 
 
+@app.route("/admin/api/datahub/save-chart", methods=["POST"])
+@admin_required
+def admin_datahub_save_chart():
+    """Persist a chart the assistant drew in chat as a static widget on a
+    dashboard (find-or-create by name). Backs the chat 'Save to dashboard'
+    button. Super-admin only."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    b = request.get_json(silent=True) or {}
+    spec = b.get("spec")
+    if not isinstance(spec, dict) or not spec:
+        return jsonify({"error": "spec is required"}), 400
+    did = b.get("dashboard_id")
+    if not did:
+        dname = (b.get("dashboard_name") or "AI Charts").strip()[:160] or "AI Charts"
+        row = query_db("SELECT id FROM dashboards WHERE name=%s ORDER BY id LIMIT 1",
+                       (dname,), fetchone=True)
+        did = row["id"] if row else execute_db(
+            "INSERT INTO dashboards (name) VALUES (%s) RETURNING id", (dname,))["id"]
+    wt, sc = _dh_spec_to_static_widget(spec)
+    last = query_db("SELECT COALESCE(MAX(sort_order),-1) AS m FROM dashboard_widgets "
+                    "WHERE dashboard_id=%s", (did,), fetchone=True) or {"m": -1}
+    w = execute_db(
+        "INSERT INTO dashboard_widgets (dashboard_id, name, widget_type, "
+        " source_type, source_config, sort_order) "
+        "VALUES (%s,%s,%s,'static',%s::jsonb,%s) RETURNING id",
+        (did, str(spec.get("title") or "Chart")[:160], wt, json.dumps(sc),
+         int(last["m"]) + 1))
+    return jsonify({"ok": True, "dashboard_id": did,
+                    "widget_id": (w["id"] if w else None)})
+
+
 @app.route("/admin/api/datahub/<int:cid>/ai-define", methods=["POST"])
 @admin_required
 def admin_datahub_ai_define(cid):
@@ -38209,7 +38315,7 @@ def admin_create_widget(did):
     source_config = body.get("source_config") or {}
     if widget_type not in ("kpi", "table", "line", "bar"):
         return jsonify({"error": "Invalid widget type."}), 400
-    if source_type not in ("builtin", "internal_db", "external_postgres", "external_rest"):
+    if source_type not in ("builtin", "internal_db", "external_postgres", "external_rest", "static"):
         return jsonify({"error": "Invalid source type."}), 400
     if not name:
         return jsonify({"error": "Name is required."}), 400
@@ -38239,7 +38345,7 @@ def admin_update_widget(did, wid):
     source_config = body.get("source_config") or {}
     if widget_type not in ("kpi", "table", "line", "bar"):
         return jsonify({"error": "Invalid widget type."}), 400
-    if source_type not in ("builtin", "internal_db", "external_postgres", "external_rest"):
+    if source_type not in ("builtin", "internal_db", "external_postgres", "external_rest", "static"):
         return jsonify({"error": "Invalid source type."}), 400
     execute_db(
         "UPDATE dashboard_widgets SET name = %s, widget_type = %s, "
@@ -38298,6 +38404,10 @@ def admin_run_widget(wid):
             url = decrypt_secret(conn_row["encrypted_config"])
             raw = _run_external_postgres(url, query)
             data = _shape_external_data_for_widget(raw, row["widget_type"], cfg)
+        elif row["source_type"] == "static":
+            # Datahub (task 058): a chart saved from chat — the data is stored
+            # verbatim in source_config["data"] (no execution).
+            data = cfg.get("data") or {}
         elif row["source_type"] == "external_rest":
             conn_id = cfg.get("connection_id")
             if not conn_id:
