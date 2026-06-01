@@ -6442,6 +6442,194 @@ def admin_delete_embed_key(kid):
     return jsonify({"success": True})
 
 
+# -----------------------------------------------------------------------------
+# Chat-only mode (super-admin gated)
+# -----------------------------------------------------------------------------
+# Some clients want ONLY the AI chat embedded on their OWN pre-existing website
+# — not the Replit-hosted public landing page. The embeddable widget already
+# supports that (per-client publishable embed keys + origin allowlist + the
+# /embed/loader.js snippet). What this adds is a switch to turn OFF the public
+# marketing site so a chat-only client doesn't also expose a full landing page
+# at the root URL.
+#
+# When `site_settings.chat_only_mode` is TRUE, the public website routes (the
+# landing page, standalone /p/<slug> pages, pretty per-section URLs, blog
+# posts, the static front-end bundle, etc.) return a minimal placeholder
+# instead of the full site. Everything the embedded chat and the operator
+# need keeps working — the chat API, chatbot settings, the embed loader and
+# widget assets, uploaded media, the admin dashboard, and health probes.
+#
+# The flag is read on EVERY request (in a before_request hook), so the value
+# is cached for a few seconds to avoid a DB round-trip per request. The cache
+# is invalidated immediately whenever the toggle is saved.
+#
+# Default is FALSE, and any error (e.g. the column missing on an older install
+# that hasn't run the migration yet) FAILS OPEN — the public site stays
+# visible — so we never accidentally hide an operator's whole website.
+
+# Path prefixes that MUST keep working when chat-only mode is ON. These cover
+# the admin dashboard + login, every API (chat, chatbot-settings, embeddable
+# endpoints, …), the cross-origin embed loader + widget assets, uploaded
+# media the chat may reference, and any framework static files.
+_CHAT_ONLY_ALLOWED_PREFIXES = (
+    "/admin",       # dashboard, login, /admin/sso, and all /admin/api/* endpoints
+    "/api",         # chat, chatbot-settings, forms, products, checkout, stripe webhook
+    "/embed",       # /embed/loader.js — the cross-origin widget loader
+    "/widget",      # /widget/chat-ui.js|css, voice.js — widget assets
+    "/uploads",     # user-uploaded images the chat/gallery cards may reference
+    "/static",      # any framework static assets
+    "/bundle.",     # fingerprinted JS bundle the widget/loader may pull
+    # Machine-to-machine endpoints that MUST keep working regardless of whether
+    # the public marketing site is visible — hiding these behind the HTML
+    # placeholder would silently swallow real webhook/automation deliveries or
+    # break plugin distribution (the upstream would see a 200 and assume success).
+    "/webhooks",    # Resend + Twilio (SMS/voice) status & inbound webhooks
+    "/automations", # /automations/hook/<token> — inbound automation triggers
+    "/plugin",      # plugin update.json / download / onboarding distribution
+)
+
+# Exact paths that must stay reachable when chat-only mode is ON: health
+# probes (so deployments don't flap) and common root-level asset requests.
+_CHAT_ONLY_ALLOWED_EXACT = (
+    "/healthz", "/health", "/favicon.ico", "/robots.txt",
+)
+
+# Tiny TTL cache so the per-request flag check isn't a DB hit every time.
+_CHAT_ONLY_CACHE = {"val": None, "ts": 0.0}
+_CHAT_ONLY_CACHE_TTL_SEC = 10.0
+
+
+def _chat_only_mode_enabled():
+    """Return True if the super-admin has turned the public site OFF.
+
+    Cached for a few seconds. Fails OPEN (returns False) on any error —
+    including the column not existing on an install that hasn't run the
+    0022 migration — so a DB blip can never hide the whole public site."""
+    now = _time.time()
+    cached = _CHAT_ONLY_CACHE["val"]
+    if cached is not None and (now - _CHAT_ONLY_CACHE["ts"]) < _CHAT_ONLY_CACHE_TTL_SEC:
+        return cached
+    val = False
+    try:
+        row = query_db(
+            "SELECT chat_only_mode FROM site_settings WHERE id = 1",
+            fetchone=True,
+        )
+        if row:
+            val = bool(row.get("chat_only_mode"))
+    except Exception:
+        val = False
+    _CHAT_ONLY_CACHE["val"] = val
+    _CHAT_ONLY_CACHE["ts"] = now
+    return val
+
+
+def _chat_only_invalidate_cache():
+    """Force the next _chat_only_mode_enabled() call to re-read the DB.
+    Called right after the toggle is saved so the change takes effect now."""
+    _CHAT_ONLY_CACHE["val"] = None
+    _CHAT_ONLY_CACHE["ts"] = 0.0
+
+
+# Minimal, industry-agnostic placeholder shown at the root URL (and other
+# public pages) while chat-only mode is ON. Deliberately neutral — no
+# business name or marketing content — since the real delivery is the chat
+# embedded on the client's own website.
+_CHAT_ONLY_PLACEHOLDER_HTML = (
+    "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+    "<meta name=\"robots\" content=\"noindex\">"
+    "<title>Chat available</title>"
+    "<style>html,body{height:100%;margin:0}"
+    "body{display:flex;align-items:center;justify-content:center;"
+    "font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;"
+    "background:#0f172a;color:#e2e8f0;text-align:center;padding:1.5rem}"
+    ".box{max-width:30rem}"
+    "h1{font-size:1.25rem;font-weight:600;margin:0 0 .5rem}"
+    "p{font-size:.95rem;line-height:1.5;color:#94a3b8;margin:0}</style>"
+    "</head><body><div class=\"box\">"
+    "<h1>This page isn't available here.</h1>"
+    "<p>The assistant is available directly on our website.</p>"
+    "</div></body></html>"
+)
+
+
+def _chat_only_placeholder_response():
+    """Build the minimal placeholder response (HTTP 200 so health checks and
+    uptime monitors that hit '/' stay green)."""
+    resp = make_response(_CHAT_ONLY_PLACEHOLDER_HTML, 200)
+    resp.headers["Content-Type"] = "text/html; charset=utf-8"
+    # Don't let proxies/browsers cache the placeholder — toggling the mode
+    # off should restore the real site immediately.
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.before_request
+def _enforce_chat_only_mode():
+    """When chat-only mode is ON, hide the public marketing site.
+
+    Returns the minimal placeholder for any public page request while
+    letting admin, APIs, the embed loader/widget assets, uploads, and
+    health probes through untouched. When the mode is OFF this is a no-op,
+    so existing installs behave exactly as before."""
+    try:
+        path = request.path or ""
+    except Exception:
+        return None
+    if not _chat_only_mode_enabled():
+        return None
+    # Never interfere with CORS preflight — the embed widget relies on it.
+    if request.method == "OPTIONS":
+        return None
+    for prefix in _CHAT_ONLY_ALLOWED_PREFIXES:
+        if path == prefix or path.startswith(prefix if prefix.endswith(".") else prefix + "/"):
+            return None
+    if path in _CHAT_ONLY_ALLOWED_EXACT:
+        return None
+    # Everything else is a public-site page → show the placeholder instead.
+    return _chat_only_placeholder_response()
+
+
+@app.route("/admin/api/site-mode", methods=["GET"])
+@admin_required
+def admin_get_site_mode():
+    """Return the current chat-only-mode flag for the dashboard toggle.
+
+    Read-only and resilient: if the column doesn't exist yet (migration
+    not run) it reports False rather than erroring."""
+    val = False
+    try:
+        row = query_db(
+            "SELECT chat_only_mode FROM site_settings WHERE id = 1",
+            fetchone=True,
+        )
+        if row:
+            val = bool(row.get("chat_only_mode"))
+    except Exception:
+        val = False
+    return jsonify({"chat_only_mode": val})
+
+
+@app.route("/admin/api/site-mode", methods=["PUT"])
+@admin_required
+def admin_set_site_mode():
+    """Turn chat-only mode on/off. Super-admin role ONLY — the same hard
+    server-side boundary used by the other white-label / embed endpoints
+    (the template hiding the tab is only cosmetic; THIS is the real gate)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    d = request.get_json(silent=True) or {}
+    val = bool(d.get("chat_only_mode"))
+    execute_db(
+        "UPDATE site_settings SET chat_only_mode = %s WHERE id = 1",
+        (val,),
+    )
+    _chat_only_invalidate_cache()
+    return jsonify({"chat_only_mode": val})
+
+
 # ---- WordPress-embedded admin SSO ----------------------------------------
 # The WP plugin mints a single-use, short-lived HMAC token (the identical scheme
 # below) with the shared SSO_SIGNING_SECRET and iframes /admin/sso?token=...; we

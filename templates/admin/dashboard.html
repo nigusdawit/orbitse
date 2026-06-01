@@ -10850,6 +10850,22 @@ TO CUSTOMIZE THIS DASHBOARD:
       </div>
     </div>
 
+    <!-- Chat-only mode (super admin only) -->
+    <div class="wp-card">
+      <h3 class="wp-h3">💬 Chat-only mode</h3>
+      <p class="wp-hint" style="margin-top:0;">For clients who only want the AI chat
+        on their <strong>own</strong> website — not this hosted landing page. When ON,
+        visiting this site's main URL shows a minimal placeholder instead of the full
+        public site. The embedded chat widget, the chat API, and this admin dashboard
+        keep working normally. Turning it OFF restores the public site instantly — no
+        content is deleted.</p>
+      <label class="wp-check" style="display:flex; align-items:center; gap:0.6rem; margin-top:0.5rem;">
+        <input type="checkbox" id="wp-chat-only-toggle" onchange="wpSaveSiteMode()" data-testid="toggle-chat-only-mode">
+        <span>Hide the public website (chat-only)</span>
+      </label>
+      <p class="wp-hint" id="wp-chat-only-status" style="margin-top:0.5rem;"></p>
+    </div>
+
     <!-- Embed keys -->
     <div class="wp-card">
       <h3 class="wp-h3">🪪 Embed keys</h3>
@@ -24871,8 +24887,61 @@ TO CUSTOMIZE THIS DASHBOARD:
         document.getElementById('wp-release-info').innerHTML =
           '<div class="empty-state" style="color:#ef4444;">Could not load: ' + escapeHTML(String(e.message || e)) + '</div>';
       }
+      loadWpSiteMode();
       loadWpEmbedKeys();
       loadWpLinks();
+    }
+
+    // ---- Chat-only mode (super admin) -------------------------------------
+    async function loadWpSiteMode() {
+      const toggle = document.getElementById('wp-chat-only-toggle');
+      const status = document.getElementById('wp-chat-only-status');
+      if (!toggle) return;
+      try {
+        const res = await fetch('/admin/api/site-mode', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const d = await res.json();
+        toggle.checked = !!d.chat_only_mode;
+        if (status) {
+          status.textContent = d.chat_only_mode
+            ? 'Public website is hidden — only the embedded chat is served.'
+            : 'Public website is visible.';
+        }
+      } catch (e) {
+        if (status) status.textContent = 'Could not load: ' + (e.message || e);
+      }
+    }
+
+    async function wpSaveSiteMode() {
+      const toggle = document.getElementById('wp-chat-only-toggle');
+      const status = document.getElementById('wp-chat-only-status');
+      if (!toggle) return;
+      const want = toggle.checked;
+      try {
+        const res = await fetch('/admin/api/site-mode', {
+          method: 'PUT', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_only_mode: want })
+        });
+        if (res.status === 403) {
+          // Super-admin role required — revert the optimistic toggle.
+          toggle.checked = !want;
+          throw new Error('Only the super admin can change this.');
+        }
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const d = await res.json();
+        toggle.checked = !!d.chat_only_mode;
+        if (status) {
+          status.textContent = d.chat_only_mode
+            ? 'Public website is hidden — only the embedded chat is served.'
+            : 'Public website is visible.';
+        }
+        showToast && showToast(d.chat_only_mode ? 'Public website hidden' : 'Public website restored', 'success');
+      } catch (e) {
+        toggle.checked = !want;
+        if (status) status.textContent = 'Could not save: ' + (e.message || e);
+        showToast && showToast('Could not save: ' + (e.message || e), 'error');
+      }
     }
 
     async function wpBuild() {
