@@ -4977,6 +4977,22 @@ def init_db():
                 );
                 CREATE INDEX IF NOT EXISTS content_assets_draft_idx
                     ON content_assets (draft_id);
+
+                -- Publish audit log (Phase 8 / task 067): one row per outbound
+                -- publish attempt through a capability. detail never stores
+                -- secrets (config is redacted before logging).
+                CREATE TABLE IF NOT EXISTS publish_log (
+                    id            BIGSERIAL PRIMARY KEY,
+                    tenant_id     INTEGER NOT NULL DEFAULT 1,
+                    capability_id BIGINT REFERENCES publish_capabilities(id) ON DELETE SET NULL,
+                    draft_id      BIGINT REFERENCES content_drafts(id) ON DELETE SET NULL,
+                    kind          TEXT NOT NULL DEFAULT '',
+                    status        TEXT NOT NULL DEFAULT '',
+                    detail        TEXT NOT NULL DEFAULT '',
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS publish_log_recent_idx
+                    ON publish_log (tenant_id, created_at DESC);
                 """
             )
     finally:
@@ -16297,11 +16313,35 @@ def _dh_spec_to_static_widget(spec):
     return wt, {"data": data}
 
 
+def _rce_tool_role_guard():
+    """Server-side role boundary for the super-admin-only Research/Content AI
+    tools. Returns an error dict if the CURRENT request is an authenticated
+    non-super-admin (client) session, else None. Request-context-safe: outside a
+    request (system/automation/tests, which are trusted server-side callers) it
+    returns None. The HTTP routes enforce the same boundary with
+    _require_super_admin_role(); this closes the same gap on the AI-tool surface
+    (the admin chat is only @admin_required, so a client session can reach tools
+    unless they self-check)."""
+    try:
+        from flask import has_request_context
+        if not has_request_context():
+            return None
+        if session.get("admin_logged_in") and \
+                session.get("admin_role", "super_admin") != "super_admin":
+            return {"error": "This action requires the super-admin role."}
+    except Exception:
+        return None
+    return None
+
+
 def _admin_tool_gather_sources(urls=None, topic=None, ingest_kb=False, **_):
     """Gather web pages into the Research Hub's Sources layer (full text), under
     a new draft research report. Gated by the Research Hub toggle. Provide a list
     of URLs; optionally a topic + whether to also add them to the knowledge base.
     Read-only against the web (SSRF-guarded). Returns a summary + report_id."""
+    guard = _rce_tool_role_guard()
+    if guard:
+        return guard
     if isinstance(urls, str):
         urls = [urls]
     if not isinstance(urls, list) or not urls:
@@ -16316,6 +16356,9 @@ def _admin_tool_run_research(question=None, topic=None, seed_urls=None,
     the Research Hub's Sources layer, and write a cited synthesis report (summary
     + key points + citations). Optionally pass seed_urls to include. Read-only;
     gated by the Research Hub toggle. Returns the report_id + a result summary."""
+    guard = _rce_tool_role_guard()
+    if guard:
+        return guard
     if isinstance(seed_urls, str):
         seed_urls = [seed_urls]
     if not (question or "").strip():
@@ -16332,6 +16375,9 @@ def _admin_tool_generate_content(report_id=None, content_types=None,
     content_type (e.g. blog, social, linkedin, newsletter, email, faq, summary)
     in the Content Studio for the owner to review before publishing. Read-only on
     the report; gated by the Content Studio toggle. Returns the created drafts."""
+    guard = _rce_tool_role_guard()
+    if guard:
+        return guard
     if isinstance(content_types, str):
         content_types = [content_types]
     if report_id is None:
@@ -16350,12 +16396,29 @@ def _admin_tool_generate_visual(draft_id=None, asset_type=None, brief=None,
     source, clips a storyboard, images a placeholder unless a real provider is
     chosen. The asset can then be embedded into the draft. Gated by the Visual
     Content toggle. Returns the created asset."""
+    guard = _rce_tool_role_guard()
+    if guard:
+        return guard
     at = (asset_type or "image").strip().lower()
     if draft_id in (None, "") and report_id in (None, ""):
         return {"error": "Provide a draft_id (or report_id) for the visual."}
     return _rce_create_visual(draft_id=draft_id, report_id=report_id,
                               asset_type=at, brief=(brief or ""),
                               provider=(provider or None))
+
+
+def _admin_tool_publish_content(draft_id=None, capability_id=None, **_):
+    """Publish a content draft through an EXISTING, enabled publish capability
+    (by capability_id). You can only fire a capability the owner already set up —
+    you cannot create one or change its configuration/command. Auto-publish must
+    be enabled by the owner; otherwise the draft stays ready for manual publish.
+    Returns the publish result (logged)."""
+    guard = _rce_tool_role_guard()
+    if guard:
+        return guard
+    if draft_id in (None, "") or capability_id in (None, ""):
+        return {"error": "Provide draft_id and capability_id."}
+    return _rce_publish_draft(draft_id, capability_id, via="auto")
 
 
 def _admin_tool_create_dashboard(name=None, description=None, widgets=None, **_):
@@ -19173,6 +19236,7 @@ ADMIN_TOOL_FUNCTIONS = {
     "run_research":                 _admin_tool_run_research,
     "generate_content":             _admin_tool_generate_content,
     "generate_visual":              _admin_tool_generate_visual,
+    "publish_content":              _admin_tool_publish_content,
     "admin_save_query":             _admin_tool_save_query,
     "render_chart":                 _admin_tool_render_chart,
     "admin_create_dashboard":       _admin_tool_create_dashboard,
@@ -19392,6 +19456,16 @@ ADMIN_TOOLS = [
                         "brief": {"type": "string"},
                         "provider": {"type": "string"}},
          "required": ["asset_type"]}),
+    _admin_tool_schema(
+        "publish_content",
+        "Publish a content draft through an existing, enabled publish capability "
+        "(pass its capability_id). You can only fire a capability the owner has "
+        "already configured — you cannot create capabilities or set their command. "
+        "Auto-publish must be enabled by the owner. Returns the (logged) result.",
+        {"type": "object",
+         "properties": {"draft_id": {"type": "integer"},
+                        "capability_id": {"type": "integer"}},
+         "required": ["draft_id", "capability_id"]}),
     _admin_tool_schema(
         "admin_define_schema",
         "DRAFT the Datahub data dictionary for a connection: inspect + sample it "
@@ -41330,6 +41404,341 @@ def _rce_embed_asset(draft_id, asset_id):
             "embedded": snippet[:200]}
 
 
+# =============================================================================
+# RESEARCH & CONTENT ENGINE — Publish capabilities + auto-post (Phase 8 / 067)
+# =============================================================================
+# Super-admin-defined output channels for content. Four kinds:
+#   webhook   — POST the content JSON to a URL
+#   http_api  — a general HTTP call (operator picks method/headers)
+#   mcp       — call a tool on a connected MCP server
+#   python    — fire an OPERATOR-AUTHORED command, passing the content as DATA
+# Config is Fernet-encrypted at rest and NEVER returned decrypted (reads are
+# redacted). Outbound HTTP reuses the SSRF-guarded, DNS-rebind-pinned sender.
+# Auto-publish is gated by the autopublish_enabled knob (default off); every
+# capability is enabled=FALSE until a super-admin turns it on; every attempt is
+# logged. SECURITY: the AI can only FIRE an existing, enabled capability with
+# parameters — it can never create one or supply the python command (that is
+# operator-only), and python execution is additionally gated by a deployment env
+# flag so a compromised admin session alone cannot get code execution.
+
+_RCE_CAP_KINDS = ("webhook", "http_api", "mcp", "python")
+
+
+def _rce_python_capabilities_allowed():
+    """Deployment-level gate for python publish capabilities. NOT a DB-overridable
+    AI Control knob — a compromised admin session must not be able to flip it.
+    Set RCE_PYTHON_CAPABILITY_ENABLED=1/true/yes/on to allow operator-authored
+    python capabilities to execute."""
+    return str(os.environ.get("RCE_PYTHON_CAPABILITY_ENABLED", "")).strip().lower() \
+        in ("1", "true", "yes", "on")
+
+
+def _rce_cap_config(row):
+    """Decrypt a capability's stored JSON config. Returns {} on any failure."""
+    try:
+        return json.loads(decrypt_secret(row.get("encrypted_config") or "") or "{}")
+    except Exception:
+        return {}
+
+
+def _rce_cap_redacted(row):
+    """Public view of a capability — NEVER returns secrets (headers/credentials/
+    full command). Only safe summary fields."""
+    if not row:
+        return None
+    cfg = _rce_cap_config(row)
+    kind = (row.get("kind") or "").strip().lower()
+    summary = {}
+    if kind in ("webhook", "http_api"):
+        host = ""
+        try:
+            import urllib.parse as _up
+            host = _up.urlparse(cfg.get("url") or "").hostname or ""
+        except Exception:
+            host = ""
+        summary = {"host": host, "method": cfg.get("method") or "POST",
+                   "has_headers": bool(cfg.get("headers"))}
+    elif kind == "mcp":
+        summary = {"server_id": cfg.get("server_id"), "tool": cfg.get("tool")}
+    elif kind == "python":
+        cmd = cfg.get("command") if isinstance(cfg.get("command"), list) else []
+        summary = {"command_preview": (cmd[0] if cmd else ""), "argc": len(cmd),
+                   "pass_as": cfg.get("pass_as") or "stdin",
+                   "deployment_allows": _rce_python_capabilities_allowed()}
+    d = {"id": row.get("id"), "name": row.get("name"), "kind": kind,
+         "description": row.get("description") or "",
+         "enabled": bool(row.get("enabled")), "config_summary": summary,
+         "created_at": row.get("created_at"), "updated_at": row.get("updated_at")}
+    return _iso_row(d, "created_at", "updated_at")
+
+
+def _rce_validate_cap_config(kind, cfg):
+    """Validate a config dict for a kind. Returns an error string or None."""
+    if not isinstance(cfg, dict):
+        return "config must be an object."
+    if kind in ("webhook", "http_api"):
+        url = (cfg.get("url") or "").strip()
+        if not url:
+            return "config.url is required."
+        ok, _p, err = _webhook_url_safe(url)   # courtesy pre-check (runtime re-checks)
+        if not ok:
+            return f"url refused: {err}"
+    elif kind == "mcp":
+        if cfg.get("server_id") in (None, "") or not (cfg.get("tool") or "").strip():
+            return "config needs server_id + tool."
+    elif kind == "python":
+        cmd = cfg.get("command")
+        if not isinstance(cmd, list) or not cmd or not all(isinstance(x, str) for x in cmd):
+            return "config.command must be a non-empty list of strings (operator-defined)."
+    return None
+
+
+# --- outbound dispatchers (each returns {ok, status, detail[, blocked]}) -----
+
+def _rce_safe_http_send(url, *, method="POST", headers=None, payload=None, timeout=10.0):
+    """SSRF-guarded outbound HTTP with a DNS-rebinding pin (reuses
+    _webhook_url_safe + the urllib3 pin). Never raises."""
+    ok, parsed, err = _webhook_url_safe(url)
+    if not ok:
+        return {"ok": False, "status": 0, "blocked": True,
+                "detail": f"blocked: {err or 'URL refused'}"}
+    parsed_url, validated_ips = parsed
+    m = (method or "POST").strip().upper()
+    if m not in ("GET", "POST", "PUT", "PATCH"):
+        m = "POST"
+    hdrs = {str(k): str(v) for k, v in (headers or {}).items()
+            if isinstance(headers, dict)}
+    hdrs.setdefault("User-Agent", "rce-publish/1.0")
+    try:
+        t = max(1.0, min(float(timeout or 10), 20.0))
+    except Exception:
+        t = 10.0
+    pin_host = (parsed_url.hostname or "").lower()
+    pin_port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
+    prev = getattr(_webhook_dns_pin_local, "pins", None)
+    pins = dict(prev or {})
+    pins[(pin_host, pin_port)] = validated_ips[0]
+    _webhook_dns_pin_local.pins = pins
+    try:
+        import requests as _rq
+        if m == "GET":
+            resp = _rq.get(url, headers=hdrs, timeout=t, allow_redirects=False)
+        else:
+            hdrs.setdefault("Content-Type", "application/json")
+            resp = _rq.request(m, url, json=payload, headers=hdrs, timeout=t,
+                               allow_redirects=False)
+    except Exception as e:
+        return {"ok": False, "status": 0, "detail": f"request failed: {str(e)[:200]}"}
+    finally:
+        _webhook_dns_pin_local.pins = prev
+    return {"ok": (200 <= resp.status_code < 300), "status": resp.status_code,
+            "detail": (resp.text or "")[:1000]}
+
+
+def _rce_dispatch_mcp(cfg, payload):
+    """Call a tool on a connected MCP server (reuses _mcp_call_tool)."""
+    sid = cfg.get("server_id")
+    tool = (cfg.get("tool") or "").strip()
+    if sid in (None, "") or not tool:
+        return {"ok": False, "status": "error", "detail": "mcp capability needs server_id + tool."}
+    try:
+        srv = query_db(
+            "SELECT id, name, description, transport, url, auth_type, "
+            "auth_header_name, auth_credential, enabled, allowed_for_admin, "
+            "allowed_for_velo, connector_type, oauth_state "
+            "FROM mcp_servers WHERE id=%s", (int(sid),), fetchone=True)
+    except Exception as e:
+        return {"ok": False, "status": "error", "detail": f"load mcp server: {str(e)[:150]}"}
+    if not srv:
+        return {"ok": False, "status": "error", "detail": "mcp server not found."}
+    if not srv.get("enabled"):
+        return {"ok": False, "status": "error", "detail": "mcp server is disabled."}
+    args = payload if isinstance(payload, dict) else {}
+    if isinstance(cfg.get("arg_template"), dict):
+        args = {**cfg["arg_template"], **args}
+    result, err = _mcp_call_tool(srv, tool, args)
+    if err is not None:
+        return {"ok": False, "status": "error",
+                "detail": f"mcp {err.get('code')}: {str(err.get('message', ''))[:300]}"}
+    is_err = isinstance(result, dict) and result.get("isError")
+    return {"ok": not is_err, "status": "ok",
+            "detail": (json.dumps(result)[:1000] if result else "")}
+
+
+def _rce_dispatch_python(cfg, payload):
+    """Run an OPERATOR-AUTHORED command, passing the payload as DATA (never code).
+    Double-gated: requires the deployment env flag AND an operator-defined command
+    list. The payload reaches the program via stdin or a single JSON argv element
+    (shell=False) so its contents can never be parsed as a command. Never raises."""
+    if not _rce_python_capabilities_allowed():
+        return {"ok": False, "status": "disabled",
+                "detail": "python capabilities are disabled on this deployment "
+                          "(set RCE_PYTHON_CAPABILITY_ENABLED=1 to allow)."}
+    cmd = cfg.get("command")
+    if not isinstance(cmd, list) or not cmd or not all(isinstance(x, str) for x in cmd):
+        return {"ok": False, "status": "error",
+                "detail": "python capability 'command' must be a non-empty list of strings."}
+    pass_as = (cfg.get("pass_as") or "stdin").strip().lower()
+    try:
+        timeout = max(1, min(int(cfg.get("timeout") or 30), 120))
+    except (TypeError, ValueError):
+        timeout = 30
+    payload_json = json.dumps(payload or {})[:200000]
+    args = list(cmd)
+    stdin_data = None
+    if pass_as == "argv":
+        args = list(cmd) + [payload_json]
+    else:
+        stdin_data = payload_json
+    import subprocess
+    # Minimal environment (no inherited secrets); payload also offered via env.
+    env = {"PATH": os.environ.get("PATH", ""),
+           "RCE_PAYLOAD": payload_json[:32000]}
+    try:
+        proc = subprocess.run(args, input=stdin_data, capture_output=True,
+                              text=True, timeout=timeout, shell=False, env=env)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "status": "timeout", "detail": f"timed out after {timeout}s"}
+    except FileNotFoundError:
+        return {"ok": False, "status": "error", "detail": "command not found"}
+    except Exception as e:
+        return {"ok": False, "status": "error",
+                "detail": f"{type(e).__name__}: {str(e)[:200]}"}
+    out = ((proc.stdout or "") +
+           (("\n[stderr] " + proc.stderr) if proc.stderr else ""))[:2000]
+    return {"ok": proc.returncode == 0, "status": f"exit {proc.returncode}",
+            "detail": out}
+
+
+def _rce_run_capability(cap_row, payload):
+    """Dispatch a publish to a capability by its kind. Never raises."""
+    cfg = _rce_cap_config(cap_row)
+    kind = (cap_row.get("kind") or "").strip().lower()
+    if kind == "webhook":
+        url = (cfg.get("url") or "").strip()
+        if not url:
+            return {"ok": False, "status": "error", "detail": "webhook url missing"}
+        return _rce_safe_http_send(url, method="POST", headers=cfg.get("headers"),
+                                   payload=payload, timeout=cfg.get("timeout"))
+    if kind == "http_api":
+        url = (cfg.get("url") or "").strip()
+        if not url:
+            return {"ok": False, "status": "error", "detail": "http_api url missing"}
+        return _rce_safe_http_send(url, method=(cfg.get("method") or "POST"),
+                                   headers=cfg.get("headers"), payload=payload,
+                                   timeout=cfg.get("timeout"))
+    if kind == "mcp":
+        return _rce_dispatch_mcp(cfg, payload)
+    if kind == "python":
+        return _rce_dispatch_python(cfg, payload)
+    return {"ok": False, "status": "error", "detail": f"unknown capability kind '{kind}'"}
+
+
+# --- capability CRUD ---------------------------------------------------------
+
+def _rce_create_capability(name, kind, config, *, description="", enabled=False):
+    """Create a publish capability (config encrypted at rest). Returns the
+    redacted row or {"error": ...}."""
+    kind = (kind or "").strip().lower()
+    if kind not in _RCE_CAP_KINDS:
+        return {"error": f"kind must be one of {_RCE_CAP_KINDS}."}
+    name = (name or "").strip()
+    if not name:
+        return {"error": "name is required."}
+    cfg = config if isinstance(config, dict) else {}
+    v = _rce_validate_cap_config(kind, cfg)
+    if v:
+        return {"error": v}
+    tid = current_tenant_id()
+    row = execute_db(
+        "INSERT INTO publish_capabilities (tenant_id, name, kind, description, "
+        " encrypted_config, enabled) VALUES (%s,%s,%s,%s,%s,%s) RETURNING *",
+        (tid, name[:200], kind, (description or "")[:2000],
+         encrypt_secret(json.dumps(cfg)), bool(enabled)))
+    return _rce_cap_redacted(row)
+
+
+def _rce_update_capability(cid, *, name=None, description=None, config=None,
+                           enabled=None):
+    """Update a capability. Returns the redacted row or {"error": ...}."""
+    tid = current_tenant_id()
+    row = query_db("SELECT * FROM publish_capabilities WHERE id=%s AND tenant_id=%s",
+                   (cid, tid), fetchone=True)
+    if not row:
+        return {"error": "not_found"}
+    sets, params = [], []
+    if name is not None:
+        sets.append("name=%s")
+        params.append(str(name)[:200])
+    if description is not None:
+        sets.append("description=%s")
+        params.append(str(description)[:2000])
+    if enabled is not None:
+        sets.append("enabled=%s")
+        params.append(bool(enabled))
+    if config is not None:
+        cfg = config if isinstance(config, dict) else {}
+        v = _rce_validate_cap_config(row.get("kind"), cfg)
+        if v:
+            return {"error": v}
+        sets.append("encrypted_config=%s")
+        params.append(encrypt_secret(json.dumps(cfg)))
+    if not sets:
+        return {"error": "Nothing to update."}
+    sets.append("updated_at=NOW()")
+    execute_db(f"UPDATE publish_capabilities SET {', '.join(sets)} "
+               "WHERE id=%s AND tenant_id=%s", tuple(params + [cid, tid]))
+    return _rce_cap_redacted(
+        query_db("SELECT * FROM publish_capabilities WHERE id=%s AND tenant_id=%s",
+                 (cid, tid), fetchone=True))
+
+
+def _rce_publish_draft(draft_id, capability_id, *, via="manual"):
+    """Publish a content draft through a capability. Manual publishes need the
+    capability enabled; AUTO publishes additionally require autopublish_enabled.
+    Every attempt is logged. Returns {ok, ...} or {"error": ...}."""
+    tid = current_tenant_id()
+    if via == "auto" and not get_ai_setting("autopublish_enabled"):
+        return {"error": "Auto-publish is turned off. The draft is ready for "
+                         "manual review/publish."}
+    try:
+        did, cid = int(draft_id), int(capability_id)
+    except (TypeError, ValueError):
+        return {"error": "Valid draft_id and capability_id are required."}
+    d = query_db("SELECT * FROM content_drafts WHERE id=%s AND tenant_id=%s",
+                 (did, tid), fetchone=True)
+    if not d:
+        return {"error": "Draft not found."}
+    cap = query_db("SELECT * FROM publish_capabilities WHERE id=%s AND tenant_id=%s",
+                   (cid, tid), fetchone=True)
+    if not cap:
+        return {"error": "Capability not found."}
+    if not cap.get("enabled"):
+        return {"error": "That capability is disabled. Enable it first."}
+    meta = d.get("meta")
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = {}
+    payload = {"draft_id": did, "title": d.get("title") or "",
+               "body": d.get("body") or "", "content_type": d.get("content_type") or "",
+               "meta": meta if isinstance(meta, dict) else {}}
+    result = _rce_run_capability(cap, payload)
+    status = "ok" if result.get("ok") else ("blocked" if result.get("blocked") else "error")
+    execute_db(
+        "INSERT INTO publish_log (tenant_id, capability_id, draft_id, kind, status, "
+        " detail) VALUES (%s,%s,%s,%s,%s,%s)",
+        (tid, cid, did, cap.get("kind"), status, str(result.get("detail") or "")[:4000]))
+    if result.get("ok"):
+        execute_db("UPDATE content_drafts SET status='published', "
+                   "target_table='capability', target_id=%s, updated_at=NOW() "
+                   "WHERE id=%s AND tenant_id=%s", (cid, did, tid))
+    return {"ok": bool(result.get("ok")), "status": result.get("status"),
+            "detail": str(result.get("detail") or "")[:500],
+            "capability": cap.get("name"), "draft_id": did}
+
+
 def _scrape_serialize_job(row: dict) -> dict:
     """Convert a DB row into a JSON-friendly dict for the UI."""
     """Convert a DB row into a JSON-friendly dict for the UI."""
@@ -45506,6 +45915,111 @@ def admin_content_visual_embed():
         return jsonify({"error": "Provide draft_id and asset_id."}), 400
     result = _rce_embed_asset(b.get("draft_id"), b.get("asset_id"))
     return jsonify(result), (200 if "error" not in result else 400)
+
+
+# --- Publish capabilities registry (super-admin) ----------------------------
+
+@app.route("/admin/api/publish/capabilities", methods=["GET"])
+@admin_required
+def admin_list_publish_capabilities():
+    """List publish capabilities (redacted — never secrets). Super-admin only."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    tid = current_tenant_id()
+    rows = query_db("SELECT * FROM publish_capabilities WHERE tenant_id=%s "
+                    "ORDER BY id DESC LIMIT 200", (tid,)) or []
+    return jsonify({"capabilities": [_rce_cap_redacted(r) for r in rows],
+                    "python_allowed": _rce_python_capabilities_allowed()})
+
+
+@app.route("/admin/api/publish/capabilities", methods=["POST"])
+@admin_required
+def admin_create_publish_capability():
+    """Create a publish capability (super-admin only). Config is encrypted."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    b = request.get_json(silent=True) or {}
+    result = _rce_create_capability(
+        b.get("name"), b.get("kind"), b.get("config") or {},
+        description=(b.get("description") or ""), enabled=bool(b.get("enabled")))
+    return jsonify(result), (200 if "error" not in result else 400)
+
+
+@app.route("/admin/api/publish/capabilities/<int:cid>", methods=["GET"])
+@admin_required
+def admin_get_publish_capability(cid):
+    """One capability (redacted). Super-admin only."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    tid = current_tenant_id()
+    row = query_db("SELECT * FROM publish_capabilities WHERE id=%s AND tenant_id=%s",
+                   (cid, tid), fetchone=True)
+    if not row:
+        return jsonify({"error": "not_found"}), 404
+    return jsonify(_rce_cap_redacted(row))
+
+
+@app.route("/admin/api/publish/capabilities/<int:cid>", methods=["POST"])
+@admin_required
+def admin_update_publish_capability(cid):
+    """Update a capability (name/description/config/enabled). Super-admin only."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    b = request.get_json(silent=True) or {}
+    result = _rce_update_capability(
+        cid, name=b.get("name"), description=b.get("description"),
+        config=(b.get("config") if "config" in b else None),
+        enabled=(b.get("enabled") if "enabled" in b else None))
+    if result.get("error") == "not_found":
+        return jsonify(result), 404
+    return jsonify(result), (200 if "error" not in result else 400)
+
+
+@app.route("/admin/api/publish/capabilities/<int:cid>", methods=["DELETE"])
+@admin_required
+def admin_delete_publish_capability(cid):
+    """Delete a capability. Super-admin only."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    tid = current_tenant_id()
+    execute_db("DELETE FROM publish_capabilities WHERE id=%s AND tenant_id=%s",
+               (cid, tid))
+    return jsonify({"ok": True})
+
+
+@app.route("/admin/api/content/drafts/<int:did>/publish", methods=["POST"])
+@admin_required
+def admin_publish_content_draft(did):
+    """Publish a draft through a capability (super-admin, manual action). Manual
+    publish needs the capability enabled; auto-publish (the AI path) additionally
+    needs autopublish_enabled."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    b = request.get_json(silent=True) or {}
+    if b.get("capability_id") in (None, ""):
+        return jsonify({"error": "Provide capability_id."}), 400
+    result = _rce_publish_draft(did, b.get("capability_id"), via="manual")
+    return jsonify(result), (200 if "error" not in result else 400)
+
+
+@app.route("/admin/api/publish/log", methods=["GET"])
+@admin_required
+def admin_publish_log():
+    """Recent publish attempts (super-admin only)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    tid = current_tenant_id()
+    rows = query_db(
+        "SELECT id, capability_id, draft_id, kind, status, detail, created_at "
+        "FROM publish_log WHERE tenant_id=%s ORDER BY id DESC LIMIT 200", (tid,)) or []
+    return jsonify({"log": [_iso_row(r, "created_at") for r in rows]})
 
 
 # --- PUBLIC: unsubscribe ----------------------------------------------------
