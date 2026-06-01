@@ -7182,70 +7182,54 @@ function chatShowTyping(show) {
  * availability…"). It replaces the featureless spinner with real, changing
  * progress so the visitor can see the assistant is working.
  *
- * The text is shown in two places so it's visible whatever state the chat is
- * in: (1) a label on the collapsed-bar thinking indicator, and (2) a status
- * line inside whichever message panel is open. Styles are applied inline so
- * this never depends on a CSS file that the browser might have cached.
+ * The text rides inside the SAME floating pill the three-dot "thinking"
+ * animation uses (it pops up just above the chat bar), so the status looks
+ * like a natural extension of that indicator rather than a separate element.
+ * The pill is created on demand if it isn't already showing.
  *
  * @param {string|null} text - The status text to show, or null/empty to clear.
  */
 function chatSetStatus(text) {
-  /* (1) Collapsed-bar indicator: attach/update a small text label so the
-     dots-above-the-bar state (shown while the panel is still closed) reads
-     out what's happening. */
-  const barInd = document.getElementById('bar-thinking-indicator');
-  if (barInd) {
-    let label = barInd.querySelector('.bar-thinking-label');
-    if (text) {
-      if (!label) {
-        label = document.createElement('span');
-        label.className = 'bar-thinking-label';
-        label.style.marginLeft = '8px';
-        label.style.fontSize = '0.85rem';
-        label.style.opacity = '0.75';
-        barInd.appendChild(label);
-      }
-      label.textContent = text;
-    } else if (label) {
-      label.remove();
+  const bar = document.querySelector('.chatbot-bar');
+  let indicator = document.getElementById('bar-thinking-indicator');
+
+  /* Clearing: just drop the text label, leaving the plain dots-only pill to
+     showBarThinking()'s own show/hide lifecycle. */
+  if (!text) {
+    if (indicator) {
+      const label = indicator.querySelector('.bar-thinking-label');
+      if (label) label.remove();
     }
+    return;
   }
 
-  /* (2) In-panel status line: render a single updating line where the typing
-     dots normally sit, across whichever message areas exist. */
-  ['chatbot-messages', 'split-chat-messages', 'side-chat-messages'].forEach(containerId => {
-    const container = document.getElementById(containerId);
-    if (!container) return;
+  /* Make sure the floating pill exists — this is the exact same popup the
+     three-dot "thinking" animation uses (a centered pill that fades in just
+     above the chat bar), so the status reads out inside it instead of a
+     separate, differently-styled line. */
+  if (!indicator && bar) {
+    indicator = document.createElement('div');
+    indicator.id = 'bar-thinking-indicator';
+    indicator.className = 'bar-thinking';
+    indicator.innerHTML =
+      '<div class="bar-thinking-dot"></div>' +
+      '<div class="bar-thinking-dot"></div>' +
+      '<div class="bar-thinking-dot"></div>';
+    bar.parentElement.insertBefore(indicator, bar);
+  }
+  if (!indicator) return;
 
-    let line = container.querySelector('.chat-status');
-    if (text) {
-      if (!line) {
-        line = document.createElement('div');
-        line.className = 'chat-status';
-        line.style.display = 'flex';
-        line.style.alignItems = 'center';
-        line.style.gap = '8px';
-        line.style.padding = '6px 12px';
-        line.style.fontSize = '0.85rem';
-        line.style.opacity = '0.7';
-        line.style.fontStyle = 'italic';
-        const span = document.createElement('span');
-        span.className = 'chat-status-text';
-        line.appendChild(span);
-        /* Reuse the same animated dots as the typing indicator for a
-           consistent "still working" feel. */
-        line.insertAdjacentHTML('beforeend',
-          '<span class="chat-typing-dot"></span>' +
-          '<span class="chat-typing-dot"></span>' +
-          '<span class="chat-typing-dot"></span>');
-        container.appendChild(line);
-      }
-      line.querySelector('.chat-status-text').textContent = text;
-      container.scrollTop = container.scrollHeight;
-    } else if (line) {
-      line.remove();
-    }
-  });
+  /* Add/update the status text right after the animated dots, inside the pill. */
+  let label = indicator.querySelector('.bar-thinking-label');
+  if (!label) {
+    label = document.createElement('span');
+    label.className = 'bar-thinking-label';
+    label.style.marginLeft = '6px';
+    label.style.fontSize = '0.8rem';
+    label.style.whiteSpace = 'nowrap';
+    indicator.appendChild(label);
+  }
+  label.textContent = text;
 }
 
 
