@@ -105,7 +105,7 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 |----|-------|--------|--------|------------|-------|
 | 062 | Foundation: Sources/reports/drafts/capabilities schema + knobs + read APIs | done | task/062-research-content-foundation | — | Gate 6/6 + migration 0026; 4 tables; AI Control group "Research & Content" (8 knobs, all default-off + master-switch); read APIs for reports(+sources) & drafts |
 | 063 | Gather: multi-source fetch into the Sources layer | done | task/063-research-gather | 062 | Gate 8/8; reuses scraper SSRF-guarded fetch + render fallback; content-hash dedup; rate-limited; gather_sources tool + POST /admin/api/research/gather; gated by research_hub_enabled |
-| 064 | Deep Research: fan-out → fetch → cited synthesis | not_started | task/064-deep-research | 063 | |
+| 064 | Deep Research: fan-out → fetch → cited synthesis | done | task/064-deep-research | 063 | Gate 14/14 (+22 with 063); plan→discover(web search)→fetch(063 gather)→synthesize; anti-hallucination citation filter (drops unfetched URLs); cost-capped (max_sources≤25, 4 sub-q / 3 searches); OpenAI JSON mode, stub-tested; run_research tool + POST /admin/api/research/run |
 | 065 | Content Studio (text): one report → many drafts, review-gated | not_started | task/065-content-studio-text | 062 | |
 | 066 | Visual content scaffold: image/diagram/clip gen + stitch + embed | not_started | task/066-visual-content | 065 | |
 | 067 | Publish capabilities registry + auto-post (mcp/webhook/http_api/python) | not_started | task/067-publish-capabilities | 062 | |
