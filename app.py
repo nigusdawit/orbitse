@@ -25303,6 +25303,42 @@ def api_chat():
 # ADMIN DASHBOARD — HTML pages (protected by login)
 # =============================================================================
 
+# Super-admin-controlled glassmorphic appearance for the admin panel itself
+# (distinct from the public-site theme_* columns). Defaults are safe so a
+# pre-migration DB still renders.
+_ADMIN_APPEARANCE_DEFAULTS = {
+    "mode": "dark", "accent": "#6c8cff", "accent2": "#9a7cff",
+    "blur": 18.0, "radius": 16.0, "glass": 0.55, "glow": 0.5,
+}
+
+
+def _admin_appearance():
+    """Read the admin-panel appearance settings from site_settings, falling back
+    to defaults for any missing/invalid value (pre-migration safe). Returns a
+    dict consumed by the dashboard template's inline CSS-variable block."""
+    d = dict(_ADMIN_APPEARANCE_DEFAULTS)
+    try:
+        row = query_db("SELECT * FROM site_settings WHERE id=1", fetchone=True)
+        if row:
+            if row.get("admin_theme_mode") in ("dark", "light"):
+                d["mode"] = row["admin_theme_mode"]
+            for key, col in (("accent", "admin_theme_accent"),
+                             ("accent2", "admin_theme_accent2")):
+                v = (row.get(col) or "").strip()
+                if re.match(r"^#[0-9a-fA-F]{3,8}$", v):
+                    d[key] = v
+            for key, col in (("blur", "admin_theme_blur"), ("radius", "admin_theme_radius"),
+                             ("glass", "admin_theme_glass"), ("glow", "admin_theme_glow")):
+                if row.get(col) is not None:
+                    try:
+                        d[key] = float(row[col])
+                    except (TypeError, ValueError):
+                        pass
+    except Exception:
+        pass
+    return d
+
+
 @app.route("/admin")
 @admin_required
 def admin_dashboard():
@@ -25312,12 +25348,15 @@ def admin_dashboard():
     Protected by password authentication.
 
     Exposes `has_feature(name)` to the template so sidebar entries can be
-    gated by feature flags without an extra round-trip.
+    gated by feature flags without an extra round-trip. `appearance` carries the
+    super-admin glassmorphic theme settings, injected as inline CSS variables so
+    the look applies before paint (no flash).
     """
     return render_template(
         "admin/dashboard.html",
         has_feature=tenant_has_feature,
         is_super_admin=_is_super_admin,
+        appearance=_admin_appearance(),
     )
 
 
@@ -31661,6 +31700,49 @@ def admin_update_theme():
         )
 
     return jsonify(result)
+
+
+@app.route("/admin/api/admin-appearance", methods=["PUT"])
+@admin_required
+def admin_update_appearance():
+    """PUT /admin/api/admin-appearance — Save the admin panel's OWN glassmorphic
+    appearance (mode/accent/blur/radius/glassiness/glow). Super-admin only and
+    distinct from the public-site /admin/api/theme. Numerics are clamped and
+    colors validated so a stray value can't break the UI."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    data = request.get_json(silent=True) or {}
+
+    def _num(key, default, lo, hi):
+        try:
+            v = float(data.get(key, default))
+        except (TypeError, ValueError):
+            v = default
+        return max(lo, min(hi, v))
+
+    def _hex(key, default):
+        v = (data.get(key) or "").strip()
+        return v if re.match(r"^#[0-9a-fA-F]{3,8}$", v) else default
+
+    mode = data.get("mode") if data.get("mode") in ("dark", "light") else "dark"
+    accent = _hex("accent", "#6c8cff")
+    accent2 = _hex("accent2", "#9a7cff")
+    blur = _num("blur", 18, 0, 40)
+    radius = _num("radius", 16, 0, 28)
+    glass = _num("glass", 0.55, 0.2, 0.95)
+    glow = _num("glow", 0.5, 0.0, 1.0)
+    try:
+        execute_db(
+            "UPDATE site_settings SET admin_theme_mode=%s, admin_theme_accent=%s, "
+            "admin_theme_accent2=%s, admin_theme_blur=%s, admin_theme_radius=%s, "
+            "admin_theme_glass=%s, admin_theme_glow=%s, updated_at=NOW() WHERE id=1",
+            (mode, accent, accent2, blur, radius, glass, glow))
+    except Exception as e:
+        print(f"[appearance] save failed: {type(e).__name__}: {e}")
+        return jsonify({"error": "Could not save appearance."}), 500
+    return jsonify({"ok": True, "mode": mode, "accent": accent, "accent2": accent2,
+                    "blur": blur, "radius": radius, "glass": glass, "glow": glow})
 
 
 @app.route("/admin/api/curated-font-pairs", methods=["GET"])
