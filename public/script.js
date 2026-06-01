@@ -6252,6 +6252,7 @@ async function chatSendStreaming(message, wasCollapsed) {
     if (!res.ok) {
       showBarThinking(false);
       chatShowTyping(false);
+      chatSetStatus(null);
       chatAddMessage('agent', 'I apologize, but I\'m having trouble connecting right now. Please try again.');
       return;
     }
@@ -6305,6 +6306,8 @@ async function chatSendStreaming(message, wasCollapsed) {
             if (!streamBubble && !bubbleFinalized) {
               chatShowTyping(false);
               showBarThinking(false);
+              /* Real text is arriving now — clear the live research status. */
+              chatSetStatus(null);
               streamBubble = chatCreateStreamBubble();
               expandedForResponse = true;
             }
@@ -6390,6 +6393,13 @@ async function chatSendStreaming(message, wasCollapsed) {
             finalReply = event.content;
           } else if (event.type === 'command') {
             pendingCommand = event.command;
+          } else if (event.type === 'status') {
+            /* Live "what the AI is doing now" label streamed during the silent
+               research rounds (tool lookups) before any reply text arrives.
+               Swap the bare spinner for this changing status so the wait feels
+               alive. It's cleared automatically once the first token lands. */
+            chatShowTyping(false);
+            chatSetStatus(event.content);
           } else if (event.type === 'availability') {
             /* Availability snapshot from lookup_service_availability —
                buffer it; we'll render the chip card after the assistant's
@@ -6399,6 +6409,7 @@ async function chatSendStreaming(message, wasCollapsed) {
           } else if (event.type === 'error') {
             showBarThinking(false);
             chatShowTyping(false);
+            chatSetStatus(null);
             if (streamBubble) streamBubble.remove();
             /* Tear down the live page render if the AI errored mid-stream
                so a half-built page doesn't stick around. */
@@ -6422,6 +6433,8 @@ async function chatSendStreaming(message, wasCollapsed) {
 
     showBarThinking(false);
     chatShowTyping(false);
+    /* Stream finished — drop any lingering live-research status line. */
+    chatSetStatus(null);
 
     let displayText = finalReply || displayTokens.replace(/`{1,3}\s*$/, '').trim();
     if (!displayText && tokenText.trim()) {
@@ -6749,6 +6762,7 @@ async function chatSendStreaming(message, wasCollapsed) {
     console.error('Chat error:', error);
     showBarThinking(false);
     chatShowTyping(false);
+    chatSetStatus(null);
     /* Tear down any in-flight sentence-streaming TTS so the visitor doesn't
        keep hearing fragments of an aborted reply. */
     if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakCancel === 'function') {
@@ -7157,6 +7171,79 @@ function chatShowTyping(show) {
     if (show) {
       container.insertAdjacentHTML('beforeend', typingHtml);
       container.scrollTop = container.scrollHeight;
+    }
+  });
+}
+
+
+/**
+ * Show a live "what the AI is doing right now" status line during the silent
+ * research seconds before the reply starts streaming (e.g. "Checking
+ * availability…"). It replaces the featureless spinner with real, changing
+ * progress so the visitor can see the assistant is working.
+ *
+ * The text is shown in two places so it's visible whatever state the chat is
+ * in: (1) a label on the collapsed-bar thinking indicator, and (2) a status
+ * line inside whichever message panel is open. Styles are applied inline so
+ * this never depends on a CSS file that the browser might have cached.
+ *
+ * @param {string|null} text - The status text to show, or null/empty to clear.
+ */
+function chatSetStatus(text) {
+  /* (1) Collapsed-bar indicator: attach/update a small text label so the
+     dots-above-the-bar state (shown while the panel is still closed) reads
+     out what's happening. */
+  const barInd = document.getElementById('bar-thinking-indicator');
+  if (barInd) {
+    let label = barInd.querySelector('.bar-thinking-label');
+    if (text) {
+      if (!label) {
+        label = document.createElement('span');
+        label.className = 'bar-thinking-label';
+        label.style.marginLeft = '8px';
+        label.style.fontSize = '0.85rem';
+        label.style.opacity = '0.75';
+        barInd.appendChild(label);
+      }
+      label.textContent = text;
+    } else if (label) {
+      label.remove();
+    }
+  }
+
+  /* (2) In-panel status line: render a single updating line where the typing
+     dots normally sit, across whichever message areas exist. */
+  ['chatbot-messages', 'split-chat-messages', 'side-chat-messages'].forEach(containerId => {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+
+    let line = container.querySelector('.chat-status');
+    if (text) {
+      if (!line) {
+        line = document.createElement('div');
+        line.className = 'chat-status';
+        line.style.display = 'flex';
+        line.style.alignItems = 'center';
+        line.style.gap = '8px';
+        line.style.padding = '6px 12px';
+        line.style.fontSize = '0.85rem';
+        line.style.opacity = '0.7';
+        line.style.fontStyle = 'italic';
+        const span = document.createElement('span');
+        span.className = 'chat-status-text';
+        line.appendChild(span);
+        /* Reuse the same animated dots as the typing indicator for a
+           consistent "still working" feel. */
+        line.insertAdjacentHTML('beforeend',
+          '<span class="chat-typing-dot"></span>' +
+          '<span class="chat-typing-dot"></span>' +
+          '<span class="chat-typing-dot"></span>');
+        container.appendChild(line);
+      }
+      line.querySelector('.chat-status-text').textContent = text;
+      container.scrollTop = container.scrollHeight;
+    } else if (line) {
+      line.remove();
     }
   });
 }

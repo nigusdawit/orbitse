@@ -22294,6 +22294,51 @@ def _visitor_apply_persona(message, model, provider, active_tools, messages):
         return model, provider, active_tools, "general"
 
 
+# ---------------------------------------------------------------------------
+# Visitor-chat live status labels.
+#
+# When the AI answers a visitor it often spends a few silent seconds first
+# "researching" — i.e. calling one or more read-only lookup tools to gather
+# the live data it needs before it starts writing. During that gap no text
+# tokens are produced, so without help the visitor just stares at a spinner.
+#
+# To make that wait feel alive, the visitor chat generator streams a small
+# "status" event describing what it is doing right now (see api_chat). This
+# map turns each tool name into a short, friendly, industry-agnostic phrase.
+# Names that aren't listed fall back to a generic message via
+# _visitor_tool_status(), so adding a new tool never breaks the indicator.
+# ---------------------------------------------------------------------------
+_VISITOR_TOOL_STATUS = {
+    "lookup_business_info": "Reading the business details…",
+    "lookup_services": "Looking up services…",
+    "lookup_service_availability": "Checking availability…",
+    "lookup_gallery_cards": "Browsing the gallery…",
+    "lookup_experiences": "Looking up experiences…",
+    "lookup_pricing": "Checking pricing…",
+    "lookup_products": "Looking up products…",
+    "lookup_events": "Looking up events…",
+    "lookup_blog": "Reading the blog…",
+    "lookup_team": "Looking up the team…",
+    "lookup_faq": "Checking the FAQ…",
+    "lookup_knowledge_base": "Searching the knowledge base…",
+    "lookup_offers": "Looking up current offers…",
+    "lookup_testimonials": "Reading testimonials…",
+    "lookup_custom_section_items": "Gathering page content…",
+    "lookup_generated_page": "Checking saved pages…",
+    "lookup_presentation": "Finding the presentation…",
+    "lookup_web_search": "Searching the web…",
+}
+
+
+def _visitor_tool_status(name):
+    """Return a short, friendly status line for a visitor-chat tool call.
+
+    Falls back to a generic phrase for any tool not in the map so the live
+    indicator keeps working even as new lookup tools are added.
+    """
+    return _VISITOR_TOOL_STATUS.get(name, "Gathering information…")
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """
@@ -23355,6 +23400,17 @@ def api_chat():
                 # Never block the live path because the cache misbehaved.
                 print(f"[chat] cache read error (falling through): {_cache_read_e}")
 
+            # Live status: show *something* the instant the turn begins so the
+            # visitor never faces a bare spinner while the model reads the
+            # prompt and decides whether it needs to look anything up. Specific
+            # per-tool labels replace this generic one as soon as a research
+            # round actually runs (see the tool-execution loop below).
+            yield (
+                "data: "
+                + json.dumps({"type": "status", "content": "Working on it…"})
+                + "\n\n"
+            )
+
             for _round_idx in range(max_rounds):
                 round_text = ""
                 tcs = []   # completed tool calls this round
@@ -23470,6 +23526,18 @@ def api_chat():
                     })
                     # Execute each tool and append its result message.
                     for tc in tcs:
+                        # Live status: tell the visitor what we're fetching
+                        # right now (e.g. "Checking availability…") so the
+                        # silent research gap shows real, changing progress
+                        # instead of a featureless spinner.
+                        yield (
+                            "data: "
+                            + json.dumps({
+                                "type": "status",
+                                "content": _visitor_tool_status(tc["name"]),
+                            })
+                            + "\n\n"
+                        )
                         result_str, log_entry = execute_chat_tool(
                             tc["name"],
                             tc["args"],
