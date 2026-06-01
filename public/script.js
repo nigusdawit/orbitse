@@ -6471,8 +6471,7 @@ async function chatSendStreaming(message, wasCollapsed) {
       (pendingCommand.action === 'generatePage' || pendingCommand.action === 'generateHTML');
     if (pageStreamStarted && !_completedPageCmd) {
       if (isImmersivePageStreaming()) {
-        finishImmersivePageStreaming();
-        resetImmersiveStreamState();
+        finalizeImmersivePageStreaming();
       }
       pageStreamStarted = false;
       chatAddMessage('agent', "That page got cut off before it finished building. Could you ask me to try again?");
@@ -9175,6 +9174,12 @@ function openImmersivePageStreaming() {
     if (data.type === '__immersive_ready__') {
       state.ready = true;
       _flushImmersiveStream();
+      /* If a finalize was requested before the iframe was ready, the queued
+         'finish' has now been delivered by the flush above — so it is finally
+         safe to tear down (remove this listener + clear state). */
+      if (state.pendingReset && state.queue.length === 0) {
+        resetImmersiveStreamState();
+      }
     }
   };
   state._onMessage = onMessage;
@@ -9216,13 +9221,42 @@ function finishImmersivePageStreaming() {
   _flushImmersiveStream();
 }
 
+/* Finalize a stream AND tear it down safely. Use this (instead of calling
+   finishImmersivePageStreaming + resetImmersiveStreamState back-to-back) when
+   you also want to remove the message listener — e.g. the interrupted-build
+   safety net. The subtle bug it avoids: if the iframe handshake ('ready')
+   hasn't arrived yet, the queued 'finish' can't be delivered, so resetting
+   immediately would remove the listener and the "Building" pulse would never
+   clear. Instead we defer the teardown until 'ready' drains the queue, with a
+   timeout fallback so the listener is never leaked. */
+function finalizeImmersivePageStreaming() {
+  const state = _immersiveStream;
+  if (!state) return;
+  finishImmersivePageStreaming();
+  if (state.ready) {
+    /* Handshake already happened: the 'finish' was just flushed, tear down. */
+    resetImmersiveStreamState();
+  } else {
+    /* Not ready yet: keep the listener so 'finish' is delivered on ready,
+       then reset (see the ready handler). Fallback reset after 5s so we never
+       leak the listener if the iframe never reports ready. */
+    state.pendingReset = true;
+    state._resetTimer = setTimeout(() => { resetImmersiveStreamState(); }, 5000);
+  }
+}
+
 function isImmersivePageStreaming() {
   return !!(_immersiveStream && _immersiveStream.isStreaming);
 }
 
 function resetImmersiveStreamState() {
-  if (_immersiveStream && _immersiveStream._onMessage) {
-    window.removeEventListener('message', _immersiveStream._onMessage);
+  if (_immersiveStream) {
+    if (_immersiveStream._onMessage) {
+      window.removeEventListener('message', _immersiveStream._onMessage);
+    }
+    if (_immersiveStream._resetTimer) {
+      clearTimeout(_immersiveStream._resetTimer);
+    }
   }
   _immersiveStream = null;
 }

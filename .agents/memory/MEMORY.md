@@ -1,4 +1,5 @@
 - [Adding tables — _DDL vs Alembic](schema-ddl-vs-alembic.md) — new DB tables need an Alembic migration; the legacy schema.py `_DDL` silently fails partway on existing DBs so appended tables never get created.
+- [Streaming page-build infra](streaming-page-build-infra.md) — SSE/AI-stream endpoints need gthread + long gunicorn --timeout (else WORKER TIMEOUT kills them) + big per-round max_tokens + ack-aware iframe teardown; `winch` log flood is harmless.
 - [pytest suite env sensitivity](test-suite-env-sensitivity.md) — `pytest tests/` in the live workspace shows many FALSE failures (leaking SUPER_ADMIN_KEY/secrets, missing SSO_SIGNING_SECRET/CLIENT_PASSWORD); run with a clean env; trust app-boot+migrations as the real health signal.
 - [Dual boot entrypoints](boot-entrypoints.md) — boot-time seeding/sync must be added to BOTH main._bootstrap() and app.py __main__; write-invalidated caches must take the loader's lock.
 - [query_db fetchone gotcha](query-db-fetchone.md) — query_db returns a LIST by default; single-row callers using row.get(...) need fetchone=True or it raises and is often silently swallowed.
