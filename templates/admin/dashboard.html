@@ -2136,6 +2136,25 @@ TO CUSTOMIZE THIS DASHBOARD:
     html[data-admin-theme="light"] .rte-btn{ color:var(--admin-text-muted) !important; }
     html[data-admin-theme="light"] .rte-btn:hover,
     html[data-admin-theme="light"] .rte-btn-toggle.active{ color:var(--admin-accent) !important; }
+
+    /* ---- Phase D accelerator: map common hardcoded INLINE text-grays to theme
+       tokens so bespoke/inline-styled tabs (Research Hub, Content Studio,
+       Analytics, …) read correctly in BOTH themes. Attribute selectors match
+       only elements whose style sets that color — never Chart.js/canvas — and
+       !important beats the inline value. Covers static markup AND JS-rendered
+       innerHTML (which carries the same inline color). ---- */
+    [style*="color:#cbd5e1"], [style*="color: #cbd5e1"],
+    [style*="color:#e4e4e7"], [style*="color: #e4e4e7"],
+    [style*="color:#e2e8f0"], [style*="color: #e2e8f0"]{ color:var(--admin-text) !important; }
+    [style*="color:#94a3b8"], [style*="color: #94a3b8"],
+    [style*="color:#9ca3af"], [style*="color: #9ca3af"],
+    [style*="color:#64748b"], [style*="color: #64748b"]{ color:var(--admin-text-muted) !important; }
+    /* white inline text is invisible on light surfaces — remap, but ONLY in light
+       (dark keeps the intended white). Biggest single light-mode win. */
+    html[data-admin-theme="light"] [style*="color:#fff"],
+    html[data-admin-theme="light"] [style*="color: #fff"],
+    html[data-admin-theme="light"] [style*="color:white"],
+    html[data-admin-theme="light"] [style*="color: white"]{ color:var(--admin-text) !important; }
   </style>
   <script>window.__ADMIN_APPEARANCE__ = {{ appearance|tojson }};</script>
 </head>
