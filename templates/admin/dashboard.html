@@ -11882,6 +11882,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       r.style.setProperty('--admin-glass', (+AP.glass).toFixed(2));
       r.style.setProperty('--admin-glow', (+AP.glow).toFixed(2));
       _apSyncToggleIcon();
+      if (window.adminRecolorCharts) window.adminRecolorCharts();
     }
     function apInitControls(){
       var g=function(i){return document.getElementById(i);};
@@ -11917,6 +11918,34 @@ TO CUSTOMIZE THIS DASHBOARD:
       apApply(); apInitControls(); apPersist(false);
     }
     document.addEventListener('DOMContentLoaded', function(){ apInitControls(); _apSyncToggleIcon(); });
+
+    /* Chart.js theme integration (task 072, Phase D): ONE global plugin recolors
+       every chart's ticks/grid/legend from the current theme — config-agnostic,
+       so all charts (overview trend, cost, dashboard widgets, analytics…) read
+       correctly in dark AND light, and recolor on theme toggle. Canvas can't use
+       CSS vars, so this feeds resolved colors in JS. */
+    (function(){
+      if (typeof Chart === 'undefined') return;
+      function _cc(){
+        var light = document.documentElement.getAttribute('data-admin-theme') === 'light';
+        return { tick: light ? 'rgba(25,35,58,0.66)' : 'rgba(255,255,255,0.60)',
+                 grid: light ? 'rgba(20,30,60,0.10)'  : 'rgba(255,255,255,0.07)' };
+      }
+      try{
+        Chart.register({ id:'adminThemeColors', beforeUpdate:function(chart){
+          var c=_cc(), sc=(chart.options && chart.options.scales) || {};
+          Object.keys(sc).forEach(function(k){ var s=sc[k]; if(!s) return;
+            s.ticks = s.ticks || {}; s.ticks.color = c.tick;
+            s.grid = s.grid || {}; if(s.grid.display !== false) s.grid.color = c.grid; });
+          var lg = chart.options && chart.options.plugins && chart.options.plugins.legend;
+          if(lg){ lg.labels = lg.labels || {}; lg.labels.color = c.tick; }
+        }});
+        Chart.defaults.color = _cc().tick;
+      }catch(e){}
+      window.adminRecolorCharts = function(){
+        try{ Object.values(Chart.instances || {}).forEach(function(ch){ ch.update('none'); }); }catch(e){}
+      };
+    })();
 
 
     /*
