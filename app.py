@@ -16287,6 +16287,22 @@ def _admin_tool_gather_sources(urls=None, topic=None, ingest_kb=False, **_):
                                    topic=(topic or ""), ingest_kb=bool(ingest_kb))
 
 
+def _admin_tool_run_research(question=None, topic=None, seed_urls=None,
+                             ingest_kb=False, **_):
+    """Run DEEP RESEARCH on a question: web-search it, fetch the best sources into
+    the Research Hub's Sources layer, and write a cited synthesis report (summary
+    + key points + citations). Optionally pass seed_urls to include. Read-only;
+    gated by the Research Hub toggle. Returns the report_id + a result summary."""
+    if isinstance(seed_urls, str):
+        seed_urls = [seed_urls]
+    if not (question or "").strip():
+        return {"error": "Provide a research question."}
+    seeds = ([str(u) for u in seed_urls][:20]
+             if isinstance(seed_urls, list) else None)
+    return _rce_run_research(question or "", topic=(topic or ""),
+                             seed_urls=seeds, ingest_kb=bool(ingest_kb))
+
+
 def _admin_tool_create_dashboard(name=None, description=None, widgets=None, **_):
     """Create a persistent dashboard (appears in the Custom Dashboards tab) with
     widgets. Each widget is either {name, chart:{...}} (a static chart you've
@@ -19099,6 +19115,7 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_query_connection":       _admin_tool_query_connection,
     "admin_define_schema":          _admin_tool_define_schema,
     "gather_sources":               _admin_tool_gather_sources,
+    "run_research":                 _admin_tool_run_research,
     "admin_save_query":             _admin_tool_save_query,
     "render_chart":                 _admin_tool_render_chart,
     "admin_create_dashboard":       _admin_tool_create_dashboard,
@@ -19273,6 +19290,21 @@ ADMIN_TOOLS = [
                         "topic": {"type": "string"},
                         "ingest_kb": {"type": "boolean"}},
          "required": ["urls"]}),
+    _admin_tool_schema(
+        "run_research",
+        "Run DEEP RESEARCH on a question: the assistant fans it out into focused "
+        "sub-questions, web-searches each, fetches the best sources into the "
+        "Research Hub, and writes a cited synthesis report (summary + key points "
+        "+ citations). Use when the owner asks you to research a topic or gather "
+        "evidence for content. Optionally pass `seed_urls`. Read-only; requires "
+        "the Research Hub to be enabled.",
+        {"type": "object",
+         "properties": {"question": {"type": "string",
+                                     "description": "The research question or topic."},
+                        "topic": {"type": "string"},
+                        "seed_urls": {"type": "array", "items": {"type": "string"}},
+                        "ingest_kb": {"type": "boolean"}},
+         "required": ["question"]}),
     _admin_tool_schema(
         "admin_define_schema",
         "DRAFT the Datahub data dictionary for a connection: inspect + sample it "
@@ -40550,6 +40582,217 @@ def _rce_gather_into_report(urls, *, topic="", ingest_kb=False):
     return summary
 
 
+# =============================================================================
+# RESEARCH & CONTENT ENGINE — Deep Research (Phase 8 / task 064)
+# =============================================================================
+# A cited-synthesis pipeline on top of the Gather machinery (063):
+#   plan (fan-out the question into focused sub-questions)
+#   → discover (web-search each via scraper.research_objective → candidate URLs)
+#   → fetch the candidates into research_sources (063 _rce_gather, SSRF-guarded)
+#   → synthesize (LLM reads ONLY the gathered sources → summary + key points +
+#     citations; citations are filtered to URLs we actually fetched, so the
+#     model can't invent sources).
+# Cost-capped by research_max_sources + a small sub-question cap. Uses OpenAI
+# JSON mode (same path as the Datahub auto-define), so it's stub-testable with
+# no spend and degrades to a clear error when no key is configured.
+
+def _rce_text_model(model=None):
+    """Resolve the research/synthesis model. We call OpenAI in JSON mode, so a
+    'claude*' value maps to the OpenAI default (mirrors _dh_llm_draft)."""
+    mdl = (model or get_ai_setting("research_model") or "").strip() or "gpt-4o-mini"
+    if mdl.lower().startswith("claude"):
+        mdl = "gpt-4o-mini"
+    return mdl
+
+
+def _rce_record_cost(resp, mdl):
+    """Best-effort cost accounting for a research LLM call (never raises)."""
+    try:
+        record_chat_cost_from_response(resp, surface="research",
+                                       provider="openai", model=mdl)
+    except Exception:
+        pass
+
+
+def _rce_plan_subquestions(question, *, max_q=4, model=None):
+    """Fan a research question out into a few focused, non-overlapping web-search
+    sub-questions. Falls back to [question] if the LLM is unavailable. Bounded by
+    max_q (cost). Never raises."""
+    q = (question or "").strip()
+    if not q:
+        return []
+    if not openai_client or max_q <= 1:
+        return [q]
+    mdl = _rce_text_model(model)
+    try:
+        resp = openai_client.with_options(timeout=30.0).chat.completions.create(
+            model=mdl, response_format={"type": "json_object"},
+            max_tokens=400, temperature=0.2,
+            messages=[{"role": "system", "content":
+                       ("Break the user's research question into at most %d focused, "
+                        "non-overlapping web-search sub-questions that together cover "
+                        'it. Return ONLY {"subquestions":[str,...]}.' % int(max_q))},
+                      {"role": "user", "content": q[:2000]}])
+        _rce_record_cost(resp, mdl)
+        data = json.loads(resp.choices[0].message.content or "{}")
+        subs = [str(s).strip() for s in (data.get("subquestions") or []) if str(s).strip()]
+        # Always keep the original question first so nothing is lost.
+        ordered = [q] + [s for s in subs if s.lower() != q.lower()]
+        return ordered[:max(1, int(max_q))]
+    except Exception as e:
+        print(f"[research] sub-question planning failed: {type(e).__name__}: {e}")
+        return [q]
+
+
+def _rce_discover_sources(objectives, *, max_sources, max_searches=3):
+    """Web-search each objective (scraper.research_objective) → (candidate URLs,
+    combined notes). Caps the number of search calls (cost) and total candidate
+    URLs. Never raises — a failed objective is skipped."""
+    urls, notes, seen = [], [], set()
+    for obj in [o for o in (objectives or []) if str(o).strip()][:max(1, int(max_searches))]:
+        try:
+            r = scraper.research_objective(openai_client, openai_direct_client, obj)
+        except Exception as e:
+            print(f"[research] web search failed for {obj[:80]!r}: {type(e).__name__}: {e}")
+            continue
+        if not isinstance(r, dict) or not r.get("ok"):
+            continue
+        if r.get("text"):
+            notes.append(f"## {obj}\n{r['text']}")
+        for s in (r.get("sources") or []):
+            u = (s.get("url") if isinstance(s, dict) else "").strip()
+            if u and u not in seen:
+                seen.add(u)
+                urls.append(u)
+        if len(urls) >= max_sources:
+            break
+    return urls[:max_sources], "\n\n".join(notes)
+
+
+def _rce_clean_citations(raw, srows):
+    """Anti-hallucination: keep only citations whose URL matches a source we
+    actually fetched. If none match, fall back to listing the fetched sources."""
+    allowed = {}
+    for s in (srows or []):
+        u = (s.get("url") or "").strip()
+        if u:
+            allowed.setdefault(u, s.get("title") or "")
+    out, seen = [], set()
+    for c in (raw or []):
+        if not isinstance(c, dict):
+            continue
+        u = str(c.get("url") or "").strip()
+        if u and u in allowed and u not in seen:
+            seen.add(u)
+            out.append({"title": str(c.get("title") or allowed[u] or u)[:300],
+                        "url": u[:2000]})
+    if not out:  # model gave no usable citations — cite what we gathered
+        for u, t in allowed.items():
+            if u not in seen:
+                seen.add(u)
+                out.append({"title": (t or u)[:300], "url": u[:2000]})
+    return out[:50]
+
+
+def _rce_synthesize(question, srows, notes, *, model=None):
+    """LLM synthesis over ONLY the gathered sources → {summary, key_points,
+    citations}. Returns None on failure (never raises)."""
+    if not openai_client:
+        return None
+    mdl = _rce_text_model(model)
+    blocks = []
+    for i, s in enumerate(srows or [], 1):
+        blocks.append(f"[{i}] {s.get('title') or s.get('url') or ''}\n"
+                      f"URL: {s.get('url') or ''}\n{(s.get('content_text') or '')[:4000]}")
+    context = "\n\n".join(blocks)[:48000]
+    system = (
+        "You are a meticulous research analyst. Using ONLY the numbered sources "
+        "and notes provided (do not use outside knowledge, do not invent sources "
+        "or facts), write a factual synthesis answering the question. Return ONLY "
+        'a JSON object: {"summary": str (2-4 short paragraphs), "key_points": '
+        '[str, ...] (5-10 concise bullets), "citations": [{"title": str, "url": '
+        'str}]}. Only cite URLs that appear in the sources above.')
+    user = (f"QUESTION: {(question or '').strip()[:2000]}\n\n"
+            f"NOTES:\n{(notes or '')[:8000]}\n\nSOURCES:\n{context}")
+    try:
+        resp = openai_client.with_options(timeout=60.0).chat.completions.create(
+            model=mdl, response_format={"type": "json_object"},
+            max_tokens=2000, temperature=0.2,
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": user}])
+        _rce_record_cost(resp, mdl)
+        data = json.loads(resp.choices[0].message.content or "{}")
+        return data if isinstance(data, dict) else None
+    except Exception as e:
+        print(f"[research] synthesis failed: {type(e).__name__}: {e}")
+        return None
+
+
+def _rce_run_research(question, *, topic="", seed_urls=None, ingest_kb=False,
+                      max_sources=None, model=None):
+    """End-to-end deep research: plan → discover + fetch → synthesize → write a
+    cited report. Gated by research_hub_enabled (master-switch-aware). Returns
+    {report_id, status, ...} or {"error": ...}. Cost-capped by
+    research_max_sources (sources) + a small sub-question cap."""
+    if not get_ai_setting("research_hub_enabled"):
+        return {"error": "The Research Hub is turned off."}
+    q = (question or "").strip()
+    if not q:
+        return {"error": "A research question is required."}
+    if not openai_client:
+        return {"error": "AI is not configured (no OpenAI key)."}
+    tid = current_tenant_id()
+    try:
+        cap = int(max_sources) if max_sources else int(get_ai_setting("research_max_sources") or 8)
+    except (TypeError, ValueError):
+        cap = 8
+    cap = max(1, min(cap, 25))   # hard ceiling regardless of config (cost guard)
+    mdl = _rce_text_model(model)
+    row = execute_db(
+        "INSERT INTO research_reports (tenant_id, topic, question, status, model, "
+        " created_by) VALUES (%s,%s,%s,'running',%s,'deep_research') RETURNING id",
+        (tid, (topic or q)[:300], q[:4000], mdl[:120]))
+    rid = row["id"] if row else None
+    try:
+        # 1) Plan — fan the question out into a few focused sub-questions.
+        subs = _rce_plan_subquestions(q, max_q=max(1, min(cap, 4)), model=mdl)
+        # 2) Discover — web-search each → candidate URLs + notes.
+        discovered, notes = _rce_discover_sources(subs, max_sources=cap)
+        # 3) Fetch — seed URLs first, then discovered, into research_sources.
+        seeds = [str(u).strip() for u in (seed_urls or []) if str(u).strip()]
+        seed_set = set(seeds)
+        all_urls = seeds + [u for u in discovered if u not in seed_set]
+        gather = _rce_gather(all_urls, report_id=rid, ingest_kb=bool(ingest_kb),
+                             max_urls=cap)
+        # 4) Synthesize — read back what we actually stored, cite only those.
+        srows = query_db(
+            "SELECT url, title, content_text FROM research_sources "
+            "WHERE report_id=%s ORDER BY id LIMIT %s", (rid, cap)) or []
+        synth = _rce_synthesize(q, srows, notes, model=mdl) or {}
+        summary = str(synth.get("summary") or "").strip()
+        key_points = [str(x).strip() for x in (synth.get("key_points") or [])
+                      if str(x).strip()][:25]
+        citations = _rce_clean_citations(synth.get("citations"), srows)
+        status = "ready" if summary else "needs_review"
+        execute_db(
+            "UPDATE research_reports SET summary=%s, key_points=%s::jsonb, "
+            "citations=%s::jsonb, status=%s, updated_at=NOW() WHERE id=%s",
+            (summary[:20000], json.dumps(key_points), json.dumps(citations),
+             status, rid))
+        return {"report_id": rid, "status": status,
+                "sources": gather.get("gathered", 0),
+                "skipped": gather.get("skipped", 0),
+                "errors": gather.get("errors", 0),
+                "key_points": len(key_points),
+                "subquestions": len(subs), "web_notes": bool(notes)}
+    except Exception as e:
+        print(f"[research] run failed (report {rid}): {type(e).__name__}: {e}")
+        if rid:
+            execute_db("UPDATE research_reports SET status='error', updated_at=NOW() "
+                       "WHERE id=%s", (rid,))
+        return {"error": "Research run failed.", "report_id": rid}
+
+
 def _scrape_serialize_job(row: dict) -> dict:
     """Convert a DB row into a JSON-friendly dict for the UI."""
     if not row:
@@ -44493,6 +44736,27 @@ def admin_research_gather():
         ingest_kb=bool(b.get("ingest_kb")))
     status = 200 if "error" not in result else 400
     return jsonify(result), status
+
+
+@app.route("/admin/api/research/run", methods=["POST"])
+@admin_required
+def admin_research_run():
+    """Run deep research on a question and return the cited report (super-admin).
+    Backs the Research Hub 'Run research' action. Gated by research_hub_enabled."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    b = request.get_json(silent=True) or {}
+    q = (b.get("question") or "").strip()
+    if not q:
+        return jsonify({"error": "Provide a research question."}), 400
+    seeds = b.get("seed_urls")
+    if isinstance(seeds, str):
+        seeds = [u.strip() for u in seeds.replace(",", "\n").splitlines() if u.strip()]
+    seeds = [str(u) for u in seeds][:20] if isinstance(seeds, list) else None
+    result = _rce_run_research(q, topic=(b.get("topic") or ""), seed_urls=seeds,
+                               ingest_kb=bool(b.get("ingest_kb")))
+    return jsonify(result), (200 if "error" not in result else 400)
 
 
 @app.route("/admin/api/research/reports/<int:rid>", methods=["GET"])
