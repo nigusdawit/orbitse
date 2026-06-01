@@ -1225,6 +1225,45 @@ def _ai_control_registry():
          "group": "Live Call", "label": "Spoken greeting",
          "env": "VOICE_GREETING",
          "description": "Greeting spoken to the caller before connecting."},
+        # Research & Content Engine (Phase 8)
+        {"key": "research_hub_enabled", "attr": "research_hub_enabled", "type": "bool",
+         "group": "Research & Content", "label": "Research Hub (scraper + deep research)",
+         "env": "RESEARCH_HUB_ENABLED",
+         "description": "Master switch for gathering sources (enhanced scraper / web / KB / "
+                        "MCP) and running Deep Research syntheses. Off = the Research Hub "
+                        "tools/tab do nothing."},
+        {"key": "content_studio_enabled", "attr": "content_studio_enabled", "type": "bool",
+         "group": "Research & Content", "label": "Content Studio (generate content)",
+         "env": "CONTENT_STUDIO_ENABLED",
+         "description": "Master switch for turning a research report / source into content "
+                        "drafts (blog, social, email, etc.). Off = content generation declines."},
+        {"key": "visual_content_enabled", "attr": "visual_content_enabled", "type": "bool",
+         "group": "Research & Content", "label": "Visual content (images / diagrams / clips)",
+         "env": "VISUAL_CONTENT_ENABLED",
+         "description": "Allow generating visual assets with image models and embedding them "
+                        "in content. Off = text only."},
+        {"key": "autopublish_enabled", "attr": "autopublish_enabled", "type": "bool",
+         "group": "Research & Content", "label": "Allow auto-publish (skip manual review)",
+         "env": "AUTOPUBLISH_ENABLED",
+         "description": "When ON, trusted content types may publish without the manual "
+                        "review step. Off (recommended) = everything stays a draft until a "
+                        "human approves it."},
+        {"key": "research_max_sources", "attr": "research_max_sources", "type": "int",
+         "group": "Research & Content", "label": "Deep Research: max sources per run",
+         "env": "RESEARCH_MAX_SOURCES",
+         "description": "Caps how many sources a Deep Research run fetches (controls cost)."},
+        {"key": "research_model", "attr": "research_model", "type": "string",
+         "group": "Research & Content", "label": "Research synthesis model",
+         "env": "RESEARCH_MODEL",
+         "description": "Model for synthesizing research reports. Blank = default."},
+        {"key": "content_model", "attr": "content_model", "type": "string",
+         "group": "Research & Content", "label": "Content generation model",
+         "env": "CONTENT_MODEL",
+         "description": "Model for generating content drafts. Blank = default."},
+        {"key": "image_model", "attr": "image_model", "type": "string",
+         "group": "Research & Content", "label": "Image / visual model",
+         "env": "IMAGE_MODEL",
+         "description": "Image model id for visual content (e.g. gpt-image-1). Blank = provider default."},
         # Activity
         {"key": "activity_logging_enabled", "attr": "activity_logging_enabled", "type": "bool",
          "group": "Activity", "label": "Log admin-AI turns to the database",
@@ -1290,6 +1329,8 @@ _AI_INERT = {
     "callback_requests_enabled": False, "team_notifications_enabled": False,
     "visitor_persona_router_enabled": False, "handoff_summary_enabled": False,
     "meetings_enabled": False, "live_call_enabled": False,
+    "research_hub_enabled": False, "content_studio_enabled": False,
+    "visual_content_enabled": False, "autopublish_enabled": False,
     "visitor_llm_max_retries": 0, "visitor_provider_fallback": False,
     "visitor_fallback_model": "", "visitor_history_token_budget": 0,
 }
@@ -4834,6 +4875,85 @@ def init_db():
                     ON voice_calls (tenant_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS voice_calls_sid_idx
                     ON voice_calls (call_sid);
+                """
+            )
+
+            # =========================================================
+            # RESEARCH & CONTENT ENGINE (Phase 8 / task 062)
+            # =========================================================
+            # The shared "Sources" layer + content pipeline. Gather (scraper /
+            # web / KB / MCP / Datahub) writes research_sources; Deep Research
+            # synthesizes research_reports (cited); the Content Studio turns a
+            # report into content_drafts (review-gated) that publish into the
+            # existing content tables; publish_capabilities are super-admin-
+            # defined output channels (mcp / webhook / http_api / python).
+            # Everything is gated by default-OFF AI Control knobs, so a fresh
+            # fork is unaffected. Also in migration 0026.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS research_reports (
+                    id           BIGSERIAL PRIMARY KEY,
+                    tenant_id    INTEGER NOT NULL DEFAULT 1,
+                    topic        TEXT NOT NULL DEFAULT '',
+                    question     TEXT NOT NULL DEFAULT '',
+                    summary      TEXT NOT NULL DEFAULT '',
+                    key_points   JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    citations    JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    status       TEXT NOT NULL DEFAULT 'draft',
+                    model        TEXT NOT NULL DEFAULT '',
+                    created_by   TEXT NOT NULL DEFAULT '',
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS research_reports_recent_idx
+                    ON research_reports (tenant_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS research_sources (
+                    id           BIGSERIAL PRIMARY KEY,
+                    tenant_id    INTEGER NOT NULL DEFAULT 1,
+                    report_id    BIGINT REFERENCES research_reports(id) ON DELETE CASCADE,
+                    source_type  TEXT NOT NULL DEFAULT 'web',
+                    url          TEXT NOT NULL DEFAULT '',
+                    title        TEXT NOT NULL DEFAULT '',
+                    content_text TEXT NOT NULL DEFAULT '',
+                    content_hash TEXT NOT NULL DEFAULT '',
+                    fetched_at   TIMESTAMPTZ,
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS research_sources_report_idx
+                    ON research_sources (report_id);
+                CREATE INDEX IF NOT EXISTS research_sources_hash_idx
+                    ON research_sources (tenant_id, content_hash);
+
+                CREATE TABLE IF NOT EXISTS content_drafts (
+                    id              BIGSERIAL PRIMARY KEY,
+                    tenant_id       INTEGER NOT NULL DEFAULT 1,
+                    content_type    TEXT NOT NULL DEFAULT 'blog',
+                    title           TEXT NOT NULL DEFAULT '',
+                    body            TEXT NOT NULL DEFAULT '',
+                    meta            JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    source_report_id BIGINT REFERENCES research_reports(id) ON DELETE SET NULL,
+                    status          TEXT NOT NULL DEFAULT 'draft',
+                    target_table    TEXT NOT NULL DEFAULT '',
+                    target_id       BIGINT,
+                    created_by      TEXT NOT NULL DEFAULT '',
+                    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS content_drafts_recent_idx
+                    ON content_drafts (tenant_id, status, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS publish_capabilities (
+                    id               BIGSERIAL PRIMARY KEY,
+                    tenant_id        INTEGER NOT NULL DEFAULT 1,
+                    name             TEXT NOT NULL DEFAULT '',
+                    kind             TEXT NOT NULL DEFAULT 'webhook',
+                    description      TEXT NOT NULL DEFAULT '',
+                    encrypted_config TEXT NOT NULL DEFAULT '',
+                    enabled          BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
                 """
             )
     finally:
@@ -44176,6 +44296,92 @@ def admin_list_voice_calls():
         "FROM voice_calls WHERE tenant_id=%s ORDER BY id DESC LIMIT %s",
         (tid, limit)) or []
     return jsonify({"calls": [_iso_row(r, "created_at") for r in rows]})
+
+
+# =============================================================================
+# RESEARCH & CONTENT ENGINE — read APIs (Phase 8 / task 062)
+# =============================================================================
+# Super-admin views of the Sources layer + content pipeline. Create/run/publish
+# logic arrives in tasks 063-068; the foundation exposes reads + the schema so
+# everything downstream slots in. Guarded super-admin; tenant-scoped.
+
+def _rce_report_row(r):
+    d = dict(r)
+    d["key_points"] = _vp_as_list(d.get("key_points"))
+    d["citations"] = _vp_as_list(d.get("citations"))
+    for k in ("created_at", "updated_at"):
+        if d.get(k):
+            d[k] = d[k].isoformat()
+    return d
+
+
+@app.route("/admin/api/research/reports", methods=["GET"])
+@admin_required
+def admin_list_research_reports():
+    """List research reports (super-admin only)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    try:
+        limit = max(1, min(int(request.args.get("limit", 100) or 100), 500))
+    except (TypeError, ValueError):
+        limit = 100
+    tid = current_tenant_id()
+    rows = query_db(
+        "SELECT id, topic, question, summary, key_points, citations, status, "
+        "model, created_at, updated_at FROM research_reports "
+        "WHERE tenant_id=%s ORDER BY id DESC LIMIT %s", (tid, limit)) or []
+    return jsonify({"reports": [_rce_report_row(r) for r in rows]})
+
+
+@app.route("/admin/api/research/reports/<int:rid>", methods=["GET"])
+@admin_required
+def admin_get_research_report(rid):
+    """One report with its fetched sources (super-admin only)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    tid = current_tenant_id()
+    row = query_db("SELECT * FROM research_reports WHERE id=%s AND tenant_id=%s",
+                   (rid, tid), fetchone=True)
+    if not row:
+        return jsonify({"error": "not_found"}), 404
+    out = _rce_report_row(row)
+    srcs = query_db(
+        "SELECT id, source_type, url, title, fetched_at FROM research_sources "
+        "WHERE report_id=%s ORDER BY id", (rid,)) or []
+    out["sources"] = [_iso_row(s, "fetched_at") for s in srcs]
+    return jsonify(out)
+
+
+@app.route("/admin/api/content/drafts", methods=["GET"])
+@admin_required
+def admin_list_content_drafts():
+    """List content drafts (super-admin only). ?status= and ?type= filters."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    try:
+        limit = max(1, min(int(request.args.get("limit", 100) or 100), 500))
+    except (TypeError, ValueError):
+        limit = 100
+    tid = current_tenant_id()
+    where = ["tenant_id=%s"]
+    params = [tid]
+    st = (request.args.get("status") or "").strip()
+    if st:
+        where.append("status=%s")
+        params.append(st)
+    ct = (request.args.get("type") or "").strip()
+    if ct:
+        where.append("content_type=%s")
+        params.append(ct)
+    rows = query_db(
+        "SELECT id, content_type, title, status, source_report_id, target_table, "
+        "target_id, created_at, updated_at FROM content_drafts "
+        f"WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT %s",
+        tuple(params + [limit])) or []
+    return jsonify({"drafts": [_iso_row(r, "created_at", "updated_at") for r in rows]})
 
 
 # --- PUBLIC: unsubscribe ----------------------------------------------------
