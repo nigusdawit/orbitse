@@ -58,6 +58,29 @@ def test_approve_endpoint_requires_super_admin():
     assert r2.status_code != 403
 
 
+def test_external_connections_routes_require_super_admin():
+    """External DB connections are a super-admin domain (consumed by the
+    super-admin-only Datahub tab)."""
+    if not CLIENT_PW:
+        return
+    c = app.app.test_client()
+    c.post("/admin/login", data={"password": CLIENT_PW})
+    with c.session_transaction() as s:
+        s["_csrf_token"] = "t"
+    assert c.get("/admin/api/external-connections").status_code == 403
+    assert c.post("/admin/api/external-connections",
+                  json={"name": "x", "kind": "postgres", "config": "postgres://h/db"},
+                  headers={"X-CSRF-Token": "t"}).status_code == 403
+    assert c.delete("/admin/api/external-connections/1",
+                    headers={"X-CSRF-Token": "t"}).status_code == 403
+    assert c.post("/admin/api/external-connections/1/test",
+                  headers={"X-CSRF-Token": "t"}).status_code == 403
+    # super-admin passes the gate (empty list is fine)
+    a = app.app.test_client()
+    a.post("/admin/login", data={"password": ADMIN_PW})
+    assert a.get("/admin/api/external-connections").status_code == 200
+
+
 def test_ungated_read_tool_still_open_to_client():
     """Sanity: we did NOT broaden the gate to admin_run_sql (the established
     admin read-SQL boundary) — a client session still passes the role guard for

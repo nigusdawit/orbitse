@@ -38323,6 +38323,9 @@ def _serialize_connection(row, include_secret=False):
 @app.route("/admin/api/external-connections", methods=["GET"])
 @admin_required
 def admin_list_external_connections():
+    guard = _require_super_admin_role()   # external DB connections are super-admin-only
+    if guard:
+        return guard
     rows = query_db(
         "SELECT id, name, kind, encrypted_config, created_at "
         "FROM external_data_connections ORDER BY name"
@@ -38333,6 +38336,9 @@ def admin_list_external_connections():
 @app.route("/admin/api/external-connections", methods=["POST"])
 @admin_required
 def admin_create_external_connection():
+    guard = _require_super_admin_role()   # external DB connections are super-admin-only
+    if guard:
+        return guard
     body = request.get_json(silent=True) or {}
     name = (body.get("name") or "").strip()
     kind = (body.get("kind") or "postgres").strip()
@@ -38363,6 +38369,9 @@ def admin_create_external_connection():
 @app.route("/admin/api/external-connections/<int:cid>", methods=["DELETE"])
 @admin_required
 def admin_delete_external_connection(cid):
+    guard = _require_super_admin_role()   # external DB connections are super-admin-only
+    if guard:
+        return guard
     execute_db("DELETE FROM external_data_connections WHERE id = %s", (cid,))
     return jsonify({"success": True})
 
@@ -38370,6 +38379,9 @@ def admin_delete_external_connection(cid):
 @app.route("/admin/api/external-connections/<int:cid>/test", methods=["POST"])
 @admin_required
 def admin_test_external_connection(cid):
+    guard = _require_super_admin_role()   # external DB connections are super-admin-only
+    if guard:
+        return guard
     row = query_db(
         "SELECT id, name, kind, encrypted_config FROM external_data_connections WHERE id = %s",
         (cid,), fetchone=True,
