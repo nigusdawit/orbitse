@@ -32,9 +32,10 @@ Secrets present in this Repl but **still holding placeholder values** — the ma
 - `RESEND_WEBHOOK_SECRET` — fail-open: webhook accepts events without signature check; status updates still post but anyone can spoof them
 - `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` — SMS campaigns + STOP-keyword opt-out + inbound-SMS webhook will return errors until real Twilio creds are set
 - `GOOGLE_PLACES_API_KEY`, `YELP_API_KEY`, `TRIPADVISOR_API_KEY` — reviews aggregator (Reviews → Insights tab) returns empty / error responses for the matching providers
-- `OPENAI_API_KEY` — currently a placeholder (`sk-not-configured`); the AI chat/voice/embedding features return friendly errors until a real key is set
 
-Confirmed working with real values: `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `ADMIN_PHONE`, `FLASK_SECRET_KEY`, `ELEVENLABS_API_KEY`, `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `SENTRY_DSN`, plus the Replit-managed integrations (OpenAI proxy, Anthropic, Stripe, database).
+Confirmed working with real values: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `BRAVE_SEARCH_API_KEY` (AI chat/voice/embeddings, Claude fallback, and AI web search), `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `ADMIN_PHONE`, `FLASK_SECRET_KEY`, `ELEVENLABS_API_KEY`, `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `SENTRY_DSN`, plus the Replit-managed integrations (Stripe, database).
+
+Note: the Replit OpenAI **proxy** (`AI_INTEGRATIONS_OPENAI_API_KEY`) is not set, so `openai_client` falls back to the direct `OPENAI_API_KEY` against `api.openai.com` (see the client init in `app.py`).
 
 When debugging or adding features that touch the placeholder list, assume the upstream call will fail and surface a friendly error — don't gate new functionality on those features being live.
 

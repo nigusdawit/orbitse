@@ -572,10 +572,21 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 # clean 401 that the per-call error handling already surfaces as "AI not
 # configured." Configure AI_INTEGRATIONS_OPENAI_API_KEY to enable real calls.
 _AI_PROXY_KEY = os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY", "").strip()
-openai_client = OpenAI(
-    api_key=_AI_PROXY_KEY or "sk-not-configured",
-    base_url=os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL", "https://api.openai.com/v1"),
-)
+if _AI_PROXY_KEY:
+    # Preferred path: Replit AI Integrations proxy (key + base URL injected
+    # by Replit). All `openai_client.*` calls flow through the proxy.
+    openai_client = OpenAI(
+        api_key=_AI_PROXY_KEY,
+        base_url=os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL", "https://api.openai.com/v1"),
+    )
+else:
+    # Fallback: when the Replit proxy isn't configured, use a direct
+    # OPENAI_API_KEY against the standard api.openai.com endpoint so chat +
+    # embeddings still work. If neither is set, the client still constructs
+    # (no import crash) and real calls fail later with a clean 401 surfaced
+    # as "AI not configured."
+    _direct_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    openai_client = OpenAI(api_key=_direct_key or "sk-not-configured")
 
 # Semantic response cache (front-loads /api/chat with embedded-similarity
 # lookup against past Q&A so identical-or-near visitor questions reuse the
