@@ -6235,17 +6235,19 @@ TO CUSTOMIZE THIS DASHBOARD:
   }
 
   async function datahubAddConnection() {
-    const name = prompt('Connection name:');
-    if (!name) return;
-    const url = prompt('Postgres connection URL (postgresql://user:pass@host:5432/db):');
-    if (!url) return;
+    // Reuse the proper "Data Connections" modal (a real form) instead of
+    // window.prompt(), which embedded/preview browsers silently block. Load the
+    // current connections first so the modal lists them; the Datahub rail
+    // refreshes when the modal closes (see closeConnectionsModal).
     try {
-      const r = await fetch('/admin/api/external-connections', {
-        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name, kind: 'postgres', config: url }) });
-      if (!r.ok) { const j = await r.json(); alert(j.error || 'Could not add connection.'); return; }
-      loadDatahub();
-    } catch (e) { alert('Could not add connection.'); }
+      const r = await fetch('/admin/api/external-connections', { credentials: 'same-origin' });
+      if (r.ok) __externalConnections = await r.json();
+    } catch (e) {}
+    if (typeof openConnectionsModal === 'function') {
+      openConnectionsModal();
+    } else {
+      alert('The connections manager is unavailable on this page.');
+    }
   }
 
   async function adminChatSend() {
@@ -20926,6 +20928,14 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
     function closeConnectionsModal() {
       document.getElementById('connections-modal').style.display = 'none';
+      // If the Datahub tab is open, refresh its rail so a just-added connection
+      // shows up there too (task 060 follow-up).
+      try {
+        const dh = document.getElementById('tab-datahub');
+        if (dh && dh.classList.contains('active') && typeof loadDatahub === 'function') {
+          loadDatahub();
+        }
+      } catch (e) {}
     }
     function onConnKindChange() {
       const kind = document.getElementById('conn-kind').value;

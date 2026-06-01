@@ -47,3 +47,16 @@ def test_template_wires_datahub_tab():
     # Column editor exposes the is_sensitive toggle (task 060).
     assert "data-dh-sens" in html
     assert "is_sensitive" in html
+
+
+def test_connect_button_uses_modal_not_prompt():
+    """The 'Connect a database' flow must open the real Data Connections modal,
+    not window.prompt() (which embedded/preview browsers block)."""
+    html = (ROOT / "templates" / "admin" / "dashboard.html").read_text(encoding="utf-8")
+    # datahubAddConnection opens the existing modal …
+    assert "function datahubAddConnection" in html
+    assert "openConnectionsModal()" in html
+    # … and the old prompt()-based connection flow is gone.
+    assert "prompt('Connection name:')" not in html
+    # Closing the modal refreshes the Datahub rail.
+    assert "function closeConnectionsModal" in html and "loadDatahub()" in html
