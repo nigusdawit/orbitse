@@ -85,6 +85,18 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 051 | Epic F activation (book_meeting ISO datetime + voice media bridge) | done | task/051-epicf-activation | 047,049 | Gate 13/13 meetings (+migration 0019) + 8/8 voice_bridge; book_meeting validates a model-supplied RFC3339 start before any calendar push (else store-only); provider-flexible voice_bridge/ (echo + openai realtime + slots), live server/call = operator runbook |
 | 052 | Make public sections industry-agnostic (Task #9) | done | task/052-neutral-copy | — | Gate 8/8 + migration 0023 (neutralizes live rows still on old defaults) verified on injected old data; neutralized section nav, landing headers, chat persona (Marco/Concierge), system prompt, blog seed, quick prompts across app.py + index.html + script.js. Layout/schema untouched |
 
+## Phase 7 — Datahub (AI-assisted data layer + dashboards; see ~/.claude/plans/serialized-floating-boot.md)
+
+| ID | Title | Status | Branch | Depends on | Drift |
+|----|-------|--------|--------|------------|-------|
+| 053 | Semantic-layer schema + app-DB-as-connection + manual CRUD | done | task/053-datahub-semantic-layer | — | Gate 7/7 + migration 0024; db_table/column_annotations + relationships + examples (ai_generated/reviewed); connection 0 = app DB |
+| 054 | Connection-aware introspection + read-only query + semantic context | done | (on main) | 053 | Gate 12/12 (real 2nd PG as external); security-review: 2 fixed (no DSN in errors, external secret-column redaction). admin_inspect_connection/admin_query_connection |
+| 055 | AI auto-define (assistant drafts the semantic layer) | done | task/055-datahub-ai-define | 053,054 | Gate 6/6 (stubbed LLM); _dh_ai_define + admin_define_schema; samples redacted before LLM; reviewed rows preserved |
+| 056 | Save SQL as a connection-aware skill (AI + manual) | done | task/056-datahub-save-query | 054 | Gate 7/7 + migration 0025 (custom_sql_skills.connection_id); admin_save_query creates DISABLED skill; external execution |
+| 057 | In-chat chart rendering | done | task/057-datahub-inchart | 054 | Gate 6/6; render_chart tool + dedicated `chart` SSE event + admin-chat Chart.js renderer |
+| 058 | AI builds persistent dashboards + save-chat-chart | done | task/058-datahub-dashboards | 057 | Gate 7/7; 'static' widget source + admin_create_dashboard + /datahub/save-chart + chat "Save to dashboard" button |
+| 059 | Datahub tab UI | done | task/059-datahub-tab | 053-058 | Gate 3/3 + 48/48 combined; super-admin tab: connections + schema browser w/ inline annotation edit + "AI-suggested · review" badges + "✨ Auto-define" + examples + assistant hand-off |
+
 **Status legend:** not_started | in_progress | paused | blocked | awaiting_review | done
 
 **Concurrency note:** M1 and M2 touch disjoint files (visitor widget/chat vs admin shell) and can run

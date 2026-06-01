@@ -2062,6 +2062,12 @@ TO CUSTOMIZE THIS DASHBOARD:
       Custom Dashboards
     </button>
     {% endif %}
+    {% if is_super_admin() %}
+    <button class="tab-btn" onclick="switchTab('datahub', this); loadDatahub();" data-testid="tab-datahub">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 11v6c0 1.66 4 3 9 3s9-1.34 9-3v-6"/></svg>
+      Datahub
+    </button>
+    {% endif %}
     {% if is_super_admin() or has_feature('analytics') %}
     <button class="tab-btn" onclick="switchTab('analytics', this)" data-testid="tab-analytics">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
@@ -4270,6 +4276,38 @@ TO CUSTOMIZE THIS DASHBOARD:
 
   <!--
   ========================================================================
+  TAB: DATAHUB (super-admin) — connections + AI-drafted semantic layer
+  ========================================================================
+  Connect databases, then let the assistant DRAFT table/column meanings,
+  relationships, and example queries (marked "AI-suggested · review"); the
+  super-admin edits what's wrong. The Business Assistant uses the reviewed
+  definitions to write correct SQL. (Phase 7 / task 059)
+  -->
+  <div id="tab-datahub" class="tab-content">
+    <div class="content-header">
+      <h2>Datahub</h2>
+      <div style="display:flex; gap:.5rem;">
+        <button class="btn-secondary" onclick="datahubAddConnection()" data-testid="button-datahub-add-conn">+ Connect a database</button>
+        <button class="btn-secondary" onclick="switchTab('admin-chat', document.querySelector('[data-testid=tab-admin-chat]')); loadAdminChat();" data-testid="button-datahub-ask">Ask the assistant</button>
+      </div>
+    </div>
+    <p style="color:var(--muted-fg,#888); max-width:70ch;">
+      Help the AI understand your data. Pick a connection, then click
+      <strong>✨ Auto-define</strong> — the assistant drafts descriptions,
+      relationships, and example queries for you to review and correct. Reviewed
+      definitions are what the Business Assistant uses when it writes SQL.
+    </p>
+    <div style="display:flex; gap:1rem; align-items:flex-start; margin-top:1rem; flex-wrap:wrap;">
+      <div id="datahub-connections" style="min-width:220px; display:flex; flex-direction:column; gap:.35rem;"
+           data-testid="datahub-connections"></div>
+      <div id="datahub-detail" style="flex:1; min-width:320px;" data-testid="datahub-detail">
+        <p style="color:var(--muted-fg,#888);">Select a connection to view its tables.</p>
+      </div>
+    </div>
+  </div>
+
+  <!--
+  ========================================================================
   TAB: ADMIN CHAT
   ========================================================================
   An in-dashboard chat surface with two modes:
@@ -6046,6 +6084,162 @@ TO CUSTOMIZE THIS DASHBOARD:
       else { btn.disabled = false; btn.textContent = orig; }
     } catch (e) { btn.disabled = false; btn.textContent = orig; }
   };
+
+  // =========================================================================
+  // DATAHUB tab (task 059): connections + AI-drafted semantic layer browser.
+  // POST/PUT/DELETE go through the global CSRF-aware fetch wrapper.
+  // =========================================================================
+  let __datahubConns = [];
+  let __datahubActive = 0;
+  function datahubEsc(s) { const d = document.createElement('div'); d.textContent = (s == null ? '' : String(s)); return d.innerHTML; }
+
+  async function loadDatahub() {
+    try {
+      const j = await (await fetch('/admin/api/datahub/connections', { credentials: 'same-origin' })).json();
+      __datahubConns = j.connections || [];
+    } catch (e) { __datahubConns = []; }
+    if (!__datahubConns.some(c => c.id === __datahubActive)) {
+      __datahubActive = __datahubConns.length ? __datahubConns[0].id : 0;
+    }
+    datahubRenderConns();
+    if (__datahubConns.length) datahubLoadDetail(__datahubActive);
+  }
+
+  function datahubRenderConns() {
+    const box = document.getElementById('datahub-connections');
+    if (!box) return;
+    box.innerHTML = __datahubConns.map(c =>
+      `<button class="btn-secondary" style="text-align:left;${c.id === __datahubActive ? 'border:2px solid #6366f1;' : ''}"
+         onclick="datahubSelect(${c.id})" data-testid="datahub-conn-${c.id}">
+         ${datahubEsc(c.name)} <span style="color:var(--muted-fg,#888);font-size:.72rem;">(${datahubEsc(c.kind)})</span>
+       </button>`).join('') || '<p style="color:var(--muted-fg,#888);">No connections yet.</p>';
+  }
+
+  function datahubSelect(cid) { __datahubActive = cid; datahubRenderConns(); datahubLoadDetail(cid); }
+
+  async function datahubLoadDetail(cid) {
+    const detail = document.getElementById('datahub-detail');
+    if (!detail) return;
+    detail.innerHTML = '<p style="color:var(--muted-fg,#888);">Loading schema…</p>';
+    let schema = {}, ann = {};
+    try { schema = await (await fetch('/admin/api/datahub/' + cid + '/schema', { credentials: 'same-origin' })).json(); }
+    catch (e) { schema = { error: 'Could not load schema.' }; }
+    try { ann = await (await fetch('/admin/api/datahub/' + cid + '/annotations', { credentials: 'same-origin' })).json(); }
+    catch (e) { ann = {}; }
+    if (schema.error) { detail.innerHTML = '<p style="color:#f87171;">' + datahubEsc(schema.error) + '</p>'; return; }
+    const tables = schema.tables || [];
+    let html = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;">
+        <h3 style="margin:0;">Tables (${tables.length})</h3>
+        <button class="btn-primary" onclick="datahubAutoDefine(${cid})" data-testid="datahub-autodefine">✨ Auto-define with AI</button>
+      </div>
+      <p style="color:var(--muted-fg,#888);font-size:.8rem;">Edit a description to mark it reviewed (the AI then treats it as ground truth).</p>`;
+    html += '<div style="display:flex;flex-direction:column;gap:.4rem;">';
+    tables.forEach(t => {
+      const badge = t.reviewed
+        ? '<span style="background:#16a34a22;color:#16a34a;padding:.1rem .4rem;border-radius:.3rem;font-size:.7rem;">reviewed</span>'
+        : (t.description ? '<span style="background:#f59e0b22;color:#f59e0b;padding:.1rem .4rem;border-radius:.3rem;font-size:.7rem;">AI-suggested · review</span>' : '');
+      const tn = datahubEsc(t.table);
+      html += `<div style="border:1px solid var(--admin-border);border-radius:.5rem;padding:.5rem .75rem;">
+          <div style="display:flex;justify-content:space-between;gap:.5rem;align-items:center;">
+            <span><strong>${tn}</strong> ${badge}</span>
+            <button class="acm-btn" style="font-size:.72rem;" onclick="datahubToggleCols('${tn}',${cid},this)">columns ▾</button>
+          </div>
+          <input data-dh-table="${tn}" value="${datahubEsc(t.description || '')}" placeholder="Describe this table…"
+                 style="width:100%;margin-top:.4rem;padding:.3rem;border:1px solid var(--admin-border);border-radius:.3rem;"
+                 onchange="datahubSaveTable(${cid}, this)">
+          <div class="dh-cols" data-for="${tn}" style="display:none;margin-top:.5rem;"></div>
+        </div>`;
+    });
+    html += '</div>';
+    const exs = ann.examples || [];
+    html += `<h3 style="margin-top:1rem;">Example queries (${exs.length})</h3><div style="display:flex;flex-direction:column;gap:.3rem;">`;
+    exs.forEach(e => {
+      html += `<div style="border:1px solid var(--admin-border);border-radius:.4rem;padding:.4rem .6rem;font-size:.85rem;">
+          <div><strong>${datahubEsc(e.question)}</strong>
+            <button class="acm-btn" style="font-size:.68rem;float:right;" onclick="datahubDel('example',${e.id},${cid})">delete</button></div>
+          <code style="font-size:.78rem;white-space:pre-wrap;">${datahubEsc(e.sql)}</code></div>`;
+    });
+    html += '</div>';
+    detail.innerHTML = html;
+  }
+
+  async function datahubSaveTable(cid, el) {
+    try {
+      await fetch('/admin/api/datahub/' + cid + '/table-annotation', {
+        method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table_name: el.getAttribute('data-dh-table'), description: el.value })
+      });
+      datahubLoadDetail(cid);
+    } catch (e) {}
+  }
+
+  async function datahubToggleCols(table, cid, btn) {
+    const holder = document.querySelector('.dh-cols[data-for="' + CSS.escape(table) + '"]');
+    if (!holder) return;
+    if (holder.style.display !== 'none') { holder.style.display = 'none'; btn.textContent = 'columns ▾'; return; }
+    holder.style.display = 'block'; btn.textContent = 'columns ▴';
+    holder.innerHTML = '<span style="color:var(--muted-fg,#888);font-size:.8rem;">Loading…</span>';
+    let d = {};
+    try { d = await (await fetch('/admin/api/datahub/' + cid + '/schema?table=' + encodeURIComponent(table), { credentials: 'same-origin' })).json(); }
+    catch (e) { holder.innerHTML = '<span style="color:#f87171;">Failed</span>'; return; }
+    const cols = (d.columns || []);
+    holder.innerHTML = cols.map(c => {
+      const cn = datahubEsc(c.column);
+      return `<div style="display:flex;gap:.4rem;align-items:center;margin:.2rem 0;">
+          <code style="min-width:130px;font-size:.78rem;">${cn} <span style="color:var(--muted-fg,#888);">${datahubEsc(c.type || '')}</span></code>
+          <input data-dh-col="${cn}" value="${datahubEsc(c.description || '')}" placeholder="meaning…"
+                 style="flex:1;padding:.25rem;border:1px solid var(--admin-border);border-radius:.3rem;font-size:.8rem;"
+                 onchange="datahubSaveCol(${cid},'${datahubEsc(table)}',this)">
+          <input data-dh-sem value="${datahubEsc(c.semantic_type || '')}" placeholder="type"
+                 style="width:90px;padding:.25rem;border:1px solid var(--admin-border);border-radius:.3rem;font-size:.78rem;"
+                 onchange="datahubSaveCol(${cid},'${datahubEsc(table)}',this.previousElementSibling)">
+        </div>`;
+    }).join('') || '<span style="color:var(--muted-fg,#888);">No columns.</span>';
+  }
+
+  async function datahubSaveCol(cid, table, descEl) {
+    const row = descEl.parentElement;
+    const sem = row.querySelector('[data-dh-sem]');
+    try {
+      await fetch('/admin/api/datahub/' + cid + '/column-annotation', {
+        method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table_name: table, column_name: descEl.getAttribute('data-dh-col'),
+                               description: descEl.value, semantic_type: sem ? sem.value : '' })
+      });
+    } catch (e) {}
+  }
+
+  async function datahubAutoDefine(cid) {
+    const detail = document.getElementById('datahub-detail');
+    if (detail) detail.insertAdjacentHTML('afterbegin',
+      '<div id="dh-defining" style="color:#6366f1;margin-bottom:.5rem;">✨ The assistant is drafting definitions… this can take a moment.</div>');
+    try {
+      const r = await fetch('/admin/api/datahub/' + cid + '/ai-define', {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const j = await r.json();
+      if (!r.ok) alert(j.error || 'Auto-define failed.');
+    } catch (e) { alert('Auto-define failed.'); }
+    datahubLoadDetail(cid);
+  }
+
+  async function datahubDel(kind, id, cid) {
+    try { await fetch('/admin/api/datahub/annotation/' + kind + '/' + id, { method: 'DELETE', credentials: 'same-origin' }); } catch (e) {}
+    datahubLoadDetail(cid);
+  }
+
+  async function datahubAddConnection() {
+    const name = prompt('Connection name:');
+    if (!name) return;
+    const url = prompt('Postgres connection URL (postgresql://user:pass@host:5432/db):');
+    if (!url) return;
+    try {
+      const r = await fetch('/admin/api/external-connections', {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name, kind: 'postgres', config: url }) });
+      if (!r.ok) { const j = await r.json(); alert(j.error || 'Could not add connection.'); return; }
+      loadDatahub();
+    } catch (e) { alert('Could not add connection.'); }
+  }
 
   async function adminChatSend() {
     const input = document.getElementById('admin-chat-input');
