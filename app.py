@@ -39268,6 +39268,89 @@ def _automations_call_skill_hook(skill_name, args_dict):
 automations.set_skill_executor(_automations_call_skill_hook)
 
 
+# --- Research & Content Engine automation actions (Phase 8 / task 068) -------
+# Let an automation run deep research, generate content, and publish — chaining
+# the new RCE pipeline into triggers/schedules. Each action is additive (a new
+# action kind; existing automations are untouched) and degrades to a clear error
+# when its feature knob is off. cfg is already merge-tag-rendered by the engine,
+# so a later step can reference an earlier step's output (e.g. the report_id from
+# a research step) via {{stepN.report_id}}.
+
+def _rce_action_research(cfg, ctx):
+    """Automation action: run deep research. cfg: {question|topic, topic?}."""
+    q = (cfg.get("question") or cfg.get("topic") or "").strip()
+    if not q:
+        return {"ok": False, "error": "research action needs a 'question'."}
+    res = _rce_run_research(q, topic=(cfg.get("topic") or ""))
+    if not isinstance(res, dict) or res.get("error"):
+        return {"ok": False, "error": (res or {}).get("error", "research failed")}
+    return {"ok": True, "report_id": res.get("report_id"),
+            "status": res.get("status"), "sources": res.get("sources"),
+            "result": res}
+
+
+def _rce_action_generate(cfg, ctx):
+    """Automation action: generate content from a report. cfg: {report_id,
+    content_types (list or comma string), instructions?, tone?}."""
+    rid = cfg.get("report_id")
+    cts = cfg.get("content_types") or cfg.get("content_type")
+    if isinstance(cts, str):
+        cts = [c.strip() for c in cts.replace(",", "\n").splitlines() if c.strip()]
+    if rid in (None, "") or not cts:
+        return {"ok": False, "error": "generate action needs report_id + content_types."}
+    res = _rce_generate_from_report(rid, [str(c) for c in cts][:12],
+                                    extra=(cfg.get("instructions") or ""),
+                                    tone=(cfg.get("tone") or ""))
+    if not isinstance(res, dict) or res.get("error"):
+        return {"ok": False, "error": (res or {}).get("error", "generate failed")}
+    return {"ok": True, "drafts": res.get("drafts"), "result": res}
+
+
+def _rce_action_publish(cfg, ctx):
+    """Automation action: publish a draft via a capability (auto path → needs
+    autopublish_enabled). cfg: {draft_id, capability_id}."""
+    did = cfg.get("draft_id")
+    cid = cfg.get("capability_id")
+    if did in (None, "") or cid in (None, ""):
+        return {"ok": False, "error": "publish action needs draft_id + capability_id."}
+    res = _rce_publish_draft(did, cid, via="auto")
+    if not isinstance(res, dict) or res.get("error"):
+        return {"ok": False, "error": (res or {}).get("error", "publish failed")}
+    return {"ok": bool(res.get("ok")), "result": res, "error": (None if res.get("ok")
+            else str(res.get("detail") or "publish failed"))}
+
+
+automations.register_action("rce_research", _rce_action_research, {
+    "kind": "rce_research", "label": "Run deep research",
+    "group": "Research & Content",
+    "config_fields": [
+        {"name": "question", "label": "Research question", "kind": "textarea", "required": True},
+        {"name": "topic", "label": "Topic (optional)", "kind": "text"},
+    ],
+    "outputs": ["ok", "report_id", "status", "sources"],
+})
+automations.register_action("rce_generate_content", _rce_action_generate, {
+    "kind": "rce_generate_content", "label": "Generate content from a report",
+    "group": "Research & Content",
+    "config_fields": [
+        {"name": "report_id", "label": "Report ID (use a {{step}} merge tag)", "kind": "text", "required": True},
+        {"name": "content_types", "label": "Content types (comma-separated, e.g. blog,social)", "kind": "text", "required": True},
+        {"name": "instructions", "label": "Extra instructions (optional)", "kind": "textarea"},
+        {"name": "tone", "label": "Tone (optional)", "kind": "text"},
+    ],
+    "outputs": ["ok", "drafts"],
+})
+automations.register_action("rce_publish", _rce_action_publish, {
+    "kind": "rce_publish", "label": "Publish a draft via a capability",
+    "group": "Research & Content",
+    "config_fields": [
+        {"name": "draft_id", "label": "Draft ID (use a {{step}} merge tag)", "kind": "text", "required": True},
+        {"name": "capability_id", "label": "Publish capability ID", "kind": "text", "required": True},
+    ],
+    "outputs": ["ok", "result"],
+})
+
+
 # =============================================================================
 # AUTOMATIONS — admin CRUD + run log + public webhook
 # =============================================================================

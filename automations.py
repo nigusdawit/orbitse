@@ -144,6 +144,28 @@ def set_skill_executor(fn: Callable[[str, Dict[str, Any]], Dict[str, Any]]) -> N
     _SKILL_EXECUTOR = fn
 
 
+def register_action(kind: str, impl: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]],
+                    metadata: Optional[Dict[str, Any]] = None) -> None:
+    """Register an external action implementation (called by app.py at startup).
+
+    Purely additive — extends the dispatch table + the builder UI metadata
+    WITHOUT this module importing app.py and WITHOUT touching the built-in
+    actions. `impl` is callable(rendered_cfg, ctx) -> {"ok": bool, ...} (same
+    contract as the built-in actions; merge tags in cfg are already rendered by
+    the engine before impl is called). `metadata`, if given, is an ACTION_TYPES-
+    shaped dict shown in the automation builder."""
+    kind = (kind or "").strip()
+    if not kind:
+        return
+    _ACTION_DISPATCH[kind] = impl
+    if metadata:
+        for i, a in enumerate(ACTION_TYPES):
+            if a.get("kind") == kind:
+                ACTION_TYPES[i] = metadata
+                return
+        ACTION_TYPES.append(metadata)
+
+
 def configure(
     *,
     query_db: Callable[..., Any],
