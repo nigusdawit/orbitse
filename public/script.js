@@ -6496,7 +6496,15 @@ async function chatSendStreaming(message, wasCollapsed) {
     /* Check if we're currently on the landing page (not in gallery view) */
     const onLandingPage = !document.getElementById('gallery-view').classList.contains('active');
 
-    if (wasCollapsed && onLandingPage && !isNavigate) {
+    /* Is the hero description actually visible to the visitor?
+       The hero section can be disabled from the admin Page Layout, in which
+       case #hero-description still exists in the DOM but its parent section is
+       display:none — typing the AI reply there would silently vanish. When the
+       hero isn't available we fall through to the chat-popup branch below,
+       which auto-expands the compact concierge bar to show the message. */
+    const heroAvailable = isHeroDescriptionVisible();
+
+    if (wasCollapsed && onLandingPage && !isNavigate && heroAvailable) {
       /* ── LANDING PAGE MODE: type response into the hero description ── */
       /* Finalize the stream bubble in the chat panels so the rendered
          markdown replaces the raw streaming text */
@@ -6783,6 +6791,14 @@ function chatAddMessage(role, text) {
   if (role === 'agent') {
     updateSidePanelLatest(text);
     updateMainPanelLatest(text);
+    /* Auto-expand: when the chat is fully collapsed AND the hero description
+       isn't visible (e.g. the hero section is disabled in Page Layout), there
+       is nowhere on the page for this reply to surface — so pop the chat panel
+       open. This covers normal AI replies, error notices ("Connection issue…"),
+       and any other agent message routed straight through chatAddMessage. */
+    if (!chatExpanded && !splitScreenActive && !sidePanelActive && !isHeroDescriptionVisible()) {
+      ensureChatExpanded();
+    }
   }
 }
 
@@ -7281,6 +7297,35 @@ function chatToggleExpand() {
     const history = document.getElementById('panel-history');
     if (history) history.classList.remove('visible');
   }
+}
+
+
+/**
+ * Expand the chat panel only if it's currently collapsed.
+ *
+ * chatToggleExpand() is a pure toggle, so calling it blindly could close an
+ * already-open panel. This guard makes "make sure the chat is open" safe to
+ * call from anywhere (e.g. when an AI reply has nowhere else to surface).
+ */
+function ensureChatExpanded() {
+  if (!chatExpanded) chatToggleExpand();
+}
+
+
+/**
+ * Is the hero description currently visible to the visitor?
+ *
+ * The hero section can be disabled from the admin Page Layout, in which case
+ * #hero-description still exists in the DOM but its parent section is
+ * display:none. offsetParent is null whenever the element (or any ancestor) is
+ * hidden, so this returns false when the hero is disabled, yet still true when
+ * the hero is merely scrolled off-screen (it's still rendered).
+ *
+ * @returns {boolean} true when the hero description can actually show text.
+ */
+function isHeroDescriptionVisible() {
+  const el = document.getElementById('hero-description');
+  return !!el && el.offsetParent !== null;
 }
 
 
