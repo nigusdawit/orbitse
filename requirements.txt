@@ -42,3 +42,4 @@ python-docx
 python-pptx
 rjsmin
 sentry-sdk
+pytest
