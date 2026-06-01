@@ -2820,8 +2820,10 @@ TO CUSTOMIZE THIS DASHBOARD:
       </div>
       <div class="db-modal-body">
         <p style="color:var(--muted-fg,#888); margin-top:0;">
-          Add an outside Postgres database or a REST endpoint. Credentials are
-          encrypted before they touch the database.
+          Add an outside database (Postgres, MySQL, or any database URL) or a
+          REST endpoint. Credentials are encrypted before they touch the
+          database. Connections are shared across Custom Dashboards and the
+          Datahub.
         </p>
         <div id="connections-list" data-testid="list-connections"></div>
         <hr>
@@ -2833,14 +2835,17 @@ TO CUSTOMIZE THIS DASHBOARD:
           <label>Kind
             <select id="conn-kind" onchange="onConnKindChange()" data-testid="select-conn-kind">
               <option value="postgres">Postgres database (URL)</option>
+              <option value="mysql">MySQL / MariaDB (URL)</option>
+              <option value="sql">Other database (any URL)</option>
               <option value="rest">REST API endpoint</option>
             </select>
           </label>
         </div>
         <div id="conn-postgres-fields">
-          <label>Connection URL
+          <label><span id="conn-url-label">Connection URL</span>
             <input type="text" id="conn-pg-url" placeholder="postgres://user:pass@host:5432/db" data-testid="input-conn-pg-url">
           </label>
+          <p id="conn-url-hint" style="color:var(--muted-fg,#888); font-size:.78rem; margin:.25rem 0 0 0;"></p>
         </div>
         <div id="conn-rest-fields" style="display:none;">
           <label>Base URL
@@ -20939,8 +20944,22 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
     function onConnKindChange() {
       const kind = document.getElementById('conn-kind').value;
-      document.getElementById('conn-postgres-fields').style.display = (kind === 'postgres') ? 'block' : 'none';
+      const isSql = (kind === 'postgres' || kind === 'mysql' || kind === 'sql');
+      document.getElementById('conn-postgres-fields').style.display = isSql ? 'block' : 'none';
       document.getElementById('conn-rest-fields').style.display = (kind === 'rest') ? 'block' : 'none';
+      // Tune the URL field placeholder/hint per database kind.
+      const urlInput = document.getElementById('conn-pg-url');
+      const hint = document.getElementById('conn-url-hint');
+      if (kind === 'mysql') {
+        urlInput.placeholder = 'mysql://user:pass@host:3306/dbname';
+        hint.textContent = 'MySQL / MariaDB. The pymysql driver is bundled.';
+      } else if (kind === 'sql') {
+        urlInput.placeholder = 'dialect+driver://user:pass@host:port/dbname';
+        hint.textContent = 'Any SQLAlchemy URL (e.g. mssql+pyodbc://…, sqlite:///…). The matching driver must be installed in your deployment.';
+      } else if (kind === 'postgres') {
+        urlInput.placeholder = 'postgres://user:pass@host:5432/db';
+        hint.textContent = '';
+      }
     }
 
     function renderConnectionsList() {
@@ -20969,9 +20988,9 @@ TO CUSTOMIZE THIS DASHBOARD:
       const kind = document.getElementById('conn-kind').value;
       if (!name) { alert('Please enter a name.'); return; }
       let config;
-      if (kind === 'postgres') {
+      if (kind === 'postgres' || kind === 'mysql' || kind === 'sql') {
         config = document.getElementById('conn-pg-url').value.trim();
-        if (!config) { alert('Please paste a Postgres connection URL.'); return; }
+        if (!config) { alert('Please paste a database connection URL.'); return; }
       } else {
         const url = document.getElementById('conn-rest-url').value.trim();
         let headers = {};
