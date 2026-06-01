@@ -7648,8 +7648,21 @@ function executeCommand(cmd) {
          CSS animations the visitor just watched play. Otherwise fall back
          to the one-shot renderer for fast/non-streamed responses. */
       if (isImmersivePageStreaming()) {
+        /* Did the live stream actually deliver content to the iframe? It only
+           counts if the iframe handshake landed (ready) AND we queued some
+           HTML (written > 0). If either is false — e.g. the cross-iframe
+           postMessage handshake never arrived, or no safe HTML boundary was
+           flushed — the visitor would be left staring at a blank "Building"
+           page. In that case we fall back to the reliable one-shot renderer,
+           which writes the full HTML straight into the iframe document so the
+           page always appears. */
+        const st = _immersiveStream;
+        const delivered = !!(st && st.ready && st.written > 0);
         finishImmersivePageStreaming();
         resetImmersiveStreamState();
+        if (!delivered && (cmd.html || '').trim()) {
+          openImmersivePage(cmd.html);
+        }
       } else {
         openImmersivePage(cmd.html || '');
       }
@@ -9159,6 +9172,9 @@ function openImmersivePageStreaming() {
     queue: [],
     ready: false,
     isStreaming: true,
+    written: 0,   /* total chars actually queued for the iframe — lets the
+                     command handler tell whether the live render produced
+                     anything, and fall back to a one-shot render if not. */
     token: 'tok_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10)
   };
 
@@ -9210,6 +9226,7 @@ function _flushImmersiveStream() {
 function appendImmersivePageStreaming(deltaHtml) {
   if (!_immersiveStream || !deltaHtml) return;
   _immersiveStream.queue.push({ type: 'append', html: deltaHtml });
+  _immersiveStream.written += deltaHtml.length;
   _flushImmersiveStream();
 }
 
