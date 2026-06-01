@@ -222,8 +222,8 @@ FONTS:
             Loading...
           </p>
           <div class="hero-buttons">
-            <button class="btn-secondary" onclick="showGallery()" aria-label="Explore the gallery" data-testid="button-explore-gallery">
-              Explore Gallery
+            <button class="btn-secondary" onclick="showGallery()" aria-label="Browse highlights" data-testid="button-explore-gallery">
+              Browse Highlights
             </button>
             <button id="btn-sphere-view" class="btn-secondary" onclick="showSphereView()" aria-label="Open immersive sphere view" data-testid="button-explore-sphere" style="display:none;">
               &#x2728; Immersive View
@@ -263,8 +263,8 @@ FONTS:
         </div>
 
         <div class="text-center mt-xl">
-          <button class="btn-secondary" onclick="showGallery()" aria-label="View all gallery items" data-testid="button-view-all-gallery">
-            View All Gallery Items
+          <button class="btn-secondary" onclick="showGallery()" aria-label="View all highlights" data-testid="button-view-all-gallery">
+            View All Highlights
           </button>
         </div>
       </div>
@@ -281,9 +281,9 @@ FONTS:
 
         <!-- Experiences Header -->
         <div class="section-header fade-in-view">
-          <p class="section-eyebrow">Curated For You</p>
+          <p class="section-eyebrow">Our Offerings</p>
           <h2 class="section-title" data-testid="text-experiences-title">What We Provide</h2>
-          <p class="section-subtitle">Discover our curated selection of services and experiences designed just for you.</p>
+          <p class="section-subtitle">Explore the services and offerings we provide.</p>
         </div>
 
         <!-- Experience Cards — populated by JavaScript -->
@@ -293,8 +293,8 @@ FONTS:
 
         <!-- Pricing Header -->
         <div class="section-header fade-in-view mt-2xl">
-          <p class="section-eyebrow">Seasonal Rates</p>
-          <h2 class="section-title" data-testid="text-pricing-title">Plan Your Visit</h2>
+          <p class="section-eyebrow">Pricing</p>
+          <h2 class="section-title" data-testid="text-pricing-title">Our Pricing</h2>
         </div>
 
         <!-- Pricing Cards — populated by JavaScript -->
@@ -322,7 +322,7 @@ FONTS:
     <section id="section-services" class="snap-section landing-section" style="background: var(--bg-section-1); display: none;" data-testid="section-services">
       <div class="max-w-container" style="max-width: 60rem;">
         <div class="section-header fade-in-view">
-          <p class="section-eyebrow">Reserve Your Spot</p>
+          <p class="section-eyebrow">Book a Service</p>
           <h2 class="section-title" data-testid="text-services-title">Services</h2>
           <p class="section-subtitle">Browse what we offer and book online in a few clicks.</p>
         </div>
@@ -573,8 +573,8 @@ FONTS:
                already on the homepage and prevents the full reload
                that the href would otherwise trigger. -->
           <li><a href="/" onclick="scrollToSection('section-hero'); return false;" data-testid="link-footer-home">Home</a></li>
-          <li><a href="/highlights" onclick="scrollToSection('section-highlights'); return false;" data-testid="link-footer-highlights">Gallery</a></li>
-          <li><a href="/experiences" onclick="scrollToSection('section-experiences'); return false;" data-testid="link-footer-experiences">Experiences</a></li>
+          <li><a href="/highlights" onclick="scrollToSection('section-highlights'); return false;" data-testid="link-footer-highlights">Highlights</a></li>
+          <li><a href="/experiences" onclick="scrollToSection('section-experiences'); return false;" data-testid="link-footer-experiences">Offerings</a></li>
           <li id="footer-link-testimonials" style="display:none;"><a href="/testimonials" onclick="scrollToSection('section-testimonials'); return false;" data-testid="link-footer-testimonials">Testimonials</a></li>
           <li id="footer-link-team" style="display:none;"><a href="/team" onclick="scrollToSection('section-team'); return false;" data-testid="link-footer-team">Team</a></li>
           <li id="footer-link-faq" style="display:none;"><a href="/faq" onclick="scrollToSection('section-faq'); return false;" data-testid="link-footer-faq">FAQ</a></li>
@@ -835,7 +835,7 @@ FONTS:
     <div id="chatbot-bar" class="chatbot-bar" aria-label="AI assistant chat bar" data-testid="chatbot-bar">
       <!-- Agent avatar — profile image for the AI concierge -->
       <div id="chatbot-avatar" class="chatbot-avatar" data-testid="chatbot-avatar">
-        <img src="/ai_concierge.png" alt="AI Concierge" class="chatbot-avatar-img">
+        <img src="/ai_concierge.png" alt="AI Assistant" class="chatbot-avatar-img">
       </div>
 
       <!-- Agent info (name + role) — visible on wider screens -->
@@ -892,7 +892,7 @@ FONTS:
       <div class="panel-latest" id="panel-latest">
         <div class="panel-latest-header">
           <div class="side-panel-agent-badge">
-            <div id="chatbot-panel-avatar" class="chatbot-avatar chatbot-avatar-sm"><img src="/ai_concierge.png" alt="AI Concierge" class="chatbot-avatar-img"></div>
+            <div id="chatbot-panel-avatar" class="chatbot-avatar chatbot-avatar-sm"><img src="/ai_concierge.png" alt="AI Assistant" class="chatbot-avatar-img"></div>
             <span id="chatbot-panel-name" class="side-panel-agent-name">AI Assistant</span>
           </div>
           <div class="side-panel-actions">
@@ -972,7 +972,7 @@ FONTS:
     <div class="split-chat" id="split-chat">
       <div class="chatbot-panel-header">
         <div class="chatbot-panel-header-info">
-          <div id="split-chat-avatar" class="chatbot-avatar chatbot-avatar-sm"><img src="/ai_concierge.png" alt="AI Concierge" class="chatbot-avatar-img"></div>
+          <div id="split-chat-avatar" class="chatbot-avatar chatbot-avatar-sm"><img src="/ai_concierge.png" alt="AI Assistant" class="chatbot-avatar-img"></div>
           <div>
             <span id="split-chat-name" class="chatbot-agent-name">AI Assistant</span>
             <span id="split-chat-role" class="chatbot-agent-role">Assistant</span>
@@ -1161,7 +1161,7 @@ FONTS:
     <div class="side-panel-latest" id="side-panel-latest">
       <div class="side-panel-latest-header">
         <div class="side-panel-agent-badge">
-          <div id="side-chat-avatar" class="chatbot-avatar chatbot-avatar-sm"><img src="/ai_concierge.png" alt="AI Concierge" class="chatbot-avatar-img"></div>
+          <div id="side-chat-avatar" class="chatbot-avatar chatbot-avatar-sm"><img src="/ai_concierge.png" alt="AI Assistant" class="chatbot-avatar-img"></div>
           <span id="side-chat-name" class="side-panel-agent-name">AI Assistant</span>
         </div>
         <div class="side-panel-actions">
