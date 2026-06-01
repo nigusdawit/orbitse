@@ -44,3 +44,6 @@ def test_template_wires_datahub_tab():
     assert "datahubAutoDefine" in html
     # Tab button is inside a super-admin-only block.
     assert 'data-testid="tab-datahub"' in html
+    # Column editor exposes the is_sensitive toggle (task 060).
+    assert "data-dh-sens" in html
+    assert "is_sensitive" in html
