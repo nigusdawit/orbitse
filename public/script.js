@@ -4862,6 +4862,11 @@ async function loadAndApplyTheme() {
     setNumVar('theme_glass_blur_px',    '--glass-blur',       'px');
     setNumVar('theme_radius_rem',       '--radius',           'rem');
     setNumVar('theme_transition_sec',   '--transition-medium', 's');
+    /* Overall-size (zoom) factor. The server injected an
+       `html{zoom:var(--ui-scale,1)}` rule before first paint, so updating
+       the --ui-scale custom property here re-zooms the whole site live
+       after an admin save (no page reload needed). 1.0 = 100%. */
+    setNumVar('theme_ui_scale',         '--ui-scale',         '');
 
     /* Derive --color-bg-rgb from theme_bg so any rgba() that reads it
        (loading-screen tint) re-tints when the bg color changes. */

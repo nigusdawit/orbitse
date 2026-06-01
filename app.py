@@ -8175,6 +8175,14 @@ def _build_theme_vars_style():
         except (TypeError, ValueError):
             frame_inset = 0
         frame_inset = max(0, min(32, frame_inset))
+        # Overall-size (zoom) factor. 1.0 = 100% (no zoom); < 1 zooms out
+        # (smaller components), > 1 zooms in (bigger). Applied as CSS `zoom`
+        # on the document root below so EVERYTHING scales proportionally
+        # (cards, type, spacing, chat widget). Clamped 0.5–1.5 so a stray
+        # value can't make the site unusable. Injected before first paint
+        # so there's no resize flash on load.
+        ui_scale = _f("theme_ui_scale", 1.0)
+        ui_scale = max(0.5, min(1.5, ui_scale))
         # Personality (Task #64 / item 11) — admin-picked progress-bar
         # color. When empty we deliberately OMIT the variable so the
         # CSS fallback chain (var(--scroll-progress-color, var(--color-
@@ -8207,13 +8215,19 @@ def _build_theme_vars_style():
             f"--logo-image:{logo_image_css};"
             f"--ease-active:{ease_active};"
             f"--space-scale:{density_scale};"
+            f"--ui-scale:{ui_scale};"
             f"--section-frame-inset:{frame_inset}px;"
             # Personality (Task #64 / item 11) — scroll-progress bar color.
             # Only emitted when admin set a custom hex; otherwise the CSS
             # rule's var(--scroll-progress-color, var(--color-accent))
             # fallback tracks live accent updates without a page reload.
             f"{progress_color_decl}"
-            "}</style>"
+            "}"
+            # Apply the overall-size factor as CSS `zoom` on the root so
+            # every component scales together. Reads the --ui-scale var set
+            # above; live admin saves update it via script.js without reload.
+            "html{zoom:var(--ui-scale,1);}"
+            "</style>"
         )
     except Exception as e:
         print(f"[serve_index] theme vars injection failed: {e}; serving without")
@@ -29948,7 +29962,7 @@ def _resolve_active_theme():
                theme_header_align, hero_layout_mode,
                theme_cursor_mode, theme_scroll_progress,
                theme_scroll_progress_color, theme_nav_style,
-               theme_chatbot_placement,
+               theme_chatbot_placement, theme_ui_scale,
                active_theme_id
         FROM site_settings WHERE id = 1
     """, fetchone=True) or {}
@@ -30023,10 +30037,17 @@ def _resolve_active_theme():
     # NUMERIC columns come back as Decimal — coerce to float so JSON
     # serialization works and the frontend can do math on them directly.
     for k in ("theme_loading_bg_alpha", "theme_radius_rem",
-              "theme_transition_sec"):
+              "theme_transition_sec", "theme_ui_scale"):
         if settings.get(k) is not None:
             try: settings[k] = float(settings[k])
             except Exception: pass
+    # Overall-size (zoom) factor. Clamp to a sane range so a stray DB
+    # value can't shrink the site to nothing or blow it up. 1.0 = 100%.
+    try:
+        _scale = float(settings.get("theme_ui_scale"))
+    except (TypeError, ValueError):
+        _scale = 1.0
+    settings["theme_ui_scale"] = max(0.5, min(1.5, _scale))
     if settings.get("theme_glass_blur_px") is not None:
         try: settings["theme_glass_blur_px"] = int(settings["theme_glass_blur_px"])
         except Exception: pass
@@ -30119,6 +30140,9 @@ def admin_update_theme():
     glass_blur    = _num("theme_glass_blur_px",    24,   0,   80,  int)
     radius_rem    = _num("theme_radius_rem",       1.0,  0.0, 3.0, float)
     transition_s  = _num("theme_transition_sec",   0.6,  0.0, 3.0, float)
+    # Overall-size (zoom) factor — 1.0 = 100%; clamped 0.5–1.5 so a stray
+    # slider value can't shrink the site to nothing or blow it up.
+    ui_scale      = _num("theme_ui_scale",         1.0,  0.5, 1.5, float)
 
     # Brand-identity fields (Task #61 / items 2,4,17,18). Logo mode is
     # restricted to a known enum so a malformed payload can't break the
@@ -30215,7 +30239,7 @@ def admin_update_theme():
              theme_header_align = %s, hero_layout_mode = %s,
              theme_cursor_mode = %s, theme_scroll_progress = %s,
              theme_scroll_progress_color = %s, theme_nav_style = %s,
-             theme_chatbot_placement = %s,
+             theme_chatbot_placement = %s, theme_ui_scale = %s,
              updated_at = NOW()
            WHERE id = 1 RETURNING *""",
         (
@@ -30233,7 +30257,7 @@ def admin_update_theme():
             card_style, easing, photo_filter, loading_mode,
             density, frame_inset, header_align, hero_layout,
             cursor_mode, scroll_progress, scroll_progress_color,
-            nav_style, chatbot_placement,
+            nav_style, chatbot_placement, ui_scale,
         )
     )
 
