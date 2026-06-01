@@ -14034,12 +14034,12 @@ def _exec_custom_sql(name, args):
     # that database (read-only, params bound) instead of the app's own DB.
     _conn_id = int(sk.get("connection_id") or 0)
     if _conn_id != 0:
-        url, derr = _dh_postgres_url(_conn_id)
+        _kind, url, derr = _dh_sql_connection(_conn_id)
         if derr:
             return {"error": derr}, 0
         try:
-            res = _run_external_postgres(url, sql_text, max_rows=100,
-                                         params=(args or None))
+            res = _run_external_db(_kind, url, sql_text, max_rows=100,
+                                   params=(args or None))
         except Exception as e:
             print(f"[custom_sql] external skill failed (conn {_conn_id}): "
                   f"{type(e).__name__}: {e}")
@@ -15654,23 +15654,75 @@ def _admin_tool_run_sql(sql=None, **_):
 # double-guarded (_admin_safe_sql + the read-only session in
 # _run_external_postgres).
 
-def _dh_postgres_url(connection_id):
-    """Return (url, error). url is None for connection 0 (the app's own DB, which
-    is queried via the in-process safe path). For an external id, decrypt its
-    Postgres URL. REST connections / unknown ids return an error."""
+def _dh_sql_connection(connection_id):
+    """Return (kind, url, error). connection 0 = the app's own DB
+    ('postgres', None) — queried via the in-process safe path. For an external
+    id, decrypt the URL and return its kind ('postgres' | 'mysql' | 'sql').
+    REST / unknown kinds return an error. The decrypted URL never leaves the
+    server (only a connection_id is exposed to the model)."""
     cid = int(connection_id or 0)
     if cid == 0:
-        return None, None
+        return "postgres", None, None
     row = query_db("SELECT kind, encrypted_config FROM external_data_connections "
                    "WHERE id=%s", (cid,), fetchone=True)
     if not row:
-        return None, f"Connection {cid} not found."
-    if row["kind"] != "postgres":
-        return None, "That connection is a REST API, not a SQL database — can't run SQL on it."
+        return None, None, f"Connection {cid} not found."
+    kind = (row["kind"] or "").strip().lower()
+    if kind == "rest":
+        return None, None, "That connection is a REST API, not a SQL database — can't run SQL on it."
+    if kind not in ("postgres", "mysql", "sql"):
+        return None, None, f"Unsupported connection kind '{kind}'."
     try:
-        return decrypt_secret(row["encrypted_config"]), None
+        return kind, decrypt_secret(row["encrypted_config"]), None
     except Exception:
-        return None, "Could not read the connection's configuration."
+        return None, None, "Could not read the connection's configuration."
+
+
+def _dh_intro_tables(cid, kind, url):
+    """Table names for a connection (cid 0 = app DB). Postgres uses
+    information_schema; mysql / generic use the SQLAlchemy inspector (dialect-
+    agnostic). May raise on a connect failure — callers handle it."""
+    if cid == 0:
+        return [t["table_name"] for t in (query_db(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema='public' AND table_type='BASE TABLE' "
+            "ORDER BY table_name") or [])]
+    if kind == "postgres":
+        res = _run_external_postgres(
+            url, "SELECT table_name FROM information_schema.tables "
+                 "WHERE table_schema='public' ORDER BY table_name", max_rows=1000)
+        return [r[0] for r in res.get("rows", [])]
+    from sqlalchemy import inspect as _sa_inspect
+    eng = _sa_engine(kind, url)
+    try:
+        return sorted(_sa_inspect(eng).get_table_names())
+    finally:
+        eng.dispose()
+
+
+def _dh_intro_columns(cid, kind, url, table):
+    """[{column, type}] for one table (cid 0 = app DB)."""
+    tname = str(table)
+    if cid == 0:
+        rows = query_db(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name=%s ORDER BY ordinal_position",
+            (tname,)) or []
+        return [{"column": c["column_name"], "type": c["data_type"]} for c in rows]
+    if kind == "postgres":
+        _lit = "'" + tname.replace("'", "''") + "'"
+        res = _run_external_postgres(
+            url, "SELECT column_name, data_type FROM information_schema.columns "
+                 f"WHERE table_schema='public' AND table_name={_lit} "
+                 "ORDER BY ordinal_position", max_rows=1000)
+        return [{"column": r[0], "type": r[1]} for r in res.get("rows", [])]
+    from sqlalchemy import inspect as _sa_inspect
+    eng = _sa_engine(kind, url)
+    try:
+        return [{"column": c["name"], "type": str(c.get("type"))}
+                for c in _sa_inspect(eng).get_columns(tname)]
+    finally:
+        eng.dispose()
 
 
 def _admin_tool_inspect_connection(connection_id=0, table=None, **_):
@@ -15689,27 +15741,18 @@ def _admin_tool_inspect_connection(connection_id=0, table=None, **_):
     for cdef in ann["columns"]:
         col_desc.setdefault(cdef["table_name"], {})[cdef["column_name"]] = cdef
 
-    # Resolve the physical schema for the connection.
-    url, err = _dh_postgres_url(cid)
+    # Resolve the physical schema for the connection (kind-aware).
+    kind, url, err = _dh_sql_connection(cid)
     if err:
         return {"error": err}
     if not table:
         # Overview: table list (+ descriptions). Keep it bounded.
-        if cid == 0:
-            names = [t["table_name"] for t in (query_db(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema='public' AND table_type='BASE TABLE' "
-                "ORDER BY table_name") or [])]
-        else:
-            try:
-                res = _run_external_postgres(
-                    url, "SELECT table_name FROM information_schema.tables "
-                         "WHERE table_schema='public' ORDER BY table_name", max_rows=500)
-            except Exception as e:
-                print(f"[datahub] external introspect failed (conn {cid}): "
-                      f"{type(e).__name__}: {e}")
-                return {"error": "Could not connect to that database to inspect it."}
-            names = [r[0] for r in res.get("rows", [])]
+        try:
+            names = _dh_intro_tables(cid, kind, url)
+        except Exception as e:
+            print(f"[datahub] introspect tables failed (conn {cid}): "
+                  f"{type(e).__name__}: {e}")
+            return {"error": "Could not connect to that database to inspect it."}
         tables = []
         for n in names[:200]:
             d = tbl_desc.get(n) or {}
@@ -15725,24 +15768,12 @@ def _admin_tool_inspect_connection(connection_id=0, table=None, **_):
                 "hint": "Call again with a `table` to see its columns + meanings."}
     # Single-table column detail.
     tname = str(table)
-    if cid == 0:
-        cols = query_db(
-            "SELECT column_name, data_type FROM information_schema.columns "
-            "WHERE table_schema='public' AND table_name=%s ORDER BY ordinal_position",
-            (tname,)) or []
-        cols = [{"column": c["column_name"], "type": c["data_type"]} for c in cols]
-    else:
-        _lit = "'" + tname.replace("'", "''") + "'"   # safe SQL string literal
-        try:
-            res = _run_external_postgres(
-                url, "SELECT column_name, data_type FROM information_schema.columns "
-                     f"WHERE table_schema='public' AND table_name={_lit} "
-                     "ORDER BY ordinal_position", max_rows=500)
-        except Exception as e:
-            print(f"[datahub] external introspect failed (conn {cid}): "
-                  f"{type(e).__name__}: {e}")
-            return {"error": "Could not connect to that database to inspect it."}
-        cols = [{"column": r[0], "type": r[1]} for r in res.get("rows", [])]
+    try:
+        cols = _dh_intro_columns(cid, kind, url, tname)
+    except Exception as e:
+        print(f"[datahub] introspect columns failed (conn {cid}): "
+              f"{type(e).__name__}: {e}")
+        return {"error": "Could not connect to that database to inspect it."}
     if not cols:
         return {"error": f"Table '{tname}' not found on connection {cid}."}
     cmap = col_desc.get(tname, {})
@@ -15809,7 +15840,7 @@ def _admin_tool_query_connection(connection_id=0, sql=None, **_):
         cid = 0
     if cid == 0:
         return _admin_tool_run_sql(sql=sql)   # in-process safe path (+ redaction)
-    url, err = _dh_postgres_url(cid)
+    kind, url, err = _dh_sql_connection(cid)
     if err:
         return {"error": err}
     safe, serr = _admin_safe_sql(sql or "")   # read-only / single-statement / keyword guard
@@ -15824,7 +15855,7 @@ def _admin_tool_query_connection(connection_id=0, sql=None, **_):
     except Exception:
         pass
     try:
-        res = _run_external_postgres(url, safe, max_rows=100, timeout_ms=5000)
+        res = _run_external_db(kind, url, safe, max_rows=100, timeout_ms=5000)
     except Exception as e:
         # Do NOT echo the exception text: a psycopg2 connect/operational error
         # routinely embeds the external DB host/user/dbname (the DSN). Log it
@@ -15851,37 +15882,10 @@ def _admin_tool_query_connection(connection_id=0, sql=None, **_):
 # super-admin has already REVIEWED is never overwritten. Sampled values have
 # secret-named columns masked before they're shown to the LLM.
 
-def _dh_table_names(cid, url):
-    if cid == 0:
-        return [t["table_name"] for t in (query_db(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema='public' AND table_type='BASE TABLE' "
-            "ORDER BY table_name") or [])]
-    res = _run_external_postgres(
-        url, "SELECT table_name FROM information_schema.tables "
-             "WHERE table_schema='public' ORDER BY table_name", max_rows=500)
-    return [r[0] for r in res.get("rows", [])]
-
-
-def _dh_table_columns(cid, url, table):
-    if cid == 0:
-        rows = query_db(
-            "SELECT column_name, data_type FROM information_schema.columns "
-            "WHERE table_schema='public' AND table_name=%s ORDER BY ordinal_position",
-            (table,)) or []
-        return [{"column": r["column_name"], "type": r["data_type"]} for r in rows]
-    _lit = "'" + str(table).replace("'", "''") + "'"
-    res = _run_external_postgres(
-        url, "SELECT column_name, data_type FROM information_schema.columns "
-             f"WHERE table_schema='public' AND table_name={_lit} "
-             "ORDER BY ordinal_position", max_rows=500)
-    return [{"column": r[0], "type": r[1]} for r in res.get("rows", [])]
-
-
-def _dh_sample_rows(cid, url, table, cols, limit=3):
+def _dh_sample_rows(cid, kind, url, table, cols, limit=3):
     """A few read-only sample rows for LLM context, with secret-named columns
-    masked. Returns [] on any failure (sampling is best-effort)."""
-    colnames = [c["column"] for c in cols]
+    masked. Kind-aware identifier quoting (mysql backticks vs ANSI). Returns []
+    on any failure (sampling is best-effort)."""
     try:
         if cid == 0:
             ident = 'public."' + str(table).replace('"', '""') + '"'
@@ -15891,9 +15895,12 @@ def _dh_sample_rows(cid, url, table, cols, limit=3):
                 out.append({k: (_REDACTED_PLACEHOLDER if _is_sensitive_key(k)
                                 else _jsonable(v)) for k, v in dict(r).items()})
             return out
-        ident = '"' + str(table).replace('"', '""') + '"'
-        res = _run_external_postgres(url, f"SELECT * FROM {ident} LIMIT {int(limit)}",
-                                     max_rows=limit)
+        if kind == "mysql":
+            ident = "`" + str(table).replace("`", "``") + "`"
+        else:
+            ident = '"' + str(table).replace('"', '""') + '"'
+        res = _run_external_db(kind, url, f"SELECT * FROM {ident} LIMIT {int(limit)}",
+                               max_rows=limit)
         cset = res.get("columns", [])
         out = []
         for row in res.get("rows", []):
@@ -16019,11 +16026,11 @@ def _dh_ai_define(connection_id=0, table=None, model=None, max_tables=12):
         cid = int(connection_id or 0)
     except (TypeError, ValueError):
         cid = 0
-    url, err = _dh_postgres_url(cid)
+    kind, url, err = _dh_sql_connection(cid)
     if err:
         return {"error": err}
     try:
-        names = _dh_table_names(cid, url)
+        names = _dh_intro_tables(cid, kind, url)
     except Exception as e:
         print(f"[datahub] define introspect failed (conn {cid}): {type(e).__name__}: {e}")
         return {"error": "Could not read the database schema."}
@@ -16036,11 +16043,11 @@ def _dh_ai_define(connection_id=0, table=None, model=None, max_tables=12):
     schema_blob = []
     for n in names:
         try:
-            cols = _dh_table_columns(cid, url, n)
+            cols = _dh_intro_columns(cid, kind, url, n)
         except Exception:
             cols = []
         schema_blob.append({"table": n, "columns": cols,
-                            "samples": _dh_sample_rows(cid, url, n, cols, limit=3)})
+                            "samples": _dh_sample_rows(cid, kind, url, n, cols, limit=3)})
     data = _dh_llm_draft(schema_blob, model)
     if not data:
         return {"error": "The AI could not draft definitions right now."}
@@ -37839,6 +37846,58 @@ def _run_external_postgres(connection_url, query, max_rows=500, timeout_ms=5000,
         conn.close()
 
 
+# ---- Multi-database support (task 061) -------------------------------------
+# Postgres keeps its proven psycopg2 read-only path above. MySQL and the generic
+# "Any database URL" kind go through SQLAlchemy so we can support any installed
+# dialect (mysql+pymysql, mssql+pyodbc, etc.) with one code path. Same safety:
+# SELECT-only, single-statement, a rolled-back transaction, and a row cap.
+
+def _sa_engine(kind, url):
+    """Build a SQLAlchemy engine for a non-postgres SQL connection. For the
+    'mysql' kind we normalize a plain mysql:// URL to the bundled pymysql
+    driver; for the generic 'sql' kind the admin supplies a full SQLAlchemy URL
+    (it must name a driver their deployment has installed)."""
+    from sqlalchemy import create_engine
+    u = (url or "").strip()
+    if kind == "mysql" and u.startswith("mysql://"):
+        u = "mysql+pymysql://" + u[len("mysql://"):]
+    return create_engine(u, pool_pre_ping=True)
+
+
+def _run_external_sqlalchemy(kind, url, query, max_rows=100, timeout_ms=5000,
+                             params=None):
+    """Read-only query via SQLAlchemy (mysql / generic). SELECT-only +
+    single-statement validated up front; executed inside a transaction that is
+    ALWAYS rolled back. Returns {columns, rows} (rows as lists)."""
+    cleaned = _strip_sql_comments(query or "")
+    if not _SELECT_ONLY_RE.match(cleaned):
+        raise ValueError("Only SELECT (or WITH) queries are allowed.")
+    if ";" in cleaned.rstrip(";"):
+        raise ValueError("Only a single statement is allowed.")
+    from sqlalchemy import text
+    eng = _sa_engine(kind, url)
+    try:
+        with eng.connect() as conn:
+            trans = conn.begin()
+            try:
+                res = conn.execute(text(query), params or {})
+                cols = list(res.keys())
+                rows = [[_jsonable(v) for v in row]
+                        for row in res.fetchmany(max_rows)]
+            finally:
+                trans.rollback()   # never persist anything
+        return {"columns": cols, "rows": rows}
+    finally:
+        eng.dispose()
+
+
+def _run_external_db(kind, url, query, max_rows=100, timeout_ms=5000, params=None):
+    """Dispatch a read-only query to the right driver by connection kind."""
+    if (kind or "postgres") == "postgres":
+        return _run_external_postgres(url, query, max_rows, timeout_ms, params)
+    return _run_external_sqlalchemy(kind, url, query, max_rows, timeout_ms, params)
+
+
 def _jsonable(v):
     """Convert DB values to JSON-safe scalars."""
     if v is None or isinstance(v, (str, int, float, bool)):
@@ -37923,7 +37982,7 @@ def admin_create_external_connection():
     config = body.get("config") or ""
     if not name:
         return jsonify({"error": "Name is required."}), 400
-    if kind not in ("postgres", "rest"):
+    if kind not in ("postgres", "mysql", "sql", "rest"):
         return jsonify({"error": "Unsupported connection kind."}), 400
     # For REST, expect a dict {url, headers}; we store it as JSON text encrypted.
     if kind == "rest":
@@ -37931,9 +37990,9 @@ def admin_create_external_connection():
             config = json.dumps(config)
         elif not isinstance(config, str):
             return jsonify({"error": "REST config must be an object."}), 400
-    elif kind == "postgres":
+    else:  # postgres / mysql / sql — a connection URL string
         if not isinstance(config, str) or not config.strip():
-            return jsonify({"error": "Postgres connection URL is required."}), 400
+            return jsonify({"error": "A database connection URL is required."}), 400
     encrypted = encrypt_secret(config if isinstance(config, str) else json.dumps(config))
     row = execute_db(
         "INSERT INTO external_data_connections (name, kind, encrypted_config) "
@@ -37966,6 +38025,16 @@ def admin_test_external_connection(cid):
             test_conn = psycopg2.connect(config, connect_timeout=5)
             test_conn.close()
             return jsonify({"success": True, "message": "Connected successfully."})
+        elif row["kind"] in ("mysql", "sql"):
+            # MySQL / generic via SQLAlchemy — a trivial SELECT proves connectivity.
+            from sqlalchemy import text as _sa_text
+            eng = _sa_engine(row["kind"], config)
+            try:
+                with eng.connect() as c:
+                    c.execute(_sa_text("SELECT 1"))
+                return jsonify({"success": True, "message": "Connected successfully."})
+            finally:
+                eng.dispose()
         else:
             cfg = json.loads(config)
             import requests as _requests
@@ -38407,15 +38476,17 @@ def admin_run_widget(wid):
             query = cfg.get("query", "")
             if not conn_id or not query:
                 return jsonify({"error": "Connection and query are required."}), 400
+            # Any SQL connection (postgres / mysql / generic) — dispatch by kind
+            # so a widget works against MySQL or a generic DB too (task 061).
             conn_row = query_db(
-                "SELECT encrypted_config FROM external_data_connections "
-                "WHERE id = %s AND kind = 'postgres'",
+                "SELECT kind, encrypted_config FROM external_data_connections "
+                "WHERE id = %s AND kind IN ('postgres','mysql','sql')",
                 (conn_id,), fetchone=True,
             )
             if not conn_row:
                 return jsonify({"error": "Connection not found."}), 404
             url = decrypt_secret(conn_row["encrypted_config"])
-            raw = _run_external_postgres(url, query)
+            raw = _run_external_db(conn_row["kind"], url, query)
             data = _shape_external_data_for_widget(raw, row["widget_type"], cfg)
         elif row["source_type"] == "static":
             # Datahub (task 058): a chart saved from chat — the data is stored

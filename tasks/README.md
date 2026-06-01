@@ -96,6 +96,8 @@ expand on first touch to avoid premature detail that drifts). See root `PLAN.md`
 | 057 | In-chat chart rendering | done | task/057-datahub-inchart | 054 | Gate 6/6; render_chart tool + dedicated `chart` SSE event + admin-chat Chart.js renderer |
 | 058 | AI builds persistent dashboards + save-chat-chart | done | task/058-datahub-dashboards | 057 | Gate 7/7; 'static' widget source + admin_create_dashboard + /datahub/save-chart + chat "Save to dashboard" button |
 | 059 | Datahub tab UI | done | task/059-datahub-tab | 053-058 | Gate 3/3 + 48/48 combined; super-admin tab: connections + schema browser w/ inline annotation edit + "AI-suggested · review" badges + "✨ Auto-define" + examples + assistant hand-off |
+| 060 | Datahub follow-ups: is_sensitive toggle + live-verify | done | task/060-datahub-followups | 059 | Column-editor sensitive checkbox (persists); live browser pass of the tab; also fixed Connect-a-database (prompt→modal) |
+| 061 | Multi-DB connectors (MySQL + "Any database URL") | done | task/061-multidb-connectors | 059 | Gate 8/8 (+47 combined); Postgres keeps psycopg2, MySQL+generic via SQLAlchemy (pymysql); kind-aware run/introspect dispatch for datahub + dashboard widgets; connections shared across both surfaces; modal kind dropdown. Live MySQL = operator step |
 
 **Status legend:** not_started | in_progress | paused | blocked | awaiting_review | done
 
