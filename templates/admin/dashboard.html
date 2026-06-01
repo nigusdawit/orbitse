@@ -6185,6 +6185,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     const cols = (d.columns || []);
     holder.innerHTML = cols.map(c => {
       const cn = datahubEsc(c.column);
+      const sens = c.is_sensitive ? 'checked' : '';
       return `<div style="display:flex;gap:.4rem;align-items:center;margin:.2rem 0;">
           <code style="min-width:130px;font-size:.78rem;">${cn} <span style="color:var(--muted-fg,#888);">${datahubEsc(c.type || '')}</span></code>
           <input data-dh-col="${cn}" value="${datahubEsc(c.description || '')}" placeholder="meaning…"
@@ -6192,7 +6193,11 @@ TO CUSTOMIZE THIS DASHBOARD:
                  onchange="datahubSaveCol(${cid},'${datahubEsc(table)}',this)">
           <input data-dh-sem value="${datahubEsc(c.semantic_type || '')}" placeholder="type"
                  style="width:90px;padding:.25rem;border:1px solid var(--admin-border);border-radius:.3rem;font-size:.78rem;"
-                 onchange="datahubSaveCol(${cid},'${datahubEsc(table)}',this.previousElementSibling)">
+                 onchange="datahubSaveCol(${cid},'${datahubEsc(table)}',this.parentElement.querySelector('[data-dh-col]'))">
+          <label title="Mark as sensitive (PII/secret) — masked in tool results" style="display:flex;align-items:center;gap:.2rem;font-size:.72rem;color:var(--muted-fg,#888);white-space:nowrap;">
+            <input type="checkbox" data-dh-sens ${sens}
+                   onchange="datahubSaveCol(${cid},'${datahubEsc(table)}',this.parentElement.parentElement.querySelector('[data-dh-col]'))"> sensitive
+          </label>
         </div>`;
     }).join('') || '<span style="color:var(--muted-fg,#888);">No columns.</span>';
   }
@@ -6200,11 +6205,13 @@ TO CUSTOMIZE THIS DASHBOARD:
   async function datahubSaveCol(cid, table, descEl) {
     const row = descEl.parentElement;
     const sem = row.querySelector('[data-dh-sem]');
+    const sens = row.querySelector('[data-dh-sens]');
     try {
       await fetch('/admin/api/datahub/' + cid + '/column-annotation', {
         method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ table_name: table, column_name: descEl.getAttribute('data-dh-col'),
-                               description: descEl.value, semantic_type: sem ? sem.value : '' })
+                               description: descEl.value, semantic_type: sem ? sem.value : '',
+                               is_sensitive: sens ? sens.checked : false })
       });
     } catch (e) {}
   }
