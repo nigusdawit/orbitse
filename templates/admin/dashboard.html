@@ -2155,6 +2155,69 @@ TO CUSTOMIZE THIS DASHBOARD:
     html[data-admin-theme="light"] [style*="color: #fff"],
     html[data-admin-theme="light"] [style*="color:white"],
     html[data-admin-theme="light"] [style*="color: white"]{ color:var(--admin-text) !important; }
+
+    /* ============================================================== */
+    /* GLASS UI KIT (gx-*) — rebuilt component vocabulary (task 072)  */
+    /* Reusable across tabs; theme-aware via --admin-* tokens.        */
+    /* ============================================================== */
+    .gx-head{ display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; }
+    .gx-title{ margin:0; font-size:1.55rem; font-weight:700; letter-spacing:-.02em; color:var(--admin-text); }
+    .gx-sub{ margin:.45rem 0 1.5rem; color:var(--admin-text-muted); font-size:.92rem; max-width:66ch; line-height:1.55; }
+    .gx-actions{ display:flex; gap:.5rem; align-items:center; flex-shrink:0; }
+    .gx-grid{ display:grid; gap:1.1rem; }
+    .gx-grid-2{ grid-template-columns:1fr 1fr; }
+    @media(max-width:900px){ .gx-grid-2{ grid-template-columns:1fr; } }
+    .gx-card{ background:var(--admin-surface); border:1px solid var(--admin-border); border-radius:var(--admin-radius);
+      box-shadow:var(--admin-shadow); -webkit-backdrop-filter:var(--admin-blur); backdrop-filter:var(--admin-blur); padding:1.4rem 1.45rem; }
+    .gx-card-h{ display:flex; align-items:center; gap:.65rem; font-size:1rem; font-weight:600; color:var(--admin-text); margin:0 0 1.1rem; }
+    .gx-ico{ width:34px; height:34px; display:inline-flex; align-items:center; justify-content:center; border-radius:10px; flex-shrink:0;
+      background:color-mix(in srgb, var(--admin-accent) 16%, transparent); color:var(--admin-accent); }
+    .gx-ico svg{ width:18px; height:18px; }
+    .gx-field{ margin-bottom:.9rem; }
+    .gx-label{ display:block; font-size:.72rem; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--admin-text-muted); margin-bottom:.4rem; }
+    .gx-input{ width:100%; background:var(--admin-field); color:var(--admin-text); border:1px solid var(--admin-border); border-radius:10px;
+      padding:.6rem .8rem; font-size:.9rem; font-family:inherit; transition:border-color .15s, box-shadow .15s; }
+    .gx-input::placeholder{ color:var(--admin-text-muted); opacity:.7; }
+    .gx-input:focus{ outline:none; border-color:var(--admin-accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--admin-accent) 25%, transparent); }
+    textarea.gx-input{ resize:vertical; min-height:44px; }
+    .gx-btn{ display:inline-flex; align-items:center; gap:.45rem; border:1px solid var(--admin-border); background:var(--admin-surface);
+      color:var(--admin-text); border-radius:10px; padding:.6rem 1rem; font-size:.875rem; font-weight:600; cursor:pointer; font-family:inherit;
+      transition:filter .15s, box-shadow .15s, transform .04s; }
+    .gx-btn:hover{ filter:brightness(1.09); }
+    .gx-btn:active{ transform:translateY(1px); }
+    .gx-btn-primary{ border:none; color:#fff !important; background:linear-gradient(135deg,var(--admin-accent),var(--admin-accent-2));
+      box-shadow:0 6px 18px color-mix(in srgb, var(--admin-accent) 40%, transparent); }
+    .gx-btn-ghost{ background:transparent; }
+    .gx-foot{ display:flex; align-items:center; gap:.85rem; margin-top:1.15rem; flex-wrap:wrap; }
+    .gx-hint{ color:var(--admin-text-muted); font-size:.82rem; }
+    .gx-section-h{ font-size:.78rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--admin-text-muted); margin:0 0 .75rem; }
+    .gx-stats{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:1rem; margin-bottom:1.4rem; }
+    .gx-stat{ background:var(--admin-surface); border:1px solid var(--admin-border); border-radius:var(--admin-radius); box-shadow:var(--admin-shadow);
+      -webkit-backdrop-filter:var(--admin-blur); backdrop-filter:var(--admin-blur); padding:1.05rem 1.2rem; }
+    .gx-stat-label{ font-size:.72rem; color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:.05em; }
+    .gx-stat-value{ font-size:1.9rem; font-weight:700; color:var(--admin-text); margin-top:.3rem; letter-spacing:-.02em; line-height:1; }
+    .gx-list{ display:flex; flex-direction:column; gap:.6rem; }
+    .gx-row{ background:var(--admin-surface); border:1px solid var(--admin-border); border-radius:14px; padding:.9rem 1.1rem; cursor:pointer;
+      transition:border-color .15s, box-shadow .15s, transform .04s; -webkit-backdrop-filter:var(--admin-blur); backdrop-filter:var(--admin-blur); }
+    .gx-row:hover{ border-color:var(--admin-accent); box-shadow:var(--admin-shadow); }
+    .gx-row:active{ transform:translateY(1px); }
+    .gx-row-top{ display:flex; align-items:center; justify-content:space-between; gap:1rem; }
+    .gx-row-title{ font-weight:600; font-size:.95rem; color:var(--admin-text); }
+    .gx-row-sub{ color:var(--admin-text-muted); font-size:.83rem; margin-top:.3rem; line-height:1.5; }
+    .gx-badge{ display:inline-flex; align-items:center; gap:.35rem; font-size:.7rem; font-weight:700; text-transform:uppercase; letter-spacing:.03em;
+      padding:.28rem .6rem; border-radius:999px; border:1px solid var(--admin-border); color:var(--admin-text-muted); white-space:nowrap; }
+    .gx-badge::before{ content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
+    .gx-badge-ok{ color:#34d399; border-color:color-mix(in srgb,#34d399 38%,transparent); background:color-mix(in srgb,#34d399 13%,transparent); }
+    .gx-badge-run{ color:#fbbf24; border-color:color-mix(in srgb,#fbbf24 38%,transparent); background:color-mix(in srgb,#fbbf24 13%,transparent); }
+    .gx-badge-err{ color:#f87171; border-color:color-mix(in srgb,#f87171 38%,transparent); background:color-mix(in srgb,#f87171 13%,transparent); }
+    .gx-empty{ color:var(--admin-text-muted); font-size:.9rem; padding:1.6rem; text-align:center; border:1px dashed var(--admin-border); border-radius:var(--admin-radius); }
+    .gx-detail h4{ font-size:.72rem; text-transform:uppercase; letter-spacing:.05em; color:var(--admin-text-muted); margin:1.2rem 0 .5rem; }
+    .gx-detail ul{ margin:.3rem 0; padding-left:1.2rem; color:var(--admin-text); line-height:1.7; font-size:.9rem; }
+    .gx-detail a{ color:var(--admin-accent); text-decoration:none; }
+    .gx-detail a:hover{ text-decoration:underline; }
+    .gx-summary{ color:var(--admin-text); font-size:.97rem; line-height:1.75; white-space:pre-wrap; margin:.4rem 0 0; }
+    .gx-detail-head{ display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; }
+    .gx-detail-head h3{ margin:0; font-size:1.15rem; font-weight:700; color:var(--admin-text); }
   </style>
   <script>window.__ADMIN_APPEARANCE__ = {{ appearance|tojson }};</script>
 </head>
@@ -2774,42 +2837,55 @@ TO CUSTOMIZE THIS DASHBOARD:
   just surfaces the result and shows a hint when the feature is off.
   -->
   <div id="tab-research" class="tab-content">
-    <div class="content-header">
-      <h2>Research Hub</h2>
-      <div style="display:flex; gap:0.5rem;">
-        <button class="btn btn-secondary" onclick="loadResearchHub()">Refresh</button>
+    <div class="gx-head">
+      <div>
+        <h2 class="gx-title">Research Hub</h2>
+        <p class="gx-sub">Run deep research on a question — the assistant web-searches, fetches sources,
+          and writes a cited synthesis. Or just gather a list of URLs as raw source material.</p>
       </div>
-    </div>
-    <p style="color:#94a3b8; margin:0 0 1rem;">Run deep research on a question — the
-      assistant web-searches, fetches sources, and writes a cited synthesis. Or just
-      gather a list of URLs as raw source material.</p>
-
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-bottom:1.25rem;">
-      <div class="card" style="padding:1rem;">
-        <h3 style="margin:0 0 .6rem;">Run deep research</h3>
-        <label style="display:block; font-size:13px; color:#cbd5e1; margin-bottom:4px;">Question</label>
-        <textarea id="rh-question" rows="2" class="form-input" placeholder="e.g. What are competitors charging for X?"></textarea>
-        <label style="display:block; font-size:13px; color:#cbd5e1; margin:8px 0 4px;">Topic (optional)</label>
-        <input id="rh-topic" class="form-input" placeholder="Short label for the report" />
-        <label style="display:block; font-size:13px; color:#cbd5e1; margin:8px 0 4px;">Seed URLs (optional, one per line)</label>
-        <textarea id="rh-seeds" rows="2" class="form-input" placeholder="https://..."></textarea>
-        <button class="btn btn-primary" style="margin-top:.6rem;" onclick="rhRunResearch()">Run research</button>
-        <span id="rh-run-status" style="margin-left:.6rem; color:#94a3b8; font-size:13px;"></span>
-      </div>
-      <div class="card" style="padding:1rem;">
-        <h3 style="margin:0 0 .6rem;">Gather sources</h3>
-        <label style="display:block; font-size:13px; color:#cbd5e1; margin-bottom:4px;">URLs (one per line)</label>
-        <textarea id="rh-gather-urls" rows="4" class="form-input" placeholder="https://..."></textarea>
-        <label style="display:block; font-size:13px; color:#cbd5e1; margin:8px 0 4px;">Topic (optional)</label>
-        <input id="rh-gather-topic" class="form-input" placeholder="Label for the gathered set" />
-        <button class="btn btn-primary" style="margin-top:.6rem;" onclick="rhGather()">Gather</button>
-        <span id="rh-gather-status" style="margin-left:.6rem; color:#94a3b8; font-size:13px;"></span>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-ghost" onclick="loadResearchHub()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+          Refresh</button>
       </div>
     </div>
 
-    <h3 style="margin:0 0 .6rem;">Reports</h3>
-    <div id="rh-reports-list" style="display:flex; flex-direction:column; gap:.5rem;"></div>
-    <div id="rh-report-detail" style="display:none; margin-top:1rem;"></div>
+    <div class="gx-stats">
+      <div class="gx-stat"><div class="gx-stat-label">Reports</div><div class="gx-stat-value" id="rh-stat-reports">—</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Ready</div><div class="gx-stat-value" id="rh-stat-ready">—</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">In progress</div><div class="gx-stat-value" id="rh-stat-running">—</div></div>
+    </div>
+
+    <div class="gx-grid gx-grid-2" style="margin-bottom:1.5rem;">
+      <div class="gx-card">
+        <div class="gx-card-h"><span class="gx-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></span> Run deep research</div>
+        <div class="gx-field"><label class="gx-label">Question</label>
+          <textarea id="rh-question" rows="2" class="gx-input" placeholder="e.g. What are competitors charging for X?"></textarea></div>
+        <div class="gx-field"><label class="gx-label">Topic (optional)</label>
+          <input id="rh-topic" class="gx-input" placeholder="Short label for the report" /></div>
+        <div class="gx-field"><label class="gx-label">Seed URLs (optional, one per line)</label>
+          <textarea id="rh-seeds" rows="2" class="gx-input" placeholder="https://..."></textarea></div>
+        <div class="gx-foot">
+          <button class="gx-btn gx-btn-primary" onclick="rhRunResearch()">Run research</button>
+          <span id="rh-run-status" class="gx-hint"></span>
+        </div>
+      </div>
+      <div class="gx-card">
+        <div class="gx-card-h"><span class="gx-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></span> Gather sources</div>
+        <div class="gx-field"><label class="gx-label">URLs (one per line)</label>
+          <textarea id="rh-gather-urls" rows="4" class="gx-input" placeholder="https://..."></textarea></div>
+        <div class="gx-field"><label class="gx-label">Topic (optional)</label>
+          <input id="rh-gather-topic" class="gx-input" placeholder="Label for the gathered set" /></div>
+        <div class="gx-foot">
+          <button class="gx-btn gx-btn-primary" onclick="rhGather()">Gather</button>
+          <span id="rh-gather-status" class="gx-hint"></span>
+        </div>
+      </div>
+    </div>
+
+    <h3 class="gx-section-h">Reports</h3>
+    <div id="rh-reports-list" class="gx-list"></div>
+    <div id="rh-report-detail" class="gx-detail" style="display:none; margin-top:1rem;"></div>
   </div>
 
   <!--
@@ -11968,22 +12044,32 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     /* ---- Research Hub ---- */
+    function rhBadge(status){
+      var s=String(status||'').toLowerCase();
+      var cls = s==='ready' ? 'gx-badge gx-badge-ok'
+        : (s==='running'||s==='draft' ? 'gx-badge gx-badge-run'
+        : (s==='error'||s==='needs_review' ? 'gx-badge gx-badge-err' : 'gx-badge'));
+      return '<span class="'+cls+'">'+_rceEsc(status||'—')+'</span>';
+    }
     async function loadResearchHub(){
       const wrap=document.getElementById('rh-reports-list');
       if(!wrap) return;
-      wrap.innerHTML='<div style="color:#94a3b8;">Loading…</div>';
+      wrap.innerHTML='<div class="gx-empty">Loading…</div>';
       try{
         const j=await _rceGet('/admin/api/research/reports');
         const reports=j.reports||[];
-        if(!reports.length){ wrap.innerHTML='<div style="color:#94a3b8;">No reports yet — run research above.</div>'; return; }
+        var ready=reports.filter(function(r){ return (r.status||'')==='ready'; }).length;
+        var running=reports.filter(function(r){ var s=(r.status||''); return s==='running'||s==='draft'; }).length;
+        var setT=function(id,v){ var e=document.getElementById(id); if(e) e.textContent=v; };
+        setT('rh-stat-reports', reports.length); setT('rh-stat-ready', ready); setT('rh-stat-running', running);
+        if(!reports.length){ wrap.innerHTML='<div class="gx-empty">No reports yet — run research or gather sources above.</div>'; return; }
         wrap.innerHTML=reports.map(function(r){ return ''
-          +'<div class="card" style="padding:.7rem; cursor:pointer;" onclick="rhOpenReport('+r.id+')">'
-          +'<div style="display:flex; justify-content:space-between; gap:1rem;">'
-          +'<strong>'+_rceEsc(r.topic||r.question||('Report #'+r.id))+'</strong>'
-          +'<span style="font-size:12px; color:#c9a96e;">'+_rceEsc(r.status||'')+'</span></div>'
-          +'<div style="font-size:12px; color:#94a3b8; margin-top:3px;">'+_rceEsc((r.summary||'').slice(0,140))+'</div></div>';
+          +'<div class="gx-row" onclick="rhOpenReport('+r.id+')">'
+          +'<div class="gx-row-top"><span class="gx-row-title">'+_rceEsc(r.topic||r.question||('Report #'+r.id))+'</span>'+rhBadge(r.status)+'</div>'
+          +(r.summary?('<div class="gx-row-sub">'+_rceEsc(String(r.summary).slice(0,160))+'</div>'):'')
+          +'</div>';
         }).join('');
-      }catch(e){ wrap.innerHTML='<div style="color:#f87171;">Could not load reports.</div>'; }
+      }catch(e){ wrap.innerHTML='<div class="gx-empty" style="color:var(--admin-danger);">Could not load reports.</div>'; }
     }
     async function rhRunResearch(){
       const q=(document.getElementById('rh-question').value||'').trim();
@@ -12012,16 +12098,16 @@ TO CUSTOMIZE THIS DASHBOARD:
         const kps=(r.key_points||[]).map(function(k){ return '<li>'+_rceEsc(k)+'</li>'; }).join('');
         const cites=(r.citations||[]).map(function(c){ return '<li><a href="'+_rceEsc(c.url||'')+'" target="_blank" rel="noopener noreferrer">'+_rceEsc(c.title||c.url||'')+'</a></li>'; }).join('');
         const srcs=(r.sources||[]).map(function(s){ return '<li>'+_rceEsc(s.title||s.url||'')+'</li>'; }).join('');
-        d.innerHTML='<div class="card" style="padding:1rem;">'
-          +'<div style="display:flex; justify-content:space-between; align-items:flex-start;"><h3 style="margin:0;">'+_rceEsc(r.topic||r.question||('Report #'+r.id))+'</h3>'
-          +'<button class="btn btn-secondary" onclick="rhHideReport()">Close</button></div>'
-          +'<p style="white-space:pre-wrap; color:#cbd5e1;">'+_rceEsc(r.summary||'(no synthesis yet)')+'</p>'
-          +(kps?('<h4>Key points</h4><ul style="color:#cbd5e1;">'+kps+'</ul>'):'')
+        d.innerHTML='<div class="gx-card">'
+          +'<div class="gx-detail-head"><h3>'+_rceEsc(r.topic||r.question||('Report #'+r.id))+'</h3>'
+          +'<span class="gx-actions">'+rhBadge(r.status)+'<button class="gx-btn gx-btn-ghost" onclick="rhHideReport()">Close</button></span></div>'
+          +'<p class="gx-summary">'+_rceEsc(r.summary||'(no synthesis yet)')+'</p>'
+          +(kps?('<h4>Key points</h4><ul>'+kps+'</ul>'):'')
           +(cites?('<h4>Citations</h4><ul>'+cites+'</ul>'):'')
-          +(srcs?('<h4>Sources</h4><ul style="color:#94a3b8;">'+srcs+'</ul>'):'')
-          +'<button class="btn btn-primary" onclick="csUseReport('+r.id+')">Make content from this →</button>'
+          +(srcs?('<h4>Sources</h4><ul style="color:var(--admin-text-muted);">'+srcs+'</ul>'):'')
+          +'<div style="margin-top:1.2rem;"><button class="gx-btn gx-btn-primary" onclick="csUseReport('+r.id+')">Make content from this →</button></div>'
           +'</div>';
-      }catch(e){ d.innerHTML='<div style="color:#f87171;">Could not load report.</div>'; }
+      }catch(e){ d.innerHTML='<div class="gx-empty" style="color:var(--admin-danger);">Could not load report.</div>'; }
     }
     function csUseReport(id){
       const btn=document.querySelector('[data-testid="tab-content-studio"]');
