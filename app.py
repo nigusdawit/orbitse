@@ -15676,9 +15676,14 @@ def _admin_tool_inspect_connection(connection_id=0, table=None, **_):
                 "WHERE table_schema='public' AND table_type='BASE TABLE' "
                 "ORDER BY table_name") or [])]
         else:
-            res = _run_external_postgres(
-                url, "SELECT table_name FROM information_schema.tables "
-                     "WHERE table_schema='public' ORDER BY table_name", max_rows=500)
+            try:
+                res = _run_external_postgres(
+                    url, "SELECT table_name FROM information_schema.tables "
+                         "WHERE table_schema='public' ORDER BY table_name", max_rows=500)
+            except Exception as e:
+                print(f"[datahub] external introspect failed (conn {cid}): "
+                      f"{type(e).__name__}: {e}")
+                return {"error": "Could not connect to that database to inspect it."}
             names = [r[0] for r in res.get("rows", [])]
         tables = []
         for n in names[:200]:
@@ -15703,10 +15708,15 @@ def _admin_tool_inspect_connection(connection_id=0, table=None, **_):
         cols = [{"column": c["column_name"], "type": c["data_type"]} for c in cols]
     else:
         _lit = "'" + tname.replace("'", "''") + "'"   # safe SQL string literal
-        res = _run_external_postgres(
-            url, "SELECT column_name, data_type FROM information_schema.columns "
-                 f"WHERE table_schema='public' AND table_name={_lit} "
-                 "ORDER BY ordinal_position", max_rows=500)
+        try:
+            res = _run_external_postgres(
+                url, "SELECT column_name, data_type FROM information_schema.columns "
+                     f"WHERE table_schema='public' AND table_name={_lit} "
+                     "ORDER BY ordinal_position", max_rows=500)
+        except Exception as e:
+            print(f"[datahub] external introspect failed (conn {cid}): "
+                  f"{type(e).__name__}: {e}")
+            return {"error": "Could not connect to that database to inspect it."}
         cols = [{"column": r[0], "type": r[1]} for r in res.get("rows", [])]
     if not cols:
         return {"error": f"Table '{tname}' not found on connection {cid}."}
@@ -15791,11 +15801,20 @@ def _admin_tool_query_connection(connection_id=0, sql=None, **_):
     try:
         res = _run_external_postgres(url, safe, max_rows=100, timeout_ms=5000)
     except Exception as e:
-        return {"error": f"Query error: {str(e)[:300]}"}
-    return {"connection_id": cid, "sql": safe,
-            "columns": res.get("columns", []), "rows": res.get("rows", []),
-            "row_count": len(res.get("rows", [])),
-            "truncated": len(res.get("rows", [])) == 100}
+        # Do NOT echo the exception text: a psycopg2 connect/operational error
+        # routinely embeds the external DB host/user/dbname (the DSN). Log it
+        # server-side; return a generic message to the model.
+        print(f"[datahub] external query failed (conn {cid}): {type(e).__name__}: {e}")
+        return {"error": "The query could not be run against that connection."}
+    cols = res.get("columns", [])
+    rows = res.get("rows", [])
+    # Parity with the app-DB path: mask values of secret-named columns.
+    sens = {i for i, c in enumerate(cols) if _is_sensitive_key(c)}
+    if sens:
+        rows = [[(_REDACTED_PLACEHOLDER if i in sens else v)
+                 for i, v in enumerate(r)] for r in rows]
+    return {"connection_id": cid, "sql": safe, "columns": cols, "rows": rows,
+            "row_count": len(rows), "truncated": len(rows) == 100}
 
 
 def _admin_tool_list_skills():

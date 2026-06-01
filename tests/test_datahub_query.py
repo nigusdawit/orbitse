@@ -104,6 +104,35 @@ def test_decrypted_url_never_returned():
     assert "password" not in blob.lower() and "@" not in blob  # no DSN leakage
 
 
+def test_external_secret_column_redacted():
+    cid = _ext_connection_id()
+    if cid is None:
+        return
+    # The gate seeded ext table `creds(id, password)`. The secret-named column
+    # must come back masked, matching the app-DB path's redaction.
+    out = app._admin_tool_query_connection(cid, sql="SELECT id, password FROM creds")
+    assert "rows" in out and out["rows"]
+    flat = repr(out["rows"])
+    assert "topsecret" not in flat            # the real value never surfaces
+    assert app._REDACTED_PLACEHOLDER in flat  # it's masked
+
+
+def test_external_connect_error_has_no_dsn():
+    # A connection whose URL points nowhere must NOT echo host/user/dbname.
+    enc = app.encrypt_secret("postgresql://secretuser:pw@nonexistent-host-xyz:5432/hiddendb")
+    row = app.execute_db(
+        "INSERT INTO external_data_connections (name, kind, encrypted_config) "
+        "VALUES ('ext-bad','postgres',%s) RETURNING id", (enc,))
+    try:
+        out = app._admin_tool_query_connection(row["id"], sql="SELECT 1")
+        blob = repr(out).lower()
+        assert "error" in out
+        assert "nonexistent-host-xyz" not in blob and "secretuser" not in blob
+        assert "hiddendb" not in blob
+    finally:
+        app.execute_db("DELETE FROM external_data_connections WHERE id=%s", (row["id"],))
+
+
 # ---- reviewed data-dictionary context --------------------------------------
 
 def test_admin_context_empty_then_populated():
