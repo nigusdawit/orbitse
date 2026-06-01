@@ -2464,6 +2464,16 @@ TO CUSTOMIZE THIS DASHBOARD:
     .gx-btn:focus-visible, .gx-input:focus-visible, .gx-subtab:focus-visible,
     .gx-icon-btn:focus-visible, .tab-btn:focus-visible, .gx-seg button:focus-visible,
     .gx-drawer-close:focus-visible{ outline:2px solid var(--admin-accent); outline-offset:2px; }
+
+    /* Sidebar search + collapsible groups (task 073). */
+    #gx-nav-search-wrap{ padding:.15rem .2rem .7rem; }
+    #gx-nav-search{ width:100%; background:var(--admin-field); border:1px solid var(--admin-border); border-radius:9px;
+      padding:.45rem .65rem; color:var(--admin-text); font-size:.85rem; font-family:inherit; }
+    #gx-nav-search::placeholder{ color:var(--admin-text-muted); }
+    #gx-nav-search:focus{ outline:none; border-color:var(--admin-accent); box-shadow:0 0 0 3px color-mix(in srgb,var(--admin-accent) 22%,transparent); }
+    .sidebar-group-label, .sidebar-section-heading{ cursor:pointer; user-select:none; display:flex; align-items:center; justify-content:space-between; }
+    .gx-nav-chev{ font-size:.9em; opacity:.45; transition:transform .15s; margin-left:.4rem; }
+    .collapsed > .gx-nav-chev{ transform:rotate(-90deg); }
   </style>
   <script>window.__ADMIN_APPEARANCE__ = {{ appearance|tojson }};</script>
 </head>
@@ -2514,6 +2524,14 @@ TO CUSTOMIZE THIS DASHBOARD:
          behavior, marketing, reviews. Designed for non-technical operators
          running the site week to week.
          ==================================================================== -->
+
+    <!-- Type-to-filter across all 60+ tabs (task 073). Hidden in icon-only
+         sidebar mode. Filters .tab-btn by label + hides empty group headers. -->
+    <div id="gx-nav-search-wrap">
+      <input id="gx-nav-search" type="search" placeholder="Search settings…"
+             aria-label="Search admin tabs" oninput="gxNavFilter(this.value)"
+             autocomplete="off" spellcheck="false">
+    </div>
 
     <div class="sidebar-group-label">Insights</div>
     <button class="tab-btn active" onclick="switchTab('overview', this); loadOverview();" data-testid="tab-overview">
@@ -2751,17 +2769,9 @@ TO CUSTOMIZE THIS DASHBOARD:
     </button>
     {% endif %}
     {% if is_super_admin() or has_feature('messaging') %}
-    <button class="tab-btn" onclick="switchTab('messaging-subscribers', this); loadMessagingSubscribers();" data-testid="tab-messaging-subscribers">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-      Subscribers
-    </button>
-    <button class="tab-btn" onclick="switchTab('messaging-templates', this); loadMessagingTemplates();" data-testid="tab-messaging-templates">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-      Templates
-    </button>
-    <button class="tab-btn" onclick="switchTab('messaging-campaigns', this); loadMessagingCampaigns();" data-testid="tab-messaging-campaigns">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-      Campaigns
+    <button class="tab-btn" id="navbtn-messaging" onclick="switchTab('messaging-subscribers', this); loadMessagingSubscribers();" data-testid="tab-messaging">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 6l-10 7L2 6"/></svg>
+      Messaging
     </button>
     {% endif %}
     {% if is_super_admin() or has_feature('automations') %}
@@ -2771,19 +2781,10 @@ TO CUSTOMIZE THIS DASHBOARD:
     </button>
     {% endif %}
 
-    <div class="sidebar-group-label">Reviews</div>
     {% if is_super_admin() or has_feature('reviews') %}
-    <button class="tab-btn" onclick="switchTab('reviews-destinations', this); loadReviewDestinations();" data-testid="tab-reviews-destinations">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
-      Destinations
-    </button>
-    <button class="tab-btn" onclick="switchTab('reviews-requests', this); loadReviewRequests();" data-testid="tab-reviews-requests">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-      Requests
-    </button>
-    <button class="tab-btn" onclick="switchTab('reviews-insights', this); loadReviewInsights();" data-testid="tab-reviews-insights">
+    <button class="tab-btn" id="navbtn-reviews" onclick="switchTab('reviews-destinations', this); loadReviewDestinations();" data-testid="tab-reviews">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-      Insights
+      Reviews
     </button>
     {% endif %}
 
@@ -11039,7 +11040,12 @@ TO CUSTOMIZE THIS DASHBOARD:
   submissions, or paste a CSV. Each row tracks opt-in flags so the
   dispatcher and unsubscribe flow can honor them.
   -->
-  <div id="tab-messaging-subscribers" class="tab-content">
+  <div id="tab-messaging-subscribers" class="tab-content" data-navbtn="messaging">
+    <div class="gx-subtabs" role="tablist">
+      <button class="gx-subtab active" onclick="switchTab('messaging-subscribers'); loadMessagingSubscribers();">Subscribers</button>
+      <button class="gx-subtab" onclick="switchTab('messaging-templates'); loadMessagingTemplates();">Templates</button>
+      <button class="gx-subtab" onclick="switchTab('messaging-campaigns'); loadMessagingCampaigns();">Campaigns</button>
+    </div>
     <div class="section-header-admin">
       <div>
         <h2>Subscribers</h2>
@@ -11131,7 +11137,12 @@ TO CUSTOMIZE THIS DASHBOARD:
   Reusable message bodies (email or SMS) with merge-tag support. AI can
   draft a body from a short prompt or summarize recent chat themes.
   -->
-  <div id="tab-messaging-templates" class="tab-content">
+  <div id="tab-messaging-templates" class="tab-content" data-navbtn="messaging">
+    <div class="gx-subtabs" role="tablist">
+      <button class="gx-subtab" onclick="switchTab('messaging-subscribers'); loadMessagingSubscribers();">Subscribers</button>
+      <button class="gx-subtab active" onclick="switchTab('messaging-templates'); loadMessagingTemplates();">Templates</button>
+      <button class="gx-subtab" onclick="switchTab('messaging-campaigns'); loadMessagingCampaigns();">Campaigns</button>
+    </div>
     <div class="section-header-admin">
       <div>
         <h2>Templates</h2>
@@ -11257,7 +11268,12 @@ TO CUSTOMIZE THIS DASHBOARD:
   The dispatcher picks up queued campaigns whose send_at has arrived
   on the next scheduler tick (every 30s).
   -->
-  <div id="tab-messaging-campaigns" class="tab-content">
+  <div id="tab-messaging-campaigns" class="tab-content" data-navbtn="messaging">
+    <div class="gx-subtabs" role="tablist">
+      <button class="gx-subtab" onclick="switchTab('messaging-subscribers'); loadMessagingSubscribers();">Subscribers</button>
+      <button class="gx-subtab" onclick="switchTab('messaging-templates'); loadMessagingTemplates();">Templates</button>
+      <button class="gx-subtab active" onclick="switchTab('messaging-campaigns'); loadMessagingCampaigns();">Campaigns</button>
+    </div>
     <div class="section-header-admin">
       <div>
         <h2>Campaigns</h2>
@@ -11573,7 +11589,12 @@ TO CUSTOMIZE THIS DASHBOARD:
   optional auto-send settings so a destination can fire N days after a
   booking is paid. The cached aggregate snapshot is shown inline.
   -->
-  <div id="tab-reviews-destinations" class="tab-content">
+  <div id="tab-reviews-destinations" class="tab-content" data-navbtn="reviews">
+    <div class="gx-subtabs" role="tablist">
+      <button class="gx-subtab active" onclick="switchTab('reviews-destinations'); loadReviewDestinations();">Destinations</button>
+      <button class="gx-subtab" onclick="switchTab('reviews-requests'); loadReviewRequests();">Requests</button>
+      <button class="gx-subtab" onclick="switchTab('reviews-insights'); loadReviewInsights();">Insights</button>
+    </div>
     <div class="section-header-admin">
       <div>
         <h2>Review destinations</h2>
@@ -11687,7 +11708,12 @@ TO CUSTOMIZE THIS DASHBOARD:
   brand-new ask manually, cancel queued asks, and inspect the rendered
   body that actually went out.
   -->
-  <div id="tab-reviews-requests" class="tab-content">
+  <div id="tab-reviews-requests" class="tab-content" data-navbtn="reviews">
+    <div class="gx-subtabs" role="tablist">
+      <button class="gx-subtab" onclick="switchTab('reviews-destinations'); loadReviewDestinations();">Destinations</button>
+      <button class="gx-subtab active" onclick="switchTab('reviews-requests'); loadReviewRequests();">Requests</button>
+      <button class="gx-subtab" onclick="switchTab('reviews-insights'); loadReviewInsights();">Insights</button>
+    </div>
     <div class="section-header-admin">
       <div>
         <h2>Review requests</h2>
@@ -11773,7 +11799,12 @@ TO CUSTOMIZE THIS DASHBOARD:
   per destination. Also shows the cached aggregate snapshots so the
   admin can see at-a-glance how well each platform is performing.
   -->
-  <div id="tab-reviews-insights" class="tab-content">
+  <div id="tab-reviews-insights" class="tab-content" data-navbtn="reviews">
+    <div class="gx-subtabs" role="tablist">
+      <button class="gx-subtab" onclick="switchTab('reviews-destinations'); loadReviewDestinations();">Destinations</button>
+      <button class="gx-subtab" onclick="switchTab('reviews-requests'); loadReviewRequests();">Requests</button>
+      <button class="gx-subtab active" onclick="switchTab('reviews-insights'); loadReviewInsights();">Insights</button>
+    </div>
     <div class="section-header-admin">
       <div>
         <h2>Review insights</h2>
@@ -12323,8 +12354,18 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
 
       /* Show the selected tab */
-      document.getElementById('tab-' + tabId).classList.add('active');
-      if (btn) btn.classList.add('active');
+      var _panel = document.getElementById('tab-' + tabId);
+      if (_panel) _panel.classList.add('active');
+      if (btn) {
+        btn.classList.add('active');
+      } else if (_panel) {
+        /* Hub members (Messaging / Reviews sub-tabs) call switchTab with no
+           sidebar btn — highlight the hub's sidebar button via data-navbtn so
+           the nav stays correct (task 073 IA consolidation). */
+        var _nav = _panel.getAttribute('data-navbtn');
+        var _nb = _nav && document.getElementById('navbtn-' + _nav);
+        if (_nb) _nb.classList.add('active');
+      }
 
       /* Reset scroll back to the top of the new tab so short tabs
          (Plans & Features, Cost) don't appear blank when the user
@@ -12344,6 +12385,58 @@ TO CUSTOMIZE THIS DASHBOARD:
       if (sidebar) sidebar.classList.remove('open');
       if (overlay) overlay.classList.remove('active');
     }
+
+    // =====================================================================
+    // Sidebar: type-to-filter across all tabs + collapsible groups with
+    // persisted state (task 073). Findability fix for the 60+ tab nav.
+    // =====================================================================
+    function gxNavFilter(q){
+      q=(q||'').trim().toLowerCase();
+      var nav=document.getElementById('admin-sidebar'); if(!nav) return;
+      nav.querySelectorAll('.tab-btn').forEach(function(b){
+        var t=(b.textContent||'').toLowerCase();
+        b.style.display=(!q || t.indexOf(q)>=0)?'':'none';
+      });
+      var heads=nav.querySelectorAll('.sidebar-group-label,.sidebar-section-heading,.sidebar-section-divider');
+      heads.forEach(function(g){
+        if(!q){ g.style.display=''; return; }
+        var any=false,n=g.nextElementSibling;
+        while(n && !/sidebar-(group-label|section-heading|section-divider)/.test(n.className||'')){
+          if(n.classList && n.classList.contains('tab-btn') && n.style.display!=='none'){ any=true; break; }
+          n=n.nextElementSibling;
+        }
+        g.style.display=any?'':'none';
+      });
+      // When the query clears, re-apply any collapsed groups (search had forced them open).
+      if(!q){ nav.querySelectorAll('.sidebar-group-label.collapsed,.sidebar-section-heading.collapsed')
+        .forEach(function(g){ _gxGroupBtns(g).forEach(function(b){ b.style.display='none'; }); }); }
+    }
+    function _gxGroupBtns(label){
+      var out=[],n=label.nextElementSibling;
+      while(n && !/sidebar-(group-label|section-heading)/.test(n.className||'')){
+        if(n.classList && n.classList.contains('tab-btn')) out.push(n);
+        n=n.nextElementSibling;
+      }
+      return out;
+    }
+    function gxToggleGroup(label){
+      var collapsed=label.classList.toggle('collapsed');
+      _gxGroupBtns(label).forEach(function(b){ b.style.display=collapsed?'none':''; });
+      try{ var st=JSON.parse(localStorage.getItem('gxNavCollapsed')||'{}');
+        st[(label.textContent||'').replace(/[⌄›]/g,'').trim()]=collapsed;
+        localStorage.setItem('gxNavCollapsed',JSON.stringify(st)); }catch(e){}
+    }
+    function gxInitNav(){
+      var nav=document.getElementById('admin-sidebar'); if(!nav) return;
+      var st={}; try{ st=JSON.parse(localStorage.getItem('gxNavCollapsed')||'{}'); }catch(e){}
+      nav.querySelectorAll('.sidebar-group-label,.sidebar-section-heading').forEach(function(g){
+        if(!g.querySelector('.gx-nav-chev')){ var c=document.createElement('span'); c.className='gx-nav-chev'; c.textContent='⌄'; g.appendChild(c); }
+        g.addEventListener('click', function(){ gxToggleGroup(g); });
+        var key=(g.textContent||'').replace(/[⌄›]/g,'').trim();
+        if(st[key]){ g.classList.add('collapsed'); _gxGroupBtns(g).forEach(function(b){ b.style.display='none'; }); }
+      });
+    }
+    document.addEventListener('DOMContentLoaded', gxInitNav);
 
 
     /*
