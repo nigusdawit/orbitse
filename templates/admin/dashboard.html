@@ -4415,51 +4415,38 @@ TO CUSTOMIZE THIS DASHBOARD:
   Manage the curated experiences shown on the landing page.
   -->
   <div id="tab-experiences" class="tab-content">
-    <div class="section-header-admin">
+    <div class="gx-head">
       <div>
-        <h2>Experiences</h2>
-        <p>Manage the curated activity cards on the landing page.</p>
+        <h2 class="gx-title">Experiences</h2>
+        <p class="gx-sub">Manage the curated activity cards on the landing page.</p>
       </div>
-      <button class="btn btn-primary" onclick="showExpForm()" data-testid="button-add-experience">+ Add Experience</button>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-primary" onclick="showExpForm()" data-testid="button-add-experience">+ Add Experience</button>
+      </div>
     </div>
 
-    <!-- Experience form -->
-    <div id="exp-form-panel" class="form-panel" style="display:none;">
-      <h3 id="exp-form-title">Add New Experience</h3>
+    <!-- Experience form — mounted into the gx-drawer by showExpForm()/editExperience() -->
+    <div id="exp-form-panel" style="display:none;">
       <input type="hidden" id="exp-form-id">
-      <div class="form-row">
-        <div class="form-group">
-          <label for="exp-name">Name</label>
-          <input type="text" id="exp-name" placeholder="Private Boat Tours" data-testid="input-exp-name">
-        </div>
-        <div class="form-group">
-          <label for="exp-icon">Icon</label>
-          <select id="exp-icon" data-testid="select-exp-icon">
-            <option value="waves">Waves</option>
-            <option value="wine">Wine</option>
-            <option value="utensils">Utensils</option>
-            <option value="map-pin">Map Pin</option>
-            <option value="star">Star</option>
-            <option value="compass">Compass</option>
-            <option value="anchor">Anchor</option>
-            <option value="sun">Sun</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label for="exp-sort-order">Sort Order</label>
-          <input type="number" id="exp-sort-order" placeholder="1" value="0" data-testid="input-exp-sort">
-        </div>
+      <div class="gx-grid-fields">
+        <div class="gx-field col-2"><label class="gx-label" for="exp-name">Name<span class="gx-req">*</span></label>
+          <input class="gx-input" type="text" id="exp-name" placeholder="Private Boat Tours" data-testid="input-exp-name"></div>
+        <div class="gx-field"><label class="gx-label" for="exp-icon">Icon</label>
+          <select class="gx-input" id="exp-icon" data-testid="select-exp-icon">
+            <option value="waves">🌊 Waves</option>
+            <option value="wine">🍷 Wine</option>
+            <option value="utensils">🍴 Utensils</option>
+            <option value="map-pin">📍 Map Pin</option>
+            <option value="star">★ Star</option>
+            <option value="compass">🧭 Compass</option>
+            <option value="anchor">⚓ Anchor</option>
+            <option value="sun">☀ Sun</option>
+          </select></div>
+        <div class="gx-field"><label class="gx-label" for="exp-sort-order">Sort order</label>
+          <input class="gx-input" type="number" id="exp-sort-order" placeholder="1" value="0" data-testid="input-exp-sort"></div>
       </div>
-      <div class="form-row">
-        <div class="form-group" style="grid-column: 1 / -1;">
-          <label for="exp-description">Description</label>
-          <textarea id="exp-description" rows="2" placeholder="A short description of this experience..." data-testid="input-exp-description"></textarea>
-        </div>
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-secondary" onclick="hideExpForm()" data-testid="button-cancel-exp">Cancel</button>
-        <button class="btn btn-primary" onclick="saveExperience()" data-testid="button-save-exp">Save Experience</button>
-      </div>
+      <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="exp-description">Description</label>
+        <textarea class="gx-input" id="exp-description" rows="3" placeholder="A short description of this experience..." data-testid="input-exp-description"></textarea></div>
     </div>
 
     <!-- Experiences data table -->
@@ -4487,39 +4474,28 @@ TO CUSTOMIZE THIS DASHBOARD:
   Manage seasonal pricing tiers shown on the landing page.
   -->
   <div id="tab-pricing" class="tab-content">
-    <div class="section-header-admin">
+    <div class="gx-head">
       <div>
-        <h2>Pricing Seasons</h2>
-        <p>Manage the seasonal pricing tiers on the landing page.</p>
+        <h2 class="gx-title">Pricing Seasons</h2>
+        <p class="gx-sub">Manage the seasonal pricing tiers on the landing page.</p>
       </div>
-      <button class="btn btn-primary" onclick="showPricingForm()" data-testid="button-add-pricing">+ Add Season</button>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-primary" onclick="showPricingForm()" data-testid="button-add-pricing">+ Add Season</button>
+      </div>
     </div>
 
-    <!-- Pricing form -->
-    <div id="pricing-form-panel" class="form-panel" style="display:none;">
-      <h3 id="pricing-form-title">Add New Season</h3>
+    <!-- Pricing form — mounted into the gx-drawer by showPricingForm()/editPricing() -->
+    <div id="pricing-form-panel" style="display:none;">
       <input type="hidden" id="pricing-form-id">
-      <div class="form-row">
-        <div class="form-group">
-          <label for="pricing-label">Label</label>
-          <input type="text" id="pricing-label" placeholder="High" data-testid="input-pricing-label">
-        </div>
-        <div class="form-group">
-          <label for="pricing-date-range">Date Range</label>
-          <input type="text" id="pricing-date-range" placeholder="Jun - Sep" data-testid="input-pricing-dates">
-        </div>
-        <div class="form-group">
-          <label for="pricing-price-range">Price Range</label>
-          <input type="text" id="pricing-price-range" placeholder="$1,200 - $1,800/night" data-testid="input-pricing-price">
-        </div>
-        <div class="form-group">
-          <label for="pricing-sort-order">Sort Order</label>
-          <input type="number" id="pricing-sort-order" placeholder="1" value="0" data-testid="input-pricing-sort">
-        </div>
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-secondary" onclick="hidePricingForm()" data-testid="button-cancel-pricing">Cancel</button>
-        <button class="btn btn-primary" onclick="savePricing()" data-testid="button-save-pricing">Save Season</button>
+      <div class="gx-grid-fields">
+        <div class="gx-field"><label class="gx-label" for="pricing-label">Label<span class="gx-req">*</span></label>
+          <input class="gx-input" type="text" id="pricing-label" placeholder="High" data-testid="input-pricing-label"></div>
+        <div class="gx-field"><label class="gx-label" for="pricing-date-range">Date range</label>
+          <input class="gx-input" type="text" id="pricing-date-range" placeholder="Jun – Sep" data-testid="input-pricing-dates"></div>
+        <div class="gx-field"><label class="gx-label" for="pricing-price-range">Price range</label>
+          <input class="gx-input" type="text" id="pricing-price-range" placeholder="$1,200 – $1,800/night" data-testid="input-pricing-price"></div>
+        <div class="gx-field"><label class="gx-label" for="pricing-sort-order">Sort order</label>
+          <input class="gx-input" type="number" id="pricing-sort-order" placeholder="1" value="0" data-testid="input-pricing-sort"></div>
       </div>
     </div>
 
@@ -4649,52 +4625,37 @@ TO CUSTOMIZE THIS DASHBOARD:
       <button class="btn btn-primary" onclick="showTestimonialForm()" data-testid="button-add-testimonial">+ Add Testimonial</button>
     </div>
 
-    <div id="testimonial-form-panel" class="form-panel" style="display:none;">
-      <h3 id="testimonial-form-title">Add New Testimonial</h3>
+    <div id="testimonial-form-panel" style="display:none;">
       <input type="hidden" id="testimonial-form-id">
-      <div class="form-row">
-        <div class="form-group">
-          <label for="testimonial-reviewer-name">Reviewer Name</label>
-          <input type="text" id="testimonial-reviewer-name" placeholder="Jane Smith" data-testid="input-testimonial-name">
-        </div>
-        <div class="form-group">
-          <label for="testimonial-reviewer-role">Role / Company</label>
-          <input type="text" id="testimonial-reviewer-role" placeholder="CEO, Acme Corp" data-testid="input-testimonial-role">
-        </div>
-        <div class="form-group">
-          <label for="testimonial-rating">Rating</label>
-          <select id="testimonial-rating" data-testid="select-testimonial-rating">
-            <option value="5">5 Stars</option>
-            <option value="4">4 Stars</option>
-            <option value="3">3 Stars</option>
-            <option value="2">2 Stars</option>
-            <option value="1">1 Star</option>
-          </select>
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group" style="grid-column: 1 / -1;">
-          <label for="testimonial-content">Review Content</label>
-          <textarea id="testimonial-content" rows="3" placeholder="Write the client's review here..." data-testid="input-testimonial-content"></textarea>
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Reviewer</div>
+        <div class="gx-grid-fields">
+          <div class="gx-field"><label class="gx-label" for="testimonial-reviewer-name">Name<span class="gx-req">*</span></label>
+            <input class="gx-input" type="text" id="testimonial-reviewer-name" placeholder="Jane Smith" data-testid="input-testimonial-name"></div>
+          <div class="gx-field"><label class="gx-label" for="testimonial-reviewer-role">Role / Company</label>
+            <input class="gx-input" type="text" id="testimonial-reviewer-role" placeholder="CEO, Acme Corp" data-testid="input-testimonial-role"></div>
+          <div class="gx-field"><label class="gx-label" for="testimonial-rating">Rating</label>
+            <select class="gx-input" id="testimonial-rating" data-testid="select-testimonial-rating">
+              <option value="5">★★★★★ 5 Stars</option>
+              <option value="4">★★★★ 4 Stars</option>
+              <option value="3">★★★ 3 Stars</option>
+              <option value="2">★★ 2 Stars</option>
+              <option value="1">★ 1 Star</option>
+            </select></div>
+          <div class="gx-field"><label class="gx-label" for="testimonial-sort-order">Sort order</label>
+            <input class="gx-input" type="number" id="testimonial-sort-order" placeholder="0" value="0" data-testid="input-testimonial-sort"></div>
         </div>
       </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label for="testimonial-image">Image URL (optional)</label>
-          <div style="display: flex; gap: 0.5rem;">
-            <input type="url" id="testimonial-image" placeholder="https://..." data-testid="input-testimonial-image" style="flex:1;">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'testimonial-image', mediaType:'image'})" data-testid="button-pick-testimonial-image">Pick</button>
-            <button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('testimonial-image')" data-testid="button-upload-testimonial-image">Upload</button>
-          </div>
-        </div>
-        <div class="form-group">
-          <label for="testimonial-sort-order">Sort Order</label>
-          <input type="number" id="testimonial-sort-order" placeholder="0" value="0" data-testid="input-testimonial-sort">
-        </div>
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-secondary" onclick="hideTestimonialForm()" data-testid="button-cancel-testimonial">Cancel</button>
-        <button class="btn btn-primary" onclick="saveTestimonial()" data-testid="button-save-testimonial">Save Testimonial</button>
+      <div class="gx-fieldset" style="margin-bottom:0">
+        <div class="gx-fieldset-h">Review &amp; photo</div>
+        <div class="gx-field"><label class="gx-label" for="testimonial-content">Review content<span class="gx-req">*</span></label>
+          <textarea class="gx-input" id="testimonial-content" rows="4" placeholder="Write the client's review here..." data-testid="input-testimonial-content"></textarea></div>
+        <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="testimonial-image">Image URL (optional)</label>
+          <div class="gx-media-field">
+            <input class="gx-input" type="url" id="testimonial-image" placeholder="https://..." data-testid="input-testimonial-image">
+            <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'testimonial-image', mediaType:'image'})" data-testid="button-pick-testimonial-image">🖼</button>
+            <button type="button" class="gx-icon-btn" title="Upload" onclick="uploadImageFor('testimonial-image')" data-testid="button-upload-testimonial-image">⤴</button>
+          </div></div>
       </div>
     </div>
 
@@ -4725,50 +4686,35 @@ TO CUSTOMIZE THIS DASHBOARD:
   Each member has a name, title, bio, and optional photo.
   -->
   <div id="tab-team" class="tab-content">
-    <div class="section-header-admin">
+    <div class="gx-head">
       <div>
-        <h2>Team Members</h2>
-        <p>Manage team member cards displayed on the public site.</p>
+        <h2 class="gx-title">Team Members</h2>
+        <p class="gx-sub">Manage team member cards displayed on the public site.</p>
       </div>
-      <button class="btn btn-primary" onclick="showTeamForm()" data-testid="button-add-team">+ Add Member</button>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-primary" onclick="showTeamForm()" data-testid="button-add-team">+ Add Member</button>
+      </div>
     </div>
 
-    <div id="team-form-panel" class="form-panel" style="display:none;">
-      <h3 id="team-form-title">Add New Team Member</h3>
+    <div id="team-form-panel" style="display:none;">
       <input type="hidden" id="team-form-id">
-      <div class="form-row">
-        <div class="form-group">
-          <label for="team-name">Name</label>
-          <input type="text" id="team-name" placeholder="John Doe" data-testid="input-team-name">
-        </div>
-        <div class="form-group">
-          <label for="team-title">Title / Position</label>
-          <input type="text" id="team-title" placeholder="Head Chef" data-testid="input-team-title">
-        </div>
+      <div class="gx-grid-fields">
+        <div class="gx-field"><label class="gx-label" for="team-name">Name<span class="gx-req">*</span></label>
+          <input class="gx-input" type="text" id="team-name" placeholder="John Doe" data-testid="input-team-name"></div>
+        <div class="gx-field"><label class="gx-label" for="team-title">Title / Position</label>
+          <input class="gx-input" type="text" id="team-title" placeholder="Head Chef" data-testid="input-team-title"></div>
       </div>
-      <div class="form-row">
-        <div class="form-group" style="grid-column: 1 / -1;">
-          <label for="team-bio">Bio</label>
-          <textarea id="team-bio" rows="3" placeholder="A short biography..." data-testid="input-team-bio"></textarea>
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label for="team-image">Image URL (optional)</label>
-          <div style="display: flex; gap: 0.5rem;">
-            <input type="url" id="team-image" placeholder="https://..." data-testid="input-team-image" style="flex:1;">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'team-image', mediaType:'image'})" data-testid="button-pick-team-image">Pick</button>
-            <button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('team-image')" data-testid="button-upload-team-image">Upload</button>
-          </div>
-        </div>
-        <div class="form-group">
-          <label for="team-sort-order">Sort Order</label>
-          <input type="number" id="team-sort-order" placeholder="0" value="0" data-testid="input-team-sort">
-        </div>
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-secondary" onclick="hideTeamForm()" data-testid="button-cancel-team">Cancel</button>
-        <button class="btn btn-primary" onclick="saveTeamMember()" data-testid="button-save-team">Save Member</button>
+      <div class="gx-field"><label class="gx-label" for="team-bio">Bio</label>
+        <textarea class="gx-input" id="team-bio" rows="3" placeholder="A short biography..." data-testid="input-team-bio"></textarea></div>
+      <div class="gx-grid-fields">
+        <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="team-image">Image URL (optional)</label>
+          <div class="gx-media-field">
+            <input class="gx-input" type="url" id="team-image" placeholder="https://..." data-testid="input-team-image">
+            <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'team-image', mediaType:'image'})" data-testid="button-pick-team-image">🖼</button>
+            <button type="button" class="gx-icon-btn" title="Upload" onclick="uploadImageFor('team-image')" data-testid="button-upload-team-image">⤴</button>
+          </div></div>
+        <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="team-sort-order">Sort order</label>
+          <input class="gx-input" type="number" id="team-sort-order" placeholder="0" value="0" data-testid="input-team-sort"></div>
       </div>
     </div>
 
@@ -4798,39 +4744,24 @@ TO CUSTOMIZE THIS DASHBOARD:
   Each FAQ has a question and answer pair.
   -->
   <div id="tab-faq" class="tab-content">
-    <div class="section-header-admin">
+    <div class="gx-head">
       <div>
-        <h2>Frequently Asked Questions</h2>
-        <p>Manage the FAQ section displayed on the public site.</p>
+        <h2 class="gx-title">Frequently Asked Questions</h2>
+        <p class="gx-sub">Manage the FAQ section displayed on the public site.</p>
       </div>
-      <button class="btn btn-primary" onclick="showFaqForm()" data-testid="button-add-faq">+ Add FAQ</button>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-primary" onclick="showFaqForm()" data-testid="button-add-faq">+ Add FAQ</button>
+      </div>
     </div>
 
-    <div id="faq-form-panel" class="form-panel" style="display:none;">
-      <h3 id="faq-form-title">Add New FAQ</h3>
+    <div id="faq-form-panel" style="display:none;">
       <input type="hidden" id="faq-form-id">
-      <div class="form-row">
-        <div class="form-group" style="grid-column: 1 / -1;">
-          <label for="faq-question">Question</label>
-          <input type="text" id="faq-question" placeholder="What are your check-in hours?" data-testid="input-faq-question">
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group" style="grid-column: 1 / -1;">
-          <label for="faq-answer">Answer</label>
-          <textarea id="faq-answer" rows="4" placeholder="Our check-in time is 3:00 PM..." data-testid="input-faq-answer"></textarea>
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label for="faq-sort-order">Sort Order</label>
-          <input type="number" id="faq-sort-order" placeholder="0" value="0" data-testid="input-faq-sort">
-        </div>
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-secondary" onclick="hideFaqForm()" data-testid="button-cancel-faq">Cancel</button>
-        <button class="btn btn-primary" onclick="saveFaq()" data-testid="button-save-faq">Save FAQ</button>
-      </div>
+      <div class="gx-field"><label class="gx-label" for="faq-question">Question<span class="gx-req">*</span></label>
+        <input class="gx-input" type="text" id="faq-question" placeholder="What are your check-in hours?" data-testid="input-faq-question"></div>
+      <div class="gx-field"><label class="gx-label" for="faq-answer">Answer<span class="gx-req">*</span></label>
+        <textarea class="gx-input" id="faq-answer" rows="5" placeholder="Our check-in time is 3:00 PM..." data-testid="input-faq-answer"></textarea></div>
+      <div class="gx-field" style="margin-bottom:0; max-width:160px"><label class="gx-label" for="faq-sort-order">Sort order</label>
+        <input class="gx-input" type="number" id="faq-sort-order" placeholder="0" value="0" data-testid="input-faq-sort"></div>
     </div>
 
     <table class="data-table" id="faq-table">
@@ -12294,7 +12225,13 @@ TO CUSTOMIZE THIS DASHBOARD:
       const bd = gxEnsureDrawer();
       document.getElementById('gx-drawer-title').textContent = title || '';
       const body = document.getElementById('gx-drawer-body');
-      body.innerHTML = '';
+      // Park any previously-mounted node in a hidden holder rather than
+      // destroying it — the mounted form panels belong to their tabs and are
+      // reused (getElementById must keep finding their fields). innerHTML=''
+      // would permanently delete the prior tab's form. (task 073 fix)
+      let park = document.getElementById('gx-drawer-parking');
+      if (!park) { park = document.createElement('div'); park.id = 'gx-drawer-parking'; park.style.display = 'none'; document.body.appendChild(park); }
+      while (body.firstChild) park.appendChild(body.firstChild);
       if (typeof content === 'string') body.innerHTML = content;
       else if (content) body.appendChild(content);   // a live DOM node (keeps listeners)
       const foot = document.getElementById('gx-drawer-foot');
@@ -13217,27 +13154,25 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     function showExpForm() {
-      document.getElementById('exp-form-panel').style.display = 'block';
-      document.getElementById('exp-form-title').textContent = 'Add New Experience';
       document.getElementById('exp-form-id').value = '';
       document.getElementById('exp-name').value = '';
       document.getElementById('exp-icon').value = 'star';
       document.getElementById('exp-sort-order').value = '0';
       document.getElementById('exp-description').value = '';
+      const p = document.getElementById('exp-form-panel'); p.style.display = '';
+      gxOpenDrawer('Add experience', p, { onSave: saveExperience, saveLabel: 'Save experience' });
     }
 
-    function hideExpForm() {
-      document.getElementById('exp-form-panel').style.display = 'none';
-    }
+    function hideExpForm() { gxCloseDrawer(); }
 
     function editExperience(exp) {
-      document.getElementById('exp-form-panel').style.display = 'block';
-      document.getElementById('exp-form-title').textContent = 'Edit: ' + exp.name;
       document.getElementById('exp-form-id').value = exp.id;
       document.getElementById('exp-name').value = exp.name;
       document.getElementById('exp-icon').value = exp.icon;
       document.getElementById('exp-sort-order').value = exp.sort_order;
       document.getElementById('exp-description').value = exp.description;
+      const p = document.getElementById('exp-form-panel'); p.style.display = '';
+      gxOpenDrawer('Edit: ' + (exp.name || 'experience'), p, { onSave: saveExperience, saveLabel: 'Save experience' });
     }
 
     async function saveExperience() {
@@ -13322,27 +13257,25 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     function showPricingForm() {
-      document.getElementById('pricing-form-panel').style.display = 'block';
-      document.getElementById('pricing-form-title').textContent = 'Add New Season';
       document.getElementById('pricing-form-id').value = '';
       document.getElementById('pricing-label').value = '';
       document.getElementById('pricing-date-range').value = '';
       document.getElementById('pricing-price-range').value = '';
       document.getElementById('pricing-sort-order').value = '0';
+      const p = document.getElementById('pricing-form-panel'); p.style.display = '';
+      gxOpenDrawer('Add pricing season', p, { onSave: savePricing, saveLabel: 'Save season' });
     }
 
-    function hidePricingForm() {
-      document.getElementById('pricing-form-panel').style.display = 'none';
-    }
+    function hidePricingForm() { gxCloseDrawer(); }
 
     function editPricing(season) {
-      document.getElementById('pricing-form-panel').style.display = 'block';
-      document.getElementById('pricing-form-title').textContent = 'Edit: ' + season.label;
       document.getElementById('pricing-form-id').value = season.id;
       document.getElementById('pricing-label').value = season.label;
       document.getElementById('pricing-date-range').value = season.date_range;
       document.getElementById('pricing-price-range').value = season.price_range;
       document.getElementById('pricing-sort-order').value = season.sort_order;
+      const p = document.getElementById('pricing-form-panel'); p.style.display = '';
+      gxOpenDrawer('Edit: ' + (season.label || 'season'), p, { onSave: savePricing, saveLabel: 'Save season' });
     }
 
     async function savePricing() {
@@ -15460,8 +15393,6 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     function showTestimonialForm() {
-      document.getElementById('testimonial-form-panel').style.display = 'block';
-      document.getElementById('testimonial-form-title').textContent = 'Add New Testimonial';
       document.getElementById('testimonial-form-id').value = '';
       document.getElementById('testimonial-reviewer-name').value = '';
       document.getElementById('testimonial-reviewer-role').value = '';
@@ -15469,15 +15400,13 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('testimonial-content').value = '';
       document.getElementById('testimonial-image').value = '';
       document.getElementById('testimonial-sort-order').value = '0';
+      const p = document.getElementById('testimonial-form-panel'); p.style.display = '';
+      gxOpenDrawer('Add testimonial', p, { onSave: saveTestimonial, saveLabel: 'Save testimonial' });
     }
 
-    function hideTestimonialForm() {
-      document.getElementById('testimonial-form-panel').style.display = 'none';
-    }
+    function hideTestimonialForm() { gxCloseDrawer(); }
 
     function editTestimonial(item) {
-      document.getElementById('testimonial-form-panel').style.display = 'block';
-      document.getElementById('testimonial-form-title').textContent = 'Edit: ' + item.reviewer_name;
       document.getElementById('testimonial-form-id').value = item.id;
       document.getElementById('testimonial-reviewer-name').value = item.reviewer_name || '';
       document.getElementById('testimonial-reviewer-role').value = item.reviewer_role || '';
@@ -15485,6 +15414,8 @@ TO CUSTOMIZE THIS DASHBOARD:
       document.getElementById('testimonial-content').value = item.content || '';
       document.getElementById('testimonial-image').value = item.image_url || '';
       document.getElementById('testimonial-sort-order').value = item.sort_order || 0;
+      const p = document.getElementById('testimonial-form-panel'); p.style.display = '';
+      gxOpenDrawer('Edit: ' + (item.reviewer_name || 'testimonial'), p, { onSave: saveTestimonial, saveLabel: 'Save testimonial' });
     }
 
     async function saveTestimonial() {
@@ -16031,29 +15962,27 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     function showTeamForm() {
-      document.getElementById('team-form-panel').style.display = 'block';
-      document.getElementById('team-form-title').textContent = 'Add New Team Member';
       document.getElementById('team-form-id').value = '';
       document.getElementById('team-name').value = '';
       document.getElementById('team-title').value = '';
       document.getElementById('team-bio').value = '';
       document.getElementById('team-image').value = '';
       document.getElementById('team-sort-order').value = '0';
+      const p = document.getElementById('team-form-panel'); p.style.display = '';
+      gxOpenDrawer('Add team member', p, { onSave: saveTeamMember, saveLabel: 'Save member' });
     }
 
-    function hideTeamForm() {
-      document.getElementById('team-form-panel').style.display = 'none';
-    }
+    function hideTeamForm() { gxCloseDrawer(); }
 
     function editTeamMember(item) {
-      document.getElementById('team-form-panel').style.display = 'block';
-      document.getElementById('team-form-title').textContent = 'Edit: ' + item.name;
       document.getElementById('team-form-id').value = item.id;
       document.getElementById('team-name').value = item.name || '';
       document.getElementById('team-title').value = item.title || '';
       document.getElementById('team-bio').value = item.bio || '';
       document.getElementById('team-image').value = item.image_url || '';
       document.getElementById('team-sort-order').value = item.sort_order || 0;
+      const p = document.getElementById('team-form-panel'); p.style.display = '';
+      gxOpenDrawer('Edit: ' + (item.name || 'member'), p, { onSave: saveTeamMember, saveLabel: 'Save member' });
     }
 
     async function saveTeamMember() {
@@ -16140,25 +16069,23 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     function showFaqForm() {
-      document.getElementById('faq-form-panel').style.display = 'block';
-      document.getElementById('faq-form-title').textContent = 'Add New FAQ';
       document.getElementById('faq-form-id').value = '';
       document.getElementById('faq-question').value = '';
       document.getElementById('faq-answer').value = '';
       document.getElementById('faq-sort-order').value = '0';
+      const p = document.getElementById('faq-form-panel'); p.style.display = '';
+      gxOpenDrawer('Add FAQ', p, { onSave: saveFaq, saveLabel: 'Save FAQ' });
     }
 
-    function hideFaqForm() {
-      document.getElementById('faq-form-panel').style.display = 'none';
-    }
+    function hideFaqForm() { gxCloseDrawer(); }
 
     function editFaq(item) {
-      document.getElementById('faq-form-panel').style.display = 'block';
-      document.getElementById('faq-form-title').textContent = 'Edit FAQ';
       document.getElementById('faq-form-id').value = item.id;
       document.getElementById('faq-question').value = item.question || '';
       document.getElementById('faq-answer').value = item.answer || '';
       document.getElementById('faq-sort-order').value = item.sort_order || 0;
+      const p = document.getElementById('faq-form-panel'); p.style.display = '';
+      gxOpenDrawer('Edit FAQ', p, { onSave: saveFaq, saveLabel: 'Save FAQ' });
     }
 
     async function saveFaq() {
