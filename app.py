@@ -8831,7 +8831,15 @@ def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_
             except Exception as e:
                 print(f"[_render_app_shell_response] standalone-page pre-hide failed: {e}; continuing")
 
-        return Response(html_content, mimetype="text/html")
+        # The HTML embeds the content-fingerprinted JS bundle <script> tag.
+        # If the browser caches this HTML, a reload keeps serving the OLD
+        # bundle URL even after a deploy/restart changes the bundle — so the
+        # visitor never gets new front-end code. Force revalidation on every
+        # load (the bundle itself stays forever-cacheable via its hashed URL),
+        # so a single refresh always fetches the latest bundle.
+        resp = Response(html_content, mimetype="text/html")
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return resp
     except Exception:
         # Last-resort fallback: serve the raw file if everything else fails.
         return send_from_directory("public", "index.html")

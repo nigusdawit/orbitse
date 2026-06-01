@@ -47,3 +47,34 @@ feature gated.
 A flood of `[INFO] Handling signal: winch` in the gunicorn log is just the
 Replit console pane sending SIGWINCH (terminal resize). Gunicorn logs each one
 but takes no action while serving — it does NOT indicate a crash or restart.
+
+## Front-end JS changes don't reach the browser until TWO things happen
+The public homepage loads `script.js`+`voice.js` as ONE minified, content-
+fingerprinted bundle (`asset_bundle.py`, served at `/bundle.<sha256[:12]>.min.js`),
+**built once per gunicorn worker and cached in-memory for the worker's lifetime**.
+Editing `script.js` alone changes NOTHING the visitor sees until:
+
+1. **The worker restarts** so `asset_bundle.build_bundle()` re-reads the sources
+   and computes a new hash. `gunicorn --reload` only watches *Python* files, not
+   static JS — so a JS-only edit needs a manual workflow restart.
+2. **The index HTML is fetched fresh** so the browser gets the new bundle URL.
+   `serve_index` must send `Cache-Control: no-cache, no-store, must-revalidate`
+   on the HTML; otherwise the browser/preview keeps serving cached HTML with the
+   OLD bundle URL and the new code never loads (the bundle URL itself stays
+   forever-cacheable because it's hash-fingerprinted — only the HTML must
+   revalidate).
+
+**Why:** multiple rounds of "my front-end fix didn't change anything" were caused
+by the stale cached bundle, NOT by the JS logic. After any front-end edit:
+restart the workflow, then confirm with `curl -sD- .../ | grep cache-control`
+and `curl -s .../ | grep -o '/bundle\.[a-f0-9]\{12\}\.min\.js'`.
+
+## Immersive page render: prefer a one-shot fallback over trusting the stream
+The live progressive iframe render depends on a cross-iframe postMessage `ready`
+handshake that is unreliable in the preview environment. The `generatePage`
+command handler tracks `_immersiveStream.ready/completed/written` and only trusts
+the streamed page when `ready && completed && written>0`; otherwise it falls back
+to `openImmersivePage(cmd.html)` (a fresh `srcdoc` write, which always works since
+the "Building" pulse itself renders via `srcdoc`). Open the "Building" overlay as
+soon as the `{"action":"generatePage|generateHTML"}` token is seen — don't wait
+for the `html` field — so it appears promptly instead of after the text preamble.
