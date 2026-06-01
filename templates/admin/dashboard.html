@@ -2068,6 +2068,18 @@ TO CUSTOMIZE THIS DASHBOARD:
       Datahub
     </button>
     {% endif %}
+    {% if is_super_admin() %}
+    <button class="tab-btn" onclick="switchTab('research', this); loadResearchHub();" data-testid="tab-research">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      Research Hub
+    </button>
+    {% endif %}
+    {% if is_super_admin() %}
+    <button class="tab-btn" onclick="switchTab('content-studio', this); loadContentStudio();" data-testid="tab-content-studio">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+      Content Studio
+    </button>
+    {% endif %}
     {% if is_super_admin() or has_feature('analytics') %}
     <button class="tab-btn" onclick="switchTab('analytics', this)" data-testid="tab-analytics">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
@@ -2544,6 +2556,114 @@ TO CUSTOMIZE THIS DASHBOARD:
     3. Connections manager (modal)
   Widget editor is also a modal.
   -->
+  <!--
+  ========================================================================
+  RESEARCH HUB TAB (super-admin) — Phase 8 / task 069
+  ========================================================================
+  Run deep research, gather sources, and read cited reports. Talks to
+  /admin/api/research/*. Gated server-side by research_hub_enabled; this UI
+  just surfaces the result and shows a hint when the feature is off.
+  -->
+  <div id="tab-research" class="tab-content">
+    <div class="content-header">
+      <h2>Research Hub</h2>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn btn-secondary" onclick="loadResearchHub()">Refresh</button>
+      </div>
+    </div>
+    <p style="color:#94a3b8; margin:0 0 1rem;">Run deep research on a question — the
+      assistant web-searches, fetches sources, and writes a cited synthesis. Or just
+      gather a list of URLs as raw source material.</p>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-bottom:1.25rem;">
+      <div class="card" style="padding:1rem;">
+        <h3 style="margin:0 0 .6rem;">Run deep research</h3>
+        <label style="display:block; font-size:13px; color:#cbd5e1; margin-bottom:4px;">Question</label>
+        <textarea id="rh-question" rows="2" class="form-input" placeholder="e.g. What are competitors charging for X?"></textarea>
+        <label style="display:block; font-size:13px; color:#cbd5e1; margin:8px 0 4px;">Topic (optional)</label>
+        <input id="rh-topic" class="form-input" placeholder="Short label for the report" />
+        <label style="display:block; font-size:13px; color:#cbd5e1; margin:8px 0 4px;">Seed URLs (optional, one per line)</label>
+        <textarea id="rh-seeds" rows="2" class="form-input" placeholder="https://..."></textarea>
+        <button class="btn btn-primary" style="margin-top:.6rem;" onclick="rhRunResearch()">Run research</button>
+        <span id="rh-run-status" style="margin-left:.6rem; color:#94a3b8; font-size:13px;"></span>
+      </div>
+      <div class="card" style="padding:1rem;">
+        <h3 style="margin:0 0 .6rem;">Gather sources</h3>
+        <label style="display:block; font-size:13px; color:#cbd5e1; margin-bottom:4px;">URLs (one per line)</label>
+        <textarea id="rh-gather-urls" rows="4" class="form-input" placeholder="https://..."></textarea>
+        <label style="display:block; font-size:13px; color:#cbd5e1; margin:8px 0 4px;">Topic (optional)</label>
+        <input id="rh-gather-topic" class="form-input" placeholder="Label for the gathered set" />
+        <button class="btn btn-primary" style="margin-top:.6rem;" onclick="rhGather()">Gather</button>
+        <span id="rh-gather-status" style="margin-left:.6rem; color:#94a3b8; font-size:13px;"></span>
+      </div>
+    </div>
+
+    <h3 style="margin:0 0 .6rem;">Reports</h3>
+    <div id="rh-reports-list" style="display:flex; flex-direction:column; gap:.5rem;"></div>
+    <div id="rh-report-detail" style="display:none; margin-top:1rem;"></div>
+  </div>
+
+  <!--
+  ========================================================================
+  CONTENT STUDIO TAB (super-admin) — Phase 8 / task 069
+  ========================================================================
+  Generate content drafts from a research report, review/edit/approve them,
+  attach visual assets, manage publish capabilities, and publish. Talks to
+  /admin/api/content/* and /admin/api/publish/*. Gated server-side by
+  content_studio_enabled / visual_content_enabled / autopublish_enabled.
+  -->
+  <div id="tab-content-studio" class="tab-content">
+    <div class="content-header">
+      <h2>Content Studio</h2>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn btn-secondary" onclick="loadContentStudio()">Refresh</button>
+      </div>
+    </div>
+
+    <div class="card" style="padding:1rem; margin-bottom:1.25rem;">
+      <h3 style="margin:0 0 .6rem;">Generate content from a report</h3>
+      <div style="display:flex; gap:.6rem; flex-wrap:wrap; align-items:flex-end;">
+        <div>
+          <label style="display:block; font-size:13px; color:#cbd5e1; margin-bottom:4px;">Report ID</label>
+          <input id="cs-gen-report" class="form-input" style="width:110px;" placeholder="e.g. 12" />
+        </div>
+        <div style="flex:1; min-width:240px;">
+          <label style="display:block; font-size:13px; color:#cbd5e1; margin-bottom:4px;">Content types</label>
+          <div id="cs-gen-types" style="display:flex; gap:.6rem; flex-wrap:wrap; font-size:13px; color:#cbd5e1;"></div>
+        </div>
+      </div>
+      <label style="display:block; font-size:13px; color:#cbd5e1; margin:8px 0 4px;">Extra instructions / tone (optional)</label>
+      <input id="cs-gen-instructions" class="form-input" placeholder="e.g. friendly, concise" />
+      <button class="btn btn-primary" style="margin-top:.6rem;" onclick="csGenerate()">Generate drafts</button>
+      <span id="cs-gen-status" style="margin-left:.6rem; color:#94a3b8; font-size:13px;"></span>
+    </div>
+
+    <div style="display:flex; gap:.6rem; align-items:center; margin-bottom:.6rem;">
+      <h3 style="margin:0;">Drafts</h3>
+      <select id="cs-filter-status" class="form-input" style="width:auto;" onchange="csLoadDrafts()">
+        <option value="">All statuses</option>
+        <option value="draft">Draft</option>
+        <option value="approved">Approved</option>
+        <option value="rejected">Rejected</option>
+        <option value="published">Published</option>
+      </select>
+    </div>
+    <div id="cs-drafts-list" style="display:flex; flex-direction:column; gap:.5rem;"></div>
+    <div id="cs-draft-detail" style="display:none; margin-top:1rem;"></div>
+
+    <hr style="border-color:rgba(255,255,255,.1); margin:1.5rem 0;" />
+    <div style="display:flex; gap:.6rem; align-items:center;">
+      <h3 style="margin:0;">Publish capabilities</h3>
+      <button class="btn btn-secondary" onclick="csShowCapForm()">Add capability</button>
+      <span id="cs-cap-python-note" style="color:#94a3b8; font-size:12px;"></span>
+    </div>
+    <div id="cs-cap-form" style="display:none;" class="card"></div>
+    <div id="cs-cap-list" style="display:flex; flex-direction:column; gap:.5rem; margin-top:.6rem;"></div>
+
+    <h3 style="margin:1.25rem 0 .6rem;">Recent publishes</h3>
+    <div id="cs-publish-log" style="display:flex; flex-direction:column; gap:.35rem;"></div>
+  </div>
+
   <div id="tab-dashboards" class="tab-content">
     <div id="dashboards-list-view">
       <div class="content-header">
@@ -11520,6 +11640,251 @@ TO CUSTOMIZE THIS DASHBOARD:
       const overlay = document.getElementById('sidebar-overlay');
       if (sidebar) sidebar.classList.remove('open');
       if (overlay) overlay.classList.remove('active');
+    }
+
+
+    /*
+    ========================================================================
+    RESEARCH HUB + CONTENT STUDIO (super-admin) — Phase 8 / task 069
+    ========================================================================
+    Thin UI over /admin/api/research/* , /admin/api/content/* and
+    /admin/api/publish/* . All server endpoints enforce the super-admin role and
+    the feature knobs (research_hub_enabled / content_studio_enabled /
+    visual_content_enabled / autopublish_enabled); this UI just surfaces the
+    result. Every value rendered from a report/draft/source is HTML-escaped via
+    _rceEsc (it can contain LLM- or web-derived text).
+    */
+    function _rceEsc(s){ const d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
+    async function _rceGet(url){ const r=await fetch(url); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
+    async function _rcePost(url, body){
+      const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+      const j=await r.json().catch(function(){ return {}; });
+      return {ok:r.ok, status:r.status, data:j};
+    }
+
+    /* ---- Research Hub ---- */
+    async function loadResearchHub(){
+      const wrap=document.getElementById('rh-reports-list');
+      if(!wrap) return;
+      wrap.innerHTML='<div style="color:#94a3b8;">Loading…</div>';
+      try{
+        const j=await _rceGet('/admin/api/research/reports');
+        const reports=j.reports||[];
+        if(!reports.length){ wrap.innerHTML='<div style="color:#94a3b8;">No reports yet — run research above.</div>'; return; }
+        wrap.innerHTML=reports.map(function(r){ return ''
+          +'<div class="card" style="padding:.7rem; cursor:pointer;" onclick="rhOpenReport('+r.id+')">'
+          +'<div style="display:flex; justify-content:space-between; gap:1rem;">'
+          +'<strong>'+_rceEsc(r.topic||r.question||('Report #'+r.id))+'</strong>'
+          +'<span style="font-size:12px; color:#c9a96e;">'+_rceEsc(r.status||'')+'</span></div>'
+          +'<div style="font-size:12px; color:#94a3b8; margin-top:3px;">'+_rceEsc((r.summary||'').slice(0,140))+'</div></div>';
+        }).join('');
+      }catch(e){ wrap.innerHTML='<div style="color:#f87171;">Could not load reports.</div>'; }
+    }
+    async function rhRunResearch(){
+      const q=(document.getElementById('rh-question').value||'').trim();
+      const st=document.getElementById('rh-run-status');
+      if(!q){ st.textContent='Enter a question.'; return; }
+      st.textContent='Researching… this can take a minute.';
+      const r=await _rcePost('/admin/api/research/run', {question:q, topic:(document.getElementById('rh-topic').value||''), seed_urls:(document.getElementById('rh-seeds').value||'')});
+      if(r.ok){ st.textContent='Done — report #'+r.data.report_id+' ('+(r.data.status||'')+').'; loadResearchHub(); if(r.data.report_id) rhOpenReport(r.data.report_id); }
+      else { st.textContent=(r.data.error||'Failed.'); }
+    }
+    async function rhGather(){
+      const urls=(document.getElementById('rh-gather-urls').value||'').trim();
+      const st=document.getElementById('rh-gather-status');
+      if(!urls){ st.textContent='Enter one or more URLs.'; return; }
+      st.textContent='Gathering…';
+      const r=await _rcePost('/admin/api/research/gather', {urls:urls, topic:(document.getElementById('rh-gather-topic').value||'')});
+      if(r.ok){ st.textContent='Gathered '+(r.data.gathered||0)+', skipped '+(r.data.skipped||0)+'.'; loadResearchHub(); }
+      else { st.textContent=(r.data.error||'Failed.'); }
+    }
+    function rhHideReport(){ const d=document.getElementById('rh-report-detail'); if(d) d.style.display='none'; }
+    async function rhOpenReport(id){
+      const d=document.getElementById('rh-report-detail');
+      d.style.display='block'; d.innerHTML='<div style="color:#94a3b8;">Loading…</div>';
+      try{
+        const r=await _rceGet('/admin/api/research/reports/'+id);
+        const kps=(r.key_points||[]).map(function(k){ return '<li>'+_rceEsc(k)+'</li>'; }).join('');
+        const cites=(r.citations||[]).map(function(c){ return '<li><a href="'+_rceEsc(c.url||'')+'" target="_blank" rel="noopener noreferrer">'+_rceEsc(c.title||c.url||'')+'</a></li>'; }).join('');
+        const srcs=(r.sources||[]).map(function(s){ return '<li>'+_rceEsc(s.title||s.url||'')+'</li>'; }).join('');
+        d.innerHTML='<div class="card" style="padding:1rem;">'
+          +'<div style="display:flex; justify-content:space-between; align-items:flex-start;"><h3 style="margin:0;">'+_rceEsc(r.topic||r.question||('Report #'+r.id))+'</h3>'
+          +'<button class="btn btn-secondary" onclick="rhHideReport()">Close</button></div>'
+          +'<p style="white-space:pre-wrap; color:#cbd5e1;">'+_rceEsc(r.summary||'(no synthesis yet)')+'</p>'
+          +(kps?('<h4>Key points</h4><ul style="color:#cbd5e1;">'+kps+'</ul>'):'')
+          +(cites?('<h4>Citations</h4><ul>'+cites+'</ul>'):'')
+          +(srcs?('<h4>Sources</h4><ul style="color:#94a3b8;">'+srcs+'</ul>'):'')
+          +'<button class="btn btn-primary" onclick="csUseReport('+r.id+')">Make content from this →</button>'
+          +'</div>';
+      }catch(e){ d.innerHTML='<div style="color:#f87171;">Could not load report.</div>'; }
+    }
+    function csUseReport(id){
+      const btn=document.querySelector('[data-testid="tab-content-studio"]');
+      switchTab('content-studio', btn); loadContentStudio();
+      const f=document.getElementById('cs-gen-report'); if(f) f.value=id;
+    }
+
+    /* ---- Content Studio ---- */
+    var CS_CONTENT_TYPES=['blog','social','linkedin','newsletter','email','faq','summary'];
+    function loadContentStudio(){
+      const tw=document.getElementById('cs-gen-types');
+      if(tw && !tw.dataset.built){
+        tw.innerHTML=CS_CONTENT_TYPES.map(function(t){ return '<label style="display:inline-flex; gap:4px; align-items:center;"><input type="checkbox" value="'+t+'"'+(t==='blog'?' checked':'')+'> '+t+'</label>'; }).join('');
+        tw.dataset.built='1';
+      }
+      csLoadDrafts(); csLoadCaps(); csLoadLog();
+    }
+    async function csLoadDrafts(){
+      const wrap=document.getElementById('cs-drafts-list'); if(!wrap) return;
+      const st=(document.getElementById('cs-filter-status').value||'');
+      wrap.innerHTML='<div style="color:#94a3b8;">Loading…</div>';
+      try{
+        const j=await _rceGet('/admin/api/content/drafts'+(st?('?status='+encodeURIComponent(st)):''));
+        const ds=j.drafts||[];
+        if(!ds.length){ wrap.innerHTML='<div style="color:#94a3b8;">No drafts.</div>'; return; }
+        wrap.innerHTML=ds.map(function(d){ return ''
+          +'<div class="card" style="padding:.6rem; cursor:pointer;" onclick="csOpenDraft('+d.id+')">'
+          +'<div style="display:flex; justify-content:space-between; gap:1rem;"><strong>'+_rceEsc(d.title||('Draft #'+d.id))+'</strong>'
+          +'<span style="font-size:12px; color:#94a3b8;">'+_rceEsc(d.content_type||'')+' · '+_rceEsc(d.status||'')+'</span></div></div>';
+        }).join('');
+      }catch(e){ wrap.innerHTML='<div style="color:#f87171;">Could not load drafts.</div>'; }
+    }
+    async function csGenerate(){
+      const rid=(document.getElementById('cs-gen-report').value||'').trim();
+      const st=document.getElementById('cs-gen-status');
+      const types=Array.prototype.slice.call(document.querySelectorAll('#cs-gen-types input:checked')).map(function(c){ return c.value; });
+      if(!rid||!types.length){ st.textContent='Enter a report ID and pick at least one type.'; return; }
+      st.textContent='Generating…';
+      const r=await _rcePost('/admin/api/content/generate', {report_id:rid, content_types:types, instructions:(document.getElementById('cs-gen-instructions').value||'')});
+      if(r.ok){ st.textContent='Created '+((r.data.drafts||[]).length)+' draft(s).'; csLoadDrafts(); }
+      else { st.textContent=(r.data.error||'Failed.'); }
+    }
+    function csHideDraft(){ const d=document.getElementById('cs-draft-detail'); if(d) d.style.display='none'; }
+    async function csOpenDraft(id){
+      const d=document.getElementById('cs-draft-detail');
+      d.style.display='block'; d.innerHTML='<div style="color:#94a3b8;">Loading…</div>';
+      try{
+        const r=await _rceGet('/admin/api/content/drafts/'+id);
+        const caps=await _rceGet('/admin/api/publish/capabilities').catch(function(){ return {capabilities:[]}; });
+        const capOpts=(caps.capabilities||[]).map(function(c){ return '<option value="'+c.id+'">'+_rceEsc(c.name)+' ('+_rceEsc(c.kind)+')'+(c.enabled?'':' [disabled]')+'</option>'; }).join('');
+        d.innerHTML='<div class="card" style="padding:1rem;">'
+          +'<div style="display:flex; justify-content:space-between; align-items:flex-start;"><h3 style="margin:0;">Draft #'+r.id+' · '+_rceEsc(r.content_type||'')+'</h3>'
+          +'<button class="btn btn-secondary" onclick="csHideDraft()">Close</button></div>'
+          +'<input id="cs-d-title" class="form-input" value="'+_rceEsc(r.title||'')+'" style="margin:.5rem 0;" />'
+          +'<textarea id="cs-d-body" class="form-input" rows="10">'+_rceEsc(r.body||'')+'</textarea>'
+          +'<div style="display:flex; gap:.5rem; margin-top:.6rem; flex-wrap:wrap;">'
+          +'<button class="btn btn-primary" onclick="csSaveDraft('+r.id+')">Save</button>'
+          +'<button class="btn btn-secondary" onclick="csApprove('+r.id+')">Approve</button>'
+          +'<button class="btn btn-secondary" onclick="csReject('+r.id+')">Reject</button>'
+          +'<span id="cs-d-status" style="color:#94a3b8; font-size:13px; align-self:center;">Status: '+_rceEsc(r.status||'')+'</span></div>'
+          +'<hr style="border-color:rgba(255,255,255,.1); margin:.8rem 0;"/>'
+          +'<div style="display:flex; gap:.5rem; align-items:flex-end; flex-wrap:wrap;">'
+          +'<select id="cs-v-type" class="form-input" style="width:auto;"><option value="image">Image</option><option value="diagram">Diagram</option><option value="clip">Clip</option></select>'
+          +'<input id="cs-v-brief" class="form-input" placeholder="Brief for the visual" style="flex:1; min-width:200px;" />'
+          +'<button class="btn btn-secondary" onclick="csGenVisual('+r.id+')">Generate visual</button></div>'
+          +'<div id="cs-v-list" style="margin-top:.5rem;"></div>'
+          +'<hr style="border-color:rgba(255,255,255,.1); margin:.8rem 0;"/>'
+          +'<div style="display:flex; gap:.5rem; align-items:flex-end; flex-wrap:wrap;">'
+          +'<select id="cs-pub-cap" class="form-input" style="width:auto;">'+(capOpts||'<option value="">No capabilities</option>')+'</select>'
+          +'<button class="btn btn-primary" onclick="csPublish('+r.id+')">Publish</button>'
+          +'<span id="cs-pub-status" style="color:#94a3b8; font-size:13px; align-self:center;"></span></div>'
+          +'</div>';
+        csLoadAssets(r.id);
+      }catch(e){ d.innerHTML='<div style="color:#f87171;">Could not load draft.</div>'; }
+    }
+    async function csSaveDraft(id){
+      const r=await _rcePost('/admin/api/content/drafts/'+id, {title:document.getElementById('cs-d-title').value, body:document.getElementById('cs-d-body').value});
+      document.getElementById('cs-d-status').textContent = r.ok?'Saved.':((r.data.error)||'Failed.');
+      if(r.ok) csLoadDrafts();
+    }
+    async function csSetStatus(id, status){
+      const r=await _rcePost('/admin/api/content/drafts/'+id, {status:status});
+      const el=document.getElementById('cs-d-status'); if(el) el.textContent = r.ok?('Status: '+status):((r.data.error)||'Failed.');
+      if(r.ok) csLoadDrafts();
+    }
+    function csApprove(id){ csSetStatus(id, 'approved'); }
+    function csReject(id){ csSetStatus(id, 'rejected'); }
+    async function csGenVisual(id){
+      const r=await _rcePost('/admin/api/content/visual/generate', {draft_id:id, asset_type:document.getElementById('cs-v-type').value, brief:document.getElementById('cs-v-brief').value});
+      if(r.ok) csLoadAssets(id); else alert(r.data.error||'Visual generation failed.');
+    }
+    async function csLoadAssets(id){
+      const wrap=document.getElementById('cs-v-list'); if(!wrap) return;
+      try{
+        const j=await _rceGet('/admin/api/content/assets?draft_id='+id);
+        const as=j.assets||[];
+        wrap.innerHTML = as.length? as.map(function(a){ return ''
+          +'<div style="display:flex; justify-content:space-between; font-size:13px; color:#cbd5e1; padding:3px 0;">'
+          +'<span>'+_rceEsc(a.asset_type)+' · '+_rceEsc(a.provider)+' · '+_rceEsc(a.status)+'</span>'
+          +'<button class="btn btn-secondary" style="padding:2px 8px;" onclick="csEmbed('+id+','+a.id+')">Embed</button></div>';
+        }).join('') : '<div style="color:#94a3b8; font-size:13px;">No visuals yet.</div>';
+      }catch(e){ wrap.innerHTML=''; }
+    }
+    async function csEmbed(did, aid){
+      const r=await _rcePost('/admin/api/content/visual/embed', {draft_id:did, asset_id:aid});
+      if(r.ok) csOpenDraft(did); else alert(r.data.error||'Embed failed.');
+    }
+    async function csPublish(id){
+      const cap=document.getElementById('cs-pub-cap').value;
+      const st=document.getElementById('cs-pub-status');
+      if(!cap){ st.textContent='Pick a capability.'; return; }
+      st.textContent='Publishing…';
+      const r=await _rcePost('/admin/api/content/drafts/'+id+'/publish', {capability_id:cap});
+      st.textContent = r.ok ? (r.data.ok?'Published.':('Failed: '+(r.data.detail||''))) : (r.data.error||'Failed.');
+      csLoadDrafts(); csLoadLog();
+    }
+
+    /* ---- capabilities ---- */
+    async function csLoadCaps(){
+      const wrap=document.getElementById('cs-cap-list'); if(!wrap) return;
+      try{
+        const j=await _rceGet('/admin/api/publish/capabilities');
+        const note=document.getElementById('cs-cap-python-note');
+        if(note) note.textContent = j.python_allowed? '' : '(python capabilities are disabled on this deployment)';
+        const cs=j.capabilities||[];
+        wrap.innerHTML = cs.length? cs.map(function(c){ return ''
+          +'<div class="card" style="padding:.6rem; display:flex; justify-content:space-between; align-items:center;">'
+          +'<span>'+_rceEsc(c.name)+' <span style="color:#94a3b8; font-size:12px;">('+_rceEsc(c.kind)+')</span></span>'
+          +'<span style="display:flex; gap:.5rem; align-items:center;">'
+          +'<label style="font-size:12px; color:#cbd5e1;"><input type="checkbox" '+(c.enabled?'checked':'')+' onchange="csToggleCap('+c.id+', this.checked)"> enabled</label>'
+          +'<button class="btn btn-secondary" style="padding:2px 8px;" onclick="csDeleteCap('+c.id+')">Delete</button></span></div>';
+        }).join('') : '<div style="color:#94a3b8;">No capabilities yet.</div>';
+      }catch(e){ wrap.innerHTML='<div style="color:#f87171;">Could not load capabilities.</div>'; }
+    }
+    function csHideCapForm(){ const f=document.getElementById('cs-cap-form'); if(f) f.style.display='none'; }
+    function csShowCapForm(){
+      const f=document.getElementById('cs-cap-form');
+      f.style.display='block'; f.style.padding='1rem';
+      f.innerHTML='<h4 style="margin:0 0 .5rem;">New capability</h4>'
+        +'<input id="cs-cap-name" class="form-input" placeholder="Name" style="margin-bottom:.4rem;" />'
+        +'<select id="cs-cap-kind" class="form-input" style="margin-bottom:.4rem;"><option value="webhook">webhook</option><option value="http_api">http_api</option><option value="mcp">mcp</option><option value="python">python</option></select>'
+        +'<div style="font-size:12px; color:#94a3b8; margin-bottom:4px;">Config (JSON). webhook/http_api need a url; mcp needs server_id+tool; python needs a command list (operator-defined).</div>'
+        +'<textarea id="cs-cap-config" class="form-input" rows="3"></textarea>'
+        +'<div style="margin-top:.5rem; display:flex; gap:.5rem;">'
+        +'<button class="btn btn-primary" onclick="csCreateCap()">Create</button>'
+        +'<button class="btn btn-secondary" onclick="csHideCapForm()">Cancel</button>'
+        +'<span id="cs-cap-status" style="color:#94a3b8; font-size:13px; align-self:center;"></span></div>';
+    }
+    async function csCreateCap(){
+      const st=document.getElementById('cs-cap-status');
+      var cfg;
+      try{ cfg=JSON.parse(document.getElementById('cs-cap-config').value||'{}'); }
+      catch(e){ st.textContent='Config is not valid JSON.'; return; }
+      const r=await _rcePost('/admin/api/publish/capabilities', {name:document.getElementById('cs-cap-name').value, kind:document.getElementById('cs-cap-kind').value, config:cfg});
+      if(r.ok){ csHideCapForm(); csLoadCaps(); }
+      else { st.textContent=(r.data.error||'Failed.'); }
+    }
+    async function csToggleCap(id, enabled){ await _rcePost('/admin/api/publish/capabilities/'+id, {enabled:enabled}); csLoadCaps(); }
+    async function csDeleteCap(id){ if(!confirm('Delete this capability?')) return; await fetch('/admin/api/publish/capabilities/'+id, {method:'DELETE'}); csLoadCaps(); }
+    async function csLoadLog(){
+      const wrap=document.getElementById('cs-publish-log'); if(!wrap) return;
+      try{
+        const j=await _rceGet('/admin/api/publish/log');
+        const ls=j.log||[];
+        wrap.innerHTML = ls.length? ls.slice(0,30).map(function(e){ return ''
+          +'<div style="font-size:12px; color:#94a3b8;">#'+e.id+' · draft '+_rceEsc(String(e.draft_id))+' · '+_rceEsc(e.kind)+' · <span style="color:'+(e.status==='ok'?'#34d399':'#f87171')+'">'+_rceEsc(e.status)+'</span></div>';
+        }).join('') : '<div style="color:#94a3b8; font-size:13px;">No publishes yet.</div>';
+      }catch(e){ wrap.innerHTML=''; }
     }
 
 
