@@ -7962,22 +7962,16 @@ TO CUSTOMIZE THIS DASHBOARD:
         <button class="btn btn-secondary" onclick="loadVoiceUsage()" data-testid="button-refresh-voice-usage">Refresh</button>
       </div>
 
-      <div id="voice-usage-stats" class="form-panel" style="display:flex; gap:2rem; flex-wrap:wrap;">
-        <div>
-          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Today (paid)</div>
-          <div id="voice-stat-today-req" style="font-size: 1.25rem; font-weight: 600; color: #fff;">0 requests</div>
-          <div id="voice-stat-today-chars" style="color: var(--admin-text-muted); font-size: 0.8rem;">0 characters</div>
-        </div>
-        <div>
-          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Last 7 Days</div>
-          <div id="voice-stat-week-req" style="font-size: 1.25rem; font-weight: 600; color: #fff;">0 requests</div>
-          <div id="voice-stat-week-chars" style="color: var(--admin-text-muted); font-size: 0.8rem;">0 characters</div>
-        </div>
-        <div>
-          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Last 30 Days</div>
-          <div id="voice-stat-month-req" style="font-size: 1.25rem; font-weight: 600; color: #fff;">0 requests</div>
-          <div id="voice-stat-month-chars" style="color: var(--admin-text-muted); font-size: 0.8rem;">0 characters</div>
-        </div>
+      <div id="voice-usage-stats" class="gx-stats">
+        <div class="gx-stat"><div class="gx-stat-label">Today (paid)</div>
+          <div class="gx-stat-value" id="voice-stat-today-req" style="font-size:1.25rem;">0 requests</div>
+          <div id="voice-stat-today-chars" style="color:var(--admin-text-muted); font-size:0.8rem; margin-top:.2rem;">0 characters</div></div>
+        <div class="gx-stat"><div class="gx-stat-label">Last 7 Days</div>
+          <div class="gx-stat-value" id="voice-stat-week-req" style="font-size:1.25rem;">0 requests</div>
+          <div id="voice-stat-week-chars" style="color:var(--admin-text-muted); font-size:0.8rem; margin-top:.2rem;">0 characters</div></div>
+        <div class="gx-stat"><div class="gx-stat-label">Last 30 Days</div>
+          <div class="gx-stat-value" id="voice-stat-month-req" style="font-size:1.25rem;">0 requests</div>
+          <div id="voice-stat-month-chars" style="color:var(--admin-text-muted); font-size:0.8rem; margin-top:.2rem;">0 characters</div></div>
       </div>
 
       <table class="data-table" style="margin-top: 1rem;">
@@ -8406,39 +8400,23 @@ TO CUSTOMIZE THIS DASHBOARD:
       </div>
 
       <!-- Analytics Cards -->
-      <div id="form-analytics" class="form-panel" style="display: flex; gap: 2rem; flex-wrap: wrap; margin-bottom: 1.5rem;">
-        <div>
-          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Total</div>
-          <div id="analytics-total" style="font-size: 1.5rem; font-weight: 600; color: #fff;" data-testid="text-analytics-total">0</div>
-        </div>
-        <div>
-          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Today</div>
-          <div id="analytics-today" style="font-size: 1.5rem; font-weight: 600; color: #fff;" data-testid="text-analytics-today">0</div>
-        </div>
-        <div>
-          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Abandoned</div>
-          <div id="analytics-abandoned" style="font-size: 1.5rem; font-weight: 600; color: #f59e0b;" data-testid="text-analytics-abandoned">0</div>
-        </div>
-        <div>
-          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Abandon Rate</div>
-          <div id="analytics-abandon-rate" style="font-size: 1.5rem; font-weight: 600; color: #f59e0b;" data-testid="text-analytics-abandon-rate">0%</div>
-        </div>
-        <div>
-          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Devices</div>
-          <div id="analytics-devices" style="font-size: 0.8rem; color: rgba(255,255,255,0.7);" data-testid="text-analytics-devices">—</div>
-        </div>
-        <div>
-          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Top UTM Source</div>
-          <div id="analytics-utm" style="font-size: 0.8rem; color: rgba(255,255,255,0.7);" data-testid="text-analytics-utm">—</div>
-        </div>
-        <div>
-          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Browsers</div>
-          <div id="analytics-browsers" style="font-size: 0.8rem; color: rgba(255,255,255,0.7);" data-testid="text-analytics-browsers">—</div>
-        </div>
-        <div>
-          <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Status Breakdown</div>
-          <div id="analytics-status" style="font-size: 0.8rem; color: rgba(255,255,255,0.7);" data-testid="text-analytics-status">—</div>
-        </div>
+      <div id="form-analytics" class="gx-stats" style="margin-bottom: 1.5rem;">
+        <div class="gx-stat"><div class="gx-stat-label">Total</div>
+          <div class="gx-stat-value" id="analytics-total" data-testid="text-analytics-total">0</div></div>
+        <div class="gx-stat"><div class="gx-stat-label">Today</div>
+          <div class="gx-stat-value" id="analytics-today" data-testid="text-analytics-today">0</div></div>
+        <div class="gx-stat"><div class="gx-stat-label">Abandoned</div>
+          <div class="gx-stat-value" id="analytics-abandoned" style="color:#f59e0b;" data-testid="text-analytics-abandoned">0</div></div>
+        <div class="gx-stat"><div class="gx-stat-label">Abandon Rate</div>
+          <div class="gx-stat-value" id="analytics-abandon-rate" style="color:#f59e0b;" data-testid="text-analytics-abandon-rate">0%</div></div>
+        <div class="gx-stat"><div class="gx-stat-label">Devices</div>
+          <div id="analytics-devices" style="font-size:0.85rem; color:var(--admin-text); margin-top:.3rem;" data-testid="text-analytics-devices">—</div></div>
+        <div class="gx-stat"><div class="gx-stat-label">Top UTM Source</div>
+          <div id="analytics-utm" style="font-size:0.85rem; color:var(--admin-text); margin-top:.3rem;" data-testid="text-analytics-utm">—</div></div>
+        <div class="gx-stat"><div class="gx-stat-label">Browsers</div>
+          <div id="analytics-browsers" style="font-size:0.85rem; color:var(--admin-text); margin-top:.3rem;" data-testid="text-analytics-browsers">—</div></div>
+        <div class="gx-stat"><div class="gx-stat-label">Status Breakdown</div>
+          <div id="analytics-status" style="font-size:0.85rem; color:var(--admin-text); margin-top:.3rem;" data-testid="text-analytics-status">—</div></div>
       </div>
 
       <table class="data-table" id="submissions-table">
