@@ -9237,16 +9237,9 @@ def serve_static(filename):
 # PUBLIC API — Read-only endpoints for the public site
 # =============================================================================
 
-@app.route("/api/site-settings")
-def api_site_settings():
-    """
-    GET /api/site-settings
-    Returns the site-wide configuration (name, tagline, hero content, etc.).
-    """
-    settings = query_db("SELECT * FROM site_settings WHERE id = 1", fetchone=True)
-    if not settings:
-        return jsonify({"error": "No site settings found"}), 404
-    return jsonify(settings)
+# GET /api/site-settings moved to admin/public_api.py (Track B / B2 — the first
+# de-monolith blueprint, proving the route-extraction pattern). Same URL + method;
+# registered via app.register_blueprint(public_bp). See admin/public_api.py.
 
 
 # Hero layout modes (Task #63 / item 16). Kept in sync with the front-end
@@ -46258,6 +46251,13 @@ def _ensure_messaging_scheduler():
 from velo_endpoints import velo_bp, get_registered_capabilities  # noqa: E402
 import velo_handlers  # noqa: F401, E402  — import side-effect registers handlers
 app.register_blueprint(velo_bp)
+
+# First de-monolith blueprint (Track B / B2): the public read API. Imported here
+# and registered on the global app exactly like velo_bp. Its routes keep their
+# absolute /api/* paths, so the URL surface is unchanged (route-snapshot stays
+# identical); only the endpoint name gains a "public_api." prefix.
+from admin.public_api import public_bp  # noqa: E402
+app.register_blueprint(public_bp)
 
 
 def _resolve_velo_callback_url():
