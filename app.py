@@ -9855,64 +9855,7 @@ def llms_txt():
 # =============================================================
 # PUBLIC API — PAGE SECTIONS (controls section order on public site)
 # =============================================================
-@app.route("/api/sphere-settings")
-def api_sphere_settings():
-    """
-    GET /api/sphere-settings
-    Returns sphere view configuration and image URLs for the public site.
-    If image_source is 'gallery', images come from gallery_cards.
-    If image_source is 'custom', images come from sphere_images.
-    """
-    settings = query_db("SELECT * FROM sphere_settings WHERE id = 1", fetchone=True)
-    if not settings:
-        return jsonify({"enabled": False})
-
-    result = dict(settings)
-
-    if result.get("image_source") == "gallery":
-        cards = query_db("SELECT image_url FROM gallery_cards WHERE image_url != '' ORDER BY sort_order ASC")
-        result["images"] = [c["image_url"] for c in (cards or [])]
-    else:
-        imgs = query_db("SELECT id, image_url, caption, sort_order FROM sphere_images ORDER BY sort_order ASC")
-        result["images"] = [i["image_url"] for i in (imgs or [])]
-
-    # If sections mode, include section summary data for the 3D cards
-    if result.get("view_mode") == "sections":
-        site = query_db("SELECT site_name, site_subtitle, hero_tagline, hero_title, hero_description, hero_image FROM site_settings WHERE id = 1", fetchone=True)
-        cards_data = query_db("SELECT slug, title, subtitle, image_url, category, price FROM gallery_cards ORDER BY sort_order ASC LIMIT 6")
-        exps = query_db("SELECT name, description, icon FROM experiences ORDER BY sort_order ASC LIMIT 4")
-        pricing = query_db("SELECT label, date_range, price_range FROM pricing_seasons ORDER BY sort_order ASC LIMIT 4")
-        testimonials = query_db("SELECT reviewer_name, reviewer_role, content, rating FROM testimonials ORDER BY sort_order ASC LIMIT 3")
-        team = query_db("SELECT name, title, image_url FROM team_members ORDER BY sort_order ASC LIMIT 4")
-        faqs = query_db("SELECT question FROM faqs ORDER BY sort_order ASC LIMIT 4")
-        blog = query_db("SELECT title, category, cover_image FROM blog_posts WHERE status = 'published' ORDER BY sort_order ASC LIMIT 3")
-
-        result["sections_data"] = {
-            "site": dict(site) if site else {},
-            "highlights": [dict(c) for c in (cards_data or [])],
-            "experiences": [dict(e) for e in (exps or [])],
-            "pricing": [dict(p) for p in (pricing or [])],
-            "testimonials": [dict(t) for t in (testimonials or [])],
-            "team": [dict(t) for t in (team or [])],
-            "faq": [dict(f) for f in (faqs or [])],
-            "blog": [dict(b) for b in (blog or [])],
-        }
-
-    return jsonify(result)
-
-
-@app.route("/api/page-sections")
-def api_page_sections():
-    """
-    GET /api/page-sections
-    Returns ALL sections (enabled and disabled) ordered by sort_order.
-    The frontend uses this to determine section order AND visibility —
-    it needs disabled sections in the list so it can hide them properly.
-    """
-    sections = query_db(
-        "SELECT * FROM page_sections ORDER BY sort_order ASC"
-    )
-    return jsonify(sections or [])
+# /api/sphere-settings + /api/page-sections moved to admin/public_api.py (Track B / B3).
 
 
 # =============================================================================
@@ -10151,38 +10094,7 @@ def api_page_bundle():
 # =============================================================
 # PUBLIC API — CUSTOM SECTION ITEMS
 # =============================================================
-@app.route("/api/custom-section/<int:section_id>/items")
-def api_custom_section_items(section_id):
-    """
-    GET /api/custom-section/<section_id>/items
-    Returns all items for a specific custom section, ordered by sort_order.
-    """
-    items = query_db(
-        "SELECT * FROM custom_section_items WHERE section_id = %s ORDER BY sort_order ASC",
-        (section_id,)
-    )
-    return jsonify(items or [])
-
-
-@app.route("/api/chatbot-settings")
-def api_chatbot_settings():
-    """
-    GET /api/chatbot-settings
-    Returns the chatbot configuration for the public site.
-    The public site JavaScript uses this to decide whether to show
-    the chatbot and how to configure it.
-    """
-    settings = query_db("SELECT * FROM chatbot_settings WHERE id = 1", fetchone=True)
-    if not settings:
-        return jsonify({"enabled": False})
-    # Prompt privacy: the public site never needs the prompt wording, so it is
-    # never exposed here (this endpoint is unauthenticated). The Brand Voice
-    # layer is operator/business config too — also stripped from the public
-    # payload.
-    out = dict(settings)
-    out.pop("system_prompt", None)
-    out.pop("brand_voice", None)
-    return jsonify(out)
+# /api/custom-section/<id>/items + /api/chatbot-settings moved to admin/public_api.py (Track B / B3).
 
 
 # =============================================================================
