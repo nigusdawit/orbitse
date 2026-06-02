@@ -1,4 +1,5 @@
 - [Adding tables — _DDL vs Alembic](schema-ddl-vs-alembic.md) — new DB tables need an Alembic migration; the legacy schema.py `_DDL` silently fails partway on existing DBs so appended tables never get created.
+- [cost_dashboard feature gate vs tests](cost-dashboard-feature-gate.md) — cost HTTP tests 404 when the feature flag is toggled off in tenant_features; it's a data/toggle state, not a merge break.
 - [Public-site gating must exempt machine endpoints](chat-only-allowlist.md) — a before_request allowlist that hides public pages must also let /webhooks /automations /plugin through or it silently swallows webhook deliveries.
 - [Streaming page-build infra](streaming-page-build-infra.md) — SSE/AI-stream endpoints need gthread + long gunicorn --timeout (else WORKER TIMEOUT kills them) + big per-round max_tokens + ack-aware iframe teardown; `winch` log flood is harmless.
 - [pytest suite env sensitivity](test-suite-env-sensitivity.md) — `pytest tests/` in the live workspace shows many FALSE failures (leaking SUPER_ADMIN_KEY/secrets, missing SSO_SIGNING_SECRET/CLIENT_PASSWORD); run with a clean env; trust app-boot+migrations as the real health signal.
