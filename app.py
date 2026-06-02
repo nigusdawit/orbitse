@@ -27909,63 +27909,9 @@ def admin_update_business_info():
     return jsonify(info or {})
 
 
-@app.route("/admin/api/social-links", methods=["GET"])
-@admin_required
-def admin_get_social_links():
-    """GET social media links for the admin panel."""
-    info = query_db("SELECT social_links FROM site_settings WHERE id = 1", fetchone=True)
-    return jsonify(info.get("social_links", {}) if info else {})
-
-
-@app.route("/admin/api/social-links", methods=["PUT"])
-@admin_required
-def admin_update_social_links():
-    """PUT /admin/api/social-links — Update social media profile URLs."""
-    data = request.get_json()
-    execute_db(
-        "UPDATE site_settings SET social_links = %s::jsonb, updated_at = NOW() WHERE id = 1",
-        (json.dumps(data),)
-    )
-    return jsonify(data)
-
-
-@app.route("/admin/api/section-visibility", methods=["GET"])
-@admin_required
-def admin_get_section_visibility():
-    """GET section visibility toggles + landing scroll mode for the admin panel."""
-    info = query_db("""
-        SELECT section_testimonials, section_team, section_faq, section_footer,
-               scroll_mode
-        FROM site_settings WHERE id = 1
-    """, fetchone=True)
-    return jsonify(info or {})
-
-
-@app.route("/admin/api/section-visibility", methods=["PUT"])
-@admin_required
-def admin_update_section_visibility():
-    """PUT /admin/api/section-visibility — Toggle sections on/off and pick scroll mode."""
-    data = request.get_json()
-    # Whitelist scroll_mode to the two values the frontend knows how to honor;
-    # anything else falls back to 'snap' so a typo in the request can't put the
-    # site into an undefined state.
-    scroll_mode = data.get("scroll_mode", "snap")
-    if scroll_mode not in ("snap", "smooth"):
-        scroll_mode = "snap"
-    info = execute_db(
-        """UPDATE site_settings SET
-             section_testimonials = %s, section_team = %s,
-             section_faq = %s, section_footer = %s,
-             scroll_mode = %s,
-             updated_at = NOW()
-           WHERE id = 1 RETURNING
-             section_testimonials, section_team, section_faq, section_footer,
-             scroll_mode""",
-        (data.get("section_testimonials", False), data.get("section_team", False),
-         data.get("section_faq", False), data.get("section_footer", True),
-         scroll_mode)
-    )
-    return jsonify(info or {})
+# social-links + section-visibility admin GET/PUT moved to admin/content.py
+# (Track B / B11): content_bp. Same /admin/api/social-links and /admin/api/
+# section-visibility URLs; @admin_required preserved (from core).
 
 
 # --------------- Site Settings CRUD ---------------
