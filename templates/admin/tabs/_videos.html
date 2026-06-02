@@ -1,0 +1,45 @@
+{# admin/tabs/_videos.html — 'videos' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-videos" class="tab-content">
+    <div class="gx-head">
+      <div>
+        <h2 class="gx-title">Video Gallery</h2>
+        <p class="gx-sub">Curate a grid of videos. Each one plays in a lightbox on the public site. Enable the "Video Gallery" section in Page Layout to show it.</p>
+      </div>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-primary" onclick="showVideoGalleryForm()" data-testid="button-new-video">+ New Video</button>
+      </div>
+    </div>
+
+    <div id="video-form-panel" style="display:none;">
+      <input type="hidden" id="video-form-id">
+      <div class="gx-grid-fields">
+        <div class="gx-field col-2"><label class="gx-label" for="video-title">Title<span class="gx-req">*</span></label>
+          <input class="gx-input" type="text" id="video-title" data-testid="input-video-title"></div>
+        <div class="gx-field"><label class="gx-label" for="video-sort-order">Sort order</label>
+          <input class="gx-input" type="number" id="video-sort-order" value="0" data-testid="input-video-sort"></div>
+      </div>
+      <div class="gx-field"><label class="gx-label" for="video-url">Video URL<span class="gx-req">*</span></label>
+        <div class="gx-media-field">
+          <input class="gx-input" type="url" id="video-url" placeholder="/uploads/clip.mp4" data-testid="input-video-url">
+          <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'video-url', mediaType:'video'})" data-testid="button-pick-video-url">🎬</button>
+        </div></div>
+      <div class="gx-field"><label class="gx-label" for="video-thumb">Thumbnail image URL</label>
+        <div class="gx-media-field">
+          <input class="gx-input" type="url" id="video-thumb" placeholder="https://…" data-testid="input-video-thumb">
+          <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'video-thumb', mediaType:'image'})" data-testid="button-pick-video-thumb">🖼</button>
+        </div></div>
+      <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="video-description">Description</label>
+        <textarea class="gx-input" id="video-description" rows="3" data-testid="input-video-description"></textarea></div>
+    </div>
+
+    <table class="data-table" id="video-gallery-table">
+      <thead>
+        <tr><th>Thumb</th><th>Title</th><th>Video URL</th><th>Sort</th><th></th></tr>
+      </thead>
+      <tbody id="video-gallery-tbody">
+        <tr><td colspan="5" style="text-align:center; color:var(--admin-text-muted); padding:1.5rem;">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>

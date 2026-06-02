@@ -1,0 +1,25 @@
+{# admin/tabs/_site-designs.html — 'site-designs' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-site-designs" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Website Designs</h2>
+        <p>Multiple full homepages you can preview side-by-side. Publish one to make it live at /.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn btn-secondary" onclick="alert('AI design drafting lands in the next session — you’ll be able to pick a Claude tier per call.');" data-testid="button-site-designs-ai-draft">
+          Ask AI to draft one
+        </button>
+        <button class="btn btn-primary" onclick="openSiteDesignForm()" data-testid="button-site-designs-new">
+          + New design
+        </button>
+      </div>
+    </div>
+    <div id="site-designs-grid" data-testid="grid-site-designs"
+         style="display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:1rem; margin-top:1rem;">
+      <div style="grid-column:1/-1; padding:2rem; text-align:center; color:var(--admin-text-muted);" data-testid="text-site-designs-loading">
+        Loading designs…
+      </div>
+    </div>
+  </div>

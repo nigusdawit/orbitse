@@ -1,0 +1,25 @@
+{# admin/tabs/_site-themes.html — 'site-themes' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-site-themes" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Themes</h2>
+        <p>A library of color + font palettes. Publish one to make it the active theme.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn btn-secondary" onclick="alert('AI theme drafting lands in the next session.');" data-testid="button-site-themes-ai-draft">
+          Ask AI to draft one
+        </button>
+        <button class="btn btn-primary" onclick="openSiteThemeForm()" data-testid="button-site-themes-new">
+          + New theme
+        </button>
+      </div>
+    </div>
+    <div id="site-themes-grid" data-testid="grid-site-themes"
+         style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1rem; margin-top:1rem;">
+      <div style="grid-column:1/-1; padding:2rem; text-align:center; color:var(--admin-text-muted);" data-testid="text-site-themes-loading">
+        Loading themes…
+      </div>
+    </div>
+  </div>

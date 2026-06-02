@@ -1,0 +1,111 @@
+{# admin/tabs/_reviews-destinations.html — 'reviews-destinations' tab panel (task 076 F3). #}
+<div id="tab-reviews-destinations" class="tab-content" data-navbtn="reviews">
+    <div class="gx-subtabs" role="tablist">
+      <button class="gx-subtab active" onclick="switchTab('reviews-destinations'); loadReviewDestinations();">Destinations</button>
+      <button class="gx-subtab" onclick="switchTab('reviews-requests'); loadReviewRequests();">Requests</button>
+      <button class="gx-subtab" onclick="switchTab('reviews-insights'); loadReviewInsights();">Insights</button>
+    </div>
+    <div class="section-header-admin">
+      <div>
+        <h2>Review destinations</h2>
+        <p>Where reviewers should land — Google, Yelp, TripAdvisor, or your own form.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn btn-secondary btn-sm" onclick="loadReviewDestinations()" data-testid="button-review-destinations-refresh">Refresh</button>
+        <button class="btn btn-primary btn-sm" onclick="openReviewDestinationForm()" data-testid="button-review-destination-add">+ New destination</button>
+      </div>
+    </div>
+
+    <div class="form-panel" id="review-destination-form-panel" style="display:none;">
+      <h3 id="review-destination-form-title">New destination</h3>
+      <input type="hidden" id="review-destination-id">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Name</label>
+          <input type="text" id="review-destination-name" placeholder="Our Google Listing" data-testid="input-review-destination-name">
+        </div>
+        <div class="form-group">
+          <label>Kind</label>
+          <select id="review-destination-kind" onchange="onReviewDestinationKindChange()" data-testid="select-review-destination-kind">
+            <option value="google">Google</option>
+            <option value="yelp">Yelp</option>
+            <option value="tripadvisor">TripAdvisor</option>
+            <option value="internal">Internal form</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Public URL</label>
+          <input type="text" id="review-destination-url" placeholder="https://g.page/your-business/review" data-testid="input-review-destination-url">
+        </div>
+        <div class="form-group">
+          <label id="review-destination-extid-label">Place ID / Business ID</label>
+          <input type="text" id="review-destination-extid" placeholder="ChIJ…" data-testid="input-review-destination-extid">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label><input type="checkbox" id="review-destination-auto-send" data-testid="checkbox-review-destination-auto"> Auto-send after booking is paid</label>
+        </div>
+        <div class="form-group">
+          <label>Days after paid</label>
+          <input type="number" id="review-destination-auto-days" min="0" max="365" value="3" data-testid="input-review-destination-auto-days">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label><input type="checkbox" id="review-destination-default" data-testid="checkbox-review-destination-default"> Use as default for manual asks</label>
+        </div>
+        <div class="form-group">
+          <label><input type="checkbox" id="review-destination-public" data-testid="checkbox-review-destination-public"> Show snapshot publicly on site</label>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="closeReviewDestinationForm()" data-testid="button-review-destination-cancel">Cancel</button>
+        <button class="btn btn-primary" onclick="saveReviewDestination()" data-testid="button-review-destination-save">Save destination</button>
+      </div>
+    </div>
+
+    <div class="form-panel" style="margin-top:1rem;">
+      <h3>Settings</h3>
+      <p style="color:var(--admin-text-muted); font-size:0.85rem; margin-top:-0.25rem;">Wrap every ask in a messaging template so tone and branding stay consistent.</p>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Email template wrapper</label>
+          <select id="review-settings-email-tpl" data-testid="select-review-settings-email-tpl"><option value="">— None (use built-in default) —</option></select>
+        </div>
+        <div class="form-group">
+          <label>SMS template wrapper</label>
+          <select id="review-settings-sms-tpl" data-testid="select-review-settings-sms-tpl"><option value="">— None (use built-in default) —</option></select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Default auto-send delay (days)</label>
+          <input type="number" id="review-settings-auto-days" min="0" max="365" value="3" data-testid="input-review-settings-auto-days">
+        </div>
+        <div class="form-group">
+          <label><input type="checkbox" id="review-settings-public-show" data-testid="checkbox-review-settings-public-show"> Show review snapshots on the public site</label>
+          <div style="font-size:0.8rem; color:var(--admin-text-muted);" id="review-settings-snapshot-meta"></div>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="saveReviewSettings()" data-testid="button-review-settings-save">Save settings</button>
+      </div>
+    </div>
+
+    <div style="overflow-x:auto; margin-top:1rem;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Name</th><th>Kind</th><th>URL</th><th>Auto-send</th>
+            <th>Aggregate</th><th>Public</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="review-destinations-tbody">
+          <tr><td colspan="7" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>

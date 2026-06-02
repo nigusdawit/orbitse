@@ -1,0 +1,67 @@
+{# admin/tabs/_products.html — 'products' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-products" class="tab-content">
+    <div class="gx-head">
+      <div>
+        <h2 class="gx-title">Products</h2>
+        <p class="gx-sub">Sell physical or digital goods. Enable the "Store" section in Page Layout to show the storefront publicly.</p>
+        <p id="products-stripe-status" style="margin:0.5rem 0 0; font-size:0.85rem;"></p>
+      </div>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-primary" onclick="showProductForm()" data-testid="button-new-product">+ New Product</button>
+      </div>
+    </div>
+
+    <div id="product-form-panel" style="display:none;">
+      <input type="hidden" id="product-form-id">
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Details</div>
+        <div class="gx-grid-fields">
+          <div class="gx-field col-2"><label class="gx-label" for="product-name">Name<span class="gx-req">*</span></label>
+            <input class="gx-input" type="text" id="product-name" data-testid="input-product-name"></div>
+          <div class="gx-field"><label class="gx-label" for="product-slug">Slug <span class="gx-hint">(auto from name)</span></label>
+            <input class="gx-input" type="text" id="product-slug" placeholder="auto-from-name" data-testid="input-product-slug"></div>
+          <div class="gx-field"><label class="gx-label" for="product-sort-order">Sort order</label>
+            <input class="gx-input" type="number" id="product-sort-order" value="0" data-testid="input-product-sort"></div>
+        </div>
+      </div>
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Pricing &amp; inventory</div>
+        <div class="gx-grid-fields">
+          <div class="gx-field"><label class="gx-label" for="product-price">Price<span class="gx-req">*</span></label>
+            <input class="gx-input" type="number" id="product-price" step="0.01" min="0" placeholder="29.99" data-testid="input-product-price"></div>
+          <div class="gx-field"><label class="gx-label" for="product-currency">Currency</label>
+            <select class="gx-input" id="product-currency" data-testid="input-product-currency">
+              <option value="USD">USD ($)</option><option value="EUR">EUR (€)</option><option value="GBP">GBP (£)</option>
+              <option value="CAD">CAD</option><option value="AUD">AUD</option><option value="JPY">JPY (¥)</option>
+            </select></div>
+          <div class="gx-field"><label class="gx-label" for="product-stock">Stock</label>
+            <input class="gx-input" type="number" id="product-stock" value="0" min="0" data-testid="input-product-stock"></div>
+        </div>
+        <div class="gx-foot" style="margin-top:.4rem; gap:1.4rem">
+          <label class="ap-check" style="margin:0"><input type="checkbox" id="product-active" checked data-testid="input-product-active"> Active (visible on storefront)</label>
+          <label class="ap-check" style="margin:0"><input type="checkbox" id="product-track-inventory" checked data-testid="input-product-track-inventory"> Track inventory (mark sold out at 0)</label>
+        </div>
+      </div>
+      <div class="gx-fieldset" style="margin-bottom:0">
+        <div class="gx-fieldset-h">Media &amp; description</div>
+        <div class="gx-field"><label class="gx-label" for="product-image">Image URL</label>
+          <div class="gx-media-field">
+            <input class="gx-input" type="url" id="product-image" placeholder="https://…" data-testid="input-product-image">
+            <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'product-image', mediaType:'image'})" data-testid="button-pick-product-image">🖼</button>
+          </div></div>
+        <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="product-description">Description</label>
+          <textarea class="gx-input" id="product-description" rows="3" data-testid="input-product-description"></textarea></div>
+      </div>
+    </div>
+
+    <table class="data-table" id="products-table">
+      <thead>
+        <tr><th>Image</th><th>Name</th><th>Price</th><th>Stock</th><th>Active</th><th>Sort</th><th></th></tr>
+      </thead>
+      <tbody id="products-tbody">
+        <tr><td colspan="7" style="text-align:center; color:var(--admin-text-muted); padding:1.5rem;">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>

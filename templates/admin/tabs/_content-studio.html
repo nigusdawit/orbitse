@@ -1,0 +1,57 @@
+{# admin/tabs/_content-studio.html — 'content-studio' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-content-studio" class="tab-content">
+    <div class="gx-head">
+      <div>
+        <h2 class="gx-title">Content Studio</h2>
+        <p class="gx-sub">Turn a research report into content — generate drafts, review &amp; edit them,
+          attach visuals, then publish through your channels.</p>
+      </div>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-ghost" onclick="loadContentStudio()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+          Refresh</button>
+      </div>
+    </div>
+
+    <div class="gx-card" style="margin-bottom:1.5rem;">
+      <div class="gx-card-h"><span class="gx-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></span> Generate content from a report</div>
+      <div style="display:flex; gap:1.1rem; flex-wrap:wrap; align-items:flex-start;">
+        <div class="gx-field" style="margin-bottom:0;"><label class="gx-label">Report ID</label>
+          <input id="cs-gen-report" class="gx-input" style="width:120px;" placeholder="e.g. 12" /></div>
+        <div class="gx-field" style="flex:1; min-width:260px; margin-bottom:0;"><label class="gx-label">Content types</label>
+          <div id="cs-gen-types" style="display:flex; gap:.7rem; flex-wrap:wrap; font-size:.85rem; color:var(--admin-text);"></div></div>
+      </div>
+      <div class="gx-field" style="margin-top:.9rem;"><label class="gx-label">Extra instructions / tone (optional)</label>
+        <input id="cs-gen-instructions" class="gx-input" placeholder="e.g. friendly, concise" /></div>
+      <div class="gx-foot">
+        <button class="gx-btn gx-btn-primary" onclick="csGenerate()">Generate drafts</button>
+        <span id="cs-gen-status" class="gx-hint"></span>
+      </div>
+    </div>
+
+    <div style="display:flex; gap:.8rem; align-items:center; margin-bottom:.75rem;">
+      <h3 class="gx-section-h" style="margin:0;">Drafts</h3>
+      <select id="cs-filter-status" class="gx-input" style="width:auto; padding:.35rem .6rem;" onchange="csLoadDrafts()">
+        <option value="">All statuses</option>
+        <option value="draft">Draft</option>
+        <option value="approved">Approved</option>
+        <option value="rejected">Rejected</option>
+        <option value="published">Published</option>
+      </select>
+    </div>
+    <div id="cs-drafts-list" class="gx-list"></div>
+    <div id="cs-draft-detail" class="gx-detail" style="display:none; margin-top:1rem;"></div>
+
+    <div style="display:flex; gap:.8rem; align-items:center; margin:1.75rem 0 .75rem;">
+      <h3 class="gx-section-h" style="margin:0;">Publish capabilities</h3>
+      <button class="gx-btn gx-btn-ghost" onclick="csShowCapForm()" style="padding:.35rem .7rem; font-size:.8rem;">+ Add capability</button>
+      <span id="cs-cap-python-note" class="gx-hint" style="font-size:.75rem;"></span>
+    </div>
+    <div id="cs-cap-form" style="display:none; margin-bottom:.7rem;" class="gx-card"></div>
+    <div id="cs-cap-list" class="gx-list"></div>
+
+    <h3 class="gx-section-h" style="margin:1.75rem 0 .75rem;">Recent publishes</h3>
+    <div id="cs-publish-log" style="display:flex; flex-direction:column; gap:.4rem;"></div>
+  </div>

@@ -1,0 +1,85 @@
+{# admin/tabs/_cards.html — 'cards' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-cards" class="tab-content">
+    <div class="gx-head">
+      <div>
+        <h2 class="gx-title">Gallery Cards</h2>
+        <p class="gx-sub">Manage the slides shown in the Explore gallery and the Highlights grid.</p>
+      </div>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-primary" onclick="showCardForm()" data-testid="button-add-card">+ Add card</button>
+      </div>
+    </div>
+
+    <!-- Card form — mounted into the gx-drawer by showCardForm()/editCard().
+         Field IDs + data-testids are unchanged so saveCard()/tests still work;
+         only the layout is regrouped into fieldsets. -->
+    <div id="card-form-panel" style="display:none;">
+      <input type="hidden" id="card-form-id">
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Basics</div>
+        <div class="gx-grid-fields">
+          <div class="gx-field"><label class="gx-label" for="card-title">Title<span class="gx-req">*</span></label>
+            <input class="gx-input" type="text" id="card-title" placeholder="Master Suite" data-testid="input-card-title"></div>
+          <div class="gx-field"><label class="gx-label" for="card-slug">Slug</label>
+            <input class="gx-input" type="text" id="card-slug" placeholder="master-suite" data-testid="input-card-slug"></div>
+          <div class="gx-field"><label class="gx-label" for="card-subtitle">Subtitle</label>
+            <input class="gx-input" type="text" id="card-subtitle" placeholder="Private Terrace & Ocean Views" data-testid="input-card-subtitle"></div>
+          <div class="gx-field"><label class="gx-label" for="card-category">Category</label>
+            <select class="gx-input" id="card-category" data-testid="select-card-category">
+              <option value="property">Property</option>
+              <option value="rooms">Featured</option>
+              <option value="amenities">Amenities</option>
+              <option value="dining">Dining</option>
+              <option value="experiences">Experiences</option>
+              <option value="location">Location</option>
+            </select></div>
+          <div class="gx-field"><label class="gx-label" for="card-price">Price (optional)</label>
+            <input class="gx-input" type="text" id="card-price" placeholder="From $1,800/night" data-testid="input-card-price"></div>
+          <div class="gx-field"><label class="gx-label" for="card-sort-order">Sort order</label>
+            <input class="gx-input" type="number" id="card-sort-order" placeholder="1" value="0" data-testid="input-card-sort"></div>
+        </div>
+      </div>
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Media</div>
+        <div class="gx-field"><label class="gx-label" for="card-image">Image URL</label>
+          <div class="gx-media-field">
+            <input class="gx-input" type="url" id="card-image" placeholder="https://images.unsplash.com/..." data-testid="input-card-image">
+            <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'card-image', mediaType:'image'})" data-testid="button-pick-card-image">🖼</button>
+            <button type="button" class="gx-icon-btn" title="Upload" onclick="uploadImageFor('card-image')" data-testid="button-upload-card-image">⤴</button>
+          </div></div>
+        <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="card-video">Video URL <span class="gx-hint">(optional — overrides image)</span></label>
+          <div class="gx-media-field">
+            <input class="gx-input" type="url" id="card-video" placeholder="/uploads/clip.mp4" data-testid="input-card-video">
+            <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'card-video', mediaType:'video'})" data-testid="button-pick-card-video">🎬</button>
+            <button type="button" class="gx-icon-btn" title="Clear" onclick="document.getElementById('card-video').value=''" data-testid="button-clear-card-video">✕</button>
+          </div></div>
+      </div>
+      <div class="gx-fieldset" style="margin-bottom:0">
+        <div class="gx-fieldset-h">Content</div>
+        <div class="gx-field"><label class="gx-label" for="card-description">Description</label>
+          <textarea class="gx-input" id="card-description" rows="3" placeholder="A description of this space..." data-testid="input-card-description"></textarea></div>
+        <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="card-details">Details <span class="gx-hint">(one per line — shown as bullet points)</span></label>
+          <textarea class="gx-input" id="card-details" rows="4" placeholder="King bed with Italian linens&#10;Private ocean-view terrace&#10;Walk-in rain shower" data-testid="input-card-details"></textarea></div>
+      </div>
+    </div>
+
+    <!-- Cards data table -->
+    <table class="data-table" id="cards-table">
+      <thead>
+        <tr>
+          <th style="width:30px;"></th>
+          <th>Image</th>
+          <th>Title</th>
+          <th>Category</th>
+          <th>Subtitle</th>
+          <th>Price</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="cards-tbody">
+        <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>

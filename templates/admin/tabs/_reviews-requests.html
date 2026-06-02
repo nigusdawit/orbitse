@@ -1,0 +1,83 @@
+{# admin/tabs/_reviews-requests.html — 'reviews-requests' tab panel (task 076 F3). #}
+<div id="tab-reviews-requests" class="tab-content" data-navbtn="reviews">
+    <div class="gx-subtabs" role="tablist">
+      <button class="gx-subtab" onclick="switchTab('reviews-destinations'); loadReviewDestinations();">Destinations</button>
+      <button class="gx-subtab active" onclick="switchTab('reviews-requests'); loadReviewRequests();">Requests</button>
+      <button class="gx-subtab" onclick="switchTab('reviews-insights'); loadReviewInsights();">Insights</button>
+    </div>
+    <div class="section-header-admin">
+      <div>
+        <h2>Review requests</h2>
+        <p>Each row is one AI-personalized ask. Click a row to see the rendered message.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <select id="review-requests-status-filter" onchange="loadReviewRequests()" data-testid="select-review-requests-status">
+          <option value="">All statuses</option>
+          <option value="queued">Queued</option>
+          <option value="sent">Sent</option>
+          <option value="failed">Failed</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="loadReviewRequests()" data-testid="button-review-requests-refresh">Refresh</button>
+        <button class="btn btn-primary btn-sm" onclick="openReviewRequestForm()" data-testid="button-review-request-add">+ Send ask</button>
+      </div>
+    </div>
+
+    <div class="form-panel" id="review-request-form-panel" style="display:none;">
+      <h3>Send a review ask</h3>
+      <p style="color:var(--admin-text-muted); font-size:0.85rem; margin-top:-0.25rem;">The AI will draft a short personalized message. The wrapper template (set in Destinations) handles branding.</p>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Destination</label>
+          <select id="review-request-destination" data-testid="select-review-request-destination"></select>
+        </div>
+        <div class="form-group">
+          <label>Channel</label>
+          <select id="review-request-channel" data-testid="select-review-request-channel">
+            <option value="email">Email</option>
+            <option value="sms">SMS</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Recipient name</label>
+          <input type="text" id="review-request-name" placeholder="Jane Doe" data-testid="input-review-request-name">
+        </div>
+        <div class="form-group">
+          <label>Recipient email</label>
+          <input type="email" id="review-request-email" placeholder="jane@example.com" data-testid="input-review-request-email">
+        </div>
+        <div class="form-group">
+          <label>Recipient phone (E.164)</label>
+          <input type="text" id="review-request-phone" placeholder="+15551234567" data-testid="input-review-request-phone">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="flex:1;">
+          <label>What they bought / booked (used by the AI for personalization)</label>
+          <input type="text" id="review-request-item" placeholder="Sunset Sailing Tour — June 14" data-testid="input-review-request-item">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="closeReviewRequestForm()" data-testid="button-review-request-cancel">Cancel</button>
+        <button class="btn btn-primary" onclick="saveReviewRequest()" data-testid="button-review-request-save">Queue & send</button>
+      </div>
+    </div>
+
+    <div style="overflow-x:auto;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Recipient</th><th>Channel</th><th>Destination</th><th>Source</th>
+            <th>Status</th><th>Sent</th><th>Clicked</th><th>Converted</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="review-requests-tbody">
+          <tr><td colspan="9" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div id="review-request-detail-panel" style="margin-top:1.5rem;"></div>
+  </div>

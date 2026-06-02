@@ -1,0 +1,160 @@
+{# admin/tabs/_sphere.html — 'sphere' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-sphere" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Sphere View</h2>
+        <p>Configure the immersive 3D rotating image sphere experience. When enabled, an "Immersive View" button appears on the landing page.</p>
+      </div>
+    </div>
+
+    <div class="form-card" id="sphere-settings-form">
+      <div class="form-row">
+        <div class="form-group" style="flex: 0 0 auto;">
+          <label>
+            <input type="checkbox" id="sphere-enabled" onchange="toggleSphereEnabled(this)" data-testid="checkbox-sphere-enabled">
+            Enable Sphere View
+            <span id="sphere-enabled-status" style="margin-left:0.5rem; font-size:0.8rem; color:var(--muted, #888);"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group" style="flex: 2;">
+          <label for="sphere-heading-text">Heading Text</label>
+          <input type="text" id="sphere-heading-text" placeholder="The cosmos is within us..." data-testid="input-sphere-heading">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="sphere-view-mode">View Mode</label>
+          <select id="sphere-view-mode" onchange="toggleSphereViewMode()" data-testid="select-sphere-view-mode">
+            <option value="sections">Section Carousel (cards)</option>
+            <option value="sphere">Classic Sphere (images)</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="sphere-carousel-settings" style="display:none;">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="sphere-card-scale">Card Scale</label>
+            <input type="number" id="sphere-card-scale" min="0.5" max="2" step="0.1" data-testid="input-sphere-card-scale">
+          </div>
+          <div class="form-group">
+            <label for="sphere-card-gap">Card Gap</label>
+            <input type="number" id="sphere-card-gap" min="1" max="5" step="0.5" data-testid="input-sphere-card-gap">
+          </div>
+        </div>
+      </div>
+
+      <div id="sphere-classic-settings">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="sphere-image-source">Image Source</label>
+            <select id="sphere-image-source" data-testid="select-sphere-image-source">
+              <option value="gallery">Use Gallery Card Images</option>
+              <option value="custom">Use Custom Images</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="sphere-particle-count">Particle Count</label>
+          <input type="number" id="sphere-particle-count" min="100" max="5000" step="100" data-testid="input-sphere-particles">
+        </div>
+        <div class="form-group">
+          <label for="sphere-rotation-speed">Rotation Speed</label>
+          <input type="number" id="sphere-rotation-speed" min="0" max="0.01" step="0.0001" data-testid="input-sphere-rotation">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="sphere-radius">Sphere Radius</label>
+          <input type="number" id="sphere-radius" min="3" max="20" step="0.5" data-testid="input-sphere-radius">
+        </div>
+        <div class="form-group">
+          <label for="sphere-image-size">Image Size</label>
+          <input type="number" id="sphere-image-size" min="0.5" max="5" step="0.1" data-testid="input-sphere-image-size">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="sphere-position-randomness">Position Randomness</label>
+          <input type="number" id="sphere-position-randomness" min="0" max="10" step="0.5" data-testid="input-sphere-randomness">
+        </div>
+        <div class="form-group">
+          <label for="sphere-particle-opacity">Particle Opacity</label>
+          <input type="number" id="sphere-particle-opacity" min="0.1" max="1" step="0.1" data-testid="input-sphere-opacity">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="sphere-zoom-min">Zoom Min (closest)</label>
+          <input type="number" id="sphere-zoom-min" min="1" max="15" step="0.5" data-testid="input-sphere-zoom-min">
+        </div>
+        <div class="form-group">
+          <label for="sphere-zoom-max">Zoom Max (farthest)</label>
+          <input type="number" id="sphere-zoom-max" min="15" max="60" step="1" data-testid="input-sphere-zoom-max">
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="saveSphereSettings()" data-testid="button-save-sphere">Save Sphere Settings</button>
+      </div>
+    </div>
+
+    <div id="sphere-custom-images-panel" style="display:none; margin-top: 1.5rem;">
+      <div class="section-header-admin">
+        <div>
+          <h3>Custom Sphere Images</h3>
+          <p>Add images that will orbit around the sphere. Use the upload button or paste a URL.</p>
+        </div>
+        <button class="btn btn-primary" onclick="showAddSphereImageForm()" data-testid="button-add-sphere-image">+ Add Image</button>
+      </div>
+
+      <div id="add-sphere-image-form" class="form-card" style="display:none; margin-bottom: 1rem;">
+        <div class="form-row">
+          <div class="form-group" style="flex: 2;">
+            <label for="sphere-new-image-url">Image URL</label>
+            <div style="display:flex; gap: 0.5rem;">
+              <input type="text" id="sphere-new-image-url" placeholder="/uploads/image.jpg" data-testid="input-sphere-new-image-url" style="flex:1;">
+              <button type="button" class="btn btn-secondary" style="white-space:nowrap;" onclick="openMediaPicker({targetInputId:'sphere-new-image-url', mediaType:'image'})" data-testid="button-pick-sphere-image">Pick</button>
+              <label class="btn btn-secondary" style="cursor:pointer; margin:0; white-space:nowrap;">
+                Upload
+                <input type="file" accept="image/*" onchange="uploadSphereImage(this)" style="display:none;" data-testid="input-sphere-upload">
+              </label>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="sphere-new-image-caption">Caption (optional)</label>
+            <input type="text" id="sphere-new-image-caption" placeholder="Image description" data-testid="input-sphere-new-caption">
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-secondary" onclick="hideAddSphereImageForm()" data-testid="button-cancel-sphere-image">Cancel</button>
+          <button class="btn btn-primary" onclick="addSphereImage()" data-testid="button-save-sphere-image">Add Image</button>
+        </div>
+      </div>
+
+      <table class="data-table" id="sphere-images-table">
+        <thead>
+          <tr>
+            <th style="width:30px;"></th>
+            <th style="width:60px;">Preview</th>
+            <th>Image URL</th>
+            <th>Caption</th>
+            <th style="width:80px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="sphere-images-body" data-testid="sphere-images-body"></tbody>
+      </table>
+    </div>
+  </div>

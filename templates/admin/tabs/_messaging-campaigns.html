@@ -1,0 +1,82 @@
+{# admin/tabs/_messaging-campaigns.html — 'messaging-campaigns' tab panel (task 076 F3). #}
+<div id="tab-messaging-campaigns" class="tab-content" data-navbtn="messaging">
+    <div class="gx-subtabs" role="tablist">
+      <button class="gx-subtab" onclick="switchTab('messaging-subscribers'); loadMessagingSubscribers();">Subscribers</button>
+      <button class="gx-subtab" onclick="switchTab('messaging-templates'); loadMessagingTemplates();">Templates</button>
+      <button class="gx-subtab active" onclick="switchTab('messaging-campaigns'); loadMessagingCampaigns();">Campaigns</button>
+    </div>
+    <div class="section-header-admin">
+      <div>
+        <h2>Campaigns</h2>
+        <p>Send a template to a list right now or schedule it for later.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn btn-secondary btn-sm" onclick="loadMessagingCampaigns()" data-testid="button-campaigns-refresh">Refresh</button>
+        <button class="btn btn-primary btn-sm" onclick="openCampaignForm()" data-testid="button-campaign-add">+ New campaign</button>
+      </div>
+    </div>
+
+    <div class="form-panel" id="campaign-form-panel" style="display:none;">
+      <h3>New campaign</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Name</label>
+          <input type="text" id="campaign-name" placeholder="Spring sale email" data-testid="input-campaign-name">
+        </div>
+        <div class="form-group">
+          <label>Template</label>
+          <select id="campaign-template" data-testid="select-campaign-template"></select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Recipients</label>
+          <select id="campaign-recipient-kind" onchange="onCampaignRecipientKindChange()" data-testid="select-campaign-recipient-kind">
+            <option value="all">All eligible subscribers</option>
+            <option value="list">Subscribers on a specific list</option>
+            <option value="ids">Specific subscriber IDs</option>
+          </select>
+        </div>
+        <div class="form-group" id="campaign-list-group" style="display:none;">
+          <label>List name</label>
+          <input type="text" id="campaign-list-name" placeholder="default" data-testid="input-campaign-list-name">
+        </div>
+        <div class="form-group" id="campaign-ids-group" style="display:none;">
+          <label>Subscriber IDs (comma-separated)</label>
+          <input type="text" id="campaign-ids" placeholder="1,4,7" data-testid="input-campaign-ids">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>When to send</label>
+          <select id="campaign-when" onchange="onCampaignWhenChange()" data-testid="select-campaign-when">
+            <option value="now">Send immediately</option>
+            <option value="schedule">Schedule for later</option>
+            <option value="draft">Save as draft</option>
+          </select>
+        </div>
+        <div class="form-group" id="campaign-schedule-group" style="display:none;">
+          <label>Send at (your local time)</label>
+          <input type="datetime-local" id="campaign-send-at" data-testid="input-campaign-send-at">
+        </div>
+      </div>
+      <div id="campaign-recipient-count" style="font-size:0.85rem;color:var(--admin-text-muted); margin-bottom:0.75rem;"></div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="closeCampaignForm()" data-testid="button-campaign-cancel">Cancel</button>
+        <button class="btn btn-primary" onclick="saveCampaign()" data-testid="button-campaign-save">Create campaign</button>
+      </div>
+    </div>
+
+    <div style="overflow-x:auto;">
+      <table class="data-table">
+        <thead>
+          <tr><th>Name</th><th>Channel</th><th>Status</th><th>Send at</th><th>Sent / Failed</th><th>Created</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="campaigns-tbody">
+          <tr><td colspan="7" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div id="campaign-detail-panel" style="margin-top:1.5rem;"></div>
+  </div>

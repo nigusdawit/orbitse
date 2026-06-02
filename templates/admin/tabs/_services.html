@@ -1,0 +1,45 @@
+{# admin/tabs/_services.html — 'services' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-services" class="tab-content">
+    
+    <div class="section-header-admin">
+      <div>
+        <h2>Services</h2>
+        <p>Manage bookable services. Each service can be free RSVP, deposit, full-paid, or contract-based, with optional add-ons and a weekly availability schedule.</p>
+      </div>
+      <button class="btn-add" onclick="openServiceEditor(null)" data-testid="button-add-service">+ Add Service</button>
+    </div>
+
+    <div class="svc-layout">
+      <!-- LEFT: list of services (becomes a horizontal scroll bar on phone) -->
+      <aside class="svc-sidebar">
+        <div id="services-list" data-testid="services-list">
+          <p style="opacity:0.6;text-align:center;padding:2rem 1rem;">Loading services...</p>
+        </div>
+      </aside>
+
+      <!-- RIGHT: editor / sub-tabs -->
+      <div id="service-detail-pane" class="svc-detail" data-testid="service-detail-pane">
+        <p style="opacity:0.6;text-align:center;padding:4rem 1rem;">Select a service on the left, or click "+ Add Service" to create your first one.</p>
+      </div>
+    </div>
+
+    <!-- Bookings drawer (full-width, below) -->
+    <div style="margin-top: 1.5rem;">
+      <div class="section-header-admin">
+        <div>
+          <h3 style="margin: 0;">All Bookings</h3>
+          <p style="margin: 0; opacity: 0.7;">Recent client bookings across every service.</p>
+        </div>
+        <select id="bookings-status-filter" onchange="loadAllBookings()" data-testid="select-booking-status" style="padding: 0.4rem 0.6rem; border-radius: 6px;">
+          <option value="">All statuses</option>
+          <option value="pending">Pending</option>
+          <option value="confirmed">Confirmed</option>
+          <option value="cancelled">Cancelled</option>
+          <option value="completed">Completed</option>
+        </select>
+      </div>
+      <div id="bookings-table-wrap" data-testid="bookings-table-wrap"></div>
+    </div>
+  </div>

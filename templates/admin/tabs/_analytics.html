@@ -1,0 +1,124 @@
+{# admin/tabs/_analytics.html — 'analytics' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-analytics" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Visitor Analytics</h2>
+        <p>Track page views, visitor sessions, browsers, devices, and traffic sources.</p>
+      </div>
+      <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <label for="analytics-days-select" style="color: var(--admin-text-muted); font-size: 0.85rem;">Period:</label>
+        <select id="analytics-days-select" onchange="loadAnalytics()" data-testid="select-analytics-days" style="background: var(--admin-input-bg); border: 1px solid var(--admin-border); color: var(--admin-text); padding: 0.4rem 0.6rem; border-radius: var(--admin-radius); font-size: 0.85rem;">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="loadAnalytics()" data-testid="button-refresh-analytics">Refresh</button>
+      </div>
+    </div>
+
+    <!-- Summary Cards -->
+    <div id="analytics-summary-cards" class="gx-stats" style="margin-bottom: 1.5rem;">
+      <div class="gx-stat"><div class="gx-stat-label">Total Views</div>
+        <div class="gx-stat-value" id="av-total-views" data-testid="text-av-total-views">0</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Unique Visitors</div>
+        <div class="gx-stat-value" id="av-unique-visitors" data-testid="text-av-unique-visitors">0</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Sessions</div>
+        <div class="gx-stat-value" id="av-total-sessions" data-testid="text-av-total-sessions">0</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Avg. Duration</div>
+        <div class="gx-stat-value" id="av-avg-duration" data-testid="text-av-avg-duration">0s</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Today</div>
+        <div class="gx-stat-value" id="av-today-views" style="color:var(--admin-accent);" data-testid="text-av-today-views">0</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">This Week</div>
+        <div class="gx-stat-value" id="av-week-views" style="color:var(--admin-accent);" data-testid="text-av-week-views">0</div></div>
+    </div>
+
+    <!-- Daily Views Bar Chart -->
+    <div class="form-panel" style="margin-bottom: 1.5rem;">
+      <h3 style="margin-bottom: 1rem;">Daily Page Views</h3>
+      <div id="av-chart-container" data-testid="chart-daily-views" style="display: flex; align-items: flex-end; gap: 2px; height: 180px; padding: 0.5rem 0; overflow-x: auto;">
+        <div style="color: var(--admin-text-muted); font-size: 0.85rem;">Loading chart data...</div>
+      </div>
+      <div id="av-chart-labels" style="display: flex; gap: 2px; font-size: 0.65rem; color: var(--admin-text-muted); overflow-x: auto; margin-top: 0.25rem;"></div>
+    </div>
+
+    <!-- Breakdowns: Browsers, Devices, OS, UTM Sources side-by-side -->
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+      <!-- Browsers -->
+      <div class="form-panel">
+        <h3 style="margin-bottom: 0.75rem; font-size: 0.9rem;">Browsers</h3>
+        <div id="av-browsers" data-testid="list-av-browsers" style="font-size: 0.85rem; color: rgba(255,255,255,0.8);">—</div>
+      </div>
+      <!-- Devices -->
+      <div class="form-panel">
+        <h3 style="margin-bottom: 0.75rem; font-size: 0.9rem;">Devices</h3>
+        <div id="av-devices" data-testid="list-av-devices" style="font-size: 0.85rem; color: rgba(255,255,255,0.8);">—</div>
+      </div>
+      <!-- Operating Systems -->
+      <div class="form-panel">
+        <h3 style="margin-bottom: 0.75rem; font-size: 0.9rem;">Operating Systems</h3>
+        <div id="av-os" data-testid="list-av-os" style="font-size: 0.85rem; color: rgba(255,255,255,0.8);">—</div>
+      </div>
+      <!-- UTM Sources -->
+      <div class="form-panel">
+        <h3 style="margin-bottom: 0.75rem; font-size: 0.9rem;">UTM Sources</h3>
+        <div id="av-utm" data-testid="list-av-utm" style="font-size: 0.85rem; color: rgba(255,255,255,0.8);">—</div>
+      </div>
+    </div>
+
+    <!-- Top Pages Table -->
+    <div class="form-panel" style="margin-bottom: 1.5rem;">
+      <h3 style="margin-bottom: 0.75rem;">Top Pages</h3>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Page URL</th>
+            <th>Views</th>
+            <th>Avg. Duration</th>
+          </tr>
+        </thead>
+        <tbody id="av-top-pages-tbody" data-testid="table-av-top-pages">
+          <tr><td colspan="3" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Top Referrers Table -->
+    <div class="form-panel" style="margin-bottom: 1.5rem;">
+      <h3 style="margin-bottom: 0.75rem;">Top Referrers</h3>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Referrer URL</th>
+            <th>Views</th>
+          </tr>
+        </thead>
+        <tbody id="av-referrers-tbody" data-testid="table-av-referrers">
+          <tr><td colspan="2" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Recent Page Views Table -->
+    <div class="form-panel">
+      <h3 style="margin-bottom: 0.75rem;">Recent Page Views</h3>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Page</th>
+            <th>Browser</th>
+            <th>OS</th>
+            <th>Device</th>
+            <th>Duration</th>
+            <th>UTM Source</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody id="av-recent-tbody" data-testid="table-av-recent">
+          <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>

@@ -1,0 +1,38 @@
+{# admin/tabs/_faq.html — 'faq' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-faq" class="tab-content">
+    <div class="gx-head">
+      <div>
+        <h2 class="gx-title">Frequently Asked Questions</h2>
+        <p class="gx-sub">Manage the FAQ section displayed on the public site.</p>
+      </div>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-primary" onclick="showFaqForm()" data-testid="button-add-faq">+ Add FAQ</button>
+      </div>
+    </div>
+
+    <div id="faq-form-panel" style="display:none;">
+      <input type="hidden" id="faq-form-id">
+      <div class="gx-field"><label class="gx-label" for="faq-question">Question<span class="gx-req">*</span></label>
+        <input class="gx-input" type="text" id="faq-question" placeholder="What are your check-in hours?" data-testid="input-faq-question"></div>
+      <div class="gx-field"><label class="gx-label" for="faq-answer">Answer<span class="gx-req">*</span></label>
+        <textarea class="gx-input" id="faq-answer" rows="5" placeholder="Our check-in time is 3:00 PM..." data-testid="input-faq-answer"></textarea></div>
+      <div class="gx-field" style="margin-bottom:0; max-width:160px"><label class="gx-label" for="faq-sort-order">Sort order</label>
+        <input class="gx-input" type="number" id="faq-sort-order" placeholder="0" value="0" data-testid="input-faq-sort"></div>
+    </div>
+
+    <table class="data-table" id="faq-table">
+      <thead>
+        <tr>
+          <th style="width:30px;"></th>
+          <th>Question</th>
+          <th>Answer</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="faq-tbody">
+        <tr><td colspan="4" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>

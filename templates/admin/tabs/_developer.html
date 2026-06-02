@@ -1,0 +1,33 @@
+{# admin/tabs/_developer.html — 'developer' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-developer" class="tab-content">
+    <div class="content-header">
+      <h2>Developer Console</h2>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <span id="developer-updated" style="font-size:0.8125rem; color:var(--admin-text-muted);" data-testid="text-developer-updated"></span>
+        <button class="btn-secondary" onclick="loadDeveloper()" data-testid="button-developer-refresh">Refresh</button>
+      </div>
+    </div>
+    <p style="color:var(--admin-text-muted); margin:0 0 1rem 0; font-size:0.875rem;">
+      Shortcuts and reminders for the most common changes. Click any card to expand.
+    </p>
+    <div id="developer-loading" class="empty-state" style="padding:1.5rem;" data-testid="text-developer-loading">Loading…</div>
+    <div id="developer-content" style="display:none;">
+      <h3 style="margin:1rem 0 0.5rem 0; font-size:1rem; color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:0.05em;">Runbook</h3>
+      <div id="developer-runbook" style="display:flex; flex-direction:column; gap:0.5rem;" data-testid="list-developer-runbook"></div>
+      <h3 style="margin:1.5rem 0 0.5rem 0; font-size:1rem; color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:0.05em;">Service Health</h3>
+      <p style="margin:0 0 0.75rem 0; font-size:0.8125rem; color:var(--admin-text-muted);">
+        Each card shows whether the provider is configured. Press <strong>Test now</strong> to fire a tiny free-tier request and confirm connectivity.
+      </p>
+      <div id="developer-health" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:0.75rem;" data-testid="grid-developer-health"></div>
+
+      <h3 style="margin:1.5rem 0 0.5rem 0; font-size:1rem; color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:0.05em;">Super-admin activity</h3>
+      <p style="margin:0 0 0.75rem 0; font-size:0.8125rem; color:var(--admin-text-muted);">
+        The 50 most recent lock events: unlocks (success / wrong key / throttled), manual locks, and auto-locks when the 30-min TTL expires or you log out. Useful for spotting unauthorized attempts.
+      </p>
+      <div id="developer-audit" class="audit-panel" data-testid="list-developer-audit">
+        <div class="empty-state" style="padding:0.75rem;" data-testid="text-developer-audit-loading">Loading…</div>
+      </div>
+    </div>
+  </div>

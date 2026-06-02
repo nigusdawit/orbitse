@@ -1,0 +1,225 @@
+{# admin/tabs/_admin-chat.html — 'admin-chat' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-admin-chat" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Admin Chat</h2>
+        <p>Talk to your visitor agent as if you were a customer, or hand off to the admin assistant to manage the site by chat.</p>
+      </div>
+    </div>
+
+    <div role="tablist" aria-label="Admin chat mode" style="display:inline-flex; padding:.25rem; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:.75rem; margin-bottom:.75rem;">
+      <button id="admin-chat-mode-admin" role="tab" aria-selected="true" class="btn" onclick="adminChatSetMode('admin')" style="border:0; background:var(--admin-card); padding:.5rem 1rem; border-radius:.5rem; font-weight:600;" data-testid="button-admin-chat-mode-admin">Admin assistant</button>
+      <button id="admin-chat-mode-visitor" role="tab" aria-selected="false" class="btn" onclick="adminChatSetMode('visitor')" style="border:0; background:transparent; padding:.5rem 1rem; border-radius:.5rem; color:var(--admin-text-muted);" data-testid="button-admin-chat-mode-visitor">Preview as visitor</button>
+    </div>
+
+    <p id="admin-chat-mode-help" style="margin:0 0 .75rem 0; color:var(--admin-text-muted); font-size:.9rem;">
+      The admin assistant can run read-only SQL, manage AI skills, edit narrow content (FAQ, business info, blog drafts), and surface recent activity.
+    </p>
+
+    <div class="admin-chat-shell" id="admin-chat-shell">
+
+      <!-- Sessions sidebar (admin mode only — hidden in visitor preview) -->
+      <aside class="admin-chat-side" id="admin-chat-sidebar" data-testid="admin-chat-sidebar">
+        <div style="display:flex; gap:.4rem;">
+          <button class="btn btn-primary" style="flex:1; padding:.4rem .6rem; font-size:.85rem;"
+                  onclick="adminChatNewSession()" data-testid="button-admin-chat-new">+ New chat</button>
+        </div>
+        <input id="admin-chat-search" type="search" placeholder="Search conversations…"
+               oninput="adminChatRenderSessionsDebounced()"
+               style="width:100%; padding:.4rem .55rem; border:1px solid var(--admin-border); border-radius:.4rem; background:var(--admin-card); color:var(--admin-text); font-size:.85rem;"
+               data-testid="input-admin-chat-search">
+        <div id="admin-chat-sessions-list" style="overflow-y:auto; flex:1; display:flex; flex-direction:column; gap:.25rem;"
+             data-testid="admin-chat-sessions-list">
+          <div style="color:var(--admin-text-muted); font-size:.85rem; padding:.5rem;">Loading…</div>
+        </div>
+      </aside>
+
+      <!-- Main chat pane -->
+      <div style="display:flex; flex-direction:column; gap:.5rem; min-width:0;">
+
+        <!-- Header: title + model picker + per-session config buttons + export -->
+        <div class="admin-chat-header" id="admin-chat-mainheader">
+          <input id="admin-chat-title" type="text" placeholder="Untitled conversation"
+                 onchange="adminChatSaveTitle()" 
+                 style="flex:1; min-width:160px; background:transparent; border:0; outline:none; font-size:1rem; font-weight:600; color:var(--admin-text);"
+                 data-testid="input-admin-chat-title">
+          <!-- Task #80: persona pin. Auto = router classifier picks per-turn. -->
+          <select id="admin-chat-persona" title="Persona — Auto lets the router pick per-turn" data-testid="select-admin-chat-persona"
+                  style="background:var(--admin-card); color:var(--admin-text); border:1px solid var(--admin-border); border-radius:.4rem; padding:.25rem .4rem;">
+            <option value="">🎭 Auto persona</option>
+            <option value="general">General</option>
+            <option value="research">🔎 Research</option>
+            <option value="data_analyst">📊 Data analyst</option>
+            <option value="code">💻 Code</option>
+            <option value="creative">🎨 Creative</option>
+            <option value="ops">🛠 Ops</option>
+          </select>
+          <select id="admin-chat-model" onchange="adminChatSaveModel()" data-testid="select-admin-chat-model">
+            <option value="">Default model</option>
+            <optgroup label="OpenAI">
+              <option value="gpt-4o-mini">GPT-4o-mini</option>
+              <option value="gpt-4o">GPT-4o</option>
+              <option value="gpt-4.1-mini">GPT-4.1-mini</option>
+              <option value="gpt-4.1">GPT-4.1</option>
+              <option value="o3-mini">o3-mini</option>
+            </optgroup>
+            <optgroup label="Anthropic">
+              <option value="claude-3-5-sonnet-latest">Claude 3.5 Sonnet</option>
+              <option value="claude-sonnet-4-5">Claude Sonnet 4.5</option>
+            </optgroup>
+          </select>
+          {% if is_super_admin() %}
+          <button class="acm-btn" onclick="adminChatOpenPromptEditor()" title="System prompt for this conversation"
+                  data-testid="button-admin-chat-prompt">⚙ Prompt</button>
+          {% endif %}
+          <button class="acm-btn" onclick="adminChatOpenSkills()" title="Tools available to this conversation"
+                  data-testid="button-admin-chat-skills">🧰 Skills</button>
+          <!-- Task #79: Knowledge Base panel — upload docs the AI can cite -->
+          <button class="acm-btn" onclick="adminChatOpenKB()" title="Upload PDFs / docs the AI can search and cite"
+                  data-testid="button-admin-chat-kb">📚 KB</button>
+          <button class="acm-btn" onclick="adminChatExport('md')" title="Download Markdown"
+                  data-testid="button-admin-chat-export-md">↓ .md</button>
+          <button class="acm-btn" onclick="adminChatExport('json')" title="Download JSON"
+                  data-testid="button-admin-chat-export-json">↓ .json</button>
+          <button class="acm-btn" onclick="adminChatClear()" title="Clear messages (keeps the session; use Del in the sidebar to remove the session entirely)"
+                  data-testid="button-admin-chat-clear">Clear msgs</button>
+        </div>
+
+        <div id="admin-chat-messages" data-testid="admin-chat-messages" style="flex:1; min-height:400px; max-height:60vh; overflow-y:auto; padding:1rem; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:.75rem; display:flex; flex-direction:column; gap:.75rem;">
+          <div style="color:var(--admin-text-muted); font-size:.9rem;">Start a conversation below.</div>
+        </div>
+
+        <!-- Task #80: pending-attachment chip strip. Hidden until the
+             admin actually drops/picks something. Each chip carries the
+             attachment id returned by /attachments/upload; the next
+             adminChatSend collects them, clears the strip, and forwards
+             the id list to the stream endpoint. -->
+        <div id="admin-chat-attach-strip" data-testid="admin-chat-attach-strip"
+             style="display:none; flex-wrap:wrap; gap:.4rem;"></div>
+
+        <form onsubmit="event.preventDefault(); adminChatSend();" style="display:flex; gap:.5rem; align-items:flex-end;">
+          <!-- Hidden file input driven by the 📎 button. accept covers
+               images + docs the backend whitelists. -->
+          <input type="file" id="admin-chat-file-input"
+                 accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.docx,.pptx,.csv,.txt,.json,image/*"
+                 multiple style="display:none;"
+                 onchange="adminChatHandleFiles(this.files); this.value='';"
+                 data-testid="input-admin-chat-file">
+          <button type="button" class="acm-btn" title="Attach image or document (≤25MB)"
+                  onclick="document.getElementById('admin-chat-file-input').click();"
+                  style="align-self:stretch; padding:0 .75rem;"
+                  data-testid="button-admin-chat-attach">📎</button>
+          <button type="button" id="admin-chat-mic-btn" class="acm-btn"
+                  title="Hold to dictate"
+                  style="align-self:stretch; padding:0 .75rem;"
+                  data-testid="button-admin-chat-mic">🎤</button>
+          <textarea id="admin-chat-input" rows="2" placeholder="Ask the admin assistant anything about your site, or talk to your visitor agent..." style="flex:1; padding:.75rem; border:1px solid var(--admin-border); border-radius:.5rem; font-family:inherit; resize:vertical;" onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault(); adminChatSend();}" data-testid="input-admin-chat"></textarea>
+          <button type="submit" id="admin-chat-send-btn" class="btn btn-primary" style="align-self:stretch; padding:0 1.25rem;" data-testid="button-admin-chat-send">Send</button>
+        </form>
+
+      </div>
+    </div>
+
+    <!-- System prompt editor modal -->
+    <div class="admin-chat-modal-backdrop" id="admin-chat-prompt-modal" onclick="if(event.target===this) adminChatCloseModal('prompt')">
+      <div class="admin-chat-modal" data-testid="modal-admin-chat-prompt">
+        <h3 style="margin-top:0;">System prompt for this conversation</h3>
+        <p style="color:var(--admin-text-muted); font-size:.85rem; margin-top:0;">Leave empty to use the default admin assistant prompt. An override here applies ONLY to this conversation and is stored with the session, so other threads keep using the default.</p>
+        <textarea id="admin-chat-prompt-textarea" rows="14"
+                  style="width:100%; padding:.6rem; font-family:ui-monospace,monospace; font-size:.8rem; border:1px solid var(--admin-border); border-radius:.4rem; background:var(--admin-card); color:var(--admin-text); resize:vertical;"
+                  data-testid="textarea-admin-chat-prompt"></textarea>
+        <details style="margin-top:.5rem;">
+          <summary style="cursor:pointer; color:var(--admin-text-muted); font-size:.85rem;">View default prompt</summary>
+          <pre id="admin-chat-prompt-default" style="white-space:pre-wrap; background:var(--admin-card); padding:.5rem; border-radius:.4rem; font-size:.78rem; max-height:240px; overflow:auto;"></pre>
+        </details>
+        <div style="display:flex; gap:.5rem; justify-content:flex-end; margin-top:.75rem;">
+          <button class="btn btn-secondary" onclick="adminChatCloseModal('prompt')" data-testid="button-admin-chat-prompt-cancel">Cancel</button>
+          <button class="btn btn-secondary" onclick="adminChatPromptUseDefault()" data-testid="button-admin-chat-prompt-default">Reset to default</button>
+          <button class="btn btn-primary" onclick="adminChatPromptSave()" data-testid="button-admin-chat-prompt-save">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Skills (per-conversation tools) modal -->
+    <div class="admin-chat-modal-backdrop" id="admin-chat-skills-modal" onclick="if(event.target===this) adminChatCloseModal('skills')">
+      <div class="admin-chat-modal" data-testid="modal-admin-chat-skills">
+        <h3 style="margin-top:0;">Skills available in this conversation</h3>
+        <p style="color:var(--admin-text-muted); font-size:.85rem; margin-top:0;">Uncheck a skill to hide it from the assistant for this conversation only. Other conversations are unaffected. Changes apply on your next message.</p>
+        <!-- Task #79: per-session Knowledge Base toggle. Lives in the
+             Skills panel because it's logically a "tool that runs on
+             every turn". When off, the auto-retrieval is skipped but
+             the lookup_knowledge_base function-call tool still works,
+             so the AI can still pull from the KB on demand. -->
+        <div style="display:flex; align-items:center; gap:.5rem; padding:.5rem .25rem; border-bottom:1px solid var(--admin-border); margin-bottom:.5rem;">
+          <input type="checkbox" id="admin-chat-use-kb" data-testid="checkbox-admin-chat-use-kb">
+          <label for="admin-chat-use-kb" style="flex:1; font-weight:600;">
+            📚 Auto-search the Knowledge Base on every message
+          </label>
+          <button class="acm-btn" type="button" onclick="adminChatOpenKB()" data-testid="button-admin-chat-skills-kb">Manage docs →</button>
+        </div>
+        <div id="admin-chat-skills-body" style="max-height:55vh; overflow:auto;">
+          <div style="color:var(--admin-text-muted); padding:1rem;">Loading…</div>
+        </div>
+        <div style="display:flex; gap:.5rem; justify-content:flex-end; margin-top:.75rem;">
+          <button class="btn btn-secondary" onclick="adminChatCloseModal('skills')" data-testid="button-admin-chat-skills-close">Close</button>
+          <button class="btn btn-primary" onclick="adminChatSkillsSave()" data-testid="button-admin-chat-skills-save">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Knowledge Base modal (Task #79) — upload + list + reindex docs the AI can cite -->
+    <div class="admin-chat-modal-backdrop" id="admin-chat-kb-modal" onclick="if(event.target===this) adminChatCloseModal('kb')">
+      <div class="admin-chat-modal" data-testid="modal-admin-chat-kb" style="max-width:720px;">
+        <h3 style="margin-top:0;">Knowledge Base</h3>
+        <p style="color:var(--admin-text-muted); font-size:.85rem; margin-top:0;">
+          Upload PDF, DOCX, PPTX, CSV, or TXT files. The admin assistant will automatically search them
+          on every message and quote passages with <code>[source: file p.N]</code> citations. Toggle KB
+          retrieval per conversation in the Skills panel.
+        </p>
+        <div style="display:flex; gap:.5rem; align-items:center; margin:.5rem 0;">
+          <input type="file" id="admin-chat-kb-file"
+                 accept=".pdf,.docx,.pptx,.csv,.txt"
+                 style="flex:1;" data-testid="input-admin-chat-kb-file">
+          <button class="btn btn-primary" onclick="adminChatKBUpload()"
+                  data-testid="button-admin-chat-kb-upload">Upload &amp; index</button>
+        </div>
+        <div id="admin-chat-kb-status" style="font-size:.8rem; color:var(--admin-text-muted); min-height:1.2em;"></div>
+        <div id="admin-chat-kb-list" style="max-height:50vh; overflow:auto; margin-top:.5rem; border:1px solid var(--admin-border); border-radius:.4rem;">
+          <div style="color:var(--admin-text-muted); padding:1rem;">Loading…</div>
+        </div>
+        <div style="display:flex; gap:.5rem; justify-content:flex-end; margin-top:.75rem;">
+          <button class="btn btn-secondary" onclick="adminChatCloseModal('kb')"
+                  data-testid="button-admin-chat-kb-close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Citation viewer modal (Task #79) — opens when admin clicks [source: ...] -->
+    <div class="admin-chat-modal-backdrop" id="admin-chat-cite-modal" onclick="if(event.target===this) adminChatCloseModal('cite')">
+      <div class="admin-chat-modal" data-testid="modal-admin-chat-cite" style="max-width:680px;">
+        <h3 style="margin-top:0;" id="admin-chat-cite-title">Source</h3>
+        <pre id="admin-chat-cite-body"
+             style="white-space:pre-wrap; background:var(--admin-card); padding:.75rem; border-radius:.4rem; max-height:55vh; overflow:auto; font-size:.85rem; font-family:inherit;"></pre>
+        <div style="display:flex; gap:.5rem; justify-content:flex-end; margin-top:.75rem;">
+          <button class="btn btn-secondary" onclick="adminChatCloseModal('cite')">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit-and-rerun (branch) modal -->
+    <div class="admin-chat-modal-backdrop" id="admin-chat-branch-modal" onclick="if(event.target===this) adminChatCloseModal('branch')">
+      <div class="admin-chat-modal" data-testid="modal-admin-chat-branch">
+        <h3 style="margin-top:0;">Edit message &amp; re-run</h3>
+        <p style="color:var(--admin-text-muted); font-size:.85rem; margin-top:0;">This will fork the conversation up to (but not including) this message into a brand-new chat, then send your edited version. The original conversation stays untouched.</p>
+        <textarea id="admin-chat-branch-textarea" rows="6"
+                  style="width:100%; padding:.6rem; border:1px solid var(--admin-border); border-radius:.4rem; background:var(--admin-card); color:var(--admin-text); resize:vertical; font-family:inherit;"
+                  data-testid="textarea-admin-chat-branch"></textarea>
+        <div style="display:flex; gap:.5rem; justify-content:flex-end; margin-top:.75rem;">
+          <button class="btn btn-secondary" onclick="adminChatCloseModal('branch')" data-testid="button-admin-chat-branch-cancel">Cancel</button>
+          <button class="btn btn-primary" onclick="adminChatBranchSubmit()" data-testid="button-admin-chat-branch-submit">Fork &amp; send</button>
+        </div>
+      </div>
+    </div>
+  </div>

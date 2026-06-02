@@ -1,0 +1,53 @@
+{# admin/tabs/_media.html — 'media' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-media" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Media Library</h2>
+        <p>All uploaded images, videos, and audio in one place. Drag &amp; drop to upload.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <input type="file" id="media-file-input" multiple
+               accept="image/*,video/*,audio/*" style="display:none;"
+               onchange="uploadMediaFiles(this.files); this.value='';">
+        <button class="btn-primary" onclick="document.getElementById('media-file-input').click();" data-testid="button-media-upload">
+          + Upload files
+        </button>
+      </div>
+    </div>
+
+    <!-- Filter pills -->
+    <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:1rem;" id="media-filter-bar">
+      <button class="media-filter-pill active" data-type="all" aria-pressed="true" onclick="filterMedia('all', this)" data-testid="filter-media-all">All</button>
+      <button class="media-filter-pill" data-type="image" aria-pressed="false" onclick="filterMedia('image', this)" data-testid="filter-media-image">Images</button>
+      <button class="media-filter-pill" data-type="video" aria-pressed="false" onclick="filterMedia('video', this)" data-testid="filter-media-video">Videos</button>
+      <button class="media-filter-pill" data-type="audio" aria-pressed="false" onclick="filterMedia('audio', this)" data-testid="filter-media-audio">Audio</button>
+      <input type="search" id="media-search" placeholder="Search by name…"
+             oninput="renderMediaGrid()"
+             style="margin-left:auto; min-width:220px; padding:0.5rem 0.75rem; border:1px solid var(--admin-border); border-radius:6px; background:var(--admin-bg); color:var(--admin-text);"
+             data-testid="input-media-search">
+    </div>
+
+    <!-- Drag-drop zone (becomes highlighted when dragging files over the page) -->
+    <div id="media-dropzone"
+         ondragover="event.preventDefault(); this.classList.add('drag-over');"
+         ondragleave="this.classList.remove('drag-over');"
+         ondrop="handleMediaDrop(event);"
+         style="border:2px dashed var(--admin-border); border-radius:10px; padding:1.25rem; text-align:center; color:var(--admin-text-muted); margin-bottom:1rem; transition:all 0.15s ease;"
+         data-testid="dropzone-media">
+      Drop files here to upload — images, videos (mp4/webm/mov), or audio (mp3/wav/ogg)
+    </div>
+
+    <!-- Upload progress (hidden until uploads start) -->
+    <div id="media-upload-progress" style="display:none; padding:0.75rem 1rem; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:8px; margin-bottom:1rem;"></div>
+
+    <!-- Counts summary -->
+    <div id="media-counts" style="color:var(--admin-text-muted); font-size:0.875rem; margin-bottom:0.75rem;"></div>
+
+    <!-- Grid -->
+    <div id="media-grid" data-testid="grid-media"
+         style="display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:1rem;">
+      <div style="grid-column:1/-1; text-align:center; color:var(--admin-text-muted); padding:2rem;">Loading…</div>
+    </div>
+  </div>

@@ -1,0 +1,128 @@
+{# admin/tabs/_appearance.html — 'appearance' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-appearance" class="tab-content">
+    <div class="gx-head">
+      <div>
+        <h2 class="gx-title">Appearance</h2>
+        <p class="gx-sub">Reshape the admin panel's look. Changes preview live; <b>Save</b> applies them for every admin. The public/visitor site is never affected.</p>
+      </div>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-ghost" onclick="apReset()">Reset</button>
+        <button class="gx-btn gx-btn-primary" onclick="apSave()">Save</button>
+      </div>
+    </div>
+
+    <div class="ap-layout">
+      <div class="ap-controls">
+        <!-- Presets -->
+        <div class="gx-card">
+          <div class="gx-card-h"><span class="gx-ico">🎨</span>Theme presets</div>
+          <div class="ap-presets" id="ap-presets"></div>
+        </div>
+
+        <!-- Color & mode -->
+        <div class="gx-card ap-seg-wrap">
+          <div class="gx-card-h"><span class="gx-ico">◐</span>Color &amp; mode</div>
+          <div class="gx-field"><label class="gx-label">Mode</label>
+            <div class="gx-seg" data-ap-seg="mode">
+              <button type="button" data-val="light" onclick="apSet('mode','light')">Light</button>
+              <button type="button" data-val="dark"  onclick="apSet('mode','dark')">Dark</button>
+            </div>
+          </div>
+          <div class="gx-grid-fields">
+            <div class="gx-field"><label class="gx-label">Accent</label>
+              <input type="color" id="ap-accent" class="ap-color" oninput="apLive('accent',this.value)"></div>
+            <div class="gx-field"><label class="gx-label">Accent 2 (gradient)</label>
+              <input type="color" id="ap-accent2" class="ap-color" oninput="apLive('accent2',this.value)"></div>
+          </div>
+        </div>
+
+        <!-- Surface & shape -->
+        <div class="gx-card ap-seg-wrap">
+          <div class="gx-card-h"><span class="gx-ico">▢</span>Surface &amp; shape</div>
+          <div class="gx-field"><label class="gx-label">Surface style</label>
+            <div class="gx-seg" data-ap-seg="surface">
+              <button type="button" data-val="glass"   onclick="apSet('surface','glass')">Glass</button>
+              <button type="button" data-val="solid"   onclick="apSet('surface','solid')">Solid</button>
+              <button type="button" data-val="minimal" onclick="apSet('surface','minimal')">Minimal</button>
+            </div>
+          </div>
+          <label class="gx-label" style="margin-top:.9rem">Corner radius <span id="ap-radius-v" class="ap-val"></span></label>
+          <input type="range" id="ap-radius" class="ap-range" min="0" max="28" step="1" oninput="apLive('radius',this.value)">
+          <label class="gx-label" style="margin-top:.9rem">Blur <span id="ap-blur-v" class="ap-val"></span></label>
+          <input type="range" id="ap-blur" class="ap-range" min="0" max="40" step="1" oninput="apLive('blur',this.value)">
+          <label class="gx-label" style="margin-top:.9rem">Glassiness <span id="ap-glass-v" class="ap-val"></span></label>
+          <input type="range" id="ap-glass" class="ap-range" min="20" max="95" step="1" oninput="apLive('glass',this.value)">
+          <label class="gx-label" style="margin-top:.9rem">Background glow <span id="ap-glow-v" class="ap-val"></span></label>
+          <input type="range" id="ap-glow" class="ap-range" min="0" max="100" step="1" oninput="apLive('glow',this.value)">
+          <div class="gx-hint" style="margin-top:.55rem">Blur &amp; glassiness apply to the <b>Glass</b> surface style.</div>
+        </div>
+
+        <!-- Density & type -->
+        <div class="gx-card ap-seg-wrap">
+          <div class="gx-card-h"><span class="gx-ico">⇿</span>Density &amp; type</div>
+          <div class="gx-field"><label class="gx-label">Density</label>
+            <div class="gx-seg" data-ap-seg="density">
+              <button type="button" data-val="compact"     onclick="apSet('density','compact')">Compact</button>
+              <button type="button" data-val="comfortable" onclick="apSet('density','comfortable')">Comfortable</button>
+              <button type="button" data-val="spacious"    onclick="apSet('density','spacious')">Spacious</button>
+            </div>
+          </div>
+          <div class="gx-field"><label class="gx-label">Text size</label>
+            <div class="gx-seg" data-ap-seg="font_scale">
+              <button type="button" data-val="sm" onclick="apSet('font_scale','sm')">Small</button>
+              <button type="button" data-val="md" onclick="apSet('font_scale','md')">Medium</button>
+              <button type="button" data-val="lg" onclick="apSet('font_scale','lg')">Large</button>
+            </div>
+          </div>
+          <div class="gx-field" style="margin-bottom:0"><label class="gx-label">Font family</label>
+            <div class="gx-seg" data-ap-seg="font_family">
+              <button type="button" data-val="sans"       onclick="apSet('font_family','sans')">DM Sans</button>
+              <button type="button" data-val="inter"      onclick="apSet('font_family','inter')">Inter</button>
+              <button type="button" data-val="system"     onclick="apSet('font_family','system')">System</button>
+              <button type="button" data-val="serif-head" onclick="apSet('font_family','serif-head')">Serif heads</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Navigation & accessibility -->
+        <div class="gx-card ap-seg-wrap">
+          <div class="gx-card-h"><span class="gx-ico">☰</span>Navigation &amp; accessibility</div>
+          <div class="gx-field" style="margin-bottom:.4rem"><label class="gx-label">Sidebar</label>
+            <div class="gx-seg" data-ap-seg="sidebar">
+              <button type="button" data-val="comfortable" onclick="apSet('sidebar','comfortable')">Comfortable</button>
+              <button type="button" data-val="compact"     onclick="apSet('sidebar','compact')">Compact</button>
+              <button type="button" data-val="icons"       onclick="apSet('sidebar','icons')">Icons</button>
+            </div>
+          </div>
+          <label class="ap-check"><input type="checkbox" id="ap-contrast" onchange="apToggle('high_contrast',this.checked)"> High contrast</label>
+          <label class="ap-check"><input type="checkbox" id="ap-motion" onchange="apToggle('reduce_motion',this.checked)"> Reduce motion</label>
+        </div>
+
+        <div class="gx-hint" id="ap-status" style="min-height:1.2em"></div>
+      </div>
+
+      <!-- Live preview cluster -->
+      <aside class="ap-preview">
+        <div class="gx-section-h">Live preview</div>
+        <div class="gx-card">
+          <div class="gx-card-h"><span class="gx-ico">★</span>Sample surface</div>
+          <div class="gx-stats" style="margin-bottom:1rem; grid-template-columns:1fr 1fr;">
+            <div class="gx-stat"><div class="gx-stat-label">Revenue</div><div class="gx-stat-value">$4.2k</div><div class="gx-stat-delta up">▲ 12%</div></div>
+            <div class="gx-stat"><div class="gx-stat-label">Orders</div><div class="gx-stat-value">38</div></div>
+          </div>
+          <div class="gx-field"><label class="gx-label">Sample input</label><input class="gx-input" value="Hello world"></div>
+          <div class="gx-foot" style="margin-top:.6rem">
+            <button type="button" class="gx-btn gx-btn-primary">Primary</button>
+            <button type="button" class="gx-btn">Secondary</button>
+            <span class="gx-badge gx-badge-ok">OK</span>
+            <span class="gx-badge gx-badge-run">Busy</span>
+          </div>
+          <div class="gx-table-wrap" style="margin-top:1rem"><table class="gx-table"><thead><tr><th>Name</th><th>Status</th></tr></thead>
+            <tbody><tr><td>Spa Day</td><td><span class="gx-badge gx-badge-ok">Active</span></td></tr>
+            <tr><td>Tasting</td><td><span class="gx-badge">Draft</span></td></tr></tbody></table></div>
+        </div>
+      </aside>
+    </div>
+  </div>

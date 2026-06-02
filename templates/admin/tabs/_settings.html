@@ -1,0 +1,145 @@
+{# admin/tabs/_settings.html — 'settings' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-settings" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Site Settings</h2>
+        <p>Edit the site name, hero section content, and branding.</p>
+      </div>
+    </div>
+
+    <div class="form-panel" id="settings-form-panel">
+      <h3>General Settings</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="setting-site-name">Site Name</label>
+          <input type="text" id="setting-site-name" placeholder="My Site Name" data-testid="input-setting-site-name">
+        </div>
+        <div class="form-group">
+          <label for="setting-site-subtitle">Subtitle</label>
+          <input type="text" id="setting-site-subtitle" placeholder="Your tagline here" data-testid="input-setting-subtitle">
+        </div>
+        <div class="form-group">
+          <label for="setting-logo-initials">Logo Initials</label>
+          <input type="text" id="setting-logo-initials" placeholder="CS" maxlength="3" data-testid="input-setting-initials">
+        </div>
+      </div>
+
+      <h3 style="margin-top: 1.5rem;">Hero Section</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="setting-hero-tagline">Tagline</label>
+          <input type="text" id="setting-hero-tagline" placeholder="Welcome to Our Website" data-testid="input-setting-tagline">
+        </div>
+        <div class="form-group">
+          <label for="setting-hero-title">Hero Title</label>
+          <input type="text" id="setting-hero-title" placeholder="My Site Name" data-testid="input-setting-hero-title">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="setting-hero-description">Hero Description</label>
+          <textarea id="setting-hero-description" rows="3" placeholder="A description of the property..." data-testid="input-setting-description"></textarea>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="setting-hero-image">Hero Background Image URL</label>
+          <div style="display: flex; gap: 0.5rem;">
+            <input type="url" id="setting-hero-image" placeholder="https://images.unsplash.com/..." data-testid="input-setting-hero-image" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'setting-hero-image', mediaType:'image'})" data-testid="button-pick-hero-image">Pick</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="uploadImageFor('setting-hero-image')" data-testid="button-upload-hero-image">Upload</button>
+          </div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <label for="setting-hero-video">Hero Background Video URL <span style="color:var(--admin-text-muted); font-weight:normal;">(optional — overrides image)</span></label>
+          <div style="display: flex; gap: 0.5rem;">
+            <input type="url" id="setting-hero-video" placeholder="/uploads/yourvideo.mp4" data-testid="input-setting-hero-video" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openMediaPicker({targetInputId:'setting-hero-video', mediaType:'video'})" data-testid="button-pick-hero-video">Pick</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('setting-hero-video').value=''" data-testid="button-clear-hero-video">Clear</button>
+          </div>
+          <small style="color:var(--admin-text-muted);">Plays muted &amp; looped behind the hero. Falls back to the image if blank.</small>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="saveSettings()" data-testid="button-save-settings">Save Settings</button>
+      </div>
+    </div>
+
+    <!--
+    ========================================================================
+    SECTION VISIBILITY TOGGLES
+    ========================================================================
+    Toggle which content sections are visible on the public site.
+    Changes save immediately when toggled.
+    -->
+    <div class="form-panel" id="section-visibility-panel">
+      <h3>Section Visibility</h3>
+      <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 1.5rem;">Control which sections are shown on the public site. Changes save immediately.</p>
+
+      <div style="display: flex; flex-direction: column; gap: 1rem;">
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; background: var(--admin-bg); border-radius: var(--admin-radius); border: 1px solid var(--admin-border);">
+          <div>
+            <div style="font-weight: 500; color: #fff;">Testimonials / Reviews</div>
+            <div style="color: var(--admin-text-muted); font-size: 0.8125rem;">Show client reviews and ratings on the public site.</div>
+          </div>
+          <label class="toggle-switch" data-testid="toggle-section-testimonials">
+            <input type="checkbox" id="section-testimonials" onchange="saveSectionVisibility()">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; background: var(--admin-bg); border-radius: var(--admin-radius); border: 1px solid var(--admin-border);">
+          <div>
+            <div style="font-weight: 500; color: #fff;">Team / About</div>
+            <div style="color: var(--admin-text-muted); font-size: 0.8125rem;">Show team member cards on the public site.</div>
+          </div>
+          <label class="toggle-switch" data-testid="toggle-section-team">
+            <input type="checkbox" id="section-team" onchange="saveSectionVisibility()">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; background: var(--admin-bg); border-radius: var(--admin-radius); border: 1px solid var(--admin-border);">
+          <div>
+            <div style="font-weight: 500; color: #fff;">FAQ</div>
+            <div style="color: var(--admin-text-muted); font-size: 0.8125rem;">Show frequently asked questions on the public site.</div>
+          </div>
+          <label class="toggle-switch" data-testid="toggle-section-faq">
+            <input type="checkbox" id="section-faq" onchange="saveSectionVisibility()">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; background: var(--admin-bg); border-radius: var(--admin-radius); border: 1px solid var(--admin-border);">
+          <div>
+            <div style="font-weight: 500; color: #fff;">Footer</div>
+            <div style="color: var(--admin-text-muted); font-size: 0.8125rem;">Show the footer with business info and social links.</div>
+          </div>
+          <label class="toggle-switch" data-testid="toggle-section-footer">
+            <input type="checkbox" id="section-footer" onchange="saveSectionVisibility()">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <!-- Landing page scroll behavior. When OFF (default) each section snaps
+             into place like a swipe deck. When ON, visitors scroll the landing
+             page continuously like a normal website. Persists to
+             site_settings.scroll_mode ('snap' | 'smooth'). -->
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; background: var(--admin-bg); border-radius: var(--admin-radius); border: 1px solid var(--admin-border);">
+          <div>
+            <div style="font-weight: 500; color: #fff;">Smooth Scroll (Landing Page)</div>
+            <div style="color: var(--admin-text-muted); font-size: 0.8125rem;">Off (default): each section snaps into view like a swipe deck. On: visitors scroll the landing page continuously like a normal website.</div>
+          </div>
+          <label class="toggle-switch" data-testid="toggle-scroll-mode">
+            <input type="checkbox" id="scroll-mode-smooth" onchange="saveSectionVisibility()">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+    </div>
+  </div>

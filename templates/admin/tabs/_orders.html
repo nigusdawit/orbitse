@@ -1,0 +1,37 @@
+{# admin/tabs/_orders.html — 'orders' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-orders" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Orders</h2>
+        <p>Track customer orders. Refunds are processed instantly through Stripe.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <label style="font-size:0.85rem; color:var(--admin-text-muted);">Status</label>
+        <select id="orders-filter-status" onchange="loadOrders()" data-testid="select-orders-filter">
+          <option value="">All</option>
+          <option value="pending">Pending</option>
+          <option value="paid">Paid</option>
+          <option value="refunded">Refunded</option>
+          <option value="failed">Failed</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="loadOrders()" data-testid="button-refresh-orders">Refresh</button>
+      </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1rem;">
+      <table class="data-table" id="orders-table" style="margin:0;">
+        <thead>
+          <tr><th>Order #</th><th>Customer</th><th>Total</th><th>Status</th><th>Placed</th></tr>
+        </thead>
+        <tbody id="orders-tbody">
+          <tr><td colspan="5" style="text-align:center; color:var(--admin-text-muted); padding:1.5rem;">Loading…</td></tr>
+        </tbody>
+      </table>
+
+      <div id="order-detail-panel" style="background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:8px; padding:1rem; min-height:200px;">
+        <p style="color:var(--admin-text-muted); margin:0;">Select an order to view details.</p>
+      </div>
+    </div>
+  </div>

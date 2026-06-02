@@ -1,0 +1,123 @@
+{# admin/tabs/_messaging-templates.html — 'messaging-templates' tab panel (task 076 F3). #}
+<div id="tab-messaging-templates" class="tab-content" data-navbtn="messaging">
+    <div class="gx-subtabs" role="tablist">
+      <button class="gx-subtab" onclick="switchTab('messaging-subscribers'); loadMessagingSubscribers();">Subscribers</button>
+      <button class="gx-subtab active" onclick="switchTab('messaging-templates'); loadMessagingTemplates();">Templates</button>
+      <button class="gx-subtab" onclick="switchTab('messaging-campaigns'); loadMessagingCampaigns();">Campaigns</button>
+    </div>
+    <div class="section-header-admin">
+      <div>
+        <h2>Templates</h2>
+        <p>Reusable email and SMS bodies. Use {{first_name}}, {{email}}, {{unsubscribe_url}} merge tags.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn btn-secondary btn-sm" onclick="loadMessagingTemplates()" data-testid="button-templates-refresh">Refresh</button>
+        <button class="btn btn-primary btn-sm" onclick="openTemplateForm()" data-testid="button-template-add">+ New template</button>
+      </div>
+    </div>
+
+    <div class="form-panel" id="template-form-panel" style="display:none;">
+      <h3 id="template-form-title">New template</h3>
+      <input type="hidden" id="template-id">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Name</label>
+          <input type="text" id="template-name" placeholder="Welcome email" data-testid="input-template-name">
+        </div>
+        <div class="form-group">
+          <label>Channel</label>
+          <select id="template-channel" onchange="onTemplateChannelChange()" data-testid="select-template-channel">
+            <option value="email">Email</option>
+            <option value="sms">SMS</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row" id="template-email-fields-row">
+        <div class="form-group">
+          <label>Subject (email only)</label>
+          <input type="text" id="template-subject" placeholder="Welcome, {{first_name}}!" data-testid="input-template-subject">
+        </div>
+        <div class="form-group">
+          <label>From name (optional)</label>
+          <input type="text" id="template-from-name" placeholder="The Team" data-testid="input-template-from-name">
+        </div>
+        <div class="form-group">
+          <label>Reply-to (optional)</label>
+          <input type="text" id="template-reply-to" placeholder="hello@example.com" data-testid="input-template-reply-to">
+        </div>
+      </div>
+      <div class="form-group" style="margin-bottom:1rem;">
+        <label>Body</label>
+        <textarea id="template-body" rows="10" placeholder="Hi {{first_name}}, …" data-testid="textarea-template-body"></textarea>
+        <div style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.25rem;">
+          Email body accepts simple HTML (&lt;p&gt;, &lt;a&gt;, &lt;h2&gt;). The unsubscribe footer is appended automatically unless you include {{unsubscribe_url}} yourself.
+        </div>
+      </div>
+
+      <div class="form-panel" style="background:rgba(255,255,255,0.02);">
+        <h3 style="font-size:0.95rem;">Draft with AI</h3>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Mode</label>
+            <select id="ai-draft-mode" data-testid="select-ai-draft-mode">
+              <option value="prompt">Short prompt</option>
+              <option value="chat-themes">Summarize recent chats</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Tone</label>
+            <select id="ai-draft-tone" data-testid="select-ai-draft-tone">
+              <option value="friendly">Friendly</option>
+              <option value="professional">Professional</option>
+              <option value="warm">Warm</option>
+              <option value="urgent">Urgent</option>
+              <option value="playful">Playful</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Days of chat history (chat-themes mode)</label>
+            <input type="number" id="ai-draft-days" value="14" min="1" max="90" data-testid="input-ai-draft-days">
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:0.75rem;">
+          <label>Prompt</label>
+          <input type="text" id="ai-draft-prompt" placeholder="A reminder about our spring sale ending Sunday." data-testid="input-ai-draft-prompt">
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="aiDraftTemplate()" data-testid="button-ai-draft">Draft body</button>
+      </div>
+
+      <div class="form-panel" style="background:rgba(255,255,255,0.02);">
+        <h3 style="font-size:0.95rem;">Preview &amp; test send</h3>
+        <p style="color:var(--admin-text-muted); font-size:0.8rem; margin-bottom:0.5rem;">
+          Preview renders merge tags using a sample subscriber. Test send fires a single message to the address below (defaults to your <code>ADMIN_EMAIL</code> / <code>ADMIN_PHONE</code> secret).
+        </p>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Test recipient (override)</label>
+            <input type="text" id="template-test-to" placeholder="leave blank to use ADMIN_EMAIL / ADMIN_PHONE" data-testid="input-template-test-to">
+          </div>
+        </div>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="previewTemplate()" data-testid="button-template-preview">Preview</button>
+          <button class="btn btn-primary btn-sm" onclick="testSendTemplate()" data-testid="button-template-test-send">Test send to me</button>
+        </div>
+        <div id="template-preview-area" style="margin-top:0.75rem;"></div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="closeTemplateForm()" data-testid="button-template-cancel">Cancel</button>
+        <button class="btn btn-primary" onclick="saveTemplate()" data-testid="button-template-save">Save template</button>
+      </div>
+    </div>
+
+    <div style="overflow-x:auto;">
+      <table class="data-table">
+        <thead>
+          <tr><th>Name</th><th>Channel</th><th>Subject</th><th>Updated</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="templates-tbody">
+          <tr><td colspan="5" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>

@@ -1,0 +1,28 @@
+{# admin/tabs/_plans-features.html — 'plans-features' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-plans-features" class="tab-content">
+    <div class="content-header">
+      <h2>Plans &amp; Features</h2>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <span id="plans-features-updated" style="font-size:0.8125rem; color:var(--admin-text-muted);"></span>
+        <button class="btn-secondary" onclick="loadPlansFeatures()" data-testid="button-plans-features-refresh">Refresh</button>
+      </div>
+    </div>
+
+    <div id="plans-features-tenant-card" style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:1rem 1.25rem; margin-bottom:1rem;">
+      <div class="empty-state">Loading plan info…</div>
+    </div>
+
+    <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:0.5rem 0;">
+      <div style="padding:0.75rem 1.25rem; border-bottom:1px solid var(--admin-border); display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <div style="font-weight:600;">Feature toggles</div>
+          <div style="font-size:0.8125rem; color:var(--admin-text-muted);">Turn capabilities on or off for this site. Changes take effect on the next request.</div>
+        </div>
+      </div>
+      <div id="plans-features-list" data-testid="list-plans-features">
+        <div class="empty-state" style="padding:1.5rem;">Loading features…</div>
+      </div>
+    </div>
+  </div>

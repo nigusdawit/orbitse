@@ -1,0 +1,57 @@
+{# admin/tabs/_custom-skills.html — 'custom-skills' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-custom-skills" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Custom Skills</h2>
+        <p>Extend the visitor chat agent with your own knowledge, webhook calls, and parameterised database queries. Anything you save here becomes a tool the AI can call mid-conversation.</p>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-bottom:18px;border-bottom:1px solid #e5e5e5;">
+      <button class="custom-skill-subtab-btn" data-sub="knowledge" onclick="switchCustomSkillSub('knowledge')" data-testid="subtab-knowledge" style="padding:8px 16px;border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;font-weight:600;">Knowledge</button>
+      <button class="custom-skill-subtab-btn" data-sub="webhooks" onclick="switchCustomSkillSub('webhooks')" data-testid="subtab-webhooks" style="padding:8px 16px;border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;font-weight:600;">Webhooks</button>
+      <button class="custom-skill-subtab-btn" data-sub="sql" onclick="switchCustomSkillSub('sql')" data-testid="subtab-sql" style="padding:8px 16px;border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;font-weight:600;">SQL</button>
+    </div>
+
+    <!-- KNOWLEDGE -->
+    <div id="custom-sub-knowledge" class="custom-skill-sub">
+      <div class="section-header-admin">
+        <div><h3>Knowledge entries</h3><p>Short topical notes the agent searches via the lookup_knowledge skill. Keep one fact per entry.</p></div>
+        <button class="btn btn-primary" onclick="openKnowledgeEditor(null)" data-testid="button-new-knowledge">+ Add entry</button>
+      </div>
+      <div id="knowledge-list" data-testid="list-knowledge" style="display:grid;gap:8px;"></div>
+    </div>
+
+    <!-- WEBHOOKS -->
+    <div id="custom-sub-webhooks" class="custom-skill-sub" style="display:none;">
+      <div class="section-header-admin">
+        <div><h3>Webhook skills</h3><p>HTTP calls the agent can trigger. Localhost and private-network URLs are blocked; only public HTTPS endpoints work.</p></div>
+        <button class="btn btn-primary" onclick="openWebhookEditor(null)" data-testid="button-new-webhook">+ Add webhook</button>
+      </div>
+      <div id="webhooks-list" data-testid="list-webhooks" style="display:grid;gap:8px;"></div>
+    </div>
+
+    <!-- SQL -->
+    <div id="custom-sub-sql" class="custom-skill-sub" style="display:none;">
+      <div class="section-header-admin">
+        <div><h3>SQL skills</h3><p>Parameterised SELECT queries the agent can run. Use %(name)s placeholders for arguments. Only one SELECT statement per skill; 5-second budget; up to 100 rows returned.</p></div>
+        <button class="btn btn-primary" onclick="openSqlSkillEditor(null)" data-testid="button-new-sql-skill">+ Add SQL skill</button>
+      </div>
+      <div id="sql-skills-list" data-testid="list-sql-skills" style="display:grid;gap:8px;"></div>
+    </div>
+
+    <!-- Editors (modals) -->
+    <div id="custom-skill-editor" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;align-items:center;justify-content:center;">
+      <div class="admin-modal-panel">
+        <h3 id="custom-skill-editor-title" style="margin-top:0;">Edit</h3>
+        <div id="custom-skill-editor-body"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px;">
+          <button class="btn btn-secondary" onclick="closeCustomSkillEditor()" data-testid="button-cancel-custom-skill">Cancel</button>
+          <button class="btn btn-primary" id="custom-skill-save-btn" data-testid="button-save-custom-skill">Save</button>
+        </div>
+        <div id="custom-skill-editor-error" style="color:#fca5a5;margin-top:10px;font-size:13px;"></div>
+      </div>
+    </div>
+  </div>

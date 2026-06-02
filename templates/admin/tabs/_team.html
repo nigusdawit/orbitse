@@ -1,0 +1,52 @@
+{# admin/tabs/_team.html — 'team' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-team" class="tab-content">
+    <div class="gx-head">
+      <div>
+        <h2 class="gx-title">Team Members</h2>
+        <p class="gx-sub">Manage team member cards displayed on the public site.</p>
+      </div>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-primary" onclick="showTeamForm()" data-testid="button-add-team">+ Add Member</button>
+      </div>
+    </div>
+
+    <div id="team-form-panel" style="display:none;">
+      <input type="hidden" id="team-form-id">
+      <div class="gx-grid-fields">
+        <div class="gx-field"><label class="gx-label" for="team-name">Name<span class="gx-req">*</span></label>
+          <input class="gx-input" type="text" id="team-name" placeholder="John Doe" data-testid="input-team-name"></div>
+        <div class="gx-field"><label class="gx-label" for="team-title">Title / Position</label>
+          <input class="gx-input" type="text" id="team-title" placeholder="Head Chef" data-testid="input-team-title"></div>
+      </div>
+      <div class="gx-field"><label class="gx-label" for="team-bio">Bio</label>
+        <textarea class="gx-input" id="team-bio" rows="3" placeholder="A short biography..." data-testid="input-team-bio"></textarea></div>
+      <div class="gx-grid-fields">
+        <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="team-image">Image URL (optional)</label>
+          <div class="gx-media-field">
+            <input class="gx-input" type="url" id="team-image" placeholder="https://..." data-testid="input-team-image">
+            <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'team-image', mediaType:'image'})" data-testid="button-pick-team-image">🖼</button>
+            <button type="button" class="gx-icon-btn" title="Upload" onclick="uploadImageFor('team-image')" data-testid="button-upload-team-image">⤴</button>
+          </div></div>
+        <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="team-sort-order">Sort order</label>
+          <input class="gx-input" type="number" id="team-sort-order" placeholder="0" value="0" data-testid="input-team-sort"></div>
+      </div>
+    </div>
+
+    <table class="data-table" id="team-table">
+      <thead>
+        <tr>
+          <th style="width:30px;"></th>
+          <th>Image</th>
+          <th>Name</th>
+          <th>Title</th>
+          <th>Bio</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="team-tbody">
+        <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>

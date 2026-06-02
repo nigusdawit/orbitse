@@ -1,0 +1,116 @@
+{# admin/tabs/_events.html — 'events' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-events" class="tab-content">
+    <div class="gx-head">
+      <div>
+        <h2 class="gx-title">Events</h2>
+        <p class="gx-sub">Create and manage upcoming events. Visitors can RSVP from the public event page.</p>
+      </div>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-primary" onclick="showEventForm()" data-testid="button-add-event">+ New Event</button>
+      </div>
+    </div>
+
+    <!-- Event form — mounted into the gx-drawer; conditional price rows keep their IDs. -->
+    <div id="event-form-panel" style="display:none;">
+      <input type="hidden" id="event-form-id">
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Event</div>
+        <div class="gx-grid-fields">
+          <div class="gx-field"><label class="gx-label" for="event-title">Title<span class="gx-req">*</span></label>
+            <input class="gx-input" type="text" id="event-title" placeholder="Summer Workshop" data-testid="input-event-title" oninput="autoGenerateEventSlug()"></div>
+          <div class="gx-field"><label class="gx-label" for="event-slug">Slug</label>
+            <input class="gx-input" type="text" id="event-slug" placeholder="summer-workshop" data-testid="input-event-slug"></div>
+          <div class="gx-field col-2"><label class="gx-label" for="event-location">Location</label>
+            <input class="gx-input" type="text" id="event-location" placeholder="123 Main St, or 'Online'" data-testid="input-event-location"></div>
+        </div>
+      </div>
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Schedule</div>
+        <div class="gx-grid-fields">
+          <div class="gx-field"><label class="gx-label" for="event-start">Start date &amp; time<span class="gx-req">*</span></label>
+            <input class="gx-input" type="datetime-local" id="event-start" data-testid="input-event-start"></div>
+          <div class="gx-field"><label class="gx-label" for="event-end">End date &amp; time (optional)</label>
+            <input class="gx-input" type="datetime-local" id="event-end" data-testid="input-event-end"></div>
+        </div>
+      </div>
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Pricing</div>
+        <div class="gx-grid-fields">
+          <div class="gx-field"><label class="gx-label" for="event-price-mode">Price mode</label>
+            <select class="gx-input" id="event-price-mode" data-testid="select-event-price-mode" onchange="updateEventPriceModeUI()">
+              <option value="free">Free (RSVP only)</option>
+              <option value="paid">Paid ticket (Stripe Checkout)</option>
+              <option value="donation">Suggested donation (pay what you wish)</option>
+            </select></div>
+          <div class="gx-field"><label class="gx-label" for="event-currency">Currency</label>
+            <select class="gx-input" id="event-currency" data-testid="select-event-currency">
+              <option value="usd">USD</option><option value="eur">EUR</option><option value="gbp">GBP</option><option value="cad">CAD</option><option value="aud">AUD</option>
+            </select></div>
+          <div class="gx-field"><label class="gx-label" for="event-price">Price label</label>
+            <input class="gx-input" type="text" id="event-price" placeholder="Free, $25, etc." value="Free" data-testid="input-event-price">
+            <span class="gx-hint">Shown on cards. Auto-filled from price mode if left blank.</span></div>
+          <div class="gx-field" id="event-paid-row" style="display:none;"><label class="gx-label" for="event-price-amount">Ticket price</label>
+            <input class="gx-input" type="number" id="event-price-amount" min="0" step="0.01" placeholder="25.00" data-testid="input-event-price-amount">
+            <span class="gx-hint">Charged per ticket.</span></div>
+          <div class="gx-field" id="event-donation-row" style="display:none;"><label class="gx-label" for="event-min-donation">Minimum donation (optional)</label>
+            <input class="gx-input" type="number" id="event-min-donation" min="0" step="0.01" placeholder="5.00" data-testid="input-event-min-donation">
+            <span class="gx-hint">Leave blank to allow any amount.</span></div>
+        </div>
+      </div>
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Settings &amp; media</div>
+        <div class="gx-grid-fields">
+          <div class="gx-field"><label class="gx-label" for="event-capacity">Capacity <span class="gx-hint">(empty = unlimited)</span></label>
+            <input class="gx-input" type="number" id="event-capacity" placeholder="50" min="0" data-testid="input-event-capacity"></div>
+          <div class="gx-field"><label class="gx-label" for="event-status">Status</label>
+            <select class="gx-input" id="event-status" data-testid="select-event-status">
+              <option value="draft">Draft (admin only)</option><option value="published" selected>Published</option><option value="cancelled">Cancelled</option>
+            </select></div>
+          <div class="gx-field"><label class="gx-label" for="event-sort-order">Sort order</label>
+            <input class="gx-input" type="number" id="event-sort-order" placeholder="0" value="0" data-testid="input-event-sort"></div>
+          <div class="gx-field"><label class="gx-label" for="event-image">Cover image URL</label>
+            <div class="gx-media-field">
+              <input class="gx-input" type="url" id="event-image" placeholder="https://images.unsplash.com/..." data-testid="input-event-image">
+              <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'event-image', mediaType:'image'})" data-testid="button-pick-event-image">🖼</button>
+              <button type="button" class="gx-icon-btn" title="Upload" onclick="uploadImageFor('event-image')" data-testid="button-upload-event-image">⤴</button>
+            </div></div>
+        </div>
+      </div>
+      <div class="gx-fieldset" style="margin-bottom:0">
+        <div class="gx-fieldset-h">Description</div>
+        <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="event-description">Description</label>
+          <textarea class="gx-input" id="event-description" rows="5" placeholder="Tell people what to expect at this event..." data-testid="input-event-description"></textarea></div>
+      </div>
+    </div>
+
+    <!-- Events data table -->
+    <table class="data-table" id="events-table">
+      <thead>
+        <tr>
+          <th>Title</th>
+          <th>When</th>
+          <th>Status</th>
+          <th>RSVPs</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="events-tbody">
+        <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+
+    <!-- RSVP modal (toggled from action button on each event row) -->
+    <div id="rsvp-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:1000; align-items:center; justify-content:center; padding:2rem;">
+      <div style="background:#0d1320; border:1px solid rgba(255,255,255,0.1); border-radius:12px; max-width:720px; width:100%; max-height:80vh; display:flex; flex-direction:column;">
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:1.25rem 1.5rem; border-bottom:1px solid rgba(255,255,255,0.08);">
+          <h3 id="rsvp-modal-title" style="margin:0;">RSVPs</h3>
+          <button class="btn btn-secondary btn-sm" onclick="closeRsvpModal()" data-testid="button-close-rsvp-modal">Close</button>
+        </div>
+        <div id="rsvp-modal-body" style="padding:1rem 1.5rem; overflow-y:auto;">
+          <div class="empty-state">Loading...</div>
+        </div>
+      </div>
+    </div>
+  </div>
