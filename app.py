@@ -25303,6 +25303,70 @@ def api_chat():
 # ADMIN DASHBOARD — HTML pages (protected by login)
 # =============================================================================
 
+# Super-admin-controlled glassmorphic appearance for the admin panel itself
+# (distinct from the public-site theme_* columns). Defaults are safe so a
+# pre-migration DB still renders.
+_ADMIN_APPEARANCE_DEFAULTS = {
+    "mode": "dark", "accent": "#6c8cff", "accent2": "#9a7cff",
+    "blur": 18.0, "radius": 16.0, "glass": 0.55, "glow": 0.5,
+    # task 073 — expanded controls. Enums validated against these allowed sets.
+    "density": "comfortable", "font_scale": "md", "font_family": "sans",
+    "surface": "glass", "sidebar": "comfortable",
+    "high_contrast": False, "reduce_motion": False,
+}
+
+# Allowed enum values for the expanded appearance controls (server-validated so
+# a stray value can't produce an unknown data-* attr / break the CSS variants).
+_ADMIN_APPEARANCE_ENUMS = {
+    "density": ("compact", "comfortable", "spacious"),
+    "font_scale": ("sm", "md", "lg"),
+    "font_family": ("sans", "inter", "system", "serif-head"),
+    "surface": ("glass", "solid", "minimal"),
+    "sidebar": ("comfortable", "compact", "icons"),
+}
+
+
+def _admin_appearance():
+    """Read the admin-panel appearance settings from site_settings, falling back
+    to defaults for any missing/invalid value (pre-migration safe). Returns a
+    dict consumed by the dashboard template's inline CSS-variable block."""
+    d = dict(_ADMIN_APPEARANCE_DEFAULTS)
+    try:
+        row = query_db("SELECT * FROM site_settings WHERE id=1", fetchone=True)
+        if row:
+            if row.get("admin_theme_mode") in ("dark", "light"):
+                d["mode"] = row["admin_theme_mode"]
+            for key, col in (("accent", "admin_theme_accent"),
+                             ("accent2", "admin_theme_accent2")):
+                v = (row.get(col) or "").strip()
+                if re.match(r"^#[0-9a-fA-F]{3,8}$", v):
+                    d[key] = v
+            for key, col in (("blur", "admin_theme_blur"), ("radius", "admin_theme_radius"),
+                             ("glass", "admin_theme_glass"), ("glow", "admin_theme_glow")):
+                if row.get(col) is not None:
+                    try:
+                        d[key] = float(row[col])
+                    except (TypeError, ValueError):
+                        pass
+            # task 073 — expanded controls: enums validated against the allowed
+            # set, booleans coerced. Anything unexpected keeps the safe default.
+            for key, col in (("density", "admin_theme_density"),
+                             ("font_scale", "admin_theme_font_scale"),
+                             ("font_family", "admin_theme_font_family"),
+                             ("surface", "admin_theme_surface"),
+                             ("sidebar", "admin_theme_sidebar")):
+                v = (row.get(col) or "").strip()
+                if v in _ADMIN_APPEARANCE_ENUMS[key]:
+                    d[key] = v
+            for key, col in (("high_contrast", "admin_theme_high_contrast"),
+                             ("reduce_motion", "admin_theme_reduce_motion")):
+                if row.get(col) is not None:
+                    d[key] = bool(row[col])
+    except Exception:
+        pass
+    return d
+
+
 @app.route("/admin")
 @admin_required
 def admin_dashboard():
@@ -25312,12 +25376,15 @@ def admin_dashboard():
     Protected by password authentication.
 
     Exposes `has_feature(name)` to the template so sidebar entries can be
-    gated by feature flags without an extra round-trip.
+    gated by feature flags without an extra round-trip. `appearance` carries the
+    super-admin glassmorphic theme settings, injected as inline CSS variables so
+    the look applies before paint (no flash).
     """
     return render_template(
         "admin/dashboard.html",
         has_feature=tenant_has_feature,
         is_super_admin=_is_super_admin,
+        appearance=_admin_appearance(),
     )
 
 
@@ -31661,6 +31728,72 @@ def admin_update_theme():
         )
 
     return jsonify(result)
+
+
+@app.route("/admin/api/admin-appearance", methods=["PUT"])
+@admin_required
+def admin_update_appearance():
+    """PUT /admin/api/admin-appearance — Save the admin panel's OWN glassmorphic
+    appearance (mode/accent/blur/radius/glassiness/glow). Super-admin only and
+    distinct from the public-site /admin/api/theme. Numerics are clamped and
+    colors validated so a stray value can't break the UI."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    data = request.get_json(silent=True) or {}
+
+    def _num(key, default, lo, hi):
+        try:
+            v = float(data.get(key, default))
+        except (TypeError, ValueError):
+            v = default
+        return max(lo, min(hi, v))
+
+    def _hex(key, default):
+        v = (data.get(key) or "").strip()
+        return v if re.match(r"^#[0-9a-fA-F]{3,8}$", v) else default
+
+    def _enum(key):
+        """Validate an enum field against its allowed set; fall back to default."""
+        v = (data.get(key) or "").strip()
+        return v if v in _ADMIN_APPEARANCE_ENUMS[key] else _ADMIN_APPEARANCE_DEFAULTS[key]
+
+    def _bool(key):
+        return bool(data.get(key))
+
+    mode = data.get("mode") if data.get("mode") in ("dark", "light") else "dark"
+    accent = _hex("accent", "#6c8cff")
+    accent2 = _hex("accent2", "#9a7cff")
+    blur = _num("blur", 18, 0, 40)
+    radius = _num("radius", 16, 0, 28)
+    glass = _num("glass", 0.55, 0.2, 0.95)
+    glow = _num("glow", 0.5, 0.0, 1.0)
+    # task 073 — expanded controls.
+    density = _enum("density")
+    font_scale = _enum("font_scale")
+    font_family = _enum("font_family")
+    surface = _enum("surface")
+    sidebar = _enum("sidebar")
+    high_contrast = _bool("high_contrast")
+    reduce_motion = _bool("reduce_motion")
+    try:
+        execute_db(
+            "UPDATE site_settings SET admin_theme_mode=%s, admin_theme_accent=%s, "
+            "admin_theme_accent2=%s, admin_theme_blur=%s, admin_theme_radius=%s, "
+            "admin_theme_glass=%s, admin_theme_glow=%s, admin_theme_density=%s, "
+            "admin_theme_font_scale=%s, admin_theme_font_family=%s, admin_theme_surface=%s, "
+            "admin_theme_sidebar=%s, admin_theme_high_contrast=%s, admin_theme_reduce_motion=%s, "
+            "updated_at=NOW() WHERE id=1",
+            (mode, accent, accent2, blur, radius, glass, glow, density, font_scale,
+             font_family, surface, sidebar, high_contrast, reduce_motion))
+    except Exception as e:
+        print(f"[appearance] save failed: {type(e).__name__}: {e}")
+        return jsonify({"error": "Could not save appearance."}), 500
+    return jsonify({"ok": True, "mode": mode, "accent": accent, "accent2": accent2,
+                    "blur": blur, "radius": radius, "glass": glass, "glow": glow,
+                    "density": density, "font_scale": font_scale, "font_family": font_family,
+                    "surface": surface, "sidebar": sidebar, "high_contrast": high_contrast,
+                    "reduce_motion": reduce_motion})
 
 
 @app.route("/admin/api/curated-font-pairs", methods=["GET"])
