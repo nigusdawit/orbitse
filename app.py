@@ -28044,119 +28044,7 @@ def admin_list_meetings():
 # Super-admin-only management of the specialist personas the visitor concierge
 # can route to. Guarded by _require_super_admin_role(); a client session is 403'd.
 
-def _row_persona(r):
-    d = dict(r)
-    d["tool_names"] = _vp_as_list(d.get("tool_names"))
-    for k in ("created_at", "updated_at"):
-        if d.get(k):
-            d[k] = d[k].isoformat()
-    return d
-
-
-def _persona_payload(body):
-    """Validate + coerce a persona create/update body. Returns (fields, error).
-    persona_key is a slug; 'general' is reserved (it's the implicit fallback)."""
-    key = (body.get("persona_key") or "").strip().lower()
-    if not re.match(r"^[a-z0-9_]{1,40}$", key or ""):
-        return None, "persona_key must be 1-40 chars of a-z, 0-9, underscore"
-    if key == "general":
-        return None, "'general' is reserved (it is the implicit fallback persona)"
-    tools = body.get("tool_names")
-    if isinstance(tools, str):
-        tools = [t.strip() for t in tools.split(",")]
-    if not isinstance(tools, list):
-        tools = []
-    tools = [str(t).strip()[:80] for t in tools if str(t).strip()][:50]
-    try:
-        sort_order = int(body.get("sort_order") or 0)
-    except (TypeError, ValueError):
-        sort_order = 0
-    return {
-        "persona_key": key,
-        "label": (body.get("label") or "").strip()[:120],
-        "prompt_suffix": (body.get("prompt_suffix") or "").strip()[:8000],
-        "tool_names": json.dumps(tools),
-        "model": (body.get("model") or "").strip()[:120],
-        "enabled": bool(body.get("enabled", True)),
-        "sort_order": sort_order,
-    }, ""
-
-
-@app.route("/admin/api/visitor-personas", methods=["GET"])
-@admin_required
-def admin_list_visitor_personas():
-    """List the tenant's visitor personas (super-admin only)."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    tid = current_tenant_id()
-    rows = query_db(
-        "SELECT * FROM visitor_personas WHERE tenant_id=%s "
-        "ORDER BY sort_order, id", (tid,)) or []
-    return jsonify({"personas": [_row_persona(r) for r in rows]})
-
-
-@app.route("/admin/api/visitor-personas", methods=["POST"])
-@admin_required
-def admin_create_visitor_persona():
-    """Create a visitor persona (super-admin only)."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    fields, err = _persona_payload(request.get_json(silent=True) or {})
-    if err:
-        return jsonify({"error": err}), 400
-    tid = current_tenant_id()
-    # Reject a duplicate key for this tenant (the UNIQUE constraint would 500).
-    if query_db("SELECT 1 FROM visitor_personas WHERE tenant_id=%s AND persona_key=%s",
-                (tid, fields["persona_key"]), fetchone=True):
-        return jsonify({"error": "persona_key already exists"}), 409
-    row = execute_db(
-        "INSERT INTO visitor_personas (tenant_id, persona_key, label, prompt_suffix, "
-        " tool_names, model, enabled, sort_order) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
-        "RETURNING *",
-        (tid, fields["persona_key"], fields["label"], fields["prompt_suffix"],
-         fields["tool_names"], fields["model"], fields["enabled"], fields["sort_order"]))
-    return jsonify({"persona": _row_persona(row)}), 201
-
-
-@app.route("/admin/api/visitor-personas/<int:persona_id>", methods=["PUT"])
-@admin_required
-def admin_update_visitor_persona(persona_id):
-    """Update a visitor persona (super-admin only). Tenant-scoped."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    fields, err = _persona_payload(request.get_json(silent=True) or {})
-    if err:
-        return jsonify({"error": err}), 400
-    tid = current_tenant_id()
-    row = execute_db(
-        "UPDATE visitor_personas SET persona_key=%s, label=%s, prompt_suffix=%s, "
-        " tool_names=%s, model=%s, enabled=%s, sort_order=%s, updated_at=NOW() "
-        "WHERE id=%s AND tenant_id=%s RETURNING *",
-        (fields["persona_key"], fields["label"], fields["prompt_suffix"],
-         fields["tool_names"], fields["model"], fields["enabled"],
-         fields["sort_order"], persona_id, tid))
-    if not row:
-        return jsonify({"error": "not_found"}), 404
-    return jsonify({"persona": _row_persona(row)})
-
-
-@app.route("/admin/api/visitor-personas/<int:persona_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_visitor_persona(persona_id):
-    """Delete a visitor persona (super-admin only). Tenant-scoped."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    tid = current_tenant_id()
-    row = execute_db(
-        "DELETE FROM visitor_personas WHERE id=%s AND tenant_id=%s RETURNING id",
-        (persona_id, tid))
-    if not row:
-        return jsonify({"error": "not_found"}), 404
-    return jsonify({"ok": True, "deleted": persona_id})
+# Visitor-persona admin CRUD (super-admin only) moved to admin/personas.py (Track B); routes registered via personas_bp. Helpers _row_persona/_persona_payload moved with them.
 
 
 @app.route("/admin/api/ai-prompts", methods=["GET"])
@@ -44552,6 +44440,14 @@ app.register_blueprint(forms_bp)
 # _vp_as_list stays in core. Registered like the other admin blueprints.
 from admin.offers import offers_bp  # noqa: E402
 app.register_blueprint(offers_bp)
+
+# Visitor-persona admin CRUD blueprint (Track B): super-admin-only
+# /admin/api/visitor-personas* CRUD. @admin_required preserved + in-body
+# _require_super_admin_role() gate intact (from core). Helpers
+# _row_persona/_persona_payload moved with the routes; the shared _vp_as_list
+# stays in core. Registered like the other admin blueprints.
+from admin.personas import personas_bp  # noqa: E402
+app.register_blueprint(personas_bp)
 
 
 def _resolve_velo_callback_url():
