@@ -2465,6 +2465,13 @@ TO CUSTOMIZE THIS DASHBOARD:
     .gx-icon-btn:focus-visible, .tab-btn:focus-visible, .gx-seg button:focus-visible,
     .gx-drawer-close:focus-visible{ outline:2px solid var(--admin-accent); outline-offset:2px; }
 
+    /* Unify the legacy .section-header-admin / .content-header with the gx-head
+       look so every not-individually-converted tab still reads as redesigned
+       (task 073): same size/weight/spacing as gx-title; subtitle constrained. */
+    .section-header-admin, .content-header{ align-items:flex-start; }
+    .section-header-admin h2, .content-header h2{ font-size:var(--admin-fs-5); font-weight:700; letter-spacing:-.02em; }
+    .section-header-admin > div > p, .content-header > div > p{ max-width:68ch; line-height:1.55; }
+
     /* Sidebar search + collapsible groups (task 073). */
     #gx-nav-search-wrap{ padding:.15rem .2rem .7rem; }
     #gx-nav-search{ width:100%; background:var(--admin-field); border:1px solid var(--admin-border); border-radius:9px;
