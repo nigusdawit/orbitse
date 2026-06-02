@@ -644,6 +644,7 @@ from core import (  # noqa: E402 - re-export the DB layer that now lives in core
     _DB_POOL_MIN, _DB_POOL_MAX,              # pool-size constants (stats endpoint + tests)
     current_tenant_id,                       # tenant resolver (returns 1); 84 call sites + velo_handlers
     _vp_as_list,                             # JSONB->list coercion (Track B); 11 call sites here + admin/offers.py
+    _service_to_dict, _addon_rows, _hydrate_service,  # service serializers (Track B); shared by public service/booking routes here + admin/commerce.py
 )
 
 
@@ -33543,62 +33544,17 @@ def api_order_detail(order_number):
 # =============================================================================
 
 ALLOWED_CONTRACT_EXTENSIONS = {"pdf", "doc", "docx"}
-SERVICE_PRICING_MODELS = {"rsvp", "deposit", "full", "contract"}
+# SERVICE_PRICING_MODELS moved to admin/commerce.py (used only by the service-CRUD
+# routes that moved there with it).
 SERVICE_BOOKING_ACTIVE_STATUSES = ("pending", "confirmed")
 CONTRACT_UPLOAD_FOLDER = os.path.join(UPLOAD_FOLDER, "contracts")
 os.makedirs(CONTRACT_UPLOAD_FOLDER, exist_ok=True)
 
 
-def _slugify_service(text: str) -> str:
-    """Lowercase ASCII slug used for public service URLs."""
-    text = (text or "").lower().strip()
-    out = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
-    return out[:100] or "service"
-
-
-def _unique_service_slug(name: str, exclude_id: int | None = None) -> str:
-    """Pick a slug that doesn't collide with any other service row."""
-    base = _slugify_service(name)
-    candidate = base
-    n = 1
-    while True:
-        existing = query_db(
-            "SELECT id FROM services WHERE slug = %s AND (%s::int IS NULL OR id != %s)",
-            (candidate, exclude_id, exclude_id),
-            fetchone=True,
-        )
-        if not existing:
-            return candidate
-        n += 1
-        candidate = f"{base}-{n}"
-
-
-def _service_to_dict(row):
-    """Coerce DB row to a JSON-friendly dict (keeps int cents, ISO times)."""
-    if not row:
-        return None
-    d = dict(row)
-    for k, v in list(d.items()):
-        if hasattr(v, "isoformat"):
-            d[k] = v.isoformat()
-    return d
-
-
-def _addon_rows(service_id: int):
-    return query_db(
-        "SELECT * FROM service_addons WHERE service_id = %s "
-        "AND is_active = TRUE ORDER BY sort_order ASC, id ASC",
-        (service_id,),
-    ) or []
-
-
-def _hydrate_service(svc_row):
-    """Attach the active addon list to a single service dict."""
-    if not svc_row:
-        return None
-    d = _service_to_dict(svc_row)
-    d["addons"] = [_service_to_dict(a) for a in _addon_rows(d["id"])]
-    return d
+# _slugify_service / _unique_service_slug moved to admin/commerce.py (used only by
+# the service-CRUD routes that moved there). _service_to_dict / _addon_rows /
+# _hydrate_service moved to core.py (also used by the public service + booking
+# routes that remain below) and are re-exported via the `from core import` block.
 
 
 def _compute_availability(service_id: int, start_date, end_date):
@@ -33731,298 +33687,6 @@ def _compute_availability(service_id: int, start_date, end_date):
         days.append({"date": cursor.isoformat(), "slots": unique_slots})
         cursor += timedelta(days=1)
     return days
-
-
-# --------------- Admin: services CRUD ---------------
-
-@app.route("/admin/api/services", methods=["GET"])
-@admin_required
-def admin_list_services():
-    rows = query_db(
-        "SELECT * FROM services ORDER BY sort_order ASC, id ASC"
-    ) or []
-    out = []
-    for r in rows:
-        d = _service_to_dict(r)
-        d["addons"] = [_service_to_dict(a) for a in query_db(
-            "SELECT * FROM service_addons WHERE service_id = %s "
-            "ORDER BY sort_order ASC, id ASC", (d["id"],)
-        ) or []]
-        d["pending_bookings_count"] = (query_db(
-            "SELECT COUNT(*) AS n FROM service_bookings "
-            "WHERE service_id = %s AND status = 'pending'",
-            (d["id"],), fetchone=True
-        ) or {"n": 0})["n"]
-        out.append(d)
-    return jsonify(out)
-
-
-@app.route("/admin/api/services", methods=["POST"])
-@admin_required
-def admin_create_service():
-    data = request.get_json() or {}
-    name = (data.get("name") or "").strip()
-    if not name:
-        return jsonify({"error": "Name is required"}), 400
-    pricing_model = (data.get("pricing_model") or "rsvp").strip()
-    if pricing_model not in SERVICE_PRICING_MODELS:
-        return jsonify({"error": "Invalid pricing model"}), 400
-    slug = _unique_service_slug(data.get("slug") or name)
-
-    row = execute_db(
-        """INSERT INTO services
-           (slug, name, short_description, long_description, image_url,
-            duration_minutes, pricing_model, base_price_cents, deposit_cents,
-            currency, requires_calendar, capacity_per_slot, sort_order, is_active)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-           RETURNING *""",
-        (
-            slug, name,
-            data.get("short_description", ""),
-            data.get("long_description", ""),
-            data.get("image_url", ""),
-            int(data.get("duration_minutes") or 60),
-            pricing_model,
-            int(data.get("base_price_cents") or 0),
-            int(data.get("deposit_cents") or 0),
-            (data.get("currency") or "usd").lower(),
-            bool(data.get("requires_calendar", True)),
-            max(1, int(data.get("capacity_per_slot") or 1)),
-            int(data.get("sort_order") or 0),
-            bool(data.get("is_active", True)),
-        ),
-    )
-    return jsonify(_hydrate_service(row)), 201
-
-
-@app.route("/admin/api/services/<int:svc_id>", methods=["PUT"])
-@admin_required
-def admin_update_service(svc_id):
-    data = request.get_json() or {}
-    existing = query_db("SELECT * FROM services WHERE id = %s",
-                        (svc_id,), fetchone=True)
-    if not existing:
-        return jsonify({"error": "Service not found"}), 404
-    name = (data.get("name") or existing["name"]).strip()
-    pricing_model = (data.get("pricing_model") or existing["pricing_model"]).strip()
-    if pricing_model not in SERVICE_PRICING_MODELS:
-        return jsonify({"error": "Invalid pricing model"}), 400
-    new_slug = data.get("slug")
-    if new_slug:
-        slug = _unique_service_slug(new_slug, exclude_id=svc_id)
-    else:
-        slug = existing["slug"]
-
-    row = execute_db(
-        """UPDATE services SET
-             slug = %s, name = %s, short_description = %s,
-             long_description = %s, image_url = %s,
-             duration_minutes = %s, pricing_model = %s,
-             base_price_cents = %s, deposit_cents = %s,
-             currency = %s, requires_calendar = %s,
-             capacity_per_slot = %s, sort_order = %s,
-             is_active = %s, updated_at = NOW()
-           WHERE id = %s RETURNING *""",
-        (
-            slug, name,
-            data.get("short_description", existing["short_description"]),
-            data.get("long_description", existing["long_description"]),
-            data.get("image_url", existing["image_url"]),
-            int(data.get("duration_minutes", existing["duration_minutes"])),
-            pricing_model,
-            int(data.get("base_price_cents", existing["base_price_cents"])),
-            int(data.get("deposit_cents", existing["deposit_cents"])),
-            (data.get("currency", existing["currency"]) or "usd").lower(),
-            bool(data.get("requires_calendar", existing["requires_calendar"])),
-            max(1, int(data.get("capacity_per_slot", existing["capacity_per_slot"]))),
-            int(data.get("sort_order", existing["sort_order"])),
-            bool(data.get("is_active", existing["is_active"])),
-            svc_id,
-        ),
-    )
-    return jsonify(_hydrate_service(row))
-
-
-@app.route("/admin/api/services/<int:svc_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_service(svc_id):
-    n = execute_db("DELETE FROM services WHERE id = %s", (svc_id,))
-    if n == 0:
-        return jsonify({"error": "Service not found"}), 404
-    return jsonify({"success": True})
-
-
-# --------------- Admin: addons CRUD ---------------
-
-@app.route("/admin/api/services/<int:svc_id>/addons", methods=["GET"])
-@admin_required
-def admin_list_addons(svc_id):
-    rows = query_db(
-        "SELECT * FROM service_addons WHERE service_id = %s "
-        "ORDER BY sort_order ASC, id ASC", (svc_id,)
-    ) or []
-    return jsonify([_service_to_dict(r) for r in rows])
-
-
-@app.route("/admin/api/services/<int:svc_id>/addons", methods=["POST"])
-@admin_required
-def admin_create_addon(svc_id):
-    data = request.get_json() or {}
-    name = (data.get("name") or "").strip()
-    if not name:
-        return jsonify({"error": "Name required"}), 400
-    row = execute_db(
-        "INSERT INTO service_addons "
-        "(service_id, name, description, price_cents, sort_order, is_active) "
-        "VALUES (%s,%s,%s,%s,%s,%s) RETURNING *",
-        (
-            svc_id, name,
-            data.get("description", ""),
-            int(data.get("price_cents") or 0),
-            int(data.get("sort_order") or 0),
-            bool(data.get("is_active", True)),
-        ),
-    )
-    return jsonify(_service_to_dict(row)), 201
-
-
-@app.route("/admin/api/addons/<int:addon_id>", methods=["PUT"])
-@admin_required
-def admin_update_addon(addon_id):
-    data = request.get_json() or {}
-    row = execute_db(
-        "UPDATE service_addons SET "
-        "name = %s, description = %s, price_cents = %s, "
-        "sort_order = %s, is_active = %s "
-        "WHERE id = %s RETURNING *",
-        (
-            data.get("name", ""),
-            data.get("description", ""),
-            int(data.get("price_cents") or 0),
-            int(data.get("sort_order") or 0),
-            bool(data.get("is_active", True)),
-            addon_id,
-        ),
-    )
-    if not row:
-        return jsonify({"error": "Addon not found"}), 404
-    return jsonify(_service_to_dict(row))
-
-
-@app.route("/admin/api/addons/<int:addon_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_addon(addon_id):
-    n = execute_db("DELETE FROM service_addons WHERE id = %s", (addon_id,))
-    if n == 0:
-        return jsonify({"error": "Addon not found"}), 404
-    return jsonify({"success": True})
-
-
-# --------------- Admin: availability rules + overrides ---------------
-
-@app.route("/admin/api/services/<int:svc_id>/availability", methods=["GET"])
-@admin_required
-def admin_list_availability(svc_id):
-    rules = query_db(
-        "SELECT * FROM service_availability_rules WHERE service_id = %s "
-        "ORDER BY day_of_week, start_time", (svc_id,)
-    ) or []
-    overrides = query_db(
-        "SELECT * FROM service_availability_overrides WHERE service_id = %s "
-        "ORDER BY override_date, COALESCE(start_time, '00:00')", (svc_id,)
-    ) or []
-    return jsonify({
-        "rules": [_service_to_dict(r) for r in rules],
-        "overrides": [_service_to_dict(o) for o in overrides],
-    })
-
-
-@app.route("/admin/api/services/<int:svc_id>/rules", methods=["POST"])
-@admin_required
-def admin_create_rule(svc_id):
-    data = request.get_json() or {}
-    row = execute_db(
-        "INSERT INTO service_availability_rules "
-        "(service_id, day_of_week, start_time, end_time, slot_minutes, is_active) "
-        "VALUES (%s,%s,%s,%s,%s,%s) RETURNING *",
-        (
-            svc_id,
-            int(data.get("day_of_week") or 0),
-            data.get("start_time", "09:00"),
-            data.get("end_time", "17:00"),
-            int(data.get("slot_minutes") or 60),
-            bool(data.get("is_active", True)),
-        ),
-    )
-    return jsonify(_service_to_dict(row)), 201
-
-
-@app.route("/admin/api/rules/<int:rule_id>", methods=["PUT"])
-@admin_required
-def admin_update_rule(rule_id):
-    data = request.get_json() or {}
-    row = execute_db(
-        "UPDATE service_availability_rules SET "
-        "day_of_week = %s, start_time = %s, end_time = %s, "
-        "slot_minutes = %s, is_active = %s "
-        "WHERE id = %s RETURNING *",
-        (
-            int(data.get("day_of_week") or 0),
-            data.get("start_time", "09:00"),
-            data.get("end_time", "17:00"),
-            int(data.get("slot_minutes") or 60),
-            bool(data.get("is_active", True)),
-            rule_id,
-        ),
-    )
-    if not row:
-        return jsonify({"error": "Rule not found"}), 404
-    return jsonify(_service_to_dict(row))
-
-
-@app.route("/admin/api/rules/<int:rule_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_rule(rule_id):
-    n = execute_db("DELETE FROM service_availability_rules WHERE id = %s", (rule_id,))
-    if n == 0:
-        return jsonify({"error": "Rule not found"}), 404
-    return jsonify({"success": True})
-
-
-@app.route("/admin/api/services/<int:svc_id>/overrides", methods=["POST"])
-@admin_required
-def admin_create_override(svc_id):
-    data = request.get_json() or {}
-    kind = (data.get("override_kind") or "block").strip()
-    if kind not in ("block", "open"):
-        return jsonify({"error": "override_kind must be 'block' or 'open'"}), 400
-    row = execute_db(
-        "INSERT INTO service_availability_overrides "
-        "(service_id, override_date, start_time, end_time, override_kind, "
-        " slot_minutes, note) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING *",
-        (
-            svc_id,
-            data.get("override_date"),
-            data.get("start_time") or None,
-            data.get("end_time") or None,
-            kind,
-            int(data.get("slot_minutes") or 60),
-            data.get("note", ""),
-        ),
-    )
-    return jsonify(_service_to_dict(row)), 201
-
-
-@app.route("/admin/api/overrides/<int:ovr_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_override(ovr_id):
-    n = execute_db(
-        "DELETE FROM service_availability_overrides WHERE id = %s", (ovr_id,)
-    )
-    if n == 0:
-        return jsonify({"error": "Override not found"}), 404
-    return jsonify({"success": True})
 
 
 # --------------- Admin: contract template upload ---------------
@@ -44418,6 +44082,16 @@ app.register_blueprint(offers_bp)
 # stays in core. Registered like the other admin blueprints.
 from admin.personas import personas_bp  # noqa: E402
 app.register_blueprint(personas_bp)
+
+# Commerce admin CRUD blueprint (Track B): bookable-services catalog. The
+# /admin/api/services* + /admin/api/addons* + /admin/api/rules* +
+# /admin/api/overrides* CRUD routes. @admin_required gating preserved (from core).
+# SERVICE_PRICING_MODELS + _slugify_service/_unique_service_slug moved with the
+# routes (service-CRUD-only); _service_to_dict/_addon_rows/_hydrate_service live in
+# core (also used by the public service + booking routes still in app.py). The
+# contract-template UPLOAD route stays in app.py (it uses the storage backend).
+from admin.commerce import commerce_bp  # noqa: E402
+app.register_blueprint(commerce_bp)
 
 
 def _resolve_velo_callback_url():

@@ -412,3 +412,35 @@ def _vp_as_list(v):
         except Exception:
             return []
     return []
+
+
+# ---- service serializers (Track B helper relocation; shared by admin/commerce.py
+# AND the public service/booking routes that remain in app.py, so they live in
+# core and are re-exported via app.py's `from core import` block). Clean leaves:
+# only dict/isoformat (pure) and query_db (core). ----
+def _service_to_dict(row):
+    """Coerce DB row to a JSON-friendly dict (keeps int cents, ISO times)."""
+    if not row:
+        return None
+    d = dict(row)
+    for k, v in list(d.items()):
+        if hasattr(v, "isoformat"):
+            d[k] = v.isoformat()
+    return d
+
+
+def _addon_rows(service_id: int):
+    return query_db(
+        "SELECT * FROM service_addons WHERE service_id = %s "
+        "AND is_active = TRUE ORDER BY sort_order ASC, id ASC",
+        (service_id,),
+    ) or []
+
+
+def _hydrate_service(svc_row):
+    """Attach the active addon list to a single service dict."""
+    if not svc_row:
+        return None
+    d = _service_to_dict(svc_row)
+    d["addons"] = [_service_to_dict(a) for a in _addon_rows(d["id"])]
+    return d
