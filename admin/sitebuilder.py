@@ -18,19 +18,24 @@ It has exactly one caller (the page-section PUT below) and no other app.py call 
 it was moved here verbatim with that route - kept byte-for-byte to preserve the exact
 allow/deny boundary. It is a pure leaf (str ops + the constant tuple only).
 
-The standalone /admin/api/pages CRUD stays in app.py: those routes depend on the module-
-level _slugify helper, which has colliding same-named definitions in app.py that cannot
-be relocated without a rename (a logic change), so they are out of scope here.
+The standalone /admin/api/pages CRUD (+ its _serialize_page hydrator) now lives here
+too (Track B / task 078, piece #3). It was previously held back in app.py because it
+depended on the module-level _slugify, which had three colliding same-named definitions;
+that collision has since been resolved (the two dead defs removed) and the surviving
+_slugify moved to core, so these routes import it cleanly here. A page is a row in
+`pages` that reuses page_sections via the page_section_assignments join table, which is
+why this CRUD belongs alongside the section primitives above.
 
 Registered in app.py via app.register_blueprint(sitebuilder_bp), after commerce_bp.
 Imports come from core (never app - that would be circular).
 """
 import json
 import re
+import sys
 
 from flask import Blueprint, request, jsonify
 
-from core import query_db, execute_db, admin_required
+from core import query_db, execute_db, get_db, admin_required, _slugify
 
 sitebuilder_bp = Blueprint("sitebuilder", __name__)
 
@@ -243,3 +248,209 @@ def _validate_nav_link_target(raw):
         "Menu link target must be a relative path (/...), an anchor (#...), "
         "or an http(s)://, mailto:, or tel: URL."
     )
+
+
+# ---- standalone pages CRUD (Track B / task 078, piece #3, moved from app.py) ----
+# A page (pages row) reuses page_sections via the page_section_assignments join
+# table. _serialize_page hydrates a page row with its ordered section_ids. The
+# /sections PUT does an atomic delete-all-then-insert under one pooled connection.
+# _slugify (canonical, from core) generates slugs; note it never returns "", so the
+# `if not slug` guards below only fire when a caller passes a slug that slugifies
+# to empty AFTER a non-empty input cannot happen - kept verbatim for behavior parity.
+
+def _serialize_page(page_row):
+    """Hydrate a pages row with its assigned section_ids (in render
+    order) so the admin UI can show + reorder them in a single round
+    trip. Used by every endpoint that returns a page object."""
+    if not page_row:
+        return None
+    out = dict(page_row)
+    rows = query_db(
+        "SELECT section_id FROM page_section_assignments "
+        "WHERE page_id = %s ORDER BY sort_order ASC, id ASC",
+        (page_row["id"],),
+    ) or []
+    out["section_ids"] = [r["section_id"] for r in rows]
+    return out
+
+
+@sitebuilder_bp.route("/admin/api/pages", methods=["GET"])
+@admin_required
+def admin_list_pages():
+    """GET all standalone pages with their assigned section_ids."""
+    rows = query_db("SELECT * FROM pages ORDER BY sort_order ASC, id ASC") or []
+    return jsonify([_serialize_page(r) for r in rows])
+
+
+@sitebuilder_bp.route("/admin/api/pages", methods=["POST"])
+@admin_required
+def admin_create_page():
+    """POST /admin/api/pages — Create a standalone page."""
+    data = request.get_json() or {}
+    slug = _slugify(data.get("slug", ""))
+    if not slug:
+        return jsonify({"error": "Slug is required"}), 400
+    title = (data.get("title") or "").strip() or slug.replace("-", " ").title()
+    meta = (data.get("meta_description") or "").strip()
+    enabled = bool(data.get("enabled", True))
+    # Reject duplicates with a friendly 409 instead of leaking the
+    # underlying psycopg2 UNIQUE-constraint exception.
+    existing = query_db(
+        "SELECT id FROM pages WHERE slug = %s", (slug,), fetchone=True
+    )
+    if existing:
+        return jsonify({"error": "A page with that slug already exists."}), 409
+    next_order = (query_db(
+        "SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM pages",
+        fetchone=True,
+    ) or {}).get("n", 0)
+    page = execute_db(
+        """INSERT INTO pages (slug, title, meta_description, sort_order, enabled)
+           VALUES (%s, %s, %s, %s, %s) RETURNING *""",
+        (slug, title, meta, next_order, enabled),
+    )
+    return jsonify(_serialize_page(page)), 201
+
+
+@sitebuilder_bp.route("/admin/api/pages/<int:page_id>", methods=["GET"])
+@admin_required
+def admin_get_page(page_id):
+    """GET /admin/api/pages/<id> — single page with its section_ids."""
+    page = query_db("SELECT * FROM pages WHERE id = %s", (page_id,), fetchone=True)
+    if not page:
+        return jsonify({"error": "Page not found"}), 404
+    return jsonify(_serialize_page(page))
+
+
+@sitebuilder_bp.route("/admin/api/pages/<int:page_id>", methods=["PUT", "PATCH"])
+@admin_required
+def admin_update_page(page_id):
+    """PUT/PATCH /admin/api/pages/<id> — Update slug, title, meta,
+    enabled. Only fields actually sent in the body are updated; section
+    assignment is managed by the dedicated /sections endpoint below."""
+    data = request.get_json() or {}
+    existing = query_db(
+        "SELECT slug, title, meta_description, sort_order, enabled "
+        "FROM pages WHERE id = %s", (page_id,), fetchone=True,
+    )
+    if not existing:
+        return jsonify({"error": "Page not found"}), 404
+    slug = existing["slug"]
+    if "slug" in data:
+        new_slug = _slugify(data["slug"])
+        if not new_slug:
+            return jsonify({"error": "Slug cannot be empty"}), 400
+        if new_slug != slug:
+            clash = query_db(
+                "SELECT id FROM pages WHERE slug = %s AND id <> %s",
+                (new_slug, page_id), fetchone=True,
+            )
+            if clash:
+                return jsonify({"error": "A page with that slug already exists."}), 409
+            slug = new_slug
+    title    = (data["title"] if "title" in data else existing.get("title")) or ""
+    meta     = (data["meta_description"] if "meta_description" in data
+                else existing.get("meta_description")) or ""
+    enabled  = bool(data["enabled"]) if "enabled" in data else bool(existing.get("enabled"))
+    sort_ord = int(data["sort_order"]) if "sort_order" in data else int(existing.get("sort_order") or 0)
+    page = execute_db(
+        """UPDATE pages SET
+             slug = %s, title = %s, meta_description = %s,
+             sort_order = %s, enabled = %s, updated_at = NOW()
+           WHERE id = %s RETURNING *""",
+        (slug, title, meta, sort_ord, enabled, page_id),
+    )
+    if not page:
+        return jsonify({"error": "Page not found"}), 404
+    return jsonify(_serialize_page(page))
+
+
+@sitebuilder_bp.route("/admin/api/pages/<int:page_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_page(page_id):
+    """DELETE /admin/api/pages/<id>. Cascade on the join table drops
+    every section assignment automatically — sections themselves are
+    not touched (they're shared with the homepage)."""
+    count = execute_db("DELETE FROM pages WHERE id = %s", (page_id,))
+    if count == 0:
+        return jsonify({"error": "Page not found"}), 404
+    return jsonify({"success": True})
+
+
+@sitebuilder_bp.route("/admin/api/pages/<int:page_id>/sections", methods=["PUT"])
+@admin_required
+def admin_set_page_sections(page_id):
+    """PUT /admin/api/pages/<id>/sections — Replace the page's section
+    assignment list in one shot. Body: {"section_ids": [3, 1, 7]}.
+    Order in the array IS the render order (sort_order is assigned
+    sequentially). Replaces atomically (delete-all-then-insert) so the
+    admin UI doesn't have to do per-row diffing."""
+    page = query_db("SELECT id FROM pages WHERE id = %s", (page_id,), fetchone=True)
+    if not page:
+        return jsonify({"error": "Page not found"}), 404
+    data = request.get_json() or {}
+    raw_ids = data.get("section_ids") or []
+    if not isinstance(raw_ids, list):
+        return jsonify({"error": "section_ids must be an array"}), 400
+    # Validate every section exists, dedupe while preserving order so
+    # the admin can't accidentally double-render a section by clicking
+    # twice in the picker.
+    seen, section_ids = set(), []
+    for sid in raw_ids:
+        try:
+            sid_i = int(sid)
+        except (TypeError, ValueError):
+            return jsonify({"error": f"Invalid section id: {sid!r}"}), 400
+        if sid_i in seen:
+            continue
+        seen.add(sid_i)
+        section_ids.append(sid_i)
+    if section_ids:
+        existing_rows = query_db(
+            "SELECT id FROM page_sections WHERE id = ANY(%s)", (section_ids,)
+        ) or []
+        existing_ids = {r["id"] for r in existing_rows}
+        unknown = [sid for sid in section_ids if sid not in existing_ids]
+        if unknown:
+            return jsonify({"error": f"Unknown section ids: {unknown}"}), 400
+    # Atomic replace — borrow a single pooled connection, flip out of
+    # autocommit so the DELETE + N INSERTs land together, COMMIT on
+    # success, ROLLBACK on any failure. Without this a crash mid-loop
+    # (or a concurrent writer) could leave the page with partial /
+    # empty assignments and a confused admin UI.
+    conn = get_db()
+    try:
+        try:
+            conn.autocommit = False
+        except Exception:
+            pass
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM page_section_assignments WHERE page_id = %s",
+                (page_id,),
+            )
+            if section_ids:
+                # executemany is fine here — N is bounded by the number
+                # of page_sections rows the admin has, typically <30.
+                cur.executemany(
+                    "INSERT INTO page_section_assignments "
+                    "(page_id, section_id, sort_order) VALUES (%s, %s, %s)",
+                    [(page_id, sid, idx) for idx, sid in enumerate(section_ids)],
+                )
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"[admin_set_page_sections] failed for page {page_id}: {e}",
+              file=sys.stderr)
+        return jsonify({"error": "Failed to save section assignments"}), 500
+    finally:
+        try:
+            conn.autocommit = True
+        except Exception:
+            pass
+        conn.close()
+    page_full = query_db("SELECT * FROM pages WHERE id = %s", (page_id,), fetchone=True)
+    return jsonify(_serialize_page(page_full))
