@@ -2472,6 +2472,14 @@ TO CUSTOMIZE THIS DASHBOARD:
     .section-header-admin h2, .content-header h2{ font-size:var(--admin-fs-5); font-weight:700; letter-spacing:-.02em; }
     .section-header-admin > div > p, .content-header > div > p{ max-width:68ch; line-height:1.55; }
 
+    /* .form-card (used by Voice + other settings tabs) had NO definition → it
+       rendered as a bare block. Give it the same glass-card treatment as
+       .form-panel + a consistent section heading (task 073 breadth fix). */
+    .form-card{ background:var(--admin-surface); border:1px solid var(--admin-border); border-radius:var(--admin-radius);
+      box-shadow:var(--admin-shadow); -webkit-backdrop-filter:var(--admin-blur); backdrop-filter:var(--admin-blur);
+      padding:1.4rem 1.45rem; margin-bottom:1.1rem; }
+    .form-card > h3{ font-family:var(--admin-head-font); font-size:1.05rem; font-weight:700; color:var(--admin-text); margin:0 0 .9rem; }
+
     /* Sidebar search + collapsible groups (task 073). */
     #gx-nav-search-wrap{ padding:.15rem .2rem .7rem; }
     #gx-nav-search{ width:100%; background:var(--admin-field); border:1px solid var(--admin-border); border-radius:9px;
