@@ -632,266 +632,35 @@ ELEVENLABS_API_BASE = "https://api.elevenlabs.io/v1"
 # DATABASE HELPERS
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# Connection pool (Tier 7)
-# -----------------------------------------------------------------------------
-# Process-wide pool so we don't pay TCP+auth setup on every request. Each
-# gunicorn worker gets its own pool. Defaults are tuned for Replit autoscale
-# under bursty traffic (see _resolve_pool_sizes); operators on managed
-# Postgres with low max_connections should override DB_POOL_MAX to keep
-# total in-flight connections (= max * num_app_instances) under their cap.
-# Falls back to a direct connection if the pool is unavailable or exhausted,
-# so a misconfiguration never breaks the app — it just degrades to the
-# pre-pool behaviour.
-import psycopg2.pool as _psql_pool
-
-_DB_POOL = None
-_DB_POOL_LOCK = threading.Lock()
-_DB_POOL_DISABLED = False
-
-
-def _resolve_pool_sizes(env=None):
-    """Resolve (min, max) Postgres pool sizes from env vars with sensible
-    defaults for an autoscale Flask deployment.
-
-    Defaults: min=2, max=20.
-      - min=2 (vs the old min=1): keeps a warm spare connection so a
-        traffic burst doesn't pay TCP+TLS+auth handshake (~30-150 ms on
-        managed Postgres) on the FIRST request of every cold worker.
-        On Replit autoscale, instances are spun up on demand and serve
-        traffic in waves — a min=1 pool means every wave's first request
-        eats the cold-connection tax. Two warm conns covers the common
-        case of a page request firing two queries in parallel without
-        any wait.
-      - max=20 (vs the old max=10): the app fans out per request — a
-        single page-bundle response can run 8-12 queries, and concurrent
-        users multiply that. A 10-cap was hitting `_psql_pool.PoolError`
-        on bursty traffic and falling back to direct-connect (which is
-        slower than just having had a bigger pool to begin with). 20 is
-        well under managed-Postgres caps for a single app instance.
-
-    Validation: min is clamped to >= 1 (psycopg2 requires it); max is
-    clamped to >= min so a misconfig like DB_POOL_MAX=5 with the new
-    default min=2 doesn't error at construction. Empty strings (the
-    common operator mistake of `export DB_POOL_MAX=` with no value)
-    fall back to the documented defaults via `or "<default>"`. Truly
-    invalid values (DB_POOL_MIN=banana) raise a ValueError at startup
-    with a message naming the offending var and value — silent
-    fallback to the default would hide the misconfiguration for
-    weeks, fail-loud is the right policy for an infra knob."""
-    env = env if env is not None else os.environ
-    min_val = max(1, _parse_pool_int(env, "DB_POOL_MIN", "2"))
-    max_val = max(min_val, _parse_pool_int(env, "DB_POOL_MAX", "20"))
-    return min_val, max_val
-
-
-def _parse_pool_int(env, var_name, default):
-    """Parse an integer from env with an operator-friendly error message.
-    Wraps `int()` so a typo like `DB_POOL_MAX=banana` produces a
-    diagnostic that says exactly which var and which value, rather than
-    psycopg2's bare `invalid literal for int()` traceback at startup."""
-    raw = env.get(var_name, default) or default
-    try:
-        return int(raw)
-    except (ValueError, TypeError) as e:
-        raise ValueError(
-            f"[db pool] env var {var_name}={raw!r} is not a valid integer. "
-            f"Set it to a positive integer (e.g. {var_name}={default}) or "
-            f"unset it to use the default ({default})."
-        ) from e
-
-
-_DB_POOL_MIN, _DB_POOL_MAX = _resolve_pool_sizes()
-
-
-def _direct_connect():
-    """Un-pooled connection. Used by the get_db() fallback path only.
-    Closes for real (no pool involvement) so a fallback under pool exhaustion
-    doesn't accumulate."""
-    return psycopg2.connect(DATABASE_URL)
-
-
-class _PooledConnection(psycopg2.extensions.connection):
-    """psycopg2 connection subclass whose `.close()` returns to the pool.
-
-    psycopg2's C-level connection forbids reassigning `.close` as an
-    instance attribute, so we override it via a subclass and pass the
-    subclass to the pool via `connection_factory=`. This way every
-    existing `conn.close()` call site returns the connection to the pool
-    instead of closing it.
-
-    Re-entrancy guard: ThreadedConnectionPool.putconn() *itself* calls
-    `conn.close()` internally to discard a connection when the pool is
-    full or the conn is in an unknown txn state. Without the
-    `_closing_directly` flag we'd recurse into putconn forever — close
-    is the very symptom that brought us in. When that flag is set we
-    fall straight through to the real close().
-    """
-    _pool = None  # set right after pool construction in _init_db_pool()
-
-    def close(self):
-        # Re-entrancy guard: pool internally calls .close() on overflow/discard.
-        if getattr(self, "_closing_directly", False):
-            super().close()
-            return
-        pool = type(self)._pool
-        if pool is None:
-            super().close()
-            return
-        try:
-            self._closing_directly = True
-            if self.closed:
-                # Already dead — tell the pool to discard cleanly.
-                try:
-                    pool.putconn(self, close=True)
-                    return
-                except Exception:
-                    pass
-            else:
-                # Reset state so a handler that left autocommit=False or
-                # an open transaction cannot poison the next borrower.
-                try:
-                    if not self.autocommit:
-                        self.rollback()
-                except Exception:
-                    pass
-                try:
-                    self.autocommit = True
-                except Exception:
-                    pass
-                try:
-                    pool.putconn(self)
-                    return
-                except Exception:
-                    pass
-            # putconn raised — fall through to real close so we don't leak.
-            super().close()
-        finally:
-            self._closing_directly = False
-
-
-def _init_db_pool():
-    """Lazily initialise the process-wide pool. Returns the pool or None on failure."""
-    global _DB_POOL, _DB_POOL_DISABLED
-    if _DB_POOL_DISABLED:
-        return None
-    if _DB_POOL is not None:
-        return _DB_POOL
-    with _DB_POOL_LOCK:
-        if _DB_POOL is None and not _DB_POOL_DISABLED:
-            try:
-                _DB_POOL = _psql_pool.ThreadedConnectionPool(
-                    _DB_POOL_MIN, _DB_POOL_MAX, DATABASE_URL,
-                    connection_factory=_PooledConnection,
-                )
-                # Wire the subclass back to the pool so close() can find it.
-                _PooledConnection._pool = _DB_POOL
-                print(
-                    f"[db pool] initialised (min={_DB_POOL_MIN}, max={_DB_POOL_MAX})",
-                    file=sys.stderr,
-                )
-            except Exception as e:
-                print(
-                    f"[db pool] init failed, falling back to per-request connections: {e}",
-                    file=sys.stderr,
-                )
-                _DB_POOL_DISABLED = True
-                return None
-    return _DB_POOL
-
-
-def get_db():
-    """
-    Borrow a Postgres connection from the process-wide pool.
-
-    The returned connection is a `_PooledConnection` whose `.close()`
-    returns it to the pool — every existing `try: ... finally: conn.close()`
-    call site works unchanged. Falls back to a fresh direct connection if
-    the pool is unavailable or exhausted, so the app never hard-fails on
-    a pool misconfiguration.
-
-    Callers create cursors with `cursor_factory=psycopg2.extras.RealDictCursor`
-    explicitly (matches the pre-pool convention used throughout this file).
-    """
-    pool = _init_db_pool()
-    if pool is not None:
-        try:
-            conn = pool.getconn()
-            # Defence: if Postgres killed the conn while it was idle in the
-            # pool, discard it and grab another rather than handing the
-            # caller a dead handle that errors on first use.
-            if getattr(conn, "closed", 0):
-                try:
-                    pool.putconn(conn, close=True)
-                except Exception:
-                    pass
-                conn = pool.getconn()
-            try:
-                conn.autocommit = True
-            except Exception:
-                pass
-            return conn
-        except _psql_pool.PoolError as e:
-            print(f"[db pool] exhausted, falling back to direct connect: {e}", file=sys.stderr)
-        except Exception as e:
-            print(f"[db pool] borrow error, falling back to direct connect: {e}", file=sys.stderr)
-    # Fallback: behave exactly like the pre-pool implementation.
-    fallback = _direct_connect()
-    fallback.autocommit = True
-    return fallback
-
-
-def query_db(sql, params=None, fetchone=False):
-    """
-    Execute a SQL query and return results as a list of dicts (or a single dict).
-
-    Args:
-        sql (str): The SQL query to execute.
-        params (tuple, optional): Parameters to safely inject into the query.
-        fetchone (bool): If True, return only the first row.
-
-    Returns:
-        list[dict] or dict or None: Query results.
-    """
-    conn = get_db()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            if cur.description:
-                rows = cur.fetchall()
-                result = [dict(row) for row in rows]
-                return result[0] if fetchone and result else result
-            return None
-    finally:
-        conn.close()
-
-
-def execute_db(sql, params=None):
-    """
-    Execute a SQL statement that modifies data (INSERT, UPDATE, DELETE).
-    Returns the number of rows affected, or the new row for INSERT...RETURNING.
-
-    Args:
-        sql (str): The SQL statement to execute.
-        params (tuple, optional): Parameters to safely inject.
-
-    Returns:
-        dict or int: The returned row (if RETURNING is used) or affected row count.
-    """
-    conn = get_db()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            if cur.description:
-                # RETURNING with zero affected rows yields no row — return None
-                # so callers can use a simple `if not result:` guard instead of
-                # crashing with TypeError on dict(None). Existing callers
-                # already treat the value as truthy/falsy.
-                row = cur.fetchone()
-                return dict(row) if row is not None else None
-            return cur.rowcount
-    finally:
-        conn.close()
+# The connection pool + get_db / query_db / execute_db were moved to core.py
+# (Track B / B1) so Flask blueprints (admin/*.py) can import them WITHOUT
+# importing app.py - which would be a circular import. They are re-exported
+# here, so every existing `app.query_db(...)`, the pool-stats endpoint, the
+# lazy `from app import query_db` in velo_handlers/velo_endpoints/scraper, and
+# the tests all keep resolving unchanged. Full implementation: see core.py.
+from core import (  # noqa: E402 - re-export the DB layer that now lives in core.py
+    get_db, query_db, execute_db,            # public DB API (used throughout app.py)
+    _init_db_pool, _resolve_pool_sizes,      # pool internals referenced by the tests
+    _DB_POOL_MIN, _DB_POOL_MAX,              # pool-size constants (stats endpoint + tests)
+    current_tenant_id,                       # tenant resolver (returns 1); 84 call sites + velo_handlers
+    _vp_as_list,                             # JSONB->list coercion (Track B); 11 call sites here + admin/offers.py
+    _service_to_dict, _addon_rows, _hydrate_service,  # service serializers (Track B); shared by public service/booking routes here + admin/commerce.py
+    _iso_row,                                # row ISO-date coercer (Track B); ~8 call sites here + admin/crm.py
+    # --- feature-flag subsystem (Track B): registry/cache/lookups + route gate ---
+    _FEATURE_REGISTRY, _FEATURE_NAMES, _FEATURE_DEFAULTS,  # registry data (init_db seed, health, catalog, velo)
+    _FEATURE_ROUTE_PREFIXES,                  # route-prefix gate map (read by enforce + tests)
+    tenant_has_feature, invalidate_tenant_features_cache,  # the gate + cache invalidator (84+ call sites)
+    list_tenant_features, set_tenant_feature, # Plans & Features UI + velo manage_features
+    _ensure_tenant_feature_row,               # lazy row seeder (kept exported for parity)
+    enforce_feature_flags as _core_enforce_feature_flags,  # body of the before_request hook
+    # --- admin-settings snapshot helper (Track B) ---
+    _ADMIN_SETTINGS_SNAPSHOT_TABLES, _admin_settings_snapshot_table,  # snapshot-table allowlist + check
+    _admin_snapshot_row,                      # pre-write row snapshot (~20 call sites here)
+    # --- secret-redaction helpers (Track B): pure json/re leaves, ~10 call sites ---
+    _REDACTED_KEY_NAMES_LOWER, _REDACTED_ARG_KEYS, _REDACTED_PLACEHOLDER,
+    _is_sensitive_key, _redact_recursive, _redact_sensitive_args,
+    _RESULT_REDACT_PATTERNS, _redact_sensitive_result,
+)
 
 
 # Hand the semantic-cache module its dependencies now that openai_client +
@@ -5012,197 +4781,23 @@ def init_db():
 # so the existing behaviour is preserved.
 # =============================================================================
 
-# (feature_name, human_label, plan_tier_required, default_enabled, group)
-_FEATURE_REGISTRY = [
-    # Website builder (the public marketing-site editor surface). Turn this OFF
-    # for "client" installs that only want the AI concierge + its admin — the
-    # before_request hook then 403s every website-builder admin route. Defaults
-    # ON so existing operator installs are completely unaffected.
-    ("website_builder",      "Website builder (themes/pages/SEO/sections)", "solo", True, "Website"),
-    # Core (always on for paid plans)
-    ("site_themes",          "Site Themes",                  "solo",       True,  "Design"),
-    ("site_designs",         "Multi-Homepage Designs",       "growth",     True,  "Design"),
-    # AI capabilities
-    ("deck_launch",          "Presentation deck launches",   "growth",     True,  "AI"),
-    ("web_search",           "Web search tool",              "growth",     True,  "AI"),
-    ("voice",                "Voice agent (TTS / STT)",      "growth",     True,  "AI"),
-    ("generated_pages",      "AI-generated pages",           "growth",     True,  "AI"),
-    ("agent_scope_slider",   "Agent scope tightness slider", "growth",     True,  "AI"),
-    # Capabilities
-    ("custom_forms",         "Custom forms",                 "solo",       True,  "Capabilities"),
-    ("mcp",                  "MCP connectors",               "enterprise", True,  "Capabilities"),
-    ("presentations",        "Presentations admin",          "growth",     True,  "Capabilities"),
-    ("automations",          "Automations builder",          "growth",     True,  "Capabilities"),
-    ("messaging",            "Email & SMS messaging",        "growth",     True,  "Capabilities"),
-    ("chat_history",         "Chat history & transcripts",   "solo",       True,  "Capabilities"),
-    # Analytics
-    ("analytics",            "Analytics dashboard",          "growth",     True,  "Analytics"),
-    ("cost_dashboard",       "Cost transparency dashboard",  "growth",     True,  "Analytics"),
-    ("weekly_digest",        "Weekly AI activity digest",    "growth",     True,  "Analytics"),
-
-    # ---- Per-tab visibility flags (added for super-admin/client tab control) ----
-    # One on/off switch per admin tab that previously had no flag. These drive
-    # which tabs a CLIENT login sees; the super admin bypasses gating and always
-    # sees every tab. Defaults below apply ONLY to the client.
-    #
-    # Client-safe content/AI tabs — default ON (a client sees them unless the
-    # super admin turns them off).
-    ("business_info",        "Business info",                "solo",       True,  "Content"),
-    ("gallery_cards",        "Gallery cards",                "solo",       True,  "Content"),
-    ("experiences",          "Experiences",                  "solo",       True,  "Content"),
-    ("pricing",              "Pricing",                      "solo",       True,  "Content"),
-    ("testimonials",         "Testimonials",                 "solo",       True,  "Content"),
-    ("team",                 "Team",                         "solo",       True,  "Content"),
-    ("faq",                  "FAQ",                          "solo",       True,  "Content"),
-    ("blog",                 "Blog",                         "solo",       True,  "Content"),
-    ("events",               "Events",                       "solo",       True,  "Content"),
-    ("services",             "Services",                     "solo",       True,  "Content"),
-    ("media",                "Media library",                "solo",       True,  "Content"),
-    ("scraper",              "Web scraper",                  "growth",     True,  "Content"),
-    ("products",             "Products",                     "solo",       True,  "Store"),
-    ("orders",               "Orders",                       "solo",       True,  "Store"),
-    ("reviews",              "Reviews (destinations/requests/insights)", "growth", True, "Reviews"),
-    ("dashboards",           "Custom dashboards",            "growth",     True,  "Insights"),
-    ("marketing_insights",   "Marketing insights",           "growth",     True,  "Insights"),
-    ("admin_chat",           "Admin AI chat",                "solo",       True,  "AI"),
-    ("chatbot",              "Chatbot settings",             "solo",       True,  "AI"),
-    ("knowledge_cache",      "Knowledge cache (RAG)",        "growth",     True,  "AI"),
-    ("skills",               "Skills registry",              "growth",     True,  "AI"),
-    ("custom_skills",        "Custom skills",                "growth",     True,  "AI"),
-    ("recent_changes",       "Recent changes log",           "solo",       True,  "System"),
-    #
-    # Sensitive owner tabs — default OFF for clients (a client doesn't see them
-    # until the super admin explicitly enables them). The super admin always
-    # sees them. Several are ALSO behind the SUPER_ADMIN_KEY unlock-key step-up.
-    ("secrets",              "Secrets / env vars",           "solo",       False, "System"),
-    ("developer",            "Developer console",            "growth",     False, "System"),
-    ("performance",          "Performance tools",            "growth",     False, "System"),
-    ("snapshot",             "Snapshot / clone",             "growth",     False, "System"),
-    ("fleet",                "Fleet sync / VELO",            "enterprise", False, "System"),
-    ("llm_provider",         "LLM provider selector",        "growth",     False, "AI"),
-    ("stripe",               "Stripe / billing config",      "growth",     False, "Billing"),
-]
-_FEATURE_NAMES = {row[0] for row in _FEATURE_REGISTRY}
-_FEATURE_DEFAULTS = {row[0]: row[3] for row in _FEATURE_REGISTRY}
-
-# CLIENT_MODE — a one-switch "this install is a client, not the operator" flag.
-# When truthy, operator-only features default OFF, so a fresh client install has
-# the website-builder surface disabled with no manual toggling. Operators leave
-# CLIENT_MODE unset → every default stays exactly as before (fully unaffected).
-# Per-tenant overrides in the Plans & Features tab still win over these defaults.
-_OPERATOR_ONLY_FEATURES = ("website_builder",)
-_CLIENT_MODE = os.environ.get("CLIENT_MODE", "").strip().lower() in ("1", "true", "yes", "on")
-if _CLIENT_MODE:
-    for _f in _OPERATOR_ONLY_FEATURES:
-        _FEATURE_DEFAULTS[_f] = False
-
-# Per-process cache of {(tenant_id, feature_name): enabled_bool, expires_at}.
-# Tiny TTL so flag flips become visible quickly across requests without
-# hammering the DB on every tool dispatch.
-_FEATURE_CACHE = {}
-_FEATURE_CACHE_TTL_SEC = 30
+# _FEATURE_REGISTRY / _FEATURE_NAMES / _FEATURE_DEFAULTS / CLIENT_MODE defaults /
+# _FEATURE_CACHE moved to core.py (Track B, FEATURE-FLAG SUBSYSTEM); re-exported
+# via the `from core import` block above. The Plans & Features UI + every
+# tenant_has_feature() gate read these names through that re-export.
 
 
-def current_tenant_id():
-    """Return the active tenant id for this request.
-
-    For now there is exactly one tenant (id=1); later we'll resolve from
-    the request host or admin session. All call-sites should use this
-    rather than hard-coding 1.
-    """
-    return 1
+# current_tenant_id() moved to core.py (Track B / B1) — re-exported at the top of
+# this file (the `from core import …` block) so all 84 call sites + velo_handlers'
+# `from app import current_tenant_id` keep resolving. Body unchanged (returns 1).
 
 
-def invalidate_tenant_features_cache(tenant_id=None):
-    """Drop cached feature lookups so flag flips take effect immediately."""
-    global _FEATURE_CACHE
-    if tenant_id is None:
-        _FEATURE_CACHE = {}
-    else:
-        _FEATURE_CACHE = {k: v for k, v in _FEATURE_CACHE.items() if k[0] != tenant_id}
+# invalidate_tenant_features_cache + _ensure_tenant_feature_row + tenant_has_feature
+# moved to core.py (Track B, FEATURE-FLAG SUBSYSTEM); re-exported above.
 
 
-def _ensure_tenant_feature_row(tenant_id, feature_name):
-    """Lazy-seed a tenant_features row using the registry default.
-
-    Idempotent: ON CONFLICT DO NOTHING. Called from tenant_has_feature
-    when the row is missing so we never have to bulk-seed on startup.
-    """
-    default_enabled = _FEATURE_DEFAULTS.get(feature_name, True)
-    try:
-        execute_db(
-            "INSERT INTO tenant_features (tenant_id, feature_name, enabled) "
-            "VALUES (%s, %s, %s) "
-            "ON CONFLICT (tenant_id, feature_name) DO NOTHING",
-            (tenant_id, feature_name, default_enabled),
-        )
-    except Exception as e:
-        print(f"[features] could not lazy-seed {feature_name}: {e}")
-
-
-def tenant_has_feature(name, tenant_id=None):
-    """Return True if `name` is enabled for the given tenant.
-
-    Unknown feature names default to True so adding a new gate to the
-    code without an immediate registry update never breaks production.
-    The first lookup of a known feature for a tenant inserts the
-    enabled=registry-default row, so the Plans & Features tab can then
-    flip it.
-    """
-    if tenant_id is None:
-        tenant_id = current_tenant_id()
-    cache_key = (tenant_id, name)
-    cached = _FEATURE_CACHE.get(cache_key)
-    now = _time.time()
-    if cached is not None and cached[1] > now:
-        return cached[0]
-
-    if name not in _FEATURE_NAMES:
-        # Unknown gate — fail OPEN so we never silently break something.
-        _FEATURE_CACHE[cache_key] = (True, now + _FEATURE_CACHE_TTL_SEC)
-        return True
-
-    try:
-        row = query_db(
-            "SELECT enabled FROM tenant_features "
-            "WHERE tenant_id = %s AND feature_name = %s",
-            (tenant_id, name),
-            fetchone=True,
-        )
-        if row is None:
-            _ensure_tenant_feature_row(tenant_id, name)
-            enabled = _FEATURE_DEFAULTS.get(name, True)
-        else:
-            enabled = bool(row.get("enabled"))
-    except Exception as e:
-        print(f"[features] tenant_has_feature({name}) failed: {e}; failing open")
-        enabled = True
-
-    _FEATURE_CACHE[cache_key] = (enabled, now + _FEATURE_CACHE_TTL_SEC)
-    return enabled
-
-
-def list_tenant_features(tenant_id=None):
-    """Return the full feature roster for the Plans & Features UI.
-
-    Walks _FEATURE_REGISTRY (canonical order/grouping) and joins each
-    with the tenant_features.enabled value (lazy-seeding any missing
-    rows). Returns a list of dicts ready to render.
-    """
-    if tenant_id is None:
-        tenant_id = current_tenant_id()
-    out = []
-    for name, label, plan_tier, default_enabled, group in _FEATURE_REGISTRY:
-        enabled = tenant_has_feature(name, tenant_id)
-        out.append({
-            "name": name,
-            "label": label,
-            "plan_tier": plan_tier,
-            "default_enabled": default_enabled,
-            "group": group,
-            "enabled": enabled,
-        })
-    return out
+# list_tenant_features moved to core.py (Track B, FEATURE-FLAG SUBSYSTEM);
+# re-exported via the `from core import` block above.
 
 
 _AGENT_SCOPE_VALUES = ("strict", "balanced", "generous")
@@ -5250,162 +4845,20 @@ def _compose_scope_paragraph():
     )
 
 
-def set_tenant_feature(name, enabled, tenant_id=None, note=""):
-    """Flip a feature on/off for a tenant. Returns the new value."""
-    if tenant_id is None:
-        tenant_id = current_tenant_id()
-    if name not in _FEATURE_NAMES:
-        raise ValueError(f"Unknown feature: {name}")
-    execute_db(
-        "INSERT INTO tenant_features (tenant_id, feature_name, enabled, note) "
-        "VALUES (%s, %s, %s, %s) "
-        "ON CONFLICT (tenant_id, feature_name) DO UPDATE "
-        "SET enabled = EXCLUDED.enabled, note = EXCLUDED.note, updated_at = NOW()",
-        (tenant_id, name, bool(enabled), note or ""),
-    )
-    invalidate_tenant_features_cache(tenant_id)
-    return bool(enabled)
+# set_tenant_feature moved to core.py (Track B, FEATURE-FLAG SUBSYSTEM);
+# re-exported via the `from core import` block above.
 
 
-# Route-prefix → feature_name map. The before_request hook below blocks
-# any HTTP request whose path starts with one of these prefixes when
-# the tenant doesn't have the feature enabled. Order matters — more
-# specific prefixes should come before broader ones, but here the
-# prefixes don't overlap so the order is alphabetic for clarity.
-_FEATURE_ROUTE_PREFIXES = [
-    ("/admin/api/analytics",       "analytics"),
-    ("/admin/api/automations",     "automations"),
-    ("/admin/api/chat-history",    "chat_history"),
-    ("/admin/api/forms",           "custom_forms"),
-    ("/admin/api/generated-pages", "generated_pages"),
-    ("/admin/api/mcp/",            "mcp"),
-    ("/admin/api/messaging",       "messaging"),
-    ("/admin/api/presentations",   "presentations"),
-    ("/admin/api/site-designs",    "site_designs"),
-    ("/admin/api/site-themes",     "site_themes"),
-    ("/admin/api/voice",           "voice"),
-    ("/api/forms/",                "custom_forms"),
-    ("/api/generated-pages",       "generated_pages"),
-    ("/api/presentations/",        "presentations"),
-    ("/api/voice/",                "voice"),
-    # Website-builder (marketing-site editor) admin routes — gated as a unit by
-    # the `website_builder` flag so a client install has the whole site-builder
-    # surface disabled at the route layer while keeping the AI concierge admin.
-    # NOTE: deliberately EXCLUDES AI-referenced content the concierge reads
-    # (blog/team/faq/testimonials/experiences/pricing/business-info) and
-    # /admin/api/marketing (= Marketing Insights, an AI feature).
-    ("/admin/api/theme",             "website_builder"),
-    ("/admin/api/curated-font-pairs", "website_builder"),
-    ("/admin/api/site-settings",     "website_builder"),
-    ("/admin/api/page-sections",     "website_builder"),
-    ("/admin/api/pages",             "website_builder"),
-    ("/admin/api/custom-sections",   "website_builder"),
-    ("/admin/api/section-visibility", "website_builder"),
-    ("/admin/api/seo",               "website_builder"),
-    ("/admin/api/social-links",      "website_builder"),
-    ("/admin/api/sphere-images",     "website_builder"),
-    ("/admin/api/sphere-settings",   "website_builder"),
-    ("/admin/api/video-gallery",     "website_builder"),
-    ("/admin/api/podcast",           "website_builder"),
-    ("/admin/api/reorder",           "website_builder"),
-    # ---- Per-tab content/store/AI/system gating (super-admin/client control) ----
-    # One entry per tab flag added to the registry above, so a CLIENT whose flag
-    # is off gets the standard feature_disabled response on the tab's admin API.
-    # The super admin bypasses all of this (see _enforce_feature_flags). Prefixes
-    # are exact enough to avoid startswith collisions (note the trailing slash on
-    # /admin/api/chat/ so it does NOT catch chat-history or chatbot-settings).
-    ("/admin/api/business-info",   "business_info"),
-    ("/admin/api/gallery-cards",   "gallery_cards"),
-    ("/admin/api/experiences",     "experiences"),
-    ("/admin/api/pricing",         "pricing"),
-    ("/admin/api/testimonials",    "testimonials"),
-    ("/admin/api/team",            "team"),
-    ("/admin/api/faq",             "faq"),
-    ("/admin/api/blog",            "blog"),
-    ("/admin/api/events",          "events"),
-    ("/admin/api/event-rsvps",     "events"),
-    ("/admin/api/services",        "services"),
-    ("/admin/api/media",           "media"),
-    ("/admin/api/scrape",          "scraper"),   # scrape-jobs / scrape-schedules / scraper-settings
-    ("/admin/api/products",        "products"),
-    ("/admin/api/orders",          "orders"),
-    ("/admin/api/reviews",         "reviews"),
-    ("/admin/api/dashboards",      "dashboards"),
-    ("/admin/api/marketing",       "marketing_insights"),
-    ("/admin/api/chat/",           "admin_chat"),     # trailing slash: admin AI chat only
-    ("/admin/api/chatbot-settings", "chatbot"),
-    ("/admin/api/kb/",             "knowledge_cache"),
-    ("/admin/api/skills",          "skills"),
-    ("/admin/api/llm-provider",    "llm_provider"),
-    ("/admin/api/stripe",          "stripe"),
-    ("/admin/api/snapshots",       "snapshot"),
-    # Sensitive owner tabs that ALSO sit behind the SUPER_ADMIN_KEY unlock-key.
-    # The feature flag (default OFF for clients) gates tab visibility + gives a
-    # clean feature_disabled before the unlock check; the unlock-key remains the
-    # second factor for the super admin.
-    ("/admin/api/secrets",         "secrets"),
-    ("/admin/api/devconsole",      "developer"),
-    ("/admin/api/performance",     "performance"),
-
-    # Public ingress for the automations webhook trigger. We DO gate this
-    # one — if a tenant turns Automations off, third-party services hitting
-    # the saved hook URL should get a 404 (not silently consume the post).
-    ("/automations/hook/",         "automations"),
-]
-
-# Startup safety net: every feature referenced by a route-prefix gate MUST exist
-# in the registry. tenant_has_feature() fails OPEN on unknown names, so a typo in
-# a prefix→feature mapping would silently leave a (possibly sensitive) tab's API
-# reachable by clients. Fail loudly at import instead.
-_unknown_prefix_features = sorted(
-    {feature for _prefix, feature in _FEATURE_ROUTE_PREFIXES if feature not in _FEATURE_NAMES}
-)
-if _unknown_prefix_features:
-    raise RuntimeError(
-        "_FEATURE_ROUTE_PREFIXES references features not in _FEATURE_REGISTRY: "
-        + ", ".join(_unknown_prefix_features)
-        + " — add them to the registry (they would otherwise fail OPEN and leave "
-        "the tab's API reachable by clients)."
-    )
+# _FEATURE_ROUTE_PREFIXES + the startup safety-net check moved to core.py
+# (Track B, FEATURE-FLAG SUBSYSTEM); re-exported via the `from core import` block.
 
 
 @app.before_request
 def _enforce_feature_flags():
-    """Reject requests to disabled-feature endpoints with a 403.
-
-    Runs before every Flask-handled request. If the path starts with
-    a prefix in _FEATURE_ROUTE_PREFIXES and the tenant doesn't have
-    that feature, we return a small JSON 403 explaining which flag
-    is off — the admin can re-enable it from the Plans & Features tab.
-
-    GET requests get a friendlier 404 so we don't expose feature
-    structure to public visitors poking at the site.
-    """
-    # The super admin (platform owner) manages everything and is never gated by
-    # feature flags — they see and use every tab regardless of flag state. This
-    # bypass is SAFE for anon/public traffic because _is_super_admin() requires a
-    # logged-in session (anonymous visitors and client sessions fall through to
-    # the normal gating below).
-    if _is_super_admin():
-        return None
-    try:
-        path = request.path or ""
-    except Exception:
-        return None
-    for prefix, feature in _FEATURE_ROUTE_PREFIXES:
-        if path.startswith(prefix):
-            if not tenant_has_feature(feature):
-                if request.method == "GET" and not path.startswith("/admin/"):
-                    # Don't leak feature names to anonymous visitors.
-                    return jsonify({"error": "not_found"}), 404
-                return jsonify({
-                    "error": "feature_disabled",
-                    "feature": feature,
-                    "message": f"This feature ({feature}) is currently turned off for this site. "
-                                "Enable it in Admin → Plans & Features.",
-                }), 403
-            break
-    return None
+    # Feature-flag enforcement moved to core.enforce_feature_flags() (Track B).
+    # The @app.before_request registration MUST stay here (binds to `app`);
+    # the verbatim body now lives in core. See core.py FEATURE-FLAG SUBSYSTEM.
+    return _core_enforce_feature_flags()
 
 
 # =============================================================================
@@ -6403,73 +5856,16 @@ app.json_encoder = CustomJSONEncoder
 # - Consider adding HTTPS-only cookie flags.
 # =============================================================================
 
-def admin_required(f):
-    """
-    Decorator that protects a route with admin authentication.
-
-    For HTML page routes: redirects to the login page if not logged in
-    (so the user sees the familiar password form).
-
-    For JSON API routes (anything under /admin/api/* or any request that
-    explicitly accepts JSON / sends JSON / is XHR): returns a JSON 401
-    instead of a redirect. Without this the browser fetch silently
-    follows the 302 to /admin/login, the response body is HTML, and the
-    dashboard JS shows a generic "Could not save settings" error after
-    the admin's session expires — extremely confusing for the user.
-    Returning a real 401 lets the dashboard prompt for re-login cleanly.
-    """
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not session.get("admin_logged_in"):
-            wants_json = (
-                request.path.startswith("/admin/api/")
-                or request.is_json
-                or "application/json" in (request.headers.get("Accept") or "")
-                or request.headers.get("X-Requested-With") == "XMLHttpRequest"
-            )
-            if wants_json:
-                return jsonify({"error": "Admin session expired. Please log in again.", "auth_required": True}), 401
-            return redirect(url_for("admin_login"))
-        return f(*args, **kwargs)
-    return decorated_function
-
-
-def _is_super_admin():
-    """True only for a logged-in session whose role is super_admin.
-
-    The role lives server-side in the signed Flask session (set at login /
-    SSO), so it can't be forged client-side. Two non-obvious rules:
-
-    * MUST be logged-in. We deliberately AND on `admin_logged_in` so that an
-      anonymous/public request (which has no session role) returns False — the
-      `"super_admin"` default below is only ever reached by a session that is
-      already logged in. This matters because `_enforce_feature_flags` early-
-      returns for super-admins; if anon callers defaulted to super_admin the
-      feature gates (incl. the anon-GET 404-leak guard and the public
-      automations-webhook gate) would stop applying to the public.
-    * Missing role defaults to super_admin — back-compat for sessions that were
-      established before roles existed (those are the operator's own).
-
-    Drives: feature-flag bypass (super admin sees/uses everything), the
-    Plans & Features tab, and the feature-toggle endpoint guard. Distinct from
-    the SUPER_ADMIN_KEY unlock-key step-up, which stays as-is.
-    """
-    if not session.get("admin_logged_in"):
-        return False
-    return session.get("admin_role", "super_admin") == "super_admin"
-
-
-def _require_super_admin_role():
-    """Return a 403 JSON response if the session is not the super-admin role,
-    else None. Used to hard-gate the feature-control endpoints so a client
-    session can never change what it was granted (the template hiding the tab
-    is cosmetic; THIS is the real boundary)."""
-    if not _is_super_admin():
-        return jsonify({
-            "error": "super_admin_role_required",
-            "message": "Only the super admin can manage feature visibility.",
-        }), 403
-    return None
+# Auth gates moved to core.py (Track B / B1) so blueprints can apply @admin_required
+# and call _is_super_admin() / _require_super_admin_role() without importing app.py.
+# Re-exported here so the 430 @admin_required routes, the is_super_admin Jinja global
+# (context_processor below), and every super-admin-gated endpoint keep resolving
+# unchanged. The LOGIN handlers + their lockout caches (_LOGIN_ATTEMPTS /
+# _SUPER_ADMIN_ATTEMPTS) stay in app.py. Auth LOGIC moved verbatim - no behaviour
+# change; see core.py.
+from core import (  # noqa: E402 - re-export the auth gates that now live in core.py
+    admin_required, _is_super_admin, _require_super_admin_role,
+)
 
 
 # =============================================================================
@@ -9543,16 +8939,9 @@ def serve_static(filename):
 # PUBLIC API — Read-only endpoints for the public site
 # =============================================================================
 
-@app.route("/api/site-settings")
-def api_site_settings():
-    """
-    GET /api/site-settings
-    Returns the site-wide configuration (name, tagline, hero content, etc.).
-    """
-    settings = query_db("SELECT * FROM site_settings WHERE id = 1", fetchone=True)
-    if not settings:
-        return jsonify({"error": "No site settings found"}), 404
-    return jsonify(settings)
+# GET /api/site-settings moved to admin/public_api.py (Track B / B2 — the first
+# de-monolith blueprint, proving the route-extraction pattern). Same URL + method;
+# registered via app.register_blueprint(public_bp). See admin/public_api.py.
 
 
 # Hero layout modes (Task #63 / item 16). Kept in sync with the front-end
@@ -9712,183 +9101,18 @@ def api_hero_fragment():
     return Response(_render_hero_fragment(mode), mimetype="text/html")
 
 
-@app.route("/api/gallery-cards")
-def api_gallery_cards():
-    """
-    GET /api/gallery-cards
-    Returns all gallery cards ordered by sort_order.
-    """
-    cards = query_db("SELECT * FROM gallery_cards ORDER BY sort_order ASC")
-    return jsonify(cards or [])
-
-
-@app.route("/api/video-gallery")
-def api_video_gallery():
-    """GET /api/video-gallery — Public list of video gallery items."""
-    items = query_db(
-        "SELECT * FROM video_gallery_items ORDER BY sort_order ASC, id ASC"
-    )
-    return jsonify(items or [])
-
-
-@app.route("/api/podcast")
-def api_podcast():
-    """GET /api/podcast — Public list of podcast episodes."""
-    items = query_db(
-        "SELECT * FROM podcast_episodes ORDER BY sort_order ASC, id ASC"
-    )
-    return jsonify(items or [])
-
-
-@app.route("/api/experiences")
-def api_experiences():
-    """
-    GET /api/experiences
-    Returns all curated experiences ordered by sort_order.
-    """
-    exps = query_db("SELECT * FROM experiences ORDER BY sort_order ASC")
-    return jsonify(exps or [])
-
-
-@app.route("/api/pricing")
-def api_pricing():
-    """
-    GET /api/pricing
-    Returns all pricing seasons ordered by sort_order.
-    """
-    pricing = query_db("SELECT * FROM pricing_seasons ORDER BY sort_order ASC")
-    return jsonify(pricing or [])
-
-
-# =============================================================
-# PUBLIC API — TESTIMONIALS
-# =============================================================
-@app.route("/api/testimonials")
-def api_testimonials():
-    """
-    GET /api/testimonials
-    Returns all testimonials ordered by sort_order.
-    Only returned if the section is enabled in site_settings.
-    """
-    testimonials = query_db("SELECT * FROM testimonials ORDER BY sort_order ASC")
-    return jsonify(testimonials or [])
-
-
-# =============================================================
-# PUBLIC API — TEAM MEMBERS
-# =============================================================
-@app.route("/api/team")
-def api_team():
-    """
-    GET /api/team
-    Returns all team members ordered by sort_order.
-    Only returned if the section is enabled in site_settings.
-    """
-    team = query_db("SELECT * FROM team_members ORDER BY sort_order ASC")
-    return jsonify(team or [])
-
-
-# =============================================================
-# PUBLIC API — FAQ
-# =============================================================
-@app.route("/api/faq")
-def api_faq():
-    """
-    GET /api/faq
-    Returns all FAQ entries ordered by sort_order.
-    Only returned if the section is enabled in site_settings.
-    """
-    faqs = query_db("SELECT * FROM faqs ORDER BY sort_order ASC")
-    return jsonify(faqs or [])
-
-
-# =============================================================
-# PUBLIC API — BLOG POSTS
-# =============================================================
-
-@app.route("/api/blog")
-def api_blog():
-    """
-    GET /api/blog
-    Returns all published blog posts, sorted by published_at DESC
-    (most recent first), with sort_order as a secondary sort.
-    Only published posts are returned to the public site.
-    """
-    posts = query_db(
-        """SELECT id, slug, title, subtitle, excerpt, cover_image,
-                  author, category, tags, published_at, sort_order
-           FROM blog_posts
-           WHERE status = 'published'
-           ORDER BY sort_order ASC, published_at DESC"""
-    )
-    return jsonify(posts or [])
-
-
-@app.route("/api/blog/<string:slug>")
-def api_blog_post(slug):
-    """
-    GET /api/blog/<slug>
-    Returns a single published blog post by its URL slug.
-    Used by the blog detail page and for preview cards.
-    """
-    post = query_db(
-        "SELECT * FROM blog_posts WHERE slug = %s AND status = 'published'",
-        (slug,), fetchone=True
-    )
-    if not post:
-        return jsonify({"error": "Blog post not found"}), 404
-    return jsonify(post)
+# The simple public read routes (gallery-cards, video-gallery, podcast, experiences,
+# pricing, testimonials, team, faq, blog, blog/<slug>) moved to admin/public_api.py
+# (Track B / B3) - same /api/* URLs, served by public_bp. See admin/public_api.py.
 
 
 # =============================================================
 # PUBLIC API — EVENTS
 # =============================================================
 
-@app.route("/api/events")
-def api_events():
-    """
-    GET /api/events
-    Returns published + cancelled events whose start date is today or
-    later, ordered by start_at ASC (soonest first). Each row includes
-    a `rsvp_count` aggregate (sum of guests across RSVPs) so the public
-    card can show "12/30 spots taken" when capacity is set.
-    Drafts are never returned here.
-    """
-    rows = query_db(
-        """SELECT e.*,
-                  COALESCE((SELECT SUM(guests) FROM event_rsvps r
-                            WHERE r.event_id = e.id
-                              AND r.payment_status NOT IN ('expired','failed')), 0)::int AS rsvp_count
-           FROM events e
-           WHERE e.status IN ('published', 'cancelled')
-             AND e.start_at IS NOT NULL
-             AND COALESCE(e.end_at, e.start_at) >= NOW()
-           ORDER BY e.sort_order ASC, e.start_at ASC"""
-    )
-    return jsonify(rows or [])
-
-
-@app.route("/api/events/<string:slug>")
-def api_event_detail(slug):
-    """
-    GET /api/events/<slug>
-    Returns a single event by slug for the public detail page. Drafts
-    return 404; cancelled events ARE returned (so the page can show a
-    "This event has been cancelled" notice rather than a dead link).
-    Includes `rsvp_count` for capacity display.
-    """
-    event = query_db(
-        """SELECT e.*,
-                  COALESCE((SELECT SUM(guests) FROM event_rsvps r
-                            WHERE r.event_id = e.id
-                              AND r.payment_status NOT IN ('expired','failed')), 0)::int AS rsvp_count
-           FROM events e
-           WHERE e.slug = %s AND e.status IN ('published', 'cancelled')""",
-        (slug,), fetchone=True
-    )
-    if not event:
-        return jsonify({"error": "Event not found"}), 404
-    return jsonify(event)
+# GET /api/events and /api/events/<slug> moved to admin/public_api.py (Track B / B3) -
+# same URLs, served by public_bp. The rsvp POST below (txn + Stripe) stays here until
+# its Stripe/get_db dependencies are available to the blueprint. See admin/public_api.py.
 
 
 @app.route("/api/events/<string:slug>/rsvp", methods=["POST"])
@@ -10106,44 +9330,8 @@ def event_rsvp_cancel(slug):
 # =============================================================
 # PUBLIC API — BUSINESS INFO
 # =============================================================
-@app.route("/api/business-info")
-def api_business_info():
-    """
-    GET /api/business-info
-    Returns business contact info, hours, and social links
-    from the site_settings table (single-row config).
-    """
-    info = query_db("""
-        SELECT business_phone, business_email, business_address,
-               business_hours, business_map_embed, social_links
-        FROM site_settings WHERE id = 1
-    """, fetchone=True)
-    if not info:
-        return jsonify({})
-    return jsonify(info)
-
-
-# =============================================================
-# PUBLIC API — SEO SETTINGS
-# =============================================================
-
-@app.route("/api/seo")
-def api_seo():
-    """
-    GET /api/seo
-    Returns the SEO settings for the public site. These are the values
-    injected into the <head> meta tags by serve_index(). This endpoint
-    is also available for any client-side JavaScript that needs SEO data.
-    """
-    settings = query_db("""
-        SELECT seo_meta_title, seo_meta_description, seo_keywords,
-               seo_og_image, seo_twitter_handle, seo_canonical_url,
-               seo_robots, site_name, site_subtitle, hero_description
-        FROM site_settings WHERE id = 1
-    """, fetchone=True)
-    if not settings:
-        return jsonify({})
-    return jsonify(settings)
+# /api/business-info and /api/seo moved to admin/public_api.py (Track B / B3) -
+# same URLs, served by public_bp. See admin/public_api.py.
 
 
 # =============================================================
@@ -10373,64 +9561,7 @@ def llms_txt():
 # =============================================================
 # PUBLIC API — PAGE SECTIONS (controls section order on public site)
 # =============================================================
-@app.route("/api/sphere-settings")
-def api_sphere_settings():
-    """
-    GET /api/sphere-settings
-    Returns sphere view configuration and image URLs for the public site.
-    If image_source is 'gallery', images come from gallery_cards.
-    If image_source is 'custom', images come from sphere_images.
-    """
-    settings = query_db("SELECT * FROM sphere_settings WHERE id = 1", fetchone=True)
-    if not settings:
-        return jsonify({"enabled": False})
-
-    result = dict(settings)
-
-    if result.get("image_source") == "gallery":
-        cards = query_db("SELECT image_url FROM gallery_cards WHERE image_url != '' ORDER BY sort_order ASC")
-        result["images"] = [c["image_url"] for c in (cards or [])]
-    else:
-        imgs = query_db("SELECT id, image_url, caption, sort_order FROM sphere_images ORDER BY sort_order ASC")
-        result["images"] = [i["image_url"] for i in (imgs or [])]
-
-    # If sections mode, include section summary data for the 3D cards
-    if result.get("view_mode") == "sections":
-        site = query_db("SELECT site_name, site_subtitle, hero_tagline, hero_title, hero_description, hero_image FROM site_settings WHERE id = 1", fetchone=True)
-        cards_data = query_db("SELECT slug, title, subtitle, image_url, category, price FROM gallery_cards ORDER BY sort_order ASC LIMIT 6")
-        exps = query_db("SELECT name, description, icon FROM experiences ORDER BY sort_order ASC LIMIT 4")
-        pricing = query_db("SELECT label, date_range, price_range FROM pricing_seasons ORDER BY sort_order ASC LIMIT 4")
-        testimonials = query_db("SELECT reviewer_name, reviewer_role, content, rating FROM testimonials ORDER BY sort_order ASC LIMIT 3")
-        team = query_db("SELECT name, title, image_url FROM team_members ORDER BY sort_order ASC LIMIT 4")
-        faqs = query_db("SELECT question FROM faqs ORDER BY sort_order ASC LIMIT 4")
-        blog = query_db("SELECT title, category, cover_image FROM blog_posts WHERE status = 'published' ORDER BY sort_order ASC LIMIT 3")
-
-        result["sections_data"] = {
-            "site": dict(site) if site else {},
-            "highlights": [dict(c) for c in (cards_data or [])],
-            "experiences": [dict(e) for e in (exps or [])],
-            "pricing": [dict(p) for p in (pricing or [])],
-            "testimonials": [dict(t) for t in (testimonials or [])],
-            "team": [dict(t) for t in (team or [])],
-            "faq": [dict(f) for f in (faqs or [])],
-            "blog": [dict(b) for b in (blog or [])],
-        }
-
-    return jsonify(result)
-
-
-@app.route("/api/page-sections")
-def api_page_sections():
-    """
-    GET /api/page-sections
-    Returns ALL sections (enabled and disabled) ordered by sort_order.
-    The frontend uses this to determine section order AND visibility —
-    it needs disabled sections in the list so it can hide them properly.
-    """
-    sections = query_db(
-        "SELECT * FROM page_sections ORDER BY sort_order ASC"
-    )
-    return jsonify(sections or [])
+# /api/sphere-settings + /api/page-sections moved to admin/public_api.py (Track B / B3).
 
 
 # =============================================================================
@@ -10669,38 +9800,7 @@ def api_page_bundle():
 # =============================================================
 # PUBLIC API — CUSTOM SECTION ITEMS
 # =============================================================
-@app.route("/api/custom-section/<int:section_id>/items")
-def api_custom_section_items(section_id):
-    """
-    GET /api/custom-section/<section_id>/items
-    Returns all items for a specific custom section, ordered by sort_order.
-    """
-    items = query_db(
-        "SELECT * FROM custom_section_items WHERE section_id = %s ORDER BY sort_order ASC",
-        (section_id,)
-    )
-    return jsonify(items or [])
-
-
-@app.route("/api/chatbot-settings")
-def api_chatbot_settings():
-    """
-    GET /api/chatbot-settings
-    Returns the chatbot configuration for the public site.
-    The public site JavaScript uses this to decide whether to show
-    the chatbot and how to configure it.
-    """
-    settings = query_db("SELECT * FROM chatbot_settings WHERE id = 1", fetchone=True)
-    if not settings:
-        return jsonify({"enabled": False})
-    # Prompt privacy: the public site never needs the prompt wording, so it is
-    # never exposed here (this endpoint is unauthenticated). The Brand Voice
-    # layer is operator/business config too — also stripped from the public
-    # payload.
-    out = dict(settings)
-    out.pop("system_prompt", None)
-    out.pop("brand_voice", None)
-    return jsonify(out)
+# /api/custom-section/<id>/items + /api/chatbot-settings moved to admin/public_api.py (Track B / B3).
 
 
 # =============================================================================
@@ -16570,132 +15670,11 @@ def _admin_validate_write_table(table_name):
     return None  # ok
 
 
-# Sensitive key names that must never be persisted in plaintext into
-# the tool trace, admin_chat_messages, skill_usage_log, or returned by
-# the read-side admin_run_sql tool. Comparison is case-insensitive
-# (compared against k.lower()), so JSON keys like "Authorization" or
-# "API_Key" are caught regardless of casing. Exact-match (not
-# substring) so column names like csrf_token or booking_token are NOT
-# accidentally redacted.
-_REDACTED_KEY_NAMES_LOWER = frozenset({
-    "auth_credential",
-    "webhook_token",
-    "signature_secret",
-    "password",
-    "passwd",
-    "api_key",
-    "apikey",
-    "x-api-key",
-    "secret",
-    "token",
-    "authorization",
-    "bearer",
-    "encrypted_config",
-    # V2 OAuth: client_secret + the access/refresh tokens we get back from
-    # the provider all live nested in mcp_servers.oauth_state (jsonb).
-    # mcp_servers itself is in _ADMIN_SQL_SECRET_READ_TABLES so free-form
-    # SQL can't reach them, but the recursive redactor still trims them
-    # if they show up in any other surfaced result (audit logs, the
-    # dedicated mcp tool returns, snapshot previews).
-    "client_secret",
-    "access_token",
-    "refresh_token",
-    "code_verifier",
-    "pending_code_verifier",
-})
-# Backwards-compat alias for code that still imports the old name.
-_REDACTED_ARG_KEYS = _REDACTED_KEY_NAMES_LOWER
-_REDACTED_PLACEHOLDER = "***REDACTED***"
-
-
-def _is_sensitive_key(k):
-    return isinstance(k, str) and k.lower() in _REDACTED_KEY_NAMES_LOWER
-
-
-def _redact_recursive(v, _depth=0):
-    """Recursively walk dicts/lists and replace the value of any key
-    matching `_is_sensitive_key` with the redaction placeholder.
-    Strings that look like JSON are parsed, redacted, and re-serialized
-    so nested-stringified credentials are caught too. Non-redacted
-    primitives pass through unchanged. Depth-capped to avoid stack
-    blow-ups on hostile inputs."""
-    if _depth > 8:
-        return v
-    if isinstance(v, dict):
-        out = {}
-        for k, vv in v.items():
-            if _is_sensitive_key(k) and vv not in (None, ""):
-                out[k] = _REDACTED_PLACEHOLDER
-            else:
-                out[k] = _redact_recursive(vv, _depth + 1)
-        return out
-    if isinstance(v, list):
-        return [_redact_recursive(x, _depth + 1) for x in v]
-    if isinstance(v, tuple):
-        return [_redact_recursive(x, _depth + 1) for x in v]
-    # JSON-friendly coercion for SQL row cells.
-    if hasattr(v, "isoformat"):
-        return v.isoformat()
-    if isinstance(v, (bytes, bytearray, memoryview)):
-        return "<binary>"
-    if isinstance(v, str):
-        # Try to parse JSON-encoded payloads (common in tool_calls
-        # arguments and pending action payload_json strings) so nested
-        # credentials inside the string are also redacted.
-        s = v.strip()
-        if s and s[0] in "{[":
-            try:
-                parsed = json.loads(v)
-            except Exception:
-                return v
-            red = _redact_recursive(parsed, _depth + 1)
-            try:
-                return json.dumps(red)
-            except Exception:
-                return v
-        return v
-    return v
-
-
-def _redact_sensitive_args(args):
-    """Return a copy of `args` with any sensitive keys masked anywhere
-    in the structure. Accepts a dict, list, or JSON string; returns
-    the same shape it was given so the caller doesn't have to think
-    about it."""
-    if args is None:
-        return args
-    if isinstance(args, str):
-        try:
-            parsed = json.loads(args) if args else {}
-        except Exception:
-            return args  # not JSON — leave as-is rather than risk corruption
-        red = _redact_recursive(parsed)
-        try:
-            return json.dumps(red)
-        except Exception:
-            return args
-    return _redact_recursive(args)
-
-
-# Best-effort redaction for nested tool RESULT strings, where a sensitive
-# value might appear inside an embedded JSON-ish snippet (e.g. a future
-# tool that echoes back auth_credential, or a SQL SELECT result row).
-# We only touch obvious "auth_credential": "..." JSON fragments — this
-# never modifies non-matching content, so safe to run unconditionally.
-_RESULT_REDACT_PATTERNS = [
-    re.compile(r'("auth_credential"\s*:\s*)"(?:\\.|[^"\\])*"'),
-    re.compile(r"('auth_credential'\s*:\s*)'(?:\\.|[^'\\])*'"),
-]
-
-
-def _redact_sensitive_result(result_str):
-    if not result_str or not isinstance(result_str, str):
-        return result_str
-    out = result_str
-    for pat in _RESULT_REDACT_PATTERNS:
-        out = pat.sub(lambda m: f'{m.group(1)}"{_REDACTED_PLACEHOLDER}"',
-                      out)
-    return out
+# Secret-redaction helpers (_REDACTED_KEY_NAMES_LOWER / _REDACTED_ARG_KEYS /
+# _REDACTED_PLACEHOLDER / _is_sensitive_key / _redact_recursive /
+# _redact_sensitive_args / _RESULT_REDACT_PATTERNS / _redact_sensitive_result)
+# moved verbatim to core.py (Track B, SECRET REDACTION); re-exported via the
+# `from core import` block. ~10 call sites here resolve through that re-export.
 
 
 def _admin_validate_mcp_server_fields(fields, for_update=False):
@@ -17116,22 +16095,8 @@ def _admin_tool_propose_run_sql(sql=None, summary=None, _session_id="", **_):
     )
 
 
-# Tables whose rows we snapshot before any approved update/delete. The
-# snapshot enables one-click revert from the dashboard's Recent Changes
-# panel. Audit/log/history tables are deliberately excluded — they
-# already capture history themselves and are blacklisted from writes.
-_ADMIN_SETTINGS_SNAPSHOT_TABLES = frozenset({
-    "chatbot_settings",
-    "agent_skills",
-    "agent_provider_settings",
-    "site_settings",
-    "voice_settings",
-    "custom_knowledge_entries",
-    "custom_webhook_skills",
-    "custom_sql_skills",
-    "mcp_servers",
-    "mcp_tools_cache",
-})
+# _ADMIN_SETTINGS_SNAPSHOT_TABLES moved to core.py (Track B, ADMIN-SETTINGS
+# SNAPSHOT); re-exported via the `from core import` block.
 
 # Tables whose schema knowledge is also synced into agent_skills (so
 # that a write through propose_insert/update/delete can refresh the
@@ -17145,54 +16110,12 @@ _ADMIN_CUSTOM_SKILL_TABLES = frozenset({
 })
 
 
-def _admin_settings_snapshot_table(name):
-    return name in _ADMIN_SETTINGS_SNAPSHOT_TABLES
+# _admin_settings_snapshot_table moved to core.py (Track B); re-exported above.
 
 
-def _admin_snapshot_row(table_name, row_id, action_id, reason):
-    """Capture the current row state into admin_setting_snapshots BEFORE
-    an approved write mutates it. Best-effort: a snapshot failure does
-    NOT abort the write (we'd rather lose the undo than lose the
-    user-approved change).
-
-    Skips tables outside _ADMIN_SETTINGS_SNAPSHOT_TABLES, and skips rows
-    that don't exist (an update against a missing id will fail anyway,
-    a delete against a missing id is a no-op)."""
-    if not _admin_settings_snapshot_table(table_name):
-        return None
-    if row_id is None:
-        return None
-    from psycopg2 import sql as _pgsql
-    try:
-        conn = get_db(); conn.autocommit = False
-        with conn.cursor(
-            cursor_factory=psycopg2.extras.RealDictCursor
-        ) as cur:
-            cur.execute("SET LOCAL statement_timeout = '5s'")
-            cur.execute("SET LOCAL transaction_read_only = on")
-            cur.execute(
-                _pgsql.SQL("SELECT * FROM {}.{} WHERE id = %s LIMIT 1").format(
-                    _pgsql.Identifier("public"),
-                    _pgsql.Identifier(table_name)),
-                (row_id,))
-            current = cur.fetchone()
-        conn.rollback(); conn.close()
-        if not current:
-            return None
-        execute_db(
-            "INSERT INTO admin_setting_snapshots "
-            "(table_name, row_id, snapshot_json, action_id, reason) "
-            "VALUES (%s, %s, %s::jsonb, %s, %s) RETURNING id",
-            (
-                table_name,
-                int(row_id),
-                json.dumps(current, default=str),
-                (int(action_id) if action_id is not None else None),
-                (reason or "")[:500],
-            ),
-        )
-    except Exception as e:
-        print(f"[admin_snapshot] failed for {table_name}#{row_id}: {e}")
+# _admin_snapshot_row moved to core.py (Track B, ADMIN-SETTINGS SNAPSHOT);
+# re-exported via the `from core import` block. ~20 call sites here resolve
+# through that re-export.
 
 
 def _admin_post_write_sync(table_name):
@@ -23447,18 +22370,7 @@ def _vp_normalize_signals(data):
     }
 
 
-def _vp_as_list(v):
-    """JSONB may come back as a parsed list (psycopg2) or, defensively, a JSON
-    string. Always return a list."""
-    if isinstance(v, list):
-        return v
-    if isinstance(v, str) and v:
-        try:
-            parsed = json.loads(v)
-            return parsed if isinstance(parsed, list) else []
-        except Exception:
-            return []
-    return []
+# _vp_as_list moved to core.py (Track B helper relocation); re-exported via the `from core import` block above.
 
 
 def _vp_merge_tags(old, new):
@@ -25394,170 +24306,15 @@ def admin_dashboard():
 
 # --------------- Gallery Cards CRUD ---------------
 
-@app.route("/admin/api/gallery-cards", methods=["GET"])
-@admin_required
-def admin_get_cards():
-    """GET all gallery cards for the admin panel."""
-    cards = query_db("SELECT * FROM gallery_cards ORDER BY sort_order ASC")
-    return jsonify(cards or [])
-
-
-@app.route("/admin/api/gallery-cards", methods=["POST"])
-@admin_required
-def admin_create_card():
-    """
-    POST /admin/api/gallery-cards
-    Create a new gallery card.
-    """
-    data = request.get_json()
-    card = execute_db(
-        """INSERT INTO gallery_cards (slug, title, subtitle, image_url, video_url, category, description, details, price, sort_order)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
-           RETURNING *""",
-        (
-            data["slug"], data["title"], data["subtitle"],
-            data["image_url"], data.get("video_url", ""),
-            data["category"], data["description"],
-            json.dumps(data.get("details", [])),
-            data.get("price"), data.get("sort_order", 0)
-        )
-    )
-    return jsonify(card), 201
-
-
-@app.route("/admin/api/gallery-cards/<int:card_id>", methods=["PUT"])
-@admin_required
-def admin_update_card(card_id):
-    """PUT /admin/api/gallery-cards/<id> — Update a gallery card."""
-    data = request.get_json()
-    card = execute_db(
-        """UPDATE gallery_cards SET
-             slug = %s, title = %s, subtitle = %s, image_url = %s,
-             video_url = %s, category = %s, description = %s, details = %s::jsonb,
-             price = %s, sort_order = %s, updated_at = NOW()
-           WHERE id = %s RETURNING *""",
-        (
-            data["slug"], data["title"], data["subtitle"],
-            data["image_url"], data.get("video_url", ""),
-            data["category"], data["description"],
-            json.dumps(data.get("details", [])),
-            data.get("price"), data.get("sort_order", 0),
-            card_id
-        )
-    )
-    if not card:
-        return jsonify({"error": "Card not found"}), 404
-    return jsonify(card)
-
-
-@app.route("/admin/api/gallery-cards/<int:card_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_card(card_id):
-    """DELETE /admin/api/gallery-cards/<id> — Remove a gallery card."""
-    count = execute_db("DELETE FROM gallery_cards WHERE id = %s", (card_id,))
-    if count == 0:
-        return jsonify({"error": "Card not found"}), 404
-    return jsonify({"success": True})
+# The gallery-cards admin CRUD (GET/POST/PUT/DELETE) moved to admin/content.py
+# (Track B / B4 - first admin-area blueprint). Same /admin/api/gallery-cards URLs,
+# @admin_required gating preserved (from core). See admin/content.py.
 
 
 # --------------- Experiences CRUD ---------------
 
-@app.route("/admin/api/experiences", methods=["GET"])
-@admin_required
-def admin_get_experiences():
-    """GET all experiences."""
-    exps = query_db("SELECT * FROM experiences ORDER BY sort_order ASC")
-    return jsonify(exps or [])
-
-
-@app.route("/admin/api/experiences", methods=["POST"])
-@admin_required
-def admin_create_experience():
-    """POST /admin/api/experiences — Create a new experience."""
-    data = request.get_json()
-    exp = execute_db(
-        """INSERT INTO experiences (name, description, icon, sort_order)
-           VALUES (%s, %s, %s, %s) RETURNING *""",
-        (data["name"], data["description"], data.get("icon", "star"), data.get("sort_order", 0))
-    )
-    return jsonify(exp), 201
-
-
-@app.route("/admin/api/experiences/<int:exp_id>", methods=["PUT"])
-@admin_required
-def admin_update_experience(exp_id):
-    """PUT /admin/api/experiences/<id> — Update an experience."""
-    data = request.get_json()
-    exp = execute_db(
-        """UPDATE experiences SET
-             name = %s, description = %s, icon = %s,
-             sort_order = %s, updated_at = NOW()
-           WHERE id = %s RETURNING *""",
-        (data["name"], data["description"], data.get("icon", "star"), data.get("sort_order", 0), exp_id)
-    )
-    if not exp:
-        return jsonify({"error": "Experience not found"}), 404
-    return jsonify(exp)
-
-
-@app.route("/admin/api/experiences/<int:exp_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_experience(exp_id):
-    """DELETE /admin/api/experiences/<id> — Remove an experience."""
-    count = execute_db("DELETE FROM experiences WHERE id = %s", (exp_id,))
-    if count == 0:
-        return jsonify({"error": "Experience not found"}), 404
-    return jsonify({"success": True})
-
-
-# --------------- Pricing CRUD ---------------
-
-@app.route("/admin/api/pricing", methods=["GET"])
-@admin_required
-def admin_get_pricing():
-    """GET all pricing seasons."""
-    pricing = query_db("SELECT * FROM pricing_seasons ORDER BY sort_order ASC")
-    return jsonify(pricing or [])
-
-
-@app.route("/admin/api/pricing", methods=["POST"])
-@admin_required
-def admin_create_pricing():
-    """POST /admin/api/pricing — Create a new pricing season."""
-    data = request.get_json()
-    p = execute_db(
-        """INSERT INTO pricing_seasons (label, date_range, price_range, sort_order)
-           VALUES (%s, %s, %s, %s) RETURNING *""",
-        (data["label"], data["date_range"], data["price_range"], data.get("sort_order", 0))
-    )
-    return jsonify(p), 201
-
-
-@app.route("/admin/api/pricing/<int:price_id>", methods=["PUT"])
-@admin_required
-def admin_update_pricing(price_id):
-    """PUT /admin/api/pricing/<id> — Update a pricing season."""
-    data = request.get_json()
-    p = execute_db(
-        """UPDATE pricing_seasons SET
-             label = %s, date_range = %s, price_range = %s,
-             sort_order = %s, updated_at = NOW()
-           WHERE id = %s RETURNING *""",
-        (data["label"], data["date_range"], data["price_range"], data.get("sort_order", 0), price_id)
-    )
-    if not p:
-        return jsonify({"error": "Pricing not found"}), 404
-    return jsonify(p)
-
-
-@app.route("/admin/api/pricing/<int:price_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_pricing(price_id):
-    """DELETE /admin/api/pricing/<id> — Remove a pricing season."""
-    count = execute_db("DELETE FROM pricing_seasons WHERE id = %s", (price_id,))
-    if count == 0:
-        return jsonify({"error": "Pricing not found"}), 404
-    return jsonify({"success": True})
+# experiences + pricing admin CRUD moved to admin/content.py (Track B / B5).
+# Same /admin/api/* URLs, @admin_required preserved (from core). See admin/content.py.
 
 
 # =============================================================
@@ -27781,268 +26538,8 @@ def admin_update_llm_provider():
 # =============================================================
 # Manages client reviews / testimonials displayed on the public site.
 
-@app.route("/admin/api/testimonials", methods=["GET"])
-@admin_required
-def admin_get_testimonials():
-    """GET all testimonials for the admin panel."""
-    items = query_db("SELECT * FROM testimonials ORDER BY sort_order ASC")
-    return jsonify(items or [])
-
-
-@app.route("/admin/api/testimonials", methods=["POST"])
-@admin_required
-def admin_create_testimonial():
-    """POST /admin/api/testimonials — Create a new testimonial."""
-    data = request.get_json()
-    item = execute_db(
-        """INSERT INTO testimonials (reviewer_name, reviewer_role, content, rating, image_url, sort_order)
-           VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
-        (data.get("reviewer_name", ""), data.get("reviewer_role", ""),
-         data.get("content", ""), data.get("rating", 5),
-         data.get("image_url", ""), data.get("sort_order", 0))
-    )
-    return jsonify(item), 201
-
-
-@app.route("/admin/api/testimonials/<int:item_id>", methods=["PUT"])
-@admin_required
-def admin_update_testimonial(item_id):
-    """PUT /admin/api/testimonials/<id> — Update a testimonial."""
-    data = request.get_json()
-    item = execute_db(
-        """UPDATE testimonials SET
-             reviewer_name = %s, reviewer_role = %s, content = %s,
-             rating = %s, image_url = %s, sort_order = %s
-           WHERE id = %s RETURNING *""",
-        (data.get("reviewer_name", ""), data.get("reviewer_role", ""),
-         data.get("content", ""), data.get("rating", 5),
-         data.get("image_url", ""), data.get("sort_order", 0), item_id)
-    )
-    if not item:
-        return jsonify({"error": "Testimonial not found"}), 404
-    return jsonify(item)
-
-
-@app.route("/admin/api/video-gallery", methods=["GET"])
-@admin_required
-def admin_get_video_gallery():
-    items = query_db("SELECT * FROM video_gallery_items ORDER BY sort_order ASC, id ASC")
-    return jsonify(items or [])
-
-
-@app.route("/admin/api/video-gallery", methods=["POST"])
-@admin_required
-def admin_create_video_gallery():
-    data = request.get_json() or {}
-    item = execute_db(
-        """INSERT INTO video_gallery_items
-              (title, description, video_url, thumbnail_url, sort_order)
-           VALUES (%s, %s, %s, %s, %s) RETURNING *""",
-        (data.get("title", ""), data.get("description", ""),
-         data.get("video_url", ""), data.get("thumbnail_url", ""),
-         data.get("sort_order", 0))
-    )
-    return jsonify(item), 201
-
-
-@app.route("/admin/api/video-gallery/<int:item_id>", methods=["PUT"])
-@admin_required
-def admin_update_video_gallery(item_id):
-    data = request.get_json() or {}
-    item = execute_db(
-        """UPDATE video_gallery_items SET
-             title = %s, description = %s, video_url = %s,
-             thumbnail_url = %s, sort_order = %s
-           WHERE id = %s RETURNING *""",
-        (data.get("title", ""), data.get("description", ""),
-         data.get("video_url", ""), data.get("thumbnail_url", ""),
-         data.get("sort_order", 0), item_id)
-    )
-    if not item:
-        return jsonify({"error": "Video not found"}), 404
-    return jsonify(item)
-
-
-@app.route("/admin/api/video-gallery/<int:item_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_video_gallery(item_id):
-    count = execute_db("DELETE FROM video_gallery_items WHERE id = %s", (item_id,))
-    if count == 0:
-        return jsonify({"error": "Video not found"}), 404
-    return jsonify({"success": True})
-
-
-@app.route("/admin/api/podcast", methods=["GET"])
-@admin_required
-def admin_get_podcast():
-    items = query_db("SELECT * FROM podcast_episodes ORDER BY sort_order ASC, id ASC")
-    return jsonify(items or [])
-
-
-@app.route("/admin/api/podcast", methods=["POST"])
-@admin_required
-def admin_create_podcast():
-    data = request.get_json() or {}
-    item = execute_db(
-        """INSERT INTO podcast_episodes
-              (title, description, audio_url, cover_image,
-               episode_number, sort_order)
-           VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
-        (data.get("title", ""), data.get("description", ""),
-         data.get("audio_url", ""), data.get("cover_image", ""),
-         data.get("episode_number") or None,
-         data.get("sort_order", 0))
-    )
-    return jsonify(item), 201
-
-
-@app.route("/admin/api/podcast/<int:item_id>", methods=["PUT"])
-@admin_required
-def admin_update_podcast(item_id):
-    data = request.get_json() or {}
-    item = execute_db(
-        """UPDATE podcast_episodes SET
-             title = %s, description = %s, audio_url = %s,
-             cover_image = %s, episode_number = %s, sort_order = %s
-           WHERE id = %s RETURNING *""",
-        (data.get("title", ""), data.get("description", ""),
-         data.get("audio_url", ""), data.get("cover_image", ""),
-         data.get("episode_number") or None,
-         data.get("sort_order", 0), item_id)
-    )
-    if not item:
-        return jsonify({"error": "Episode not found"}), 404
-    return jsonify(item)
-
-
-@app.route("/admin/api/podcast/<int:item_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_podcast(item_id):
-    count = execute_db("DELETE FROM podcast_episodes WHERE id = %s", (item_id,))
-    if count == 0:
-        return jsonify({"error": "Episode not found"}), 404
-    return jsonify({"success": True})
-
-
-@app.route("/admin/api/testimonials/<int:item_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_testimonial(item_id):
-    """DELETE /admin/api/testimonials/<id> — Remove a testimonial."""
-    count = execute_db("DELETE FROM testimonials WHERE id = %s", (item_id,))
-    if count == 0:
-        return jsonify({"error": "Testimonial not found"}), 404
-    return jsonify({"success": True})
-
-
-# =============================================================
-# ADMIN CRUD — TEAM MEMBERS
-# =============================================================
-# Manages team/staff member cards displayed on the public site.
-
-@app.route("/admin/api/team", methods=["GET"])
-@admin_required
-def admin_get_team():
-    """GET all team members for the admin panel."""
-    items = query_db("SELECT * FROM team_members ORDER BY sort_order ASC")
-    return jsonify(items or [])
-
-
-@app.route("/admin/api/team", methods=["POST"])
-@admin_required
-def admin_create_team_member():
-    """POST /admin/api/team — Create a new team member."""
-    data = request.get_json()
-    item = execute_db(
-        """INSERT INTO team_members (name, title, bio, image_url, sort_order)
-           VALUES (%s, %s, %s, %s, %s) RETURNING *""",
-        (data.get("name", ""), data.get("title", ""),
-         data.get("bio", ""), data.get("image_url", ""),
-         data.get("sort_order", 0))
-    )
-    return jsonify(item), 201
-
-
-@app.route("/admin/api/team/<int:item_id>", methods=["PUT"])
-@admin_required
-def admin_update_team_member(item_id):
-    """PUT /admin/api/team/<id> — Update a team member."""
-    data = request.get_json()
-    item = execute_db(
-        """UPDATE team_members SET
-             name = %s, title = %s, bio = %s,
-             image_url = %s, sort_order = %s
-           WHERE id = %s RETURNING *""",
-        (data.get("name", ""), data.get("title", ""),
-         data.get("bio", ""), data.get("image_url", ""),
-         data.get("sort_order", 0), item_id)
-    )
-    if not item:
-        return jsonify({"error": "Team member not found"}), 404
-    return jsonify(item)
-
-
-@app.route("/admin/api/team/<int:item_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_team_member(item_id):
-    """DELETE /admin/api/team/<id> — Remove a team member."""
-    count = execute_db("DELETE FROM team_members WHERE id = %s", (item_id,))
-    if count == 0:
-        return jsonify({"error": "Team member not found"}), 404
-    return jsonify({"success": True})
-
-
-# =============================================================
-# ADMIN CRUD — FAQ
-# =============================================================
-# Manages frequently asked questions displayed on the public site.
-
-@app.route("/admin/api/faq", methods=["GET"])
-@admin_required
-def admin_get_faq():
-    """GET all FAQ entries for the admin panel."""
-    items = query_db("SELECT * FROM faqs ORDER BY sort_order ASC")
-    return jsonify(items or [])
-
-
-@app.route("/admin/api/faq", methods=["POST"])
-@admin_required
-def admin_create_faq():
-    """POST /admin/api/faq — Create a new FAQ entry."""
-    data = request.get_json()
-    item = execute_db(
-        """INSERT INTO faqs (question, answer, sort_order)
-           VALUES (%s, %s, %s) RETURNING *""",
-        (data.get("question", ""), data.get("answer", ""),
-         data.get("sort_order", 0))
-    )
-    return jsonify(item), 201
-
-
-@app.route("/admin/api/faq/<int:item_id>", methods=["PUT"])
-@admin_required
-def admin_update_faq(item_id):
-    """PUT /admin/api/faq/<id> — Update a FAQ entry."""
-    data = request.get_json()
-    item = execute_db(
-        """UPDATE faqs SET
-             question = %s, answer = %s, sort_order = %s
-           WHERE id = %s RETURNING *""",
-        (data.get("question", ""), data.get("answer", ""),
-         data.get("sort_order", 0), item_id)
-    )
-    if not item:
-        return jsonify({"error": "FAQ not found"}), 404
-    return jsonify(item)
-
-
-@app.route("/admin/api/faq/<int:item_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_faq(item_id):
-    """DELETE /admin/api/faq/<id> — Remove a FAQ entry."""
-    count = execute_db("DELETE FROM faqs WHERE id = %s", (item_id,))
-    if count == 0:
-        return jsonify({"error": "FAQ not found"}), 404
-    return jsonify({"success": True})
+# testimonials / video-gallery / podcast / team / faq admin CRUD (20 routes) moved to
+# admin/content.py (Track B / B6). Same /admin/api/* URLs, @admin_required preserved.
 
 
 # =============================================================
@@ -28052,131 +26549,8 @@ def admin_delete_faq(item_id):
 # Admin can create, edit, delete, and publish/unpublish posts.
 # Published posts appear on the public site and in the AI knowledge base.
 
-@app.route("/admin/api/blog", methods=["GET"])
-@admin_required
-def admin_get_blog_posts():
-    """
-    GET /admin/api/blog
-    Returns ALL blog posts (including drafts) for the admin panel,
-    sorted by sort_order and then by created_at descending.
-    """
-    posts = query_db(
-        "SELECT * FROM blog_posts ORDER BY sort_order ASC, created_at DESC"
-    )
-    return jsonify(posts or [])
-
-
-@app.route("/admin/api/blog", methods=["POST"])
-@admin_required
-def admin_create_blog_post():
-    """
-    POST /admin/api/blog
-    Create a new blog post. Auto-generates slug from title if not provided.
-    Sets published_at to NOW() if status is 'published'.
-    """
-    data = request.get_json()
-
-    # Auto-generate slug from title if not provided
-    slug = data.get("slug", "").strip()
-    if not slug:
-        slug = re.sub(r'[^a-z0-9]+', '-', data.get("title", "untitled").lower()).strip('-')
-
-    # Set published_at timestamp when publishing
-    published_at = None
-    if data.get("status") == "published":
-        published_at = datetime.now()
-
-    post = execute_db(
-        """INSERT INTO blog_posts
-             (slug, title, subtitle, excerpt, content, cover_image,
-              author, category, tags, status, seo_title, seo_description,
-              published_at, sort_order)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-           RETURNING *""",
-        (
-            slug,
-            data.get("title", ""),
-            data.get("subtitle", ""),
-            data.get("excerpt", ""),
-            data.get("content", ""),
-            data.get("cover_image", ""),
-            data.get("author", ""),
-            data.get("category", ""),
-            data.get("tags", ""),
-            data.get("status", "draft"),
-            data.get("seo_title", ""),
-            data.get("seo_description", ""),
-            published_at,
-            data.get("sort_order", 0)
-        )
-    )
-    return jsonify(post), 201
-
-
-@app.route("/admin/api/blog/<int:post_id>", methods=["PUT"])
-@admin_required
-def admin_update_blog_post(post_id):
-    """
-    PUT /admin/api/blog/<id>
-    Update an existing blog post. If status changes to 'published'
-    and published_at is not already set, it gets set to NOW().
-    """
-    data = request.get_json()
-
-    # Check if this is a newly published post (needs published_at timestamp)
-    existing = query_db(
-        "SELECT status, published_at FROM blog_posts WHERE id = %s",
-        (post_id,), fetchone=True
-    )
-    if not existing:
-        return jsonify({"error": "Blog post not found"}), 404
-
-    # Set published_at when first published, keep existing if re-saving
-    published_at = existing.get("published_at")
-    if data.get("status") == "published" and not published_at:
-        published_at = datetime.now()
-
-    post = execute_db(
-        """UPDATE blog_posts SET
-             slug = %s, title = %s, subtitle = %s, excerpt = %s,
-             content = %s, cover_image = %s, author = %s, category = %s,
-             tags = %s, status = %s, seo_title = %s, seo_description = %s,
-             published_at = %s, sort_order = %s, updated_at = NOW()
-           WHERE id = %s RETURNING *""",
-        (
-            data.get("slug", ""),
-            data.get("title", ""),
-            data.get("subtitle", ""),
-            data.get("excerpt", ""),
-            data.get("content", ""),
-            data.get("cover_image", ""),
-            data.get("author", ""),
-            data.get("category", ""),
-            data.get("tags", ""),
-            data.get("status", "draft"),
-            data.get("seo_title", ""),
-            data.get("seo_description", ""),
-            published_at,
-            data.get("sort_order", 0),
-            post_id
-        )
-    )
-    if not post:
-        return jsonify({"error": "Blog post not found"}), 404
-    return jsonify(post)
-
-
-@app.route("/admin/api/blog/<int:post_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_blog_post(post_id):
-    """
-    DELETE /admin/api/blog/<id>
-    Permanently remove a blog post from the database.
-    """
-    count = execute_db("DELETE FROM blog_posts WHERE id = %s", (post_id,))
-    if count == 0:
-        return jsonify({"error": "Blog post not found"}), 404
-    return jsonify({"success": True})
+# blog admin CRUD moved to admin/content.py (Track B / B7). Same /admin/api/blog
+# URLs, @admin_required preserved. See admin/content.py.
 
 
 # =============================================================
@@ -28185,342 +26559,17 @@ def admin_delete_blog_post(post_id):
 # CRUD for the events listing plus a read/delete view for RSVPs that
 # visitors submit through the public event detail page.
 
-def _parse_event_payload(data):
-    """Normalize a JSON payload into the tuple of values used by both
-    INSERT and UPDATE. Treats blank strings as NULL for the optional
-    end_at + capacity columns; everything else gets sensible defaults."""
-    title = (data.get("title") or "").strip()
-    slug = (data.get("slug") or "").strip().lower()
-    slug = re.sub(r'[^a-z0-9-]', '-', slug)
-    slug = re.sub(r'-+', '-', slug).strip('-')
-    if not title or not slug:
-        raise ValueError("Title and slug are required")
-
-    start_at = (data.get("start_at") or "").strip() or None
-    end_at = (data.get("end_at") or "").strip() or None
-    if not start_at:
-        raise ValueError("Start date/time is required")
-
-    cap_raw = data.get("capacity")
-    if cap_raw in (None, "", "null"):
-        capacity = None
-    else:
-        try:
-            capacity = max(0, int(cap_raw))
-        except (TypeError, ValueError):
-            capacity = None
-
-    status = (data.get("status") or "published").strip()
-    if status not in ("draft", "published", "cancelled"):
-        status = "published"
-
-    # Payment fields. price_mode drives the public RSVP flow:
-    #   'free'     — no payment, current behavior
-    #   'paid'     — fixed ticket price, Stripe Checkout for price_amount cents
-    #   'donation' — visitor enters their own amount (>= min_donation if set)
-    price_mode = (data.get("price_mode") or "free").strip()
-    if price_mode not in ("free", "paid", "donation"):
-        price_mode = "free"
-
-    def _to_cents(raw):
-        """Accept '25', '25.50', 25, 25.5 → integer cents. Empty / invalid → None."""
-        if raw in (None, "", "null"):
-            return None
-        try:
-            return max(0, int(round(float(raw) * 100)))
-        except (TypeError, ValueError):
-            return None
-
-    price_amount = _to_cents(data.get("price_amount"))
-    min_donation = _to_cents(data.get("min_donation"))
-    if price_mode == "paid" and (price_amount is None or price_amount <= 0):
-        raise ValueError("Paid events need a ticket price greater than zero")
-
-    currency = (data.get("currency") or "usd").strip().lower()[:3] or "usd"
-
-    return (
-        title, slug,
-        (data.get("description") or "").strip(),
-        (data.get("image_url") or "").strip(),
-        start_at, end_at,
-        (data.get("location") or "").strip(),
-        capacity,
-        (data.get("price") or "Free").strip(),
-        status,
-        int(data.get("sort_order") or 0),
-        price_mode, price_amount, min_donation, currency,
-    )
+# Events + RSVP admin CRUD moved to admin/content.py (Track B / B13): content_bp.
+# Same /admin/api/events[/<id>[/rsvps]] and /admin/api/event-rsvps/<id> URLs;
+# @admin_required preserved (from core). The helper _parse_event_payload moved
+# with them. The PUBLIC visitor RSVP POST is unaffected (it lives elsewhere).
 
 
-@app.route("/admin/api/events", methods=["GET"])
-@admin_required
-def admin_get_events():
-    """GET all events (any status) for the admin panel, including a
-    rolled-up rsvp_count so the list view can show "5 RSVPs" badges."""
-    events = query_db(
-        """SELECT e.*,
-                  COALESCE((SELECT SUM(guests) FROM event_rsvps r
-                            WHERE r.event_id = e.id
-                              AND r.payment_status NOT IN ('expired','failed')), 0)::int AS rsvp_count
-           FROM events e
-           ORDER BY e.sort_order ASC, e.start_at ASC NULLS LAST"""
-    )
-    return jsonify(events or [])
-
-
-@app.route("/admin/api/events", methods=["POST"])
-@admin_required
-def admin_create_event():
-    """POST /admin/api/events — Create a new event."""
-    try:
-        values = _parse_event_payload(request.get_json() or {})
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    try:
-        event = execute_db(
-            """INSERT INTO events
-               (title, slug, description, image_url, start_at, end_at,
-                location, capacity, price, status, sort_order,
-                price_mode, price_amount, min_donation, currency)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                       %s, %s, %s, %s)
-               RETURNING *""",
-            values
-        )
-    except Exception as e:
-        # Most likely a UNIQUE-violation on slug
-        return jsonify({"error": "Could not create event: " + str(e)}), 400
-    return jsonify(event), 201
-
-
-@app.route("/admin/api/events/<int:event_id>", methods=["PUT"])
-@admin_required
-def admin_update_event(event_id):
-    """PUT /admin/api/events/<id> — Update an event."""
-    try:
-        values = _parse_event_payload(request.get_json() or {})
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    try:
-        event = execute_db(
-            """UPDATE events SET
-                 title = %s, slug = %s, description = %s, image_url = %s,
-                 start_at = %s, end_at = %s, location = %s,
-                 capacity = %s, price = %s, status = %s, sort_order = %s,
-                 price_mode = %s, price_amount = %s, min_donation = %s, currency = %s,
-                 updated_at = NOW()
-               WHERE id = %s RETURNING *""",
-            values + (event_id,)
-        )
-    except Exception as e:
-        return jsonify({"error": "Could not update event: " + str(e)}), 400
-    if not event:
-        return jsonify({"error": "Event not found"}), 404
-    return jsonify(event)
-
-
-@app.route("/admin/api/events/<int:event_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_event(event_id):
-    """DELETE /admin/api/events/<id> — Remove an event and its RSVPs
-    (cascade is enforced at the DB level via the FK)."""
-    count = execute_db("DELETE FROM events WHERE id = %s", (event_id,))
-    if count == 0:
-        return jsonify({"error": "Event not found"}), 404
-    return jsonify({"success": True})
-
-
-@app.route("/admin/api/events/<int:event_id>/rsvps", methods=["GET"])
-@admin_required
-def admin_get_event_rsvps(event_id):
-    """GET all RSVPs for one event, newest first."""
-    rsvps = query_db(
-        "SELECT * FROM event_rsvps WHERE event_id = %s ORDER BY created_at DESC",
-        (event_id,)
-    )
-    return jsonify(rsvps or [])
-
-
-@app.route("/admin/api/event-rsvps/<int:rsvp_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_rsvp(rsvp_id):
-    """DELETE /admin/api/event-rsvps/<id> — Remove a single RSVP."""
-    count = execute_db("DELETE FROM event_rsvps WHERE id = %s", (rsvp_id,))
-    if count == 0:
-        return jsonify({"error": "RSVP not found"}), 404
-    return jsonify({"success": True})
-
-
-# =============================================================
-# ADMIN CRUD — PAGE SECTIONS (Layout + Custom Sections)
-# =============================================================
-# Manages the section registry — controls page layout order,
-# section visibility, and custom section creation.
-
-@app.route("/admin/api/page-sections", methods=["GET"])
-@admin_required
-def admin_get_page_sections():
-    """GET all page sections (built-in + custom) for the admin panel."""
-    sections = query_db("SELECT * FROM page_sections ORDER BY sort_order ASC")
-    return jsonify(sections or [])
-
-
-@app.route("/admin/api/page-sections", methods=["POST"])
-@admin_required
-def admin_create_page_section():
-    """POST /admin/api/page-sections — Create a new custom section."""
-    data = request.get_json()
-    slug = data.get("slug", "").strip().lower()
-    slug = re.sub(r'[^a-z0-9-]', '-', slug)
-    slug = re.sub(r'-+', '-', slug).strip('-')
-    if not slug:
-        return jsonify({"error": "Slug is required"}), 400
-
-    # Get the next sort_order (add to the end, before footer)
-    max_order = query_db(
-        "SELECT COALESCE(MAX(sort_order), 0) + 1 as next_order FROM page_sections",
-        fetchone=True
-    )
-    next_order = max_order["next_order"] if max_order else 0
-
-    item = execute_db(
-        """INSERT INTO page_sections (slug, title, section_type, template, sort_order, enabled, settings)
-           VALUES (%s, %s, 'custom', %s, %s, %s, %s::jsonb) RETURNING *""",
-        (slug, data.get("title", "New Section"),
-         data.get("template", "cards_grid"), next_order,
-         data.get("enabled", True), json.dumps(data.get("settings", {})))
-    )
-    return jsonify(item), 201
-
-
-@app.route("/admin/api/page-sections/<int:section_id>", methods=["PUT"])
-@admin_required
-def admin_update_page_section(section_id):
-    """PUT /admin/api/page-sections/<id> — Update a section's title, subtitle,
-    enabled flag, and settings.
-
-    The optional subtitle is used by some custom-section templates as a small
-    free-text "where to look" pointer (the rsvp_form template, for example,
-    stashes the event slug here so the admin doesn't need a whole settings
-    panel just to pick which event to show).
-
-    Only the fields actually present in the request body are touched —
-    callers that only want to flip `enabled` or rename `title` shouldn't
-    have to round-trip the rest. We build the SET clause dynamically and
-    fall back to the existing row for any omitted field so the UPDATE is
-    safe even when called from older clients.
-    """
-    data = request.get_json() or {}
-
-    existing = query_db(
-        "SELECT title, subtitle, enabled, settings, bg_image, bg_overlay_alpha, "
-        "nav_link_target, seo_title, seo_description, seo_image "
-        "FROM page_sections WHERE id = %s",
-        (section_id,), fetchone=True
-    )
-    if not existing:
-        return jsonify({"error": "Section not found"}), 404
-
-    title    = data["title"]    if "title"    in data else (existing.get("title") or "")
-    subtitle = data["subtitle"] if "subtitle" in data else (existing.get("subtitle") or "")
-    enabled  = data["enabled"]  if "enabled"  in data else bool(existing.get("enabled"))
-    settings = data["settings"] if "settings" in data else (existing.get("settings") or {})
-    bg_image = data["bg_image"] if "bg_image" in data else (existing.get("bg_image") or "")
-    # Per-section SEO overrides (Task #69). Trim and coerce to string;
-    # empty strings are allowed and explicitly mean "fall back to the
-    # site-wide cascade in _build_seo_meta_html". We don't validate
-    # that seo_image is a real URL — admins paste both /uploads/<hex>.jpg
-    # internal paths and absolute https:// URLs (e.g. CDN-hosted assets)
-    # here, both of which are legitimate as og:image values.
-    def _seo_field(key):
-        if key in data:
-            return str(data.get(key) or "").strip()
-        return str(existing.get(key) or "").strip()
-    seo_title       = _seo_field("seo_title")
-    seo_description = _seo_field("seo_description")
-    seo_image       = _seo_field("seo_image")
-    # Section Menu link override — empty = same-page anchor (default
-    # behaviour); any non-empty value is used verbatim as the menu
-    # entry's href, typically "/p/<slug>" to send the menu at a
-    # standalone page. We restrict to safe schemes (no `javascript:`
-    # / `data:`) to avoid stored XSS via an admin-supplied link
-    # clicked by every visitor.
-    if "nav_link_target" in data:
-        try:
-            nav_link_target = _validate_nav_link_target(data["nav_link_target"])
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 400
-    else:
-        nav_link_target = (existing.get("nav_link_target") or "")
-    # Clamp overlay alpha to a sane range — a stray slider value at 1.0
-    # blacks the photo out entirely; <0 produces an invalid CSS color.
-    if "bg_overlay_alpha" in data:
-        try:
-            bg_overlay_alpha = max(0.0, min(1.0, float(data["bg_overlay_alpha"])))
-        except (TypeError, ValueError):
-            bg_overlay_alpha = float(existing.get("bg_overlay_alpha") or 0.45)
-    else:
-        bg_overlay_alpha = float(existing.get("bg_overlay_alpha") or 0.45)
-
-    item = execute_db(
-        """UPDATE page_sections SET
-             title = %s, subtitle = %s, enabled = %s, settings = %s::jsonb,
-             bg_image = %s, bg_overlay_alpha = %s, nav_link_target = %s,
-             seo_title = %s, seo_description = %s, seo_image = %s
-           WHERE id = %s RETURNING *""",
-        (title, subtitle, enabled, json.dumps(settings),
-         bg_image, bg_overlay_alpha, nav_link_target,
-         seo_title, seo_description, seo_image, section_id)
-    )
-    if not item:
-        return jsonify({"error": "Section not found"}), 404
-    return jsonify(item)
-
-
-@app.route("/admin/api/page-sections/<int:section_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_page_section(section_id):
-    """DELETE /admin/api/page-sections/<id> — Delete a custom section (built-in protected)."""
-    section = query_db("SELECT * FROM page_sections WHERE id = %s", (section_id,), fetchone=True)
-    if not section:
-        return jsonify({"error": "Section not found"}), 404
-    if section.get("section_type") == "built_in":
-        return jsonify({"error": "Cannot delete built-in sections"}), 400
-    execute_db("DELETE FROM page_sections WHERE id = %s", (section_id,))
-    return jsonify({"success": True})
-
-
-@app.route("/admin/api/page-sections/<int:section_id>/toggle", methods=["PUT"])
-@admin_required
-def admin_toggle_page_section(section_id):
-    """PUT /admin/api/page-sections/<id>/toggle — Quick toggle enabled/disabled."""
-    data = request.get_json()
-    enabled = data.get("enabled", True)
-    item = execute_db(
-        "UPDATE page_sections SET enabled = %s WHERE id = %s RETURNING *",
-        (enabled, section_id)
-    )
-    if not item:
-        return jsonify({"error": "Section not found"}), 404
-
-    # Sync the old section_testimonials/team/faq/footer toggles in site_settings
-    # so existing code that reads those columns stays in sync
-    section = query_db("SELECT slug FROM page_sections WHERE id = %s", (section_id,), fetchone=True)
-    if section:
-        toggle_map = {
-            "testimonials": "section_testimonials",
-            "team": "section_team",
-            "faq": "section_faq",
-            "footer": "section_footer"
-        }
-        col = toggle_map.get(section["slug"])
-        if col:
-            execute_db(
-                f"UPDATE site_settings SET {col} = %s WHERE id = 1",
-                (enabled,)
-            )
-
-    return jsonify(item)
+# Page-sections admin CRUD moved to admin/sitebuilder.py (Track B): sitebuilder_bp.
+# Same /admin/api/page-sections[/<id>[/toggle]] URLs; @admin_required preserved (from
+# core). The nav-link-target security validator (_validate_nav_link_target + its scheme
+# allowlist) had this PUT as its only caller, so it moved verbatim with the routes. The
+# standalone /admin/api/pages CRUD stays here (it needs the colliding _slugify helper).
 
 
 # =============================================================
@@ -28543,50 +26592,6 @@ def _slugify(raw):
     s = re.sub(r'[^a-z0-9-]', '-', s)
     s = re.sub(r'-+', '-', s).strip('-')
     return s
-
-
-# Allowlist of URL schemes acceptable as a `page_sections.nav_link_target`.
-# Anything else (notably `javascript:` and `data:`) is rejected to prevent
-# stored XSS via an admin-supplied menu link clicked by every visitor.
-_NAV_LINK_TARGET_ALLOWED_SCHEMES = ("http://", "https://", "mailto:", "tel:")
-
-
-def _validate_nav_link_target(raw):
-    """Return a sanitised `nav_link_target` value, or raise ValueError.
-
-    Empty string is the disabled state and always passes through.
-    Otherwise we only accept:
-      - relative paths starting with "/" (e.g. "/p/about")
-      - same-page anchors starting with "#"
-      - absolute URLs using an allowlisted scheme above
-    Dangerous schemes (`javascript:`, `data:`, `vbscript:`, etc.) are
-    rejected so the value can be safely written verbatim into an <a>
-    tag's href attribute by the admin UI / public renderer.
-    """
-    if raw is None:
-        return ""
-    val = str(raw).strip()
-    if not val:
-        return ""
-    # Protocol-relative URLs ("//evil.example/x") and Windows-style
-    # backslash paths ("\\evil.example") are treated as cross-origin
-    # navigations by browsers — reject them so a "/"-prefixed value
-    # is guaranteed to be a same-origin internal path.
-    if val.startswith("//") or val.startswith("\\"):
-        raise ValueError(
-            "Menu link target must not start with '//' or '\\' "
-            "(use a full https:// URL instead)."
-        )
-    if val[0] in ("/", "#"):
-        return val
-    lowered = val.lower()
-    for scheme in _NAV_LINK_TARGET_ALLOWED_SCHEMES:
-        if lowered.startswith(scheme):
-            return val
-    raise ValueError(
-        "Menu link target must be a relative path (/...), an anchor (#...), "
-        "or an http(s)://, mailto:, or tel: URL."
-    )
 
 
 def _serialize_page(page_row):
@@ -28792,68 +26797,9 @@ def admin_set_page_sections(page_id):
 # =============================================================
 # Manages the content items inside custom sections.
 
-@app.route("/admin/api/custom-sections/<int:section_id>/items", methods=["GET"])
-@admin_required
-def admin_get_custom_items(section_id):
-    """GET all items for a specific custom section."""
-    items = query_db(
-        "SELECT * FROM custom_section_items WHERE section_id = %s ORDER BY sort_order ASC",
-        (section_id,)
-    )
-    return jsonify(items or [])
-
-
-@app.route("/admin/api/custom-sections/<int:section_id>/items", methods=["POST"])
-@admin_required
-def admin_create_custom_item(section_id):
-    """POST /admin/api/custom-sections/<section_id>/items — Add an item to a custom section."""
-    data = request.get_json()
-    item = execute_db(
-        """INSERT INTO custom_section_items
-           (section_id, title, subtitle, content, image_url, link_url, link_text, icon, sort_order, extra_data)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb) RETURNING *""",
-        (section_id, data.get("title", ""), data.get("subtitle", ""),
-         data.get("content", ""), data.get("image_url", ""),
-         data.get("link_url", ""), data.get("link_text", ""),
-         data.get("icon", ""), data.get("sort_order", 0),
-         json.dumps(data.get("extra_data", {})))
-    )
-    return jsonify(item), 201
-
-
-@app.route("/admin/api/custom-sections/<int:section_id>/items/<int:item_id>", methods=["PUT"])
-@admin_required
-def admin_update_custom_item(section_id, item_id):
-    """PUT /admin/api/custom-sections/<section_id>/items/<item_id> — Update an item."""
-    data = request.get_json()
-    item = execute_db(
-        """UPDATE custom_section_items SET
-             title = %s, subtitle = %s, content = %s, image_url = %s,
-             link_url = %s, link_text = %s, icon = %s, sort_order = %s,
-             extra_data = %s::jsonb
-           WHERE id = %s AND section_id = %s RETURNING *""",
-        (data.get("title", ""), data.get("subtitle", ""),
-         data.get("content", ""), data.get("image_url", ""),
-         data.get("link_url", ""), data.get("link_text", ""),
-         data.get("icon", ""), data.get("sort_order", 0),
-         json.dumps(data.get("extra_data", {})), item_id, section_id)
-    )
-    if not item:
-        return jsonify({"error": "Item not found"}), 404
-    return jsonify(item)
-
-
-@app.route("/admin/api/custom-sections/<int:section_id>/items/<int:item_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_custom_item(section_id, item_id):
-    """DELETE /admin/api/custom-sections/<section_id>/items/<item_id> — Remove an item."""
-    count = execute_db(
-        "DELETE FROM custom_section_items WHERE id = %s AND section_id = %s",
-        (item_id, section_id)
-    )
-    if count == 0:
-        return jsonify({"error": "Item not found"}), 404
-    return jsonify({"success": True})
+# Custom-section items CRUD moved to admin/content.py (Track B / B12): content_bp.
+# Same /admin/api/custom-sections/<id>/items[/<item_id>] URLs; @admin_required
+# preserved (from core).
 
 
 # =============================================================
@@ -28862,50 +26808,9 @@ def admin_delete_custom_item(section_id, item_id):
 # Manages the SEO meta tags, Open Graph, Twitter Cards, and other
 # search engine optimization settings stored on the site_settings table.
 
-@app.route("/admin/api/seo", methods=["GET"])
-@admin_required
-def admin_get_seo():
-    """
-    GET /admin/api/seo
-    Returns the current SEO settings for the admin panel.
-    """
-    settings = query_db("""
-        SELECT seo_meta_title, seo_meta_description, seo_keywords,
-               seo_og_image, seo_twitter_handle, seo_canonical_url, seo_robots
-        FROM site_settings WHERE id = 1
-    """, fetchone=True)
-    return jsonify(settings or {})
-
-
-@app.route("/admin/api/seo", methods=["PUT"])
-@admin_required
-def admin_update_seo():
-    """
-    PUT /admin/api/seo
-    Update SEO settings (meta title, description, keywords, OG image,
-    Twitter handle, canonical URL, robots directive).
-    """
-    data = request.get_json()
-    result = execute_db(
-        """UPDATE site_settings SET
-             seo_meta_title = %s, seo_meta_description = %s,
-             seo_keywords = %s, seo_og_image = %s,
-             seo_twitter_handle = %s, seo_canonical_url = %s,
-             seo_robots = %s, updated_at = NOW()
-           WHERE id = 1 RETURNING
-             seo_meta_title, seo_meta_description, seo_keywords,
-             seo_og_image, seo_twitter_handle, seo_canonical_url, seo_robots""",
-        (
-            data.get("seo_meta_title", ""),
-            data.get("seo_meta_description", ""),
-            data.get("seo_keywords", ""),
-            data.get("seo_og_image", ""),
-            data.get("seo_twitter_handle", ""),
-            data.get("seo_canonical_url", ""),
-            data.get("seo_robots", "index, follow")
-        )
-    )
-    return jsonify(result or {})
+# SEO settings GET/PUT moved to admin/content.py (Track B / B12): content_bp.
+# Same /admin/api/seo URL. (The AI-backed /admin/api/seo/generate POST below
+# stays here - it calls the OpenAI helper, not in core.)
 
 
 @app.route("/admin/api/seo/generate", methods=["POST"])
@@ -29020,96 +26925,12 @@ def admin_generate_seo():
 # These endpoints update columns on the single-row site_settings table
 # rather than managing separate tables.
 
-@app.route("/admin/api/business-info", methods=["GET"])
-@admin_required
-def admin_get_business_info():
-    """GET business contact info for the admin panel."""
-    info = query_db("""
-        SELECT business_phone, business_email, business_address,
-               business_hours, business_map_embed
-        FROM site_settings WHERE id = 1
-    """, fetchone=True)
-    return jsonify(info or {})
+# business-info admin GET/PUT moved to admin/content.py (Track B / B16). Same URL, @admin_required preserved.
 
 
-@app.route("/admin/api/business-info", methods=["PUT"])
-@admin_required
-def admin_update_business_info():
-    """PUT /admin/api/business-info — Update business contact info."""
-    data = request.get_json()
-    info = execute_db(
-        """UPDATE site_settings SET
-             business_phone = %s, business_email = %s,
-             business_address = %s, business_hours = %s::jsonb,
-             business_map_embed = %s, updated_at = NOW()
-           WHERE id = 1 RETURNING
-             business_phone, business_email, business_address,
-             business_hours, business_map_embed""",
-        (data.get("business_phone", ""), data.get("business_email", ""),
-         data.get("business_address", ""),
-         json.dumps(data.get("business_hours", [])),
-         data.get("business_map_embed", ""))
-    )
-    return jsonify(info or {})
-
-
-@app.route("/admin/api/social-links", methods=["GET"])
-@admin_required
-def admin_get_social_links():
-    """GET social media links for the admin panel."""
-    info = query_db("SELECT social_links FROM site_settings WHERE id = 1", fetchone=True)
-    return jsonify(info.get("social_links", {}) if info else {})
-
-
-@app.route("/admin/api/social-links", methods=["PUT"])
-@admin_required
-def admin_update_social_links():
-    """PUT /admin/api/social-links — Update social media profile URLs."""
-    data = request.get_json()
-    execute_db(
-        "UPDATE site_settings SET social_links = %s::jsonb, updated_at = NOW() WHERE id = 1",
-        (json.dumps(data),)
-    )
-    return jsonify(data)
-
-
-@app.route("/admin/api/section-visibility", methods=["GET"])
-@admin_required
-def admin_get_section_visibility():
-    """GET section visibility toggles + landing scroll mode for the admin panel."""
-    info = query_db("""
-        SELECT section_testimonials, section_team, section_faq, section_footer,
-               scroll_mode
-        FROM site_settings WHERE id = 1
-    """, fetchone=True)
-    return jsonify(info or {})
-
-
-@app.route("/admin/api/section-visibility", methods=["PUT"])
-@admin_required
-def admin_update_section_visibility():
-    """PUT /admin/api/section-visibility — Toggle sections on/off and pick scroll mode."""
-    data = request.get_json()
-    # Whitelist scroll_mode to the two values the frontend knows how to honor;
-    # anything else falls back to 'snap' so a typo in the request can't put the
-    # site into an undefined state.
-    scroll_mode = data.get("scroll_mode", "snap")
-    if scroll_mode not in ("snap", "smooth"):
-        scroll_mode = "snap"
-    info = execute_db(
-        """UPDATE site_settings SET
-             section_testimonials = %s, section_team = %s,
-             section_faq = %s, section_footer = %s,
-             scroll_mode = %s,
-             updated_at = NOW()
-           WHERE id = 1 RETURNING
-             section_testimonials, section_team, section_faq, section_footer,
-             scroll_mode""",
-        (data.get("section_testimonials", False), data.get("section_team", False),
-         data.get("section_faq", False), data.get("section_footer", True),
-         scroll_mode)
-    )
-    return jsonify(info or {})
+# social-links + section-visibility admin GET/PUT moved to admin/content.py
+# (Track B / B11): content_bp. Same /admin/api/social-links and /admin/api/
+# section-visibility URLs; @admin_required preserved (from core).
 
 
 # --------------- Site Settings CRUD ---------------
@@ -29384,45 +27205,9 @@ def admin_list_ai_activity():
     })
 
 
-@app.route("/admin/api/visitor-profiles", methods=["GET"])
-@admin_required
-def admin_list_visitor_profiles():
-    """Visitor CRM profiles (task 042), highest lead-score first. Super-admin
-    only — these accumulate visitor signals (interests/needs/lead/consent).
-    ?limit=N (default 100, max 500). Empty until the 'Visitor CRM' knob is on."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    try:
-        limit = int(request.args.get("limit", 100) or 100)
-    except (TypeError, ValueError):
-        limit = 100
-    limit = max(1, min(limit, 500))
-    tid = current_tenant_id()
-    rows = query_db(
-        "SELECT id, visitor_id, interests, needs, lead_score, consent, summary, "
-        "turns, created_at, updated_at FROM visitor_profiles "
-        "WHERE tenant_id=%s ORDER BY lead_score DESC, updated_at DESC LIMIT %s",
-        (tid, limit)) or []
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["interests"] = _vp_as_list(d.get("interests"))
-        d["needs"] = _vp_as_list(d.get("needs"))
-        for k in ("created_at", "updated_at"):
-            if d.get(k):
-                d[k] = d[k].isoformat()
-        out.append(d)
-    stats = query_db(
-        "SELECT COUNT(*) AS n, COALESCE(MAX(lead_score),0) AS top "
-        "FROM visitor_profiles WHERE tenant_id=%s", (tid,), fetchone=True) or {}
-    return jsonify({
-        "profiles": out,
-        "stats": {
-            "count": int(stats.get("n") or 0),
-            "top_lead_score": int(stats.get("top") or 0),
-        },
-    })
+# Visitor-profiles admin read API moved to admin/crm.py (Track B): crm_bp. Same
+# /admin/api/visitor-profiles URL; @admin_required + in-body _require_super_admin_role()
+# preserved (from core). Uses the shared _vp_as_list leaf (stays in core).
 
 
 # =============================================================================
@@ -29432,188 +27217,15 @@ def admin_list_visitor_profiles():
 # the gated `lookup_offers` tool. All routes are guarded by
 # _require_super_admin_role() (a client session can't read or edit offers).
 
-def _row_offer(r):
-    """Serialize an offers row for the admin API (ISO timestamps, parsed tags)."""
-    d = dict(r)
-    d["trigger_tags"] = _vp_as_list(d.get("trigger_tags"))
-    for k in ("starts_at", "ends_at", "created_at", "updated_at"):
-        if d.get(k):
-            d[k] = d[k].isoformat()
-    return d
-
-
-def _offer_payload(body):
-    """Validate + coerce an offer create/update body. Returns (fields, error).
-    Only whitelisted columns are accepted (no mass-assignment)."""
-    title = (body.get("title") or "").strip()
-    if not title:
-        return None, "title is required"
-    tags = body.get("trigger_tags")
-    if isinstance(tags, str):
-        tags = [t.strip() for t in tags.split(",")]
-    if not isinstance(tags, list):
-        tags = []
-    tags = [str(t).strip()[:80] for t in tags if str(t).strip()][:25]
-    try:
-        priority = int(body.get("priority") or 0)
-    except (TypeError, ValueError):
-        priority = 0
-    return {
-        "title": title[:300],
-        "description": (body.get("description") or "").strip()[:4000],
-        "code": (body.get("code") or "").strip()[:80],
-        "cta_url": (body.get("cta_url") or "").strip()[:1000],
-        "trigger_tags": json.dumps(tags),
-        "active": bool(body.get("active", True)),
-        "starts_at": (body.get("starts_at") or None),
-        "ends_at": (body.get("ends_at") or None),
-        "priority": priority,
-    }, ""
-
-
-@app.route("/admin/api/offers", methods=["GET"])
-@admin_required
-def admin_list_offers():
-    """List all offers for the tenant (super-admin only)."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    tid = current_tenant_id()
-    rows = query_db(
-        "SELECT * FROM offers WHERE tenant_id=%s ORDER BY priority DESC, id DESC",
-        (tid,)) or []
-    return jsonify({"offers": [_row_offer(r) for r in rows]})
-
-
-@app.route("/admin/api/offers", methods=["POST"])
-@admin_required
-def admin_create_offer():
-    """Create an offer (super-admin only)."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    fields, err = _offer_payload(request.get_json(silent=True) or {})
-    if err:
-        return jsonify({"error": err}), 400
-    tid = current_tenant_id()
-    row = execute_db(
-        "INSERT INTO offers (tenant_id, title, description, code, cta_url, "
-        " trigger_tags, active, starts_at, ends_at, priority) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
-        (tid, fields["title"], fields["description"], fields["code"],
-         fields["cta_url"], fields["trigger_tags"], fields["active"],
-         fields["starts_at"], fields["ends_at"], fields["priority"]))
-    return jsonify({"offer": _row_offer(row)}), 201
-
-
-@app.route("/admin/api/offers/<int:offer_id>", methods=["PUT"])
-@admin_required
-def admin_update_offer(offer_id):
-    """Update an offer (super-admin only). Scoped to the tenant."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    fields, err = _offer_payload(request.get_json(silent=True) or {})
-    if err:
-        return jsonify({"error": err}), 400
-    tid = current_tenant_id()
-    row = execute_db(
-        "UPDATE offers SET title=%s, description=%s, code=%s, cta_url=%s, "
-        " trigger_tags=%s, active=%s, starts_at=%s, ends_at=%s, priority=%s, "
-        " updated_at=NOW() WHERE id=%s AND tenant_id=%s RETURNING *",
-        (fields["title"], fields["description"], fields["code"], fields["cta_url"],
-         fields["trigger_tags"], fields["active"], fields["starts_at"],
-         fields["ends_at"], fields["priority"], offer_id, tid))
-    if not row:
-        return jsonify({"error": "not_found"}), 404
-    return jsonify({"offer": _row_offer(row)})
-
-
-@app.route("/admin/api/offers/<int:offer_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_offer(offer_id):
-    """Delete an offer (super-admin only). Scoped to the tenant."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    tid = current_tenant_id()
-    row = execute_db(
-        "DELETE FROM offers WHERE id=%s AND tenant_id=%s RETURNING id",
-        (offer_id, tid))
-    if not row:
-        return jsonify({"error": "not_found"}), 404
-    return jsonify({"ok": True, "deleted": offer_id})
+# Offers admin CRUD (super-admin only) moved to admin/offers.py (Track B); routes registered via offers_bp. Helpers _row_offer/_offer_payload moved with them.
 
 
 # =============================================================================
-# LEADS + CALLBACKS — super-admin read APIs (task 045)
+# LEADS + CALLBACKS + MEETINGS — super-admin read APIs (task 045)
 # =============================================================================
-# Super-admin-only views of what the agentic-growth tools captured. These hold
-# visitor PII (operator sales data), so a client session is 403'd.
-
-def _iso_row(r, *date_cols):
-    d = dict(r)
-    for k in date_cols:
-        if d.get(k):
-            d[k] = d[k].isoformat()
-    return d
-
-
-@app.route("/admin/api/leads", methods=["GET"])
-@admin_required
-def admin_list_leads():
-    """Leads captured by the concierge (super-admin only). ?limit=N (max 500)."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    try:
-        limit = max(1, min(int(request.args.get("limit", 100) or 100), 500))
-    except (TypeError, ValueError):
-        limit = 100
-    tid = current_tenant_id()
-    rows = query_db(
-        "SELECT id, name, email, phone, interest, message, source, status, "
-        "created_at FROM leads WHERE tenant_id=%s ORDER BY id DESC LIMIT %s",
-        (tid, limit)) or []
-    return jsonify({"leads": [_iso_row(r, "created_at") for r in rows]})
-
-
-@app.route("/admin/api/callbacks", methods=["GET"])
-@admin_required
-def admin_list_callbacks():
-    """Callback requests taken by the concierge (super-admin only)."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    try:
-        limit = max(1, min(int(request.args.get("limit", 100) or 100), 500))
-    except (TypeError, ValueError):
-        limit = 100
-    tid = current_tenant_id()
-    rows = query_db(
-        "SELECT id, name, phone, preferred_time, reason, ai_summary, status, "
-        "created_at FROM callback_requests WHERE tenant_id=%s ORDER BY id DESC LIMIT %s",
-        (tid, limit)) or []
-    return jsonify({"callbacks": [_iso_row(r, "created_at") for r in rows]})
-
-
-@app.route("/admin/api/meetings", methods=["GET"])
-@admin_required
-def admin_list_meetings():
-    """Meeting requests/bookings taken by the concierge (super-admin only)."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    try:
-        limit = max(1, min(int(request.args.get("limit", 100) or 100), 500))
-    except (TypeError, ValueError):
-        limit = 100
-    tid = current_tenant_id()
-    rows = query_db(
-        "SELECT id, name, email, phone, requested_time, start_iso, duration_minutes, "
-        "notes, status, calendar_event_id, created_at FROM meetings "
-        "WHERE tenant_id=%s ORDER BY id DESC LIMIT %s", (tid, limit)) or []
-    return jsonify({"meetings": [_iso_row(r, "created_at") for r in rows]})
+# Moved to admin/crm.py (Track B): crm_bp. Same /admin/api/{leads,callbacks,meetings}
+# URLs; @admin_required + in-body _require_super_admin_role() preserved (from core).
+# The shared _iso_row leaf moved to core (re-exported); it has ~8 other call sites.
 
 
 # =============================================================================
@@ -29622,119 +27234,7 @@ def admin_list_meetings():
 # Super-admin-only management of the specialist personas the visitor concierge
 # can route to. Guarded by _require_super_admin_role(); a client session is 403'd.
 
-def _row_persona(r):
-    d = dict(r)
-    d["tool_names"] = _vp_as_list(d.get("tool_names"))
-    for k in ("created_at", "updated_at"):
-        if d.get(k):
-            d[k] = d[k].isoformat()
-    return d
-
-
-def _persona_payload(body):
-    """Validate + coerce a persona create/update body. Returns (fields, error).
-    persona_key is a slug; 'general' is reserved (it's the implicit fallback)."""
-    key = (body.get("persona_key") or "").strip().lower()
-    if not re.match(r"^[a-z0-9_]{1,40}$", key or ""):
-        return None, "persona_key must be 1-40 chars of a-z, 0-9, underscore"
-    if key == "general":
-        return None, "'general' is reserved (it is the implicit fallback persona)"
-    tools = body.get("tool_names")
-    if isinstance(tools, str):
-        tools = [t.strip() for t in tools.split(",")]
-    if not isinstance(tools, list):
-        tools = []
-    tools = [str(t).strip()[:80] for t in tools if str(t).strip()][:50]
-    try:
-        sort_order = int(body.get("sort_order") or 0)
-    except (TypeError, ValueError):
-        sort_order = 0
-    return {
-        "persona_key": key,
-        "label": (body.get("label") or "").strip()[:120],
-        "prompt_suffix": (body.get("prompt_suffix") or "").strip()[:8000],
-        "tool_names": json.dumps(tools),
-        "model": (body.get("model") or "").strip()[:120],
-        "enabled": bool(body.get("enabled", True)),
-        "sort_order": sort_order,
-    }, ""
-
-
-@app.route("/admin/api/visitor-personas", methods=["GET"])
-@admin_required
-def admin_list_visitor_personas():
-    """List the tenant's visitor personas (super-admin only)."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    tid = current_tenant_id()
-    rows = query_db(
-        "SELECT * FROM visitor_personas WHERE tenant_id=%s "
-        "ORDER BY sort_order, id", (tid,)) or []
-    return jsonify({"personas": [_row_persona(r) for r in rows]})
-
-
-@app.route("/admin/api/visitor-personas", methods=["POST"])
-@admin_required
-def admin_create_visitor_persona():
-    """Create a visitor persona (super-admin only)."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    fields, err = _persona_payload(request.get_json(silent=True) or {})
-    if err:
-        return jsonify({"error": err}), 400
-    tid = current_tenant_id()
-    # Reject a duplicate key for this tenant (the UNIQUE constraint would 500).
-    if query_db("SELECT 1 FROM visitor_personas WHERE tenant_id=%s AND persona_key=%s",
-                (tid, fields["persona_key"]), fetchone=True):
-        return jsonify({"error": "persona_key already exists"}), 409
-    row = execute_db(
-        "INSERT INTO visitor_personas (tenant_id, persona_key, label, prompt_suffix, "
-        " tool_names, model, enabled, sort_order) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
-        "RETURNING *",
-        (tid, fields["persona_key"], fields["label"], fields["prompt_suffix"],
-         fields["tool_names"], fields["model"], fields["enabled"], fields["sort_order"]))
-    return jsonify({"persona": _row_persona(row)}), 201
-
-
-@app.route("/admin/api/visitor-personas/<int:persona_id>", methods=["PUT"])
-@admin_required
-def admin_update_visitor_persona(persona_id):
-    """Update a visitor persona (super-admin only). Tenant-scoped."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    fields, err = _persona_payload(request.get_json(silent=True) or {})
-    if err:
-        return jsonify({"error": err}), 400
-    tid = current_tenant_id()
-    row = execute_db(
-        "UPDATE visitor_personas SET persona_key=%s, label=%s, prompt_suffix=%s, "
-        " tool_names=%s, model=%s, enabled=%s, sort_order=%s, updated_at=NOW() "
-        "WHERE id=%s AND tenant_id=%s RETURNING *",
-        (fields["persona_key"], fields["label"], fields["prompt_suffix"],
-         fields["tool_names"], fields["model"], fields["enabled"],
-         fields["sort_order"], persona_id, tid))
-    if not row:
-        return jsonify({"error": "not_found"}), 404
-    return jsonify({"persona": _row_persona(row)})
-
-
-@app.route("/admin/api/visitor-personas/<int:persona_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_visitor_persona(persona_id):
-    """Delete a visitor persona (super-admin only). Tenant-scoped."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    tid = current_tenant_id()
-    row = execute_db(
-        "DELETE FROM visitor_personas WHERE id=%s AND tenant_id=%s RETURNING id",
-        (persona_id, tid))
-    if not row:
-        return jsonify({"error": "not_found"}), 404
-    return jsonify({"ok": True, "deleted": persona_id})
+# Visitor-persona admin CRUD (super-admin only) moved to admin/personas.py (Track B); routes registered via personas_bp. Helpers _row_persona/_persona_payload moved with them.
 
 
 @app.route("/admin/api/ai-prompts", methods=["GET"])
@@ -31230,100 +28730,14 @@ def admin_secrets_unset():
 
 # --------------- Drag-and-Drop Reorder ---------------
 
-@app.route("/admin/api/reorder/<string:content_type>", methods=["PUT"])
-@admin_required
-def admin_reorder(content_type):
-    """PUT /admin/api/reorder/<type> — Batch-update sort_order for a content type."""
-    table_map = {
-        "gallery-cards": "gallery_cards",
-        "experiences": "experiences",
-        "pricing": "pricing_seasons",
-        "testimonials": "testimonials",
-        "team": "team_members",
-        "faq": "faqs",
-        "page-sections": "page_sections",
-        "custom-section-items": "custom_section_items",
-        "blog-posts": "blog_posts",
-        "page-views": "page_views"
-    }
-    table = table_map.get(content_type)
-    if not table:
-        return jsonify({"error": "Invalid content type"}), 400
-
-    items = request.get_json()
-    if not isinstance(items, list):
-        return jsonify({"error": "Expected array of {id, sort_order}"}), 400
-
-    # Tables that have an updated_at column get it refreshed on reorder
-    tables_with_updated_at = {"gallery_cards", "experiences", "pricing_seasons"}
-
-    conn = get_db()
-    try:
-        with conn.cursor() as cur:
-            for item in items:
-                if table in tables_with_updated_at:
-                    cur.execute(
-                        f"UPDATE {table} SET sort_order = %s, updated_at = NOW() WHERE id = %s",
-                        (item["sort_order"], item["id"])
-                    )
-                else:
-                    cur.execute(
-                        f"UPDATE {table} SET sort_order = %s WHERE id = %s",
-                        (item["sort_order"], item["id"])
-                    )
-    finally:
-        conn.close()
-
-    return jsonify({"success": True})
+# Batch reorder of content sort_order (gallery-cards/experiences/pricing/testimonials/
+# team/faq/page-sections/custom-section-items/blog-posts/page-views) moved to
+# admin/content.py (Track B / B10): content_bp. Same /admin/api/reorder/<type> URL.
 
 
-# --------------- Chat History & Analytics ---------------
-
-@app.route("/admin/api/chat-history", methods=["GET"])
-@admin_required
-def admin_chat_history():
-    """GET /admin/api/chat-history — List conversations with stats."""
-    page = int(request.args.get("page", 1))
-    per_page = int(request.args.get("per_page", 50))
-    offset = (page - 1) * per_page
-
-    conversations = query_db("""
-        SELECT c.*,
-            c.visitor_id,
-            (SELECT COUNT(*) FROM chat_messages WHERE conversation_id = c.id) as message_count,
-            (SELECT content FROM chat_messages WHERE conversation_id = c.id AND role = 'user' ORDER BY id LIMIT 1) as first_message
-        FROM chat_conversations c
-        ORDER BY c.updated_at DESC
-        LIMIT %s OFFSET %s
-    """, (per_page, offset))
-
-    # Chat analytics stats:
-    # - total_conversations: one per page load (each refresh = new conversation)
-    # - messages_today: all messages sent today across all conversations
-    # - avg_messages: average messages per conversation
-    # - unique_visitors: distinct visitor_ids (tracks returning visitors across sessions)
-    stats = query_db("""
-        SELECT
-            (SELECT COUNT(*) FROM chat_conversations) as total_conversations,
-            (SELECT COUNT(*) FROM chat_messages WHERE created_at >= CURRENT_DATE) as messages_today,
-            (SELECT ROUND(AVG(cnt), 1) FROM (SELECT COUNT(*) as cnt FROM chat_messages GROUP BY conversation_id) sub) as avg_messages,
-            (SELECT COUNT(DISTINCT visitor_id) FROM chat_conversations WHERE visitor_id != '' AND visitor_id IS NOT NULL) as unique_visitors
-    """, fetchone=True)
-
-    return jsonify({"conversations": conversations or [], "stats": stats or {}})
-
-
-@app.route("/admin/api/chat-history/<int:conv_id>", methods=["GET"])
-@admin_required
-def admin_chat_detail(conv_id):
-    """GET /admin/api/chat-history/<id> — Full conversation with messages."""
-    conv = query_db("SELECT * FROM chat_conversations WHERE id = %s", (conv_id,), fetchone=True)
-    if not conv:
-        return jsonify({"error": "Conversation not found"}), 404
-    messages = query_db(
-        "SELECT * FROM chat_messages WHERE conversation_id = %s ORDER BY created_at", (conv_id,)
-    )
-    return jsonify({"conversation": conv, "messages": messages or []})
+# Chat-history admin API (conversation log + chat stats) moved to
+# admin/reporting.py (Track B): reporting_bp. Same /admin/api/chat-history[/<id>]
+# URLs; @admin_required preserved (from core). Read-only, no shared helpers.
 
 
 # --------------- Theme / Color Editor ---------------
@@ -32184,167 +29598,15 @@ def api_save_generated_page():
     return jsonify({"success": True, "id": page_id, "slug": slug})
 
 
-@app.route("/admin/api/generated-pages", methods=["GET"])
-@admin_required
-def admin_list_generated_pages():
-    """GET /admin/api/generated-pages — List all saved AI-generated pages."""
-    pages = query_db(
-        "SELECT id, title, slug, status, prompt, created_at, updated_at FROM generated_pages ORDER BY created_at DESC"
-    )
-    return jsonify(pages or [])
+# Generated-pages ADMIN CRUD (list/get/update/delete) moved to admin/content.py
+# (Track B): content_bp. Same /admin/api/generated-pages[/<id>] URLs; @admin_required
+# preserved (from core). The PUBLIC /api/generated-pages POST (save) stays above.
 
 
-@app.route("/admin/api/generated-pages/<int:page_id>", methods=["GET"])
-@admin_required
-def admin_get_generated_page(page_id):
-    """GET /admin/api/generated-pages/<id> — Get a single page with full HTML."""
-    page = query_db("SELECT * FROM generated_pages WHERE id = %s", (page_id,), fetchone=True)
-    if not page:
-        return jsonify({"error": "Page not found"}), 404
-    return jsonify(page)
-
-
-@app.route("/admin/api/generated-pages/<int:page_id>", methods=["PUT"])
-@admin_required
-def admin_update_generated_page(page_id):
-    """PUT /admin/api/generated-pages/<id> — Update page title, status, or HTML."""
-    data = request.get_json()
-    fields, values = [], []
-    for key in ['title', 'html']:
-        if key in data:
-            fields.append(f"{key} = %s")
-            values.append(data[key])
-    if 'status' in data and data['status'] in ('draft', 'published'):
-        fields.append("status = %s")
-        values.append(data['status'])
-    if not fields:
-        return jsonify({"error": "No fields to update"}), 400
-    fields.append("updated_at = NOW()")
-    values.append(page_id)
-    execute_db(f"UPDATE generated_pages SET {', '.join(fields)} WHERE id = %s", tuple(values))
-    return jsonify({"success": True})
-
-
-@app.route("/admin/api/generated-pages/<int:page_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_generated_page(page_id):
-    """DELETE /admin/api/generated-pages/<id> — Delete a saved page."""
-    execute_db("DELETE FROM generated_pages WHERE id = %s", (page_id,))
-    return jsonify({"success": True})
-
-
-# =============================================================
-# MARKETING INSIGHTS + DRAFTS — read endpoints for the
-# "Marketing Insights" admin tab. The admin AI populates these
-# tables via _admin_tool_analyze_* (insights cache) and
-# propose_draft_blog_post / propose_draft_faq_entry (pending
-# rows). The tab below is purely a viewer — approve / reject
-# of drafts goes through the existing chat-action endpoints.
-# =============================================================
-
-@app.route("/admin/api/marketing/insights", methods=["GET"])
-@admin_required
-def admin_list_marketing_insights():
-    """GET /admin/api/marketing/insights — list cached insight runs.
-    Optional ?type=<insight_type> filters to one kind (chat_topics /
-    page_library / seo_gaps). Default 50 most recent."""
-    insight_type = (request.args.get("type") or "").strip()[:50]
-    try:
-        limit = max(1, min(int(request.args.get("limit") or 50), 200))
-    except Exception:
-        limit = 50
-    where = ["1=1"]
-    args = []
-    if insight_type:
-        where.append("insight_type = %s")
-        args.append(insight_type)
-    rows = query_db(
-        "SELECT id, insight_type, window_start, window_end, "
-        "       summary_json, notes, created_at "
-        "FROM marketing_insights_log WHERE " + " AND ".join(where)
-        + " ORDER BY created_at DESC LIMIT %s",
-        tuple(args + [limit]),
-    ) or []
-    out = []
-    for r in rows:
-        out.append({
-            "id": r["id"],
-            "insight_type": r.get("insight_type") or "",
-            "window_start": (r["window_start"].isoformat()
-                              if r.get("window_start") else None),
-            "window_end": (r["window_end"].isoformat()
-                            if r.get("window_end") else None),
-            "summary_json": r.get("summary_json") or {},
-            "notes": r.get("notes") or "",
-            "created_at": (r["created_at"].isoformat()
-                           if r.get("created_at") else None),
-        })
-    return jsonify({"insights": out, "count": len(out)})
-
-
-@app.route("/admin/api/marketing/drafts", methods=["GET"])
-@admin_required
-def admin_list_marketing_drafts():
-    """GET /admin/api/marketing/drafts — list AI-drafted blog / FAQ
-    entries the admin AI has queued for approval. Wraps the existing
-    admin_pending_actions table; approve / reject still go through
-    /admin/api/chat/action/<id>/approve | /reject.
-
-    Status semantics: rows start at 'pending', the approve endpoint
-    transitions them to 'executed' on success or 'failed' on error,
-    and the reject endpoint transitions them to 'rejected'. We accept
-    'approved' as a UI-friendly alias for 'executed' so the dashboard
-    filter labels can read naturally."""
-    status_raw = (request.args.get("status") or "pending").strip()[:20]
-    # Allowlist + 'approved' alias → 'executed' (the real DB value).
-    valid_status = {"pending", "executed", "rejected", "failed"}
-    if status_raw == "approved":
-        status = "executed"
-    elif status_raw in valid_status:
-        status = status_raw
-    else:
-        status = "pending"
-    try:
-        limit = max(1, min(int(request.args.get("limit") or 50), 200))
-    except Exception:
-        limit = 50
-    rows = query_db(
-        "SELECT id, action_type, target_table, target_id, "
-        "       payload_json, preview, status, error_text, "
-        "       created_at, decided_at "
-        "FROM admin_pending_actions "
-        "WHERE target_table IN ('blog_posts','faqs') "
-        "  AND status = %s "
-        "ORDER BY created_at DESC LIMIT %s",
-        (status, limit),
-    ) or []
-    out = []
-    for r in rows:
-        payload = r.get("payload_json") or {}
-        if isinstance(payload, str):
-            try: payload = json.loads(payload)
-            except Exception: payload = {}
-        fields = (payload.get("fields") or {}) if isinstance(payload, dict) else {}
-        out.append({
-            "id": r["id"],
-            "kind": ("blog" if r.get("target_table") == "blog_posts"
-                     else "faq" if r.get("target_table") == "faqs"
-                     else (r.get("target_table") or "")),
-            "target_table": r.get("target_table") or "",
-            "target_id": r.get("target_id"),
-            "title": (fields.get("title") or fields.get("question")
-                      or "(untitled)"),
-            "body_preview": ((fields.get("content") or fields.get("answer")
-                              or "")[:400]),
-            "preview": r.get("preview") or "",
-            "status": r.get("status") or "",
-            "error_text": r.get("error_text") or "",
-            "created_at": (r["created_at"].isoformat()
-                           if r.get("created_at") else None),
-            "decided_at": (r["decided_at"].isoformat()
-                           if r.get("decided_at") else None),
-        })
-    return jsonify({"drafts": out, "count": len(out)})
+# Marketing-insights + drafts VIEWERS (read-only) moved to admin/reporting.py
+# (Track B): reporting_bp. Same /admin/api/marketing/{insights,drafts} URLs;
+# @admin_required preserved (from core). Approve/reject still go through the
+# chat-action endpoints in app.py. No shared helpers.
 
 
 @app.route("/api/generated-pages/by-slug/<slug>")
@@ -32620,333 +29882,9 @@ def public_generated_page(slug):
 # DYNAMIC FORM BUILDER — Admin API Routes
 # =============================================================================
 
-@app.route("/admin/api/forms", methods=["GET"])
-@admin_required
-def admin_list_forms():
-    """GET /admin/api/forms — List all forms with field/submission counts."""
-    forms = query_db("""
-        SELECT f.*,
-            (SELECT COUNT(*) FROM form_fields WHERE form_id = f.id) AS field_count,
-            (SELECT COUNT(*) FROM form_submissions WHERE form_id = f.id) AS submission_count
-        FROM custom_forms f ORDER BY f.sort_order, f.created_at
-    """)
-    return jsonify(forms or [])
-
-
-@app.route("/admin/api/forms", methods=["POST"])
-@admin_required
-def admin_create_form():
-    """POST /admin/api/forms — Create a new form."""
-    data = request.get_json()
-    if not data or not data.get("name"):
-        return jsonify({"error": "Form name is required"}), 400
-    slug = data.get("slug") or data["name"].lower().replace(" ", "-").replace("'", "")
-    slug = re.sub(r'[^a-z0-9\-]', '', slug)
-    existing = query_db("SELECT id FROM custom_forms WHERE slug = %s", (slug,), fetchone=True)
-    if existing:
-        return jsonify({"error": "A form with this slug already exists"}), 400
-    result = execute_db(
-        """INSERT INTO custom_forms (name, slug, description, status, submit_button_text, success_message, sort_order)
-           VALUES (%s, %s, %s, %s, %s, %s, COALESCE((SELECT MAX(sort_order)+1 FROM custom_forms), 0))
-           RETURNING *""",
-        (
-            data["name"],
-            slug,
-            data.get("description", ""),
-            data.get("status", "active"),
-            data.get("submit_button_text", "Submit"),
-            data.get("success_message", "Thank you! Your submission has been received.")
-        )
-    )
-    return jsonify(result), 201
-
-
-@app.route("/admin/api/forms/<int:form_id>", methods=["GET"])
-@admin_required
-def admin_get_form(form_id):
-    """GET /admin/api/forms/<id> — Get a single form with all its fields."""
-    form = query_db("SELECT * FROM custom_forms WHERE id = %s", (form_id,), fetchone=True)
-    if not form:
-        return jsonify({"error": "Form not found"}), 404
-    fields = query_db("SELECT * FROM form_fields WHERE form_id = %s ORDER BY sort_order", (form_id,))
-    form["fields"] = fields or []
-    sub_count = query_db("SELECT COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s", (form_id,), fetchone=True)
-    form["submission_count"] = sub_count["cnt"] if sub_count else 0
-    return jsonify(form)
-
-
-def _form_is_managed(form_id):
-    """Return (form_row, is_managed). Managed forms (form_type != 'standard')
-    are auto-created by features like Service Bookings — admins can browse
-    submissions but must NOT edit/delete the form itself or its fields,
-    otherwise the feature that owns the form breaks."""
-    row = query_db(
-        "SELECT id, form_type, name FROM custom_forms WHERE id = %s",
-        (form_id,), fetchone=True,
-    )
-    if not row:
-        return (None, False)
-    return (row, (row.get("form_type") or "standard") != "standard")
-
-
-def _reject_if_managed(form_id):
-    """Helper for admin mutation endpoints — returns a Flask response if the
-    form is system-managed, or None if it's a normal admin-editable form."""
-    row, managed = _form_is_managed(form_id)
-    if not row:
-        return jsonify({"error": "Form not found"}), 404
-    if managed:
-        return jsonify({
-            "error": (
-                f"This is an auto-managed form ({row.get('name','')}). "
-                "It is owned by another feature (e.g. Service Bookings) and "
-                "cannot be edited or deleted from the Forms tab. "
-                "You can still view its submissions and analytics."
-            )
-        }), 403
-    return None
-
-
-@app.route("/admin/api/forms/<int:form_id>", methods=["PUT"])
-@admin_required
-def admin_update_form(form_id):
-    """PUT /admin/api/forms/<id> — Update form settings."""
-    blocked = _reject_if_managed(form_id)
-    if blocked:
-        return blocked
-    data = request.get_json()
-    result = execute_db(
-        """UPDATE custom_forms SET
-             name = %s, description = %s, status = %s,
-             submit_button_text = %s, success_message = %s, updated_at = NOW()
-           WHERE id = %s RETURNING *""",
-        (
-            data.get("name", ""),
-            data.get("description", ""),
-            data.get("status", "active"),
-            data.get("submit_button_text", "Submit"),
-            data.get("success_message", "Thank you! Your submission has been received."),
-            form_id
-        )
-    )
-    if not result:
-        return jsonify({"error": "Form not found"}), 404
-    return jsonify(result)
-
-
-@app.route("/admin/api/forms/<int:form_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_form(form_id):
-    """DELETE /admin/api/forms/<id> — Delete a form (cascades fields and submissions)."""
-    blocked = _reject_if_managed(form_id)
-    if blocked:
-        return blocked
-    sub_count = query_db("SELECT COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s", (form_id,), fetchone=True)
-    if sub_count and sub_count["cnt"] > 0:
-        confirm = request.args.get("confirm") == "true"
-        if not confirm:
-            return jsonify({"error": f"Form has {sub_count['cnt']} submission(s). Add ?confirm=true to delete anyway."}), 400
-    result = execute_db("DELETE FROM custom_forms WHERE id = %s RETURNING id", (form_id,))
-    if not result:
-        return jsonify({"error": "Form not found"}), 404
-    return jsonify({"success": True})
-
-
-@app.route("/admin/api/forms/<int:form_id>/fields", methods=["POST"])
-@admin_required
-def admin_add_field(form_id):
-    """POST /admin/api/forms/<id>/fields — Add a field to a form."""
-    blocked = _reject_if_managed(form_id)
-    if blocked:
-        return blocked
-    data = request.get_json()
-    if not data or not data.get("label"):
-        return jsonify({"error": "Field label is required"}), 400
-    name = data.get("name") or data["label"].lower().replace(" ", "_")
-    name = re.sub(r'[^a-z0-9_]', '', name)
-    options_val = json.dumps(data["options"]) if data.get("options") else None
-    step_val = max(1, int(data.get("step", 1))) if data.get("step") else 1
-    result = execute_db(
-        """INSERT INTO form_fields (form_id, field_type, label, name, placeholder, required, options, default_value, sort_order, width, validation_regex, help_text, step)
-           VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, COALESCE((SELECT MAX(sort_order)+1 FROM form_fields WHERE form_id = %s), 0), %s, %s, %s, %s)
-           RETURNING *""",
-        (
-            form_id,
-            data.get("field_type", "text"),
-            data["label"],
-            name,
-            data.get("placeholder", ""),
-            data.get("required", False),
-            options_val,
-            data.get("default_value", ""),
-            form_id,
-            data.get("width", "full"),
-            data.get("validation_regex", ""),
-            data.get("help_text", ""),
-            step_val
-        )
-    )
-    return jsonify(result), 201
-
-
-@app.route("/admin/api/forms/<int:form_id>/fields/<int:field_id>", methods=["PUT"])
-@admin_required
-def admin_update_field(form_id, field_id):
-    """PUT /admin/api/forms/<id>/fields/<field_id> — Update a field."""
-    blocked = _reject_if_managed(form_id)
-    if blocked:
-        return blocked
-    data = request.get_json()
-    options_val = json.dumps(data["options"]) if data.get("options") else None
-    step_val = max(1, int(data.get("step", 1))) if data.get("step") else 1
-    result = execute_db(
-        """UPDATE form_fields SET
-             field_type = %s, label = %s, name = %s, placeholder = %s,
-             required = %s, options = %s::jsonb, default_value = %s,
-             width = %s, validation_regex = %s, help_text = %s, step = %s
-           WHERE id = %s AND form_id = %s RETURNING *""",
-        (
-            data.get("field_type", "text"),
-            data.get("label", ""),
-            data.get("name", ""),
-            data.get("placeholder", ""),
-            data.get("required", False),
-            options_val,
-            data.get("default_value", ""),
-            data.get("width", "full"),
-            data.get("validation_regex", ""),
-            data.get("help_text", ""),
-            step_val,
-            field_id,
-            form_id
-        )
-    )
-    if not result:
-        return jsonify({"error": "Field not found"}), 404
-    return jsonify(result)
-
-
-@app.route("/admin/api/forms/<int:form_id>/fields/<int:field_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_field(form_id, field_id):
-    """DELETE /admin/api/forms/<id>/fields/<field_id> — Remove a field."""
-    blocked = _reject_if_managed(form_id)
-    if blocked:
-        return blocked
-    result = execute_db("DELETE FROM form_fields WHERE id = %s AND form_id = %s RETURNING id", (field_id, form_id))
-    if not result:
-        return jsonify({"error": "Field not found"}), 404
-    return jsonify({"success": True})
-
-
-@app.route("/admin/api/forms/<int:form_id>/fields/reorder", methods=["PUT"])
-@admin_required
-def admin_reorder_fields(form_id):
-    """PUT /admin/api/forms/<id>/fields/reorder — Batch reorder fields."""
-    blocked = _reject_if_managed(form_id)
-    if blocked:
-        return blocked
-    data = request.get_json()
-    order = data.get("order", [])
-    for item in order:
-        execute_db(
-            "UPDATE form_fields SET sort_order = %s WHERE id = %s AND form_id = %s",
-            (item["sort_order"], item["id"], form_id)
-        )
-    return jsonify({"success": True})
-
-
-# =============================================================================
-# DYNAMIC FORM BUILDER — Submissions & Analytics
-# =============================================================================
-
-@app.route("/admin/api/forms/<int:form_id>/submissions", methods=["GET"])
-@admin_required
-def admin_form_submissions(form_id):
-    """GET /admin/api/forms/<id>/submissions — List submissions with all fields."""
-    submissions = query_db(
-        "SELECT * FROM form_submissions WHERE form_id = %s ORDER BY submitted_at DESC",
-        (form_id,)
-    )
-    fields = query_db(
-        "SELECT id, label, name, field_type FROM form_fields WHERE form_id = %s ORDER BY sort_order",
-        (form_id,)
-    )
-    return jsonify({"submissions": submissions or [], "fields": fields or []})
-
-
-@app.route("/admin/api/submissions/<int:sub_id>/status", methods=["PUT"])
-@admin_required
-def admin_update_submission_status(sub_id):
-    """PUT /admin/api/submissions/<id>/status — Update submission status."""
-    data = request.get_json()
-    result = execute_db(
-        "UPDATE form_submissions SET status = %s WHERE id = %s RETURNING id, status",
-        (data.get("status", "new"), sub_id)
-    )
-    if not result:
-        return jsonify({"error": "Submission not found"}), 404
-    return jsonify(result)
-
-
-@app.route("/admin/api/submissions/<int:sub_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_submission(sub_id):
-    """DELETE /admin/api/submissions/<id> — Delete a submission."""
-    result = execute_db("DELETE FROM form_submissions WHERE id = %s RETURNING id", (sub_id,))
-    if not result:
-        return jsonify({"error": "Submission not found"}), 404
-    return jsonify({"success": True})
-
-
-@app.route("/admin/api/forms/<int:form_id>/analytics", methods=["GET"])
-@admin_required
-def admin_form_analytics(form_id):
-    """GET /admin/api/forms/<id>/analytics — Marketing analytics for a form."""
-    total = query_db("SELECT COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s", (form_id,), fetchone=True)
-    today = query_db(
-        "SELECT COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s AND submitted_at::date = CURRENT_DATE",
-        (form_id,), fetchone=True
-    )
-    by_status = query_db(
-        "SELECT status, COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s GROUP BY status ORDER BY cnt DESC",
-        (form_id,)
-    )
-    by_device = query_db(
-        "SELECT device_type, COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s GROUP BY device_type ORDER BY cnt DESC",
-        (form_id,)
-    )
-    by_utm = query_db(
-        "SELECT utm_source, COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s AND utm_source != '' GROUP BY utm_source ORDER BY cnt DESC LIMIT 10",
-        (form_id,)
-    )
-    by_browser = query_db(
-        "SELECT browser, COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s AND browser != '' GROUP BY browser ORDER BY cnt DESC LIMIT 10",
-        (form_id,)
-    )
-    by_os = query_db(
-        "SELECT os, COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s AND os != '' GROUP BY os ORDER BY cnt DESC LIMIT 10",
-        (form_id,)
-    )
-    top_referrers = query_db(
-        "SELECT referrer_url, COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s AND referrer_url != '' GROUP BY referrer_url ORDER BY cnt DESC LIMIT 10",
-        (form_id,)
-    )
-    by_language = query_db(
-        "SELECT language, COUNT(*) AS cnt FROM form_submissions WHERE form_id = %s AND language != '' GROUP BY language ORDER BY cnt DESC LIMIT 10",
-        (form_id,)
-    )
-    return jsonify({
-        "total": total["cnt"] if total else 0,
-        "today": today["cnt"] if today else 0,
-        "by_status": by_status or [],
-        "by_device": by_device or [],
-        "by_utm_source": by_utm or [],
-        "by_browser": by_browser or [],
-        "by_os": by_os or [],
-        "top_referrers": top_referrers or [],
-        "by_language": by_language or []
-    })
+# Dynamic form-builder admin CRUD (custom_forms / form_fields / form_submissions)
+# moved to admin/forms.py (Track B / B9): forms_bp. Same /admin/api/forms/* and
+# /admin/api/submissions/* URLs; @admin_required gating preserved (from core).
 
 
 # =============================================================================
@@ -33365,270 +30303,21 @@ def api_track_duration():
     return jsonify({"ok": True}), 200
 
 
-# =============================================================================
-# ADMIN ANALYTICS API — Aggregated visitor stats for the dashboard
-# =============================================================================
-
-@app.route("/admin/api/analytics")
-@admin_required
-def admin_api_analytics():
-    """GET /admin/api/analytics — Return aggregated analytics data.
-
-    Query params:
-      days  — number of past days to include (default 30, max 365)
-    """
-    days = min(int(request.args.get("days", 30)), 365)
-
-    # --- Summary counts ------------------------------------------------------
-    summary = query_db(
-        """SELECT
-               COUNT(*)                                     AS total_views,
-               COUNT(DISTINCT visitor_id) FILTER (WHERE visitor_id != '') AS unique_visitors,
-               COUNT(DISTINCT session_id)                   AS total_sessions,
-               COALESCE(AVG(duration_seconds) FILTER (WHERE duration_seconds > 0), 0) AS avg_duration,
-               COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE) AS today_views,
-               COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE - INTERVAL '7 days') AS week_views
-           FROM page_views
-           WHERE created_at >= NOW() - MAKE_INTERVAL(days => %s)""",
-        (days,),
-        fetchone=True,
-    )
-
-    # --- Top pages -----------------------------------------------------------
-    top_pages = query_db(
-        """SELECT page_url, COUNT(*) AS views,
-                  COALESCE(AVG(duration_seconds) FILTER (WHERE duration_seconds > 0), 0) AS avg_dur
-             FROM page_views
-            WHERE created_at >= NOW() - MAKE_INTERVAL(days => %s)
-            GROUP BY page_url
-            ORDER BY views DESC
-            LIMIT 10""",
-        (days,),
-    )
-
-    # --- Browser breakdown ---------------------------------------------------
-    browsers = query_db(
-        """SELECT browser, COUNT(*) AS cnt
-             FROM page_views
-            WHERE created_at >= NOW() - MAKE_INTERVAL(days => %s) AND browser != ''
-            GROUP BY browser ORDER BY cnt DESC LIMIT 5""",
-        (days,),
-    )
-
-    # --- Device breakdown ----------------------------------------------------
-    devices = query_db(
-        """SELECT device_type, COUNT(*) AS cnt
-             FROM page_views
-            WHERE created_at >= NOW() - MAKE_INTERVAL(days => %s)
-            GROUP BY device_type ORDER BY cnt DESC""",
-        (days,),
-    )
-
-    # --- OS breakdown --------------------------------------------------------
-    os_stats = query_db(
-        """SELECT os, COUNT(*) AS cnt
-             FROM page_views
-            WHERE created_at >= NOW() - MAKE_INTERVAL(days => %s) AND os != ''
-            GROUP BY os ORDER BY cnt DESC LIMIT 5""",
-        (days,),
-    )
-
-    # --- Top referrers -------------------------------------------------------
-    referrers = query_db(
-        """SELECT referrer_url, COUNT(*) AS cnt
-             FROM page_views
-            WHERE created_at >= NOW() - MAKE_INTERVAL(days => %s) AND referrer_url != ''
-            GROUP BY referrer_url ORDER BY cnt DESC LIMIT 10""",
-        (days,),
-    )
-
-    # --- Top UTM sources -----------------------------------------------------
-    utm_sources = query_db(
-        """SELECT utm_source, COUNT(*) AS cnt
-             FROM page_views
-            WHERE created_at >= NOW() - MAKE_INTERVAL(days => %s) AND utm_source != ''
-            GROUP BY utm_source ORDER BY cnt DESC LIMIT 5""",
-        (days,),
-    )
-
-    # --- Recent page views (last 50) ----------------------------------------
-    recent = query_db(
-        """SELECT id, session_id, visitor_id, page_url, referrer_url,
-                  browser, os, device_type, duration_seconds,
-                  utm_source, created_at
-             FROM page_views
-            WHERE created_at >= NOW() - MAKE_INTERVAL(days => %s)
-            ORDER BY created_at DESC LIMIT 50""",
-        (days,),
-    )
-
-    def _row(r):
-        d = dict(r)
-        for k, v in d.items():
-            if hasattr(v, "isoformat"):
-                d[k] = v.isoformat()
-        return d
-
-    return jsonify({
-        "summary": {
-            "total_views": summary["total_views"],
-            "unique_visitors": summary["unique_visitors"],
-            "total_sessions": summary["total_sessions"],
-            "avg_duration": round(float(summary["avg_duration"]), 1),
-            "today_views": summary["today_views"],
-            "week_views": summary["week_views"],
-        },
-        "top_pages":   [_row(r) for r in top_pages],
-        "browsers":    [_row(r) for r in browsers],
-        "devices":     [_row(r) for r in devices],
-        "os_stats":    [_row(r) for r in os_stats],
-        "referrers":   [_row(r) for r in referrers],
-        "utm_sources": [_row(r) for r in utm_sources],
-        "recent":      [_row(r) for r in recent],
-    })
-
-
-@app.route("/admin/api/analytics/chart")
-@admin_required
-def admin_api_analytics_chart():
-    """GET /admin/api/analytics/chart — Daily pageview counts for bar chart.
-
-    Query params:
-      days — number of past days (default 30, max 90)
-    Returns JSON array of { date, views } objects.
-    """
-    days = min(int(request.args.get("days", 30)), 90)
-
-    rows = query_db(
-        """SELECT d::date AS date, COALESCE(pv.cnt, 0) AS views
-             FROM generate_series(
-                      (CURRENT_DATE - MAKE_INTERVAL(days => %s - 1)),
-                      CURRENT_DATE,
-                      '1 day'::interval
-                  ) AS d
-             LEFT JOIN (
-                 SELECT created_at::date AS day, COUNT(*) AS cnt
-                   FROM page_views
-                  WHERE created_at >= CURRENT_DATE - MAKE_INTERVAL(days => %s - 1)
-                  GROUP BY day
-             ) pv ON pv.day = d::date
-           ORDER BY d""",
-        (days, days),
-    )
-
-    result = []
-    for r in rows:
-        d = r["date"]
-        result.append({
-            "date": d.isoformat() if hasattr(d, "isoformat") else str(d),
-            "views": r["views"],
-        })
-    return jsonify(result)
+# Analytics admin API (pageview aggregates + daily chart) moved to
+# admin/reporting.py (Track B): reporting_bp. Same /admin/api/analytics[/chart]
+# URLs; @admin_required preserved (from core). Read-only, no shared helpers.
 
 
 # =============================================================
 # ADMIN API — SPHERE VIEW SETTINGS
 # =============================================================
 
-@app.route("/admin/api/sphere-settings", methods=["GET"])
-@admin_required
-def admin_get_sphere_settings():
-    settings = query_db("SELECT * FROM sphere_settings WHERE id = 1", fetchone=True)
-    if not settings:
-        return jsonify({"enabled": False})
-    result = dict(settings)
-    imgs = query_db("SELECT id, image_url, caption, sort_order FROM sphere_images ORDER BY sort_order ASC")
-    result["custom_images"] = imgs or []
-    return jsonify(result)
+# sphere-settings + sphere-images admin CRUD (6 routes) moved to admin/content.py
+# (Track B / B8). Same /admin/api/* URLs, @admin_required preserved.
 
 
-@app.route("/admin/api/sphere-settings", methods=["PUT"])
-@admin_required
-def admin_update_sphere_settings():
-    data = request.get_json(force=True)
-    execute_db("""
-        UPDATE sphere_settings SET
-            enabled = %s,
-            heading_text = %s,
-            view_mode = %s,
-            particle_count = %s,
-            rotation_speed = %s,
-            sphere_radius = %s,
-            image_size = %s,
-            image_source = %s,
-            position_randomness = %s,
-            particle_opacity = %s,
-            zoom_min = %s,
-            zoom_max = %s,
-            card_scale = %s,
-            card_gap = %s,
-            updated_at = NOW()
-        WHERE id = 1
-    """, (
-        data.get("enabled", False),
-        data.get("heading_text", ""),
-        data.get("view_mode", "sections"),
-        int(data.get("particle_count", 1500)),
-        float(data.get("rotation_speed", 0.0005)),
-        float(data.get("sphere_radius", 9)),
-        float(data.get("image_size", 1.5)),
-        data.get("image_source", "gallery"),
-        float(data.get("position_randomness", 4)),
-        float(data.get("particle_opacity", 1)),
-        float(data.get("zoom_min", 5)),
-        float(data.get("zoom_max", 30)),
-        float(data.get("card_scale", 1.0)),
-        float(data.get("card_gap", 2.5)),
-    ))
-    return jsonify({"status": "ok"})
-
-
-@app.route("/admin/api/sphere-settings/enabled", methods=["PATCH"])
-@admin_required
-def admin_patch_sphere_enabled():
-    """Lightweight toggle endpoint — flips just the `enabled` flag so the
-    admin checkbox can auto-save without rewriting every other field."""
-    data = request.get_json(force=True) or {}
-    enabled = bool(data.get("enabled", False))
-    execute_db("UPDATE sphere_settings SET enabled = %s, updated_at = NOW() WHERE id = 1", (enabled,))
-    return jsonify({"status": "ok", "enabled": enabled})
-
-
-@app.route("/admin/api/sphere-images", methods=["GET"])
-@admin_required
-def admin_get_sphere_images():
-    imgs = query_db("SELECT * FROM sphere_images ORDER BY sort_order ASC")
-    return jsonify(imgs or [])
-
-
-@app.route("/admin/api/sphere-images", methods=["POST"])
-@admin_required
-def admin_create_sphere_image():
-    data = request.get_json(force=True)
-    max_order = query_db("SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM sphere_images", fetchone=True)
-    next_order = max_order["next_order"] if max_order else 0
-    execute_db(
-        "INSERT INTO sphere_images (image_url, caption, sort_order) VALUES (%s, %s, %s)",
-        (data.get("image_url", ""), data.get("caption", ""), next_order)
-    )
-    return jsonify({"status": "ok"})
-
-
-@app.route("/admin/api/sphere-images/<int:img_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_sphere_image(img_id):
-    execute_db("DELETE FROM sphere_images WHERE id = %s", (img_id,))
-    return jsonify({"status": "ok"})
-
-
-@app.route("/admin/api/reorder/sphere-images", methods=["PUT"])
-@admin_required
-def admin_reorder_sphere_images():
-    data = request.get_json(force=True)
-    ids = data.get("ids", [])
-    for i, img_id in enumerate(ids):
-        execute_db("UPDATE sphere_images SET sort_order = %s WHERE id = %s", (i, img_id))
-    return jsonify({"status": "ok"})
+# Sphere-images reorder moved to admin/content.py (Track B / B10): content_bp.
+# Same /admin/api/reorder/sphere-images URL; @admin_required preserved (core).
 
 
 # =============================================================================
@@ -35722,62 +32411,17 @@ def api_order_detail(order_number):
 # =============================================================================
 
 ALLOWED_CONTRACT_EXTENSIONS = {"pdf", "doc", "docx"}
-SERVICE_PRICING_MODELS = {"rsvp", "deposit", "full", "contract"}
+# SERVICE_PRICING_MODELS moved to admin/commerce.py (used only by the service-CRUD
+# routes that moved there with it).
 SERVICE_BOOKING_ACTIVE_STATUSES = ("pending", "confirmed")
 CONTRACT_UPLOAD_FOLDER = os.path.join(UPLOAD_FOLDER, "contracts")
 os.makedirs(CONTRACT_UPLOAD_FOLDER, exist_ok=True)
 
 
-def _slugify_service(text: str) -> str:
-    """Lowercase ASCII slug used for public service URLs."""
-    text = (text or "").lower().strip()
-    out = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
-    return out[:100] or "service"
-
-
-def _unique_service_slug(name: str, exclude_id: int | None = None) -> str:
-    """Pick a slug that doesn't collide with any other service row."""
-    base = _slugify_service(name)
-    candidate = base
-    n = 1
-    while True:
-        existing = query_db(
-            "SELECT id FROM services WHERE slug = %s AND (%s::int IS NULL OR id != %s)",
-            (candidate, exclude_id, exclude_id),
-            fetchone=True,
-        )
-        if not existing:
-            return candidate
-        n += 1
-        candidate = f"{base}-{n}"
-
-
-def _service_to_dict(row):
-    """Coerce DB row to a JSON-friendly dict (keeps int cents, ISO times)."""
-    if not row:
-        return None
-    d = dict(row)
-    for k, v in list(d.items()):
-        if hasattr(v, "isoformat"):
-            d[k] = v.isoformat()
-    return d
-
-
-def _addon_rows(service_id: int):
-    return query_db(
-        "SELECT * FROM service_addons WHERE service_id = %s "
-        "AND is_active = TRUE ORDER BY sort_order ASC, id ASC",
-        (service_id,),
-    ) or []
-
-
-def _hydrate_service(svc_row):
-    """Attach the active addon list to a single service dict."""
-    if not svc_row:
-        return None
-    d = _service_to_dict(svc_row)
-    d["addons"] = [_service_to_dict(a) for a in _addon_rows(d["id"])]
-    return d
+# _slugify_service / _unique_service_slug moved to admin/commerce.py (used only by
+# the service-CRUD routes that moved there). _service_to_dict / _addon_rows /
+# _hydrate_service moved to core.py (also used by the public service + booking
+# routes that remain below) and are re-exported via the `from core import` block.
 
 
 def _compute_availability(service_id: int, start_date, end_date):
@@ -35910,298 +32554,6 @@ def _compute_availability(service_id: int, start_date, end_date):
         days.append({"date": cursor.isoformat(), "slots": unique_slots})
         cursor += timedelta(days=1)
     return days
-
-
-# --------------- Admin: services CRUD ---------------
-
-@app.route("/admin/api/services", methods=["GET"])
-@admin_required
-def admin_list_services():
-    rows = query_db(
-        "SELECT * FROM services ORDER BY sort_order ASC, id ASC"
-    ) or []
-    out = []
-    for r in rows:
-        d = _service_to_dict(r)
-        d["addons"] = [_service_to_dict(a) for a in query_db(
-            "SELECT * FROM service_addons WHERE service_id = %s "
-            "ORDER BY sort_order ASC, id ASC", (d["id"],)
-        ) or []]
-        d["pending_bookings_count"] = (query_db(
-            "SELECT COUNT(*) AS n FROM service_bookings "
-            "WHERE service_id = %s AND status = 'pending'",
-            (d["id"],), fetchone=True
-        ) or {"n": 0})["n"]
-        out.append(d)
-    return jsonify(out)
-
-
-@app.route("/admin/api/services", methods=["POST"])
-@admin_required
-def admin_create_service():
-    data = request.get_json() or {}
-    name = (data.get("name") or "").strip()
-    if not name:
-        return jsonify({"error": "Name is required"}), 400
-    pricing_model = (data.get("pricing_model") or "rsvp").strip()
-    if pricing_model not in SERVICE_PRICING_MODELS:
-        return jsonify({"error": "Invalid pricing model"}), 400
-    slug = _unique_service_slug(data.get("slug") or name)
-
-    row = execute_db(
-        """INSERT INTO services
-           (slug, name, short_description, long_description, image_url,
-            duration_minutes, pricing_model, base_price_cents, deposit_cents,
-            currency, requires_calendar, capacity_per_slot, sort_order, is_active)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-           RETURNING *""",
-        (
-            slug, name,
-            data.get("short_description", ""),
-            data.get("long_description", ""),
-            data.get("image_url", ""),
-            int(data.get("duration_minutes") or 60),
-            pricing_model,
-            int(data.get("base_price_cents") or 0),
-            int(data.get("deposit_cents") or 0),
-            (data.get("currency") or "usd").lower(),
-            bool(data.get("requires_calendar", True)),
-            max(1, int(data.get("capacity_per_slot") or 1)),
-            int(data.get("sort_order") or 0),
-            bool(data.get("is_active", True)),
-        ),
-    )
-    return jsonify(_hydrate_service(row)), 201
-
-
-@app.route("/admin/api/services/<int:svc_id>", methods=["PUT"])
-@admin_required
-def admin_update_service(svc_id):
-    data = request.get_json() or {}
-    existing = query_db("SELECT * FROM services WHERE id = %s",
-                        (svc_id,), fetchone=True)
-    if not existing:
-        return jsonify({"error": "Service not found"}), 404
-    name = (data.get("name") or existing["name"]).strip()
-    pricing_model = (data.get("pricing_model") or existing["pricing_model"]).strip()
-    if pricing_model not in SERVICE_PRICING_MODELS:
-        return jsonify({"error": "Invalid pricing model"}), 400
-    new_slug = data.get("slug")
-    if new_slug:
-        slug = _unique_service_slug(new_slug, exclude_id=svc_id)
-    else:
-        slug = existing["slug"]
-
-    row = execute_db(
-        """UPDATE services SET
-             slug = %s, name = %s, short_description = %s,
-             long_description = %s, image_url = %s,
-             duration_minutes = %s, pricing_model = %s,
-             base_price_cents = %s, deposit_cents = %s,
-             currency = %s, requires_calendar = %s,
-             capacity_per_slot = %s, sort_order = %s,
-             is_active = %s, updated_at = NOW()
-           WHERE id = %s RETURNING *""",
-        (
-            slug, name,
-            data.get("short_description", existing["short_description"]),
-            data.get("long_description", existing["long_description"]),
-            data.get("image_url", existing["image_url"]),
-            int(data.get("duration_minutes", existing["duration_minutes"])),
-            pricing_model,
-            int(data.get("base_price_cents", existing["base_price_cents"])),
-            int(data.get("deposit_cents", existing["deposit_cents"])),
-            (data.get("currency", existing["currency"]) or "usd").lower(),
-            bool(data.get("requires_calendar", existing["requires_calendar"])),
-            max(1, int(data.get("capacity_per_slot", existing["capacity_per_slot"]))),
-            int(data.get("sort_order", existing["sort_order"])),
-            bool(data.get("is_active", existing["is_active"])),
-            svc_id,
-        ),
-    )
-    return jsonify(_hydrate_service(row))
-
-
-@app.route("/admin/api/services/<int:svc_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_service(svc_id):
-    n = execute_db("DELETE FROM services WHERE id = %s", (svc_id,))
-    if n == 0:
-        return jsonify({"error": "Service not found"}), 404
-    return jsonify({"success": True})
-
-
-# --------------- Admin: addons CRUD ---------------
-
-@app.route("/admin/api/services/<int:svc_id>/addons", methods=["GET"])
-@admin_required
-def admin_list_addons(svc_id):
-    rows = query_db(
-        "SELECT * FROM service_addons WHERE service_id = %s "
-        "ORDER BY sort_order ASC, id ASC", (svc_id,)
-    ) or []
-    return jsonify([_service_to_dict(r) for r in rows])
-
-
-@app.route("/admin/api/services/<int:svc_id>/addons", methods=["POST"])
-@admin_required
-def admin_create_addon(svc_id):
-    data = request.get_json() or {}
-    name = (data.get("name") or "").strip()
-    if not name:
-        return jsonify({"error": "Name required"}), 400
-    row = execute_db(
-        "INSERT INTO service_addons "
-        "(service_id, name, description, price_cents, sort_order, is_active) "
-        "VALUES (%s,%s,%s,%s,%s,%s) RETURNING *",
-        (
-            svc_id, name,
-            data.get("description", ""),
-            int(data.get("price_cents") or 0),
-            int(data.get("sort_order") or 0),
-            bool(data.get("is_active", True)),
-        ),
-    )
-    return jsonify(_service_to_dict(row)), 201
-
-
-@app.route("/admin/api/addons/<int:addon_id>", methods=["PUT"])
-@admin_required
-def admin_update_addon(addon_id):
-    data = request.get_json() or {}
-    row = execute_db(
-        "UPDATE service_addons SET "
-        "name = %s, description = %s, price_cents = %s, "
-        "sort_order = %s, is_active = %s "
-        "WHERE id = %s RETURNING *",
-        (
-            data.get("name", ""),
-            data.get("description", ""),
-            int(data.get("price_cents") or 0),
-            int(data.get("sort_order") or 0),
-            bool(data.get("is_active", True)),
-            addon_id,
-        ),
-    )
-    if not row:
-        return jsonify({"error": "Addon not found"}), 404
-    return jsonify(_service_to_dict(row))
-
-
-@app.route("/admin/api/addons/<int:addon_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_addon(addon_id):
-    n = execute_db("DELETE FROM service_addons WHERE id = %s", (addon_id,))
-    if n == 0:
-        return jsonify({"error": "Addon not found"}), 404
-    return jsonify({"success": True})
-
-
-# --------------- Admin: availability rules + overrides ---------------
-
-@app.route("/admin/api/services/<int:svc_id>/availability", methods=["GET"])
-@admin_required
-def admin_list_availability(svc_id):
-    rules = query_db(
-        "SELECT * FROM service_availability_rules WHERE service_id = %s "
-        "ORDER BY day_of_week, start_time", (svc_id,)
-    ) or []
-    overrides = query_db(
-        "SELECT * FROM service_availability_overrides WHERE service_id = %s "
-        "ORDER BY override_date, COALESCE(start_time, '00:00')", (svc_id,)
-    ) or []
-    return jsonify({
-        "rules": [_service_to_dict(r) for r in rules],
-        "overrides": [_service_to_dict(o) for o in overrides],
-    })
-
-
-@app.route("/admin/api/services/<int:svc_id>/rules", methods=["POST"])
-@admin_required
-def admin_create_rule(svc_id):
-    data = request.get_json() or {}
-    row = execute_db(
-        "INSERT INTO service_availability_rules "
-        "(service_id, day_of_week, start_time, end_time, slot_minutes, is_active) "
-        "VALUES (%s,%s,%s,%s,%s,%s) RETURNING *",
-        (
-            svc_id,
-            int(data.get("day_of_week") or 0),
-            data.get("start_time", "09:00"),
-            data.get("end_time", "17:00"),
-            int(data.get("slot_minutes") or 60),
-            bool(data.get("is_active", True)),
-        ),
-    )
-    return jsonify(_service_to_dict(row)), 201
-
-
-@app.route("/admin/api/rules/<int:rule_id>", methods=["PUT"])
-@admin_required
-def admin_update_rule(rule_id):
-    data = request.get_json() or {}
-    row = execute_db(
-        "UPDATE service_availability_rules SET "
-        "day_of_week = %s, start_time = %s, end_time = %s, "
-        "slot_minutes = %s, is_active = %s "
-        "WHERE id = %s RETURNING *",
-        (
-            int(data.get("day_of_week") or 0),
-            data.get("start_time", "09:00"),
-            data.get("end_time", "17:00"),
-            int(data.get("slot_minutes") or 60),
-            bool(data.get("is_active", True)),
-            rule_id,
-        ),
-    )
-    if not row:
-        return jsonify({"error": "Rule not found"}), 404
-    return jsonify(_service_to_dict(row))
-
-
-@app.route("/admin/api/rules/<int:rule_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_rule(rule_id):
-    n = execute_db("DELETE FROM service_availability_rules WHERE id = %s", (rule_id,))
-    if n == 0:
-        return jsonify({"error": "Rule not found"}), 404
-    return jsonify({"success": True})
-
-
-@app.route("/admin/api/services/<int:svc_id>/overrides", methods=["POST"])
-@admin_required
-def admin_create_override(svc_id):
-    data = request.get_json() or {}
-    kind = (data.get("override_kind") or "block").strip()
-    if kind not in ("block", "open"):
-        return jsonify({"error": "override_kind must be 'block' or 'open'"}), 400
-    row = execute_db(
-        "INSERT INTO service_availability_overrides "
-        "(service_id, override_date, start_time, end_time, override_kind, "
-        " slot_minutes, note) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING *",
-        (
-            svc_id,
-            data.get("override_date"),
-            data.get("start_time") or None,
-            data.get("end_time") or None,
-            kind,
-            int(data.get("slot_minutes") or 60),
-            data.get("note", ""),
-        ),
-    )
-    return jsonify(_service_to_dict(row)), 201
-
-
-@app.route("/admin/api/overrides/<int:ovr_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_override(ovr_id):
-    n = execute_db(
-        "DELETE FROM service_availability_overrides WHERE id = %s", (ovr_id,)
-    )
-    if n == 0:
-        return jsonify({"error": "Override not found"}), 404
-    return jsonify({"success": True})
 
 
 # --------------- Admin: contract template upload ---------------
@@ -38812,160 +35164,11 @@ def admin_datahub_delete(kind, rid):
     return jsonify({"ok": True})
 
 
-# ----- Dashboards CRUD -----------------------------------------------------
-
-def _serialize_dashboard(row, widgets=None):
-    out = {
-        "id": row["id"],
-        "name": row["name"],
-        "description": row.get("description") or "",
-        "sort_order": row.get("sort_order", 0),
-        "created_at": row["created_at"].isoformat() if row.get("created_at") else "",
-    }
-    if widgets is not None:
-        out["widgets"] = widgets
-    return out
-
-
-def _serialize_widget(row):
-    return {
-        "id": row["id"],
-        "dashboard_id": row["dashboard_id"],
-        "name": row["name"],
-        "widget_type": row["widget_type"],
-        "source_type": row["source_type"],
-        "source_config": row.get("source_config") or {},
-        "sort_order": row.get("sort_order", 0),
-    }
-
-
-@app.route("/admin/api/dashboards", methods=["GET"])
-@admin_required
-def admin_list_dashboards():
-    rows = query_db(
-        "SELECT id, name, description, sort_order, created_at "
-        "FROM dashboards ORDER BY sort_order, id"
-    ) or []
-    return jsonify([_serialize_dashboard(r) for r in rows])
-
-
-@app.route("/admin/api/dashboards", methods=["POST"])
-@admin_required
-def admin_create_dashboard():
-    body = request.get_json(silent=True) or {}
-    name = (body.get("name") or "").strip()
-    description = (body.get("description") or "").strip()
-    if not name:
-        return jsonify({"error": "Name is required."}), 400
-    row = execute_db(
-        "INSERT INTO dashboards (name, description) VALUES (%s, %s) "
-        "RETURNING id, name, description, sort_order, created_at",
-        (name, description),
-    )
-    return jsonify(_serialize_dashboard(row)), 201
-
-
-@app.route("/admin/api/dashboards/<int:did>", methods=["GET"])
-@admin_required
-def admin_get_dashboard(did):
-    row = query_db(
-        "SELECT id, name, description, sort_order, created_at "
-        "FROM dashboards WHERE id = %s",
-        (did,), fetchone=True,
-    )
-    if not row:
-        return jsonify({"error": "Not found"}), 404
-    widget_rows = query_db(
-        "SELECT id, dashboard_id, name, widget_type, source_type, source_config, sort_order "
-        "FROM dashboard_widgets WHERE dashboard_id = %s ORDER BY sort_order, id",
-        (did,),
-    ) or []
-    return jsonify(_serialize_dashboard(row, [_serialize_widget(w) for w in widget_rows]))
-
-
-@app.route("/admin/api/dashboards/<int:did>", methods=["PUT"])
-@admin_required
-def admin_update_dashboard(did):
-    body = request.get_json(silent=True) or {}
-    name = (body.get("name") or "").strip()
-    description = (body.get("description") or "").strip()
-    if not name:
-        return jsonify({"error": "Name is required."}), 400
-    execute_db(
-        "UPDATE dashboards SET name = %s, description = %s WHERE id = %s",
-        (name, description, did),
-    )
-    return jsonify({"success": True})
-
-
-@app.route("/admin/api/dashboards/<int:did>", methods=["DELETE"])
-@admin_required
-def admin_delete_dashboard(did):
-    execute_db("DELETE FROM dashboards WHERE id = %s", (did,))
-    return jsonify({"success": True})
-
-
-# ----- Widget CRUD ---------------------------------------------------------
-
-@app.route("/admin/api/dashboards/<int:did>/widgets", methods=["POST"])
-@admin_required
-def admin_create_widget(did):
-    body = request.get_json(silent=True) or {}
-    name = (body.get("name") or "").strip()
-    widget_type = (body.get("widget_type") or "kpi").strip()
-    source_type = (body.get("source_type") or "builtin").strip()
-    source_config = body.get("source_config") or {}
-    if widget_type not in ("kpi", "table", "line", "bar"):
-        return jsonify({"error": "Invalid widget type."}), 400
-    if source_type not in ("builtin", "internal_db", "external_postgres", "external_rest", "static"):
-        return jsonify({"error": "Invalid source type."}), 400
-    if not name:
-        return jsonify({"error": "Name is required."}), 400
-    # Determine sort_order — append to end.
-    last = query_db(
-        "SELECT COALESCE(MAX(sort_order), -1) AS m FROM dashboard_widgets "
-        "WHERE dashboard_id = %s", (did,), fetchone=True,
-    ) or {"m": -1}
-    sort_order = int(last["m"]) + 1
-    row = execute_db(
-        "INSERT INTO dashboard_widgets (dashboard_id, name, widget_type, "
-        "source_type, source_config, sort_order) "
-        "VALUES (%s, %s, %s, %s, %s::jsonb, %s) "
-        "RETURNING id, dashboard_id, name, widget_type, source_type, source_config, sort_order",
-        (did, name, widget_type, source_type, json.dumps(source_config), sort_order),
-    )
-    return jsonify(_serialize_widget(row)), 201
-
-
-@app.route("/admin/api/dashboards/<int:did>/widgets/<int:wid>", methods=["PUT"])
-@admin_required
-def admin_update_widget(did, wid):
-    body = request.get_json(silent=True) or {}
-    name = (body.get("name") or "").strip()
-    widget_type = (body.get("widget_type") or "kpi").strip()
-    source_type = (body.get("source_type") or "builtin").strip()
-    source_config = body.get("source_config") or {}
-    if widget_type not in ("kpi", "table", "line", "bar"):
-        return jsonify({"error": "Invalid widget type."}), 400
-    if source_type not in ("builtin", "internal_db", "external_postgres", "external_rest", "static"):
-        return jsonify({"error": "Invalid source type."}), 400
-    execute_db(
-        "UPDATE dashboard_widgets SET name = %s, widget_type = %s, "
-        "source_type = %s, source_config = %s::jsonb "
-        "WHERE id = %s AND dashboard_id = %s",
-        (name, widget_type, source_type, json.dumps(source_config), wid, did),
-    )
-    return jsonify({"success": True})
-
-
-@app.route("/admin/api/dashboards/<int:did>/widgets/<int:wid>", methods=["DELETE"])
-@admin_required
-def admin_delete_widget(did, wid):
-    execute_db(
-        "DELETE FROM dashboard_widgets WHERE id = %s AND dashboard_id = %s",
-        (wid, did),
-    )
-    return jsonify({"success": True})
+# Dashboards + widget CRUD moved to admin/dashboards.py (Track B): dashboards_bp.
+# Same /admin/api/dashboards[/<id>[/widgets[/<wid>]]] URLs; @admin_required preserved
+# (from core). The _serialize_dashboard/_serialize_widget row serializers (used only
+# by those routes) moved with them. The widget /run executor + /builtin-metrics +
+# /db-tables stay here (they need the BUILTIN_METRICS registry / connector layer).
 
 
 # ----- Widget execution ----------------------------------------------------
@@ -46475,68 +42678,10 @@ def public_preferences_post():
 # and lets an admin flip the toggle. The flip writes through to tenant_features
 # and busts the in-process cache so the change is live on the very next request.
 
-@app.route("/admin/api/tenant/features", methods=["GET"])
-@admin_required
-def admin_list_tenant_features():
-    """Return every known feature + on/off state + plan tier + addon flag."""
-    # HARD boundary: only the super admin manages feature visibility. A client
-    # session is logged-in (passes @admin_required) but must never read or change
-    # the feature roster — this is what stops a client from re-granting itself
-    # tabs by hitting the API directly, independent of the hidden UI tab.
-    _guard = _require_super_admin_role()
-    if _guard is not None:
-        return _guard
-    try:
-        tid = current_tenant_id()
-        # Pull plan + tenant info so the UI can show "you're on the Growth plan".
-        # NOTE: the plans table has columns (id, slug, name, description,
-        # sort_order). We expose `slug` as `plan_code` for UI back-compat.
-        tenant = query_db(
-            "SELECT t.id, t.name AS tenant_name, t.plan_id, "
-            "       p.slug AS plan_code, p.name AS plan_name "
-            "FROM tenants t LEFT JOIN plans p ON p.id = t.plan_id "
-            "WHERE t.id = %s",
-            (tid,), fetchone=True,
-        ) or {}
-        features = list_tenant_features(tid)
-        plans = query_db(
-            "SELECT id, slug AS code, name, description, sort_order "
-            "FROM plans ORDER BY sort_order, id"
-        ) or []
-        return jsonify({
-            "tenant": dict(tenant) if tenant else {"id": tid},
-            "features": features,
-            "plans": [dict(p) for p in plans],
-        })
-    except Exception as e:
-        print(f"[plans] list_tenant_features failed: {e}")
-        return jsonify({"error": "failed_to_list_features", "detail": str(e)}), 500
-
-
-@app.route("/admin/api/tenant/features/<name>", methods=["PATCH"])
-@admin_required
-def admin_toggle_tenant_feature(name):
-    """Flip one feature on/off. Body: {"enabled": bool, "note"?: str}."""
-    # HARD boundary: super admin only (see admin_list_tenant_features). Without
-    # this in-handler check a client could PATCH its own flags via curl.
-    _guard = _require_super_admin_role()
-    if _guard is not None:
-        return _guard
-    body = request.get_json(silent=True) or {}
-    if "enabled" not in body:
-        return jsonify({"error": "missing_field", "field": "enabled"}), 400
-    try:
-        new_val = set_tenant_feature(
-            name,
-            bool(body.get("enabled")),
-            note=str(body.get("note") or ""),
-        )
-        return jsonify({"feature": name, "enabled": new_val})
-    except ValueError as ve:
-        return jsonify({"error": "unknown_feature", "feature": name, "detail": str(ve)}), 400
-    except Exception as e:
-        print(f"[plans] toggle feature {name} failed: {e}")
-        return jsonify({"error": "toggle_failed", "detail": str(e)}), 500
+# The two Plans & Features admin endpoints (GET /admin/api/tenant/features and
+# PATCH /admin/api/tenant/features/<name>) moved verbatim to admin/tenancy.py
+# (Track B). Registered via app.register_blueprint(tenancy_bp) below. URLs +
+# the in-body _require_super_admin_role() boundary are unchanged.
 
 
 # --- Scheduler boot ----------------------------------------------------------
@@ -46564,6 +42709,90 @@ def _ensure_messaging_scheduler():
 from velo_endpoints import velo_bp, get_registered_capabilities  # noqa: E402
 import velo_handlers  # noqa: F401, E402  — import side-effect registers handlers
 app.register_blueprint(velo_bp)
+
+# First de-monolith blueprint (Track B / B2): the public read API. Imported here
+# and registered on the global app exactly like velo_bp. Its routes keep their
+# absolute /api/* paths, so the URL surface is unchanged (route-snapshot stays
+# identical); only the endpoint name gains a "public_api." prefix.
+from admin.public_api import public_bp  # noqa: E402
+app.register_blueprint(public_bp)
+
+# Admin content CRUD blueprint (Track B / B4): gallery-cards etc. Same /admin/api/*
+# URLs; @admin_required gating preserved (from core). Registered like public_bp.
+from admin.content import content_bp  # noqa: E402
+app.register_blueprint(content_bp)
+
+# Dynamic form-builder admin CRUD blueprint (Track B / B9): custom_forms /
+# form_fields / form_submissions. Same /admin/api/forms/* and
+# /admin/api/submissions/* URLs; @admin_required gating preserved (from core).
+from admin.forms import forms_bp  # noqa: E402
+app.register_blueprint(forms_bp)
+
+# Offers admin CRUD blueprint (Track B): super-admin-only /admin/api/offers* CRUD.
+# @admin_required preserved + in-body _require_super_admin_role() gate intact (from
+# core). Helpers _row_offer/_offer_payload moved with the routes; the shared
+# _vp_as_list stays in core. Registered like the other admin blueprints.
+from admin.offers import offers_bp  # noqa: E402
+app.register_blueprint(offers_bp)
+
+# Visitor-persona admin CRUD blueprint (Track B): super-admin-only
+# /admin/api/visitor-personas* CRUD. @admin_required preserved + in-body
+# _require_super_admin_role() gate intact (from core). Helpers
+# _row_persona/_persona_payload moved with the routes; the shared _vp_as_list
+# stays in core. Registered like the other admin blueprints.
+from admin.personas import personas_bp  # noqa: E402
+app.register_blueprint(personas_bp)
+
+# Commerce admin CRUD blueprint (Track B): bookable-services catalog. The
+# /admin/api/services* + /admin/api/addons* + /admin/api/rules* +
+# /admin/api/overrides* CRUD routes. @admin_required gating preserved (from core).
+# SERVICE_PRICING_MODELS + _slugify_service/_unique_service_slug moved with the
+# routes (service-CRUD-only); _service_to_dict/_addon_rows/_hydrate_service live in
+# core (also used by the public service + booking routes still in app.py). The
+# contract-template UPLOAD route stays in app.py (it uses the storage backend).
+from admin.commerce import commerce_bp  # noqa: E402
+app.register_blueprint(commerce_bp)
+
+# Site-builder admin CRUD blueprint (Track B): page_sections registry. The
+# /admin/api/page-sections[/<id>[/toggle]] CRUD routes. @admin_required gating
+# preserved (from core). The nav-link-target security validator
+# (_validate_nav_link_target + its scheme allowlist) had the PUT route as its only
+# caller, so it moved verbatim into the blueprint with the routes. The standalone
+# /admin/api/pages CRUD stays in app.py (it needs the colliding _slugify helper).
+from admin.sitebuilder import sitebuilder_bp  # noqa: E402
+app.register_blueprint(sitebuilder_bp)
+
+# Reporting blueprint (Track B): the two read-only admin dashboards — chat-history
+# (conversation log + chat stats) and analytics (pageview aggregates + daily chart).
+# Same /admin/api/chat-history[/<id>] and /admin/api/analytics[/chart] URLs;
+# @admin_required preserved (from core). All GETs, no writes, no shared helpers.
+from admin.reporting import reporting_bp  # noqa: E402
+app.register_blueprint(reporting_bp)
+
+# Dashboards blueprint (Track B): dashboard + widget CRUD for the no-code analytics
+# board builder. Same /admin/api/dashboards[/<id>[/widgets[/<wid>]]] URLs;
+# @admin_required preserved (from core). The widget /run executor, /builtin-metrics,
+# /db-tables, and all /datahub/* routes stay in app.py (they need the BUILTIN_METRICS
+# registry / multi-DB connector / AI-tool helpers, which are not clean leaves).
+from admin.dashboards import dashboards_bp  # noqa: E402
+app.register_blueprint(dashboards_bp)
+
+# CRM blueprint (Track B): super-admin read APIs for concierge-captured data —
+# visitor-profiles, leads, callbacks, meetings. Same /admin/api/* URLs;
+# @admin_required + in-body _require_super_admin_role() preserved (from core). The
+# shared _iso_row + _vp_as_list leaves live in core (re-exported for app.py's other
+# call sites).
+from admin.crm import crm_bp  # noqa: E402
+app.register_blueprint(crm_bp)
+
+# Tenancy blueprint (Track B): the super-admin Plans & Features management API —
+# GET /admin/api/tenant/features (roster + on/off state) and PATCH
+# /admin/api/tenant/features/<name> (flip one). @admin_required + in-body
+# _require_super_admin_role() preserved (from core). The feature subsystem
+# (list_tenant_features / set_tenant_feature) now lives in core, so this blueprint
+# imports it cleanly. Registered like the other admin blueprints.
+from admin.tenancy import tenancy_bp  # noqa: E402
+app.register_blueprint(tenancy_bp)
 
 
 def _resolve_velo_callback_url():
