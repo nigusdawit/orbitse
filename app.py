@@ -646,6 +646,13 @@ from core import (  # noqa: E402 - re-export the DB layer that now lives in core
     _vp_as_list,                             # JSONB->list coercion (Track B); 11 call sites here + admin/offers.py
     _service_to_dict, _addon_rows, _hydrate_service,  # service serializers (Track B); shared by public service/booking routes here + admin/commerce.py
     _iso_row,                                # row ISO-date coercer (Track B); ~8 call sites here + admin/crm.py
+    # --- feature-flag subsystem (Track B): registry/cache/lookups + route gate ---
+    _FEATURE_REGISTRY, _FEATURE_NAMES, _FEATURE_DEFAULTS,  # registry data (init_db seed, health, catalog, velo)
+    _FEATURE_ROUTE_PREFIXES,                  # route-prefix gate map (read by enforce + tests)
+    tenant_has_feature, invalidate_tenant_features_cache,  # the gate + cache invalidator (84+ call sites)
+    list_tenant_features, set_tenant_feature, # Plans & Features UI + velo manage_features
+    _ensure_tenant_feature_row,               # lazy row seeder (kept exported for parity)
+    enforce_feature_flags as _core_enforce_feature_flags,  # body of the before_request hook
 )
 
 
@@ -4767,95 +4774,10 @@ def init_db():
 # so the existing behaviour is preserved.
 # =============================================================================
 
-# (feature_name, human_label, plan_tier_required, default_enabled, group)
-_FEATURE_REGISTRY = [
-    # Website builder (the public marketing-site editor surface). Turn this OFF
-    # for "client" installs that only want the AI concierge + its admin — the
-    # before_request hook then 403s every website-builder admin route. Defaults
-    # ON so existing operator installs are completely unaffected.
-    ("website_builder",      "Website builder (themes/pages/SEO/sections)", "solo", True, "Website"),
-    # Core (always on for paid plans)
-    ("site_themes",          "Site Themes",                  "solo",       True,  "Design"),
-    ("site_designs",         "Multi-Homepage Designs",       "growth",     True,  "Design"),
-    # AI capabilities
-    ("deck_launch",          "Presentation deck launches",   "growth",     True,  "AI"),
-    ("web_search",           "Web search tool",              "growth",     True,  "AI"),
-    ("voice",                "Voice agent (TTS / STT)",      "growth",     True,  "AI"),
-    ("generated_pages",      "AI-generated pages",           "growth",     True,  "AI"),
-    ("agent_scope_slider",   "Agent scope tightness slider", "growth",     True,  "AI"),
-    # Capabilities
-    ("custom_forms",         "Custom forms",                 "solo",       True,  "Capabilities"),
-    ("mcp",                  "MCP connectors",               "enterprise", True,  "Capabilities"),
-    ("presentations",        "Presentations admin",          "growth",     True,  "Capabilities"),
-    ("automations",          "Automations builder",          "growth",     True,  "Capabilities"),
-    ("messaging",            "Email & SMS messaging",        "growth",     True,  "Capabilities"),
-    ("chat_history",         "Chat history & transcripts",   "solo",       True,  "Capabilities"),
-    # Analytics
-    ("analytics",            "Analytics dashboard",          "growth",     True,  "Analytics"),
-    ("cost_dashboard",       "Cost transparency dashboard",  "growth",     True,  "Analytics"),
-    ("weekly_digest",        "Weekly AI activity digest",    "growth",     True,  "Analytics"),
-
-    # ---- Per-tab visibility flags (added for super-admin/client tab control) ----
-    # One on/off switch per admin tab that previously had no flag. These drive
-    # which tabs a CLIENT login sees; the super admin bypasses gating and always
-    # sees every tab. Defaults below apply ONLY to the client.
-    #
-    # Client-safe content/AI tabs — default ON (a client sees them unless the
-    # super admin turns them off).
-    ("business_info",        "Business info",                "solo",       True,  "Content"),
-    ("gallery_cards",        "Gallery cards",                "solo",       True,  "Content"),
-    ("experiences",          "Experiences",                  "solo",       True,  "Content"),
-    ("pricing",              "Pricing",                      "solo",       True,  "Content"),
-    ("testimonials",         "Testimonials",                 "solo",       True,  "Content"),
-    ("team",                 "Team",                         "solo",       True,  "Content"),
-    ("faq",                  "FAQ",                          "solo",       True,  "Content"),
-    ("blog",                 "Blog",                         "solo",       True,  "Content"),
-    ("events",               "Events",                       "solo",       True,  "Content"),
-    ("services",             "Services",                     "solo",       True,  "Content"),
-    ("media",                "Media library",                "solo",       True,  "Content"),
-    ("scraper",              "Web scraper",                  "growth",     True,  "Content"),
-    ("products",             "Products",                     "solo",       True,  "Store"),
-    ("orders",               "Orders",                       "solo",       True,  "Store"),
-    ("reviews",              "Reviews (destinations/requests/insights)", "growth", True, "Reviews"),
-    ("dashboards",           "Custom dashboards",            "growth",     True,  "Insights"),
-    ("marketing_insights",   "Marketing insights",           "growth",     True,  "Insights"),
-    ("admin_chat",           "Admin AI chat",                "solo",       True,  "AI"),
-    ("chatbot",              "Chatbot settings",             "solo",       True,  "AI"),
-    ("knowledge_cache",      "Knowledge cache (RAG)",        "growth",     True,  "AI"),
-    ("skills",               "Skills registry",              "growth",     True,  "AI"),
-    ("custom_skills",        "Custom skills",                "growth",     True,  "AI"),
-    ("recent_changes",       "Recent changes log",           "solo",       True,  "System"),
-    #
-    # Sensitive owner tabs — default OFF for clients (a client doesn't see them
-    # until the super admin explicitly enables them). The super admin always
-    # sees them. Several are ALSO behind the SUPER_ADMIN_KEY unlock-key step-up.
-    ("secrets",              "Secrets / env vars",           "solo",       False, "System"),
-    ("developer",            "Developer console",            "growth",     False, "System"),
-    ("performance",          "Performance tools",            "growth",     False, "System"),
-    ("snapshot",             "Snapshot / clone",             "growth",     False, "System"),
-    ("fleet",                "Fleet sync / VELO",            "enterprise", False, "System"),
-    ("llm_provider",         "LLM provider selector",        "growth",     False, "AI"),
-    ("stripe",               "Stripe / billing config",      "growth",     False, "Billing"),
-]
-_FEATURE_NAMES = {row[0] for row in _FEATURE_REGISTRY}
-_FEATURE_DEFAULTS = {row[0]: row[3] for row in _FEATURE_REGISTRY}
-
-# CLIENT_MODE — a one-switch "this install is a client, not the operator" flag.
-# When truthy, operator-only features default OFF, so a fresh client install has
-# the website-builder surface disabled with no manual toggling. Operators leave
-# CLIENT_MODE unset → every default stays exactly as before (fully unaffected).
-# Per-tenant overrides in the Plans & Features tab still win over these defaults.
-_OPERATOR_ONLY_FEATURES = ("website_builder",)
-_CLIENT_MODE = os.environ.get("CLIENT_MODE", "").strip().lower() in ("1", "true", "yes", "on")
-if _CLIENT_MODE:
-    for _f in _OPERATOR_ONLY_FEATURES:
-        _FEATURE_DEFAULTS[_f] = False
-
-# Per-process cache of {(tenant_id, feature_name): enabled_bool, expires_at}.
-# Tiny TTL so flag flips become visible quickly across requests without
-# hammering the DB on every tool dispatch.
-_FEATURE_CACHE = {}
-_FEATURE_CACHE_TTL_SEC = 30
+# _FEATURE_REGISTRY / _FEATURE_NAMES / _FEATURE_DEFAULTS / CLIENT_MODE defaults /
+# _FEATURE_CACHE moved to core.py (Track B, FEATURE-FLAG SUBSYSTEM); re-exported
+# via the `from core import` block above. The Plans & Features UI + every
+# tenant_has_feature() gate read these names through that re-export.
 
 
 # current_tenant_id() moved to core.py (Track B / B1) — re-exported at the top of
@@ -4863,96 +4785,12 @@ _FEATURE_CACHE_TTL_SEC = 30
 # `from app import current_tenant_id` keep resolving. Body unchanged (returns 1).
 
 
-def invalidate_tenant_features_cache(tenant_id=None):
-    """Drop cached feature lookups so flag flips take effect immediately."""
-    global _FEATURE_CACHE
-    if tenant_id is None:
-        _FEATURE_CACHE = {}
-    else:
-        _FEATURE_CACHE = {k: v for k, v in _FEATURE_CACHE.items() if k[0] != tenant_id}
+# invalidate_tenant_features_cache + _ensure_tenant_feature_row + tenant_has_feature
+# moved to core.py (Track B, FEATURE-FLAG SUBSYSTEM); re-exported above.
 
 
-def _ensure_tenant_feature_row(tenant_id, feature_name):
-    """Lazy-seed a tenant_features row using the registry default.
-
-    Idempotent: ON CONFLICT DO NOTHING. Called from tenant_has_feature
-    when the row is missing so we never have to bulk-seed on startup.
-    """
-    default_enabled = _FEATURE_DEFAULTS.get(feature_name, True)
-    try:
-        execute_db(
-            "INSERT INTO tenant_features (tenant_id, feature_name, enabled) "
-            "VALUES (%s, %s, %s) "
-            "ON CONFLICT (tenant_id, feature_name) DO NOTHING",
-            (tenant_id, feature_name, default_enabled),
-        )
-    except Exception as e:
-        print(f"[features] could not lazy-seed {feature_name}: {e}")
-
-
-def tenant_has_feature(name, tenant_id=None):
-    """Return True if `name` is enabled for the given tenant.
-
-    Unknown feature names default to True so adding a new gate to the
-    code without an immediate registry update never breaks production.
-    The first lookup of a known feature for a tenant inserts the
-    enabled=registry-default row, so the Plans & Features tab can then
-    flip it.
-    """
-    if tenant_id is None:
-        tenant_id = current_tenant_id()
-    cache_key = (tenant_id, name)
-    cached = _FEATURE_CACHE.get(cache_key)
-    now = _time.time()
-    if cached is not None and cached[1] > now:
-        return cached[0]
-
-    if name not in _FEATURE_NAMES:
-        # Unknown gate — fail OPEN so we never silently break something.
-        _FEATURE_CACHE[cache_key] = (True, now + _FEATURE_CACHE_TTL_SEC)
-        return True
-
-    try:
-        row = query_db(
-            "SELECT enabled FROM tenant_features "
-            "WHERE tenant_id = %s AND feature_name = %s",
-            (tenant_id, name),
-            fetchone=True,
-        )
-        if row is None:
-            _ensure_tenant_feature_row(tenant_id, name)
-            enabled = _FEATURE_DEFAULTS.get(name, True)
-        else:
-            enabled = bool(row.get("enabled"))
-    except Exception as e:
-        print(f"[features] tenant_has_feature({name}) failed: {e}; failing open")
-        enabled = True
-
-    _FEATURE_CACHE[cache_key] = (enabled, now + _FEATURE_CACHE_TTL_SEC)
-    return enabled
-
-
-def list_tenant_features(tenant_id=None):
-    """Return the full feature roster for the Plans & Features UI.
-
-    Walks _FEATURE_REGISTRY (canonical order/grouping) and joins each
-    with the tenant_features.enabled value (lazy-seeding any missing
-    rows). Returns a list of dicts ready to render.
-    """
-    if tenant_id is None:
-        tenant_id = current_tenant_id()
-    out = []
-    for name, label, plan_tier, default_enabled, group in _FEATURE_REGISTRY:
-        enabled = tenant_has_feature(name, tenant_id)
-        out.append({
-            "name": name,
-            "label": label,
-            "plan_tier": plan_tier,
-            "default_enabled": default_enabled,
-            "group": group,
-            "enabled": enabled,
-        })
-    return out
+# list_tenant_features moved to core.py (Track B, FEATURE-FLAG SUBSYSTEM);
+# re-exported via the `from core import` block above.
 
 
 _AGENT_SCOPE_VALUES = ("strict", "balanced", "generous")
@@ -5000,162 +4838,20 @@ def _compose_scope_paragraph():
     )
 
 
-def set_tenant_feature(name, enabled, tenant_id=None, note=""):
-    """Flip a feature on/off for a tenant. Returns the new value."""
-    if tenant_id is None:
-        tenant_id = current_tenant_id()
-    if name not in _FEATURE_NAMES:
-        raise ValueError(f"Unknown feature: {name}")
-    execute_db(
-        "INSERT INTO tenant_features (tenant_id, feature_name, enabled, note) "
-        "VALUES (%s, %s, %s, %s) "
-        "ON CONFLICT (tenant_id, feature_name) DO UPDATE "
-        "SET enabled = EXCLUDED.enabled, note = EXCLUDED.note, updated_at = NOW()",
-        (tenant_id, name, bool(enabled), note or ""),
-    )
-    invalidate_tenant_features_cache(tenant_id)
-    return bool(enabled)
+# set_tenant_feature moved to core.py (Track B, FEATURE-FLAG SUBSYSTEM);
+# re-exported via the `from core import` block above.
 
 
-# Route-prefix → feature_name map. The before_request hook below blocks
-# any HTTP request whose path starts with one of these prefixes when
-# the tenant doesn't have the feature enabled. Order matters — more
-# specific prefixes should come before broader ones, but here the
-# prefixes don't overlap so the order is alphabetic for clarity.
-_FEATURE_ROUTE_PREFIXES = [
-    ("/admin/api/analytics",       "analytics"),
-    ("/admin/api/automations",     "automations"),
-    ("/admin/api/chat-history",    "chat_history"),
-    ("/admin/api/forms",           "custom_forms"),
-    ("/admin/api/generated-pages", "generated_pages"),
-    ("/admin/api/mcp/",            "mcp"),
-    ("/admin/api/messaging",       "messaging"),
-    ("/admin/api/presentations",   "presentations"),
-    ("/admin/api/site-designs",    "site_designs"),
-    ("/admin/api/site-themes",     "site_themes"),
-    ("/admin/api/voice",           "voice"),
-    ("/api/forms/",                "custom_forms"),
-    ("/api/generated-pages",       "generated_pages"),
-    ("/api/presentations/",        "presentations"),
-    ("/api/voice/",                "voice"),
-    # Website-builder (marketing-site editor) admin routes — gated as a unit by
-    # the `website_builder` flag so a client install has the whole site-builder
-    # surface disabled at the route layer while keeping the AI concierge admin.
-    # NOTE: deliberately EXCLUDES AI-referenced content the concierge reads
-    # (blog/team/faq/testimonials/experiences/pricing/business-info) and
-    # /admin/api/marketing (= Marketing Insights, an AI feature).
-    ("/admin/api/theme",             "website_builder"),
-    ("/admin/api/curated-font-pairs", "website_builder"),
-    ("/admin/api/site-settings",     "website_builder"),
-    ("/admin/api/page-sections",     "website_builder"),
-    ("/admin/api/pages",             "website_builder"),
-    ("/admin/api/custom-sections",   "website_builder"),
-    ("/admin/api/section-visibility", "website_builder"),
-    ("/admin/api/seo",               "website_builder"),
-    ("/admin/api/social-links",      "website_builder"),
-    ("/admin/api/sphere-images",     "website_builder"),
-    ("/admin/api/sphere-settings",   "website_builder"),
-    ("/admin/api/video-gallery",     "website_builder"),
-    ("/admin/api/podcast",           "website_builder"),
-    ("/admin/api/reorder",           "website_builder"),
-    # ---- Per-tab content/store/AI/system gating (super-admin/client control) ----
-    # One entry per tab flag added to the registry above, so a CLIENT whose flag
-    # is off gets the standard feature_disabled response on the tab's admin API.
-    # The super admin bypasses all of this (see _enforce_feature_flags). Prefixes
-    # are exact enough to avoid startswith collisions (note the trailing slash on
-    # /admin/api/chat/ so it does NOT catch chat-history or chatbot-settings).
-    ("/admin/api/business-info",   "business_info"),
-    ("/admin/api/gallery-cards",   "gallery_cards"),
-    ("/admin/api/experiences",     "experiences"),
-    ("/admin/api/pricing",         "pricing"),
-    ("/admin/api/testimonials",    "testimonials"),
-    ("/admin/api/team",            "team"),
-    ("/admin/api/faq",             "faq"),
-    ("/admin/api/blog",            "blog"),
-    ("/admin/api/events",          "events"),
-    ("/admin/api/event-rsvps",     "events"),
-    ("/admin/api/services",        "services"),
-    ("/admin/api/media",           "media"),
-    ("/admin/api/scrape",          "scraper"),   # scrape-jobs / scrape-schedules / scraper-settings
-    ("/admin/api/products",        "products"),
-    ("/admin/api/orders",          "orders"),
-    ("/admin/api/reviews",         "reviews"),
-    ("/admin/api/dashboards",      "dashboards"),
-    ("/admin/api/marketing",       "marketing_insights"),
-    ("/admin/api/chat/",           "admin_chat"),     # trailing slash: admin AI chat only
-    ("/admin/api/chatbot-settings", "chatbot"),
-    ("/admin/api/kb/",             "knowledge_cache"),
-    ("/admin/api/skills",          "skills"),
-    ("/admin/api/llm-provider",    "llm_provider"),
-    ("/admin/api/stripe",          "stripe"),
-    ("/admin/api/snapshots",       "snapshot"),
-    # Sensitive owner tabs that ALSO sit behind the SUPER_ADMIN_KEY unlock-key.
-    # The feature flag (default OFF for clients) gates tab visibility + gives a
-    # clean feature_disabled before the unlock check; the unlock-key remains the
-    # second factor for the super admin.
-    ("/admin/api/secrets",         "secrets"),
-    ("/admin/api/devconsole",      "developer"),
-    ("/admin/api/performance",     "performance"),
-
-    # Public ingress for the automations webhook trigger. We DO gate this
-    # one — if a tenant turns Automations off, third-party services hitting
-    # the saved hook URL should get a 404 (not silently consume the post).
-    ("/automations/hook/",         "automations"),
-]
-
-# Startup safety net: every feature referenced by a route-prefix gate MUST exist
-# in the registry. tenant_has_feature() fails OPEN on unknown names, so a typo in
-# a prefix→feature mapping would silently leave a (possibly sensitive) tab's API
-# reachable by clients. Fail loudly at import instead.
-_unknown_prefix_features = sorted(
-    {feature for _prefix, feature in _FEATURE_ROUTE_PREFIXES if feature not in _FEATURE_NAMES}
-)
-if _unknown_prefix_features:
-    raise RuntimeError(
-        "_FEATURE_ROUTE_PREFIXES references features not in _FEATURE_REGISTRY: "
-        + ", ".join(_unknown_prefix_features)
-        + " — add them to the registry (they would otherwise fail OPEN and leave "
-        "the tab's API reachable by clients)."
-    )
+# _FEATURE_ROUTE_PREFIXES + the startup safety-net check moved to core.py
+# (Track B, FEATURE-FLAG SUBSYSTEM); re-exported via the `from core import` block.
 
 
 @app.before_request
 def _enforce_feature_flags():
-    """Reject requests to disabled-feature endpoints with a 403.
-
-    Runs before every Flask-handled request. If the path starts with
-    a prefix in _FEATURE_ROUTE_PREFIXES and the tenant doesn't have
-    that feature, we return a small JSON 403 explaining which flag
-    is off — the admin can re-enable it from the Plans & Features tab.
-
-    GET requests get a friendlier 404 so we don't expose feature
-    structure to public visitors poking at the site.
-    """
-    # The super admin (platform owner) manages everything and is never gated by
-    # feature flags — they see and use every tab regardless of flag state. This
-    # bypass is SAFE for anon/public traffic because _is_super_admin() requires a
-    # logged-in session (anonymous visitors and client sessions fall through to
-    # the normal gating below).
-    if _is_super_admin():
-        return None
-    try:
-        path = request.path or ""
-    except Exception:
-        return None
-    for prefix, feature in _FEATURE_ROUTE_PREFIXES:
-        if path.startswith(prefix):
-            if not tenant_has_feature(feature):
-                if request.method == "GET" and not path.startswith("/admin/"):
-                    # Don't leak feature names to anonymous visitors.
-                    return jsonify({"error": "not_found"}), 404
-                return jsonify({
-                    "error": "feature_disabled",
-                    "feature": feature,
-                    "message": f"This feature ({feature}) is currently turned off for this site. "
-                                "Enable it in Admin → Plans & Features.",
-                }), 403
-            break
-    return None
+    # Feature-flag enforcement moved to core.enforce_feature_flags() (Track B).
+    # The @app.before_request registration MUST stay here (binds to `app`);
+    # the verbatim body now lives in core. See core.py FEATURE-FLAG SUBSYSTEM.
+    return _core_enforce_feature_flags()
 
 
 # =============================================================================
