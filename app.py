@@ -42848,68 +42848,10 @@ def public_preferences_post():
 # and lets an admin flip the toggle. The flip writes through to tenant_features
 # and busts the in-process cache so the change is live on the very next request.
 
-@app.route("/admin/api/tenant/features", methods=["GET"])
-@admin_required
-def admin_list_tenant_features():
-    """Return every known feature + on/off state + plan tier + addon flag."""
-    # HARD boundary: only the super admin manages feature visibility. A client
-    # session is logged-in (passes @admin_required) but must never read or change
-    # the feature roster — this is what stops a client from re-granting itself
-    # tabs by hitting the API directly, independent of the hidden UI tab.
-    _guard = _require_super_admin_role()
-    if _guard is not None:
-        return _guard
-    try:
-        tid = current_tenant_id()
-        # Pull plan + tenant info so the UI can show "you're on the Growth plan".
-        # NOTE: the plans table has columns (id, slug, name, description,
-        # sort_order). We expose `slug` as `plan_code` for UI back-compat.
-        tenant = query_db(
-            "SELECT t.id, t.name AS tenant_name, t.plan_id, "
-            "       p.slug AS plan_code, p.name AS plan_name "
-            "FROM tenants t LEFT JOIN plans p ON p.id = t.plan_id "
-            "WHERE t.id = %s",
-            (tid,), fetchone=True,
-        ) or {}
-        features = list_tenant_features(tid)
-        plans = query_db(
-            "SELECT id, slug AS code, name, description, sort_order "
-            "FROM plans ORDER BY sort_order, id"
-        ) or []
-        return jsonify({
-            "tenant": dict(tenant) if tenant else {"id": tid},
-            "features": features,
-            "plans": [dict(p) for p in plans],
-        })
-    except Exception as e:
-        print(f"[plans] list_tenant_features failed: {e}")
-        return jsonify({"error": "failed_to_list_features", "detail": str(e)}), 500
-
-
-@app.route("/admin/api/tenant/features/<name>", methods=["PATCH"])
-@admin_required
-def admin_toggle_tenant_feature(name):
-    """Flip one feature on/off. Body: {"enabled": bool, "note"?: str}."""
-    # HARD boundary: super admin only (see admin_list_tenant_features). Without
-    # this in-handler check a client could PATCH its own flags via curl.
-    _guard = _require_super_admin_role()
-    if _guard is not None:
-        return _guard
-    body = request.get_json(silent=True) or {}
-    if "enabled" not in body:
-        return jsonify({"error": "missing_field", "field": "enabled"}), 400
-    try:
-        new_val = set_tenant_feature(
-            name,
-            bool(body.get("enabled")),
-            note=str(body.get("note") or ""),
-        )
-        return jsonify({"feature": name, "enabled": new_val})
-    except ValueError as ve:
-        return jsonify({"error": "unknown_feature", "feature": name, "detail": str(ve)}), 400
-    except Exception as e:
-        print(f"[plans] toggle feature {name} failed: {e}")
-        return jsonify({"error": "toggle_failed", "detail": str(e)}), 500
+# The two Plans & Features admin endpoints (GET /admin/api/tenant/features and
+# PATCH /admin/api/tenant/features/<name>) moved verbatim to admin/tenancy.py
+# (Track B). Registered via app.register_blueprint(tenancy_bp) below. URLs +
+# the in-body _require_super_admin_role() boundary are unchanged.
 
 
 # --- Scheduler boot ----------------------------------------------------------
@@ -43012,6 +42954,15 @@ app.register_blueprint(dashboards_bp)
 # call sites).
 from admin.crm import crm_bp  # noqa: E402
 app.register_blueprint(crm_bp)
+
+# Tenancy blueprint (Track B): the super-admin Plans & Features management API —
+# GET /admin/api/tenant/features (roster + on/off state) and PATCH
+# /admin/api/tenant/features/<name> (flip one). @admin_required + in-body
+# _require_super_admin_role() preserved (from core). The feature subsystem
+# (list_tenant_features / set_tenant_feature) now lives in core, so this blueprint
+# imports it cleanly. Registered like the other admin blueprints.
+from admin.tenancy import tenancy_bp  # noqa: E402
+app.register_blueprint(tenancy_bp)
 
 
 def _resolve_velo_callback_url():
