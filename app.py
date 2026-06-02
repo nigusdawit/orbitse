@@ -653,6 +653,9 @@ from core import (  # noqa: E402 - re-export the DB layer that now lives in core
     list_tenant_features, set_tenant_feature, # Plans & Features UI + velo manage_features
     _ensure_tenant_feature_row,               # lazy row seeder (kept exported for parity)
     enforce_feature_flags as _core_enforce_feature_flags,  # body of the before_request hook
+    # --- admin-settings snapshot helper (Track B) ---
+    _ADMIN_SETTINGS_SNAPSHOT_TABLES, _admin_settings_snapshot_table,  # snapshot-table allowlist + check
+    _admin_snapshot_row,                      # pre-write row snapshot (~20 call sites here)
 )
 
 
@@ -16209,22 +16212,8 @@ def _admin_tool_propose_run_sql(sql=None, summary=None, _session_id="", **_):
     )
 
 
-# Tables whose rows we snapshot before any approved update/delete. The
-# snapshot enables one-click revert from the dashboard's Recent Changes
-# panel. Audit/log/history tables are deliberately excluded — they
-# already capture history themselves and are blacklisted from writes.
-_ADMIN_SETTINGS_SNAPSHOT_TABLES = frozenset({
-    "chatbot_settings",
-    "agent_skills",
-    "agent_provider_settings",
-    "site_settings",
-    "voice_settings",
-    "custom_knowledge_entries",
-    "custom_webhook_skills",
-    "custom_sql_skills",
-    "mcp_servers",
-    "mcp_tools_cache",
-})
+# _ADMIN_SETTINGS_SNAPSHOT_TABLES moved to core.py (Track B, ADMIN-SETTINGS
+# SNAPSHOT); re-exported via the `from core import` block.
 
 # Tables whose schema knowledge is also synced into agent_skills (so
 # that a write through propose_insert/update/delete can refresh the
@@ -16238,54 +16227,12 @@ _ADMIN_CUSTOM_SKILL_TABLES = frozenset({
 })
 
 
-def _admin_settings_snapshot_table(name):
-    return name in _ADMIN_SETTINGS_SNAPSHOT_TABLES
+# _admin_settings_snapshot_table moved to core.py (Track B); re-exported above.
 
 
-def _admin_snapshot_row(table_name, row_id, action_id, reason):
-    """Capture the current row state into admin_setting_snapshots BEFORE
-    an approved write mutates it. Best-effort: a snapshot failure does
-    NOT abort the write (we'd rather lose the undo than lose the
-    user-approved change).
-
-    Skips tables outside _ADMIN_SETTINGS_SNAPSHOT_TABLES, and skips rows
-    that don't exist (an update against a missing id will fail anyway,
-    a delete against a missing id is a no-op)."""
-    if not _admin_settings_snapshot_table(table_name):
-        return None
-    if row_id is None:
-        return None
-    from psycopg2 import sql as _pgsql
-    try:
-        conn = get_db(); conn.autocommit = False
-        with conn.cursor(
-            cursor_factory=psycopg2.extras.RealDictCursor
-        ) as cur:
-            cur.execute("SET LOCAL statement_timeout = '5s'")
-            cur.execute("SET LOCAL transaction_read_only = on")
-            cur.execute(
-                _pgsql.SQL("SELECT * FROM {}.{} WHERE id = %s LIMIT 1").format(
-                    _pgsql.Identifier("public"),
-                    _pgsql.Identifier(table_name)),
-                (row_id,))
-            current = cur.fetchone()
-        conn.rollback(); conn.close()
-        if not current:
-            return None
-        execute_db(
-            "INSERT INTO admin_setting_snapshots "
-            "(table_name, row_id, snapshot_json, action_id, reason) "
-            "VALUES (%s, %s, %s::jsonb, %s, %s) RETURNING id",
-            (
-                table_name,
-                int(row_id),
-                json.dumps(current, default=str),
-                (int(action_id) if action_id is not None else None),
-                (reason or "")[:500],
-            ),
-        )
-    except Exception as e:
-        print(f"[admin_snapshot] failed for {table_name}#{row_id}: {e}")
+# _admin_snapshot_row moved to core.py (Track B, ADMIN-SETTINGS SNAPSHOT);
+# re-exported via the `from core import` block. ~20 call sites here resolve
+# through that re-export.
 
 
 def _admin_post_write_sync(table_name):
