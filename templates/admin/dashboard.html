@@ -10720,7 +10720,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           </div>
           <div style="display:flex; gap:0.5rem; align-items:center;">
             <label style="font-size:0.85rem; color:var(--admin-text-muted);">Status</label>
-            <select id="mi-drafts-status" onchange="loadMarketingInsights()" data-testid="select-marketing-drafts-status" style="padding:0.4rem 0.6rem; background:#0f1623; color:#e4e4e7; border:1px solid #243044; border-radius:4px; font-size:0.85rem;">
+            <select id="mi-drafts-status" onchange="loadMarketingInsights()" data-testid="select-marketing-drafts-status" class="gx-input" style="max-width:240px; padding:.45rem .6rem;">
               <option value="pending">Pending</option>
               <option value="approved">Approved &amp; published</option>
               <option value="rejected">Rejected</option>
@@ -10742,7 +10742,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           </div>
           <div style="display:flex; gap:0.5rem; align-items:center;">
             <label style="font-size:0.85rem; color:var(--admin-text-muted);">Type</label>
-            <select id="mi-insights-type" onchange="loadMarketingInsights()" data-testid="select-marketing-insights-type" style="padding:0.4rem 0.6rem; background:#0f1623; color:#e4e4e7; border:1px solid #243044; border-radius:4px; font-size:0.85rem;">
+            <select id="mi-insights-type" onchange="loadMarketingInsights()" data-testid="select-marketing-insights-type" class="gx-input" style="max-width:240px; padding:.45rem .6rem;">
               <option value="">All types</option>
               <option value="chat_topics">Chat topics</option>
               <option value="page_library">Page library</option>
@@ -19525,46 +19525,40 @@ TO CUSTOMIZE THIS DASHBOARD:
       if (!el) return;
       if (!drafts.length) {
         el.innerHTML = `<div class="empty-state" style="padding:1.5rem 0; color:var(--admin-text-muted); text-align:center;">
-          No ${escapeHTML(status)} drafts. Ask the AI in <a href="#" onclick="switchTab('admin-chat', document.querySelector('[data-testid=tab-admin-chat]')); loadAdminChat(); return false;" style="color:#7dd3fc;">Admin Chat</a> to draft a blog post or FAQ entry — they'll appear here for approval.
+          No ${escapeHTML(status)} drafts. Ask the AI in <a href="#" onclick="switchTab('admin-chat', document.querySelector('[data-testid=tab-admin-chat]')); loadAdminChat(); return false;" style="color:var(--admin-accent);">Admin Chat</a> to draft a blog post or FAQ entry — they'll appear here for approval.
         </div>`;
         return;
       }
       el.innerHTML = drafts.map(d => {
         const created = d.created_at ? new Date(d.created_at).toLocaleString() : '';
         const kindLabel = d.kind === 'blog' ? 'Blog post' : d.kind === 'faq' ? 'FAQ entry' : (d.kind || 'Draft');
-        const kindColor = d.kind === 'blog' ? '#1e3a8a' : '#3f1d6e';
-        const kindFg    = d.kind === 'blog' ? '#bfdbfe' : '#e9d5ff';
         const isPending = d.status === 'pending';
         const statusBadge = isPending
-          ? '<span style="background:#92400e; color:#fcd34d; padding:2px 8px; border-radius:4px; font-size:0.7rem;">Pending</span>'
+          ? '<span class="gx-badge gx-badge-run">Pending</span>'
           : d.status === 'approved'
-            ? '<span style="background:#166534; color:#86efac; padding:2px 8px; border-radius:4px; font-size:0.7rem;">Approved</span>'
+            ? '<span class="gx-badge gx-badge-ok">Approved</span>'
             : d.status === 'rejected'
-              ? '<span style="background:#5b1a1a; color:#fca5a5; padding:2px 8px; border-radius:4px; font-size:0.7rem;">Rejected</span>'
-              : '<span style="background:#3f3f46; color:#d4d4d8; padding:2px 8px; border-radius:4px; font-size:0.7rem;">' + escapeHTML(d.status || '') + '</span>';
+              ? '<span class="gx-badge gx-badge-err">Rejected</span>'
+              : '<span class="gx-badge">' + escapeHTML(d.status || '') + '</span>';
         const errLine = d.error_text
-          ? `<div style="color:#fca5a5; font-size:0.8rem; margin-top:0.5rem;">Error: ${escapeHTML(d.error_text)}</div>`
+          ? `<div style="color:var(--admin-danger); font-size:0.8rem; margin-top:0.5rem;">Error: ${escapeHTML(d.error_text)}</div>`
           : '';
         const actions = isPending
-          ? `<div style="display:flex; gap:0.5rem; margin-top:0.75rem;">
-              <button class="btn btn-sm btn-primary" onclick="approveMarketingDraft(${d.id})" data-testid="button-marketing-approve-${d.id}">Approve & publish</button>
-              <button class="btn btn-sm btn-danger" onclick="rejectMarketingDraft(${d.id})" data-testid="button-marketing-reject-${d.id}">Reject</button>
+          ? `<div class="gx-foot" style="margin-top:0.75rem;">
+              <button class="gx-btn gx-btn-primary" onclick="approveMarketingDraft(${d.id})" data-testid="button-marketing-approve-${d.id}">Approve &amp; publish</button>
+              <button class="gx-btn gx-btn-ghost" onclick="rejectMarketingDraft(${d.id})" data-testid="button-marketing-reject-${d.id}">Reject</button>
             </div>`
           : '';
-        return `<div class="form-panel" style="background:#0f1623; padding:1rem; margin-bottom:0.75rem; border:1px solid #243044; border-radius:6px;" data-testid="row-marketing-draft-${d.id}">
-          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:1rem;">
-            <div style="flex:1; min-width:0;">
-              <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.4rem;">
-                <span style="background:${kindColor}; color:${kindFg}; padding:2px 8px; border-radius:4px; font-size:0.7rem; font-weight:600;">${escapeHTML(kindLabel)}</span>
-                ${statusBadge}
-                <span style="color:var(--admin-text-muted); font-size:0.75rem;">${escapeHTML(created)}</span>
-              </div>
-              <div style="font-weight:600; margin-bottom:0.3rem;" data-testid="text-marketing-draft-title-${d.id}">${escapeHTML(d.title || '')}</div>
-              <div style="color:#cbd5e1; font-size:0.85rem; white-space:pre-wrap; line-height:1.45;">${escapeHTML(d.body_preview || '')}${(d.body_preview || '').length >= 400 ? '…' : ''}</div>
-              ${errLine}
-              ${actions}
-            </div>
+        return `<div class="gx-card" style="margin-bottom:0.75rem;" data-testid="row-marketing-draft-${d.id}">
+          <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.4rem;">
+            <span class="gx-badge">${escapeHTML(kindLabel)}</span>
+            ${statusBadge}
+            <span style="color:var(--admin-text-muted); font-size:0.75rem;">${escapeHTML(created)}</span>
           </div>
+          <div style="font-weight:600; margin-bottom:0.3rem; color:var(--admin-text);" data-testid="text-marketing-draft-title-${d.id}">${escapeHTML(d.title || '')}</div>
+          <div style="color:var(--admin-text-muted); font-size:0.85rem; white-space:pre-wrap; line-height:1.45;">${escapeHTML(d.body_preview || '')}${(d.body_preview || '').length >= 400 ? '…' : ''}</div>
+          ${errLine}
+          ${actions}
         </div>`;
       }).join('');
     }
@@ -19574,7 +19568,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       if (!el) return;
       if (!rows.length) {
         el.innerHTML = `<div class="empty-state" style="padding:1.5rem 0; color:var(--admin-text-muted); text-align:center;">
-          No insight reports yet. Ask the AI in <a href="#" onclick="switchTab('admin-chat', document.querySelector('[data-testid=tab-admin-chat]')); loadAdminChat(); return false;" style="color:#7dd3fc;">Admin Chat</a> to analyze visitor chat topics, page library reuse, or content gaps — results will be cached here.
+          No insight reports yet. Ask the AI in <a href="#" onclick="switchTab('admin-chat', document.querySelector('[data-testid=tab-admin-chat]')); loadAdminChat(); return false;" style="color:var(--admin-accent);">Admin Chat</a> to analyze visitor chat topics, page library reuse, or content gaps — results will be cached here.
         </div>`;
         return;
       }
@@ -19591,15 +19585,15 @@ TO CUSTOMIZE THIS DASHBOARD:
           try { return JSON.stringify(r.summary_json, null, 2); }
           catch (e) { return String(r.summary_json || ''); }
         })();
-        return `<details style="background:#0f1623; padding:0.75rem 1rem; margin-bottom:0.5rem; border:1px solid #243044; border-radius:6px;" data-testid="row-marketing-insight-${r.id}">
+        return `<details class="gx-card" style="padding:0.75rem 1rem; margin-bottom:0.5rem;" data-testid="row-marketing-insight-${r.id}">
           <summary style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; gap:1rem; list-style:none;">
             <span>
-              <span style="background:#1e3a5a; color:#bfdbfe; padding:2px 8px; border-radius:4px; font-size:0.7rem; font-weight:600; margin-right:0.5rem;">${escapeHTML(labelOf(r.insight_type))}</span>
-              <span style="color:#cbd5e1;">${escapeHTML(r.notes || '(no notes)')}</span>
+              <span class="gx-badge" style="margin-right:0.5rem;">${escapeHTML(labelOf(r.insight_type))}</span>
+              <span style="color:var(--admin-text);">${escapeHTML(r.notes || '(no notes)')}</span>
             </span>
             <span style="color:var(--admin-text-muted); font-size:0.75rem; white-space:nowrap;">${escapeHTML(window_ || created)}</span>
           </summary>
-          <pre style="margin:0.75rem 0 0; padding:0.75rem; background:#060b14; color:#a7f3d0; font-size:0.78rem; line-height:1.4; max-height:400px; overflow:auto; border-radius:4px; white-space:pre-wrap; word-break:break-word;">${escapeHTML(summary)}</pre>
+          <pre style="margin:0.75rem 0 0; padding:0.75rem; background:var(--admin-field); color:var(--admin-text); font-size:0.78rem; line-height:1.4; max-height:400px; overflow:auto; border-radius:8px; white-space:pre-wrap; word-break:break-word;">${escapeHTML(summary)}</pre>
           <div style="color:var(--admin-text-muted); font-size:0.7rem; margin-top:0.5rem;">Run at ${escapeHTML(created)} · id ${r.id}</div>
         </details>`;
       }).join('');
