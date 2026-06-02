@@ -35888,160 +35888,11 @@ def admin_datahub_delete(kind, rid):
     return jsonify({"ok": True})
 
 
-# ----- Dashboards CRUD -----------------------------------------------------
-
-def _serialize_dashboard(row, widgets=None):
-    out = {
-        "id": row["id"],
-        "name": row["name"],
-        "description": row.get("description") or "",
-        "sort_order": row.get("sort_order", 0),
-        "created_at": row["created_at"].isoformat() if row.get("created_at") else "",
-    }
-    if widgets is not None:
-        out["widgets"] = widgets
-    return out
-
-
-def _serialize_widget(row):
-    return {
-        "id": row["id"],
-        "dashboard_id": row["dashboard_id"],
-        "name": row["name"],
-        "widget_type": row["widget_type"],
-        "source_type": row["source_type"],
-        "source_config": row.get("source_config") or {},
-        "sort_order": row.get("sort_order", 0),
-    }
-
-
-@app.route("/admin/api/dashboards", methods=["GET"])
-@admin_required
-def admin_list_dashboards():
-    rows = query_db(
-        "SELECT id, name, description, sort_order, created_at "
-        "FROM dashboards ORDER BY sort_order, id"
-    ) or []
-    return jsonify([_serialize_dashboard(r) for r in rows])
-
-
-@app.route("/admin/api/dashboards", methods=["POST"])
-@admin_required
-def admin_create_dashboard():
-    body = request.get_json(silent=True) or {}
-    name = (body.get("name") or "").strip()
-    description = (body.get("description") or "").strip()
-    if not name:
-        return jsonify({"error": "Name is required."}), 400
-    row = execute_db(
-        "INSERT INTO dashboards (name, description) VALUES (%s, %s) "
-        "RETURNING id, name, description, sort_order, created_at",
-        (name, description),
-    )
-    return jsonify(_serialize_dashboard(row)), 201
-
-
-@app.route("/admin/api/dashboards/<int:did>", methods=["GET"])
-@admin_required
-def admin_get_dashboard(did):
-    row = query_db(
-        "SELECT id, name, description, sort_order, created_at "
-        "FROM dashboards WHERE id = %s",
-        (did,), fetchone=True,
-    )
-    if not row:
-        return jsonify({"error": "Not found"}), 404
-    widget_rows = query_db(
-        "SELECT id, dashboard_id, name, widget_type, source_type, source_config, sort_order "
-        "FROM dashboard_widgets WHERE dashboard_id = %s ORDER BY sort_order, id",
-        (did,),
-    ) or []
-    return jsonify(_serialize_dashboard(row, [_serialize_widget(w) for w in widget_rows]))
-
-
-@app.route("/admin/api/dashboards/<int:did>", methods=["PUT"])
-@admin_required
-def admin_update_dashboard(did):
-    body = request.get_json(silent=True) or {}
-    name = (body.get("name") or "").strip()
-    description = (body.get("description") or "").strip()
-    if not name:
-        return jsonify({"error": "Name is required."}), 400
-    execute_db(
-        "UPDATE dashboards SET name = %s, description = %s WHERE id = %s",
-        (name, description, did),
-    )
-    return jsonify({"success": True})
-
-
-@app.route("/admin/api/dashboards/<int:did>", methods=["DELETE"])
-@admin_required
-def admin_delete_dashboard(did):
-    execute_db("DELETE FROM dashboards WHERE id = %s", (did,))
-    return jsonify({"success": True})
-
-
-# ----- Widget CRUD ---------------------------------------------------------
-
-@app.route("/admin/api/dashboards/<int:did>/widgets", methods=["POST"])
-@admin_required
-def admin_create_widget(did):
-    body = request.get_json(silent=True) or {}
-    name = (body.get("name") or "").strip()
-    widget_type = (body.get("widget_type") or "kpi").strip()
-    source_type = (body.get("source_type") or "builtin").strip()
-    source_config = body.get("source_config") or {}
-    if widget_type not in ("kpi", "table", "line", "bar"):
-        return jsonify({"error": "Invalid widget type."}), 400
-    if source_type not in ("builtin", "internal_db", "external_postgres", "external_rest", "static"):
-        return jsonify({"error": "Invalid source type."}), 400
-    if not name:
-        return jsonify({"error": "Name is required."}), 400
-    # Determine sort_order — append to end.
-    last = query_db(
-        "SELECT COALESCE(MAX(sort_order), -1) AS m FROM dashboard_widgets "
-        "WHERE dashboard_id = %s", (did,), fetchone=True,
-    ) or {"m": -1}
-    sort_order = int(last["m"]) + 1
-    row = execute_db(
-        "INSERT INTO dashboard_widgets (dashboard_id, name, widget_type, "
-        "source_type, source_config, sort_order) "
-        "VALUES (%s, %s, %s, %s, %s::jsonb, %s) "
-        "RETURNING id, dashboard_id, name, widget_type, source_type, source_config, sort_order",
-        (did, name, widget_type, source_type, json.dumps(source_config), sort_order),
-    )
-    return jsonify(_serialize_widget(row)), 201
-
-
-@app.route("/admin/api/dashboards/<int:did>/widgets/<int:wid>", methods=["PUT"])
-@admin_required
-def admin_update_widget(did, wid):
-    body = request.get_json(silent=True) or {}
-    name = (body.get("name") or "").strip()
-    widget_type = (body.get("widget_type") or "kpi").strip()
-    source_type = (body.get("source_type") or "builtin").strip()
-    source_config = body.get("source_config") or {}
-    if widget_type not in ("kpi", "table", "line", "bar"):
-        return jsonify({"error": "Invalid widget type."}), 400
-    if source_type not in ("builtin", "internal_db", "external_postgres", "external_rest", "static"):
-        return jsonify({"error": "Invalid source type."}), 400
-    execute_db(
-        "UPDATE dashboard_widgets SET name = %s, widget_type = %s, "
-        "source_type = %s, source_config = %s::jsonb "
-        "WHERE id = %s AND dashboard_id = %s",
-        (name, widget_type, source_type, json.dumps(source_config), wid, did),
-    )
-    return jsonify({"success": True})
-
-
-@app.route("/admin/api/dashboards/<int:did>/widgets/<int:wid>", methods=["DELETE"])
-@admin_required
-def admin_delete_widget(did, wid):
-    execute_db(
-        "DELETE FROM dashboard_widgets WHERE id = %s AND dashboard_id = %s",
-        (wid, did),
-    )
-    return jsonify({"success": True})
+# Dashboards + widget CRUD moved to admin/dashboards.py (Track B): dashboards_bp.
+# Same /admin/api/dashboards[/<id>[/widgets[/<wid>]]] URLs; @admin_required preserved
+# (from core). The _serialize_dashboard/_serialize_widget row serializers (used only
+# by those routes) moved with them. The widget /run executor + /builtin-metrics +
+# /db-tables stay here (they need the BUILTIN_METRICS registry / connector layer).
 
 
 # ----- Widget execution ----------------------------------------------------
@@ -43699,6 +43550,14 @@ app.register_blueprint(sitebuilder_bp)
 # @admin_required preserved (from core). All GETs, no writes, no shared helpers.
 from admin.reporting import reporting_bp  # noqa: E402
 app.register_blueprint(reporting_bp)
+
+# Dashboards blueprint (Track B): dashboard + widget CRUD for the no-code analytics
+# board builder. Same /admin/api/dashboards[/<id>[/widgets[/<wid>]]] URLs;
+# @admin_required preserved (from core). The widget /run executor, /builtin-metrics,
+# /db-tables, and all /datahub/* routes stay in app.py (they need the BUILTIN_METRICS
+# registry / multi-DB connector / AI-tool helpers, which are not clean leaves).
+from admin.dashboards import dashboards_bp  # noqa: E402
+app.register_blueprint(dashboards_bp)
 
 
 def _resolve_velo_callback_url():
