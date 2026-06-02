@@ -2190,6 +2190,10 @@ TO CUSTOMIZE THIS DASHBOARD:
     html[data-admin-theme="light"] [style*="color: #fff"],
     html[data-admin-theme="light"] [style*="color:white"],
     html[data-admin-theme="light"] [style*="color: white"]{ color:var(--admin-text) !important; }
+    /* rgba-white inline text (common in JS-generated rows, e.g. Changes/Skills)
+       isn't caught above — remap the muted-white variants to a token in light. */
+    html[data-admin-theme="light"] [style*="color:rgba(255,255,255"],
+    html[data-admin-theme="light"] [style*="color: rgba(255,255,255"]{ color:var(--admin-text-muted) !important; }
 
     /* ============================================================== */
     /* GLASS UI KIT (gx-*) — rebuilt component vocabulary (task 072)  */
