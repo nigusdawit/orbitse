@@ -585,3 +585,95 @@ def admin_delete_blog_post(post_id):
     if count == 0:
         return jsonify({"error": "Blog post not found"}), 404
     return jsonify({"success": True})
+
+# ---- sphere-settings + sphere-images CRUD (Track B / B8, verbatim) ----
+
+@content_bp.route("/admin/api/sphere-settings", methods=["GET"])
+@admin_required
+def admin_get_sphere_settings():
+    settings = query_db("SELECT * FROM sphere_settings WHERE id = 1", fetchone=True)
+    if not settings:
+        return jsonify({"enabled": False})
+    result = dict(settings)
+    imgs = query_db("SELECT id, image_url, caption, sort_order FROM sphere_images ORDER BY sort_order ASC")
+    result["custom_images"] = imgs or []
+    return jsonify(result)
+
+
+@content_bp.route("/admin/api/sphere-settings", methods=["PUT"])
+@admin_required
+def admin_update_sphere_settings():
+    data = request.get_json(force=True)
+    execute_db("""
+        UPDATE sphere_settings SET
+            enabled = %s,
+            heading_text = %s,
+            view_mode = %s,
+            particle_count = %s,
+            rotation_speed = %s,
+            sphere_radius = %s,
+            image_size = %s,
+            image_source = %s,
+            position_randomness = %s,
+            particle_opacity = %s,
+            zoom_min = %s,
+            zoom_max = %s,
+            card_scale = %s,
+            card_gap = %s,
+            updated_at = NOW()
+        WHERE id = 1
+    """, (
+        data.get("enabled", False),
+        data.get("heading_text", ""),
+        data.get("view_mode", "sections"),
+        int(data.get("particle_count", 1500)),
+        float(data.get("rotation_speed", 0.0005)),
+        float(data.get("sphere_radius", 9)),
+        float(data.get("image_size", 1.5)),
+        data.get("image_source", "gallery"),
+        float(data.get("position_randomness", 4)),
+        float(data.get("particle_opacity", 1)),
+        float(data.get("zoom_min", 5)),
+        float(data.get("zoom_max", 30)),
+        float(data.get("card_scale", 1.0)),
+        float(data.get("card_gap", 2.5)),
+    ))
+    return jsonify({"status": "ok"})
+
+
+@content_bp.route("/admin/api/sphere-settings/enabled", methods=["PATCH"])
+@admin_required
+def admin_patch_sphere_enabled():
+    """Lightweight toggle endpoint — flips just the `enabled` flag so the
+    admin checkbox can auto-save without rewriting every other field."""
+    data = request.get_json(force=True) or {}
+    enabled = bool(data.get("enabled", False))
+    execute_db("UPDATE sphere_settings SET enabled = %s, updated_at = NOW() WHERE id = 1", (enabled,))
+    return jsonify({"status": "ok", "enabled": enabled})
+
+
+@content_bp.route("/admin/api/sphere-images", methods=["GET"])
+@admin_required
+def admin_get_sphere_images():
+    imgs = query_db("SELECT * FROM sphere_images ORDER BY sort_order ASC")
+    return jsonify(imgs or [])
+
+
+@content_bp.route("/admin/api/sphere-images", methods=["POST"])
+@admin_required
+def admin_create_sphere_image():
+    data = request.get_json(force=True)
+    max_order = query_db("SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM sphere_images", fetchone=True)
+    next_order = max_order["next_order"] if max_order else 0
+    execute_db(
+        "INSERT INTO sphere_images (image_url, caption, sort_order) VALUES (%s, %s, %s)",
+        (data.get("image_url", ""), data.get("caption", ""), next_order)
+    )
+    return jsonify({"status": "ok"})
+
+
+@content_bp.route("/admin/api/sphere-images/<int:img_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_sphere_image(img_id):
+    execute_db("DELETE FROM sphere_images WHERE id = %s", (img_id,))
+    return jsonify({"status": "ok"})
