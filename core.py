@@ -444,3 +444,14 @@ def _hydrate_service(svc_row):
     d = _service_to_dict(svc_row)
     d["addons"] = [_service_to_dict(a) for a in _addon_rows(d["id"])]
     return d
+
+
+# ---- row ISO-date coercer (Track B helper relocation; pure leaf, shared by the
+# admin/crm.py read APIs AND ~8 other app.py routes, so it lives in core and is
+# re-exported via app.py's `from core import` block). dict + isoformat only. ----
+def _iso_row(r, *date_cols):
+    d = dict(r)
+    for k in date_cols:
+        if d.get(k):
+            d[k] = d[k].isoformat()
+    return d

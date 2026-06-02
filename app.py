@@ -645,6 +645,7 @@ from core import (  # noqa: E402 - re-export the DB layer that now lives in core
     current_tenant_id,                       # tenant resolver (returns 1); 84 call sites + velo_handlers
     _vp_as_list,                             # JSONB->list coercion (Track B); 11 call sites here + admin/offers.py
     _service_to_dict, _addon_rows, _hydrate_service,  # service serializers (Track B); shared by public service/booking routes here + admin/commerce.py
+    _iso_row,                                # row ISO-date coercer (Track B); ~8 call sites here + admin/crm.py
 )
 
 
@@ -27678,45 +27679,9 @@ def admin_list_ai_activity():
     })
 
 
-@app.route("/admin/api/visitor-profiles", methods=["GET"])
-@admin_required
-def admin_list_visitor_profiles():
-    """Visitor CRM profiles (task 042), highest lead-score first. Super-admin
-    only — these accumulate visitor signals (interests/needs/lead/consent).
-    ?limit=N (default 100, max 500). Empty until the 'Visitor CRM' knob is on."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    try:
-        limit = int(request.args.get("limit", 100) or 100)
-    except (TypeError, ValueError):
-        limit = 100
-    limit = max(1, min(limit, 500))
-    tid = current_tenant_id()
-    rows = query_db(
-        "SELECT id, visitor_id, interests, needs, lead_score, consent, summary, "
-        "turns, created_at, updated_at FROM visitor_profiles "
-        "WHERE tenant_id=%s ORDER BY lead_score DESC, updated_at DESC LIMIT %s",
-        (tid, limit)) or []
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["interests"] = _vp_as_list(d.get("interests"))
-        d["needs"] = _vp_as_list(d.get("needs"))
-        for k in ("created_at", "updated_at"):
-            if d.get(k):
-                d[k] = d[k].isoformat()
-        out.append(d)
-    stats = query_db(
-        "SELECT COUNT(*) AS n, COALESCE(MAX(lead_score),0) AS top "
-        "FROM visitor_profiles WHERE tenant_id=%s", (tid,), fetchone=True) or {}
-    return jsonify({
-        "profiles": out,
-        "stats": {
-            "count": int(stats.get("n") or 0),
-            "top_lead_score": int(stats.get("top") or 0),
-        },
-    })
+# Visitor-profiles admin read API moved to admin/crm.py (Track B): crm_bp. Same
+# /admin/api/visitor-profiles URL; @admin_required + in-body _require_super_admin_role()
+# preserved (from core). Uses the shared _vp_as_list leaf (stays in core).
 
 
 # =============================================================================
@@ -27730,74 +27695,11 @@ def admin_list_visitor_profiles():
 
 
 # =============================================================================
-# LEADS + CALLBACKS — super-admin read APIs (task 045)
+# LEADS + CALLBACKS + MEETINGS — super-admin read APIs (task 045)
 # =============================================================================
-# Super-admin-only views of what the agentic-growth tools captured. These hold
-# visitor PII (operator sales data), so a client session is 403'd.
-
-def _iso_row(r, *date_cols):
-    d = dict(r)
-    for k in date_cols:
-        if d.get(k):
-            d[k] = d[k].isoformat()
-    return d
-
-
-@app.route("/admin/api/leads", methods=["GET"])
-@admin_required
-def admin_list_leads():
-    """Leads captured by the concierge (super-admin only). ?limit=N (max 500)."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    try:
-        limit = max(1, min(int(request.args.get("limit", 100) or 100), 500))
-    except (TypeError, ValueError):
-        limit = 100
-    tid = current_tenant_id()
-    rows = query_db(
-        "SELECT id, name, email, phone, interest, message, source, status, "
-        "created_at FROM leads WHERE tenant_id=%s ORDER BY id DESC LIMIT %s",
-        (tid, limit)) or []
-    return jsonify({"leads": [_iso_row(r, "created_at") for r in rows]})
-
-
-@app.route("/admin/api/callbacks", methods=["GET"])
-@admin_required
-def admin_list_callbacks():
-    """Callback requests taken by the concierge (super-admin only)."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    try:
-        limit = max(1, min(int(request.args.get("limit", 100) or 100), 500))
-    except (TypeError, ValueError):
-        limit = 100
-    tid = current_tenant_id()
-    rows = query_db(
-        "SELECT id, name, phone, preferred_time, reason, ai_summary, status, "
-        "created_at FROM callback_requests WHERE tenant_id=%s ORDER BY id DESC LIMIT %s",
-        (tid, limit)) or []
-    return jsonify({"callbacks": [_iso_row(r, "created_at") for r in rows]})
-
-
-@app.route("/admin/api/meetings", methods=["GET"])
-@admin_required
-def admin_list_meetings():
-    """Meeting requests/bookings taken by the concierge (super-admin only)."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    try:
-        limit = max(1, min(int(request.args.get("limit", 100) or 100), 500))
-    except (TypeError, ValueError):
-        limit = 100
-    tid = current_tenant_id()
-    rows = query_db(
-        "SELECT id, name, email, phone, requested_time, start_iso, duration_minutes, "
-        "notes, status, calendar_event_id, created_at FROM meetings "
-        "WHERE tenant_id=%s ORDER BY id DESC LIMIT %s", (tid, limit)) or []
-    return jsonify({"meetings": [_iso_row(r, "created_at") for r in rows]})
+# Moved to admin/crm.py (Track B): crm_bp. Same /admin/api/{leads,callbacks,meetings}
+# URLs; @admin_required + in-body _require_super_admin_role() preserved (from core).
+# The shared _iso_row leaf moved to core (re-exported); it has ~8 other call sites.
 
 
 # =============================================================================
@@ -43514,6 +43416,14 @@ app.register_blueprint(reporting_bp)
 # registry / multi-DB connector / AI-tool helpers, which are not clean leaves).
 from admin.dashboards import dashboards_bp  # noqa: E402
 app.register_blueprint(dashboards_bp)
+
+# CRM blueprint (Track B): super-admin read APIs for concierge-captured data —
+# visitor-profiles, leads, callbacks, meetings. Same /admin/api/* URLs;
+# @admin_required + in-body _require_super_admin_role() preserved (from core). The
+# shared _iso_row + _vp_as_list leaves live in core (re-exported for app.py's other
+# call sites).
+from admin.crm import crm_bp  # noqa: E402
+app.register_blueprint(crm_bp)
 
 
 def _resolve_velo_callback_url():
