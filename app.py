@@ -656,6 +656,10 @@ from core import (  # noqa: E402 - re-export the DB layer that now lives in core
     # --- admin-settings snapshot helper (Track B) ---
     _ADMIN_SETTINGS_SNAPSHOT_TABLES, _admin_settings_snapshot_table,  # snapshot-table allowlist + check
     _admin_snapshot_row,                      # pre-write row snapshot (~20 call sites here)
+    # --- secret-redaction helpers (Track B): pure json/re leaves, ~10 call sites ---
+    _REDACTED_KEY_NAMES_LOWER, _REDACTED_ARG_KEYS, _REDACTED_PLACEHOLDER,
+    _is_sensitive_key, _redact_recursive, _redact_sensitive_args,
+    _RESULT_REDACT_PATTERNS, _redact_sensitive_result,
 )
 
 
@@ -15666,132 +15670,11 @@ def _admin_validate_write_table(table_name):
     return None  # ok
 
 
-# Sensitive key names that must never be persisted in plaintext into
-# the tool trace, admin_chat_messages, skill_usage_log, or returned by
-# the read-side admin_run_sql tool. Comparison is case-insensitive
-# (compared against k.lower()), so JSON keys like "Authorization" or
-# "API_Key" are caught regardless of casing. Exact-match (not
-# substring) so column names like csrf_token or booking_token are NOT
-# accidentally redacted.
-_REDACTED_KEY_NAMES_LOWER = frozenset({
-    "auth_credential",
-    "webhook_token",
-    "signature_secret",
-    "password",
-    "passwd",
-    "api_key",
-    "apikey",
-    "x-api-key",
-    "secret",
-    "token",
-    "authorization",
-    "bearer",
-    "encrypted_config",
-    # V2 OAuth: client_secret + the access/refresh tokens we get back from
-    # the provider all live nested in mcp_servers.oauth_state (jsonb).
-    # mcp_servers itself is in _ADMIN_SQL_SECRET_READ_TABLES so free-form
-    # SQL can't reach them, but the recursive redactor still trims them
-    # if they show up in any other surfaced result (audit logs, the
-    # dedicated mcp tool returns, snapshot previews).
-    "client_secret",
-    "access_token",
-    "refresh_token",
-    "code_verifier",
-    "pending_code_verifier",
-})
-# Backwards-compat alias for code that still imports the old name.
-_REDACTED_ARG_KEYS = _REDACTED_KEY_NAMES_LOWER
-_REDACTED_PLACEHOLDER = "***REDACTED***"
-
-
-def _is_sensitive_key(k):
-    return isinstance(k, str) and k.lower() in _REDACTED_KEY_NAMES_LOWER
-
-
-def _redact_recursive(v, _depth=0):
-    """Recursively walk dicts/lists and replace the value of any key
-    matching `_is_sensitive_key` with the redaction placeholder.
-    Strings that look like JSON are parsed, redacted, and re-serialized
-    so nested-stringified credentials are caught too. Non-redacted
-    primitives pass through unchanged. Depth-capped to avoid stack
-    blow-ups on hostile inputs."""
-    if _depth > 8:
-        return v
-    if isinstance(v, dict):
-        out = {}
-        for k, vv in v.items():
-            if _is_sensitive_key(k) and vv not in (None, ""):
-                out[k] = _REDACTED_PLACEHOLDER
-            else:
-                out[k] = _redact_recursive(vv, _depth + 1)
-        return out
-    if isinstance(v, list):
-        return [_redact_recursive(x, _depth + 1) for x in v]
-    if isinstance(v, tuple):
-        return [_redact_recursive(x, _depth + 1) for x in v]
-    # JSON-friendly coercion for SQL row cells.
-    if hasattr(v, "isoformat"):
-        return v.isoformat()
-    if isinstance(v, (bytes, bytearray, memoryview)):
-        return "<binary>"
-    if isinstance(v, str):
-        # Try to parse JSON-encoded payloads (common in tool_calls
-        # arguments and pending action payload_json strings) so nested
-        # credentials inside the string are also redacted.
-        s = v.strip()
-        if s and s[0] in "{[":
-            try:
-                parsed = json.loads(v)
-            except Exception:
-                return v
-            red = _redact_recursive(parsed, _depth + 1)
-            try:
-                return json.dumps(red)
-            except Exception:
-                return v
-        return v
-    return v
-
-
-def _redact_sensitive_args(args):
-    """Return a copy of `args` with any sensitive keys masked anywhere
-    in the structure. Accepts a dict, list, or JSON string; returns
-    the same shape it was given so the caller doesn't have to think
-    about it."""
-    if args is None:
-        return args
-    if isinstance(args, str):
-        try:
-            parsed = json.loads(args) if args else {}
-        except Exception:
-            return args  # not JSON — leave as-is rather than risk corruption
-        red = _redact_recursive(parsed)
-        try:
-            return json.dumps(red)
-        except Exception:
-            return args
-    return _redact_recursive(args)
-
-
-# Best-effort redaction for nested tool RESULT strings, where a sensitive
-# value might appear inside an embedded JSON-ish snippet (e.g. a future
-# tool that echoes back auth_credential, or a SQL SELECT result row).
-# We only touch obvious "auth_credential": "..." JSON fragments — this
-# never modifies non-matching content, so safe to run unconditionally.
-_RESULT_REDACT_PATTERNS = [
-    re.compile(r'("auth_credential"\s*:\s*)"(?:\\.|[^"\\])*"'),
-    re.compile(r"('auth_credential'\s*:\s*)'(?:\\.|[^'\\])*'"),
-]
-
-
-def _redact_sensitive_result(result_str):
-    if not result_str or not isinstance(result_str, str):
-        return result_str
-    out = result_str
-    for pat in _RESULT_REDACT_PATTERNS:
-        out = pat.sub(lambda m: f'{m.group(1)}"{_REDACTED_PLACEHOLDER}"',
-                      out)
-    return out
+# Secret-redaction helpers (_REDACTED_KEY_NAMES_LOWER / _REDACTED_ARG_KEYS /
+# _REDACTED_PLACEHOLDER / _is_sensitive_key / _redact_recursive /
+# _redact_sensitive_args / _RESULT_REDACT_PATTERNS / _redact_sensitive_result)
+# moved verbatim to core.py (Track B, SECRET REDACTION); re-exported via the
+# `from core import` block. ~10 call sites here resolve through that re-export.
 
 
 def _admin_validate_mcp_server_fields(fields, for_update=False):
