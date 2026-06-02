@@ -18288,27 +18288,27 @@ TO CUSTOMIZE THIS DASHBOARD:
             (st.tokens || 0).toLocaleString() + ' tokens · $' + Number(st.cost_usd || 0).toFixed(4);
         }
         if (!rows.length) { wrap.innerHTML = '<p class="empty-state">No activity recorded yet.</p>'; return; }
-        let html = '<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr style="text-align:left;opacity:.7;">'
-          + '<th style="padding:6px;">When</th><th>Surface</th><th>Model</th><th>Rounds</th><th>Tools</th>'
-          + '<th>Tokens</th><th>Cost</th><th>ms</th><th>Status</th><th></th></tr></thead><tbody>';
+        let html = '<div class="gx-table-wrap scroll"><table class="gx-table"><thead><tr>'
+          + '<th>When</th><th>Surface</th><th>Model</th><th data-prio="low">Rounds</th><th data-prio="low">Tools</th>'
+          + '<th>Tokens</th><th>Cost</th><th data-prio="low">ms</th><th>Status</th><th></th></tr></thead><tbody>';
         rows.forEach((r, i) => {
           const when = r.created_at ? new Date(r.created_at).toLocaleString() : '';
-          html += '<tr style="border-top:1px solid rgba(255,255,255,.06);">'
-            + '<td style="padding:6px;">' + _aiPromptEsc(when) + '</td>'
+          html += '<tr>'
+            + '<td>' + _aiPromptEsc(when) + '</td>'
             + '<td>' + _aiPromptEsc(r.surface || 'admin') + '</td>'
             + '<td>' + _aiPromptEsc((r.provider || '') + '/' + (r.model || '')) + '</td>'
-            + '<td>' + (r.rounds || 0) + '</td><td>' + (r.tool_calls || 0) + '</td>'
+            + '<td data-prio="low">' + (r.rounds || 0) + '</td><td data-prio="low">' + (r.tool_calls || 0) + '</td>'
             + '<td>' + ((r.tokens_in || 0) + (r.tokens_out || 0)) + '</td>'
-            + '<td>$' + Number(r.cost_usd || 0).toFixed(4) + '</td><td>' + (r.duration_ms || 0) + '</td>'
+            + '<td>$' + Number(r.cost_usd || 0).toFixed(4) + '</td><td data-prio="low">' + (r.duration_ms || 0) + '</td>'
             + '<td>' + _aiPromptEsc(r.status || '') + '</td>'
-            + '<td><button class="btn btn-secondary btn-sm" onclick="(function(){var d=document.getElementById(\'aiact-d-' + i + '\');d.style.display=(d.style.display===\'none\'?\'table-row\':\'none\');})()">view</button></td></tr>'
-            + '<tr id="aiact-d-' + i + '" style="display:none;"><td colspan="10" style="padding:10px;background:rgba(255,255,255,.03);">'
-            + '<div style="font-size:12px;opacity:.7;">Question</div><div style="white-space:pre-wrap;margin-bottom:8px;">' + _aiPromptEsc(r.user_message || '') + '</div>'
-            + '<div style="font-size:12px;opacity:.7;">Answer</div><div style="white-space:pre-wrap;">' + _aiPromptEsc(r.final_answer || '') + '</div>'
-            + (r.error_text ? '<div style="color:#f88;margin-top:6px;">' + _aiPromptEsc(r.error_text) + '</div>' : '')
+            + '<td><button class="gx-btn gx-btn-ghost" style="padding:.3rem .65rem;" onclick="(function(){var d=document.getElementById(\'aiact-d-' + i + '\');d.style.display=(d.style.display===\'none\'?\'table-row\':\'none\');})()">view</button></td></tr>'
+            + '<tr id="aiact-d-' + i + '" style="display:none;"><td colspan="10" style="background:color-mix(in srgb,var(--admin-text) 4%,transparent);">'
+            + '<div class="gx-label" style="margin-bottom:.25rem;">Question</div><div style="white-space:pre-wrap;margin-bottom:8px;">' + _aiPromptEsc(r.user_message || '') + '</div>'
+            + '<div class="gx-label" style="margin-bottom:.25rem;">Answer</div><div style="white-space:pre-wrap;">' + _aiPromptEsc(r.final_answer || '') + '</div>'
+            + (r.error_text ? '<div style="color:var(--admin-danger);margin-top:6px;">' + _aiPromptEsc(r.error_text) + '</div>' : '')
             + '</td></tr>';
         });
-        html += '</tbody></table>';
+        html += '</tbody></table></div>';
         wrap.innerHTML = html;
       } catch (e) {
         wrap.innerHTML = '<p class="empty-state">Failed to load activity.</p>';
