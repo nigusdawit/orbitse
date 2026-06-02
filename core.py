@@ -21,6 +21,7 @@ WHAT'S HERE (B1, first slice)
   app.py and are explicitly out of scope (see the refactor plan's DB guardrail).
 """
 
+import json  # used by _vp_as_list (relocated data utility, Track B)
 import os
 import sys
 import threading
@@ -391,3 +392,23 @@ def current_tenant_id():
     rather than hard-coding 1.
     """
     return 1
+
+
+# =============================================================================
+# DATA UTILITIES  (moved verbatim from app.py - Track B helper relocation)
+# =============================================================================
+# Pure leaf helpers (no app/DB/AI deps) that admin-CRUD blueprints share. Moved
+# here so a blueprint route can import them without `from app` (circular). The
+# many app.py call sites keep resolving via app.py's `from core import` re-export.
+def _vp_as_list(v):
+    """JSONB may come back as a parsed list (psycopg2) or, defensively, a JSON
+    string. Always return a list."""
+    if isinstance(v, list):
+        return v
+    if isinstance(v, str) and v:
+        try:
+            parsed = json.loads(v)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []

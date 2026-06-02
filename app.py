@@ -643,6 +643,7 @@ from core import (  # noqa: E402 - re-export the DB layer that now lives in core
     _init_db_pool, _resolve_pool_sizes,      # pool internals referenced by the tests
     _DB_POOL_MIN, _DB_POOL_MAX,              # pool-size constants (stats endpoint + tests)
     current_tenant_id,                       # tenant resolver (returns 1); 84 call sites + velo_handlers
+    _vp_as_list,                             # JSONB->list coercion (Track B); 11 call sites here + admin/offers.py
 )
 
 
@@ -22841,18 +22842,7 @@ def _vp_normalize_signals(data):
     }
 
 
-def _vp_as_list(v):
-    """JSONB may come back as a parsed list (psycopg2) or, defensively, a JSON
-    string. Always return a list."""
-    if isinstance(v, list):
-        return v
-    if isinstance(v, str) and v:
-        try:
-            parsed = json.loads(v)
-            return parsed if isinstance(parsed, list) else []
-        except Exception:
-            return []
-    return []
+# _vp_as_list moved to core.py (Track B helper relocation); re-exported via the `from core import` block above.
 
 
 def _vp_merge_tags(old, new):
@@ -27974,117 +27964,7 @@ def admin_list_visitor_profiles():
 # the gated `lookup_offers` tool. All routes are guarded by
 # _require_super_admin_role() (a client session can't read or edit offers).
 
-def _row_offer(r):
-    """Serialize an offers row for the admin API (ISO timestamps, parsed tags)."""
-    d = dict(r)
-    d["trigger_tags"] = _vp_as_list(d.get("trigger_tags"))
-    for k in ("starts_at", "ends_at", "created_at", "updated_at"):
-        if d.get(k):
-            d[k] = d[k].isoformat()
-    return d
-
-
-def _offer_payload(body):
-    """Validate + coerce an offer create/update body. Returns (fields, error).
-    Only whitelisted columns are accepted (no mass-assignment)."""
-    title = (body.get("title") or "").strip()
-    if not title:
-        return None, "title is required"
-    tags = body.get("trigger_tags")
-    if isinstance(tags, str):
-        tags = [t.strip() for t in tags.split(",")]
-    if not isinstance(tags, list):
-        tags = []
-    tags = [str(t).strip()[:80] for t in tags if str(t).strip()][:25]
-    try:
-        priority = int(body.get("priority") or 0)
-    except (TypeError, ValueError):
-        priority = 0
-    return {
-        "title": title[:300],
-        "description": (body.get("description") or "").strip()[:4000],
-        "code": (body.get("code") or "").strip()[:80],
-        "cta_url": (body.get("cta_url") or "").strip()[:1000],
-        "trigger_tags": json.dumps(tags),
-        "active": bool(body.get("active", True)),
-        "starts_at": (body.get("starts_at") or None),
-        "ends_at": (body.get("ends_at") or None),
-        "priority": priority,
-    }, ""
-
-
-@app.route("/admin/api/offers", methods=["GET"])
-@admin_required
-def admin_list_offers():
-    """List all offers for the tenant (super-admin only)."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    tid = current_tenant_id()
-    rows = query_db(
-        "SELECT * FROM offers WHERE tenant_id=%s ORDER BY priority DESC, id DESC",
-        (tid,)) or []
-    return jsonify({"offers": [_row_offer(r) for r in rows]})
-
-
-@app.route("/admin/api/offers", methods=["POST"])
-@admin_required
-def admin_create_offer():
-    """Create an offer (super-admin only)."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    fields, err = _offer_payload(request.get_json(silent=True) or {})
-    if err:
-        return jsonify({"error": err}), 400
-    tid = current_tenant_id()
-    row = execute_db(
-        "INSERT INTO offers (tenant_id, title, description, code, cta_url, "
-        " trigger_tags, active, starts_at, ends_at, priority) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
-        (tid, fields["title"], fields["description"], fields["code"],
-         fields["cta_url"], fields["trigger_tags"], fields["active"],
-         fields["starts_at"], fields["ends_at"], fields["priority"]))
-    return jsonify({"offer": _row_offer(row)}), 201
-
-
-@app.route("/admin/api/offers/<int:offer_id>", methods=["PUT"])
-@admin_required
-def admin_update_offer(offer_id):
-    """Update an offer (super-admin only). Scoped to the tenant."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    fields, err = _offer_payload(request.get_json(silent=True) or {})
-    if err:
-        return jsonify({"error": err}), 400
-    tid = current_tenant_id()
-    row = execute_db(
-        "UPDATE offers SET title=%s, description=%s, code=%s, cta_url=%s, "
-        " trigger_tags=%s, active=%s, starts_at=%s, ends_at=%s, priority=%s, "
-        " updated_at=NOW() WHERE id=%s AND tenant_id=%s RETURNING *",
-        (fields["title"], fields["description"], fields["code"], fields["cta_url"],
-         fields["trigger_tags"], fields["active"], fields["starts_at"],
-         fields["ends_at"], fields["priority"], offer_id, tid))
-    if not row:
-        return jsonify({"error": "not_found"}), 404
-    return jsonify({"offer": _row_offer(row)})
-
-
-@app.route("/admin/api/offers/<int:offer_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_offer(offer_id):
-    """Delete an offer (super-admin only). Scoped to the tenant."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    tid = current_tenant_id()
-    row = execute_db(
-        "DELETE FROM offers WHERE id=%s AND tenant_id=%s RETURNING id",
-        (offer_id, tid))
-    if not row:
-        return jsonify({"error": "not_found"}), 404
-    return jsonify({"ok": True, "deleted": offer_id})
+# Offers admin CRUD (super-admin only) moved to admin/offers.py (Track B); routes registered via offers_bp. Helpers _row_offer/_offer_payload moved with them.
 
 
 # =============================================================================
@@ -44665,6 +44545,13 @@ app.register_blueprint(content_bp)
 # /admin/api/submissions/* URLs; @admin_required gating preserved (from core).
 from admin.forms import forms_bp  # noqa: E402
 app.register_blueprint(forms_bp)
+
+# Offers admin CRUD blueprint (Track B): super-admin-only /admin/api/offers* CRUD.
+# @admin_required preserved + in-body _require_super_admin_role() gate intact (from
+# core). Helpers _row_offer/_offer_payload moved with the routes; the shared
+# _vp_as_list stays in core. Registered like the other admin blueprints.
+from admin.offers import offers_bp  # noqa: E402
+app.register_blueprint(offers_bp)
 
 
 def _resolve_velo_callback_url():
