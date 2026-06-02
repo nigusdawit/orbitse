@@ -9404,51 +9404,9 @@ def api_hero_fragment():
 # PUBLIC API — EVENTS
 # =============================================================
 
-@app.route("/api/events")
-def api_events():
-    """
-    GET /api/events
-    Returns published + cancelled events whose start date is today or
-    later, ordered by start_at ASC (soonest first). Each row includes
-    a `rsvp_count` aggregate (sum of guests across RSVPs) so the public
-    card can show "12/30 spots taken" when capacity is set.
-    Drafts are never returned here.
-    """
-    rows = query_db(
-        """SELECT e.*,
-                  COALESCE((SELECT SUM(guests) FROM event_rsvps r
-                            WHERE r.event_id = e.id
-                              AND r.payment_status NOT IN ('expired','failed')), 0)::int AS rsvp_count
-           FROM events e
-           WHERE e.status IN ('published', 'cancelled')
-             AND e.start_at IS NOT NULL
-             AND COALESCE(e.end_at, e.start_at) >= NOW()
-           ORDER BY e.sort_order ASC, e.start_at ASC"""
-    )
-    return jsonify(rows or [])
-
-
-@app.route("/api/events/<string:slug>")
-def api_event_detail(slug):
-    """
-    GET /api/events/<slug>
-    Returns a single event by slug for the public detail page. Drafts
-    return 404; cancelled events ARE returned (so the page can show a
-    "This event has been cancelled" notice rather than a dead link).
-    Includes `rsvp_count` for capacity display.
-    """
-    event = query_db(
-        """SELECT e.*,
-                  COALESCE((SELECT SUM(guests) FROM event_rsvps r
-                            WHERE r.event_id = e.id
-                              AND r.payment_status NOT IN ('expired','failed')), 0)::int AS rsvp_count
-           FROM events e
-           WHERE e.slug = %s AND e.status IN ('published', 'cancelled')""",
-        (slug,), fetchone=True
-    )
-    if not event:
-        return jsonify({"error": "Event not found"}), 404
-    return jsonify(event)
+# GET /api/events and /api/events/<slug> moved to admin/public_api.py (Track B / B3) -
+# same URLs, served by public_bp. The rsvp POST below (txn + Stripe) stays here until
+# its Stripe/get_db dependencies are available to the blueprint. See admin/public_api.py.
 
 
 @app.route("/api/events/<string:slug>/rsvp", methods=["POST"])

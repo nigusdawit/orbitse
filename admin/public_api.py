@@ -211,3 +211,51 @@ def api_seo():
     if not settings:
         return jsonify({})
     return jsonify(settings)
+
+# ---- events (read-only GETs; Track B / B3 batch 3, verbatim) ----
+
+@public_bp.route("/api/events")
+def api_events():
+    """
+    GET /api/events
+    Returns published + cancelled events whose start date is today or
+    later, ordered by start_at ASC (soonest first). Each row includes
+    a `rsvp_count` aggregate (sum of guests across RSVPs) so the public
+    card can show "12/30 spots taken" when capacity is set.
+    Drafts are never returned here.
+    """
+    rows = query_db(
+        """SELECT e.*,
+                  COALESCE((SELECT SUM(guests) FROM event_rsvps r
+                            WHERE r.event_id = e.id
+                              AND r.payment_status NOT IN ('expired','failed')), 0)::int AS rsvp_count
+           FROM events e
+           WHERE e.status IN ('published', 'cancelled')
+             AND e.start_at IS NOT NULL
+             AND COALESCE(e.end_at, e.start_at) >= NOW()
+           ORDER BY e.sort_order ASC, e.start_at ASC"""
+    )
+    return jsonify(rows or [])
+
+
+@public_bp.route("/api/events/<string:slug>")
+def api_event_detail(slug):
+    """
+    GET /api/events/<slug>
+    Returns a single event by slug for the public detail page. Drafts
+    return 404; cancelled events ARE returned (so the page can show a
+    "This event has been cancelled" notice rather than a dead link).
+    Includes `rsvp_count` for capacity display.
+    """
+    event = query_db(
+        """SELECT e.*,
+                  COALESCE((SELECT SUM(guests) FROM event_rsvps r
+                            WHERE r.event_id = e.id
+                              AND r.payment_status NOT IN ('expired','failed')), 0)::int AS rsvp_count
+           FROM events e
+           WHERE e.slug = %s AND e.status IN ('published', 'cancelled')""",
+        (slug,), fetchone=True
+    )
+    if not event:
+        return jsonify({"error": "Event not found"}), 404
+    return jsonify(event)
