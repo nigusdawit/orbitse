@@ -15,6 +15,8 @@ blueprint routes too, so nothing extra is needed here.
 Registered in app.py via app.register_blueprint(reporting_bp), after sitebuilder_bp.
 Imports come from core (never app - that would be circular).
 """
+import json
+
 from flask import Blueprint, request, jsonify
 
 from core import query_db, admin_required
@@ -228,3 +230,112 @@ def admin_api_analytics_chart():
             "views": r["views"],
         })
     return jsonify(result)
+
+
+# ---- marketing-insights viewers (Track B, verbatim; read-only) ----
+# The "Marketing Insights" tab is purely a viewer over tables the admin AI
+# populates; approve/reject of drafts still goes through the chat-action
+# endpoints (which stay in app.py). Pure query_db reads, no shared helpers.
+
+
+@reporting_bp.route("/admin/api/marketing/insights", methods=["GET"])
+@admin_required
+def admin_list_marketing_insights():
+    """GET /admin/api/marketing/insights — list cached insight runs.
+    Optional ?type=<insight_type> filters to one kind (chat_topics /
+    page_library / seo_gaps). Default 50 most recent."""
+    insight_type = (request.args.get("type") or "").strip()[:50]
+    try:
+        limit = max(1, min(int(request.args.get("limit") or 50), 200))
+    except Exception:
+        limit = 50
+    where = ["1=1"]
+    args = []
+    if insight_type:
+        where.append("insight_type = %s")
+        args.append(insight_type)
+    rows = query_db(
+        "SELECT id, insight_type, window_start, window_end, "
+        "       summary_json, notes, created_at "
+        "FROM marketing_insights_log WHERE " + " AND ".join(where)
+        + " ORDER BY created_at DESC LIMIT %s",
+        tuple(args + [limit]),
+    ) or []
+    out = []
+    for r in rows:
+        out.append({
+            "id": r["id"],
+            "insight_type": r.get("insight_type") or "",
+            "window_start": (r["window_start"].isoformat()
+                              if r.get("window_start") else None),
+            "window_end": (r["window_end"].isoformat()
+                            if r.get("window_end") else None),
+            "summary_json": r.get("summary_json") or {},
+            "notes": r.get("notes") or "",
+            "created_at": (r["created_at"].isoformat()
+                           if r.get("created_at") else None),
+        })
+    return jsonify({"insights": out, "count": len(out)})
+
+
+@reporting_bp.route("/admin/api/marketing/drafts", methods=["GET"])
+@admin_required
+def admin_list_marketing_drafts():
+    """GET /admin/api/marketing/drafts — list AI-drafted blog / FAQ
+    entries the admin AI has queued for approval. Wraps the existing
+    admin_pending_actions table; approve / reject still go through
+    /admin/api/chat/action/<id>/approve | /reject.
+
+    The optional ?status filter accepts pending | executed | rejected |
+    failed and also takes 'approved' as a UI-friendly alias for 'executed'
+    so the dashboard filter labels can read naturally."""
+    status_raw = (request.args.get("status") or "pending").strip()[:20]
+    # Allowlist + 'approved' alias → 'executed' (the real DB value).
+    valid_status = {"pending", "executed", "rejected", "failed"}
+    if status_raw == "approved":
+        status = "executed"
+    elif status_raw in valid_status:
+        status = status_raw
+    else:
+        status = "pending"
+    try:
+        limit = max(1, min(int(request.args.get("limit") or 50), 200))
+    except Exception:
+        limit = 50
+    rows = query_db(
+        "SELECT id, action_type, target_table, target_id, "
+        "       payload_json, preview, status, error_text, "
+        "       created_at, decided_at "
+        "FROM admin_pending_actions "
+        "WHERE target_table IN ('blog_posts','faqs') "
+        "  AND status = %s "
+        "ORDER BY created_at DESC LIMIT %s",
+        (status, limit),
+    ) or []
+    out = []
+    for r in rows:
+        payload = r.get("payload_json") or {}
+        if isinstance(payload, str):
+            try: payload = json.loads(payload)
+            except Exception: payload = {}
+        fields = (payload.get("fields") or {}) if isinstance(payload, dict) else {}
+        out.append({
+            "id": r["id"],
+            "kind": ("blog" if r.get("target_table") == "blog_posts"
+                     else "faq" if r.get("target_table") == "faqs"
+                     else (r.get("target_table") or "")),
+            "target_table": r.get("target_table") or "",
+            "target_id": r.get("target_id"),
+            "title": (fields.get("title") or fields.get("question")
+                      or "(untitled)"),
+            "body_preview": ((fields.get("content") or fields.get("answer")
+                              or "")[:400]),
+            "preview": r.get("preview") or "",
+            "status": r.get("status") or "",
+            "error_text": r.get("error_text") or "",
+            "created_at": (r["created_at"].isoformat()
+                           if r.get("created_at") else None),
+            "decided_at": (r["decided_at"].isoformat()
+                           if r.get("decided_at") else None),
+        })
+    return jsonify({"drafts": out, "count": len(out)})
