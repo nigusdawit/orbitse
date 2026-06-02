@@ -2603,3 +2603,32 @@ def get_tenant_cost_cap(tenant_id=None):
 def _slugify(text: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
     return s or secrets.token_hex(4)
+
+# =============================================================================
+# PRODUCT SERIALIZER  (moved from app.py - Track B / task 078, piece #3)
+# =============================================================================
+# Pure dict-shaping leaf (cents->dollars rounding + gallery_images None->[]),
+# shared by the PUBLIC product routes (/api/products) that stay in app.py and the
+# admin product CRUD (a future blueprint). Moved here, re-exported, mirroring
+# _service_to_dict / _iso_row so a products blueprint can import it without
+# `from app` (circular). No app/DB/AI deps.
+# =============================================================================
+
+def _product_row_to_dict(row):
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "slug": row["slug"],
+        "name": row["name"],
+        "description": row["description"],
+        "price_cents": row["price_cents"],
+        "price": round(row["price_cents"] / 100, 2),
+        "currency": row["currency"],
+        "image_url": row["image_url"],
+        "gallery_images": row["gallery_images"] or [],
+        "stock": row["stock"],
+        "track_inventory": row["track_inventory"],
+        "active": row["active"],
+        "sort_order": row["sort_order"],
+    }

@@ -673,6 +673,7 @@ from core import (  # noqa: E402 - re-export the DB layer that now lives in core
     compute_mtd_spend, get_tenant_cost_cap,    # MTD spend summer + cost-cap reader
     # --- slug normaliser (Track B / task 078, piece #3): canonical _slugify ---
     _slugify,                                  # products/pages/presentations slug generator
+    _product_row_to_dict,                      # product row serializer (public + admin product routes)
 )
 
 
@@ -30087,24 +30088,10 @@ def admin_voice_usage():
 # which prefers the Replit Stripe connection and falls back to the
 # STRIPE_SECRET_KEY env var.
 
-def _product_row_to_dict(row):
-    if not row:
-        return None
-    return {
-        "id": row["id"],
-        "slug": row["slug"],
-        "name": row["name"],
-        "description": row["description"],
-        "price_cents": row["price_cents"],
-        "price": round(row["price_cents"] / 100, 2),
-        "currency": row["currency"],
-        "image_url": row["image_url"],
-        "gallery_images": row["gallery_images"] or [],
-        "stock": row["stock"],
-        "track_inventory": row["track_inventory"],
-        "active": row["active"],
-        "sort_order": row["sort_order"],
-    }
+# _product_row_to_dict moved to core.py (Track B / task 078, piece #3): pure
+# dict-shaping leaf, re-exported via the `from core import` block above. Shared
+# by the public /api/products routes here + the admin product CRUD; all call
+# sites resolve it through that re-export, unchanged.
 
 
 # Cost transparency dashboard API (8 routes under /admin/api/cost/*: summary,
