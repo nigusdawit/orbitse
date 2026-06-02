@@ -797,3 +797,115 @@ def admin_update_section_visibility():
          scroll_mode)
     )
     return jsonify(info or {})
+
+
+# ---- custom-section items + SEO settings CRUD (Track B / B12, verbatim) ----
+
+@content_bp.route("/admin/api/custom-sections/<int:section_id>/items", methods=["GET"])
+@admin_required
+def admin_get_custom_items(section_id):
+    """GET all items for a specific custom section."""
+    items = query_db(
+        "SELECT * FROM custom_section_items WHERE section_id = %s ORDER BY sort_order ASC",
+        (section_id,)
+    )
+    return jsonify(items or [])
+
+
+@content_bp.route("/admin/api/custom-sections/<int:section_id>/items", methods=["POST"])
+@admin_required
+def admin_create_custom_item(section_id):
+    """POST /admin/api/custom-sections/<section_id>/items — Add an item to a custom section."""
+    data = request.get_json()
+    item = execute_db(
+        """INSERT INTO custom_section_items
+           (section_id, title, subtitle, content, image_url, link_url, link_text, icon, sort_order, extra_data)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb) RETURNING *""",
+        (section_id, data.get("title", ""), data.get("subtitle", ""),
+         data.get("content", ""), data.get("image_url", ""),
+         data.get("link_url", ""), data.get("link_text", ""),
+         data.get("icon", ""), data.get("sort_order", 0),
+         json.dumps(data.get("extra_data", {})))
+    )
+    return jsonify(item), 201
+
+
+@content_bp.route("/admin/api/custom-sections/<int:section_id>/items/<int:item_id>", methods=["PUT"])
+@admin_required
+def admin_update_custom_item(section_id, item_id):
+    """PUT /admin/api/custom-sections/<section_id>/items/<item_id> — Update an item."""
+    data = request.get_json()
+    item = execute_db(
+        """UPDATE custom_section_items SET
+             title = %s, subtitle = %s, content = %s, image_url = %s,
+             link_url = %s, link_text = %s, icon = %s, sort_order = %s,
+             extra_data = %s::jsonb
+           WHERE id = %s AND section_id = %s RETURNING *""",
+        (data.get("title", ""), data.get("subtitle", ""),
+         data.get("content", ""), data.get("image_url", ""),
+         data.get("link_url", ""), data.get("link_text", ""),
+         data.get("icon", ""), data.get("sort_order", 0),
+         json.dumps(data.get("extra_data", {})), item_id, section_id)
+    )
+    if not item:
+        return jsonify({"error": "Item not found"}), 404
+    return jsonify(item)
+
+
+@content_bp.route("/admin/api/custom-sections/<int:section_id>/items/<int:item_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_custom_item(section_id, item_id):
+    """DELETE /admin/api/custom-sections/<section_id>/items/<item_id> — Remove an item."""
+    count = execute_db(
+        "DELETE FROM custom_section_items WHERE id = %s AND section_id = %s",
+        (item_id, section_id)
+    )
+    if count == 0:
+        return jsonify({"error": "Item not found"}), 404
+    return jsonify({"success": True})
+
+
+@content_bp.route("/admin/api/seo", methods=["GET"])
+@admin_required
+def admin_get_seo():
+    """
+    GET /admin/api/seo
+    Returns the current SEO settings for the admin panel.
+    """
+    settings = query_db("""
+        SELECT seo_meta_title, seo_meta_description, seo_keywords,
+               seo_og_image, seo_twitter_handle, seo_canonical_url, seo_robots
+        FROM site_settings WHERE id = 1
+    """, fetchone=True)
+    return jsonify(settings or {})
+
+
+@content_bp.route("/admin/api/seo", methods=["PUT"])
+@admin_required
+def admin_update_seo():
+    """
+    PUT /admin/api/seo
+    Update SEO settings (meta title, description, keywords, OG image,
+    Twitter handle, canonical URL, robots directive).
+    """
+    data = request.get_json()
+    result = execute_db(
+        """UPDATE site_settings SET
+             seo_meta_title = %s, seo_meta_description = %s,
+             seo_keywords = %s, seo_og_image = %s,
+             seo_twitter_handle = %s, seo_canonical_url = %s,
+             seo_robots = %s, updated_at = NOW()
+           WHERE id = 1 RETURNING
+             seo_meta_title, seo_meta_description, seo_keywords,
+             seo_og_image, seo_twitter_handle, seo_canonical_url, seo_robots""",
+        (
+            data.get("seo_meta_title", ""),
+            data.get("seo_meta_description", ""),
+            data.get("seo_keywords", ""),
+            data.get("seo_og_image", ""),
+            data.get("seo_twitter_handle", ""),
+            data.get("seo_canonical_url", ""),
+            data.get("seo_robots", "index, follow")
+        )
+    )
+    return jsonify(result or {})
