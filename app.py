@@ -671,6 +671,8 @@ from core import (  # noqa: E402 - re-export the DB layer that now lives in core
     _invalidate_price_cache, get_model_price,  # price-cache invalidator + lookup
     _current_period, _to_float,                # month-bucket helper + float coercer
     compute_mtd_spend, get_tenant_cost_cap,    # MTD spend summer + cost-cap reader
+    # --- slug normaliser (Track B / task 078, piece #3): canonical _slugify ---
+    _slugify,                                  # products/pages/presentations slug generator
 )
 
 
@@ -31537,9 +31539,10 @@ def _handle_charge_refunded(charge):
 
 # --- Admin: Products CRUD ---------------------------------------------------
 
-def _slugify(text: str) -> str:
-    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
-    return s or secrets.token_hex(4)
+# _slugify moved to core.py (Track B / task 078, piece #3): pure leaf (re +
+# secrets), re-exported via the `from core import` block above. The ~5 call
+# sites here (products / pages / sections / presentations CRUD) resolve it
+# through that re-export, unchanged.
 
 
 # ---------------------------------------------------------------------------

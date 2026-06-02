@@ -24,6 +24,7 @@ WHAT'S HERE (B1, first slice)
 import json  # used by _vp_as_list (relocated data utility, Track B)
 import re  # used by the secret-redaction result patterns (Track B)
 import os
+import secrets  # used by _slugify's empty-input token fallback (Track B / task 078 #3)
 import sys
 import threading
 import time as _time  # used by tenant_has_feature TTL (feature subsystem)
@@ -2585,3 +2586,20 @@ def get_tenant_cost_cap(tenant_id=None):
         "digest_email": "", "digest_send_hour_utc": 9,
         "last_warned_period": "", "last_capped_period": "",
     }
+
+# =============================================================================
+# SLUG NORMALISER  (moved from app.py - Track B / task 078, piece #3)
+# =============================================================================
+# Canonical slug generator: lowercase, runs of non-[a-z0-9] -> single hyphen,
+# trimmed, with a random secrets.token_hex(4) fallback for empty/symbol-only
+# input (so it NEVER returns ""). This is the one survivor of the old 3-way
+# `_slugify` name collision in app.py (the presentations + pages/sections defs
+# were dead, shadowed code and were removed). Pure leaf (re + secrets only), so
+# the products/pages/presentations CRUD - here and in future blueprints - can
+# import it without `from app` (circular). app.py re-exports it, so its existing
+# call sites keep resolving unchanged.
+# =============================================================================
+
+def _slugify(text: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return s or secrets.token_hex(4)
