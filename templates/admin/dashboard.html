@@ -2484,6 +2484,14 @@ TO CUSTOMIZE THIS DASHBOARD:
       padding:1.4rem 1.45rem; margin-bottom:1.1rem; }
     .form-card > h3{ font-family:var(--admin-head-font); font-size:1.05rem; font-weight:700; color:var(--admin-text); margin:0 0 .9rem; }
 
+    /* .dev-card (Stripe + Developer use <details class="dev-card">) was also
+       undefined → bare blocks. Render as collapsible glass cards (task 074).
+       Keep the native disclosure marker (some summaries are flex + have a
+       right-aligned badge, so a custom ::after chevron would mis-place). */
+    .dev-card{ background:var(--admin-surface); border:1px solid var(--admin-border); border-radius:var(--admin-radius);
+      -webkit-backdrop-filter:var(--admin-blur); backdrop-filter:var(--admin-blur); box-shadow:var(--admin-shadow); overflow:hidden; margin-bottom:.2rem; }
+    .dev-card > summary{ color:var(--admin-text); }
+
     /* Sidebar search + collapsible groups (task 073). */
     #gx-nav-search-wrap{ padding:.15rem .2rem .7rem; }
     #gx-nav-search{ width:100%; background:var(--admin-field); border:1px solid var(--admin-border); border-radius:9px;
