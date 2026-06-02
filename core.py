@@ -27,11 +27,13 @@ import os
 import sys
 import threading
 import time as _time  # used by tenant_has_feature TTL (feature subsystem)
+from datetime import datetime  # used by _current_period (cost infra, Track B / task 078 #2)
 from functools import wraps
 
 import psycopg2
 import psycopg2.extras
 import psycopg2.extensions  # _PooledConnection subclasses psycopg2.extensions.connection
+import sentry_sdk  # cost-infra except blocks call sentry_sdk.capture_exception (Track B / task 078 #2)
 from flask import session, request, jsonify, redirect, url_for  # used by the auth gates (below)
 
 # scraper supplies the SCRAPER_* prompt defaults referenced by
@@ -2459,3 +2461,127 @@ def _invalidate_prompt_cache():
     with _PROMPT_CACHE_LOCK:
         _PROMPT_CACHE_LOADED = False
         _PROMPT_CACHE.clear()
+
+# =============================================================================
+# COST / BILLING INFRA  (moved from app.py - Track B / task 078, piece #2)
+# =============================================================================
+# The cost-transparency leaves the Cost dashboard + the cost-cap enforcement
+# read on every chat/voice/SMS event: the model_prices TTL cache (_PRICE_CACHE
+# + get_model_price + _invalidate_price_cache), the month-bucket helper
+# (_current_period), the float coercer (_to_float), the MTD spend summer
+# (compute_mtd_spend) and the cap reader (get_tenant_cost_cap). Moved here so the
+# cost admin blueprint can import them without `from app` (circular). app.py
+# re-exports every name below via its `from core import` block, so the record_*
+# writers, enforce_cost_cap / cost_cap_blocks_send / _async_warn_check, the
+# weekly digest, and all ~30 call sites keep resolving unchanged.
+#
+# MUTABLE CACHE: _PRICE_CACHE / _PRICE_CACHE_EXP are mutated IN PLACE (clear()/
+# item-set). Reader (get_model_price) and invalidator (_invalidate_price_cache)
+# live HERE together; the cost-prices PATCH route busts the cache by calling the
+# re-exported _invalidate_price_cache(). No code outside core rebinds the dicts.
+#
+# Errors are reported via sentry_sdk.capture_exception exactly as before (a no-op
+# when Sentry is not initialised), which is why core imports sentry_sdk.
+# =============================================================================
+
+# Tiny in-process TTL cache for model_prices lookups. The price row is
+# read on every chat / voice / SMS event so even a 10-row table is worth
+# memoizing. _invalidate_price_cache() is called by the admin PATCH
+# endpoint so edits become visible immediately.
+_PRICE_CACHE = {}
+_PRICE_CACHE_EXP = {}
+_PRICE_CACHE_TTL_SEC = 60
+
+
+def _invalidate_price_cache():
+    _PRICE_CACHE.clear()
+    _PRICE_CACHE_EXP.clear()
+
+
+def get_model_price(provider, model, surface="chat"):
+    """Look up the active price row for (provider, model, surface).
+    Returns the row dict or None. Cached for 60s in-process."""
+    key = ((provider or "").lower(), (model or "").strip(), (surface or "chat").lower())
+    now = _time.time()
+    exp = _PRICE_CACHE_EXP.get(key, 0)
+    if exp > now and key in _PRICE_CACHE:
+        return _PRICE_CACHE[key]
+    try:
+        row = query_db(
+            "SELECT * FROM model_prices "
+            "WHERE LOWER(provider) = %s AND model = %s AND LOWER(surface) = %s "
+            "  AND active = TRUE LIMIT 1",
+            (key[0], key[1], key[2]),
+            fetchone=True,
+        )
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        print(f"[cost] price lookup failed for {key}: {e}")
+        row = None
+    _PRICE_CACHE[key] = row
+    _PRICE_CACHE_EXP[key] = now + _PRICE_CACHE_TTL_SEC
+    return row
+
+
+def _current_period():
+    """The 'YYYY-MM' string used to bucket monthly spend. UTC for now."""
+    return datetime.utcnow().strftime("%Y-%m")
+
+
+def _to_float(x, default=0.0):
+    try:
+        if x is None:
+            return default
+        return float(x)
+    except (TypeError, ValueError):
+        return default
+
+
+def compute_mtd_spend(tenant_id=None):
+    """Sum the three ledgers for the current month. Returns a dict with
+    chat_usd, voice_usd, sms_usd, total_usd (all floats, never None)."""
+    tid = tenant_id if tenant_id is not None else current_tenant_id()
+    period = _current_period() + "-01"
+    out = {"chat_usd": 0.0, "voice_usd": 0.0, "sms_usd": 0.0, "total_usd": 0.0}
+    try:
+        a = query_db(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS s FROM api_cost_events "
+            "WHERE tenant_id = %s AND created_at >= DATE_TRUNC('month', NOW())",
+            (tid,), fetchone=True)
+        v = query_db(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS s FROM voice_cost_events "
+            "WHERE tenant_id = %s AND created_at >= DATE_TRUNC('month', NOW())",
+            (tid,), fetchone=True)
+        s = query_db(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS s FROM sms_cost_events "
+            "WHERE tenant_id = %s AND created_at >= DATE_TRUNC('month', NOW())",
+            (tid,), fetchone=True)
+        out["chat_usd"] = _to_float((a or {}).get("s"))
+        out["voice_usd"] = _to_float((v or {}).get("s"))
+        out["sms_usd"] = _to_float((s or {}).get("s"))
+        out["total_usd"] = out["chat_usd"] + out["voice_usd"] + out["sms_usd"]
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        print(f"[cost] compute_mtd_spend failed: {e}")
+    return out
+
+
+def get_tenant_cost_cap(tenant_id=None):
+    """Read the tenant_cost_caps row, returning a dict with sane defaults
+    if no row exists yet (e.g. fresh tenant before init_db re-runs)."""
+    tid = tenant_id if tenant_id is not None else current_tenant_id()
+    try:
+        row = query_db(
+            "SELECT * FROM tenant_cost_caps WHERE tenant_id = %s",
+            (tid,), fetchone=True)
+        if row:
+            return row
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        print(f"[cost] get_tenant_cost_cap failed: {e}")
+    return {
+        "tenant_id": tid, "monthly_cap_usd": None, "warn_at_percent": 80,
+        "cap_behavior": "alert_only", "alert_email": "",
+        "digest_email": "", "digest_send_hour_utc": 9,
+        "last_warned_period": "", "last_capped_period": "",
+    }
