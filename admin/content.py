@@ -190,3 +190,268 @@ def admin_delete_pricing(price_id):
     if count == 0:
         return jsonify({"error": "Pricing not found"}), 404
     return jsonify({"success": True})
+
+# ---- testimonials / video-gallery / podcast / team / faq CRUD (Track B / B6) ----
+
+@content_bp.route("/admin/api/testimonials", methods=["GET"])
+@admin_required
+def admin_get_testimonials():
+    """GET all testimonials for the admin panel."""
+    items = query_db("SELECT * FROM testimonials ORDER BY sort_order ASC")
+    return jsonify(items or [])
+
+
+@content_bp.route("/admin/api/testimonials", methods=["POST"])
+@admin_required
+def admin_create_testimonial():
+    """POST /admin/api/testimonials — Create a new testimonial."""
+    data = request.get_json()
+    item = execute_db(
+        """INSERT INTO testimonials (reviewer_name, reviewer_role, content, rating, image_url, sort_order)
+           VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
+        (data.get("reviewer_name", ""), data.get("reviewer_role", ""),
+         data.get("content", ""), data.get("rating", 5),
+         data.get("image_url", ""), data.get("sort_order", 0))
+    )
+    return jsonify(item), 201
+
+
+@content_bp.route("/admin/api/testimonials/<int:item_id>", methods=["PUT"])
+@admin_required
+def admin_update_testimonial(item_id):
+    """PUT /admin/api/testimonials/<id> — Update a testimonial."""
+    data = request.get_json()
+    item = execute_db(
+        """UPDATE testimonials SET
+             reviewer_name = %s, reviewer_role = %s, content = %s,
+             rating = %s, image_url = %s, sort_order = %s
+           WHERE id = %s RETURNING *""",
+        (data.get("reviewer_name", ""), data.get("reviewer_role", ""),
+         data.get("content", ""), data.get("rating", 5),
+         data.get("image_url", ""), data.get("sort_order", 0), item_id)
+    )
+    if not item:
+        return jsonify({"error": "Testimonial not found"}), 404
+    return jsonify(item)
+
+
+@content_bp.route("/admin/api/video-gallery", methods=["GET"])
+@admin_required
+def admin_get_video_gallery():
+    items = query_db("SELECT * FROM video_gallery_items ORDER BY sort_order ASC, id ASC")
+    return jsonify(items or [])
+
+
+@content_bp.route("/admin/api/video-gallery", methods=["POST"])
+@admin_required
+def admin_create_video_gallery():
+    data = request.get_json() or {}
+    item = execute_db(
+        """INSERT INTO video_gallery_items
+              (title, description, video_url, thumbnail_url, sort_order)
+           VALUES (%s, %s, %s, %s, %s) RETURNING *""",
+        (data.get("title", ""), data.get("description", ""),
+         data.get("video_url", ""), data.get("thumbnail_url", ""),
+         data.get("sort_order", 0))
+    )
+    return jsonify(item), 201
+
+
+@content_bp.route("/admin/api/video-gallery/<int:item_id>", methods=["PUT"])
+@admin_required
+def admin_update_video_gallery(item_id):
+    data = request.get_json() or {}
+    item = execute_db(
+        """UPDATE video_gallery_items SET
+             title = %s, description = %s, video_url = %s,
+             thumbnail_url = %s, sort_order = %s
+           WHERE id = %s RETURNING *""",
+        (data.get("title", ""), data.get("description", ""),
+         data.get("video_url", ""), data.get("thumbnail_url", ""),
+         data.get("sort_order", 0), item_id)
+    )
+    if not item:
+        return jsonify({"error": "Video not found"}), 404
+    return jsonify(item)
+
+
+@content_bp.route("/admin/api/video-gallery/<int:item_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_video_gallery(item_id):
+    count = execute_db("DELETE FROM video_gallery_items WHERE id = %s", (item_id,))
+    if count == 0:
+        return jsonify({"error": "Video not found"}), 404
+    return jsonify({"success": True})
+
+
+@content_bp.route("/admin/api/podcast", methods=["GET"])
+@admin_required
+def admin_get_podcast():
+    items = query_db("SELECT * FROM podcast_episodes ORDER BY sort_order ASC, id ASC")
+    return jsonify(items or [])
+
+
+@content_bp.route("/admin/api/podcast", methods=["POST"])
+@admin_required
+def admin_create_podcast():
+    data = request.get_json() or {}
+    item = execute_db(
+        """INSERT INTO podcast_episodes
+              (title, description, audio_url, cover_image,
+               episode_number, sort_order)
+           VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
+        (data.get("title", ""), data.get("description", ""),
+         data.get("audio_url", ""), data.get("cover_image", ""),
+         data.get("episode_number") or None,
+         data.get("sort_order", 0))
+    )
+    return jsonify(item), 201
+
+
+@content_bp.route("/admin/api/podcast/<int:item_id>", methods=["PUT"])
+@admin_required
+def admin_update_podcast(item_id):
+    data = request.get_json() or {}
+    item = execute_db(
+        """UPDATE podcast_episodes SET
+             title = %s, description = %s, audio_url = %s,
+             cover_image = %s, episode_number = %s, sort_order = %s
+           WHERE id = %s RETURNING *""",
+        (data.get("title", ""), data.get("description", ""),
+         data.get("audio_url", ""), data.get("cover_image", ""),
+         data.get("episode_number") or None,
+         data.get("sort_order", 0), item_id)
+    )
+    if not item:
+        return jsonify({"error": "Episode not found"}), 404
+    return jsonify(item)
+
+
+@content_bp.route("/admin/api/podcast/<int:item_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_podcast(item_id):
+    count = execute_db("DELETE FROM podcast_episodes WHERE id = %s", (item_id,))
+    if count == 0:
+        return jsonify({"error": "Episode not found"}), 404
+    return jsonify({"success": True})
+
+
+@content_bp.route("/admin/api/testimonials/<int:item_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_testimonial(item_id):
+    """DELETE /admin/api/testimonials/<id> — Remove a testimonial."""
+    count = execute_db("DELETE FROM testimonials WHERE id = %s", (item_id,))
+    if count == 0:
+        return jsonify({"error": "Testimonial not found"}), 404
+    return jsonify({"success": True})
+
+
+# =============================================================
+# ADMIN CRUD — TEAM MEMBERS
+# =============================================================
+# Manages team/staff member cards displayed on the public site.
+
+@content_bp.route("/admin/api/team", methods=["GET"])
+@admin_required
+def admin_get_team():
+    """GET all team members for the admin panel."""
+    items = query_db("SELECT * FROM team_members ORDER BY sort_order ASC")
+    return jsonify(items or [])
+
+
+@content_bp.route("/admin/api/team", methods=["POST"])
+@admin_required
+def admin_create_team_member():
+    """POST /admin/api/team — Create a new team member."""
+    data = request.get_json()
+    item = execute_db(
+        """INSERT INTO team_members (name, title, bio, image_url, sort_order)
+           VALUES (%s, %s, %s, %s, %s) RETURNING *""",
+        (data.get("name", ""), data.get("title", ""),
+         data.get("bio", ""), data.get("image_url", ""),
+         data.get("sort_order", 0))
+    )
+    return jsonify(item), 201
+
+
+@content_bp.route("/admin/api/team/<int:item_id>", methods=["PUT"])
+@admin_required
+def admin_update_team_member(item_id):
+    """PUT /admin/api/team/<id> — Update a team member."""
+    data = request.get_json()
+    item = execute_db(
+        """UPDATE team_members SET
+             name = %s, title = %s, bio = %s,
+             image_url = %s, sort_order = %s
+           WHERE id = %s RETURNING *""",
+        (data.get("name", ""), data.get("title", ""),
+         data.get("bio", ""), data.get("image_url", ""),
+         data.get("sort_order", 0), item_id)
+    )
+    if not item:
+        return jsonify({"error": "Team member not found"}), 404
+    return jsonify(item)
+
+
+@content_bp.route("/admin/api/team/<int:item_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_team_member(item_id):
+    """DELETE /admin/api/team/<id> — Remove a team member."""
+    count = execute_db("DELETE FROM team_members WHERE id = %s", (item_id,))
+    if count == 0:
+        return jsonify({"error": "Team member not found"}), 404
+    return jsonify({"success": True})
+
+
+# =============================================================
+# ADMIN CRUD — FAQ
+# =============================================================
+# Manages frequently asked questions displayed on the public site.
+
+@content_bp.route("/admin/api/faq", methods=["GET"])
+@admin_required
+def admin_get_faq():
+    """GET all FAQ entries for the admin panel."""
+    items = query_db("SELECT * FROM faqs ORDER BY sort_order ASC")
+    return jsonify(items or [])
+
+
+@content_bp.route("/admin/api/faq", methods=["POST"])
+@admin_required
+def admin_create_faq():
+    """POST /admin/api/faq — Create a new FAQ entry."""
+    data = request.get_json()
+    item = execute_db(
+        """INSERT INTO faqs (question, answer, sort_order)
+           VALUES (%s, %s, %s) RETURNING *""",
+        (data.get("question", ""), data.get("answer", ""),
+         data.get("sort_order", 0))
+    )
+    return jsonify(item), 201
+
+
+@content_bp.route("/admin/api/faq/<int:item_id>", methods=["PUT"])
+@admin_required
+def admin_update_faq(item_id):
+    """PUT /admin/api/faq/<id> — Update a FAQ entry."""
+    data = request.get_json()
+    item = execute_db(
+        """UPDATE faqs SET
+             question = %s, answer = %s, sort_order = %s
+           WHERE id = %s RETURNING *""",
+        (data.get("question", ""), data.get("answer", ""),
+         data.get("sort_order", 0), item_id)
+    )
+    if not item:
+        return jsonify({"error": "FAQ not found"}), 404
+    return jsonify(item)
+
+
+@content_bp.route("/admin/api/faq/<int:item_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_faq(item_id):
+    """DELETE /admin/api/faq/<id> — Remove a FAQ entry."""
+    count = execute_db("DELETE FROM faqs WHERE id = %s", (item_id,))
+    if count == 0:
+        return jsonify({"error": "FAQ not found"}), 404
+    return jsonify({"success": True})
