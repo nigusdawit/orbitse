@@ -642,6 +642,7 @@ from core import (  # noqa: E402 - re-export the DB layer that now lives in core
     get_db, query_db, execute_db,            # public DB API (used throughout app.py)
     _init_db_pool, _resolve_pool_sizes,      # pool internals referenced by the tests
     _DB_POOL_MIN, _DB_POOL_MAX,              # pool-size constants (stats endpoint + tests)
+    current_tenant_id,                       # tenant resolver (returns 1); 84 call sites + velo_handlers
 )
 
 
@@ -4854,14 +4855,9 @@ _FEATURE_CACHE = {}
 _FEATURE_CACHE_TTL_SEC = 30
 
 
-def current_tenant_id():
-    """Return the active tenant id for this request.
-
-    For now there is exactly one tenant (id=1); later we'll resolve from
-    the request host or admin session. All call-sites should use this
-    rather than hard-coding 1.
-    """
-    return 1
+# current_tenant_id() moved to core.py (Track B / B1) — re-exported at the top of
+# this file (the `from core import …` block) so all 84 call sites + velo_handlers'
+# `from app import current_tenant_id` keep resolving. Body unchanged (returns 1).
 
 
 def invalidate_tenant_features_cache(tenant_id=None):

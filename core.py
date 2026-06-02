@@ -376,3 +376,18 @@ def _require_super_admin_role():
             "message": "Only the super admin can manage feature visibility.",
         }), 403
     return None
+
+
+# =============================================================================
+# TENANCY  (moved verbatim from app.py - Track B / B1)
+# =============================================================================
+# Every tenant-scoped query goes through this resolver rather than hard-coding 1,
+# so blueprints need it too. Self-contained (no deps); re-exported by app.py.
+def current_tenant_id():
+    """Return the active tenant id for this request.
+
+    For now there is exactly one tenant (id=1); later we'll resolve from
+    the request host or admin session. All call-sites should use this
+    rather than hard-coding 1.
+    """
+    return 1
