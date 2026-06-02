@@ -24999,121 +24999,16 @@ def admin_update_chatbot():
 
 
 # =============================================================================
-# AI PROMPTS — super-admin editor (DB-backed, cached)
+# AI CONTROL + AI ACTIVITY routes  (moved to admin/ai_control.py - Track B / task 078)
 # =============================================================================
-# These endpoints back the admin "AI Prompts" tab. ALL of them are locked to
-# the super-admin role: the tab is hidden from clients in the template, but the
-# real boundary is _require_super_admin_role() here so a client session can
-# never read or change prompt wording even by calling the API directly.
-
-@app.route("/admin/api/ai-control", methods=["GET"])
-@admin_required
-def admin_list_ai_control():
-    """Return every AI Control knob with its effective value + where it comes
-    from (db override / env / default). Super-admin only."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    items = []
-    for spec in _ai_control_registry():
-        key = spec["key"]
-        try:
-            effective = get_ai_setting(key)
-        except Exception:
-            effective = None
-        items.append({
-            "key": key, "label": spec["label"], "group": spec["group"],
-            "type": spec["type"], "description": spec["description"],
-            "env": spec["env"],
-            "value": effective,
-            "default": getattr(_pylego_config.get_config(), spec["attr"]),
-            "source": _ai_setting_source(key),
-        })
-    return jsonify({"settings": items})
-
-
-@app.route("/admin/api/ai-control/<key>", methods=["PUT"])
-@admin_required
-def admin_set_ai_control(key):
-    """Persist an AI Control override. Body: {"value": ...}. Super-admin only."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    body = request.get_json(silent=True) or {}
-    if "value" not in body:
-        return jsonify({"error": "missing_field", "field": "value"}), 400
-    try:
-        by = "super_admin"
-        new_val = set_ai_setting(key, body.get("value"), by=by)
-        return jsonify({"key": key, "value": new_val, "source": _ai_setting_source(key)})
-    except ValueError as ve:
-        return jsonify({"error": "invalid", "detail": str(ve)}), 400
-    except Exception as e:
-        print(f"[ai-control] set {key} failed: {e}")
-        return jsonify({"error": "save_failed", "detail": str(e)}), 500
-
-
-@app.route("/admin/api/ai-control/<key>/reset", methods=["POST"])
-@admin_required
-def admin_reset_ai_control(key):
-    """Delete an override → revert the knob to its env/default. Super-admin only."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    try:
-        reset_ai_setting(key)
-        return jsonify({"key": key, "value": get_ai_setting(key),
-                        "source": _ai_setting_source(key)})
-    except ValueError as ve:
-        return jsonify({"error": "invalid", "detail": str(ve)}), 400
-    except Exception as e:
-        print(f"[ai-control] reset {key} failed: {e}")
-        return jsonify({"error": "reset_failed", "detail": str(e)}), 500
-
-
-@app.route("/admin/api/ai-activity", methods=["GET"])
-@admin_required
-def admin_list_ai_activity():
-    """Recent admin-AI turns (metadata + redacted question/answer) + light
-    totals. Super-admin only. ?limit=N (default 100, max 500)."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    try:
-        limit = int(request.args.get("limit", 100) or 100)
-    except (TypeError, ValueError):
-        limit = 100
-    limit = max(1, min(limit, 500))
-    # Optional surface filter: admin | visitor | (anything else = all).
-    surface = (request.args.get("surface") or "").strip().lower()
-    where, params = "", []
-    if surface in ("admin", "visitor"):
-        where = "WHERE surface = %s "
-        params = [surface]
-    rows = query_db(
-        "SELECT id, surface, session_id, model, provider, rounds, tool_calls, "
-        "tokens_in, tokens_out, cost_usd, duration_ms, status, error_text, "
-        "user_message, final_answer, created_at FROM ai_activity_log "
-        + where + "ORDER BY id DESC LIMIT %s",
-        tuple(params + [limit])) or []
-    out = []
-    for r in rows:
-        d = dict(r)
-        if d.get("created_at"):
-            d["created_at"] = d["created_at"].isoformat()
-        out.append(d)
-    stats = query_db(
-        "SELECT COUNT(*) AS n, COALESCE(SUM(cost_usd),0) AS cost, "
-        "COALESCE(SUM(tokens_in+tokens_out),0) AS tokens FROM ai_activity_log "
-        + where, tuple(params), fetchone=True) or {}
-    return jsonify({
-        "activity": out,
-        "stats": {
-            "count": int(stats.get("n") or 0),
-            "cost_usd": round(float(stats.get("cost") or 0), 6),
-            "tokens": int(stats.get("tokens") or 0),
-        },
-    })
+# The four super-admin endpoints - GET /admin/api/ai-control (list knobs + effective
+# values + source), PUT /admin/api/ai-control/<key> (save override), POST
+# /admin/api/ai-control/<key>/reset (revert to env/default), and GET
+# /admin/api/ai-activity (recent AI turns + totals) - moved to the ai_control_bp
+# blueprint. Same absolute URLs; @admin_required + in-body _require_super_admin_role()
+# preserved (from core). The AI-Control settings subsystem they call now lives in
+# core (re-exported), and the per-knob pylego.config default is read via pylego
+# directly in the blueprint. Registered via app.register_blueprint(ai_control_bp).
 
 
 # Visitor-profiles admin read API moved to admin/crm.py (Track B): crm_bp. Same
@@ -39976,6 +39871,15 @@ app.register_blueprint(cost_bp)
 # live in core, so this blueprint imports them cleanly. Registered like the others.
 from admin.products import products_bp  # noqa: E402
 app.register_blueprint(products_bp)
+
+# AI Control blueprint (Track B / task 078): the super-admin AI Control + AI Activity
+# API — 4 routes (GET /admin/api/ai-control list, PUT /admin/api/ai-control/<key> save,
+# POST /admin/api/ai-control/<key>/reset, GET /admin/api/ai-activity). @admin_required +
+# in-body _require_super_admin_role() preserved (from core). The AI-Control settings
+# subsystem (registry/cache/getter + set/reset + obs sink) now lives in core, so this
+# blueprint imports it cleanly. Registered like the others.
+from admin.ai_control import ai_control_bp  # noqa: E402
+app.register_blueprint(ai_control_bp)
 
 
 def _resolve_velo_callback_url():
