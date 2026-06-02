@@ -18345,23 +18345,23 @@ TO CUSTOMIZE THIS DASHBOARD:
     function _offerCard(o) {
       o = o || {};
       const card = document.createElement('div');
-      card.className = 'card';
-      card.style.cssText = 'margin-bottom:14px;padding:16px;';
+      card.className = 'gx-card';
+      card.style.cssText = 'margin-bottom:14px;';
       card.dataset.id = o.id || '';
       const tags = Array.isArray(o.trigger_tags) ? o.trigger_tags.join(', ') : '';
       card.innerHTML =
-        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">'
-        + '<label>Title<input type="text" class="of-title" value="' + _esc6(o.title || '') + '"></label>'
-        + '<label>Code<input type="text" class="of-code" value="' + _esc6(o.code || '') + '"></label>'
-        + '<label style="grid-column:1/3;">Description<textarea class="of-desc" rows="2">' + _esc6(o.description || '') + '</textarea></label>'
-        + '<label style="grid-column:1/3;">Call-to-action URL<input type="url" class="of-url" value="' + _esc6(o.cta_url || '') + '"></label>'
-        + '<label style="grid-column:1/3;">Trigger tags (comma-separated; blank = always eligible)<input type="text" class="of-tags" value="' + _esc6(tags) + '"></label>'
-        + '<label>Priority<input type="number" class="of-prio" value="' + _esc6(String(o.priority || 0)) + '"></label>'
-        + '<label style="align-self:end;"><input type="checkbox" class="of-active" ' + (o.active === false ? '' : 'checked') + '> Active</label>'
+        '<div class="gx-grid-fields">'
+        + '<div class="gx-field"><label class="gx-label">Title</label><input type="text" class="gx-input of-title" value="' + _esc6(o.title || '') + '"></div>'
+        + '<div class="gx-field"><label class="gx-label">Code</label><input type="text" class="gx-input of-code" value="' + _esc6(o.code || '') + '"></div>'
+        + '<div class="gx-field col-2"><label class="gx-label">Description</label><textarea class="gx-input of-desc" rows="2">' + _esc6(o.description || '') + '</textarea></div>'
+        + '<div class="gx-field col-2"><label class="gx-label">Call-to-action URL</label><input type="url" class="gx-input of-url" value="' + _esc6(o.cta_url || '') + '"></div>'
+        + '<div class="gx-field col-2"><label class="gx-label">Trigger tags <span class="gx-hint">(comma-separated; blank = always eligible)</span></label><input type="text" class="gx-input of-tags" value="' + _esc6(tags) + '"></div>'
+        + '<div class="gx-field"><label class="gx-label">Priority</label><input type="number" class="gx-input of-prio" value="' + _esc6(String(o.priority || 0)) + '"></div>'
+        + '<div class="gx-field" style="align-self:end;"><label class="ap-check" style="margin:0;"><input type="checkbox" class="of-active" ' + (o.active === false ? '' : 'checked') + '> Active</label></div>'
         + '</div>'
-        + '<div style="margin-top:10px;display:flex;gap:8px;">'
-        + '<button class="btn btn-primary btn-sm" onclick="saveOffer(this)">Save</button>'
-        + (o.id ? '<button class="btn btn-secondary btn-sm" onclick="deleteOffer(this,' + o.id + ')">Delete</button>' : '')
+        + '<div class="gx-foot" style="margin-top:12px;">'
+        + '<button class="gx-btn gx-btn-primary" onclick="saveOffer(this)">Save</button>'
+        + (o.id ? '<button class="gx-btn gx-btn-ghost" onclick="deleteOffer(this,' + o.id + ')">Delete</button>' : '')
         + '</div>';
       return card;
     }
@@ -18374,7 +18374,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     async function saveOffer(btn) {
-      const card = btn.closest('.card'); if (!card) return;
+      const card = btn.closest('.gx-card'); if (!card) return;
       const q = s => card.querySelector(s);
       const payload = {
         title: q('.of-title').value, code: q('.of-code').value,
@@ -18421,23 +18421,23 @@ TO CUSTOMIZE THIS DASHBOARD:
     function _personaCard(p) {
       p = p || {};
       const card = document.createElement('div');
-      card.className = 'card';
-      card.style.cssText = 'margin-bottom:14px;padding:16px;';
+      card.className = 'gx-card';
+      card.style.cssText = 'margin-bottom:14px;';
       card.dataset.id = p.id || '';
       const tools = Array.isArray(p.tool_names) ? p.tool_names.join(', ') : '';
       card.innerHTML =
-        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">'
-        + '<label>Key (a-z0-9_)<input type="text" class="pe-key" value="' + _esc6(p.persona_key || '') + '"' + (p.id ? '' : '') + '></label>'
-        + '<label>Label<input type="text" class="pe-label" value="' + _esc6(p.label || '') + '"></label>'
-        + '<label style="grid-column:1/3;">Instructions appended to the system prompt<textarea class="pe-suffix" rows="3">' + _esc6(p.prompt_suffix || '') + '</textarea></label>'
-        + '<label style="grid-column:1/3;">Allowed tools (comma-separated tool names; blank = all)<input type="text" class="pe-tools" value="' + _esc6(tools) + '"></label>'
-        + '<label>Model (blank = default)<input type="text" class="pe-model" value="' + _esc6(p.model || '') + '"></label>'
-        + '<label>Sort order<input type="number" class="pe-sort" value="' + _esc6(String(p.sort_order || 0)) + '"></label>'
-        + '<label style="align-self:end;"><input type="checkbox" class="pe-enabled" ' + (p.enabled === false ? '' : 'checked') + '> Enabled</label>'
+        '<div class="gx-grid-fields">'
+        + '<div class="gx-field"><label class="gx-label">Key <span class="gx-hint">(a-z0-9_)</span></label><input type="text" class="gx-input pe-key" value="' + _esc6(p.persona_key || '') + '"></div>'
+        + '<div class="gx-field"><label class="gx-label">Label</label><input type="text" class="gx-input pe-label" value="' + _esc6(p.label || '') + '"></div>'
+        + '<div class="gx-field col-2"><label class="gx-label">Instructions appended to the system prompt</label><textarea class="gx-input pe-suffix" rows="3">' + _esc6(p.prompt_suffix || '') + '</textarea></div>'
+        + '<div class="gx-field col-2"><label class="gx-label">Allowed tools <span class="gx-hint">(comma-separated; blank = all)</span></label><input type="text" class="gx-input pe-tools" value="' + _esc6(tools) + '"></div>'
+        + '<div class="gx-field"><label class="gx-label">Model <span class="gx-hint">(blank = default)</span></label><input type="text" class="gx-input pe-model" value="' + _esc6(p.model || '') + '"></div>'
+        + '<div class="gx-field"><label class="gx-label">Sort order</label><input type="number" class="gx-input pe-sort" value="' + _esc6(String(p.sort_order || 0)) + '"></div>'
+        + '<div class="gx-field" style="align-self:end;"><label class="ap-check" style="margin:0;"><input type="checkbox" class="pe-enabled" ' + (p.enabled === false ? '' : 'checked') + '> Enabled</label></div>'
         + '</div>'
-        + '<div style="margin-top:10px;display:flex;gap:8px;">'
-        + '<button class="btn btn-primary btn-sm" onclick="savePersona(this)">Save</button>'
-        + (p.id ? '<button class="btn btn-secondary btn-sm" onclick="deletePersona(this,' + p.id + ')">Delete</button>' : '')
+        + '<div class="gx-foot" style="margin-top:12px;">'
+        + '<button class="gx-btn gx-btn-primary" onclick="savePersona(this)">Save</button>'
+        + (p.id ? '<button class="gx-btn gx-btn-ghost" onclick="deletePersona(this,' + p.id + ')">Delete</button>' : '')
         + '</div>';
       return card;
     }
@@ -18450,7 +18450,7 @@ TO CUSTOMIZE THIS DASHBOARD:
     }
 
     async function savePersona(btn) {
-      const card = btn.closest('.card'); if (!card) return;
+      const card = btn.closest('.gx-card'); if (!card) return;
       const q = s => card.querySelector(s);
       const payload = {
         persona_key: q('.pe-key').value, label: q('.pe-label').value,
