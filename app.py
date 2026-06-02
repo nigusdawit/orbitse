@@ -30086,51 +30086,9 @@ def admin_secrets_unset():
 
 # --------------- Drag-and-Drop Reorder ---------------
 
-@app.route("/admin/api/reorder/<string:content_type>", methods=["PUT"])
-@admin_required
-def admin_reorder(content_type):
-    """PUT /admin/api/reorder/<type> — Batch-update sort_order for a content type."""
-    table_map = {
-        "gallery-cards": "gallery_cards",
-        "experiences": "experiences",
-        "pricing": "pricing_seasons",
-        "testimonials": "testimonials",
-        "team": "team_members",
-        "faq": "faqs",
-        "page-sections": "page_sections",
-        "custom-section-items": "custom_section_items",
-        "blog-posts": "blog_posts",
-        "page-views": "page_views"
-    }
-    table = table_map.get(content_type)
-    if not table:
-        return jsonify({"error": "Invalid content type"}), 400
-
-    items = request.get_json()
-    if not isinstance(items, list):
-        return jsonify({"error": "Expected array of {id, sort_order}"}), 400
-
-    # Tables that have an updated_at column get it refreshed on reorder
-    tables_with_updated_at = {"gallery_cards", "experiences", "pricing_seasons"}
-
-    conn = get_db()
-    try:
-        with conn.cursor() as cur:
-            for item in items:
-                if table in tables_with_updated_at:
-                    cur.execute(
-                        f"UPDATE {table} SET sort_order = %s, updated_at = NOW() WHERE id = %s",
-                        (item["sort_order"], item["id"])
-                    )
-                else:
-                    cur.execute(
-                        f"UPDATE {table} SET sort_order = %s WHERE id = %s",
-                        (item["sort_order"], item["id"])
-                    )
-    finally:
-        conn.close()
-
-    return jsonify({"success": True})
+# Batch reorder of content sort_order (gallery-cards/experiences/pricing/testimonials/
+# team/faq/page-sections/custom-section-items/blog-posts/page-views) moved to
+# admin/content.py (Track B / B10): content_bp. Same /admin/api/reorder/<type> URL.
 
 
 # --------------- Chat History & Analytics ---------------
@@ -32066,14 +32024,8 @@ def admin_api_analytics_chart():
 # (Track B / B8). Same /admin/api/* URLs, @admin_required preserved.
 
 
-@app.route("/admin/api/reorder/sphere-images", methods=["PUT"])
-@admin_required
-def admin_reorder_sphere_images():
-    data = request.get_json(force=True)
-    ids = data.get("ids", [])
-    for i, img_id in enumerate(ids):
-        execute_db("UPDATE sphere_images SET sort_order = %s WHERE id = %s", (i, img_id))
-    return jsonify({"status": "ok"})
+# Sphere-images reorder moved to admin/content.py (Track B / B10): content_bp.
+# Same /admin/api/reorder/sphere-images URL; @admin_required preserved (core).
 
 
 # =============================================================================
