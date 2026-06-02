@@ -18089,15 +18089,28 @@ def execute_admin_tool(name, args_json, session_id=""):
 
 
 def sync_ai_prompts():
-    """Pre-fill the ai_prompts table with the current default for any missing
-    key. Never overwrites an existing row, so admin edits survive restarts and
-    future code updates. Called once at boot from main._bootstrap()."""
+    """Seed the ai_prompts table with the current default for any missing key
+    AND refresh never-edited (auto-seeded) rows back to the current code default
+    so that changing a default prompt constant propagates on the next boot.
+
+    Per row, the upsert's ``ON CONFLICT`` only updates when ``updated_by IS NULL``
+    (i.e. the row was machine-seeded, never touched by a human) AND the stored
+    content actually differs from the code default (``content IS DISTINCT FROM
+    EXCLUDED.content``) — the latter avoids needless writes / updated_at churn on
+    every boot. ADMIN-EDITED rows (``updated_by`` set non-null by the admin
+    save/reset endpoints) are PRESERVED untouched: the WHERE clause skips them, so
+    super-admin edits still survive restarts and future code updates.
+
+    Called once at boot from main._bootstrap()."""
     defaults = _ai_prompt_defaults()
     for key, content in defaults.items():
         try:
             execute_db(
                 "INSERT INTO ai_prompts (prompt_key, content) VALUES (%s, %s) "
-                "ON CONFLICT (prompt_key) DO NOTHING",
+                "ON CONFLICT (prompt_key) DO UPDATE SET content = EXCLUDED.content, "
+                "updated_at = NOW() "
+                "WHERE ai_prompts.updated_by IS NULL "
+                "AND ai_prompts.content IS DISTINCT FROM EXCLUDED.content",
                 (key, content),
             )
         except Exception as e:

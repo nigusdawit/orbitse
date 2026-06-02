@@ -146,6 +146,109 @@ def test_blank_override_falls_through_to_default():
 
 
 # =============================================================================
+# sync_ai_prompts() seed/refresh semantics (task 082 — prompt seed fix)
+# =============================================================================
+# The fresh-DB harness MASKS the bug under test: on a brand-new pgserver the
+# rows are seeded straight from the current defaults, so a stale-row scenario
+# never arises naturally. These tests force that scenario by pre-inserting a
+# row with deliberately stale / human-edited content, THEN calling
+# sync_ai_prompts(), and asserting the refresh-vs-preserve behavior.
+
+def test_sync_refreshes_auto_seeded_stale_row():
+    """A machine-seeded row (updated_by IS NULL) with stale content is REFRESHED
+    by sync_ai_prompts() to the current code default, so a later change to a
+    default prompt constant propagates on the next boot. Also pins that
+    get_prompt() then serves the refreshed default (the bug was: the stale DB
+    row shadowed the constant forever)."""
+    key = "scraper_research"
+    default = app._ai_prompt_defaults()[key]
+    assert default.strip(), "precondition: default for key must be non-empty"
+    try:
+        # Pre-seed a STALE row exactly as an old auto-seed would have left it:
+        # content from a previous code version, updated_by NULL (never human-edited).
+        app.execute_db(
+            "INSERT INTO ai_prompts (prompt_key, content, updated_by) "
+            "VALUES (%s, %s, NULL) "
+            "ON CONFLICT (prompt_key) DO UPDATE SET content = EXCLUDED.content, "
+            "updated_by = NULL",
+            (key, "STALE-OLD-CONTENT"),
+        )
+        app._invalidate_prompt_cache()
+        # Sanity: the stale row is in place before the sync.
+        row = app.query_db(
+            "SELECT content, updated_by FROM ai_prompts WHERE prompt_key = %s",
+            (key,), fetchone=True,
+        )
+        assert row["content"] == "STALE-OLD-CONTENT"
+        assert row["updated_by"] is None
+
+        app.sync_ai_prompts()
+
+        # The auto-seeded row was REFRESHED to the current code default.
+        row = app.query_db(
+            "SELECT content, updated_by FROM ai_prompts WHERE prompt_key = %s",
+            (key,), fetchone=True,
+        )
+        assert row["content"] != "STALE-OLD-CONTENT", "stale row was not refreshed"
+        assert row["content"] == default
+        assert row["updated_by"] is None  # still machine-owned
+        # And get_prompt now serves the refreshed default, not the stale text.
+        assert app.get_prompt(key, default) == default
+    finally:
+        # Leave the shared row as the clean code-default seed (updated_by NULL).
+        app.execute_db(
+            "INSERT INTO ai_prompts (prompt_key, content, updated_by) "
+            "VALUES (%s, %s, NULL) "
+            "ON CONFLICT (prompt_key) DO UPDATE SET content = EXCLUDED.content, "
+            "updated_by = NULL",
+            (key, default),
+        )
+        app._invalidate_prompt_cache()
+
+
+def test_sync_preserves_admin_edited_row():
+    """A human-edited row (updated_by set non-null by the admin save/reset
+    endpoints) is PRESERVED untouched by sync_ai_prompts() — the WHERE clause
+    skips any row whose updated_by IS NOT NULL, so super-admin edits survive a
+    code default change + reboot."""
+    key = "presentation_narration"
+    default = app._ai_prompt_defaults()[key]
+    try:
+        # Pre-seed a HUMAN-EDITED row: distinct content + non-null updated_by,
+        # exactly how a super-admin save lands.
+        app.execute_db(
+            "INSERT INTO ai_prompts (prompt_key, content, updated_by) "
+            "VALUES (%s, %s, %s) "
+            "ON CONFLICT (prompt_key) DO UPDATE SET content = EXCLUDED.content, "
+            "updated_by = EXCLUDED.updated_by",
+            (key, "HUMAN-EDITED", "super_admin"),
+        )
+        app._invalidate_prompt_cache()
+
+        app.sync_ai_prompts()
+
+        # The human edit is untouched — neither content nor updated_by changed.
+        row = app.query_db(
+            "SELECT content, updated_by FROM ai_prompts WHERE prompt_key = %s",
+            (key,), fetchone=True,
+        )
+        assert row["content"] == "HUMAN-EDITED", "admin edit was clobbered by sync"
+        assert row["updated_by"] == "super_admin"
+        # get_prompt serves the human edit, not the code default.
+        assert app.get_prompt(key, default) == "HUMAN-EDITED"
+    finally:
+        # Reset the shared row back to the clean code-default seed (updated_by NULL).
+        app.execute_db(
+            "INSERT INTO ai_prompts (prompt_key, content, updated_by) "
+            "VALUES (%s, %s, NULL) "
+            "ON CONFLICT (prompt_key) DO UPDATE SET content = EXCLUDED.content, "
+            "updated_by = NULL",
+            (key, default),
+        )
+        app._invalidate_prompt_cache()
+
+
+# =============================================================================
 # HTTP routes: /admin/api/ai-prompts* + /admin/api/default-system-prompt
 # =============================================================================
 # These pin the route behavior (super-admin gating + GET/PUT/reset cycle) so the
