@@ -23,6 +23,7 @@ A plain-language reference for clients and operators. Everything here describes 
 - Remember the full conversation for that visitor's session.
 - Be turned on or off site-wide from the admin.
 - Use a system prompt you fully control — change its tone, personality, or knowledge focus without touching code.
+- Reply faster: the assistant now reuses a cached copy of its fixed instructions instead of re-reading them on every message. This is automatic for every site — replies come back quicker (and cost a little less) with no change to what the assistant says or does.
 
 ### What you control ✅
 - Which voice it uses (six OpenAI voices for fast/cheap, or any ElevenLabs voice for ultra-realistic).
@@ -30,6 +31,7 @@ A plain-language reference for clients and operators. Everything here describes 
 - Whether it speaks at all, or just types.
 - Per-visitor daily voice character cap (anti-abuse).
 - The exact wording of every greeting.
+- **Optional "specialist router"** (OFF by default) — when you turn it on, the assistant first figures out what each visitor is asking about (booking, pricing, a general question, or leaving their details) and loads only the instructions and tools that fit, for an even faster, more focused reply. It's fully under your control (a master on/off switch, the classifier model, a confidence setting, and five editable prompts). If it's ever unsure, it quietly falls back to the full assistant — so chat never breaks. Until you switch it on, nothing changes.
 
 ### Cost transparency ✅
 - Every chat message, every voice second, every SMS segment is logged with its cost.
@@ -256,7 +258,7 @@ The admin **Web Scraper** tab can pull content from any public webpage and turn 
 ### What's there ✅
 - Each end-client gets their own isolated Replit deployment with their own Postgres database.
 - A **VELO master agent** can register all client installs and broadcast configuration / feature-flag changes to them.
-- Per-tenant feature flags + plan tiers (`solo` / `growth` / `enterprise`).
+- Per-tenant feature flags + plan tiers (`solo` / `growth` / `enterprise`). The **Datahub**, **Research Hub**, and **Content Studio** tools can now be switched on or off per client from **Plans & Features** (they're ON by default), alongside the existing per-tenant toggles.
 - Per-tenant cost caps (alert / throttle / hard-block).
 
 ### What's not there yet ⛔

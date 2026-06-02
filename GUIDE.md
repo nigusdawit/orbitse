@@ -29,6 +29,8 @@ pyproject.toml                   Python package list (Flask, psycopg2, openai, g
 
 These are the core files you'll work with. Supporting files (`pyproject.toml`, `uv.lock`, `.replit`, `replit.md`) handle configuration and dependencies but you won't need to touch them.
 
+> **Note on structure:** As the template has grown, the admin panel has been split from one large file into a small shell plus one file per tab, with shared style and script files and a live component "styleguide" page, and the server code has been organized into focused modules. This makes the template easier to customize and extend. It's still plain HTML, CSS, JavaScript, and Flask with **no build step** — edit a file and refresh.
+
 ---
 
 ## How the Site Works
@@ -215,6 +217,14 @@ Backend parses the complete response for command blocks
         v
 If a command is found, frontend executes it (navigate, show slide, etc.)
 ```
+
+### Faster Replies
+
+Visitor replies come back faster now. The assistant reuses a cached copy of its large fixed instructions instead of re-reading them on every turn, so it answers more quickly and costs a little less — with no change to what it says, the commands it uses, or how it behaves. This is automatic; there's nothing to switch on.
+
+Optionally, an operator can turn on a **specialist router**. When enabled, the assistant first detects what each visitor is asking about (booking, pricing, a general question, or leaving their contact details) and loads only the instructions and tools that fit, for an even faster, more focused reply. If it's ever unsure, it safely falls back to the full assistant, so chat never breaks. The router is **OFF by default** and changes nothing until you enable it. It's fully controllable from the admin: a master on/off switch, a classifier-model field (leave it blank to use a small fast default model), and a confidence threshold live in the **AI Control** tab, the per-client enable lives in **Plans & Features**, and the five prompts it uses (the four specialists plus the router) are editable in the **AI Prompts** tab.
+
+> **Tip:** The **AI Control** tab now shows each setting's current value alongside its built-in default, so you always know exactly what a knob is set to before you change it. When the AI master switch is off, knobs are marked as inert.
 
 ### The System Prompt
 

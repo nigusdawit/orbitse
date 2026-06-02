@@ -120,13 +120,24 @@ warning at startup when this default is in effect.
 ## Project layout
 
 ```
-app.py                    Single-file Flask application (routes, schema,
-                          business logic) — currently ~31k lines
+app.py                    Slim Flask aggregator — imports, re-exports moved
+                          symbols, blueprint registration, the global
+                          before_request hooks, VELO wiring, __main__. Still
+                          holds the schema bootstrap (init_db) and the bulk of
+                          the AI/business logic not yet carved out (~40k lines)
+core.py                   Shared infrastructure the blueprints import (the Flask
+                          app + extensions, DB helpers, auth gates, feature
+                          flags, prompts, AI-Control settings, cost infra)
+admin/                    15 Flask blueprints — the feature routes split out of
+                          app.py (public_api, content, forms, commerce, …)
 velo_endpoints.py         /api/velo/command surface for VELO Master
 velo_handlers.py          The 30 registered command handlers
 messaging.py              Resend (email) + Twilio (SMS) wrappers
 stripe_client.py          Stripe checkout & webhook handling
-templates/                Jinja2 templates for the public site & admin panel
+templates/                Jinja2 templates for the public site & admin panel.
+                          The admin dashboard is a slim shell + ~65 per-tab
+                          partials under templates/admin/tabs/
+public/admin/             Extracted admin CSS/JS assets (no build step)
 static/                   CSS, JS, images
 uploads/                  User-uploaded media (PERSIST in production)
 attached_assets/          Sample assets (safe to delete)

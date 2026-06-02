@@ -56,10 +56,15 @@ Two audiences:
   site state (with a pending-action approval flow for destructive operations), watch analytics, and
   configure cost caps, feature flags, and integrations.
 
-The codebase is a **Flask monolith**: one ~30,500-line `app.py` plus four helper modules
-(`automations.py`, `scraper.py`, `messaging.py`, `stripe_client.py`). All HTTP routes,
-DB schema bootstrap, AI prompt construction, scheduler ticks, and webhook handlers live in
-`app.py`.
+The codebase **used to be** a single Flask monolith; `app.py` has been de-monolithed (Track B).
+Shared infrastructure now lives in **`core.py`**, and the feature routes live in **15 Flask
+blueprints under `admin/`**. The global `app` object is **kept** (there is no app factory), so
+`main.py` / gunicorn / the test suite still bind to it. `app.py` is now a slim aggregator
+(~40,565 lines, down from ~46,800) that still holds `init_db()`, the scheduler ticks, AI prompt
+construction, and the AI/business logic not yet carved out; alongside it are the helper modules
+(`automations.py`, `scraper.py`, `messaging.py`, `stripe_client.py`, `rag.py`, …). See
+[§2](#2-high-level-architecture) and [§4](#4-repository-layout) for the layering and where things
+moved.
 
 ---
 
@@ -67,11 +72,12 @@ DB schema bootstrap, AI prompt construction, scheduler ticks, and webhook handle
 
 ```
                       ┌──────────────────────────┐
-   public visitor ──▶ │  Flask (app.py)          │ ◀── admin (password + session)
+   public visitor ──▶ │  Flask (app.py + core.py │ ◀── admin (password + session)
+                      │  + admin/ blueprints)    │
                       │  + Gunicorn (prod)       │
                       ├──────────────────────────┤
-                      │  templates/admin/        │   <- Jinja for admin UI
-                      │  public/ (static)        │   <- HTML/CSS/JS for public site
+                      │  templates/admin/        │   <- Jinja shell + tabs/ partials
+                      │  public/ + public/admin/ │   <- HTML/CSS/JS for public + admin
                       │  uploads/ (user files)   │
                       └─────┬──────────┬─────────┘
                             │          │
@@ -95,6 +101,16 @@ DB schema bootstrap, AI prompt construction, scheduler ticks, and webhook handle
 
 Key facts:
 
+- **De-monolithed, but still one `app` object.** `app.py` was split (Track B) into three layers
+  with **no circular imports**: `state.py → core.py → admin/*.py → app.py`. `core.py` is the shared
+  bottom layer (Flask app + extensions, DB helpers, auth gates, feature flags, prompts, AI-Control
+  settings, cost infra); the **15 blueprints under `admin/`** hold the feature routes; `app.py` is
+  the slim aggregator that registers them. There is **NO app factory** — the global `app` is kept,
+  so `main.py`/gunicorn/tests bind to it unchanged. **Blueprints import only from `core`, never
+  `from app`** (that would be a cycle since `app.py` imports them); `app.py` re-exports every moved
+  symbol so `app.X`, `from app import X`, and the tests keep resolving. This was a pure code move —
+  no DB/schema change, and the route table is **byte-identical** (a route-snapshot test enforces
+  it: `tests/test_route_snapshot.py` + `tests/routes_baseline.txt`). See [§4](#4-repository-layout).
 - **One process, one DB.** No worker queue, no Redis. Background work happens in a single
   scheduler thread inside `app.py` (cost caps, weekly digest, scrape schedules, automations runner,
   review request scheduler).
@@ -127,7 +143,9 @@ Key facts:
 | Frontend | Plain HTML/CSS/JS, **DOMPurify** (sanitize AI HTML), **Lucide** icons, **Three.js + CSS3DRenderer** (Sphere View), **Chart.js** (admin dashboards), **Stripe.js** (storefront checkout), Web Speech API (free STT) |
 
 Python deps are pinned in `pyproject.toml` (locked in `uv.lock`). Frontend libs are pulled from
-CDNs in `public/index.html` and `templates/admin/dashboard.html` — there is **no bundler**.
+CDNs in `public/index.html` and the admin shell `templates/admin/dashboard.html` — there is **no
+bundler** and **no build step**. The admin's own CSS/JS now lives as plain files under
+`public/admin/` (loaded via `<link>`/`<script src>`, not ES modules — see [§12](#12-admin-dashboard-overview)).
 
 **Forbidden:** do not edit `package.json` manually, do not change `vite.config.*`, do not modify
 `drizzle.config.ts` (this project does not actually use Drizzle — it's plain SQL).
@@ -138,7 +156,9 @@ CDNs in `public/index.html` and `templates/admin/dashboard.html` — there is **
 
 | Path | Role |
 | --- | --- |
-| `app.py` | The monolith. All routes, schema bootstrap (`init_db`), AI prompt construction, scheduler ticks, webhook handlers, helpers. ~30,500 lines / ~1.4 MB. |
+| `app.py` | The slim aggregator (~40,565 lines, down from ~46,800). Imports, **re-exports** of every symbol moved to `core.py`, the 15 `app.register_blueprint(...)` calls, the 2–3 global `@before_request` hooks, schema bootstrap (`init_db`), scheduler ticks, AI prompt construction, webhook handlers, VELO wiring, and the `__main__` block — plus the business/AI logic not yet carved into a blueprint. **No app factory**; the global `app` lives here and everything binds to it. |
+| `core.py` | The shared **bottom layer** (~3,211 lines) that the blueprints import (`from core import ...`). Holds: the Flask `app` + extensions; the DB layer (`get_db`/`query_db`/`execute_db` + the connection pool); the auth gates (`admin_required`/`_is_super_admin`/`_require_super_admin_role`); the feature-flag subsystem (`_FEATURE_REGISTRY`/`tenant_has_feature`/`set_tenant_feature`); the prompt subsystem (`SYSTEM_PROMPT`/`get_prompt` + the seeded prompt registry); the AI-Control settings subsystem (`_ai_control_registry`/`get_ai_setting`); and the cost/billing infra. **Never imports `app`** (rule enforced in its header) — keep it app-free. `app.py` re-exports everything here so old call sites (`app.query_db`, `from app import query_db`, tests) still resolve. |
+| `admin/` | The **15 Flask blueprints** the feature routes were split into (Track B): `public_api`, `content`, `forms`, `offers`, `personas`, `commerce`, `sitebuilder`, `reporting`, `dashboards`, `crm`, `tenancy`, `ai_prompts`, `cost`, `products`, `ai_control` (registered in `app.py` alongside the pre-existing `velo_bp`). Each imports only from `core` — **never `from app`**. Despite the directory name they are not all admin-only (`public_api` serves the public `/api/*` reads). |
 | `automations.py` | "If This Then That" workflow engine. Triggers, action runner, retention sweep, concurrency limits. Does not create tables — uses ones from `init_db`. |
 | `scraper.py` | URL / objective scraper with SSRF guards, ScrapingBee / Browserless fallback, schedule runner. |
 | `messaging.py` | Email (Resend) + SMS (Twilio) send helpers, opt-out handling, status webhooks. Always send through this — never call Resend / Twilio directly. |
@@ -148,7 +168,10 @@ CDNs in `public/index.html` and `templates/admin/dashboard.html` — there is **
 | `public/voice.js` | `VoiceAgent` module: STT dispatch (Web Speech vs Whisper), per-sentence streaming TTS queue, intro playback. |
 | `public/styles.css` | All public-site CSS, organized in numbered sections; theme tokens come from CSS variables set by the Theme Editor. |
 | `public/ai_concierge.png` | Default chat avatar. |
-| `templates/admin/dashboard.html` | The entire admin UI (one big Jinja template + inline JS, all tabs). |
+| `templates/admin/dashboard.html` | The admin UI **shell** (~1,689 lines; was a 29,240-line monolith — task/076). `<head>`, the inline `#admin-appearance-vars {{ appearance.* }}` bootstrap (must stay inline), the `<link>`/`<script src>` tags, the sidebar nav with its `{% if is_super_admin()/has_feature() %}` gates, the global modals, and ~65 `{% include %}` lines. |
+| `templates/admin/tabs/_*.html` | One Jinja partial **per tab** (~65 files; pure markup), e.g. `_pricing.html` is the Pricing tab. Pulled into the shell via `{% include %}`. |
+| `templates/admin/README.md` | Maintainer guide for the admin split: the tab→partial→JS→endpoint map and the "how to add a tab" recipe. **Read this before touching the admin UI.** |
+| `public/admin/` | Extracted admin static assets (served at `/admin/<file>`; **no build step**, **not** ES modules — all JS functions stay GLOBAL so inline `onclick=` handlers keep working): `base.css` (global `*` reset + `:root` theme vars + the reused `.btn`/`.card`/`.badge`/`.tab-*`/`.form-*` classes), `theme.css` (the `#admin-glass-theme` glass layer + `gx-*` kit + light/dark + appearance variants), `tabs.css` (a few per-tab scoped styles), `csrf.js` (CSRF fetch wrapper + some feature JS incl. datahub; loads FIRST), `app-main.js` (the bulk of admin JS — `switchTab`, the appearance kit, every `loadX/saveX/editX`, render helpers), `services.js`, `presentations.js`, and `styleguide.html` (a live `gx-*` component gallery). |
 | `templates/admin/login.html` | Admin login form. |
 | `chat-ui-kit/` | Standalone, embeddable chat widget (HTML / CSS / JS + a tiny Flask backend). Has its own `README.md`, `INTEGRATION_GUIDE.md`, `PROMPT_GUIDE.md`. **Not** part of the live app — it's a portable kit you can ship to other projects. |
 | `attached_assets/` | User-uploaded reference assets (screenshots, design refs). Imported in frontend via `@assets/...` if needed. |
@@ -303,7 +326,8 @@ See [§27](#27-placeholder-credentials--user-visible-failure-modes) for which se
 
 - **Driver:** `psycopg2-binary`. There is **no ORM** — all SQL is raw and parameterized through
   `%s` placeholders.
-- **Helpers** (defined in `app.py`):
+- **Helpers** (now defined in `core.py` and re-exported from `app.py`, so `app.query_db(...)` and
+  `from app import query_db` both still work; blueprints should `from core import ...`):
   - `query_db(sql, params=(), fetchone=False)` — returns a list of `dict`s (or one dict if
     `fetchone=True`) using `RealDictCursor`.
   - `execute_db(sql, params=(), returning=False)` — write path; returns the row(s) when
@@ -464,7 +488,12 @@ All tables are created in `app.py`'s `init_db()`. Helper modules (`messaging.py`
 
 ## 10. Backend Route Map
 
-There are ~370 `@app.route` decorators in `app.py`. They follow strict prefix conventions:
+There are ~370 routes total. They are now split between `app.py` (routes not yet carved out) and
+the **15 blueprints under `admin/`** (each a `@<name>_bp.route(...)` in its module). The set of
+routes and their URLs is **byte-identical** to the pre-split monolith — a route-snapshot test
+(`tests/test_route_snapshot.py`) diffs the live URL map against `tests/routes_baseline.txt` to keep
+it that way. To find a handler, prefer `rg "route\(.*<path>" app.py admin/` over assuming it lives
+in `app.py`. The routes follow strict prefix conventions:
 
 | Prefix | Auth | Purpose |
 | --- | --- | --- |
@@ -492,8 +521,9 @@ There are ~370 `@app.route` decorators in `app.py`. They follow strict prefix co
 
 ### Feature-flag route gate
 
-`@app.before_request` runs `_enforce_feature_flags()` against `_FEATURE_ROUTE_PREFIXES` (in
-`app.py`). When a tenant doesn't have a feature:
+`@app.before_request` runs `_enforce_feature_flags()` (in `app.py` — it must bind to `app`) against
+`_FEATURE_ROUTE_PREFIXES` (the prefix→feature table, now in `core.py`). When a tenant doesn't have
+a feature:
 
 - Public GET routes return **404** (no leak of feature names).
 - Other requests return **403** with `{"error": "feature_disabled", "feature": "...", ...}`.
@@ -562,9 +592,26 @@ Scroll mode is set on `<html data-scroll-mode="snap|smooth">` from `siteSettings
 
 ## 12. Admin Dashboard Overview
 
-Single big Jinja template: `templates/admin/dashboard.html`. The sidebar is grouped — each tab is a
-`<div class="tab-content" id="tab-...">`. Tabs are gated by feature flags via the `has_feature`
-template helper.
+**De-monolithed (task/076).** `templates/admin/dashboard.html` was a 29,240-line monolith; it is now
+a ~1,689-line **shell** + ~65 per-tab Jinja partials + extracted static assets. **Read
+`templates/admin/README.md` first** — it carries the tab→partial→JS→endpoint map and the "how to
+add a tab" recipe.
+
+- **Shell** (`templates/admin/dashboard.html`): `<head>`, the inline `#admin-appearance-vars
+  {{ appearance.* }}` bootstrap (Jinja — must stay inline), the `<link>`/`<script src>` tags, the
+  sidebar nav with its `{% if is_super_admin()/has_feature() %}` gates, the global modals, and ~65
+  `{% include %}` lines.
+- **Tab partials** (`templates/admin/tabs/_<id>.html`): one file per tab panel (each still a
+  `<div class="tab-content" id="tab-...">`), pure markup, included by the shell.
+- **Assets** (`public/admin/`, served at `/admin/<file>`): `base.css`, `theme.css`, `tabs.css`,
+  `csrf.js`, `app-main.js`, `services.js`, `presentations.js` (see [§4](#4-repository-layout) for
+  what each holds). **No build step, no bundler, and the JS is NOT loaded as `type=module`** — every
+  function stays GLOBAL so the inline `onclick=` handlers in the partials keep resolving. A live
+  component gallery lives at `public/admin/styleguide.html`.
+
+Tabs are gated by feature flags via the `has_feature` template helper (and super-admin-only tabs by
+`is_super_admin()`). Any restyle must be **scoped** — `base.css` ships a global `*` reset and the
+reused `.btn`/`.card`/`.badge` classes, so an unscoped change leaks across all tabs.
 
 | Group | Tabs |
 | --- | --- |
@@ -572,7 +619,8 @@ template helper.
 | Layout | Page Layout (drag-reorder + custom-section builder) · Theme Editor |
 | Content | Site Settings · Gallery Cards · Experiences · Pricing · Business Info · Testimonials · Team · FAQ · Blog · Events · Services · Saved Pages · Web Scraper · Media Library · Video Gallery · Podcast |
 | Store | Products · Orders · Sphere View |
-| AI & Chat | Admin Chat · Chatbot · Chat History · Voice Agent · Forms |
+| AI & Chat | Admin Chat · Chatbot · Chat History · Voice Agent · Forms · AI Prompts · AI Control · AI Activity |
+| Growth (super-admin) | Datahub · Research Hub · Content Studio · Offers · Visitor Personas · CRM |
 | Marketing | SEO · Analytics · Marketing Insights |
 | Site | Themes · Website Designs |
 | Messaging | Subscribers · Templates · Campaigns |
@@ -583,6 +631,22 @@ template helper.
 
 **Admin Chat tab**: talks to the Admin AI which can mutate site state. Destructive actions land in
 `admin_pending_actions` and require a human Approve click before being applied.
+
+**AI Control tab**: edits the operator AI-Control knobs (`_ai_control_registry` / `get_ai_setting`,
+in `core.py`). Each knob now shows **its current value AND its default** (default rendered as the
+input placeholder + repeated in the meta line) plus an **"inert (master AI switch off)"** note when
+the master AI kill is off (task/080 — these were previously blank).
+
+**Recent admin UI fixes (task/080):**
+
+- The **"Configuration & Developer"** sidebar heading used to be invisible on the light theme
+  (hardcoded near-white at 40% opacity); it now uses a theme token and is readable in light + dark.
+- **Plans & Features** gained per-tenant toggles for **`datahub`**, **`research_hub`**, and
+  **`content_studio`** (all default **on**, preserving "super-admin always sees them"). The super-
+  admin can now disable them per client.
+- Sidebar gates were tightened to `is_super_admin() and has_feature(...)`: a feature flag can only
+  **hide** a tool, never **grant** access. (Pairs with the security boundary that the AI-tool
+  surface behind some of these tabs must self-gate — routes alone don't cover it.)
 
 ---
 
@@ -641,6 +705,47 @@ can mutate site state but routes destructive operations through `admin_pending_a
 `chatbot_settings.agent_scope_tightness ∈ {strict, balanced, generous}`. Appends a paragraph to
 the system prompt that nudges how proactive / expansive the agent should be. Gated by the
 `agent_scope_slider` feature flag (no-op when off).
+
+### Faster Visitor AI Chat (task/079 — speeds up `POST /api/chat`)
+
+Two phases. **Phase 1 ships to everyone and is behavior-preserving; Phase 2 is optional, per-client,
+and default-off / inert / fail-open.** Long-form: `docs/faster-visitor-chat/blueprint.md` + `PLAN.md`.
+
+**Phase 1 — prompt cache + reorder (all clients):**
+
+- The system prompt is reordered into a **byte-stable cacheable prefix** + a **dynamic suffix**, so
+  the big fixed context (identity, tool-usage block, layout) hashes identically turn-to-turn.
+- **Provider prompt caching** is enabled: Anthropic gets `cache_control` on the tools block + the
+  system-prefix (with a **fail-open** retry if the cache write is rejected); OpenAI caches the long
+  prefix automatically. The large fixed context is then **re-read from cache instead of re-prefilled**.
+- The `SYSTEM_PROMPT` `generatePage` design block was **trimmed** — the literal command blocks are
+  fenced **verbatim** and the change is gated by an equivalence battery, so the emitted commands are
+  unchanged.
+
+**Phase 2 — hybrid specialist router (optional, per-client, default-off):**
+
+- Built by **extending `_visitor_apply_persona(message, model, provider, active_tools, messages)`**
+  in `app.py`. On each turn it classifies intent **keyword → embedding → tiny AI classifier on
+  ambiguity** and picks a **specialist sub-prompt + a minimal tool subset** for that turn.
+- It **always keeps custom/MCP skills** in the tool set, and it inserts the chosen specialist
+  sub-prompt as a **separate system message** so the Phase-1 cache prefix is preserved.
+- **Fail-open:** any error falls back to the full default prompt + all tools (today's exact flow).
+- **Activation gate (all three must be ON):** the global **AI master-kill**, the operator knob
+  **`visitor_specialist_router_enabled`**, and the per-client feature flag
+  **`visitor_specialist_router`**. If any is off, the exact single-agent flow runs.
+
+**Control surface:**
+
+- Per-client **Plans & Features** flag `visitor_specialist_router` (in `_FEATURE_REGISTRY`, default
+  **OFF**).
+- **AI Control** knobs (`_ai_control_registry` / `get_ai_setting`, in `core.py`):
+  `visitor_specialist_router_enabled` (bool, default OFF — the operator master),
+  `visitor_specialist_router_model` (string; blank ⇒ `gpt-4o-mini`),
+  `visitor_specialist_embed_threshold` (float, default `0.78`).
+- **5 editable prompts in the AI Prompts tab** (seeded as rows by the prompt registry in `core.py`):
+  `visitor_specialist_booking`, `visitor_specialist_pricing`, `visitor_specialist_general`,
+  `visitor_specialist_leadcap`, and `visitor_specialist_router_prompt`.
+- **No migration**: the flag lazy-seeds, the prompts are rows, the knobs are config.
 
 ---
 
@@ -971,7 +1076,7 @@ This claim-then-send order means a crash mid-send can never double-deliver.
 
 ## 24. Feature Flags & Their Behavior When Off
 
-Source of truth: `_FEATURE_REGISTRY` in `app.py`. Each entry is
+Source of truth: `_FEATURE_REGISTRY` in `core.py` (re-exported from `app.py`). Each entry is
 `(feature_name, human_label, plan_tier_required, default_enabled, group)`.
 
 | Feature | Plan tier | Default | Group |
@@ -993,8 +1098,23 @@ Source of truth: `_FEATURE_REGISTRY` in `app.py`. Each entry is
 | `analytics` | growth | on | Analytics |
 | `cost_dashboard` | growth | on | Analytics |
 | `weekly_digest` | growth | on | Analytics |
+| `datahub` | growth | on | AI |
+| `research_hub` | growth | on | AI |
+| `content_studio` | growth | on | AI |
+| `visitor_specialist_router` | growth | **off** | AI |
 
 Plus the master kill-switch `voice_settings.premium_enabled` for paid voice providers.
+
+**Notes on the newer flags (task/079, task/080):**
+
+- `datahub` / `research_hub` / `content_studio` default **on** and back super-admin tools (the
+  Datahub / Research Hub / Content Studio tabs). They were added so a super-admin can **disable**
+  one per client — a flag can only **hide** a tool, never grant access (the sidebar gate is
+  `is_super_admin() and has_feature(...)`). Note `research_hub` / `content_studio` also have AI-
+  Control `*_enabled` knobs that gate their **AI-tool** surface independently (master-switch-aware).
+- `visitor_specialist_router` defaults **off** and is the **per-client half** of the Faster-Chat
+  Phase-2 gate (see [§13](#13-ai-subsystem-visitor-chat--admin-chat)). The router only runs when it,
+  the operator knob `visitor_specialist_router_enabled`, AND the AI master-kill are all on.
 
 **Client carve-out (`CLIENT_MODE` env, May 2026).** `website_builder` is the first
 member of `_OPERATOR_ONLY_FEATURES`. It defaults **on** (operator installs are
@@ -1075,19 +1195,28 @@ When the flag is off:
    defaults, or docs. The template is reused across industries.
 2. **Heavily commented, modular code.** Match the comment density in `public/index.html` /
    `script.js` — explain *why*, not just *what*.
-3. **Use the helpers** — never bypass them:
-   - DB → `query_db` / `execute_db` (parameterized).
+3. **Use the helpers** — never bypass them. The shared ones now live in `core.py`; from a blueprint
+   `from core import ...`, and from `app.py` they're already in scope (re-exported):
+   - DB → `query_db` / `execute_db` (parameterized) — in `core.py`.
+   - Auth → `admin_required` / `_is_super_admin` / `_require_super_admin_role` — in `core.py`.
+   - Feature flags → `tenant_has_feature` / `set_tenant_feature` (`_FEATURE_REGISTRY`) — in `core.py`.
+   - Prompts → `get_prompt` / `SYSTEM_PROMPT` — in `core.py`.
+   - AI-Control settings → `get_ai_setting` (`_ai_control_registry`) — in `core.py`.
    - Email/SMS → `messaging.send_email` / `messaging.send_sms`.
    - Stripe → `stripe_client.get_stripe_client()` (do not import `stripe` directly elsewhere).
-   - Encryption → existing Fernet helpers in `app.py`.
+   - Encryption → existing Fernet helpers.
    - Tenant resolution → `current_tenant_id()` (never hard-code `1`).
    - Rate-limit / cost-cap → `enforce_cost_cap()` / `cost_cap_blocks_send()` before every paid call.
 4. **Schema changes** go in `init_db()` as `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ADD COLUMN
    IF NOT EXISTS`. No separate migration file.
 5. **New chat capability?** Register it in `CHAT_TOOLS` + `CHAT_LOOKUP_FUNCTIONS` and also
    document the slug/name pair in the compact site index builder so the AI knows it exists.
-6. **New admin tab?** Add it to `templates/admin/dashboard.html` and gate it with
-   `has_feature("...")` if it's behind a feature flag.
+6. **New admin tab?** The admin UI is now a **shell + partials** (task/076): add a
+   `templates/admin/tabs/_<id>.html` partial, `{% include %}` it from `dashboard.html`, add the
+   sidebar nav entry, and gate it with `has_feature("...")` (and `is_super_admin()` if it's a super-
+   admin tool). Put new tab JS in `public/admin/app-main.js` as **global** functions (no ES modules
+   — inline `onclick=` must resolve) and keep any new CSS **scoped**. Follow
+   `templates/admin/README.md`'s "how to add a tab" recipe.
 7. **New paid surface?** Register a row in `model_prices` and add the surface to the cost
    dashboard's surface enum + chart.
 8. **Public site changes:** add `data-testid` to every interactive element and meaningful
@@ -1100,6 +1229,14 @@ When the flag is off:
 11. **Logs over silence.** When an upstream call fails, surface a clear error to the admin/visitor
     rather than a silent fallback — except where the existing code has explicitly chosen to
     fail-open (e.g. `RESEND_WEBHOOK_SECRET` placeholder behavior).
+12. **Respect the layering** (`state.py → core.py → admin/*.py → app.py`). Shared infra goes in
+    `core.py` and `core.py` **must never `import app`**. A new feature route belongs in the matching
+    **blueprint under `admin/`** (which imports only from `core`), not bolted onto `app.py` — unless
+    it's one of the things that must bind to the global `app` (the `@app.before_request` hooks, the
+    blueprint registrations, `__main__`). **Do not add an app factory**; everything binds to the one
+    global `app`. If you move a symbol, **re-export it from `app.py`** so `app.X` / `from app import
+    X` / the tests still resolve, and keep the route table byte-identical — `tests/test_route_snapshot.py`
+    will fail otherwise.
 
 ---
 
@@ -1135,6 +1272,12 @@ fail and surface a friendly error** — don't gate new functionality on those fe
   (Fernet from `FLASK_SECRET_KEY`) live, plus the provisioning checklist. Read before
   standing up a new client install.
 - **`GUIDE.md`** — non-developer walkthrough of the admin dashboard.
+- **`templates/admin/README.md`** — maintainer guide for the de-monolithed admin UI (task/076):
+  the tab→partial→JS→endpoint map and the "how to add a tab" recipe. **Read before touching the
+  admin dashboard.** Live component gallery: `public/admin/styleguide.html`.
+- **`docs/faster-visitor-chat/blueprint.md` + `PLAN.md`** — the design + plan for the Faster Visitor
+  AI Chat work (task/079): the Phase-1 prompt-cache/reorder and the Phase-2 specialist router
+  (see [§13](#13-ai-subsystem-visitor-chat--admin-chat)).
 - **`TEMPLATE_OVERVIEW.md`** — short feature overview (originally written when this was
   hospitality-flavored). Light on detail; this file supersedes it for agents.
 - **`.local/tasks/*.md`** — per-feature task plans. When working on feature X, search there for the
@@ -1151,6 +1294,11 @@ fail and surface a friendly error** — don't gate new functionality on those fe
 Anything below is a place where this knowledge base and `replit.md` (or `TEMPLATE_OVERVIEW.md`)
 disagree with what the code actually does. **Trust the code.** Reconcile here when fixing.
 
+- **Layering — `state.py` is aspirational.** The de-monolith layering is documented (here, in
+  `replit.md`, and in `core.py`'s own header) as `state.py → core.py → admin/*.py → app.py`, but
+  there is **no `state.py` file on disk yet** — `core.py` is the current **bottom** layer and reads
+  `DATABASE_URL` straight from the environment (it imports no `state` module). Treat `state.py` as
+  the planned name for a future lowest layer; today, "shared bottom layer" == `core.py`.
 - **Chat lookup tools — count.** `replit.md` historically mentions **14** lookup tools. The current
   `CHAT_TOOLS` registry exposes **16** — the additional ones are `lookup_service_availability`
   and `lookup_presentation`. The 4-round cap is unchanged.

@@ -17,6 +17,34 @@ step is required. You point the app at an empty Postgres database, set
 the env vars, and it builds 80+ tables and the column migrations on its
 own.
 
+### What's deployed (source layout)
+
+The backend was recently de‑monolithed, but **the deploy contract didn't
+change**: same entrypoints (`gunicorn main:app` / `python app.py` /
+`python main.py`), same env vars, no new migration (the Alembic head is
+unchanged). What moved is internal: `app.py` is now a slim aggregator that
+registers the feature routes, shared infrastructure lives in `core.py`, and
+the feature routes live in 15 Flask blueprints under `admin/` (plus the
+pre‑existing VELO blueprint). There's still a single global `app` object —
+no app factory — so `main:app` / `app:app` bind exactly as before.
+
+The admin UI was de‑monolithed the same way. `templates/admin/dashboard.html`
+is now a slim (~1.7k‑line) shell that `{% include %}`s ~65 tab partials from
+`templates/admin/tabs/_*.html`, and the CSS/JS lives in `public/admin/`
+(`base.css`, `theme.css`, `tabs.css`, `csrf.js`, `app-main.js`, `services.js`,
+`presentations.js`), loaded via plain `<link>`/`<script src>` tags (classic
+scripts — **not** ES modules — no build step). These files are served as
+static at `/admin/<file>` by the same catch‑all that already serves
+`script.js`/`voice.js`, so **make sure `public/admin/` and the tab partials
+ship with your deploy** (they're in the repo, so a normal Git/Docker deploy
+already includes them — there's nothing extra to build or compile).
+
+The new Faster‑Chat work needs no deploy changes either: Phase 1 (visitor‑chat
+prompt caching + system‑prompt trim) is **on by default and behavior‑preserving**
+for all clients, and the optional Phase 2 specialist router is **default‑OFF**
+and inert until a super‑admin turns it on per client. Neither adds a migration
+or an env var.
+
 ---
 
 ## Replit Deploy (fastest)

@@ -16,6 +16,7 @@ High-level feature areas (see the archive for full detail on each):
 - **Commerce & bookings** — storefront/cart + Stripe checkout, event ticketing/donations, and a full Service Bookings system (rsvp/deposit/full/contract pricing, add-ons, calendar availability).
 - **Content systems** — blog, dynamic multi-step form builder (with partial/abandon capture), custom section builder (11 templates), page layout manager, theme/color editor, SEO management, visitor analytics.
 - **AI operations** — system-prompt editor, admin chat with Knowledge Base RAG (pgvector), web scraper with schedules, cost-transparency dashboard + weekly digest, review collector.
+- **Faster Visitor AI Chat** (task/079, speeds up `POST /api/chat`) — Phase 1 (all clients, behavior-preserving): the system prompt is reordered into a byte-stable cacheable prefix + dynamic suffix, provider prompt caching is enabled (Anthropic tools-block + system-prefix `cache_control` with fail-open retry; OpenAI automatic), and the `generatePage` design block is trimmed (command blocks fenced verbatim, gated by an equivalence battery) so the big fixed context is re-read from cache instead of re-prefilled. Phase 2 (optional, per-client, **default-off / inert / fail-open**): a hybrid specialist router (keyword → embedding → tiny AI classifier on ambiguity) picks a specialist sub-prompt + minimal tool subset per turn, built by extending `_visitor_apply_persona`; it always keeps custom/MCP skills, inserts the specialist sub-prompt as a separate system message (preserving the Phase-1 cache prefix), and any error falls back to the full default prompt + all tools. It activates only when the AI master-kill **and** the `visitor_specialist_router_enabled` operator knob **and** the per-client `visitor_specialist_router` flag are all on; otherwise the exact single-agent flow runs. No migration (the flag lazy-seeds, the 5 specialist prompts are rows, the knobs are config). See `docs/faster-visitor-chat/blueprint.md`.
 - **Admin dashboard** at `/admin` (password-protected) for editing all content; changes are instantly live on the public site.
 - **Phase 6 — Visitor AI growth program** (merged 2026-05): visitor profiles/personas, offers, leads & callback requests, meetings, voice calls, AI control settings + activity log, RAG audience scoping, and super-admin-gated admin tabs.
 
@@ -42,9 +43,10 @@ When debugging or adding features that touch the placeholder list, assume the up
 ## System Architecture
 
 ### Backend (Python Flask)
-- **Framework**: Flask (Python); **entry point**: `app.py` (monolith). Run via `gunicorn --bind 0.0.0.0:5000 --reuse-port --reload main:app`.
+- **Framework**: Flask (Python); **entry point**: `app.py`. Run via `gunicorn --bind 0.0.0.0:5000 --reuse-port --reload main:app`.
 - **Port**: 5000 (required for the Replit webview).
 - **Serves**: static files from `public/`, admin templates from `templates/admin/`, REST API endpoints (public reads + admin CRUD), the chat API, and uploaded images from `uploads/`.
+- **Module layout (de-monolithed)**: `app.py` (was ~46.8k lines) was split — shared infrastructure moved to `core.py` (~3.2k lines) and feature routes moved into **15 Flask blueprints under `admin/`** (`public_api`, `content`, `forms`, `offers`, `personas`, `commerce`, `sitebuilder`, `reporting`, `dashboards`, `crm`, `tenancy`, `ai_prompts`, `cost`, `products`, `ai_control`, plus the pre-existing `velo_bp`). Layering with no circular imports: `core.py → admin/*.py → app.py` (core.py's header reserves a lower `state.py` bottom layer that hasn't been split out yet — `core.py` is the bottom layer today). **No app factory** — the global `app` object is kept, so `main.py`/gunicorn/tests still bind to it. Blueprints import only from `core` (never `from app`); `app.py` re-exports every moved symbol so `app.X`, `from app import X`, and the test suite keep resolving. `app.py` is now a slim aggregator (imports, re-exports, blueprint registration, the global `before_request` hooks, VELO wiring, `__main__`) that still holds `init_db()` and the AI/business logic not yet carved out (~40.5k lines). `core.py` holds the Flask app + extensions, the DB helpers (`get_db`/`query_db`/`execute_db` + pool), the auth gates (`admin_required`/`_is_super_admin`/`_require_super_admin_role`), the feature-flag subsystem (`_FEATURE_REGISTRY`/`tenant_has_feature`), the prompt subsystem (`SYSTEM_PROMPT`/`get_prompt`), the AI-Control settings subsystem (`_ai_control_registry`/`get_ai_setting`), and the cost/billing infra. This was a pure code move — **no DB/schema change**, `current_tenant_id()` still resolves to `1`, and the route table is byte-identical (enforced by a route-snapshot test).
 
 ### Public Site (Static HTML/CSS/JS — no build step)
 - **Location**: `public/`
@@ -56,8 +58,9 @@ When debugging or adding features that touch the placeholder list, assume the up
 
 ### Admin Dashboard
 - **URL**: `/admin` (redirects to `/admin/login` if unauthenticated); password via `ADMIN_PASSWORD` (default `"admin"`).
-- **Location**: `templates/admin/dashboard.html`, `templates/admin/login.html`.
-- **Tabs**: Page Layout, Site Settings, Gallery, Experiences, Pricing, Business Info, Testimonials, Team, FAQ, Blog, Saved Pages, Sphere View, SEO, Chatbot, Chat History, Forms, Theme, Analytics, plus the System group (Performance, Developer, Stripe, Secrets, Cost, and the super-admin-gated Phase 6 tabs).
+- **Location**: `templates/admin/dashboard.html` (the slim **shell**, ~1.7k lines), `templates/admin/login.html`.
+- **Front-end layout (de-monolithed, task/076)**: `dashboard.html` was a 29,240-line monolith and is now a ~1,689-line **shell** + ~65 per-tab Jinja partials (`templates/admin/tabs/_*.html`, pulled in with `{% include %}`) + extracted static assets under `public/admin/` (served via `<link>`/`<script src>`). There is **no build step** (no Tailwind/bundler/framework) and the assets are **not** ES modules — all admin JS functions stay GLOBAL so the inline `onclick=` handlers keep working. Assets: `base.css` (global reset + `:root` theme vars + the reused `.btn`/`.card`/`.badge`/`.tab-*`/`.form-*` classes), `theme.css` (glass theme layer + `gx-*` kit), `tabs.css`, `csrf.js` (CSRF fetch wrapper + some feature JS), `app-main.js` (the bulk of admin JS), `services.js`, `presentations.js`. What stays in the shell: the sidebar nav with its `{% if is_super_admin()/has_feature() %}` gates, the inline `#admin-appearance-vars {{ appearance.* }}` block, and the global modals. Maintainer aids: `templates/admin/README.md` (tab→partial→JS→endpoint map + "how to add a tab" recipe) and a live component gallery at `public/admin/styleguide.html`.
+- **Tabs**: Page Layout, Site Settings, Gallery, Experiences, Pricing, Business Info, Testimonials, Team, FAQ, Blog, Saved Pages, Sphere View, SEO, Chatbot, Chat History, Forms, Theme, Analytics, plus the System group (Performance, Developer, Stripe, Secrets, Cost, and the super-admin-gated growth/CRM tabs). The full canonical tab list lives in `AGENT_KNOWLEDGE_BASE.md` §12.
 
 ### Database (PostgreSQL)
 - **Connection**: `DATABASE_URL`.
@@ -120,11 +123,16 @@ Google Fonts (Playfair Display, DM Sans + dynamic), Lucide Icons, SortableJS (ad
 ## Project File Structure
 
 ```
-app.py                 — Flask backend (monolith: all routes + API)
+app.py                 — slim Flask aggregator (re-exports, blueprint registration,
+                         global before_request hooks, init_db, VELO wiring, __main__)
+core.py                — shared infra imported by the blueprints (app + extensions,
+                         DB helpers, auth gates, feature flags, prompts, AI-Control, cost)
+admin/                 — 15 Flask blueprints (the feature routes split out of app.py)
 main.py                — gunicorn entry (from app import app)
 public/                — public site (index.html, styles.css, script.js, voice.js)
+public/admin/          — extracted admin CSS/JS assets + styleguide.html (no build step)
 uploads/               — uploaded image files (runtime)
-templates/admin/       — dashboard.html, login.html
+templates/admin/       — dashboard.html (shell), login.html, README.md, tabs/_*.html partials
 templates/blog_post.html
 voice_bridge/          — standalone voice-bridge package (Phase 6)
 migrations/            — Alembic config + versions/

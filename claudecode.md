@@ -6,11 +6,17 @@ quirks, and decisions. NOT the plan or task list (those live in
 
 ## What this project is
 
-The shipping product is the **Flask monolith** `app.py` (~39k lines): public site,
+The shipping product is `app.py` + `core.py` + 15 Flask blueprints under `admin/`
+— de-monolithed from the original single-file `app.py` (Track B): a ~40.5k-line
+`app.py` aggregator (re-exports + blueprint registration + the logic not yet
+carved out) over a ~3.2k-line `core.py` shared layer (DB, auth, feature flags,
+prompts, AI-Control); one global `app`, no app factory. It covers: public site,
 AI concierge (text + voice), admin dashboard, commerce, fleet sync, embed widget,
-WordPress SSO. `admin_ai_platform/` is an extracted reference package — NOT what
-ships. Postgres + Alembic (two-track: `init_db()` owns historical tables; Alembic
-owns everything added after April 2026).
+WordPress SSO. The admin UI is a slim `templates/admin/dashboard.html` shell + ~65
+`templates/admin/tabs/` partials + `public/admin/` assets (task/076).
+`admin_ai_platform/` is an extracted reference package — NOT what ships. Postgres +
+Alembic (two-track: `init_db()` owns historical tables; Alembic owns everything
+added after April 2026).
 
 ## Entry point & run pattern (since 2026-05-30)
 
@@ -134,3 +140,50 @@ These features run store-only / decline until their creds are supplied:
 - Nothing required. Optional future work: a real provider backend for
   `voice_bridge/` beyond echo/openai (Deepgram/Gemini), and live E2E with real
   Twilio Voice + Calendar creds (operator runbook above).
+
+## De-monolith + Faster-Chat + admin fixes — MERGED to main (2026-06-02)
+
+Four tracks landed on `main`. Deploy contract is **unchanged** (same entrypoints
+`gunicorn main:app` / `python app.py`, same env vars, NO new migration — Alembic
+head unchanged); see `DEPLOY.md` → "What's deployed (source layout)".
+
+- **Track B — backend de-monolith (MERGED):** `app.py` split from ~46.8k →
+  ~40.5k lines. Shared infra carved into `core.py` (~3.2k lines); feature routes
+  carved into **15 Flask blueprints** under `admin/` (public_api, content, forms,
+  offers, personas, commerce, sitebuilder, reporting, dashboards, crm, tenancy,
+  ai_prompts, cost, products, ai_control) alongside the pre-existing `velo_bp`.
+  Global `app` KEPT — **no app factory** (`app = Flask(...)` still in `app.py`;
+  `main.py`/gunicorn/tests bind to it). Layering: `core.py` → `admin/*.py` →
+  `app.py`; blueprints import only from `core`. NO DB/schema change; the route
+  table is byte-identical (guarded by a route-snapshot test). So the "monolith"
+  framing in "What this project is" above is now historical — same app, just
+  unbundled internally.
+- **task/076 — front-end de-monolith (MERGED):** `templates/admin/dashboard.html`
+  29.2k → ~1.7k-line slim shell + **65 tab partials** (`templates/admin/tabs/_*.html`,
+  `{% include %}`d) + assets under `public/admin/` (`base.css`, `theme.css`,
+  `tabs.css`, `csrf.js`, `app-main.js`, `services.js`, `presentations.js`) loaded
+  via plain `<link>`/`<script src>` — classic scripts, **NOT** `type=module` (the
+  ~600 inline `onclick=` handlers need the functions global). **No build step**;
+  served static from `public/` like the existing `script.js`/`voice.js`. Ships
+  with a maintainer README (`templates/admin/README.md`) + a live styleguide
+  (`/admin/styleguide.html`).
+- **task/079 — Faster Visitor AI Chat (MERGED):** Phase 1 = visitor-chat prompt
+  caching + system-prompt trim, **behavior-preserving for everyone, on by default**.
+  Phase 2 = optional per-client specialist router, **DEFAULT-OFF / inert /
+  fail-open**. Control surface: Plans&Features flag `visitor_specialist_router`
+  (OFF); AI Control knobs `visitor_specialist_router_enabled` (OFF),
+  `visitor_specialist_router_model` (blank ⇒ `gpt-4o-mini`),
+  `visitor_specialist_embed_threshold` (0.78), + 5 editable prompts. NO migration.
+- **task/080 — admin UI fixes (MERGED):** sidebar nav-heading now visible
+  (theme token) in light + dark; AI Control rows now show current value +
+  default (placeholder + meta) + an inert note; new per-tenant Plans&Features
+  toggles `datahub` / `research_hub` / `content_studio` (default ON); sidebar
+  gates tightened to `is_super_admin()` and `has_feature(...)`.
+
+### Open owner item
+
+- **Live A/B of Faster-Chat Phase 1 still recommended.** Phase 1 changes the live
+  visitor chat for *everyone* (prompt caching/trim). It's behavior-preserving and
+  battery-passed, but it hasn't had a live A/B on the `$REPLIT_DEV_DOMAIN`
+  visitor-chat yet — owner should run that before relying on it in production.
+  Fully revertible via the `task/079` branch if anything looks off.

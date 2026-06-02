@@ -10,7 +10,7 @@ This template is designed to be sold, white-labeled, or deployed for any busines
 
 Most website templates give you static HTML and a chatbot widget that answers FAQs. This template gives you an **AI concierge that actively drives the visitor experience** — it can navigate the site, generate custom visual pages on the fly, fill out forms through conversation, and present information in immersive full-screen layouts. The AI knows your entire business (pulled from the database in real time) and responds accordingly.
 
-The frontend is pure HTML/CSS/JS — no React, no build step, no framework lock-in. The backend is Python Flask. The admin dashboard is a single-page interface with 18+ management tabs. Everything is designed to be picked up by a developer, themed in minutes, and deployed for a client.
+The frontend is pure HTML/CSS/JS — no React, no build step, no framework lock-in. The backend is Python Flask. The admin dashboard is organized into small per-tab files with shared styles and a live component "styleguide" page, and the backend is split into focused modules — so it's easy to customize and extend (still no build step). Everything is designed to be picked up by a developer, themed in minutes, and deployed for a client.
 
 ---
 
@@ -85,6 +85,8 @@ The AI is not a sidebar widget. It's an active participant in the visitor experi
 ### How It Works
 
 The AI receives the **entire business context** on every request — all gallery cards, pricing, experiences, FAQs, blog excerpts, business hours, active forms. It responds with a text reply and optionally a **command** that the frontend executes immediately.
+
+Visitor replies are **fast**: the assistant reuses a cached copy of its large fixed instructions instead of re-reading them every turn, so it answers quicker and costs less — with no change to its answers or commands. An operator can optionally enable a **specialist router** (off by default) that detects each visitor's intent (booking / pricing / general / lead capture) and loads only the matching instructions and tools for an even faster, focused reply, falling back to the full assistant whenever it's uncertain.
 
 ### What the AI Can Do
 
@@ -218,13 +220,17 @@ The AI's generated content automatically inherits the theme. When the AI creates
 ## File Structure
 
 ```
-├── app.py                    # Flask backend (all routes, API, admin, AI chat)
+├── app.py                    # Slim Flask aggregator (re-exports, blueprint registration, remaining logic)
+├── core.py                   # Shared infrastructure (DB, auth, feature flags, prompts, AI-Control)
+├── admin/                    # 15 Flask blueprints — feature routes carved out of app.py
 ├── public/                   # Public website
 │   ├── index.html            # Landing page + gallery + chat UI
 │   ├── styles.css            # All styles (fully commented)
-│   └── script.js             # All interactivity and API calls
+│   ├── script.js             # All interactivity and API calls
+│   └── admin/                # Extracted admin assets (base.css, theme.css, tabs.css, app-main.js, …) + styleguide.html
 ├── templates/admin/          # Admin dashboard
-│   ├── dashboard.html        # Single-page admin panel
+│   ├── dashboard.html        # Admin panel shell (head + sidebar nav + {% include %}s)
+│   ├── tabs/                 # ~65 per-tab partials (_overview.html, _datahub.html, …)
 │   └── login.html            # Admin login page
 ├── chat-ui-kit/              # Standalone chat kit (sellable package)
 │   ├── chat-ui.js            # Chat behavior and command execution
