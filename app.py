@@ -30170,53 +30170,9 @@ def api_save_generated_page():
     return jsonify({"success": True, "id": page_id, "slug": slug})
 
 
-@app.route("/admin/api/generated-pages", methods=["GET"])
-@admin_required
-def admin_list_generated_pages():
-    """GET /admin/api/generated-pages — List all saved AI-generated pages."""
-    pages = query_db(
-        "SELECT id, title, slug, status, prompt, created_at, updated_at FROM generated_pages ORDER BY created_at DESC"
-    )
-    return jsonify(pages or [])
-
-
-@app.route("/admin/api/generated-pages/<int:page_id>", methods=["GET"])
-@admin_required
-def admin_get_generated_page(page_id):
-    """GET /admin/api/generated-pages/<id> — Get a single page with full HTML."""
-    page = query_db("SELECT * FROM generated_pages WHERE id = %s", (page_id,), fetchone=True)
-    if not page:
-        return jsonify({"error": "Page not found"}), 404
-    return jsonify(page)
-
-
-@app.route("/admin/api/generated-pages/<int:page_id>", methods=["PUT"])
-@admin_required
-def admin_update_generated_page(page_id):
-    """PUT /admin/api/generated-pages/<id> — Update page title, status, or HTML."""
-    data = request.get_json()
-    fields, values = [], []
-    for key in ['title', 'html']:
-        if key in data:
-            fields.append(f"{key} = %s")
-            values.append(data[key])
-    if 'status' in data and data['status'] in ('draft', 'published'):
-        fields.append("status = %s")
-        values.append(data['status'])
-    if not fields:
-        return jsonify({"error": "No fields to update"}), 400
-    fields.append("updated_at = NOW()")
-    values.append(page_id)
-    execute_db(f"UPDATE generated_pages SET {', '.join(fields)} WHERE id = %s", tuple(values))
-    return jsonify({"success": True})
-
-
-@app.route("/admin/api/generated-pages/<int:page_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_generated_page(page_id):
-    """DELETE /admin/api/generated-pages/<id> — Delete a saved page."""
-    execute_db("DELETE FROM generated_pages WHERE id = %s", (page_id,))
-    return jsonify({"success": True})
+# Generated-pages ADMIN CRUD (list/get/update/delete) moved to admin/content.py
+# (Track B): content_bp. Same /admin/api/generated-pages[/<id>] URLs; @admin_required
+# preserved (from core). The PUBLIC /api/generated-pages POST (save) stays above.
 
 
 # =============================================================
