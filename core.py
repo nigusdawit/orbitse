@@ -564,6 +564,17 @@ _FEATURE_REGISTRY = [
     ("fleet",                "Fleet sync / VELO",            "enterprise", False, "System"),
     ("llm_provider",         "LLM provider selector",        "growth",     False, "AI"),
     ("stripe",               "Stripe / billing config",      "growth",     False, "Billing"),
+    #
+    # Super-admin power tools — historically gated ONLY by is_super_admin() in the
+    # sidebar, with no per-tenant control. Registered here as default-ON feature
+    # flags so the super admin can ALSO toggle them per tenant from Plans & Features.
+    # default_enabled=True preserves today's behavior (the super admin keeps seeing
+    # them until they explicitly turn one off for a given client). The sidebar gate
+    # stays `is_super_admin() AND has_feature(...)`, so a flag can only HIDE a tool
+    # for a client — it can never grant a non-super-admin access to it.
+    ("datahub",              "Datahub (external data connections)", "growth", True, "AI"),
+    ("research_hub",         "Research Hub",                 "growth",     True,  "AI"),
+    ("content_studio",       "Content Studio",               "growth",     True,  "AI"),
 ]
 _FEATURE_NAMES = {row[0] for row in _FEATURE_REGISTRY}
 _FEATURE_DEFAULTS = {row[0]: row[3] for row in _FEATURE_REGISTRY}

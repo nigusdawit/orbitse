@@ -223,7 +223,11 @@ TO CUSTOMIZE THIS DASHBOARD:
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.14em;
-      color: rgba(255,255,255,0.4);
+      /* Was a hardcoded rgba(255,255,255,0.4): near-invisible on the LIGHT admin
+         theme, which made the "Configuration & Developer" heading look like an empty
+         gap in the sidebar. Use the same theme token as .sidebar-group-label so the
+         heading is readable in BOTH light and dark. */
+      color: var(--admin-text-muted);
       user-select: none;
     }
 
@@ -2571,19 +2575,19 @@ TO CUSTOMIZE THIS DASHBOARD:
       Custom Dashboards
     </button>
     {% endif %}
-    {% if is_super_admin() %}
+    {% if is_super_admin() and has_feature('datahub') %}
     <button class="tab-btn" onclick="switchTab('datahub', this); loadDatahub();" data-testid="tab-datahub">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 11v6c0 1.66 4 3 9 3s9-1.34 9-3v-6"/></svg>
       Datahub
     </button>
     {% endif %}
-    {% if is_super_admin() %}
+    {% if is_super_admin() and has_feature('research_hub') %}
     <button class="tab-btn" onclick="switchTab('research', this); loadResearchHub();" data-testid="tab-research">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
       Research Hub
     </button>
     {% endif %}
-    {% if is_super_admin() %}
+    {% if is_super_admin() and has_feature('content_studio') %}
     <button class="tab-btn" onclick="switchTab('content-studio', this); loadContentStudio();" data-testid="tab-content-studio">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
       Content Studio
@@ -18164,6 +18168,13 @@ TO CUSTOMIZE THIS DASHBOARD:
         }
         const data = await res.json();
         const settings = (data && data.settings) || [];
+        // Is the master AI switch on? When it's OFF, get_ai_setting() returns the
+        // inert value (0 / "" / false) for every OTHER knob — which is the main reason
+        // the operator saw blank/zero inputs with no hint of the real setting. We keep
+        // showing the live value but surface the default (placeholder) + an "inert"
+        // note (below) so it's always clear what the knob falls back to.
+        const _masterEntry = settings.find(function (x) { return x.key === 'ai_enhancements_enabled'; });
+        const _masterOn = _masterEntry ? !!_masterEntry.value : true;
         const groups = {};
         settings.forEach(s => { (groups[s.group] = groups[s.group] || []).push(s); });
         wrap.innerHTML = '';
@@ -18178,17 +18189,28 @@ TO CUSTOMIZE THIS DASHBOARD:
             if (s.type === 'bool') {
               control = '<input type="checkbox" id="' + id + '" ' + (s.value ? 'checked' : '') + '>';
             } else if (s.type === 'int' || s.type === 'float') {
+              // Show the live value; the config/env default rides along as the
+              // placeholder so the operator always sees the fallback (handy when the
+              // value reads 0 only because the master AI switch is off).
               control = '<input type="number" id="' + id + '" value="' + _aiPromptEsc(String(s.value)) +
+                        '" placeholder="' + _aiPromptEsc(s.default == null ? '' : String(s.default)) +
                         '" step="' + (s.type === 'float' ? '0.01' : '1') + '" style="width:110px;">';
             } else {
+              // Same idea for string knobs: a blank value shows the default as a
+              // placeholder hint (several model knobs legitimately default to "").
               control = '<input type="text" id="' + id + '" value="' +
-                        _aiPromptEsc(s.value == null ? '' : String(s.value)) + '" style="width:220px;">';
+                        _aiPromptEsc(s.value == null ? '' : String(s.value)) +
+                        '" placeholder="' + _aiPromptEsc(s.default == null ? '' : String(s.default)) +
+                        '" style="width:220px;">';
             }
             html += '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-top:1px solid rgba(255,255,255,.06);">'
               + '<div style="flex:1;min-width:0;">'
               +   '<div style="font-weight:600;">' + _aiPromptEsc(s.label) + '</div>'
               +   '<div style="font-size:12px;opacity:.6;">' + _aiPromptEsc(s.description || '')
-              +     ' · <code>' + _aiPromptEsc(s.key) + '</code> · source: ' + _aiPromptEsc(s.source) + '</div>'
+              +     ' · <code>' + _aiPromptEsc(s.key) + '</code> · source: ' + _aiPromptEsc(s.source)
+              +     ' · default: <code>' + _aiPromptEsc(s.default == null ? '—' : String(s.default)) + '</code>'
+              +     ((!_masterOn && s.key !== 'ai_enhancements_enabled') ? ' · inert (master AI switch is OFF)' : '')
+              +     '</div>'
               + '</div>'
               + '<div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">' + control
               +   '<button class="btn btn-primary btn-sm" onclick="saveAiControl(\'' + s.key + '\',\'' + s.type + '\')">Save</button>'
