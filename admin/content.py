@@ -1077,3 +1077,37 @@ def admin_delete_rsvp(rsvp_id):
     if count == 0:
         return jsonify({"error": "RSVP not found"}), 404
     return jsonify({"success": True})
+
+# ---- business-info admin GET/PUT (Track B / B16, verbatim) ----
+
+@content_bp.route("/admin/api/business-info", methods=["GET"])
+@admin_required
+def admin_get_business_info():
+    """GET business contact info for the admin panel."""
+    info = query_db("""
+        SELECT business_phone, business_email, business_address,
+               business_hours, business_map_embed
+        FROM site_settings WHERE id = 1
+    """, fetchone=True)
+    return jsonify(info or {})
+
+
+@content_bp.route("/admin/api/business-info", methods=["PUT"])
+@admin_required
+def admin_update_business_info():
+    """PUT /admin/api/business-info — Update business contact info."""
+    data = request.get_json()
+    info = execute_db(
+        """UPDATE site_settings SET
+             business_phone = %s, business_email = %s,
+             business_address = %s, business_hours = %s::jsonb,
+             business_map_embed = %s, updated_at = NOW()
+           WHERE id = 1 RETURNING
+             business_phone, business_email, business_address,
+             business_hours, business_map_embed""",
+        (data.get("business_phone", ""), data.get("business_email", ""),
+         data.get("business_address", ""),
+         json.dumps(data.get("business_hours", [])),
+         data.get("business_map_embed", ""))
+    )
+    return jsonify(info or {})
