@@ -27,6 +27,10 @@ public/admin/            (served at /admin/<file> by the catch-all serve_static)
                             editor, RTE, media picker). Loaded after csrf.js + the CDN libs.
   services.js            ← Services tab controller
   presentations.js       ← Presentations / Skills / LLM-provider tab loaders
+  styleguide.html        ← LIVE gx-* component gallery — open /admin/styleguide.html.
+                            Every component + token with copy-paste snippets and a
+                            live Appearance playground. Static (no build/auth/data);
+                            keep it in sync with theme.css when you add a component.
 ```
 
 Server routes live in `app.py` (being split into Flask blueprints under `admin/` —
@@ -78,6 +82,11 @@ see the de-monolith plan / Track B).
    doesn't exist — put tab-scoped rules in `tabs.css`.
 
 ## The gx-* component kit (use these; don't reinvent)
+
+**See them all live:** open **`/admin/styleguide.html`** — a gallery of every
+component and token with copy-paste snippets and a live Appearance playground
+(source: `public/admin/styleguide.html`). It's the fastest way to find the right
+component before writing any markup.
 
 Defined in `theme.css`. The shared vocabulary every tab uses:
 `gx-head`/`gx-title`/`gx-sub` (page header), `gx-card`, `gx-fieldset` +
