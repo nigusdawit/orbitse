@@ -24788,70 +24788,9 @@ def admin_dashboard():
 
 # --------------- Gallery Cards CRUD ---------------
 
-@app.route("/admin/api/gallery-cards", methods=["GET"])
-@admin_required
-def admin_get_cards():
-    """GET all gallery cards for the admin panel."""
-    cards = query_db("SELECT * FROM gallery_cards ORDER BY sort_order ASC")
-    return jsonify(cards or [])
-
-
-@app.route("/admin/api/gallery-cards", methods=["POST"])
-@admin_required
-def admin_create_card():
-    """
-    POST /admin/api/gallery-cards
-    Create a new gallery card.
-    """
-    data = request.get_json()
-    card = execute_db(
-        """INSERT INTO gallery_cards (slug, title, subtitle, image_url, video_url, category, description, details, price, sort_order)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
-           RETURNING *""",
-        (
-            data["slug"], data["title"], data["subtitle"],
-            data["image_url"], data.get("video_url", ""),
-            data["category"], data["description"],
-            json.dumps(data.get("details", [])),
-            data.get("price"), data.get("sort_order", 0)
-        )
-    )
-    return jsonify(card), 201
-
-
-@app.route("/admin/api/gallery-cards/<int:card_id>", methods=["PUT"])
-@admin_required
-def admin_update_card(card_id):
-    """PUT /admin/api/gallery-cards/<id> — Update a gallery card."""
-    data = request.get_json()
-    card = execute_db(
-        """UPDATE gallery_cards SET
-             slug = %s, title = %s, subtitle = %s, image_url = %s,
-             video_url = %s, category = %s, description = %s, details = %s::jsonb,
-             price = %s, sort_order = %s, updated_at = NOW()
-           WHERE id = %s RETURNING *""",
-        (
-            data["slug"], data["title"], data["subtitle"],
-            data["image_url"], data.get("video_url", ""),
-            data["category"], data["description"],
-            json.dumps(data.get("details", [])),
-            data.get("price"), data.get("sort_order", 0),
-            card_id
-        )
-    )
-    if not card:
-        return jsonify({"error": "Card not found"}), 404
-    return jsonify(card)
-
-
-@app.route("/admin/api/gallery-cards/<int:card_id>", methods=["DELETE"])
-@admin_required
-def admin_delete_card(card_id):
-    """DELETE /admin/api/gallery-cards/<id> — Remove a gallery card."""
-    count = execute_db("DELETE FROM gallery_cards WHERE id = %s", (card_id,))
-    if count == 0:
-        return jsonify({"error": "Card not found"}), 404
-    return jsonify({"success": True})
+# The gallery-cards admin CRUD (GET/POST/PUT/DELETE) moved to admin/content.py
+# (Track B / B4 - first admin-area blueprint). Same /admin/api/gallery-cards URLs,
+# @admin_required gating preserved (from core). See admin/content.py.
 
 
 # --------------- Experiences CRUD ---------------
@@ -45965,6 +45904,11 @@ app.register_blueprint(velo_bp)
 # identical); only the endpoint name gains a "public_api." prefix.
 from admin.public_api import public_bp  # noqa: E402
 app.register_blueprint(public_bp)
+
+# Admin content CRUD blueprint (Track B / B4): gallery-cards etc. Same /admin/api/*
+# URLs; @admin_required gating preserved (from core). Registered like public_bp.
+from admin.content import content_bp  # noqa: E402
+app.register_blueprint(content_bp)
 
 
 def _resolve_velo_callback_url():
