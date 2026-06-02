@@ -22859,10 +22859,13 @@ def admin_dashboard():
 
 import re as _re
 
-def _slugify(value):
-    s = (value or "").strip().lower()
-    s = _re.sub(r"[^a-z0-9]+", "-", s).strip("-")
-    return s[:120] or "deck"
+# NOTE: a presentations-specific `_slugify(value)` used to live here, but it was
+# DEAD CODE — two later module-level `def _slugify(...)` (pages/sections and
+# products) shadowed it, so every call site (incl. the deck routes below)
+# already resolved to the products variant at line ~31xxx. Removing it changes
+# no runtime behavior (Track B / task 078, piece #3: 3-way _slugify collision
+# resolved down to the single canonical def). The deck routes' _slugify(...)
+# calls continue to use that canonical def, which is what they already used.
 
 
 @app.route("/admin/api/presentations", methods=["GET"])
@@ -25115,14 +25118,16 @@ def admin_update_llm_provider():
 # admins decide explicitly which pages surface in the menu (no
 # auto-listing).
 
-def _slugify(raw):
-    """Conservative slug normaliser shared by section and page CRUD —
-    lowercase, hyphen-separated, [a-z0-9-] only, no leading/trailing dashes.
-    Returns "" for empty input so callers can 400 cleanly."""
-    s = (raw or "").strip().lower()
-    s = re.sub(r'[^a-z0-9-]', '-', s)
-    s = re.sub(r'-+', '-', s).strip('-')
-    return s
+# NOTE: a pages/sections-specific `_slugify(raw)` used to live here (it returned
+# "" for empty input so callers could 400). It too was DEAD CODE — the later
+# products `def _slugify(...)` shadowed it, so the page/section CRUD below
+# already resolved to the products variant (which falls back to a random
+# secrets.token_hex(4) for empty input rather than ""). Removing it changes no
+# runtime behavior (Track B / task 078, piece #3: 3-way _slugify collision
+# resolved). IMPORTANT: because the live _slugify never returns "", the
+# `if not slug` guards in the page/section handlers below never fire for empty
+# input — an empty slug yields a random token slug, NOT a 400 (pinned in
+# tests/test_slugify.py).
 
 
 def _serialize_page(page_row):
