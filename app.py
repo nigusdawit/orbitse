@@ -9670,44 +9670,8 @@ def event_rsvp_cancel(slug):
 # =============================================================
 # PUBLIC API — BUSINESS INFO
 # =============================================================
-@app.route("/api/business-info")
-def api_business_info():
-    """
-    GET /api/business-info
-    Returns business contact info, hours, and social links
-    from the site_settings table (single-row config).
-    """
-    info = query_db("""
-        SELECT business_phone, business_email, business_address,
-               business_hours, business_map_embed, social_links
-        FROM site_settings WHERE id = 1
-    """, fetchone=True)
-    if not info:
-        return jsonify({})
-    return jsonify(info)
-
-
-# =============================================================
-# PUBLIC API — SEO SETTINGS
-# =============================================================
-
-@app.route("/api/seo")
-def api_seo():
-    """
-    GET /api/seo
-    Returns the SEO settings for the public site. These are the values
-    injected into the <head> meta tags by serve_index(). This endpoint
-    is also available for any client-side JavaScript that needs SEO data.
-    """
-    settings = query_db("""
-        SELECT seo_meta_title, seo_meta_description, seo_keywords,
-               seo_og_image, seo_twitter_handle, seo_canonical_url,
-               seo_robots, site_name, site_subtitle, hero_description
-        FROM site_settings WHERE id = 1
-    """, fetchone=True)
-    if not settings:
-        return jsonify({})
-    return jsonify(settings)
+# /api/business-info and /api/seo moved to admin/public_api.py (Track B / B3) -
+# same URLs, served by public_bp. See admin/public_api.py.
 
 
 # =============================================================
