@@ -1,0 +1,18 @@
+{# admin/tabs/_offers.html — 'offers' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-offers" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Offers &amp; Deals</h2>
+        <p style="opacity:.7;margin-top:4px;">
+          Promotions the AI concierge can surface to visitors (via the
+          <code>lookup_offers</code> tool). Turn the tool on in
+          <strong>AI Control → Visitor CRM</strong>. Tagged offers only show to
+          visitors interested in a matching topic; untagged offers are general.
+        </p>
+      </div>
+      <button class="btn-primary" onclick="newOffer()" data-testid="offer-new">+ New offer</button>
+    </div>
+    <div id="offers-list"><p class="empty-state">Loading offers…</p></div>
+  </div>

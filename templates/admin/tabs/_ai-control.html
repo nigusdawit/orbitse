@@ -1,0 +1,17 @@
+{# admin/tabs/_ai-control.html — 'ai-control' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-ai-control" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>AI Control</h2>
+        <p style="opacity:.7;margin-top:4px;">
+          Tune the Admin AI's reliability, context, and safety. Changes apply
+          <strong>live — no restart</strong>. Each knob falls back to its
+          environment variable, then a built-in default; <strong>Reset</strong>
+          removes your override.
+        </p>
+      </div>
+    </div>
+    <div id="ai-control-list"><p class="empty-state">Loading settings…</p></div>
+  </div>

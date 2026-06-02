@@ -1,0 +1,169 @@
+{# admin/tabs/_chatbot.html — 'chatbot' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-chatbot" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Chatbot Settings</h2>
+        <p>Configure the AI assistant chatbot shown on the public site.</p>
+      </div>
+    </div>
+
+    <div class="form-panel" id="chatbot-form-panel">
+
+      <!-- Master Enable/Disable Toggle -->
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.5rem; padding: 1rem; background: var(--admin-bg); border-radius: var(--admin-radius); border: 1px solid var(--admin-border);">
+        <div>
+          <h3 style="font-size: 1rem; margin-bottom: 0.25rem;">Enable Chatbot</h3>
+          <p style="color: var(--admin-text-muted); font-size: 0.8125rem;">When disabled, the chatbot is completely hidden from the public site.</p>
+        </div>
+        <label class="toggle-switch" data-testid="toggle-chatbot-enabled">
+          <input type="checkbox" id="chatbot-enabled">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      <!-- Mode Selector -->
+      <h3>Connection Mode</h3>
+      <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 1rem;">Choose how the chatbot connects to an AI agent.</p>
+      <div class="form-row" style="margin-bottom: 1.5rem;">
+        <div class="form-group">
+          <label for="chatbot-mode">Mode</label>
+          <select id="chatbot-mode" onchange="toggleChatbotMode()" data-testid="select-chatbot-mode">
+            <option value="builtin">Built-in Chat (use your own API)</option>
+            <option value="embed">External Embed (paste widget code)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Built-in Mode Settings -->
+      <div id="chatbot-builtin-settings">
+        <h3>Agent Appearance</h3>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="chatbot-agent-name">Agent Name</label>
+            <input type="text" id="chatbot-agent-name" placeholder="Marco" data-testid="input-chatbot-name">
+          </div>
+          <div class="form-group">
+            <label for="chatbot-agent-role">Agent Role</label>
+            <input type="text" id="chatbot-agent-role" placeholder="Assistant" data-testid="input-chatbot-role">
+          </div>
+          <div class="form-group">
+            <label for="chatbot-agent-avatar">Avatar (initials or URL)</label>
+            <input type="text" id="chatbot-agent-avatar" placeholder="M" data-testid="input-chatbot-avatar">
+          </div>
+        </div>
+
+        <h3 style="margin-top: 1.5rem;">Greeting &amp; Prompts</h3>
+        <div class="form-row">
+          <div class="form-group" style="grid-column: 1 / -1;">
+            <label for="chatbot-greeting">Greeting Message (first message the bot sends)</label>
+            <textarea id="chatbot-greeting" rows="2" placeholder="Welcome! How can I help you today?" data-testid="input-chatbot-greeting"></textarea>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="grid-column: 1 / -1;">
+            <label for="chatbot-quick-prompts">Quick Prompts (one per line — shown as clickable chips)</label>
+            <textarea id="chatbot-quick-prompts" rows="4" placeholder="Browse our gallery&#10;Tell me more&#10;What do you offer?&#10;Show me pricing" data-testid="input-chatbot-prompts"></textarea>
+          </div>
+        </div>
+
+        <h3 style="margin-top: 1.5rem;">API Connection</h3>
+        <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 1rem;">The endpoint where chat messages are sent via POST. Default: /api/chat (built-in demo). Change this to your own AI API endpoint.</p>
+        <div class="form-row">
+          <div class="form-group" style="grid-column: 1 / -1;">
+            <label for="chatbot-api-endpoint">API Endpoint URL</label>
+            <input type="text" id="chatbot-api-endpoint" placeholder="/api/chat" data-testid="input-chatbot-endpoint">
+          </div>
+        </div>
+      </div>
+
+      <!-- Embed Mode Settings -->
+      <div id="chatbot-embed-settings" style="display:none;">
+        <h3>External Widget Code</h3>
+        <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 1rem;">Paste the embed code from your external chatbot provider (e.g., Intercom, Drift, Tidio, or any custom widget). This code will be injected into the public site.</p>
+        <div class="form-row">
+          <div class="form-group" style="grid-column: 1 / -1;">
+            <label for="chatbot-embed-code">Embed Code (HTML/Script)</label>
+            <textarea id="chatbot-embed-code" rows="8" placeholder='<script src="https://your-chatbot-provider.com/widget.js"></script>' data-testid="input-chatbot-embed" style="font-family: monospace; font-size: 0.8125rem;"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- AI System Prompt Editor — super-admin only. The prompt wording is
+           the operator's IP; clients keep every other chatbot control but
+           never see or edit this. Server also redacts/locks it (real boundary). -->
+      {% if is_super_admin() %}
+      <div id="chatbot-system-prompt-section">
+        <h3 style="margin-top: 1.5rem;">AI System Prompt</h3>
+        <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 1rem;">
+          This is the instruction set sent to the AI before every conversation. It controls the AI's personality, knowledge, and behavior.
+          Leave empty to use the built-in default prompt.
+        </p>
+        <div class="form-row">
+          <div class="form-group" style="grid-column: 1 / -1;">
+            <label for="chatbot-system-prompt">System Prompt</label>
+            <textarea id="chatbot-system-prompt" rows="12" placeholder="You are an AI assistant for this website..." data-testid="input-chatbot-system-prompt" style="font-family: monospace; font-size: 0.8125rem;"></textarea>
+          </div>
+        </div>
+        <div style="margin-bottom: 1rem;">
+          <button class="btn btn-secondary btn-sm" onclick="loadDefaultSystemPrompt()" data-testid="button-load-default-prompt">Load Default Prompt</button>
+        </div>
+      </div>
+      {% endif %}
+
+      <!-- Brand Voice / Business Customization — visible to ALL admins
+           (clients included). Unlike the System Prompt above, this is NOT
+           the operator's IP: it is the client's own space to add their
+           business voice, tone, and custom rules. Whatever they type here is
+           APPENDED on top of the generic default prompt on the server, so the
+           AI keeps all of its built-in intelligence and simply also speaks in
+           the business's voice. -->
+      <div id="chatbot-brand-voice-section" style="margin-top: 1.5rem;">
+        <h3>Brand Voice / Business Customization</h3>
+        <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 1rem;">
+          Add your business's personality, tone, and any custom instructions for the AI here —
+          for example "Always be upbeat and use a friendly first-name tone", or "We are a vegan bakery,
+          never suggest non-vegan products." This is <strong>added on top of</strong> the built-in
+          assistant, so it keeps all of its smarts and simply speaks in your voice. Leave empty to use
+          the default voice.
+        </p>
+        <div class="form-row">
+          <div class="form-group" style="grid-column: 1 / -1;">
+            <label for="chatbot-brand-voice">Brand Voice Instructions</label>
+            <textarea id="chatbot-brand-voice" rows="8" placeholder="e.g. Speak warmly and concisely. We're a family-run business — emphasize personal service. Never promise same-day delivery." data-testid="input-chatbot-brand-voice" style="font-size: 0.875rem;"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!--
+      ====================================================================
+      SCOPE TIGHTNESS — gated by feature flag `agent_scope_slider`
+      ====================================================================
+      Hidden by default; loadChatbotSettings() reveals it when settings._features.agent_scope_slider === true.
+      -->
+      <div id="chatbot-scope-section" style="display:none; margin-top:1.5rem; padding:1rem 1.25rem; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:var(--admin-radius);">
+        <h3 style="margin-top:0;">Agent Scope</h3>
+        <p style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-bottom: 1rem;">
+          Controls how freely the AI volunteers tools, decks, and page suggestions during a chat.
+        </p>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;" id="chatbot-scope-buttons">
+          <button type="button" class="btn btn-secondary" data-scope="strict" onclick="setAgentScope('strict')" data-testid="button-scope-strict">
+            Strict
+          </button>
+          <button type="button" class="btn btn-secondary" data-scope="balanced" onclick="setAgentScope('balanced')" data-testid="button-scope-balanced">
+            Balanced
+          </button>
+          <button type="button" class="btn btn-secondary" data-scope="generous" onclick="setAgentScope('generous')" data-testid="button-scope-generous">
+            Generous
+          </button>
+        </div>
+        <p id="chatbot-scope-description" style="color: var(--admin-text-muted); font-size: 0.8125rem; margin-top: 0.75rem;"></p>
+        <input type="hidden" id="chatbot-scope-tightness" value="balanced">
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="saveChatbotSettings()" data-testid="button-save-chatbot">Save Chatbot Settings</button>
+      </div>
+    </div>
+  </div>

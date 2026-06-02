@@ -1,0 +1,54 @@
+{# admin/tabs/_research.html — 'research' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-research" class="tab-content">
+    <div class="gx-head">
+      <div>
+        <h2 class="gx-title">Research Hub</h2>
+        <p class="gx-sub">Run deep research on a question — the assistant web-searches, fetches sources,
+          and writes a cited synthesis. Or just gather a list of URLs as raw source material.</p>
+      </div>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-ghost" onclick="loadResearchHub()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+          Refresh</button>
+      </div>
+    </div>
+
+    <div class="gx-stats">
+      <div class="gx-stat"><div class="gx-stat-label">Reports</div><div class="gx-stat-value" id="rh-stat-reports">—</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Ready</div><div class="gx-stat-value" id="rh-stat-ready">—</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">In progress</div><div class="gx-stat-value" id="rh-stat-running">—</div></div>
+    </div>
+
+    <div class="gx-grid gx-grid-2" style="margin-bottom:1.5rem;">
+      <div class="gx-card">
+        <div class="gx-card-h"><span class="gx-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></span> Run deep research</div>
+        <div class="gx-field"><label class="gx-label">Question</label>
+          <textarea id="rh-question" rows="2" class="gx-input" placeholder="e.g. What are competitors charging for X?"></textarea></div>
+        <div class="gx-field"><label class="gx-label">Topic (optional)</label>
+          <input id="rh-topic" class="gx-input" placeholder="Short label for the report" /></div>
+        <div class="gx-field"><label class="gx-label">Seed URLs (optional, one per line)</label>
+          <textarea id="rh-seeds" rows="2" class="gx-input" placeholder="https://..."></textarea></div>
+        <div class="gx-foot">
+          <button class="gx-btn gx-btn-primary" onclick="rhRunResearch()">Run research</button>
+          <span id="rh-run-status" class="gx-hint"></span>
+        </div>
+      </div>
+      <div class="gx-card">
+        <div class="gx-card-h"><span class="gx-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></span> Gather sources</div>
+        <div class="gx-field"><label class="gx-label">URLs (one per line)</label>
+          <textarea id="rh-gather-urls" rows="4" class="gx-input" placeholder="https://..."></textarea></div>
+        <div class="gx-field"><label class="gx-label">Topic (optional)</label>
+          <input id="rh-gather-topic" class="gx-input" placeholder="Label for the gathered set" /></div>
+        <div class="gx-foot">
+          <button class="gx-btn gx-btn-primary" onclick="rhGather()">Gather</button>
+          <span id="rh-gather-status" class="gx-hint"></span>
+        </div>
+      </div>
+    </div>
+
+    <h3 class="gx-section-h">Reports</h3>
+    <div id="rh-reports-list" class="gx-list"></div>
+    <div id="rh-report-detail" class="gx-detail" style="display:none; margin-top:1rem;"></div>
+  </div>

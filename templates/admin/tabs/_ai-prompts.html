@@ -1,0 +1,19 @@
+{# admin/tabs/_ai-prompts.html — 'ai-prompts' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-ai-prompts" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>AI Prompts</h2>
+        <p style="opacity:.7;margin-top:4px;">
+          Edit the instructions that steer every AI feature on the platform.
+          Changes go live on the next AI reply — no restart needed. Each prompt
+          starts from the built-in default; use <strong>Reset to default</strong>
+          to restore it.
+        </p>
+      </div>
+    </div>
+    <div id="ai-prompts-list">
+      <p class="empty-state">Loading prompts…</p>
+    </div>
+  </div>

@@ -74,7 +74,9 @@ def test_dashboard_injects_theme():
     c = _sa()
     html = c.get("/admin").get_data(as_text=True)
     assert "data-admin-theme=" in html
-    assert "admin-glass-theme" in html        # the glass CSS layer is present
+    # The glass CSS layer moved from an inline <style> into public/admin/theme.css
+    # (task 076 de-monolith); assert it's linked into the page rather than inlined.
+    assert "/admin/theme.css" in html         # the glass CSS layer is present (external)
     assert "--admin-accent" in html           # customizable vars injected
     assert 'id="tab-appearance"' in html      # the customizer tab rendered
     # task 073 — expanded controls injected as <html> data-* attrs (no-flash).

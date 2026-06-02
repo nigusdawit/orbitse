@@ -1,0 +1,13 @@
+{# admin/tabs/_changes.html — 'changes' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-changes" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Recent Changes</h2>
+        <p>Every approved edit to chat settings, AI skills, providers, voice, or custom skills is captured here automatically. Click Revert to restore the previous values.</p>
+      </div>
+      <button class="btn btn-secondary" onclick="loadRecentChanges()" data-testid="button-refresh-changes">Refresh</button>
+    </div>
+    <div id="changes-list" data-testid="list-changes" style="display:grid;gap:8px;"></div>
+  </div>

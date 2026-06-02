@@ -1,0 +1,27 @@
+{# admin/tabs/_crm.html — 'crm' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-crm" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Leads &amp; CRM</h2>
+        <p style="opacity:.7;margin-top:4px;">
+          What the AI concierge captured. Each section fills only when its tool
+          is enabled in <strong>AI Control</strong>.
+        </p>
+      </div>
+      <button class="btn-secondary" onclick="loadCrm()" data-testid="crm-refresh">Refresh</button>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;" id="crm-subnav">
+      <button class="tab-btn crm-sub active" onclick="crmShow('leads', this)">Leads</button>
+      <button class="tab-btn crm-sub" onclick="crmShow('callbacks', this)">Callbacks</button>
+      <button class="tab-btn crm-sub" onclick="crmShow('meetings', this)">Meetings</button>
+      <button class="tab-btn crm-sub" onclick="crmShow('voice', this)">Voice calls</button>
+      <button class="tab-btn crm-sub" onclick="crmShow('profiles', this)">Visitor profiles</button>
+    </div>
+    <div id="crm-leads" class="crm-pane"><p class="empty-state">Loading…</p></div>
+    <div id="crm-callbacks" class="crm-pane" style="display:none;"><p class="empty-state">Loading…</p></div>
+    <div id="crm-meetings" class="crm-pane" style="display:none;"><p class="empty-state">Loading…</p></div>
+    <div id="crm-voice" class="crm-pane" style="display:none;"><p class="empty-state">Loading…</p></div>
+    <div id="crm-profiles" class="crm-pane" style="display:none;"><p class="empty-state">Loading…</p></div>
+  </div>

@@ -1,0 +1,64 @@
+{# admin/tabs/_snapshot.html — 'snapshot' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-snapshot" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Clone &amp; Snapshot</h2>
+        <p>Export this install's settings, features, FAQs (and optionally content + admin tooling) as a JSON template that can be applied to a fresh install in one shot. Inverse of the first-run wizard.</p>
+      </div>
+    </div>
+
+    <div class="form-panel" style="margin-top: 1rem;">
+      <h3 style="margin: 0 0 0.5rem 0;">What's included</h3>
+      <p style="color: var(--admin-text-muted); font-size: 0.85rem; margin: 0 0 1rem 0;">
+        Pick what to carry into the snapshot. Defaults are safe for sharing with other operators (no secrets, no content rows).
+      </p>
+      <div style="display: flex; flex-direction: column; gap: 0.625rem;">
+        <label style="display: flex; align-items: flex-start; gap: 0.5rem; cursor: pointer;">
+          <input type="checkbox" id="snap-admin-records" checked data-testid="checkbox-snap-admin-records" onchange="loadOnboardingSnapshot()" />
+          <span>
+            <strong>Admin records</strong> — skills, MCP servers, dashboards &amp; widgets, automations, messaging templates, model prices.
+            <span style="color: var(--admin-text-muted); font-size: 0.8125rem; display: block;">Recommended ON. Sensitive columns (auth tokens, webhook secrets) are redacted unless you also tick the secrets box below.</span>
+          </span>
+        </label>
+        <label style="display: flex; align-items: flex-start; gap: 0.5rem; cursor: pointer;">
+          <input type="checkbox" id="snap-content" data-testid="checkbox-snap-content" onchange="loadOnboardingSnapshot()" />
+          <span>
+            <strong>Content rows</strong> — exports the default subset (services + team only).
+            <span style="color: var(--admin-text-muted); font-size: 0.8125rem; display: block;">Off by default — content is INSERT-only on the receiving install, so re-running on a non-empty target creates duplicates. To export blog posts, products, testimonials, etc. as well, run the snapshot CLI with <code>--include-all-content</code>.</span>
+          </span>
+        </label>
+        <label style="display: flex; align-items: flex-start; gap: 0.5rem; cursor: pointer;">
+          <input type="checkbox" id="snap-secrets" data-testid="checkbox-snap-secrets" onchange="loadOnboardingSnapshot()" />
+          <span>
+            <strong>Include sensitive columns</strong> — MCP auth tokens, automation webhook tokens.
+            <span style="color: #fcd34d; font-size: 0.8125rem; display: block;">⚠ Only enable when cloning to YOUR own sibling install. Treat the resulting JSON as a secret.</span>
+          </span>
+        </label>
+      </div>
+
+      <div style="display: flex; gap: 0.625rem; margin-top: 1.25rem; flex-wrap: wrap;">
+        <button class="btn-primary" onclick="downloadOnboardingSnapshot()" data-testid="button-snap-download">Download JSON</button>
+        <button class="btn-secondary" onclick="copyOnboardingSnapshot()" data-testid="button-snap-copy">Copy to clipboard</button>
+        <button class="btn-secondary" onclick="loadOnboardingSnapshot()" data-testid="button-snap-refresh" style="margin-left: auto;">Refresh preview</button>
+      </div>
+    </div>
+
+    <div class="form-panel" style="margin-top: 1.5rem;">
+      <h3 style="margin: 0 0 1rem 0;">Snapshot preview</h3>
+      <div id="snap-preview" data-testid="container-snap-preview" style="font-size: 0.875rem;">
+        <div style="color: var(--admin-text-muted);">Loading preview…</div>
+      </div>
+    </div>
+
+    <div class="form-panel" style="margin-top: 1.5rem;">
+      <h3 style="margin: 0 0 0.5rem 0;">How to apply this on a fresh install</h3>
+      <ol style="color: var(--admin-text-muted); font-size: 0.875rem; padding-left: 1.25rem; line-height: 1.6;">
+        <li>Download the JSON above.</li>
+        <li>Open the new install's <code>/setup</code> wizard, or POST the JSON to its <code>/api/velo/command</code> endpoint with command <code>bootstrap_install</code> (template = the JSON contents).</li>
+        <li>Edit <code>admin_user.email</code> + any business-specific text (site name, contact info, FAQs) before applying — every clone needs its own owner email.</li>
+        <li>Re-runs are idempotent for settings, features, FAQs (deduped on canonical question), and admin records (UPSERT by natural key). Content rows are INSERT-only and will duplicate on re-run.</li>
+      </ol>
+    </div>
+  </div>

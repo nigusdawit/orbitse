@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<!--
+===============================================================================
+ADMIN gx-* STYLEGUIDE  (public/admin/styleguide.html)
+===============================================================================
+
+PURPOSE
+  A LIVING component gallery for the admin design system. Every gx-* component
+  and every design token is rendered here next to a copy-paste snippet, so your
+  dev team reuses the kit instead of reinventing it. This is the single source
+  of truth for "what does the admin look like and how do I build a new panel."
+
+HOW TO OPEN IT
+  This is a plain STATIC file (no build step, no Jinja, no auth, no data). It is
+  served by the same catch-all that serves /admin/base.css, so just visit:
+      /admin/styleguide.html
+  ...on a running server, or open the file directly in a browser (the CSS links
+  are absolute, so they resolve when served by the app).
+
+HOW IT STAYS FAITHFUL TO THE REAL ADMIN
+  It links the EXACT same stylesheets, in the EXACT same order, as the real
+  dashboard shell (templates/admin/dashboard.html):
+      base.css  ->  (inline #admin-appearance-vars defaults)  ->  theme.css  ->  tabs.css
+  and it sets the same data-admin-* attributes on <html>. The one difference:
+  the real shell injects #admin-appearance-vars from the database (the super-admin
+  Appearance tab); here we hardcode the shipped DEFAULTS and expose them as a live
+  playground (the control bar up top). So tweaking a knob here previews exactly
+  what the Appearance tab would do in production.
+
+HOW TO EXTEND IT (when you add a gx-* component to theme.css)
+  1. Add a new <section class="sg-section" id="..."> below, in the right group.
+  2. Drop a live specimen in a .sg-demo, and the markup in a .sg-code block
+     (HTML-escape < > & as &lt; &gt; &amp; inside <code>).
+  3. Add an anchor link to the left nav (.sg-nav) so it's discoverable.
+  Keep this file in sync with theme.css — a component that isn't here is a
+  component the team will reinvent.
+
+CONSTRAINTS (same as the rest of the admin — don't fight them)
+  - No build step. Plain HTML/CSS + one small classic <script> (no modules).
+  - Page-chrome classes are prefixed .sg-* so they never collide with the admin
+    globals from base.css. The SPECIMENS use the real classes (gx-*, .btn, .card)
+    on purpose — that's the whole point.
+===============================================================================
+-->
+<html lang="en"
+      data-admin-theme="dark"
+      data-admin-density="comfortable"
+      data-admin-surface="glass"
+      data-admin-sidebar="comfortable"
+      data-admin-font="sans"
+      data-admin-fontscale="md">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin gx-* Styleguide</title>
+
+  <!-- Same fonts as the dashboard, for visual parity. -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,100..1000&family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap">
+
+  <!-- 1) base tokens + resets + shared classes -->
+  <link rel="stylesheet" href="/admin/base.css">
+
+  <!-- 2) #admin-appearance-vars — the real dashboard injects these from the DB.
+          Here we hardcode the SHIPPED DEFAULTS (see app _admin_appearance()):
+          accent #6c8cff / accent2 #9a7cff / glass .55 / glow .5 / blur 18px /
+          radius 16px. The playground below live-edits these same variables. -->
+  <style id="admin-appearance-vars">
+    :root{
+      --admin-accent:#6c8cff;
+      --admin-accent-2:#9a7cff;
+      --admin-glass:0.55;
+      --admin-glow:0.5;
+      --admin-blur:blur(18px);
+      --admin-blur-heavy:blur(30.6px);
+      --admin-radius:16px;
+      /* alias used by a few components (Admin Chat etc.) */
+      --admin-card:var(--admin-surface);
+    }
+  </style>
+
+  <!-- 3) glass theme + the gx-* kit + light/dark + appearance variants -->
+  <link rel="stylesheet" href="/admin/theme.css">
+  <!-- 4) a few per-tab scoped styles (loaded for completeness/parity) -->
+  <link rel="stylesheet" href="/admin/tabs.css">
+
+  <!-- =======================================================================
+       STYLEGUIDE-PAGE CHROME ONLY (.sg-*). This is the gallery's own layout —
+       it is NOT part of the admin design system. Everything here is theme-aware
+       (built on the same --admin-* tokens) so the page itself reskins with the
+       playground. Scoped with the sg- prefix so it can't leak into the admin.
+       ======================================================================= -->
+  <style>
+    /* ---- page scaffold ---- */
+    body{ min-height:100vh; }
+    .sg-wrap{ max-width:1180px; margin:0 auto; padding:0 1.5rem 6rem; position:relative; z-index:1; }
+
+    /* ---- sticky top bar: title + the live appearance playground ---- */
+    .sg-topbar{ position:sticky; top:0; z-index:40; margin:0 -1.5rem 2rem; padding:1rem 1.5rem;
+      background:color-mix(in srgb, var(--admin-bg) 86%, transparent);
+      -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px);
+      border-bottom:1px solid var(--admin-border); }
+    .sg-topbar-row{ max-width:1180px; margin:0 auto; display:flex; align-items:center; gap:1rem; flex-wrap:wrap; }
+    .sg-brand{ font-family:var(--admin-head-font); font-size:1.15rem; font-weight:700; color:var(--admin-text); margin-right:auto; letter-spacing:-.01em; }
+    .sg-brand small{ display:block; font-family:var(--admin-ui-font); font-size:.72rem; font-weight:500; color:var(--admin-text-muted); letter-spacing:.02em; margin-top:.1rem; }
+
+    /* ---- the playground controls ---- */
+    .sg-controls{ display:flex; align-items:center; gap:.9rem; flex-wrap:wrap; }
+    .sg-ctl{ display:flex; flex-direction:column; gap:.2rem; }
+    .sg-ctl > span{ font-size:.62rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--admin-text-muted); }
+    .sg-ctl input[type="range"]{ width:104px; accent-color:var(--admin-accent); }
+    .sg-ctl input[type="color"]{ width:42px; height:28px; border:1px solid var(--admin-border); border-radius:8px; background:var(--admin-field); cursor:pointer; padding:2px; }
+    .sg-ctl select{ background:var(--admin-field); color:var(--admin-text); border:1px solid var(--admin-border); border-radius:8px; padding:.32rem .5rem; font-size:.8rem; font-family:inherit; }
+    .sg-ctl.sg-ctl-check{ flex-direction:row; align-items:center; gap:.4rem; }
+    .sg-ctl.sg-ctl-check span{ font-size:.7rem; }
+    .sg-reset{ background:var(--admin-surface); color:var(--admin-text); border:1px solid var(--admin-border); border-radius:9px;
+      padding:.45rem .7rem; font-size:.78rem; font-weight:600; cursor:pointer; font-family:inherit; }
+    .sg-reset:hover{ border-color:var(--admin-accent); color:var(--admin-accent); }
+
+    /* ---- two-column body: sticky TOC + content ---- */
+    .sg-body{ display:grid; grid-template-columns:200px 1fr; gap:2.4rem; align-items:start; }
+    .sg-nav{ position:sticky; top:96px; display:flex; flex-direction:column; gap:.1rem; font-size:.83rem; max-height:calc(100vh - 120px); overflow-y:auto; }
+    .sg-nav a{ color:var(--admin-text-muted); text-decoration:none; padding:.32rem .6rem; border-radius:8px; border-left:2px solid transparent; }
+    .sg-nav a:hover{ color:var(--admin-text); background:color-mix(in srgb, var(--admin-text) 5%, transparent); }
+    .sg-nav .sg-nav-h{ font-size:.66rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--admin-text-muted); margin:1rem 0 .3rem .6rem; opacity:.65; }
+    .sg-main{ min-width:0; }
+
+    /* ---- a documented section ---- */
+    .sg-section{ margin-bottom:2.8rem; scroll-margin-top:108px; }
+    .sg-section > h2{ font-family:var(--admin-head-font); font-size:1.35rem; font-weight:700; color:var(--admin-text); margin:0 0 .3rem; letter-spacing:-.01em; }
+    .sg-section > p.sg-lead{ color:var(--admin-text-muted); font-size:.9rem; line-height:1.6; margin:0 0 1.1rem; max-width:70ch; }
+    .sg-section > p.sg-lead code{ background:color-mix(in srgb, var(--admin-text) 9%, transparent); padding:.08rem .35rem; border-radius:5px; font-size:.85em; }
+
+    /* ---- a specimen + its code ---- */
+    .sg-demo{ border:1px solid var(--admin-border); border-radius:var(--admin-radius); padding:1.5rem; background:color-mix(in srgb, var(--admin-text) 3%, transparent); margin-bottom:.7rem; }
+    .sg-demo--pad0{ padding:0; overflow:hidden; }
+    .sg-row{ display:flex; gap:.8rem; align-items:center; flex-wrap:wrap; }
+    .sg-code{ position:relative; }
+    .sg-code pre{ margin:0; background:#0b0f1a; border:1px solid var(--admin-border); border-radius:12px; padding:1rem 1.1rem; overflow-x:auto; }
+    .sg-code code{ font-family:'SF Mono',ui-monospace,Menlo,Consolas,monospace; font-size:.79rem; line-height:1.55; color:#cbd5e1; white-space:pre; }
+    .sg-copy{ position:absolute; top:.55rem; right:.55rem; background:rgba(255,255,255,.08); color:#e2e8f0; border:1px solid rgba(255,255,255,.16);
+      border-radius:7px; padding:.25rem .55rem; font-size:.7rem; font-weight:600; cursor:pointer; font-family:inherit; }
+    .sg-copy:hover{ background:rgba(255,255,255,.16); }
+    .sg-copy.ok{ background:color-mix(in srgb,#34d399 30%,transparent); border-color:#34d399; color:#a7f3d0; }
+
+    /* ---- token swatches ---- */
+    .sg-swatches{ display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:.8rem; }
+    .sg-sw{ border:1px solid var(--admin-border); border-radius:12px; overflow:hidden; background:var(--admin-surface); }
+    .sg-sw-chip{ height:54px; }
+    .sg-sw-meta{ padding:.5rem .65rem; }
+    .sg-sw-meta b{ display:block; font-size:.78rem; color:var(--admin-text); font-weight:600; }
+    .sg-sw-meta span{ font-size:.68rem; color:var(--admin-text-muted); font-family:ui-monospace,monospace; }
+
+    /* ---- scale visualizers (radius / spacing / type) ---- */
+    .sg-scale{ display:flex; flex-direction:column; gap:.55rem; }
+    .sg-scale-row{ display:flex; align-items:center; gap:.9rem; }
+    .sg-scale-row .sg-scale-k{ width:120px; font-size:.74rem; color:var(--admin-text-muted); font-family:ui-monospace,monospace; flex-shrink:0; }
+    .sg-scale-bar{ height:18px; background:linear-gradient(135deg,var(--admin-accent),var(--admin-accent-2)); border-radius:5px; }
+    .sg-radius-demo{ width:70px; height:70px; background:linear-gradient(135deg,var(--admin-accent),var(--admin-accent-2)); }
+
+    @media(max-width:860px){
+      .sg-body{ grid-template-columns:1fr; }
+      .sg-nav{ position:static; flex-direction:row; flex-wrap:wrap; max-height:none; margin-bottom:1rem; }
+      .sg-nav .sg-nav-h{ width:100%; margin:.5rem 0 0 0; }
+    }
+  </style>
+</head>
+
+<body>
+  <!-- =======================================================================
+       TOP BAR — title + the LIVE APPEARANCE PLAYGROUND.
+       Each control writes a --admin-* CSS variable or a data-admin-* attribute
+       on <html>, exactly like the real super-admin Appearance tab. Edits are
+       in-memory only (this is a static reference page; the real tab persists to
+       the database via PUT /admin/api/admin-appearance).
+       ======================================================================= -->
+  <div class="sg-topbar">
+    <div class="sg-topbar-row">
+      <div class="sg-brand">Admin Design System
+        <small>gx-* component gallery &middot; live preview of the Appearance tokens</small>
+      </div>
+      <div class="sg-controls">
+        <label class="sg-ctl"><span>Theme</span>
+          <select id="sg-theme">
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </label>
+        <label class="sg-ctl"><span>Accent</span><input type="color" id="sg-accent" value="#6c8cff"></label>
+        <label class="sg-ctl"><span>Accent 2</span><input type="color" id="sg-accent2" value="#9a7cff"></label>
+        <label class="sg-ctl"><span>Blur</span><input type="range" id="sg-blur" min="0" max="40" step="1" value="18"></label>
+        <label class="sg-ctl"><span>Radius</span><input type="range" id="sg-radius" min="0" max="28" step="1" value="16"></label>
+        <label class="sg-ctl"><span>Glass</span><input type="range" id="sg-glass" min="0" max="1" step="0.05" value="0.55"></label>
+        <label class="sg-ctl"><span>Glow</span><input type="range" id="sg-glow" min="0" max="1" step="0.05" value="0.5"></label>
+        <label class="sg-ctl"><span>Density</span>
+          <select id="sg-density">
+            <option value="compact">Compact</option>
+            <option value="comfortable" selected>Comfortable</option>
+            <option value="spacious">Spacious</option>
+          </select>
+        </label>
+        <label class="sg-ctl"><span>Type</span>
+          <select id="sg-fontscale">
+            <option value="sm">Small</option>
+            <option value="md" selected>Medium</option>
+            <option value="lg">Large</option>
+          </select>
+        </label>
+        <label class="sg-ctl"><span>Font</span>
+          <select id="sg-font">
+            <option value="sans">DM Sans</option>
+            <option value="inter">Inter</option>
+            <option value="system">System</option>
+            <option value="serif-head">Serif heads</option>
+          </select>
+        </label>
+        <label class="sg-ctl"><span>Surface</span>
+          <select id="sg-surface">
+            <option value="glass" selected>Glass</option>
+            <option value="solid">Solid</option>
+            <option value="minimal">Minimal</option>
+          </select>
+        </label>
+        <label class="sg-ctl sg-ctl-check"><input type="checkbox" id="sg-contrast"><span>High contrast</span></label>
+        <label class="sg-ctl sg-ctl-check"><input type="checkbox" id="sg-motion"><span>Reduce motion</span></label>
+        <button class="sg-reset" id="sg-reset" type="button">Reset</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="sg-wrap">
+    <div class="sg-body">
+
+      <!-- ============================ LEFT NAV / TOC ============================ -->
+      <nav class="sg-nav">
+        <div class="sg-nav-h">Foundations</div>
+        <a href="#intro">Overview</a>
+        <a href="#colors">Color tokens</a>
+        <a href="#radius">Radius &amp; surface</a>
+        <a href="#spacing">Spacing scale</a>
+        <a href="#type">Type scale</a>
+        <div class="sg-nav-h">Components</div>
+        <a href="#header">Page header</a>
+        <a href="#buttons">Buttons</a>
+        <a href="#cards">Cards</a>
+        <a href="#forms">Forms &amp; fieldsets</a>
+        <a href="#media">Media field</a>
+        <a href="#stats">Stat tiles</a>
+        <a href="#table">Table</a>
+        <a href="#badges">Badges</a>
+        <a href="#subtabs">Subtabs</a>
+        <a href="#toolbar">Toolbar</a>
+        <a href="#segmented">Segmented</a>
+        <a href="#stepper">Stepper</a>
+        <a href="#list">List &amp; rows</a>
+        <a href="#states">States</a>
+        <a href="#detail">Detail view</a>
+        <a href="#drawer">Drawer</a>
+        <div class="sg-nav-h">Legacy</div>
+        <a href="#legacy">Shared classes</a>
+      </nav>
+
+      <!-- ============================== MAIN ============================== -->
+      <main class="sg-main">
+
+        <!-- ----------------------------- INTRO ----------------------------- -->
+        <section class="sg-section" id="intro">
+          <h2>The admin design system</h2>
+          <p class="sg-lead">
+            Every component below is defined in <code>public/admin/theme.css</code> and is
+            theme-aware through the <code>--admin-*</code> CSS variables. Build new admin
+            panels by composing these <code>gx-*</code> classes — don't write bespoke CSS
+            unless a component genuinely doesn't exist yet. Tweak the controls in the top
+            bar to see how the Appearance tokens reshape the whole kit at once. Full
+            maintainer guide: <code>templates/admin/README.md</code>.
+          </p>
+          <div class="gx-alert gx-alert-info" style="max-width:70ch;">
+            <span>This is a static reference page (no build step, no auth, no data). It links the
+            same stylesheets as the real dashboard, so what you see is what ships.</span>
+          </div>
+        </section>
+
+        <!-- ----------------------------- COLORS ----------------------------- -->
+        <section class="sg-section" id="colors">
+          <h2>Color tokens</h2>
+          <p class="sg-lead">Semantic colors. The neutrals (<code>bg</code>/<code>surface</code>/<code>text</code>)
+            flip with the theme; the accents come from the Appearance customizer.</p>
+          <div class="sg-demo">
+            <div class="sg-swatches">
+              <div class="sg-sw"><div class="sg-sw-chip" style="background:var(--admin-accent)"></div><div class="sg-sw-meta"><b>Accent</b><span>--admin-accent</span></div></div>
+              <div class="sg-sw"><div class="sg-sw-chip" style="background:var(--admin-accent-2)"></div><div class="sg-sw-meta"><b>Accent 2</b><span>--admin-accent-2</span></div></div>
+              <div class="sg-sw"><div class="sg-sw-chip" style="background:linear-gradient(135deg,var(--admin-accent),var(--admin-accent-2))"></div><div class="sg-sw-meta"><b>Accent gradient</b><span>btn-primary fill</span></div></div>
+              <div class="sg-sw"><div class="sg-sw-chip" style="background:var(--admin-bg)"></div><div class="sg-sw-meta"><b>Background</b><span>--admin-bg</span></div></div>
+              <div class="sg-sw"><div class="sg-sw-chip" style="background:var(--admin-surface)"></div><div class="sg-sw-meta"><b>Surface</b><span>--admin-surface</span></div></div>
+              <div class="sg-sw"><div class="sg-sw-chip" style="background:var(--admin-field)"></div><div class="sg-sw-meta"><b>Field</b><span>--admin-field</span></div></div>
+              <div class="sg-sw"><div class="sg-sw-chip" style="background:var(--admin-text)"></div><div class="sg-sw-meta"><b>Text</b><span>--admin-text</span></div></div>
+              <div class="sg-sw"><div class="sg-sw-chip" style="background:var(--admin-text-muted)"></div><div class="sg-sw-meta"><b>Text muted</b><span>--admin-text-muted</span></div></div>
+              <div class="sg-sw"><div class="sg-sw-chip" style="background:#34d399"></div><div class="sg-sw-meta"><b>Success</b><span>gx-badge-ok</span></div></div>
+              <div class="sg-sw"><div class="sg-sw-chip" style="background:#fbbf24"></div><div class="sg-sw-meta"><b>Running</b><span>gx-badge-run</span></div></div>
+              <div class="sg-sw"><div class="sg-sw-chip" style="background:#f87171"></div><div class="sg-sw-meta"><b>Error</b><span>gx-badge-err</span></div></div>
+              <div class="sg-sw"><div class="sg-sw-chip" style="background:var(--admin-border-light)"></div><div class="sg-sw-meta"><b>Border</b><span>--admin-border</span></div></div>
+            </div>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;div style="background: var(--admin-accent)"&gt;…&lt;/div&gt;
+&lt;div style="color: var(--admin-text-muted)"&gt;…&lt;/div&gt;</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- RADIUS ----------------------------- -->
+        <section class="sg-section" id="radius">
+          <h2>Radius &amp; surface</h2>
+          <p class="sg-lead">All cards/inputs share <code>--admin-radius</code>. Surface style
+            (<code>data-admin-surface</code>) switches glass &rarr; solid &rarr; minimal; drag the
+            <b>Radius</b>/<b>Glass</b>/<b>Blur</b> knobs above to feel it.</p>
+          <div class="sg-demo sg-row">
+            <div class="sg-radius-demo" style="border-radius:var(--admin-radius)"></div>
+            <div class="gx-card" style="margin:0; flex:1; min-width:220px;">A <code>.gx-card</code> — glass surface, themed border, shared radius, blur backdrop.</div>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;div class="gx-card"&gt;…&lt;/div&gt;
+&lt;!-- radius/blur/glass come from the appearance tokens; no per-element CSS --&gt;</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- SPACING ----------------------------- -->
+        <section class="sg-section" id="spacing">
+          <h2>Spacing scale</h2>
+          <p class="sg-lead">Density-aware: <code>--admin-space-scale</code> (compact .82 / comfortable 1 / spacious 1.18)
+            multiplies every step, so changing <b>Density</b> retunes padding everywhere at once.</p>
+          <div class="sg-demo">
+            <div class="sg-scale">
+              <div class="sg-scale-row"><span class="sg-scale-k">--admin-space-1</span><div class="sg-scale-bar" style="width:var(--admin-space-1)"></div></div>
+              <div class="sg-scale-row"><span class="sg-scale-k">--admin-space-2</span><div class="sg-scale-bar" style="width:var(--admin-space-2)"></div></div>
+              <div class="sg-scale-row"><span class="sg-scale-k">--admin-space-3</span><div class="sg-scale-bar" style="width:var(--admin-space-3)"></div></div>
+              <div class="sg-scale-row"><span class="sg-scale-k">--admin-space-4</span><div class="sg-scale-bar" style="width:var(--admin-space-4)"></div></div>
+              <div class="sg-scale-row"><span class="sg-scale-k">--admin-space-5</span><div class="sg-scale-bar" style="width:var(--admin-space-5)"></div></div>
+              <div class="sg-scale-row"><span class="sg-scale-k">--admin-space-6</span><div class="sg-scale-bar" style="width:var(--admin-space-6)"></div></div>
+            </div>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>padding: var(--admin-space-4) var(--admin-space-5);
+gap: var(--admin-space-3);</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- TYPE ----------------------------- -->
+        <section class="sg-section" id="type">
+          <h2>Type scale</h2>
+          <p class="sg-lead">Sized from <code>--admin-fs-*</code> tokens (driven by <code>--admin-font-scale</code> —
+            change <b>Type</b> above). Headings use <code>--admin-head-font</code>, body uses <code>--admin-ui-font</code>.</p>
+          <div class="sg-demo">
+            <div class="sg-scale">
+              <div style="font-size:var(--admin-fs-6); font-family:var(--admin-head-font); color:var(--admin-text); line-height:1.1;">Display &mdash; fs-6</div>
+              <div style="font-size:var(--admin-fs-5); font-family:var(--admin-head-font); color:var(--admin-text); line-height:1.1;">Page title &mdash; fs-5</div>
+              <div style="font-size:var(--admin-fs-4); color:var(--admin-text);">Section heading &mdash; fs-4</div>
+              <div style="font-size:var(--admin-fs-3); color:var(--admin-text);">Card heading &mdash; fs-3</div>
+              <div style="font-size:var(--admin-fs-2); color:var(--admin-text);">Body text &mdash; fs-2</div>
+              <div style="font-size:var(--admin-fs-1); color:var(--admin-text-muted);">Small / meta &mdash; fs-1</div>
+              <div style="font-size:var(--admin-fs-0); color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:.05em;">Label &mdash; fs-0</div>
+            </div>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>font-size: var(--admin-fs-3);
+font-family: var(--admin-head-font);</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- PAGE HEADER ----------------------------- -->
+        <section class="sg-section" id="header">
+          <h2>Page header</h2>
+          <p class="sg-lead">The standard tab header: <code>gx-head</code> wraps a <code>gx-title</code> +
+            <code>gx-sub</code> on the left and a <code>gx-actions</code> cluster on the right.</p>
+          <div class="sg-demo">
+            <div class="gx-head">
+              <div>
+                <h1 class="gx-title">Pricing</h1>
+                <p class="gx-sub">Manage seasonal pricing tiers shown on the public site. Changes go live on reload.</p>
+              </div>
+              <div class="gx-actions">
+                <button class="gx-btn gx-btn-ghost">Import</button>
+                <button class="gx-btn gx-btn-primary">+ New tier</button>
+              </div>
+            </div>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;div class="gx-head"&gt;
+  &lt;div&gt;
+    &lt;h1 class="gx-title"&gt;Pricing&lt;/h1&gt;
+    &lt;p class="gx-sub"&gt;Manage seasonal pricing tiers…&lt;/p&gt;
+  &lt;/div&gt;
+  &lt;div class="gx-actions"&gt;
+    &lt;button class="gx-btn gx-btn-ghost"&gt;Import&lt;/button&gt;
+    &lt;button class="gx-btn gx-btn-primary"&gt;+ New tier&lt;/button&gt;
+  &lt;/div&gt;
+&lt;/div&gt;</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- BUTTONS ----------------------------- -->
+        <section class="sg-section" id="buttons">
+          <h2>Buttons</h2>
+          <p class="sg-lead"><code>gx-btn</code> is the base; add <code>gx-btn-primary</code> (accent gradient) or
+            <code>gx-btn-ghost</code> (transparent). <code>gx-icon-btn</code> is the square icon-only variant.</p>
+          <div class="sg-demo sg-row">
+            <button class="gx-btn gx-btn-primary">Primary</button>
+            <button class="gx-btn">Default</button>
+            <button class="gx-btn gx-btn-ghost">Ghost</button>
+            <button class="gx-icon-btn" title="Edit" aria-label="Edit">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+            </button>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;button class="gx-btn gx-btn-primary"&gt;Primary&lt;/button&gt;
+&lt;button class="gx-btn"&gt;Default&lt;/button&gt;
+&lt;button class="gx-btn gx-btn-ghost"&gt;Ghost&lt;/button&gt;
+&lt;button class="gx-icon-btn" aria-label="Edit"&gt;&lt;svg…&gt;&lt;/svg&gt;&lt;/button&gt;</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- CARDS ----------------------------- -->
+        <section class="sg-section" id="cards">
+          <h2>Cards</h2>
+          <p class="sg-lead"><code>gx-card</code> is the glass container. <code>gx-card-h</code> is its header row,
+            usually with a <code>gx-ico</code> (accent-tinted icon chip).</p>
+          <div class="sg-demo gx-grid gx-grid-2">
+            <div class="gx-card">
+              <div class="gx-card-h">
+                <span class="gx-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg></span>
+                Traffic this week
+              </div>
+              <p style="color:var(--admin-text-muted); margin:0; font-size:.9rem; line-height:1.6;">Card body text. Compose stats, forms, tables, or lists inside.</p>
+            </div>
+            <div class="gx-card">
+              <div class="gx-card-h">
+                <span class="gx-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-2.82 1.17V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9z"/></svg></span>
+                Settings
+              </div>
+              <p style="color:var(--admin-text-muted); margin:0; font-size:.9rem; line-height:1.6;">Use <code>gx-grid gx-grid-2</code> to lay cards out two-up (collapses to one column under 900px).</p>
+            </div>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;div class="gx-grid gx-grid-2"&gt;
+  &lt;div class="gx-card"&gt;
+    &lt;div class="gx-card-h"&gt;
+      &lt;span class="gx-ico"&gt;&lt;svg…&gt;&lt;/svg&gt;&lt;/span&gt; Traffic this week
+    &lt;/div&gt;
+    &lt;p&gt;Card body…&lt;/p&gt;
+  &lt;/div&gt;
+&lt;/div&gt;</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- FORMS ----------------------------- -->
+        <section class="sg-section" id="forms">
+          <h2>Forms &amp; fieldsets</h2>
+          <p class="sg-lead">Group fields with <code>gx-fieldset</code>; lay them out two-up with
+            <code>gx-grid-fields</code> (add <code>col-2</code> to span). Each field is
+            <code>gx-field</code> &rarr; <code>gx-label</code> + <code>gx-input</code>. Mark required with
+            <code>gx-req</code>; add a hint bubble with <code>gx-help</code>.</p>
+          <div class="sg-demo">
+            <div class="gx-fieldset">
+              <div class="gx-fieldset-h">Tier details</div>
+              <div class="gx-grid-fields">
+                <div class="gx-field">
+                  <label class="gx-label">Name <span class="gx-req">*</span></label>
+                  <input class="gx-input" placeholder="e.g. Summer Peak">
+                </div>
+                <div class="gx-field">
+                  <label class="gx-label">Price <span class="gx-help" title="Shown on the public pricing page">?</span></label>
+                  <input class="gx-input" placeholder="$120">
+                </div>
+                <div class="gx-field col-2">
+                  <label class="gx-label">Description</label>
+                  <textarea class="gx-input" placeholder="What's included…"></textarea>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;div class="gx-fieldset"&gt;
+  &lt;div class="gx-fieldset-h"&gt;Tier details&lt;/div&gt;
+  &lt;div class="gx-grid-fields"&gt;
+    &lt;div class="gx-field"&gt;
+      &lt;label class="gx-label"&gt;Name &lt;span class="gx-req"&gt;*&lt;/span&gt;&lt;/label&gt;
+      &lt;input class="gx-input" placeholder="e.g. Summer Peak"&gt;
+    &lt;/div&gt;
+    &lt;div class="gx-field col-2"&gt;
+      &lt;label class="gx-label"&gt;Description&lt;/label&gt;
+      &lt;textarea class="gx-input"&gt;&lt;/textarea&gt;
+    &lt;/div&gt;
+  &lt;/div&gt;
+&lt;/div&gt;</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- MEDIA FIELD ----------------------------- -->
+        <section class="sg-section" id="media">
+          <h2>Media field</h2>
+          <p class="sg-lead"><code>gx-media-field</code> collapses a URL input + pick/upload icon buttons +
+            a <code>gx-media-thumb</code> preview into one row.</p>
+          <div class="sg-demo">
+            <div class="gx-field">
+              <label class="gx-label">Hero image</label>
+              <div class="gx-media-field">
+                <input class="gx-input" placeholder="https://… or pick / upload">
+                <button class="gx-icon-btn" title="Pick from media" aria-label="Pick from media">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                </button>
+                <button class="gx-icon-btn" title="Upload" aria-label="Upload">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>
+                </button>
+                <img class="gx-media-thumb" alt="" src="data:image/svg+xml;utf8,&lt;svg xmlns='http://www.w3.org/2000/svg' width='42' height='42'&gt;&lt;rect width='42' height='42' fill='%236c8cff'/&gt;&lt;/svg&gt;">
+              </div>
+            </div>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;div class="gx-media-field"&gt;
+  &lt;input class="gx-input" placeholder="https://… or pick / upload"&gt;
+  &lt;button class="gx-icon-btn" aria-label="Pick"&gt;&lt;svg…&gt;&lt;/svg&gt;&lt;/button&gt;
+  &lt;button class="gx-icon-btn" aria-label="Upload"&gt;&lt;svg…&gt;&lt;/svg&gt;&lt;/button&gt;
+  &lt;img class="gx-media-thumb" src="…"&gt;
+&lt;/div&gt;</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- STATS ----------------------------- -->
+        <section class="sg-section" id="stats">
+          <h2>Stat tiles</h2>
+          <p class="sg-lead">KPI strip: <code>gx-stats</code> auto-fits <code>gx-stat</code> tiles. Each has a
+            <code>gx-stat-label</code> + <code>gx-stat-value</code>, optional <code>gx-stat-delta</code>
+            (<code>up</code>/<code>down</code>) and <code>gx-stat-ico</code>.</p>
+          <div class="sg-demo">
+            <div class="gx-stats" style="margin:0;">
+              <div class="gx-stat"><div class="gx-stat-label">Visitors</div><div class="gx-stat-value">12,480</div><div class="gx-stat-delta up">&#9650; 8.2%</div></div>
+              <div class="gx-stat"><div class="gx-stat-label">Conversations</div><div class="gx-stat-value">1,204</div><div class="gx-stat-delta down">&#9660; 3.1%</div></div>
+              <div class="gx-stat"><div class="gx-stat-label">Cost (mo)</div><div class="gx-stat-value">$84.10</div></div>
+              <div class="gx-stat"><div class="gx-stat-label">Uptime</div><div class="gx-stat-value">99.9%</div></div>
+            </div>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;div class="gx-stats"&gt;
+  &lt;div class="gx-stat"&gt;
+    &lt;div class="gx-stat-label"&gt;Visitors&lt;/div&gt;
+    &lt;div class="gx-stat-value"&gt;12,480&lt;/div&gt;
+    &lt;div class="gx-stat-delta up"&gt;&amp;#9650; 8.2%&lt;/div&gt;
+  &lt;/div&gt;
+&lt;/div&gt;</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- TABLE ----------------------------- -->
+        <section class="sg-section" id="table">
+          <h2>Table</h2>
+          <p class="sg-lead">Wrap <code>gx-table</code> in <code>gx-table-wrap</code> (sticky head, hover rows,
+            rounded glass frame). Add <code>scroll</code> for horizontal overflow; mark low-priority
+            columns <code>data-prio="low"</code> to hide them under 720px.</p>
+          <div class="sg-demo sg-demo--pad0">
+            <div class="gx-table-wrap">
+              <table class="gx-table">
+                <thead><tr><th>Name</th><th>Status</th><th data-prio="low">Updated</th><th style="text-align:right">Price</th></tr></thead>
+                <tbody>
+                  <tr><td>Summer Peak</td><td><span class="gx-badge gx-badge-ok">Live</span></td><td data-prio="low">2h ago</td><td style="text-align:right">$120</td></tr>
+                  <tr><td>Shoulder</td><td><span class="gx-badge gx-badge-run">Draft</span></td><td data-prio="low">1d ago</td><td style="text-align:right">$90</td></tr>
+                  <tr><td>Off-season</td><td><span class="gx-badge gx-badge-err">Hidden</span></td><td data-prio="low">5d ago</td><td style="text-align:right">$60</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;div class="gx-table-wrap"&gt;
+  &lt;table class="gx-table"&gt;
+    &lt;thead&gt;&lt;tr&gt;&lt;th&gt;Name&lt;/th&gt;&lt;th data-prio="low"&gt;Updated&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+    &lt;tbody&gt;&lt;tr&gt;&lt;td&gt;Summer Peak&lt;/td&gt;&lt;td data-prio="low"&gt;2h ago&lt;/td&gt;&lt;/tr&gt;&lt;/tbody&gt;
+  &lt;/table&gt;
+&lt;/div&gt;</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- BADGES ----------------------------- -->
+        <section class="sg-section" id="badges">
+          <h2>Badges</h2>
+          <p class="sg-lead">Pill status indicators with a leading dot. <code>gx-badge</code> base +
+            <code>gx-badge-ok</code> / <code>-run</code> / <code>-err</code>.</p>
+          <div class="sg-demo sg-row">
+            <span class="gx-badge">Neutral</span>
+            <span class="gx-badge gx-badge-ok">Active</span>
+            <span class="gx-badge gx-badge-run">Running</span>
+            <span class="gx-badge gx-badge-err">Failed</span>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;span class="gx-badge gx-badge-ok"&gt;Active&lt;/span&gt;
+&lt;span class="gx-badge gx-badge-run"&gt;Running&lt;/span&gt;
+&lt;span class="gx-badge gx-badge-err"&gt;Failed&lt;/span&gt;</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- SUBTABS ----------------------------- -->
+        <section class="sg-section" id="subtabs">
+          <h2>Subtabs</h2>
+          <p class="sg-lead">Secondary nav inside a tab (CRM / hubs / forms). The active one gets an accent underline.
+            <span style="color:var(--admin-text-muted)">(Click to try — wired by the page's demo script.)</span></p>
+          <div class="sg-demo">
+            <div class="gx-subtabs" data-sg-subtabs>
+              <button class="gx-subtab active">Overview</button>
+              <button class="gx-subtab">Contacts</button>
+              <button class="gx-subtab">Segments</button>
+              <button class="gx-subtab">Settings</button>
+            </div>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;div class="gx-subtabs"&gt;
+  &lt;button class="gx-subtab active"&gt;Overview&lt;/button&gt;
+  &lt;button class="gx-subtab"&gt;Contacts&lt;/button&gt;
+&lt;/div&gt;
+&lt;!-- toggle the .active class in your switch handler --&gt;</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- TOOLBAR ----------------------------- -->
+        <section class="sg-section" id="toolbar">
+          <h2>Toolbar</h2>
+          <p class="sg-lead"><code>gx-toolbar</code> lays out action clusters; wrap related buttons in
+            <code>gx-toolbar-group</code> to get separators between groups.</p>
+          <div class="sg-demo">
+            <div class="gx-toolbar">
+              <div class="gx-toolbar-group">
+                <button class="gx-btn gx-btn-primary">+ New</button>
+                <button class="gx-btn">Import</button>
+              </div>
+              <div class="gx-toolbar-group">
+                <button class="gx-icon-btn" aria-label="Refresh"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.65 4.36A9 9 0 0 0 20.5 15"/></svg></button>
+                <button class="gx-icon-btn" aria-label="Filter"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg></button>
+              </div>
+              <div class="gx-toolbar-group">
+                <input class="gx-input" style="width:200px" placeholder="Search…">
+              </div>
+            </div>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;div class="gx-toolbar"&gt;
+  &lt;div class="gx-toolbar-group"&gt;
+    &lt;button class="gx-btn gx-btn-primary"&gt;+ New&lt;/button&gt;
+  &lt;/div&gt;
+  &lt;div class="gx-toolbar-group"&gt;
+    &lt;input class="gx-input" placeholder="Search…"&gt;
+  &lt;/div&gt;
+&lt;/div&gt;</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- SEGMENTED ----------------------------- -->
+        <section class="sg-section" id="segmented">
+          <h2>Segmented control</h2>
+          <p class="sg-lead"><code>gx-seg</code> for mutually-exclusive mode toggles. The active button gets a
+            raised surface. <span style="color:var(--admin-text-muted)">(Click to try.)</span></p>
+          <div class="sg-demo sg-row">
+            <div class="gx-seg" data-sg-seg>
+              <button class="active">Day</button>
+              <button>Week</button>
+              <button>Month</button>
+            </div>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;div class="gx-seg"&gt;
+  &lt;button class="active"&gt;Day&lt;/button&gt;
+  &lt;button&gt;Week&lt;/button&gt;
+  &lt;button&gt;Month&lt;/button&gt;
+&lt;/div&gt;</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- STEPPER ----------------------------- -->
+        <section class="sg-section" id="stepper">
+          <h2>Stepper</h2>
+          <p class="sg-lead">Linear workflow indicator. Mark each <code>gx-step</code> as <code>done</code> or
+            <code>active</code>; separate with <code>gx-step-sep</code>.</p>
+          <div class="sg-demo">
+            <div class="gx-stepper">
+              <div class="gx-step done"><span class="gx-step-n">&#10003;</span> Connect</div>
+              <span class="gx-step-sep"></span>
+              <div class="gx-step active"><span class="gx-step-n">2</span> Configure</div>
+              <span class="gx-step-sep"></span>
+              <div class="gx-step"><span class="gx-step-n">3</span> Review</div>
+            </div>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;div class="gx-stepper"&gt;
+  &lt;div class="gx-step done"&gt;&lt;span class="gx-step-n"&gt;&amp;#10003;&lt;/span&gt; Connect&lt;/div&gt;
+  &lt;span class="gx-step-sep"&gt;&lt;/span&gt;
+  &lt;div class="gx-step active"&gt;&lt;span class="gx-step-n"&gt;2&lt;/span&gt; Configure&lt;/div&gt;
+&lt;/div&gt;</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- LIST / ROWS ----------------------------- -->
+        <section class="sg-section" id="list">
+          <h2>List &amp; rows</h2>
+          <p class="sg-lead">Clickable record rows. <code>gx-list</code> stacks <code>gx-row</code>s; each has a
+            <code>gx-row-top</code> (title + trailing badge/meta) and an optional <code>gx-row-sub</code>.</p>
+          <div class="sg-demo">
+            <div class="gx-list">
+              <div class="gx-row">
+                <div class="gx-row-top"><span class="gx-row-title">Welcome email</span><span class="gx-badge gx-badge-ok">Sent</span></div>
+                <div class="gx-row-sub">Last run 2h ago &middot; 1,204 recipients &middot; 38% open rate</div>
+              </div>
+              <div class="gx-row">
+                <div class="gx-row-top"><span class="gx-row-title">Abandoned cart</span><span class="gx-badge gx-badge-run">Scheduled</span></div>
+                <div class="gx-row-sub">Next run in 3h &middot; triggered by inactivity</div>
+              </div>
+            </div>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;div class="gx-list"&gt;
+  &lt;div class="gx-row"&gt;
+    &lt;div class="gx-row-top"&gt;
+      &lt;span class="gx-row-title"&gt;Welcome email&lt;/span&gt;
+      &lt;span class="gx-badge gx-badge-ok"&gt;Sent&lt;/span&gt;
+    &lt;/div&gt;
+    &lt;div class="gx-row-sub"&gt;Last run 2h ago…&lt;/div&gt;
+  &lt;/div&gt;
+&lt;/div&gt;</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- STATES ----------------------------- -->
+        <section class="sg-section" id="states">
+          <h2>Loading / empty / error states</h2>
+          <p class="sg-lead">Always render a state instead of a blank panel: <code>gx-skeleton</code> while loading,
+            <code>gx-empty-rich</code> when there's nothing yet, <code>gx-error</code> on failure, and
+            <code>gx-alert</code> (<code>-info</code>/<code>-warn</code>) for inline notices.</p>
+          <div class="sg-demo gx-grid gx-grid-2">
+            <div>
+              <div class="gx-section-h">Skeleton</div>
+              <div class="gx-card" style="margin:0">
+                <div class="gx-skeleton gx-skel-line" style="width:60%"></div>
+                <div class="gx-skeleton gx-skel-line" style="width:90%"></div>
+                <div class="gx-skeleton gx-skel-line" style="width:75%"></div>
+                <div class="gx-skeleton gx-skel-card" style="margin-top:.8rem"></div>
+              </div>
+            </div>
+            <div>
+              <div class="gx-section-h">Empty</div>
+              <div class="gx-card" style="margin:0">
+                <div class="gx-empty-rich">
+                  <svg class="gx-empty-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+                  <h4>No campaigns yet</h4>
+                  <p style="margin:0; font-size:.85rem;">Create your first campaign to get started.</p>
+                  <button class="gx-btn gx-btn-primary" style="margin-top:.4rem">+ New campaign</button>
+                </div>
+              </div>
+            </div>
+            <div>
+              <div class="gx-section-h">Error</div>
+              <div class="gx-error">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+                Couldn't load data — check the connection and retry.
+              </div>
+            </div>
+            <div>
+              <div class="gx-section-h">Alerts</div>
+              <div class="gx-alert gx-alert-info" style="margin-bottom:.6rem">Heads up — this preview uses default tokens.</div>
+              <div class="gx-alert gx-alert-warn">This action can't be undone.</div>
+            </div>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;!-- loading --&gt;
+&lt;div class="gx-skeleton gx-skel-line" style="width:60%"&gt;&lt;/div&gt;
+&lt;div class="gx-skeleton gx-skel-card"&gt;&lt;/div&gt;
+
+&lt;!-- empty --&gt;
+&lt;div class="gx-empty-rich"&gt;
+  &lt;svg class="gx-empty-ico"…&gt;&lt;/svg&gt;
+  &lt;h4&gt;No campaigns yet&lt;/h4&gt;
+&lt;/div&gt;
+
+&lt;!-- error / alerts --&gt;
+&lt;div class="gx-error"&gt;Couldn't load data…&lt;/div&gt;
+&lt;div class="gx-alert gx-alert-warn"&gt;This action can't be undone.&lt;/div&gt;</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- DETAIL ----------------------------- -->
+        <section class="sg-section" id="detail">
+          <h2>Detail view</h2>
+          <p class="sg-lead">For read views inside a drawer/panel: <code>gx-detail-head</code> (title + actions),
+            <code>gx-summary</code> (preformatted body), and <code>gx-detail</code> sections (h4 + ul / links).</p>
+          <div class="sg-demo">
+            <div class="gx-card" style="margin:0">
+              <div class="gx-detail-head">
+                <h3>Conversation #4821</h3>
+                <span class="gx-badge gx-badge-ok">Resolved</span>
+              </div>
+              <div class="gx-detail">
+                <p class="gx-summary">Visitor asked about seasonal pricing and availability for August. The assistant quoted the Summer Peak tier and shared the booking link.</p>
+                <h4>Captured fields</h4>
+                <ul>
+                  <li>Email — <a href="#detail">guest@example.com</a></li>
+                  <li>Party size — 4</li>
+                  <li>Source — <a href="#detail">organic / homepage</a></li>
+                </ul>
+              </div>
+            </div>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;div class="gx-detail-head"&gt;
+  &lt;h3&gt;Conversation #4821&lt;/h3&gt;
+  &lt;span class="gx-badge gx-badge-ok"&gt;Resolved&lt;/span&gt;
+&lt;/div&gt;
+&lt;div class="gx-detail"&gt;
+  &lt;p class="gx-summary"&gt;Visitor asked about…&lt;/p&gt;
+  &lt;h4&gt;Captured fields&lt;/h4&gt;
+  &lt;ul&gt;&lt;li&gt;Email — &lt;a href="#"&gt;guest@example.com&lt;/a&gt;&lt;/li&gt;&lt;/ul&gt;
+&lt;/div&gt;</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- DRAWER ----------------------------- -->
+        <section class="sg-section" id="drawer">
+          <h2>Drawer (slide-over)</h2>
+          <p class="sg-lead">The one add/edit surface across the admin. In the real app you call
+            <code>gxOpenDrawer(title, node, {onSave})</code> (app-main.js); here's the raw markup +
+            a working open/close demo.</p>
+          <div class="sg-demo sg-row">
+            <button class="gx-btn gx-btn-primary" id="sg-drawer-open">Open drawer demo</button>
+            <span class="gx-hint">Opens a right slide-over with a backdrop; click the backdrop or &times; to close.</span>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;div class="gx-drawer-backdrop"&gt;&lt;/div&gt;
+&lt;aside class="gx-drawer"&gt;
+  &lt;div class="gx-drawer-head"&gt;
+    &lt;h3&gt;Edit tier&lt;/h3&gt;
+    &lt;button class="gx-drawer-close"&gt;&amp;times;&lt;/button&gt;
+  &lt;/div&gt;
+  &lt;div class="gx-drawer-body"&gt;&lt;!-- gx-fieldset / gx-field … --&gt;&lt;/div&gt;
+  &lt;div class="gx-drawer-foot"&gt;
+    &lt;button class="gx-btn gx-btn-ghost"&gt;Cancel&lt;/button&gt;
+    &lt;button class="gx-btn gx-btn-primary"&gt;Save&lt;/button&gt;
+  &lt;/div&gt;
+&lt;/aside&gt;
+&lt;!-- add .open to BOTH .gx-drawer-backdrop and .gx-drawer to show --&gt;</code></pre></div>
+        </section>
+
+        <!-- ----------------------------- LEGACY ----------------------------- -->
+        <section class="sg-section" id="legacy">
+          <h2>Shared legacy classes</h2>
+          <p class="sg-lead">Pre-<code>gx-*</code> classes the theme still uplifts, so older panels read as
+            redesigned. Prefer <code>gx-*</code> for new work, but these are valid:
+            <code>.btn</code>/<code>.btn-primary</code>/<code>.btn-secondary</code>, <code>.card</code>,
+            <code>.form-panel</code> + <code>.form-group</code>, <code>.data-table</code>, and the
+            <code>.toggle-switch</code>.</p>
+          <div class="sg-demo">
+            <div class="form-panel" style="margin:0">
+              <div class="sg-row" style="margin-bottom:1rem">
+                <button class="btn btn-primary">.btn-primary</button>
+                <button class="btn btn-secondary">.btn-secondary</button>
+                <label class="toggle-switch"><input type="checkbox" checked><span class="toggle-slider"></span></label>
+              </div>
+              <div class="form-group">
+                <label>Legacy form group</label>
+                <input class="form-input" placeholder="Themed via the same tokens">
+              </div>
+            </div>
+          </div>
+          <div class="sg-code"><button class="sg-copy" type="button">Copy</button><pre><code>&lt;div class="form-panel"&gt;
+  &lt;div class="form-group"&gt;
+    &lt;label&gt;Legacy form group&lt;/label&gt;
+    &lt;input class="form-input"&gt;
+  &lt;/div&gt;
+  &lt;button class="btn btn-primary"&gt;Save&lt;/button&gt;
+&lt;/div&gt;</code></pre></div>
+        </section>
+
+      </main>
+    </div>
+  </div>
+
+  <!-- ============ the drawer demo nodes (hidden until opened) ============ -->
+  <div class="gx-drawer-backdrop" id="sg-drawer-backdrop"></div>
+  <aside class="gx-drawer" id="sg-drawer" aria-hidden="true">
+    <div class="gx-drawer-head">
+      <h3>Edit tier</h3>
+      <button class="gx-drawer-close" id="sg-drawer-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="gx-drawer-body">
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Tier details</div>
+        <div class="gx-grid-fields">
+          <div class="gx-field"><label class="gx-label">Name</label><input class="gx-input" value="Summer Peak"></div>
+          <div class="gx-field"><label class="gx-label">Price</label><input class="gx-input" value="$120"></div>
+          <div class="gx-field col-2"><label class="gx-label">Description</label><textarea class="gx-input">Peak-season nightly rate.</textarea></div>
+        </div>
+      </div>
+      <div class="gx-alert gx-alert-info">This is a demo drawer — nothing is saved.</div>
+    </div>
+    <div class="gx-drawer-foot">
+      <button class="gx-btn gx-btn-ghost" id="sg-drawer-cancel">Cancel</button>
+      <button class="gx-btn gx-btn-primary">Save</button>
+    </div>
+  </aside>
+
+  <!-- =======================================================================
+       STYLEGUIDE DEMO SCRIPT (classic, standalone — NOT app-main.js).
+       Powers: the live appearance playground, copy buttons, and the interactive
+       demos (subtabs / segmented / drawer). It only manipulates this page; it
+       shares nothing with the real admin controller.
+       ======================================================================= -->
+  <script>
+    (function () {
+      "use strict";
+      var root = document.documentElement;
+      var $ = function (id) { return document.getElementById(id); };
+
+      /* ---- LIVE APPEARANCE PLAYGROUND ----
+         Each control sets a --admin-* CSS variable or a data-admin-* attribute,
+         mirroring exactly what the super-admin Appearance tab persists. */
+      function setVar(name, value) { root.style.setProperty(name, value); }
+      function setAttr(name, value) { root.setAttribute(name, value); }
+
+      function applyBlur(px) {
+        setVar("--admin-blur", "blur(" + px + "px)");
+        // --admin-blur-heavy tracks blur * 1.7 (matches the dashboard formula).
+        setVar("--admin-blur-heavy", "blur(" + (Math.round(px * 1.7 * 10) / 10) + "px)");
+      }
+
+      // When surface isn't "glass", theme.css forces glass/blur — so the real
+      // Appearance tab disables those sliders. Mirror that for fidelity.
+      function syncSurfaceLocks() {
+        var glassy = $("sg-surface").value === "glass";
+        $("sg-blur").disabled = !glassy;
+        $("sg-glass").disabled = !glassy;
+        $("sg-blur").style.opacity = $("sg-glass").style.opacity = glassy ? "1" : ".4";
+      }
+
+      $("sg-theme").addEventListener("change", function () { setAttr("data-admin-theme", this.value); });
+      $("sg-accent").addEventListener("input", function () { setVar("--admin-accent", this.value); });
+      $("sg-accent2").addEventListener("input", function () { setVar("--admin-accent-2", this.value); });
+      $("sg-blur").addEventListener("input", function () { applyBlur(this.value); });
+      $("sg-radius").addEventListener("input", function () { setVar("--admin-radius", this.value + "px"); });
+      $("sg-glass").addEventListener("input", function () { setVar("--admin-glass", this.value); });
+      $("sg-glow").addEventListener("input", function () { setVar("--admin-glow", this.value); });
+      $("sg-density").addEventListener("change", function () { setAttr("data-admin-density", this.value); });
+      $("sg-fontscale").addEventListener("change", function () { setAttr("data-admin-fontscale", this.value); });
+      $("sg-font").addEventListener("change", function () { setAttr("data-admin-font", this.value); });
+      $("sg-surface").addEventListener("change", function () { setAttr("data-admin-surface", this.value); syncSurfaceLocks(); });
+      $("sg-contrast").addEventListener("change", function () {
+        if (this.checked) setAttr("data-admin-contrast", "high"); else root.removeAttribute("data-admin-contrast");
+      });
+      $("sg-motion").addEventListener("change", function () {
+        if (this.checked) setAttr("data-admin-motion", "reduce"); else root.removeAttribute("data-admin-motion");
+      });
+
+      // Reset every knob back to the shipped defaults.
+      $("sg-reset").addEventListener("click", function () {
+        var d = { theme: "dark", accent: "#6c8cff", accent2: "#9a7cff", blur: 18, radius: 16,
+                  glass: 0.55, glow: 0.5, density: "comfortable", fontscale: "md", font: "sans", surface: "glass" };
+        $("sg-theme").value = d.theme;     setAttr("data-admin-theme", d.theme);
+        $("sg-accent").value = d.accent;   setVar("--admin-accent", d.accent);
+        $("sg-accent2").value = d.accent2; setVar("--admin-accent-2", d.accent2);
+        $("sg-blur").value = d.blur;       applyBlur(d.blur);
+        $("sg-radius").value = d.radius;   setVar("--admin-radius", d.radius + "px");
+        $("sg-glass").value = d.glass;     setVar("--admin-glass", d.glass);
+        $("sg-glow").value = d.glow;       setVar("--admin-glow", d.glow);
+        $("sg-density").value = d.density; setAttr("data-admin-density", d.density);
+        $("sg-fontscale").value = d.fontscale; setAttr("data-admin-fontscale", d.fontscale);
+        $("sg-font").value = d.font;       setAttr("data-admin-font", d.font);
+        $("sg-surface").value = d.surface; setAttr("data-admin-surface", d.surface);
+        $("sg-contrast").checked = false;  root.removeAttribute("data-admin-contrast");
+        $("sg-motion").checked = false;    root.removeAttribute("data-admin-motion");
+        syncSurfaceLocks();
+      });
+      syncSurfaceLocks();
+
+      /* ---- COPY BUTTONS (event-delegated) ----
+         textContent of the <code> block is the un-escaped markup (the browser
+         decoded &lt; etc. on parse), so it copies as real, paste-ready HTML. */
+      document.body.addEventListener("click", function (e) {
+        var btn = e.target.closest(".sg-copy");
+        if (!btn) return;
+        var code = btn.parentElement.querySelector("code");
+        if (!code) return;
+        navigator.clipboard.writeText(code.textContent).then(function () {
+          var orig = btn.textContent;
+          btn.textContent = "Copied!"; btn.classList.add("ok");
+          setTimeout(function () { btn.textContent = orig; btn.classList.remove("ok"); }, 1200);
+        });
+      });
+
+      /* ---- INTERACTIVE DEMOS: subtabs + segmented (toggle .active within group) ---- */
+      function wireActiveGroup(selector) {
+        document.querySelectorAll(selector).forEach(function (group) {
+          group.addEventListener("click", function (e) {
+            var b = e.target.closest("button");
+            if (!b || !group.contains(b)) return;
+            group.querySelectorAll("button").forEach(function (x) { x.classList.remove("active"); });
+            b.classList.add("active");
+          });
+        });
+      }
+      wireActiveGroup("[data-sg-subtabs]");
+      wireActiveGroup("[data-sg-seg]");
+
+      /* ---- DRAWER DEMO: add/remove .open on backdrop + drawer together ---- */
+      var bd = $("sg-drawer-backdrop"), dr = $("sg-drawer");
+      function openDrawer() { bd.classList.add("open"); dr.classList.add("open"); dr.setAttribute("aria-hidden", "false"); }
+      function closeDrawer() { bd.classList.remove("open"); dr.classList.remove("open"); dr.setAttribute("aria-hidden", "true"); }
+      $("sg-drawer-open").addEventListener("click", openDrawer);
+      $("sg-drawer-close").addEventListener("click", closeDrawer);
+      $("sg-drawer-cancel").addEventListener("click", closeDrawer);
+      bd.addEventListener("click", closeDrawer);
+      document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeDrawer(); });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+{# admin/tabs/_pricing.html — 'pricing' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-pricing" class="tab-content">
+    <div class="gx-head">
+      <div>
+        <h2 class="gx-title">Pricing Seasons</h2>
+        <p class="gx-sub">Manage the seasonal pricing tiers on the landing page.</p>
+      </div>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-primary" onclick="showPricingForm()" data-testid="button-add-pricing">+ Add Season</button>
+      </div>
+    </div>
+
+    <!-- Pricing form — mounted into the gx-drawer by showPricingForm()/editPricing() -->
+    <div id="pricing-form-panel" style="display:none;">
+      <input type="hidden" id="pricing-form-id">
+      <div class="gx-grid-fields">
+        <div class="gx-field"><label class="gx-label" for="pricing-label">Label<span class="gx-req">*</span></label>
+          <input class="gx-input" type="text" id="pricing-label" placeholder="High" data-testid="input-pricing-label"></div>
+        <div class="gx-field"><label class="gx-label" for="pricing-date-range">Date range</label>
+          <input class="gx-input" type="text" id="pricing-date-range" placeholder="Jun – Sep" data-testid="input-pricing-dates"></div>
+        <div class="gx-field"><label class="gx-label" for="pricing-price-range">Price range</label>
+          <input class="gx-input" type="text" id="pricing-price-range" placeholder="$1,200 – $1,800/night" data-testid="input-pricing-price"></div>
+        <div class="gx-field"><label class="gx-label" for="pricing-sort-order">Sort order</label>
+          <input class="gx-input" type="number" id="pricing-sort-order" placeholder="1" value="0" data-testid="input-pricing-sort"></div>
+      </div>
+    </div>
+
+    <!-- Pricing data table -->
+    <table class="data-table" id="pricing-table">
+      <thead>
+        <tr>
+          <th style="width:30px;"></th>
+          <th>Label</th>
+          <th>Date Range</th>
+          <th>Price Range</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="pricing-tbody">
+        <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>

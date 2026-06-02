@@ -1,0 +1,35 @@
+{# admin/tabs/_llm-provider.html — 'llm-provider' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-llm-provider" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>AI Provider</h2>
+        <p>Pick which large-language-model service powers the chat agent. Switching is instant and applies to the next visitor message.</p>
+      </div>
+    </div>
+    <div class="form-panel" id="llm-provider-form" style="max-width:640px;">
+      <div class="form-row" style="margin-bottom:18px;">
+        <label style="font-weight:600;">Active Provider</label>
+        <div style="display:flex;gap:18px;margin-top:8px;">
+          <label style="display:flex;align-items:center;gap:6px;"><input type="radio" name="llm-provider" value="openai" data-testid="radio-provider-openai"> OpenAI</label>
+          <label style="display:flex;align-items:center;gap:6px;"><input type="radio" name="llm-provider" value="claude" data-testid="radio-provider-claude"> Claude (Anthropic)</label>
+        </div>
+        <div id="llm-provider-warning" style="color:#fca5a5;font-size:13px;margin-top:6px;"></div>
+      </div>
+      <div class="form-row" style="margin-bottom:14px;">
+        <label for="openai-model" style="font-weight:600;">OpenAI Model</label>
+        <select id="openai-model" data-testid="input-openai-model" style="width:100%;padding:8px;">
+          <option value="gpt-4o-mini">GPT-4o mini — fast &amp; affordable (recommended)</option>
+          <option value="gpt-4o">GPT-4o — higher quality, slower &amp; pricier</option>
+        </select>
+      </div>
+      <div class="form-row" style="margin-bottom:18px;">
+        <label for="claude-model" style="font-weight:600;">Claude Model</label>
+        <select id="claude-model" data-testid="input-claude-model" style="width:100%;padding:8px;">
+          <option value="claude-sonnet-4-5">Claude Sonnet 4.5 — top quality, slowest</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" onclick="saveLlmProvider()" data-testid="button-save-llm-provider">Save</button>
+    </div>
+  </div>

@@ -1,0 +1,43 @@
+{# admin/tabs/_reviews-insights.html — 'reviews-insights' tab panel (task 076 F3). #}
+<div id="tab-reviews-insights" class="tab-content" data-navbtn="reviews">
+    <div class="gx-subtabs" role="tablist">
+      <button class="gx-subtab" onclick="switchTab('reviews-destinations'); loadReviewDestinations();">Destinations</button>
+      <button class="gx-subtab" onclick="switchTab('reviews-requests'); loadReviewRequests();">Requests</button>
+      <button class="gx-subtab active" onclick="switchTab('reviews-insights'); loadReviewInsights();">Insights</button>
+    </div>
+    <div class="section-header-admin">
+      <div>
+        <h2>Review insights</h2>
+        <p>How asks are performing across channels and destinations.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn btn-secondary btn-sm" onclick="loadReviewInsights()" data-testid="button-review-insights-refresh">Refresh</button>
+      </div>
+    </div>
+
+    <div id="review-insights-overall" class="kpi-grid" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:1rem; margin-bottom:1.5rem;"></div>
+
+    <h3 style="margin-top:1rem;">By channel</h3>
+    <div style="overflow-x:auto;">
+      <table class="data-table">
+        <thead>
+          <tr><th>Channel</th><th>Sent</th><th>Clicked</th><th>Converted</th><th>Click rate</th><th>Conversion rate</th></tr>
+        </thead>
+        <tbody id="review-insights-channel-tbody">
+          <tr><td colspan="6" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 style="margin-top:1.5rem;">By destination</h3>
+    <div style="overflow-x:auto;">
+      <table class="data-table">
+        <thead>
+          <tr><th>Name</th><th>Kind</th><th>Sent</th><th>Clicked</th><th>Converted</th><th>Click rate</th></tr>
+        </thead>
+        <tbody id="review-insights-dest-tbody">
+          <tr><td colspan="6" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>

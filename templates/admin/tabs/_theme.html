@@ -1,0 +1,833 @@
+{# admin/tabs/_theme.html — 'theme' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-theme" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Theme Editor</h2>
+        <p>Customize colors, fonts, and glass effects for the public site.</p>
+      </div>
+      <button class="btn btn-danger btn-sm" onclick="resetTheme()" data-testid="button-reset-theme">Reset to Default</button>
+    </div>
+
+    <div class="form-panel" id="theme-form-panel">
+
+      <div id="theme-preview" style="margin-bottom:1.5rem; border-radius:var(--admin-radius); overflow:hidden; border:1px solid var(--admin-border);">
+        <div id="tp-bg" style="padding:1.5rem; transition:background 0.3s;">
+          <div style="display:flex; gap:1rem; margin-bottom:1rem;">
+            <div id="tp-s1" style="flex:1; padding:1rem; border-radius:8px; transition:background 0.3s;">
+              <p id="tp-eyebrow" style="font-size:0.65rem; text-transform:uppercase; letter-spacing:0.1em; margin:0 0 0.25rem; transition:color 0.3s;">Section Title</p>
+              <p id="tp-heading" style="font-size:1.1rem; font-weight:700; margin:0 0 0.35rem; transition:color 0.3s, font-family 0.3s;">Heading Preview</p>
+              <p id="tp-body" style="font-size:0.8rem; margin:0; opacity:0.7; transition:color 0.3s, font-family 0.3s;">This is how your body text will look on the site.</p>
+            </div>
+            <div id="tp-s2" style="flex:1; padding:1rem; border-radius:8px; transition:background 0.3s;">
+              <div id="tp-glass" style="padding:0.75rem; border-radius:6px; backdrop-filter:blur(12px); transition:background 0.3s, border-color 0.3s;">
+                <p id="tp-glass-heading" style="font-size:0.85rem; font-weight:600; margin:0 0 0.25rem; transition:color 0.3s;">Glass Card</p>
+                <p id="tp-glass-body" style="font-size:0.75rem; margin:0; opacity:0.7; transition:color 0.3s;">Cards and panels use this frosted glass style.</p>
+              </div>
+            </div>
+          </div>
+          <div style="display:flex; gap:0.75rem; align-items:center;">
+            <button id="tp-btn" style="padding:0.4rem 1rem; border-radius:6px; border:none; font-size:0.75rem; font-weight:600; cursor:default; transition:background 0.3s, color 0.3s;">Accent Button</button>
+            <span id="tp-link" style="font-size:0.75rem; text-decoration:underline; transition:color 0.3s;">Accent Link</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============================================================
+           BRAND IDENTITY (Task #61 — items 2, 4, 17, 18)
+           One-click palette gallery, curated font-pair picker,
+           accent-gradient toggle, and logo treatment selector. Each
+           control writes through to the existing theme_* fields below
+           so the form's Save button keeps being the single source of
+           truth — no separate "save brand" action required.
+           ============================================================ -->
+      <h3 style="margin-top:0;">Brand Identity</h3>
+      <p style="font-size:0.8rem;color:var(--admin-text-muted);margin-top:0;margin-bottom:1rem;">
+        Pick a curated palette to instantly rebrand the site, choose a
+        Google Font pairing, switch to a gradient accent, or change how
+        your logo is presented.
+      </p>
+
+      <!-- PALETTE GALLERY -->
+      <h4 style="margin-bottom:0.35rem;">Palette Gallery</h4>
+      <p style="font-size:0.75rem;color:var(--admin-text-muted);margin-top:0;margin-bottom:0.75rem;">
+        Click any palette to publish it — the colors and fonts below update
+        immediately, and any open public-site tabs refresh their styling live.
+      </p>
+      <div id="brand-palette-gallery"
+           style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:0.75rem;margin-bottom:1.5rem;"
+           data-testid="grid-brand-palettes">
+        <div style="grid-column:1/-1;color:var(--admin-text-muted);font-size:0.8rem;">Loading palettes…</div>
+      </div>
+
+      <!-- FONT PAIR PICKER -->
+      <div class="form-row">
+        <div class="form-group" style="grid-column:1/-1;">
+          <label for="brand-font-pair">Font Pairing</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">
+            Picks both a heading serif and a body sans at once. Sets the two font dropdowns below.
+          </span>
+          <select id="brand-font-pair" data-testid="select-brand-font-pair"
+                  onchange="applyBrandFontPair(this.value)">
+            <option value="">— Custom (use the dropdowns below) —</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- ACCENT GRADIENT -->
+      <div class="form-row">
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+            <input type="checkbox" id="theme-accent-gradient"
+                   data-testid="checkbox-theme-accent-gradient"
+                   onchange="updateThemePreview()">
+            <span>Use accent gradient</span>
+          </label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:0.25rem;">
+            Buttons and accent surfaces blend from the accent into the secondary color.
+          </span>
+        </div>
+        <div class="form-group">
+          <label for="theme-accent-secondary">Accent Secondary Color</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">
+            Second stop of the gradient (only used when the toggle is on).
+          </span>
+          <div class="theme-color-input">
+            <div class="theme-swatch" id="swatch-theme-accent-secondary"
+                 onclick="document.getElementById('theme-accent-secondary-picker').click()"></div>
+            <input type="color" id="theme-accent-secondary-picker" class="theme-picker-hidden"
+                   onchange="document.getElementById('theme-accent-secondary').value=this.value;syncPickerSwatch('theme-accent-secondary');updateThemePreview()"
+                   data-testid="picker-theme-accent-secondary">
+            <input type="text" id="theme-accent-secondary" placeholder="#e0c896"
+                   oninput="syncPickerSwatch('theme-accent-secondary');updateThemePreview()"
+                   data-testid="input-theme-accent-secondary">
+          </div>
+        </div>
+      </div>
+
+      <!-- LOGO TREATMENT -->
+      <div class="form-row">
+        <div class="form-group">
+          <label for="theme-logo-mode">Logo Treatment</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">
+            How the logo renders in the header, footer, and lockup.
+          </span>
+          <select id="theme-logo-mode" data-testid="select-theme-logo-mode" onchange="onLogoModeChange()">
+            <option value="monogram">Monogram (initials in a circle)</option>
+            <option value="image">Image (uploaded logo only)</option>
+            <option value="wordmark">Wordmark (site name as text)</option>
+            <option value="lockup">Lockup (image + site name)</option>
+          </select>
+        </div>
+        <div class="form-group" id="theme-logo-image-group">
+          <label for="theme-logo-image">Logo Image</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">
+            Used by Image and Lockup modes. Square PNGs work best.
+          </span>
+          <div style="display:flex;gap:0.5rem;align-items:center;">
+            <input type="text" id="theme-logo-image" placeholder="/uploads/logo.png"
+                   oninput="updateThemePreview()" onchange="updateThemePreview()"
+                   data-testid="input-theme-logo-image" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm"
+                    onclick="openMediaPicker({targetInputId:'theme-logo-image', mediaType:'image'})"
+                    data-testid="button-pick-theme-logo-image">Pick</button>
+            <button type="button" class="btn btn-secondary btn-sm"
+                    onclick="uploadImageFor('theme-logo-image')"
+                    data-testid="button-upload-theme-logo-image">Upload</button>
+          </div>
+          <div id="theme-logo-image-preview" style="margin-top:0.5rem;"></div>
+        </div>
+      </div>
+
+      <h3>Colors</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="theme-bg">Background Color</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Main page background</span>
+          <div class="theme-color-input">
+            <div class="theme-swatch" id="swatch-theme-bg" onclick="document.getElementById('theme-bg-picker').click()"></div>
+            <input type="color" id="theme-bg-picker" class="theme-picker-hidden" onchange="document.getElementById('theme-bg').value=this.value;syncPickerSwatch('theme-bg');updateThemePreview()" data-testid="picker-theme-bg">
+            <input type="text" id="theme-bg" placeholder="#060b14" oninput="syncPickerSwatch('theme-bg');updateThemePreview()" data-testid="input-theme-bg">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-section1">Section Background 1</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Alternating section color</span>
+          <div class="theme-color-input">
+            <div class="theme-swatch" id="swatch-theme-section1" onclick="document.getElementById('theme-section1-picker').click()"></div>
+            <input type="color" id="theme-section1-picker" class="theme-picker-hidden" onchange="document.getElementById('theme-section1').value=this.value;syncPickerSwatch('theme-section1');updateThemePreview()" data-testid="picker-theme-section1">
+            <input type="text" id="theme-section1" placeholder="#0a0f1a" oninput="syncPickerSwatch('theme-section1');updateThemePreview()" data-testid="input-theme-section1">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-section2">Section Background 2</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Other alternating color</span>
+          <div class="theme-color-input">
+            <div class="theme-swatch" id="swatch-theme-section2" onclick="document.getElementById('theme-section2-picker').click()"></div>
+            <input type="color" id="theme-section2-picker" class="theme-picker-hidden" onchange="document.getElementById('theme-section2').value=this.value;syncPickerSwatch('theme-section2');updateThemePreview()" data-testid="picker-theme-section2">
+            <input type="text" id="theme-section2" placeholder="#060b14" oninput="syncPickerSwatch('theme-section2');updateThemePreview()" data-testid="input-theme-section2">
+          </div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="theme-accent">Accent Color</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Buttons, links, highlights</span>
+          <div class="theme-color-input">
+            <div class="theme-swatch" id="swatch-theme-accent" onclick="document.getElementById('theme-accent-picker').click()"></div>
+            <input type="color" id="theme-accent-picker" class="theme-picker-hidden" onchange="document.getElementById('theme-accent').value=this.value;syncPickerSwatch('theme-accent');updateThemePreview()" data-testid="picker-theme-accent">
+            <input type="text" id="theme-accent" placeholder="#c9a96e" oninput="syncPickerSwatch('theme-accent');updateThemePreview()" data-testid="input-theme-accent">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-text">Text Color</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Headings and body text</span>
+          <div class="theme-color-input">
+            <div class="theme-swatch" id="swatch-theme-text" onclick="document.getElementById('theme-text-picker').click()"></div>
+            <input type="color" id="theme-text-picker" class="theme-picker-hidden" onchange="document.getElementById('theme-text').value=this.value;syncPickerSwatch('theme-text');updateThemePreview()" data-testid="picker-theme-text">
+            <input type="text" id="theme-text" placeholder="#e4e4e7" oninput="syncPickerSwatch('theme-text');updateThemePreview()" data-testid="input-theme-text">
+          </div>
+        </div>
+      </div>
+
+      <h3 style="margin-top: 1.5rem;">Glass Effects</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="theme-glass-border">Glass Border Color</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Card and panel borders</span>
+          <div class="theme-color-input">
+            <div class="theme-swatch" id="swatch-theme-glass-border" onclick="document.getElementById('theme-glass-border-picker').click()" style="background:rgba(255,255,255,0.08);"></div>
+            <input type="color" id="theme-glass-border-picker" class="theme-picker-hidden" onchange="document.getElementById('theme-glass-border').value=this.value;syncPickerSwatch('theme-glass-border');updateThemePreview()" data-testid="picker-theme-glass-border">
+            <input type="text" id="theme-glass-border" placeholder="rgba(255,255,255,0.08)" oninput="syncPickerSwatch('theme-glass-border');updateThemePreview()" data-testid="input-theme-glass-border">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-glass-bg">Glass Background Color</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Card and panel fill</span>
+          <div class="theme-color-input">
+            <div class="theme-swatch" id="swatch-theme-glass-bg" onclick="document.getElementById('theme-glass-bg-picker').click()" style="background:rgba(255,255,255,0.03);"></div>
+            <input type="color" id="theme-glass-bg-picker" class="theme-picker-hidden" onchange="document.getElementById('theme-glass-bg').value=this.value;syncPickerSwatch('theme-glass-bg');updateThemePreview()" data-testid="picker-theme-glass-bg">
+            <input type="text" id="theme-glass-bg" placeholder="rgba(255,255,255,0.03)" oninput="syncPickerSwatch('theme-glass-bg');updateThemePreview()" data-testid="input-theme-glass-bg">
+          </div>
+        </div>
+      </div>
+
+      <h3 style="margin-top: 1.5rem;">Fonts</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="theme-font-serif">Heading Font (Serif)</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Used for titles and section headings</span>
+          <select id="theme-font-serif" data-testid="select-theme-font-serif" onchange="updateThemePreview()">
+            <option value="">Default (Playfair Display)</option>
+            <option value="Playfair Display">Playfair Display</option>
+            <option value="Cormorant Garamond">Cormorant Garamond</option>
+            <option value="Libre Baskerville">Libre Baskerville</option>
+            <option value="EB Garamond">EB Garamond</option>
+            <option value="Merriweather">Merriweather</option>
+            <option value="Lora">Lora</option>
+            <option value="Crimson Text">Crimson Text</option>
+            <option value="Source Serif 4">Source Serif 4</option>
+            <option value="Noto Serif">Noto Serif</option>
+            <option value="DM Serif Display">DM Serif Display</option>
+            <option value="Fraunces">Fraunces</option>
+            <option value="Bodoni Moda">Bodoni Moda</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="theme-font-sans">Body Font (Sans-Serif)</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Used for paragraphs and descriptions</span>
+          <select id="theme-font-sans" data-testid="select-theme-font-sans" onchange="updateThemePreview()">
+            <option value="">Default (DM Sans)</option>
+            <option value="DM Sans">DM Sans</option>
+            <option value="Inter">Inter</option>
+            <option value="Outfit">Outfit</option>
+            <option value="Plus Jakarta Sans">Plus Jakarta Sans</option>
+            <option value="Manrope">Manrope</option>
+            <option value="Nunito Sans">Nunito Sans</option>
+            <option value="Raleway">Raleway</option>
+            <option value="Work Sans">Work Sans</option>
+            <option value="Poppins">Poppins</option>
+            <option value="Montserrat">Montserrat</option>
+            <option value="Source Sans 3">Source Sans 3</option>
+            <option value="Figtree">Figtree</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- ============================================================
+           UNIVERSAL VISUAL TOKENS
+           Four master knobs that flow through every themed surface
+           (loading screen, glass panels, corner radius, motion). Each
+           slider live-previews via updateThemePreview() and persists in
+           site_settings.theme_* columns through saveTheme().
+           ============================================================ -->
+      <h3 style="margin-top:2rem;margin-bottom:0.25rem;">Visual Tokens</h3>
+      <p style="font-size:0.8rem;color:var(--admin-text-muted);margin-top:0;margin-bottom:1rem;">
+        Universal knobs that affect the loading screen, glass surfaces, corner
+        radius, and motion timing across the whole public site.
+      </p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="theme-loading-bg-alpha">
+            Loading-screen tint opacity
+            <span id="theme-loading-bg-alpha-val" style="float:right;color:var(--admin-text-muted);">0.85</span>
+          </label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">How opaque the boot overlay sits over the page background</span>
+          <input type="range" id="theme-loading-bg-alpha" min="0" max="1" step="0.05" value="0.85"
+                 oninput="document.getElementById('theme-loading-bg-alpha-val').textContent=parseFloat(this.value).toFixed(2);updateThemePreview()"
+                 data-testid="input-theme-loading-bg-alpha">
+        </div>
+        <div class="form-group">
+          <label for="theme-glass-blur-px">
+            Glass blur
+            <span id="theme-glass-blur-px-val" style="float:right;color:var(--admin-text-muted);">24px</span>
+          </label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Backdrop blur strength on every glass surface</span>
+          <input type="range" id="theme-glass-blur-px" min="0" max="40" step="1" value="24"
+                 oninput="document.getElementById('theme-glass-blur-px-val').textContent=this.value+'px';updateThemePreview()"
+                 data-testid="input-theme-glass-blur-px">
+        </div>
+        <div class="form-group">
+          <label for="theme-radius-rem">
+            Corner radius
+            <span id="theme-radius-rem-val" style="float:right;color:var(--admin-text-muted);">1.00rem</span>
+          </label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Roundness of cards, panels and the loading badge (0 for sharp corners)</span>
+          <input type="range" id="theme-radius-rem" min="0" max="2" step="0.05" value="1.0"
+                 oninput="document.getElementById('theme-radius-rem-val').textContent=parseFloat(this.value).toFixed(2)+'rem';updateThemePreview()"
+                 data-testid="input-theme-radius-rem">
+        </div>
+        <div class="form-group">
+          <label for="theme-transition-sec">
+            Motion speed
+            <span id="theme-transition-sec-val" style="float:right;color:var(--admin-text-muted);">0.60s</span>
+          </label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">How long medium fades and slides take (lower = snappier)</span>
+          <input type="range" id="theme-transition-sec" min="0.2" max="1.2" step="0.05" value="0.6"
+                 oninput="document.getElementById('theme-transition-sec-val').textContent=parseFloat(this.value).toFixed(2)+'s';updateThemePreview()"
+                 data-testid="input-theme-transition-sec">
+        </div>
+        <div class="form-group">
+          <label for="theme-ui-scale">
+            Overall size (zoom)
+            <span id="theme-ui-scale-val" style="float:right;color:var(--admin-text-muted);">100%</span>
+          </label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Zooms the whole public site in or out. Lower = smaller components (zoom out), higher = bigger (zoom in). 100% = default.</span>
+          <input type="range" id="theme-ui-scale" min="0.5" max="1.5" step="0.05" value="1.0"
+                 oninput="document.getElementById('theme-ui-scale-val').textContent=Math.round(parseFloat(this.value)*100)+'%';updateThemePreview()"
+                 data-testid="input-theme-ui-scale">
+        </div>
+        <div class="form-group">
+          <label for="theme-chat-pill-scale">
+            Chat pill size
+            <span id="theme-chat-pill-scale-val" style="float:right;color:var(--admin-text-muted);">100%</span>
+          </label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Sizes the floating chat pill only. Lower = smaller pill, higher = bigger. 100% = default. Doesn't affect the open chat panel.</span>
+          <input type="range" id="theme-chat-pill-scale" min="0.7" max="1.4" step="0.05" value="1.0"
+                 oninput="document.getElementById('theme-chat-pill-scale-val').textContent=Math.round(parseFloat(this.value)*100)+'%';updateThemePreview()"
+                 data-testid="input-theme-chat-pill-scale">
+        </div>
+      </div>
+
+      <!-- ============================================================
+           SURFACE TREATMENT PRESETS (Task #62 — items 3, 5, 12, 13)
+           Four named pickers that swap the personality of every card,
+           the motion curve, the photo treatment, and the boot overlay.
+           Each picker has a small live preview thumbnail next to it
+           (driven by updateThemePreview()) so the admin can see what
+           the preset looks like BEFORE saving. Preset names are frozen
+           by the CSS rules in public/styles.css and the validator in
+           app.py — keep the option values in sync with both.
+           ============================================================ -->
+      <style>
+        /* Self-contained styles for the 4 mini preview thumbnails.
+           Admin pages don't load public/styles.css so we can't rely on
+           its [data-card-style]/[data-photo-filter] selectors here.
+           Each thumbnail re-implements just enough of the public-site
+           look to be recognisable in a 64–72px tall box.            */
+        .surface-preview-row {
+          display: flex; align-items: center; gap: 0.75rem;
+          margin-top: 0.5rem;
+        }
+        .surface-preview-row .surface-preview {
+          flex: 0 0 auto; width: 116px; height: 70px;
+          border-radius: 0.45rem; position: relative; overflow: hidden;
+          background: #1a1d22;
+          border: 1px solid rgba(255,255,255,0.08);
+        }
+        .surface-preview-row .surface-preview-caption {
+          font-size: 0.7rem; color: var(--admin-text-muted); line-height: 1.25;
+        }
+        /* Card-style thumbnail variants ------------------------------ */
+        .surface-preview-card { padding: 10px; }
+        .surface-preview-card .mini-card {
+          width: 100%; height: 100%;
+          display: flex; align-items: flex-end; padding: 6px;
+          font-size: 0.6rem; color: rgba(255,255,255,0.85);
+          transition: all 0.2s ease;
+        }
+        [data-preview-card-style="editorial"] .mini-card {
+          background: rgba(255,255,255,0.08); backdrop-filter: blur(6px);
+          border: 1px solid rgba(255,255,255,0.14);
+          border-radius: 0.5rem;
+          box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        }
+        [data-preview-card-style="glass"] .mini-card {
+          background: rgba(255,255,255,0.14); backdrop-filter: blur(12px);
+          border: 1px solid rgba(255,255,255,0.22);
+          border-radius: 0.5rem;
+          box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+        }
+        [data-preview-card-style="brutal"] .mini-card {
+          background: #2a2d33; border: 2px solid #fff; border-radius: 0;
+          box-shadow: 4px 4px 0 0 var(--admin-accent, #fb923c);
+        }
+        [data-preview-card-style="minimal"] .mini-card {
+          background: transparent; border: 1px solid rgba(255,255,255,0.18);
+          border-radius: 0.2rem; box-shadow: none;
+        }
+        /* Motion thumbnail — animates a dot across the box on each
+           preview update. Triggered by toggling .play.            */
+        .surface-preview-motion .mini-track {
+          position: absolute; left: 8px; right: 8px; top: 50%;
+          height: 2px; background: rgba(255,255,255,0.12);
+          transform: translateY(-50%);
+        }
+        .surface-preview-motion .mini-dot {
+          position: absolute; left: 8px; top: 50%;
+          width: 14px; height: 14px; border-radius: 50%;
+          background: var(--admin-accent, #fb923c);
+          transform: translate(0, -50%);
+          transition: transform 0.9s var(--mini-ease, cubic-bezier(0.22, 1, 0.36, 1));
+        }
+        .surface-preview-motion.play .mini-dot {
+          transform: translate(80px, -50%);
+        }
+        /* Photo thumbnail — real <img> so the photo-filter CSS we set
+           on the parent (via inline `filter:`) takes effect.        */
+        .surface-preview-photo .mini-img {
+          width: 100%; height: 100%; object-fit: cover; display: block;
+          transition: filter 0.2s ease;
+        }
+        .surface-preview-photo .mini-grain {
+          position: absolute; inset: 0; pointer-events: none;
+          background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.4'/></svg>");
+          mix-blend-mode: overlay; opacity: 0; transition: opacity 0.2s ease;
+        }
+        .surface-preview-photo[data-preview-photo-filter="grain"] .mini-grain { opacity: 0.5; }
+        /* Loading-mode thumbnail — mini reproduction of the boot
+           overlay markup. Each preset hides/shows different parts.  */
+        .surface-preview-loading {
+          background: rgba(0,0,0,0.55); display: flex;
+          align-items: center; justify-content: center;
+        }
+        .surface-preview-loading .mini-panel {
+          display: flex; flex-direction: column; align-items: center; gap: 4px;
+          padding: 6px 10px; border-radius: 6px;
+          background: rgba(255,255,255,0.06);
+          border: 1px solid rgba(255,255,255,0.1);
+        }
+        .surface-preview-loading .mini-logo {
+          width: 18px; height: 18px; border-radius: 50%;
+          background: var(--admin-accent, #fb923c);
+        }
+        .surface-preview-loading .mini-name {
+          font-size: 0.55rem; color: rgba(255,255,255,0.85); letter-spacing: 0.05em;
+        }
+        .surface-preview-loading .mini-shimmer {
+          width: 60px; height: 3px; border-radius: 2px;
+          background: linear-gradient(90deg,
+            rgba(255,255,255,0.05) 0%,
+            rgba(255,255,255,0.35) 50%,
+            rgba(255,255,255,0.05) 100%);
+          background-size: 200% 100%;
+          animation: mini-shimmer 1.6s linear infinite;
+        }
+        @keyframes mini-shimmer {
+          0% { background-position: -100% 0; }
+          100% { background-position: 100% 0; }
+        }
+        [data-preview-loading-mode="logo_only"] .mini-name,
+        [data-preview-loading-mode="logo_only"] .mini-shimmer { display: none; }
+        [data-preview-loading-mode="spinner_only"] .mini-logo,
+        [data-preview-loading-mode="spinner_only"] .mini-name { display: none; }
+        [data-preview-loading-mode="fade_only"] .mini-panel {
+          background: transparent; border: none;
+        }
+        [data-preview-loading-mode="fade_only"] .mini-logo,
+        [data-preview-loading-mode="fade_only"] .mini-name,
+        [data-preview-loading-mode="fade_only"] .mini-shimmer { display: none; }
+      </style>
+
+      <h3 style="margin-top:2rem;margin-bottom:0.25rem;">Surface Treatment</h3>
+      <p style="font-size:0.8rem;color:var(--admin-text-muted);margin-top:0;margin-bottom:1rem;">
+        Pick a card style, motion personality, photo filter, and loading mode.
+        Each picker shows a live preview — changes apply on save without a page reload.
+      </p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="theme-card-style">Card style</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Visual treatment shared by every card on the public site</span>
+          <select id="theme-card-style" data-testid="select-theme-card-style"
+                  onchange="updateThemePreview()">
+            <option value="editorial">Editorial — soft glass, generous radius (default)</option>
+            <option value="glass">Glass — heavy backdrop blur</option>
+            <option value="brutal">Brutal — square corners, hard accent shadow</option>
+            <option value="minimal">Minimal — hairline border, no shadow</option>
+          </select>
+          <div class="surface-preview-row">
+            <div id="surface-preview-card" class="surface-preview surface-preview-card"
+                 data-preview-card-style="editorial" data-testid="preview-card-style">
+              <div class="mini-card">Card</div>
+            </div>
+            <div class="surface-preview-caption">Live preview of the chosen card style</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-easing">Motion personality</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Named easing curve every transition uses</span>
+          <select id="theme-easing" data-testid="select-theme-easing"
+                  onchange="updateThemePreview()">
+            <option value="snappy">Snappy — quick out-cubic</option>
+            <option value="gentle">Gentle — smooth out-cubic (default)</option>
+            <option value="bouncy">Bouncy — slight overshoot</option>
+            <option value="editorial">Editorial — slow in-out</option>
+          </select>
+          <div class="surface-preview-row">
+            <div id="surface-preview-motion" class="surface-preview surface-preview-motion"
+                 data-testid="preview-motion" style="cursor:pointer;"
+                 onclick="this.classList.remove('play'); void this.offsetWidth; this.classList.add('play');">
+              <div class="mini-track"></div>
+              <div class="mini-dot"></div>
+            </div>
+            <div class="surface-preview-caption">Click the box to replay the easing</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-photo-filter">Photo filter</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Global filter on every public-site image and background</span>
+          <select id="theme-photo-filter" data-testid="select-theme-photo-filter"
+                  onchange="updateThemePreview()">
+            <option value="none">None (default)</option>
+            <option value="warm">Warm — saturated, hue shift toward gold</option>
+            <option value="cool">Cool — desaturated, hue shift toward blue</option>
+            <option value="bw">Black &amp; white</option>
+            <option value="grain">Grain — subtle film overlay</option>
+          </select>
+          <div class="surface-preview-row">
+            <div id="surface-preview-photo" class="surface-preview surface-preview-photo"
+                 data-preview-photo-filter="none" data-testid="preview-photo-filter">
+              <img class="mini-img" alt="" aria-hidden="true"
+                   src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 116 70'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%23f59e0b'/><stop offset='0.5' stop-color='%23ec4899'/><stop offset='1' stop-color='%233b82f6'/></linearGradient></defs><rect width='116' height='70' fill='url(%23g)'/><circle cx='25' cy='22' r='10' fill='%23fde68a' opacity='0.85'/><path d='M0 55 L40 35 L70 50 L116 28 L116 70 L0 70 Z' fill='%23064e3b' opacity='0.7'/></svg>">
+              <div class="mini-grain"></div>
+            </div>
+            <div class="surface-preview-caption">Sample image with the chosen filter</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-loading-mode">Loading mode</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">What's visible inside the boot overlay before the page paints</span>
+          <select id="theme-loading-mode" data-testid="select-theme-loading-mode"
+                  onchange="updateThemePreview()">
+            <option value="logo_name">Logo + site name (default)</option>
+            <option value="logo_only">Logo only</option>
+            <option value="spinner_only">Spinner only</option>
+            <option value="fade_only">Fade only — bare backdrop</option>
+          </select>
+          <div class="surface-preview-row">
+            <div id="surface-preview-loading" class="surface-preview surface-preview-loading"
+                 data-preview-loading-mode="logo_name" data-testid="preview-loading-mode">
+              <div class="mini-panel">
+                <div class="mini-logo"></div>
+                <div class="mini-name">SITE NAME</div>
+                <div class="mini-shimmer"></div>
+              </div>
+            </div>
+            <div class="surface-preview-caption">Mini boot overlay reproduction</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ====================================================================
+           Layout & Rhythm panel  (Task #63 / items 6, 7, 9, 16)
+           ====================================================================
+           Four admin-controlled knobs that shape the public site's spacing,
+           section framing, header alignment, and hero structure. Each picker
+           updates a small thumbnail in-place via updateThemePreview() and
+           persists in site_settings on Save Theme — no full reload required.
+           The companion CSS below renders the thumbnails purely with CSS so
+           they require no extra JS to redraw.
+      ==================================================================== -->
+      <style>
+        /* Density preview — three stacked bars whose vertical gap shrinks
+           or grows so the admin sees the chosen rhythm at a glance. */
+        .layout-preview { width: 116px; height: 70px; border-radius: 0.5rem; background: var(--admin-bg-tertiary, rgba(255,255,255,0.04)); border: 1px solid var(--admin-border, rgba(255,255,255,0.08)); padding: 8px; display: flex; flex-direction: column; align-items: stretch; justify-content: center; }
+        .layout-preview .lp-bar { height: 6px; background: var(--admin-text-muted, rgba(255,255,255,0.35)); border-radius: 2px; }
+        [data-preview-density="compact"]     .lp-bar + .lp-bar { margin-top: 3px; }
+        [data-preview-density="comfortable"] .lp-bar + .lp-bar { margin-top: 7px; }
+        [data-preview-density="spacious"]    .lp-bar + .lp-bar { margin-top: 12px; }
+        /* Frame-inset preview — outer page bg + inner painted card whose
+           horizontal margin grows with the slider, mirroring how the public
+           landing-section's painted area shrinks with --section-frame-inset. */
+        .frame-preview { width: 116px; height: 70px; border-radius: 0.5rem; background: var(--admin-bg-secondary, rgba(255,255,255,0.06)); padding: 6px; display: flex; align-items: stretch; justify-content: stretch; transition: padding 0.2s ease; }
+        .frame-preview .fp-card { flex: 1; background: var(--color-accent, #c9a96e); opacity: 0.55; border-radius: 0.25rem; }
+        /* Header-align preview — three lines representing eyebrow/title/intro
+           re-justified per variant. */
+        .align-preview { width: 116px; height: 70px; border-radius: 0.5rem; background: var(--admin-bg-tertiary, rgba(255,255,255,0.04)); border: 1px solid var(--admin-border, rgba(255,255,255,0.08)); padding: 10px; display: flex; flex-direction: column; gap: 5px; }
+        .align-preview .ap-eyebrow { height: 4px; width: 30%; background: var(--color-accent, #c9a96e); border-radius: 2px; align-self: center; }
+        .align-preview .ap-title   { height: 8px; width: 70%; background: var(--admin-text-muted, rgba(255,255,255,0.5)); border-radius: 2px; align-self: center; }
+        .align-preview .ap-intro   { height: 4px; width: 50%; background: var(--admin-text-muted, rgba(255,255,255,0.3)); border-radius: 2px; align-self: center; }
+        [data-preview-header-align="left"] .ap-eyebrow,
+        [data-preview-header-align="left"] .ap-title,
+        [data-preview-header-align="left"] .ap-intro,
+        [data-preview-header-align="numbered"] .ap-eyebrow,
+        [data-preview-header-align="numbered"] .ap-title,
+        [data-preview-header-align="numbered"] .ap-intro { align-self: flex-start; }
+        [data-preview-header-align="numbered"] .ap-eyebrow::before { content: "01·"; font-size: 6px; color: var(--color-accent, #c9a96e); font-weight: 700; margin-right: 3px; }
+        [data-preview-header-align="split"] { display: grid; grid-template-columns: 1fr 2fr; gap: 4px; padding: 10px; align-items: start; }
+        [data-preview-header-align="split"] .ap-eyebrow { grid-column: 1; align-self: start; width: 90%; }
+        [data-preview-header-align="split"] .ap-title,
+        [data-preview-header-align="split"] .ap-intro { grid-column: 2; align-self: start; width: 100%; }
+        /* Hero-layout preview — five distinct mini compositions. */
+        .hero-preview { width: 116px; height: 70px; border-radius: 0.5rem; background: var(--admin-bg-tertiary, rgba(255,255,255,0.04)); border: 1px solid var(--admin-border, rgba(255,255,255,0.08)); position: relative; overflow: hidden; }
+        .hero-preview .hp-img { position: absolute; inset: 0; background: linear-gradient(135deg, #f59e0b, #ec4899 60%, #3b82f6); }
+        .hero-preview .hp-text { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); width: 60%; height: 6px; background: rgba(255,255,255,0.85); border-radius: 2px; box-shadow: 0 -10px 0 rgba(255,255,255,0.55); }
+        [data-preview-hero-layout="split"] .hp-img { right: 50%; }
+        [data-preview-hero-layout="split"] .hp-text { left: 75%; bottom: 30px; transform: translateX(-50%); width: 35%; }
+        [data-preview-hero-layout="text_mesh"] .hp-img { background: radial-gradient(ellipse at 20% 10%, rgba(255,255,255,0.15), transparent 60%), radial-gradient(ellipse at 80% 30%, var(--color-accent, #c9a96e) 0%, transparent 60%), linear-gradient(135deg, var(--color-bg, #060b14), var(--color-section-2, #0a0f1a)); }
+        [data-preview-hero-layout="carousel"] .hp-img::after { content: ""; position: absolute; right: 6px; bottom: 6px; width: 18px; height: 4px; background: rgba(255,255,255,0.7); border-radius: 2px; box-shadow: -7px 0 0 rgba(255,255,255,0.35), -14px 0 0 rgba(255,255,255,0.35); }
+        [data-preview-hero-layout="video"] .hp-img::after { content: "▶"; position: absolute; left: 50%; top: 35%; transform: translate(-50%, -50%); color: rgba(255,255,255,0.9); font-size: 18px; }
+      </style>
+
+      <h3 style="margin-top:2rem;margin-bottom:0.25rem;">Layout &amp; Rhythm</h3>
+      <p style="font-size:0.8rem;color:var(--admin-text-muted);margin-top:0;margin-bottom:1rem;">
+        Set the spacing density, section frame, header alignment, and hero structure for the public site.
+        Each picker shows a live preview — changes apply on save without a page reload.
+      </p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="theme-density">Density</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Multiplies every spacing token site-wide</span>
+          <select id="theme-density" data-testid="select-theme-density"
+                  onchange="updateThemePreview()">
+            <option value="compact">Compact — 0.75x (tight, business)</option>
+            <option value="comfortable">Comfortable — 1.0x (default)</option>
+            <option value="spacious">Spacious — 1.25x (editorial / venue)</option>
+          </select>
+          <div class="surface-preview-row">
+            <div id="layout-preview-density" class="layout-preview"
+                 data-preview-density="comfortable" data-testid="preview-density">
+              <div class="lp-bar"></div>
+              <div class="lp-bar"></div>
+              <div class="lp-bar"></div>
+            </div>
+            <div class="surface-preview-caption">Bar gap mirrors the section rhythm</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-section-frame-inset">Section frame inset
+            <span id="theme-section-frame-inset-val" style="float:right;color:var(--admin-text-muted);font-weight:normal;font-size:0.85em;">0px</span>
+          </label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Page-bg gutter on either side of every section (0–32 px)</span>
+          <input type="range" id="theme-section-frame-inset" min="0" max="32" step="1" value="0"
+                 data-testid="input-theme-section-frame-inset"
+                 oninput="document.getElementById('theme-section-frame-inset-val').textContent=this.value+'px';updateThemePreview()"
+                 onchange="updateThemePreview()"
+                 style="width:100%;">
+          <div class="surface-preview-row">
+            <div id="layout-preview-frame" class="frame-preview" data-testid="preview-frame-inset">
+              <div class="fp-card"></div>
+            </div>
+            <div class="surface-preview-caption">Inner card shrinks as inset grows</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-header-align">Header alignment</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">How every section header is justified</span>
+          <select id="theme-header-align" data-testid="select-theme-header-align"
+                  onchange="updateThemePreview()">
+            <option value="centered">Centered (default)</option>
+            <option value="left">Left aligned</option>
+            <option value="numbered">Numbered — auto "01." prefix</option>
+            <option value="split">Split — eyebrow left, title right</option>
+          </select>
+          <div class="surface-preview-row">
+            <div id="layout-preview-align" class="align-preview"
+                 data-preview-header-align="centered" data-testid="preview-header-align">
+              <div class="ap-eyebrow"></div>
+              <div class="ap-title"></div>
+              <div class="ap-intro"></div>
+            </div>
+            <div class="surface-preview-caption">Eyebrow / title / intro lines re-flow per variant</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="hero-layout-mode">Hero layout</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Visual structure of the hero section</span>
+          <select id="hero-layout-mode" data-testid="select-hero-layout-mode"
+                  onchange="updateThemePreview()">
+            <option value="full_bleed">Full bleed — image bg + centered text (default)</option>
+            <option value="split">Split — 50/50 image + text grid</option>
+            <option value="text_mesh">Text on mesh — text only on a CSS gradient</option>
+            <option value="carousel">Carousel — image bg cycles gallery photos</option>
+            <option value="video">Video — force-show the hero video</option>
+          </select>
+          <div class="surface-preview-row">
+            <div id="layout-preview-hero" class="hero-preview"
+                 data-preview-hero-layout="full_bleed" data-testid="preview-hero-layout">
+              <div class="hp-img"></div>
+              <div class="hp-text"></div>
+            </div>
+            <div class="surface-preview-caption">Mini hero composition for each layout</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ====================================================================
+           Personality panel  (Task #64 / items 10, 11, 14, 15)
+           ====================================================================
+           Four small admin knobs that tweak how the public site *feels*:
+           cursor mode, scroll-progress bar (with color), nav style, and
+           chatbot placement. Each picker has a tiny CSS-only preview
+           thumbnail next to it; updateThemePreview() drives the toggles.
+      ==================================================================== -->
+      <style>
+        /* Cursor preview — the dot variant shows a small filled circle in
+           the corner; magnetic adds a faint halo. */
+        .cursor-preview { width: 116px; height: 70px; border-radius: 0.5rem; background: var(--admin-bg-tertiary, rgba(255,255,255,0.04)); border: 1px solid var(--admin-border, rgba(255,255,255,0.08)); position: relative; }
+        .cursor-preview .cp-dot { position: absolute; left: 60%; top: 55%; width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent, #c9a96e); opacity: 0; transition: opacity 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease; }
+        [data-preview-cursor-mode="dot"] .cp-dot      { opacity: 1; }
+        [data-preview-cursor-mode="magnetic"] .cp-dot { opacity: 1; transform: scale(1.6); box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-accent, #c9a96e) 30%, transparent); }
+        /* Scroll-progress preview — a thin bar across the top. */
+        .scroll-preview { width: 116px; height: 70px; border-radius: 0.5rem; background: var(--admin-bg-tertiary, rgba(255,255,255,0.04)); border: 1px solid var(--admin-border, rgba(255,255,255,0.08)); position: relative; overflow: hidden; }
+        .scroll-preview .sp-bar { position: absolute; top: 0; left: 0; height: 4px; width: 60%; background: var(--color-accent, #c9a96e); transition: width 0.2s ease, background 0.2s ease, opacity 0.2s ease; }
+        [data-preview-scroll-progress="0"] .sp-bar { opacity: 0; }
+        /* Nav-style preview — five distinct mini compositions of a top bar. */
+        .nav-preview { width: 116px; height: 70px; border-radius: 0.5rem; background: var(--admin-bg-tertiary, rgba(255,255,255,0.04)); border: 1px solid var(--admin-border, rgba(255,255,255,0.08)); position: relative; overflow: hidden; padding: 6px; }
+        .nav-preview .np-bar { position: absolute; top: 6px; left: 6px; right: 6px; height: 10px; border-radius: 4px; background: rgba(255,255,255,0.18); display: flex; align-items: center; justify-content: space-between; padding: 0 4px; }
+        .nav-preview .np-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--color-accent, #c9a96e); }
+        .nav-preview .np-links { display: flex; gap: 3px; }
+        .nav-preview .np-links span { width: 8px; height: 2px; background: rgba(255,255,255,0.5); border-radius: 1px; }
+        [data-preview-nav-style="sticky"] .np-bar           { background: rgba(255,255,255,0.32); border-bottom: 1px solid rgba(255,255,255,0.18); }
+        [data-preview-nav-style="hidden_on_scroll"] .np-bar { transform: translateY(-110%); }
+        [data-preview-nav-style="hidden_on_scroll"]::after  { content: "↓"; position: absolute; right: 8px; top: 26px; color: rgba(255,255,255,0.6); font-size: 12px; }
+        [data-preview-nav-style="hamburger"] .np-links      { display: none; }
+        [data-preview-nav-style="hamburger"] .np-bar::after { content: "☰"; color: rgba(255,255,255,0.7); font-size: 9px; line-height: 1; }
+        [data-preview-nav-style="side_rail"] .np-bar        { top: 6px; left: 6px; bottom: 6px; right: auto; width: 14px; height: auto; flex-direction: column; padding: 4px 0; gap: 6px; align-items: center; justify-content: flex-start; }
+        [data-preview-nav-style="side_rail"] .np-links      { flex-direction: column; gap: 4px; }
+        [data-preview-nav-style="side_rail"] .np-links span { width: 6px; height: 2px; }
+        /* Chatbot-placement preview — a screen with the chatbot pill in
+           five different positions. */
+        .chatbot-preview { width: 116px; height: 70px; border-radius: 0.5rem; background: var(--admin-bg-tertiary, rgba(255,255,255,0.04)); border: 1px solid var(--admin-border, rgba(255,255,255,0.08)); position: relative; overflow: hidden; }
+        .chatbot-preview .cbp-pill { position: absolute; height: 8px; width: 30px; border-radius: 4px; background: var(--color-accent, #c9a96e); }
+        [data-preview-chatbot-placement="bottom_center"] .cbp-pill { left: 50%; bottom: 8px; transform: translateX(-50%); }
+        [data-preview-chatbot-placement="bottom_right"]  .cbp-pill { right: 8px; bottom: 8px; }
+        [data-preview-chatbot-placement="side_panel"]    .cbp-pill { right: 0; top: 0; bottom: 0; width: 18px; height: auto; border-radius: 0; }
+        [data-preview-chatbot-placement="cmd_k"]         .cbp-pill { display: none; }
+        [data-preview-chatbot-placement="cmd_k"]::after  { content: "⌘K"; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); color: rgba(255,255,255,0.7); font-size: 11px; font-weight: 600; }
+        [data-preview-chatbot-placement="hidden_until_button"] .cbp-pill { right: 6px; bottom: 6px; width: 14px; height: 14px; border-radius: 50%; }
+      </style>
+
+      <h3 style="margin-top:2rem;margin-bottom:0.25rem;">Personality</h3>
+      <p style="font-size:0.8rem;color:var(--admin-text-muted);margin-top:0;margin-bottom:1rem;">
+        Small interaction details that tweak how the public site <em>feels</em>.
+        Each picker shows a live preview — changes apply on save without a page reload.
+      </p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="theme-cursor-mode">Cursor mode</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Visitor pointer style on desktop (touch devices always use native)</span>
+          <select id="theme-cursor-mode" data-testid="select-theme-cursor-mode"
+                  onchange="updateThemePreview()">
+            <option value="native">Native — system cursor (default)</option>
+            <option value="dot">Dot — small accent-colored follower</option>
+            <option value="magnetic">Magnetic — dot grows on hover targets</option>
+          </select>
+          <div class="surface-preview-row">
+            <div id="personality-preview-cursor" class="cursor-preview"
+                 data-preview-cursor-mode="native" data-testid="preview-cursor-mode">
+              <div class="cp-dot"></div>
+            </div>
+            <div class="surface-preview-caption">Mini cursor demo per mode</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-scroll-progress" style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+            <input type="checkbox" id="theme-scroll-progress" data-testid="checkbox-theme-scroll-progress"
+                   onchange="updateThemePreview()" style="margin:0;">
+            Scroll-progress bar
+          </label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:0.35rem;margin-bottom:0.35rem;">Thin bar at the top of the viewport that grows as the visitor scrolls</span>
+          <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.35rem;">
+            <span style="font-size:0.75rem;color:var(--admin-text-muted);">Color override:</span>
+            <input type="color" id="theme-scroll-progress-color-picker"
+                   onchange="document.getElementById('theme-scroll-progress-color').value=this.value;updateThemePreview()"
+                   data-testid="picker-theme-scroll-progress-color"
+                   style="width:32px;height:32px;border:1px solid var(--admin-border);border-radius:0.35rem;background:transparent;cursor:pointer;padding:0;">
+            <input type="text" id="theme-scroll-progress-color" placeholder="(uses brand accent)"
+                   oninput="syncProgressColorPicker();updateThemePreview()"
+                   data-testid="input-theme-scroll-progress-color"
+                   style="flex:1;font-family:monospace;font-size:0.8rem;">
+            <button type="button" class="btn btn-secondary btn-sm"
+                    onclick="document.getElementById('theme-scroll-progress-color').value='';syncProgressColorPicker();updateThemePreview()"
+                    data-testid="button-clear-scroll-progress-color"
+                    style="padding:0.25rem 0.5rem;font-size:0.75rem;">Clear</button>
+          </div>
+          <div class="surface-preview-row">
+            <div id="personality-preview-scroll" class="scroll-preview"
+                 data-preview-scroll-progress="0" data-testid="preview-scroll-progress">
+              <div class="sp-bar"></div>
+            </div>
+            <div class="surface-preview-caption">Bar appears only when toggled on</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-nav-style">Nav style</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">How the top navigation behaves on the public site</span>
+          <select id="theme-nav-style" data-testid="select-theme-nav-style"
+                  onchange="updateThemePreview()">
+            <option value="floating_glass">Floating glass — default</option>
+            <option value="sticky">Sticky — pinned to top with backdrop</option>
+            <option value="hamburger">Hamburger — collapsed menu toggle</option>
+            <option value="hidden_on_scroll">Hidden on scroll — re-appears on scroll up</option>
+            <option value="side_rail">Side rail — vertical bar on the left</option>
+          </select>
+          <div class="surface-preview-row">
+            <div id="personality-preview-nav" class="nav-preview"
+                 data-preview-nav-style="floating_glass" data-testid="preview-nav-style">
+              <div class="np-bar">
+                <div class="np-dot"></div>
+                <div class="np-links"><span></span><span></span><span></span></div>
+              </div>
+            </div>
+            <div class="surface-preview-caption">Mini composition for each variant</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="theme-chatbot-placement">Chatbot placement</label>
+          <span style="display:block;font-size:0.7rem;color:var(--admin-text-muted);margin-top:-0.25rem;margin-bottom:0.35rem;">Where the AI chatbot widget docks (or how it's summoned)</span>
+          <select id="theme-chatbot-placement" data-testid="select-theme-chatbot-placement"
+                  onchange="updateThemePreview()">
+            <option value="bottom_center">Bottom center — default floating pill</option>
+            <option value="bottom_right">Bottom right — corner pill</option>
+            <option value="side_panel">Side panel — full-height right column</option>
+            <option value="cmd_k">⌘K only — summon via keyboard shortcut</option>
+            <option value="hidden_until_button">Hidden — small launcher button only</option>
+          </select>
+          <div class="surface-preview-row">
+            <div id="personality-preview-chatbot" class="chatbot-preview"
+                 data-preview-chatbot-placement="bottom_center" data-testid="preview-chatbot-placement">
+              <div class="cbp-pill"></div>
+            </div>
+            <div class="surface-preview-caption">Mini placement preview per variant</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="saveTheme()" data-testid="button-save-theme">Save Theme</button>
+      </div>
+    </div>
+  </div>

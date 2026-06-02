@@ -1,0 +1,63 @@
+{# admin/tabs/_marketing-insights.html — 'marketing-insights' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-marketing-insights" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>AI Insights & Drafts</h2>
+        <p>Marketing reports the admin AI has run, plus blog and FAQ entries it has drafted for your approval.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn btn-secondary btn-sm" onclick="loadMarketingInsights()" data-testid="button-marketing-refresh">Refresh</button>
+        <button class="btn btn-primary btn-sm" onclick="switchTab('admin-chat', document.querySelector('[data-testid=tab-admin-chat]')); loadAdminChat();" data-testid="button-marketing-open-chat">Ask the AI</button>
+      </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns: 1fr; gap:1.5rem; margin-top:1rem;">
+
+      <!-- DRAFTS — pending blog / FAQ entries the AI has composed. -->
+      <div class="form-panel">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; margin-bottom:0.75rem;">
+          <div>
+            <h3 style="margin:0;">Drafts awaiting approval</h3>
+            <p style="margin:0.25rem 0 0; color:var(--admin-text-muted); font-size:0.85rem;">Blog posts and FAQ entries the admin AI has written. Approve to publish, reject to discard.</p>
+          </div>
+          <div style="display:flex; gap:0.5rem; align-items:center;">
+            <label style="font-size:0.85rem; color:var(--admin-text-muted);">Status</label>
+            <select id="mi-drafts-status" onchange="loadMarketingInsights()" data-testid="select-marketing-drafts-status" class="gx-input" style="max-width:240px; padding:.45rem .6rem;">
+              <option value="pending">Pending</option>
+              <option value="approved">Approved &amp; published</option>
+              <option value="rejected">Rejected</option>
+              <option value="failed">Failed</option>
+            </select>
+          </div>
+        </div>
+        <div id="mi-drafts-list" data-testid="list-marketing-drafts">
+          <div class="empty-state" style="padding:1rem 0; color:var(--admin-text-muted);">Loading drafts…</div>
+        </div>
+      </div>
+
+      <!-- INSIGHTS — cached insight runs from analyze_chat_topics / analyze_page_library / suggest_seo_improvements. -->
+      <div class="form-panel">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; margin-bottom:0.75rem;">
+          <div>
+            <h3 style="margin:0;">Insight reports</h3>
+            <p style="margin:0.25rem 0 0; color:var(--admin-text-muted); font-size:0.85rem;">Cached output from the admin AI's marketing analysis tools. Click a row to expand the full report.</p>
+          </div>
+          <div style="display:flex; gap:0.5rem; align-items:center;">
+            <label style="font-size:0.85rem; color:var(--admin-text-muted);">Type</label>
+            <select id="mi-insights-type" onchange="loadMarketingInsights()" data-testid="select-marketing-insights-type" class="gx-input" style="max-width:240px; padding:.45rem .6rem;">
+              <option value="">All types</option>
+              <option value="chat_topics">Chat topics</option>
+              <option value="page_library">Page library</option>
+              <option value="seo_gaps">SEO / content gaps</option>
+            </select>
+          </div>
+        </div>
+        <div id="mi-insights-list" data-testid="list-marketing-insights">
+          <div class="empty-state" style="padding:1rem 0; color:var(--admin-text-muted);">Loading insights…</div>
+        </div>
+      </div>
+
+    </div>
+  </div>

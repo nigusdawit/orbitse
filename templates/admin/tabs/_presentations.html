@@ -1,0 +1,20 @@
+{# admin/tabs/_presentations.html — 'presentations' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-presentations" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Presentation Decks</h2>
+        <p>Slide decks the AI can launch on a visitor's screen with voice narration. Visitors can pause, ask questions, and resume.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <button class="btn btn-secondary" onclick="document.getElementById('presentation-import-file').click()" data-testid="button-import-presentation">⬆ Import deck</button>
+        <input type="file" id="presentation-import-file" accept=".pdf,.pptx,.ppt,.key,.odp,.doc,.docx,.odt,.rtf,.jpg,.jpeg,.png,.webp" multiple style="display:none;" onchange="importPresentationFromFile(this)">
+        <button class="btn btn-primary" onclick="openPresentationEditor(null)" data-testid="button-new-presentation">+ New Deck</button>
+      </div>
+    </div>
+    <p style="color:var(--admin-text-muted); font-size:13px; margin:-4px 0 14px;">
+      Upload any slide format and we'll auto-convert each slide to a pixel-perfect image: PDF, PowerPoint (.pptx/.ppt), Keynote (.key), OpenDocument (.odp/.odt), Word (.doc/.docx/.rtf), or a set of JPG/PNG/WEBP images (one slide each, ordered by filename). PowerPoint speaker notes are pulled in automatically as starter narration.
+    </p>
+    <div id="presentations-list" data-testid="list-presentations" style="display:grid;gap:14px;"></div>
+  </div>

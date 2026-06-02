@@ -1,0 +1,63 @@
+{# admin/tabs/_testimonials.html — 'testimonials' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-testimonials" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Testimonials</h2>
+        <p>Manage client reviews and ratings displayed on the public site.</p>
+      </div>
+      <button class="btn btn-primary" onclick="showTestimonialForm()" data-testid="button-add-testimonial">+ Add Testimonial</button>
+    </div>
+
+    <div id="testimonial-form-panel" style="display:none;">
+      <input type="hidden" id="testimonial-form-id">
+      <div class="gx-fieldset">
+        <div class="gx-fieldset-h">Reviewer</div>
+        <div class="gx-grid-fields">
+          <div class="gx-field"><label class="gx-label" for="testimonial-reviewer-name">Name<span class="gx-req">*</span></label>
+            <input class="gx-input" type="text" id="testimonial-reviewer-name" placeholder="Jane Smith" data-testid="input-testimonial-name"></div>
+          <div class="gx-field"><label class="gx-label" for="testimonial-reviewer-role">Role / Company</label>
+            <input class="gx-input" type="text" id="testimonial-reviewer-role" placeholder="CEO, Acme Corp" data-testid="input-testimonial-role"></div>
+          <div class="gx-field"><label class="gx-label" for="testimonial-rating">Rating</label>
+            <select class="gx-input" id="testimonial-rating" data-testid="select-testimonial-rating">
+              <option value="5">★★★★★ 5 Stars</option>
+              <option value="4">★★★★ 4 Stars</option>
+              <option value="3">★★★ 3 Stars</option>
+              <option value="2">★★ 2 Stars</option>
+              <option value="1">★ 1 Star</option>
+            </select></div>
+          <div class="gx-field"><label class="gx-label" for="testimonial-sort-order">Sort order</label>
+            <input class="gx-input" type="number" id="testimonial-sort-order" placeholder="0" value="0" data-testid="input-testimonial-sort"></div>
+        </div>
+      </div>
+      <div class="gx-fieldset" style="margin-bottom:0">
+        <div class="gx-fieldset-h">Review &amp; photo</div>
+        <div class="gx-field"><label class="gx-label" for="testimonial-content">Review content<span class="gx-req">*</span></label>
+          <textarea class="gx-input" id="testimonial-content" rows="4" placeholder="Write the client's review here..." data-testid="input-testimonial-content"></textarea></div>
+        <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="testimonial-image">Image URL (optional)</label>
+          <div class="gx-media-field">
+            <input class="gx-input" type="url" id="testimonial-image" placeholder="https://..." data-testid="input-testimonial-image">
+            <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'testimonial-image', mediaType:'image'})" data-testid="button-pick-testimonial-image">🖼</button>
+            <button type="button" class="gx-icon-btn" title="Upload" onclick="uploadImageFor('testimonial-image')" data-testid="button-upload-testimonial-image">⤴</button>
+          </div></div>
+      </div>
+    </div>
+
+    <table class="data-table" id="testimonials-table">
+      <thead>
+        <tr>
+          <th style="width:30px;"></th>
+          <th>Image</th>
+          <th>Reviewer</th>
+          <th>Role</th>
+          <th>Rating</th>
+          <th>Content</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="testimonials-tbody">
+        <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>

@@ -1,0 +1,54 @@
+{# admin/tabs/_experiences.html — 'experiences' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-experiences" class="tab-content">
+    <div class="gx-head">
+      <div>
+        <h2 class="gx-title">Experiences</h2>
+        <p class="gx-sub">Manage the curated activity cards on the landing page.</p>
+      </div>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-primary" onclick="showExpForm()" data-testid="button-add-experience">+ Add Experience</button>
+      </div>
+    </div>
+
+    <!-- Experience form — mounted into the gx-drawer by showExpForm()/editExperience() -->
+    <div id="exp-form-panel" style="display:none;">
+      <input type="hidden" id="exp-form-id">
+      <div class="gx-grid-fields">
+        <div class="gx-field col-2"><label class="gx-label" for="exp-name">Name<span class="gx-req">*</span></label>
+          <input class="gx-input" type="text" id="exp-name" placeholder="Private Boat Tours" data-testid="input-exp-name"></div>
+        <div class="gx-field"><label class="gx-label" for="exp-icon">Icon</label>
+          <select class="gx-input" id="exp-icon" data-testid="select-exp-icon">
+            <option value="waves">🌊 Waves</option>
+            <option value="wine">🍷 Wine</option>
+            <option value="utensils">🍴 Utensils</option>
+            <option value="map-pin">📍 Map Pin</option>
+            <option value="star">★ Star</option>
+            <option value="compass">🧭 Compass</option>
+            <option value="anchor">⚓ Anchor</option>
+            <option value="sun">☀ Sun</option>
+          </select></div>
+        <div class="gx-field"><label class="gx-label" for="exp-sort-order">Sort order</label>
+          <input class="gx-input" type="number" id="exp-sort-order" placeholder="1" value="0" data-testid="input-exp-sort"></div>
+      </div>
+      <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="exp-description">Description</label>
+        <textarea class="gx-input" id="exp-description" rows="3" placeholder="A short description of this experience..." data-testid="input-exp-description"></textarea></div>
+    </div>
+
+    <!-- Experiences data table -->
+    <table class="data-table" id="exp-table">
+      <thead>
+        <tr>
+          <th style="width:30px;"></th>
+          <th>Icon</th>
+          <th>Name</th>
+          <th>Description</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="exp-tbody">
+        <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>

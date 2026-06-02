@@ -1,0 +1,299 @@
+{# admin/tabs/_voice.html — 'voice' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-voice" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Voice Agent</h2>
+        <p>Add a proactive voice layer to your site: personalized welcome messages, voice input, and AI voice replies.</p>
+      </div>
+    </div>
+
+    <!-- ============== Section 1: Master toggles + defaults ============== -->
+    <div class="form-card" id="voice-settings-form">
+      <h3 style="margin-top:0;">Voice Settings</h3>
+
+      <div class="form-row">
+        <div class="form-group" style="flex: 1;">
+          <label>
+            <input type="checkbox" id="voice-enabled-intros" data-testid="checkbox-voice-intros">
+            Enable Welcome Intros
+          </label>
+          <p class="help-text" style="margin-top:0.25rem; font-size:0.8rem; color: var(--admin-text-muted);">Plays a personalized voice note when visitors land on your site.</p>
+        </div>
+        <div class="form-group" style="flex: 1;">
+          <label>
+            <input type="checkbox" id="voice-enabled-visitor" data-testid="checkbox-voice-visitor">
+            Enable Visitor Voice Input
+          </label>
+          <p class="help-text" style="margin-top:0.25rem; font-size:0.8rem; color: var(--admin-text-muted);">Adds a microphone button so visitors can speak to the chat. Free (uses browser).</p>
+        </div>
+        <div class="form-group" style="flex: 1;">
+          <label>
+            <input type="checkbox" id="voice-enabled-ai" data-testid="checkbox-voice-ai">
+            Enable AI Voice Replies
+          </label>
+          <p class="help-text" style="margin-top:0.25rem; font-size:0.8rem; color: var(--admin-text-muted);">Speaks every AI reply aloud. Uses paid TTS — every request is logged for billing.</p>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group" style="flex: 2;">
+          <label for="voice-default-voice">Default OpenAI Voice</label>
+          <div style="display:flex; gap:0.5rem; align-items:stretch;">
+            <select id="voice-default-voice" data-testid="select-voice-default" style="flex:1;" onchange="updateOpenAIPreviewButton()">
+              <option value="alloy">Alloy (neutral, balanced)</option>
+              <option value="echo">Echo (warm male)</option>
+              <option value="fable">Fable (British male)</option>
+              <option value="onyx">Onyx (deep male)</option>
+              <option value="nova">Nova (warm female)</option>
+              <option value="shimmer">Shimmer (soft female)</option>
+            </select>
+            <button type="button" class="btn btn-secondary" onclick="previewOpenAIVoice(this)" data-testid="button-preview-openai-voice" title="Listen to a sample of this voice">▶ Listen</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="voice-tts-model">OpenAI TTS Model</label>
+          <select id="voice-tts-model" data-testid="select-voice-model">
+            <option value="tts-1">tts-1 (faster, lower cost)</option>
+            <option value="tts-1-hd">tts-1-hd (higher quality)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="voice-autoplay-strategy">Intro Autoplay</label>
+          <select id="voice-autoplay-strategy" data-testid="select-voice-autoplay">
+            <option value="gesture">Show "Tap to listen" card</option>
+            <option value="auto">Try to autoplay (fallback to card)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Hidden audio player shared by all "▶ Listen" preview buttons -->
+      <audio id="voice-preview-player" preload="none" style="display:none;"></audio>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="saveVoiceSettings(this)" data-testid="button-save-voice-settings">Save Voice Settings</button>
+      </div>
+    </div>
+
+    <!-- ============== Section 1b: Multi-provider configuration ============== -->
+    <!-- Lets the admin pick between free defaults (OpenAI TTS, browser STT)  -->
+    <!-- and premium upgrades (ElevenLabs TTS, Whisper STT). Premium options  -->
+    <!-- are gated by the master "Premium features" toggle so a single click  -->
+    <!-- can turn off all paid features for a client whose trial expired.     -->
+    <div class="form-card" id="voice-provider-form" style="margin-top: 1rem;">
+      <h3 style="margin-top:0;">Voice Providers <span class="badge" style="background: rgba(201,169,110,0.15); color: var(--admin-accent, #c9a96e); padding: 0.15rem 0.5rem; border-radius: 6px; font-size: 0.7rem; vertical-align: middle;">Premium</span></h3>
+      <p class="help-text" style="margin-top:0; color: var(--admin-text-muted);">Pick which AI providers power your voice features. Premium providers (ElevenLabs voices, Whisper transcription) deliver noticeably higher quality but require API keys and bill the client per use.</p>
+
+      <div class="form-row">
+        <div class="form-group" style="flex: 1;">
+          <label>
+            <input type="checkbox" id="voice-premium-enabled" data-testid="checkbox-voice-premium" onchange="updatePremiumGating()">
+            <strong>Enable Premium Voice Features</strong>
+          </label>
+          <p class="help-text" style="margin-top:0.25rem; font-size:0.8rem; color: var(--admin-text-muted);">Master switch for ElevenLabs and Whisper. Turn off to instantly disable all paid voice features without losing your provider selections below.</p>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group" style="flex: 1;">
+          <label for="voice-tts-provider">TTS Provider <span id="status-tts-provider" class="provider-status"></span></label>
+          <select id="voice-tts-provider" data-testid="select-tts-provider" onchange="onTtsProviderChange()">
+            <option value="openai">OpenAI (standard quality, low cost)</option>
+            <option value="elevenlabs">ElevenLabs (premium, ultra-realistic)</option>
+          </select>
+          <p class="help-text" id="tts-provider-hint" style="margin-top:0.25rem; font-size:0.8rem; color: var(--admin-text-muted);"></p>
+        </div>
+        <div class="form-group" style="flex: 1;">
+          <label for="voice-stt-provider">STT Provider <span id="status-stt-provider" class="provider-status"></span></label>
+          <select id="voice-stt-provider" data-testid="select-stt-provider" onchange="onSttProviderChange()">
+            <option value="webspeech">Browser (Web Speech API — free)</option>
+            <option value="whisper">OpenAI Whisper (premium, higher accuracy)</option>
+          </select>
+          <p class="help-text" id="stt-provider-hint" style="margin-top:0.25rem; font-size:0.8rem; color: var(--admin-text-muted);"></p>
+        </div>
+      </div>
+
+      <!-- ElevenLabs voice picker — only visible when ElevenLabs is selected.
+           Layout: voice + model on one row (equal grid cells), then a small
+           action bar with Listen + Refresh below. We put the buttons on
+           their own line because long ElevenLabs voice names ("Sarah —
+           Mature, Reassuring, Confident — american, young, professional…")
+           overflow the dropdown and would push inline buttons out of
+           alignment with the model column. -->
+      <div id="elevenlabs-config" style="display:none; padding: 1rem; border-radius: 8px; background: rgba(201,169,110,0.05); border: 1px solid rgba(201,169,110,0.2); margin-top: 0.5rem;">
+        <div class="form-row" style="margin-bottom: 0.75rem;">
+          <div class="form-group">
+            <label for="voice-elevenlabs-voice">ElevenLabs Voice</label>
+            <select id="voice-elevenlabs-voice" data-testid="select-elevenlabs-voice" style="min-width:0; width:100%;">
+              <option value="">— Loading voices…</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="voice-elevenlabs-model">ElevenLabs Model</label>
+            <select id="voice-elevenlabs-model" data-testid="select-elevenlabs-model" style="min-width:0; width:100%;">
+              <option value="eleven_turbo_v2_5">Turbo v2.5 (fast, low latency)</option>
+              <option value="eleven_multilingual_v2">Multilingual v2 (29 languages)</option>
+              <option value="eleven_monolingual_v1">Monolingual v1 (legacy)</option>
+            </select>
+          </div>
+        </div>
+        <!-- Action bar: preview + refresh, kept on their own row so they
+             never get squashed by long voice names. flex-wrap so they
+             stack on narrow viewports. -->
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center; margin-bottom: 0.5rem;">
+          <button type="button" class="btn btn-secondary" onclick="previewElevenLabsVoice(this)" data-testid="button-preview-elevenlabs" title="Listen to a sample of this voice">▶ Listen</button>
+          <button type="button" class="btn btn-secondary" onclick="loadElevenLabsVoices(true, this)" data-testid="button-refresh-elevenlabs" title="Refresh voice list from your ElevenLabs account">↻ Refresh voices</button>
+        </div>
+        <p class="help-text" style="margin: 0; font-size: 0.8rem; color: var(--admin-text-muted);" id="elevenlabs-status-text">Loading…</p>
+      </div>
+    </div>
+
+    <!-- ============== Section 2: Voice intros library ============== -->
+    <div style="margin-top: 1.5rem;">
+      <div class="section-header-admin">
+        <div>
+          <h3>Welcome Intros</h3>
+          <p>Pre-record different welcome messages for different traffic sources. The intro with the most matching filters wins (ties broken by priority).</p>
+          <p style="font-size:.85rem; opacity:.75; margin-top:.25rem;">
+            Intros only play once per browser tab so visitors aren't pestered on every reload.
+            Use the <strong>Test on site</strong> button to force a replay for QA.
+          </p>
+        </div>
+        <div style="display:flex; gap:.5rem;">
+          <button class="btn btn-secondary"
+                  onclick="window.open('/?intro=force', '_blank')"
+                  data-testid="button-test-voice-intro">▶ Test on site</button>
+          <button class="btn btn-primary" onclick="showAddVoiceIntroForm()" data-testid="button-add-voice-intro">+ New Intro</button>
+        </div>
+      </div>
+
+      <!-- Inline create / edit form. Hidden until "+ New Intro" is clicked. -->
+      <div id="voice-intro-form" class="form-card" style="display:none; margin-bottom: 1rem;">
+        <input type="hidden" id="voice-intro-id" value="">
+
+        <div class="form-row">
+          <div class="form-group" style="flex: 2;">
+            <label for="voice-intro-name">Intro Name (internal)</label>
+            <input type="text" id="voice-intro-name" placeholder="e.g. Google Ads visitors" data-testid="input-voice-intro-name">
+          </div>
+          <div class="form-group">
+            <label for="voice-intro-voice" id="voice-intro-voice-label">Voice</label>
+            <div id="voice-intro-provider-banner"
+                 style="margin-bottom:.5rem; padding:.5rem .75rem; border-radius:6px;
+                        background:rgba(255,255,255,.05); font-size:.85rem;
+                        line-height:1.4; display:none;"
+                 data-testid="banner-voice-intro-provider"></div>
+            <select id="voice-intro-voice" data-testid="select-voice-intro-voice">
+              <option value="alloy">Alloy</option>
+              <option value="echo">Echo</option>
+              <option value="fable">Fable</option>
+              <option value="onyx">Onyx</option>
+              <option value="nova">Nova</option>
+              <option value="shimmer">Shimmer</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex: 0 0 100px;">
+            <label for="voice-intro-priority">Priority</label>
+            <input type="number" id="voice-intro-priority" value="0" data-testid="input-voice-intro-priority">
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group" style="flex: 1;">
+            <label for="voice-intro-message">Message Text</label>
+            <textarea id="voice-intro-message" rows="3" placeholder="Welcome! Thanks for visiting from Google. I'm here to help you find what you're looking for." data-testid="textarea-voice-intro-message"></textarea>
+            <p class="help-text" style="margin-top:0.25rem; font-size:0.8rem; color: var(--admin-text-muted);">Click "Generate Audio" after saving to record this in the chosen voice.</p>
+          </div>
+        </div>
+
+        <!-- UTM / referrer targeting filters. Empty = match any visitor. -->
+        <div class="form-row">
+          <div class="form-group">
+            <label for="voice-intro-utm-source">UTM Source filter</label>
+            <input type="text" id="voice-intro-utm-source" placeholder="e.g. google" data-testid="input-voice-intro-utm-source">
+          </div>
+          <div class="form-group">
+            <label for="voice-intro-utm-medium">UTM Medium filter</label>
+            <input type="text" id="voice-intro-utm-medium" placeholder="e.g. cpc" data-testid="input-voice-intro-utm-medium">
+          </div>
+          <div class="form-group">
+            <label for="voice-intro-utm-campaign">UTM Campaign filter</label>
+            <input type="text" id="voice-intro-utm-campaign" placeholder="e.g. spring_sale" data-testid="input-voice-intro-utm-campaign">
+          </div>
+          <div class="form-group">
+            <label for="voice-intro-referrer">Referrer contains</label>
+            <input type="text" id="voice-intro-referrer" placeholder="e.g. instagram.com" data-testid="input-voice-intro-referrer">
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group" style="flex: 0 0 auto;">
+            <label>
+              <input type="checkbox" id="voice-intro-enabled" checked data-testid="checkbox-voice-intro-enabled">
+              Enabled
+            </label>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn btn-secondary" onclick="hideVoiceIntroForm()" data-testid="button-cancel-voice-intro">Cancel</button>
+          <button class="btn btn-primary" onclick="saveVoiceIntro()" data-testid="button-save-voice-intro">Save Intro</button>
+        </div>
+      </div>
+
+      <table class="data-table" id="voice-intros-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Voice</th>
+            <th>Targeting</th>
+            <th>Audio</th>
+            <th>Plays</th>
+            <th>Pri</th>
+            <th>On</th>
+            <th style="width:200px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="voice-intros-body" data-testid="voice-intros-body">
+          <tr><td colspan="8" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ============== Section 3: Usage stats (for billing) ============== -->
+    <div style="margin-top: 1.5rem;">
+      <div class="section-header-admin">
+        <div>
+          <h3>Usage Stats</h3>
+          <p>Voice generation usage. Only "tts_generate" requests cost money — cached hits and visitor mic input are free.</p>
+        </div>
+        <button class="btn btn-secondary" onclick="loadVoiceUsage()" data-testid="button-refresh-voice-usage">Refresh</button>
+      </div>
+
+      <div id="voice-usage-stats" class="gx-stats">
+        <div class="gx-stat"><div class="gx-stat-label">Today (paid)</div>
+          <div class="gx-stat-value" id="voice-stat-today-req" style="font-size:1.25rem;">0 requests</div>
+          <div id="voice-stat-today-chars" style="color:var(--admin-text-muted); font-size:0.8rem; margin-top:.2rem;">0 characters</div></div>
+        <div class="gx-stat"><div class="gx-stat-label">Last 7 Days</div>
+          <div class="gx-stat-value" id="voice-stat-week-req" style="font-size:1.25rem;">0 requests</div>
+          <div id="voice-stat-week-chars" style="color:var(--admin-text-muted); font-size:0.8rem; margin-top:.2rem;">0 characters</div></div>
+        <div class="gx-stat"><div class="gx-stat-label">Last 30 Days</div>
+          <div class="gx-stat-value" id="voice-stat-month-req" style="font-size:1.25rem;">0 requests</div>
+          <div id="voice-stat-month-chars" style="color:var(--admin-text-muted); font-size:0.8rem; margin-top:.2rem;">0 characters</div></div>
+      </div>
+
+      <table class="data-table" style="margin-top: 1rem;">
+        <thead>
+          <tr>
+            <th>Feature</th>
+            <th>Requests (30d)</th>
+            <th>Characters (30d)</th>
+          </tr>
+        </thead>
+        <tbody id="voice-usage-breakdown" data-testid="voice-usage-breakdown">
+          <tr><td colspan="3" class="empty-state">No usage yet.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>

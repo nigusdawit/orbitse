@@ -1,0 +1,15 @@
+{# admin/tabs/_skills.html — 'skills' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-skills" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>AI Skills Registry</h2>
+        <p>Each skill is a tool the AI can call mid-conversation. Disable a skill to remove it from the AI's toolbox. Builtin skills are defined in code; custom skills you add here return a canned answer when called.</p>
+      </div>
+      <button class="btn btn-primary" onclick="openSkillEditor(null)" data-testid="button-new-skill">+ Add custom skill</button>
+    </div>
+    <div id="skills-list" data-testid="list-skills" style="display:grid;gap:8px;margin-bottom:24px;"></div>
+    <div class="section-header-admin"><div><h3>Recent Skill Calls</h3><p>The last 100 times the AI used a skill.</p></div></div>
+    <div id="skills-usage" data-testid="list-skills-usage" style="font-family:monospace;font-size:12px;max-height:340px;overflow:auto;border:1px solid var(--admin-border);border-radius:8px;padding:10px;background:var(--admin-surface);color:var(--admin-text);"></div>
+  </div>

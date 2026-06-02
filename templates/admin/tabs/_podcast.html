@@ -1,0 +1,47 @@
+{# admin/tabs/_podcast.html — 'podcast' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-podcast" class="tab-content">
+    <div class="gx-head">
+      <div>
+        <h2 class="gx-title">Podcast Episodes</h2>
+        <p class="gx-sub">Add audio episodes that play on the public site. Enable the "Podcast" section in Page Layout to show it.</p>
+      </div>
+      <div class="gx-actions">
+        <button class="gx-btn gx-btn-primary" onclick="showPodcastForm()" data-testid="button-new-podcast">+ New Episode</button>
+      </div>
+    </div>
+
+    <div id="podcast-form-panel" style="display:none;">
+      <input type="hidden" id="podcast-form-id">
+      <div class="gx-grid-fields">
+        <div class="gx-field col-2"><label class="gx-label" for="podcast-title">Title<span class="gx-req">*</span></label>
+          <input class="gx-input" type="text" id="podcast-title" data-testid="input-podcast-title"></div>
+        <div class="gx-field"><label class="gx-label" for="podcast-episode-number">Episode #</label>
+          <input class="gx-input" type="number" id="podcast-episode-number" data-testid="input-podcast-number"></div>
+        <div class="gx-field"><label class="gx-label" for="podcast-sort-order">Sort order</label>
+          <input class="gx-input" type="number" id="podcast-sort-order" value="0" data-testid="input-podcast-sort"></div>
+      </div>
+      <div class="gx-field"><label class="gx-label" for="podcast-audio">Audio URL <span class="gx-hint">(mp3 / wav / ogg)</span><span class="gx-req">*</span></label>
+        <div class="gx-media-field">
+          <input class="gx-input" type="url" id="podcast-audio" placeholder="/uploads/episode.mp3" data-testid="input-podcast-audio">
+          <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'podcast-audio', mediaType:'audio'})" data-testid="button-pick-podcast-audio">🎵</button>
+        </div></div>
+      <div class="gx-field"><label class="gx-label" for="podcast-cover">Cover image URL</label>
+        <div class="gx-media-field">
+          <input class="gx-input" type="url" id="podcast-cover" placeholder="https://…" data-testid="input-podcast-cover">
+          <button type="button" class="gx-icon-btn" title="Pick from library" onclick="openMediaPicker({targetInputId:'podcast-cover', mediaType:'image'})" data-testid="button-pick-podcast-cover">🖼</button>
+        </div></div>
+      <div class="gx-field" style="margin-bottom:0"><label class="gx-label" for="podcast-description">Description</label>
+        <textarea class="gx-input" id="podcast-description" rows="3" data-testid="input-podcast-description"></textarea></div>
+    </div>
+
+    <table class="data-table" id="podcast-table">
+      <thead>
+        <tr><th>Cover</th><th>#</th><th>Title</th><th>Audio</th><th>Sort</th><th></th></tr>
+      </thead>
+      <tbody id="podcast-tbody">
+        <tr><td colspan="6" style="text-align:center; color:var(--admin-text-muted); padding:1.5rem;">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>

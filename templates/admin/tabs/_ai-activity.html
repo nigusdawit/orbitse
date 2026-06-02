@@ -1,0 +1,25 @@
+{# admin/tabs/_ai-activity.html — 'ai-activity' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-ai-activity" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>AI Activity</h2>
+        <p style="opacity:.7;margin-top:4px;">
+          Every recent Admin AI turn — model, rounds, tools, tokens, cost,
+          duration, status, and the (redacted) question/answer. Recording can be
+          turned off in AI Control.
+        </p>
+      </div>
+    </div>
+    <div style="margin-bottom:10px;">
+      <label style="font-size:13px;opacity:.8;margin-right:6px;">Surface:</label>
+      <select id="ai-activity-surface" onchange="loadAiActivity()" data-testid="ai-activity-surface-filter">
+        <option value="">All</option>
+        <option value="admin">Admin AI</option>
+        <option value="visitor">Visitor AI</option>
+      </select>
+    </div>
+    <div id="ai-activity-stats" style="margin-bottom:12px;opacity:.85;font-size:13px;"></div>
+    <div id="ai-activity-list"><p class="empty-state">Loading activity…</p></div>
+  </div>

@@ -1,0 +1,18 @@
+{# admin/tabs/_visitor-personas.html — 'visitor-personas' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-visitor-personas" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Visitor Personas</h2>
+        <p style="opacity:.7;margin-top:4px;">
+          Specialist agents (e.g. Sales, Support, Booking) the concierge routes
+          each visitor turn to. Each persona augments the prompt, can limit which
+          tools it may use, and can pin a model. Enable routing in
+          <strong>AI Control → Visitor Personas</strong>. Off = one general agent.
+        </p>
+      </div>
+      <button class="btn-primary" onclick="newPersona()" data-testid="persona-new">+ New persona</button>
+    </div>
+    <div id="personas-list"><p class="empty-state">Loading personas…</p></div>
+  </div>

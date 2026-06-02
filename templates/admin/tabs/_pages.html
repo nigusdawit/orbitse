@@ -1,0 +1,68 @@
+{# admin/tabs/_pages.html — 'pages' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-pages" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Saved Pages</h2>
+        <p>Create extra pages reachable at <code>/p/&lt;slug&gt;</code>. Each page reuses the sections you've already set up on the Page Layout tab. Use the per-section "Menu link target" field there to surface a page in the in-page Section Menu.</p>
+      </div>
+      <button class="btn btn-primary" onclick="showAddPageForm()" data-testid="button-add-page">+ New Page</button>
+    </div>
+
+    <div id="add-page-form-panel" class="form-panel" style="display:none;">
+      <h3>New Page</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="new-page-title">Title</label>
+          <input type="text" id="new-page-title" placeholder="About Us" oninput="autoGeneratePageSlug()" data-testid="input-page-title">
+        </div>
+        <div class="form-group">
+          <label for="new-page-slug">URL slug</label>
+          <input type="text" id="new-page-slug" placeholder="about-us" data-testid="input-page-slug">
+          <p style="color:var(--admin-text-muted); font-size:0.78rem; margin-top:0.25rem;">Public URL will be <code>/p/&lt;slug&gt;</code>. Lowercase letters, numbers and hyphens only.</p>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="new-page-meta">Meta description (SEO)</label>
+        <textarea id="new-page-meta" rows="2" placeholder="Short summary used in search engine results & social shares." data-testid="input-page-meta"></textarea>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="hideAddPageForm()" data-testid="button-cancel-page">Cancel</button>
+        <button class="btn btn-primary" onclick="createPage()" data-testid="button-create-page">Create Page</button>
+      </div>
+    </div>
+
+    <table class="data-table" id="pages-table">
+      <thead>
+        <tr>
+          <th>Title</th>
+          <th>URL</th>
+          <th>Sections</th>
+          <th>Enabled</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="pages-tbody">
+        <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+
+    <!-- Per-page section-assignment editor. Hidden until the admin
+         clicks "Sections" on a row. The list is built from the same
+         /admin/api/page-sections feed as the Page Layout tab — admins
+         tick the sections they want, drag to reorder, then Save which
+         PUTs the new list to /admin/api/pages/<id>/sections. -->
+    <div id="page-sections-editor" class="form-panel" style="display:none; margin-top:1.5rem;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+        <h3 id="page-sections-editor-title">Page Sections</h3>
+        <div style="display:flex; gap:0.5rem;">
+          <button class="btn btn-primary btn-sm" onclick="savePageSections()" data-testid="button-save-page-sections">Save Order</button>
+          <button class="btn btn-secondary btn-sm" onclick="closePageSectionsEditor()" data-testid="button-close-page-sections">Close</button>
+        </div>
+      </div>
+      <p style="color:var(--admin-text-muted); font-size:0.85rem; margin-bottom:0.75rem;">Tick the sections you want on this page. Drag the handles to reorder. The page renders with the same nav and footer as your homepage.</p>
+      <input type="hidden" id="page-sections-editor-page-id">
+      <ul id="page-sections-editor-list" class="data-table" style="list-style:none; padding:0; margin:0;"></ul>
+    </div>
+  </div>

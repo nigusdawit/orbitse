@@ -1,0 +1,46 @@
+{# admin/tabs/_chat-history.html — 'chat-history' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-chat-history" class="tab-content">
+    <div class="gx-head">
+      <div>
+        <h2 class="gx-title">Chat History</h2>
+        <p class="gx-sub">View AI assistant conversations and analytics.</p>
+      </div>
+    </div>
+
+    <div id="chat-stats" class="gx-stats">
+      <div class="gx-stat"><div class="gx-stat-label">Total Conversations</div>
+        <div class="gx-stat-value" id="stat-total-conversations">0</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Messages Today</div>
+        <div class="gx-stat-value" id="stat-messages-today">0</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Avg Messages / Conversation</div>
+        <div class="gx-stat-value" id="stat-avg-messages">0</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Unique Visitors</div>
+        <div class="gx-stat-value" id="stat-unique-visitors">0</div></div>
+    </div>
+
+    <table class="data-table" id="chat-history-table">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Messages</th>
+          <th>Visitor</th>
+          <th>Device</th>
+          <th>First Message</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="chat-history-tbody">
+        <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+
+    <div id="chat-detail-panel" class="form-panel" style="display:none; margin-top: 1.5rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <h3 id="chat-detail-title">Conversation</h3>
+        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('chat-detail-panel').style.display='none'" data-testid="button-close-chat-detail">Close</button>
+      </div>
+      <div id="chat-detail-messages" style="max-height: 400px; overflow-y: auto;"></div>
+    </div>
+  </div>

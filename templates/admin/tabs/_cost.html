@@ -1,0 +1,111 @@
+{# admin/tabs/_cost.html — 'cost' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-cost" class="tab-content">
+    <div class="content-header">
+      <h2>Cost</h2>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <span id="cost-updated" style="font-size:0.8125rem; color:var(--admin-text-muted);"></span>
+        <button class="btn-secondary" onclick="loadCost()" data-testid="button-cost-refresh">Refresh</button>
+      </div>
+    </div>
+
+    <!-- Headline KPI cards: MTD total, by-channel split, cap progress,
+         today / week / projected EOM -->
+    <div id="cost-summary-cards" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem; margin-bottom:0.5rem;">
+      <div class="empty-state" style="padding:1rem; grid-column:1/-1;">Loading cost summary…</div>
+    </div>
+    <!-- Top-spending visitors mini-table; populated by loadCostSummary -->
+    <div id="cost-top-visitors" style="margin-bottom:1rem;"></div>
+
+    <!-- Spend-over-time chart -->
+    <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:1rem 1.25rem; margin-bottom:1rem;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+        <div style="font-weight:600;">Spend over time</div>
+        <select id="cost-series-days" onchange="loadCostSeries()" data-testid="select-cost-days"
+                style="background:var(--admin-card); border:1px solid var(--admin-border); color:var(--admin-text); padding:0.35rem 0.5rem; border-radius:6px;">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="60">Last 60 days</option>
+          <option value="90">Last 90 days</option>
+        </select>
+      </div>
+      <div style="position:relative; height:240px;">
+        <canvas id="cost-series-chart" data-testid="chart-cost-series"></canvas>
+      </div>
+    </div>
+
+    <!-- Two-column: by-surface + by-model breakdowns -->
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(360px, 1fr)); gap:0.75rem; margin-bottom:1rem;">
+      <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:0.5rem 0;">
+        <div style="padding:0.75rem 1.25rem; border-bottom:1px solid var(--admin-border); font-weight:600;">By surface (this month)</div>
+        <div id="cost-by-surface" data-testid="list-cost-by-surface">
+          <div class="empty-state" style="padding:1.5rem;">Loading…</div>
+        </div>
+      </div>
+      <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:0.5rem 0;">
+        <div style="padding:0.75rem 1.25rem; border-bottom:1px solid var(--admin-border); font-weight:600;">By model (this month)</div>
+        <div id="cost-by-model" data-testid="list-cost-by-model">
+          <div class="empty-state" style="padding:1.5rem;">Loading…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Monthly cap config -->
+    <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:1rem 1.25rem; margin-bottom:1rem;">
+      <div style="font-weight:600; margin-bottom:0.25rem;">Monthly cost cap</div>
+      <div style="font-size:0.8125rem; color:var(--admin-text-muted); margin-bottom:0.75rem;">
+        When MTD spend reaches the warn threshold an email goes out. When it reaches the cap the chosen behaviour kicks in.
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem;">
+        <label style="display:flex; flex-direction:column; gap:0.25rem; font-size:0.875rem;">
+          <span>Cap (USD / month)</span>
+          <input type="number" min="0" step="1" id="cost-cap-amount" data-testid="input-cap-amount"
+                 placeholder="No cap"
+                 style="background:var(--admin-bg); border:1px solid var(--admin-border); color:var(--admin-text); padding:0.45rem 0.6rem; border-radius:6px;">
+        </label>
+        <label style="display:flex; flex-direction:column; gap:0.25rem; font-size:0.875rem;">
+          <span>Warn at %</span>
+          <input type="number" min="1" max="100" step="1" id="cost-cap-warn" value="80" data-testid="input-cap-warn"
+                 style="background:var(--admin-bg); border:1px solid var(--admin-border); color:var(--admin-text); padding:0.45rem 0.6rem; border-radius:6px;">
+        </label>
+        <label style="display:flex; flex-direction:column; gap:0.25rem; font-size:0.875rem;">
+          <span>Behaviour at cap</span>
+          <select id="cost-cap-behavior" data-testid="select-cap-behavior"
+                  style="background:var(--admin-bg); border:1px solid var(--admin-border); color:var(--admin-text); padding:0.45rem 0.6rem; border-radius:6px;">
+            <option value="alert_only">Alert only (don't block)</option>
+            <option value="throttle">Throttle (slow new requests)</option>
+            <option value="strict_block">Strict block (return 402)</option>
+          </select>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:0.25rem; font-size:0.875rem;">
+          <span>Alert email</span>
+          <input type="email" id="cost-cap-alert-email" data-testid="input-cap-alert-email"
+                 placeholder="alerts@example.com"
+                 style="background:var(--admin-bg); border:1px solid var(--admin-border); color:var(--admin-text); padding:0.45rem 0.6rem; border-radius:6px;">
+        </label>
+        <label style="display:flex; flex-direction:column; gap:0.25rem; font-size:0.875rem;">
+          <span>Weekly digest email</span>
+          <input type="email" id="cost-cap-digest-email" data-testid="input-cap-digest-email"
+                 placeholder="(uses alert email if blank)"
+                 style="background:var(--admin-bg); border:1px solid var(--admin-border); color:var(--admin-text); padding:0.45rem 0.6rem; border-radius:6px;">
+        </label>
+      </div>
+      <div style="margin-top:0.75rem; display:flex; gap:0.5rem;">
+        <button class="btn-primary" onclick="saveCostCap()" data-testid="button-save-cap">Save cap</button>
+      </div>
+    </div>
+
+    <!-- Pricing table — admin-editable model_prices -->
+    <div style="background:var(--admin-card); border:1px solid var(--admin-border); border-radius:10px; padding:0.5rem 0;">
+      <div style="padding:0.75rem 1.25rem; border-bottom:1px solid var(--admin-border);">
+        <div style="font-weight:600;">Model pricing</div>
+        <div style="font-size:0.8125rem; color:var(--admin-text-muted);">
+          Edits affect future events only. Past events keep the unit price stamped at write time.
+        </div>
+      </div>
+      <div id="cost-prices-list" data-testid="list-cost-prices">
+        <div class="empty-state" style="padding:1.5rem;">Loading prices…</div>
+      </div>
+    </div>
+  </div>

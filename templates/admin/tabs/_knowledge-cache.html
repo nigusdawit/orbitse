@@ -1,0 +1,87 @@
+{# admin/tabs/_knowledge-cache.html — 'knowledge-cache' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-knowledge-cache" class="tab-content">
+    <div class="gx-head">
+      <div>
+        <h2 class="gx-title">Knowledge Cache</h2>
+        <p class="gx-sub">Reuse past concierge answers for repeat questions — saves an LLM completion AND an ElevenLabs voice render every time it hits.</p>
+      </div>
+    </div>
+
+    <!-- Stats banner — counters refreshed every time the tab opens. -->
+    <div id="kc-stats" class="gx-stats">
+      <div class="gx-stat"><div class="gx-stat-label">Cached Entries</div>
+        <div class="gx-stat-value" id="kc-stat-entries" data-testid="text-kc-entries">—</div>
+        <div id="kc-stat-entries-detail" style="color:var(--admin-text-muted); font-size:0.75rem;">&nbsp;</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Lifetime Hits</div>
+        <div class="gx-stat-value" id="kc-stat-hits" data-testid="text-kc-hits">—</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Tokens Saved (est.)</div>
+        <div class="gx-stat-value" id="kc-stat-tokens" data-testid="text-kc-tokens">—</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">TTS Chars Saved</div>
+        <div class="gx-stat-value" id="kc-stat-tts" data-testid="text-kc-tts">—</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Content Version</div>
+        <div class="gx-stat-value" id="kc-stat-version" data-testid="text-kc-version">—</div></div>
+    </div>
+
+    <!-- Settings: enable + similarity threshold. -->
+    <div class="form-panel" style="margin-top: 1.5rem;">
+      <h3 style="margin: 0 0 1rem 0;">Cache Settings</h3>
+      <div style="display: flex; gap: 2rem; align-items: center; flex-wrap: wrap;">
+        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+          <input type="checkbox" id="kc-enabled" data-testid="checkbox-kc-enabled" onchange="saveKnowledgeCacheSettings()" />
+          <span>Enable semantic cache</span>
+        </label>
+        <div style="display: flex; align-items: center; gap: 0.75rem; min-width: 320px;">
+          <label for="kc-threshold" style="white-space: nowrap;">Similarity threshold</label>
+          <input type="range" id="kc-threshold" min="0.80" max="0.99" step="0.01" value="0.93" data-testid="input-kc-threshold" oninput="document.getElementById('kc-threshold-val').textContent = parseFloat(this.value).toFixed(2)" onchange="saveKnowledgeCacheSettings()" style="flex: 1;" />
+          <span id="kc-threshold-val" data-testid="text-kc-threshold-val" style="min-width: 3em; font-variant-numeric: tabular-nums;">0.93</span>
+        </div>
+      </div>
+      <p style="color: var(--admin-text-muted); font-size: 0.85rem; margin: 0.75rem 0 0 0;">
+        Higher threshold = stricter match, fewer hits but safer answers. 0.93 is a sane default. Below 0.85 risks serving an unrelated answer.
+      </p>
+    </div>
+
+    <!-- Bulk actions row. -->
+    <div class="form-panel" style="margin-top: 1.5rem;">
+      <h3 style="margin: 0 0 1rem 0;">Maintenance</h3>
+      <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+        <button class="btn btn-secondary" onclick="kcBackfill()" data-testid="button-kc-backfill">Backfill from Chat History</button>
+        <button class="btn btn-secondary" onclick="kcBumpVersion()" data-testid="button-kc-bump-version">Invalidate All (bump version)</button>
+        <button class="btn btn-secondary" onclick="kcPurge('stale')" data-testid="button-kc-purge-stale">Purge Stale Entries</button>
+        <button class="btn btn-danger" onclick="kcPurge('all')" data-testid="button-kc-purge-all">Purge ALL Entries</button>
+        <button class="btn btn-secondary" onclick="loadKnowledgeCache()" data-testid="button-kc-refresh" style="margin-left: auto;">Refresh</button>
+      </div>
+      <p style="color: var(--admin-text-muted); font-size: 0.85rem; margin: 0.75rem 0 0 0;">
+        Backfill walks recent conversations and seeds the cache with clean Q&A pairs. Stale = entries older than the current content version (auto-bumped when you edit the system prompt). Purge ALL is destructive — use after major business changes.
+      </p>
+    </div>
+
+    <!-- Top entries table. -->
+    <div class="form-panel" style="margin-top: 1.5rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <h3 style="margin: 0;">Top Cached Q&amp;A</h3>
+        <select id="kc-sort" onchange="loadKnowledgeCacheEntries()" data-testid="select-kc-sort" style="padding: 0.4rem;">
+          <option value="hits">Most hits</option>
+          <option value="recent">Most recent</option>
+          <option value="stale">Oldest hits first</option>
+        </select>
+      </div>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Question</th>
+            <th>Response excerpt</th>
+            <th>Hits</th>
+            <th>Last hit</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="kc-entries-tbody">
+          <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>

@@ -6,11 +6,23 @@ pin the UI wiring: the super-admin dashboard renders the new tab buttons,
 panels, and JS, and a CLIENT-role session never sees the super-admin-only tabs.
 """
 import os
+import pathlib
 
 import app
 
 ADMIN_PW = os.environ.get("ADMIN_PASSWORD", "admin")
 CLIENT_PW = os.environ.get("CLIENT_PASSWORD", "")
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+def _admin_js_sources():
+    """Concatenate the extracted admin JS bundles. Task 076 moved the inline
+    <script> blocks into public/admin/*.js (loaded via <script src>), so handler
+    and API-call wiring no longer appears inline in the rendered dashboard HTML."""
+    js_dir = ROOT / "public" / "admin"
+    if not js_dir.is_dir():
+        return ""
+    return "\n".join(p.read_text(encoding="utf-8") for p in sorted(js_dir.glob("*.js")))
 
 SUPERADMIN_MARKERS = [
     "switchTab('offers'", "loadOffers()", 'id="tab-offers"',
@@ -31,8 +43,12 @@ def _login(pw):
 
 
 def test_super_admin_sees_all_phase6_tabs():
-    html = _login(ADMIN_PW).get("/admin").get_data(as_text=True)
-    missing = [m for m in SUPERADMIN_MARKERS if m not in html]
+    # The dashboard renders the tab buttons + panels; the handlers and API calls now
+    # live in the extracted public/admin/*.js bundles (task 076 de-monolith), loaded
+    # via <script src>. Check both the rendered page and the JS it pulls in.
+    rendered = _login(ADMIN_PW).get("/admin").get_data(as_text=True)
+    haystack = rendered + _admin_js_sources()
+    missing = [m for m in SUPERADMIN_MARKERS if m not in haystack]
     assert not missing, f"missing from super-admin dashboard: {missing}"
 
 

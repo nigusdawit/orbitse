@@ -11,6 +11,21 @@ CLIENT_PW = os.environ.get("CLIENT_PASSWORD", "")
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
+def _admin_ui_source():
+    """The admin UI as one corpus: the slim shell, every tab partial, and the
+    extracted JS bundles. Task 076 split the monolithic dashboard.html into these
+    files, so wiring that used to be inline now lives across them — assert against
+    the whole corpus rather than a single file."""
+    parts = [(ROOT / "templates" / "admin" / "dashboard.html").read_text(encoding="utf-8")]
+    tabs = ROOT / "templates" / "admin" / "tabs"
+    if tabs.is_dir():
+        parts += [p.read_text(encoding="utf-8") for p in sorted(tabs.glob("*.html"))]
+    js_dir = ROOT / "public" / "admin"
+    if js_dir.is_dir():
+        parts += [p.read_text(encoding="utf-8") for p in sorted(js_dir.glob("*.js"))]
+    return "\n".join(parts)
+
+
 def _sa():
     c = app.app.test_client()
     c.post("/admin/login", data={"password": ADMIN_PW})
@@ -37,7 +52,7 @@ def test_schema_route_client_blocked():
 
 
 def test_template_wires_datahub_tab():
-    html = (ROOT / "templates" / "admin" / "dashboard.html").read_text(encoding="utf-8")
+    html = _admin_ui_source()
     assert "switchTab('datahub'" in html
     assert 'id="tab-datahub"' in html
     assert "function loadDatahub()" in html
@@ -52,7 +67,7 @@ def test_template_wires_datahub_tab():
 def test_connect_button_uses_modal_not_prompt():
     """The 'Connect a database' flow must open the real Data Connections modal,
     not window.prompt() (which embedded/preview browsers block)."""
-    html = (ROOT / "templates" / "admin" / "dashboard.html").read_text(encoding="utf-8")
+    html = _admin_ui_source()
     # datahubAddConnection opens the existing modal …
     assert "function datahubAddConnection" in html
     assert "openConnectionsModal()" in html

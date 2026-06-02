@@ -1,0 +1,38 @@
+{# admin/tabs/_dashboards.html — 'dashboards' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-dashboards" class="tab-content">
+    <div id="dashboards-list-view">
+      <div class="content-header">
+        <h2>Custom Dashboards</h2>
+        <div style="display:flex; gap:0.5rem;">
+          <button class="btn-secondary" onclick="openConnectionsModal()" data-testid="button-manage-connections">Data Connections</button>
+          <button class="btn-primary" onclick="openCreateDashboardModal()" data-testid="button-create-dashboard">New Dashboard</button>
+        </div>
+      </div>
+
+      <p style="color: var(--muted-fg, #888); max-width: 60ch;">
+        Build your own dashboards with cards and charts. Pull numbers from this
+        site's built-in metrics, your own outside database, or a REST endpoint.
+      </p>
+
+      <div id="dashboards-grid" class="dashboards-grid">
+        <div class="dashboard-empty">Loading…</div>
+      </div>
+    </div>
+
+    <div id="dashboard-detail-view" style="display:none;">
+      <div class="content-header">
+        <button class="btn-link" onclick="closeDashboardDetail()" data-testid="button-back-dashboards">&larr; All dashboards</button>
+        <div style="display:flex; gap:0.5rem; flex-wrap: wrap;">
+          <button class="btn-secondary" onclick="refreshAllWidgets()" data-testid="button-refresh-widgets">Refresh</button>
+          <button class="btn-secondary" onclick="openEditDashboardModal()" data-testid="button-edit-dashboard">Rename</button>
+          <button class="btn-primary" onclick="openWidgetEditor(null)" data-testid="button-add-widget">Add Widget</button>
+          <button class="btn-danger" onclick="deleteCurrentDashboard()" data-testid="button-delete-dashboard">Delete</button>
+        </div>
+      </div>
+      <h2 id="dashboard-detail-title" style="margin: 0 0 0.25rem 0;"></h2>
+      <p id="dashboard-detail-description" style="color: var(--muted-fg, #888); margin: 0 0 1.25rem 0;"></p>
+      <div id="dashboard-widgets-grid" class="widgets-grid"></div>
+    </div>
+  </div>

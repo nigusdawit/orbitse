@@ -1,0 +1,134 @@
+{# admin/tabs/_stripe.html — 'stripe' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-stripe" class="tab-content">
+    <div class="content-header">
+      <h2>Stripe</h2>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <span id="stripe-updated" style="font-size:0.8125rem; color:var(--admin-text-muted);" data-testid="text-stripe-updated"></span>
+        <button class="btn-secondary" onclick="loadStripe()" data-testid="button-stripe-refresh">Refresh</button>
+      </div>
+    </div>
+    <p style="color:var(--admin-text-muted); margin:0 0 1rem 0; font-size:0.875rem;">
+      Stripe configuration, product sync, and recent checkouts. Keys live in environment variables — they are never stored in the database and never displayed here.
+    </p>
+
+    <div id="stripe-loading" class="empty-state" style="padding:1.5rem;" data-testid="text-stripe-loading">Loading…</div>
+
+    <div id="stripe-content" style="display:none; flex-direction:column; gap:0.75rem;">
+
+      <!-- ========== Section 1: Mode & status ========== -->
+      <details open class="dev-card" data-testid="card-stripe-mode">
+        <summary style="cursor:pointer; padding:1rem; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
+          <span>Mode &amp; status</span>
+          <span id="stripe-mode-badge" data-testid="badge-stripe-mode" style="font-size:0.75rem; padding:0.25rem 0.625rem; border-radius:9999px; font-weight:700;">—</span>
+        </summary>
+        <div style="padding:0 1rem 1rem 1rem;">
+          <div id="stripe-mismatch-warning" style="display:none; background:rgba(245, 158, 11, 0.12); border:1px solid rgba(245, 158, 11, 0.45); color:#fcd34d; padding:0.625rem 0.875rem; border-radius:6px; margin-bottom:0.75rem; font-size:0.8125rem;" data-testid="warning-stripe-mismatch">
+            <span id="stripe-mismatch-text"></span>
+          </div>
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px,1fr)); gap:0.75rem; margin-bottom:0.75rem;">
+            <div style="background:var(--admin-bg-soft, #f8fafc); padding:0.75rem; border-radius:6px;">
+              <div style="font-size:0.75rem; color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:0.05em;">Health</div>
+              <div id="stripe-health-badge" style="margin-top:0.25rem; font-weight:600;" data-testid="text-stripe-health">—</div>
+              <div id="stripe-health-detail" style="margin-top:0.125rem; font-size:0.75rem; color:var(--admin-text-muted);" data-testid="text-stripe-health-detail"></div>
+            </div>
+            <div style="background:var(--admin-bg-soft, #f8fafc); padding:0.75rem; border-radius:6px;">
+              <div style="font-size:0.75rem; color:var(--admin-text-muted); text-transform:uppercase; letter-spacing:0.05em;">Active key kind</div>
+              <div id="stripe-active-kind" style="margin-top:0.25rem; font-weight:600;" data-testid="text-stripe-active-kind">—</div>
+              <div style="margin-top:0.125rem; font-size:0.75rem; color:var(--admin-text-muted);">What sk_… prefix the resolver uses now.</div>
+            </div>
+          </div>
+          <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+            <button class="btn-secondary" onclick="stripeProbe()" data-testid="button-stripe-probe">Test connection</button>
+            <button class="btn-primary" id="stripe-mode-switch-btn" onclick="stripeSwitchMode()" data-testid="button-stripe-switch-mode">Switch mode</button>
+          </div>
+        </div>
+      </details>
+
+      <!-- ========== Section 2: Keys detected ========== -->
+      <details class="dev-card" data-testid="card-stripe-keys">
+        <summary style="cursor:pointer; padding:1rem; font-weight:600;">Keys detected</summary>
+        <div style="padding:0 1rem 1rem 1rem;">
+          <div id="stripe-keys-banner" style="display:none; background:rgba(34,197,94,0.10); border:1px solid rgba(34,197,94,0.35); color:#86efac; padding:0.625rem 0.875rem; border-radius:6px; margin-bottom:0.75rem; font-size:0.8125rem; line-height:1.45;" data-testid="banner-stripe-connector"></div>
+          <p style="margin:0 0 0.75rem 0; font-size:0.8125rem; color:var(--admin-text-muted);">
+            Which Stripe environment variables are populated. Values are NEVER shown — only ✓ Set / ✗ Not set.
+          </p>
+          <div id="stripe-keys-grid" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px,1fr)); gap:0.5rem;" data-testid="grid-stripe-keys"></div>
+        </div>
+      </details>
+
+      <!-- ========== Section 3: Auto-sync products ========== -->
+      <details class="dev-card" data-testid="card-stripe-autosync">
+        <summary style="cursor:pointer; padding:1rem; font-weight:600;">Auto-sync products</summary>
+        <div style="padding:0 1rem 1rem 1rem;">
+          <p style="margin:0 0 0.75rem 0; font-size:0.8125rem; color:var(--admin-text-muted);">
+            When ON, creating / editing / deleting a product in the Products tab automatically mirrors the change into Stripe (current mode only). When OFF, you can still sync manually below.
+          </p>
+          <label style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.75rem;">
+            <input type="checkbox" id="stripe-autosync-toggle" onchange="stripeSetAutosync(this.checked)" data-testid="toggle-stripe-autosync">
+            <span>Auto-sync products to Stripe</span>
+          </label>
+          <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+            <button class="btn-secondary" onclick="stripeBackfill()" data-testid="button-stripe-backfill">Backfill all products now</button>
+            <span id="stripe-backfill-summary" style="font-size:0.8125rem; color:var(--admin-text-muted);" data-testid="text-stripe-backfill-summary"></span>
+          </div>
+        </div>
+      </details>
+
+      <!-- ========== Section 4: Sync status table ========== -->
+      <details class="dev-card" data-testid="card-stripe-sync-status">
+        <summary style="cursor:pointer; padding:1rem; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
+          <span>Product sync status</span>
+          <span id="stripe-sync-mode-label" style="font-size:0.75rem; color:var(--admin-text-muted); font-weight:400;" data-testid="text-stripe-sync-mode"></span>
+        </summary>
+        <div style="padding:0 1rem 1rem 1rem;">
+          <div style="overflow-x:auto;">
+            <table style="width:100%; border-collapse:collapse; font-size:0.8125rem;">
+              <thead>
+                <tr style="text-align:left; border-bottom:1px solid var(--admin-border, #e5e7eb);">
+                  <th style="padding:0.5rem;">Product</th>
+                  <th style="padding:0.5rem;">Local price</th>
+                  <th style="padding:0.5rem;">Stripe Product</th>
+                  <th style="padding:0.5rem;">Stripe Price</th>
+                  <th style="padding:0.5rem;">Last sync</th>
+                  <th style="padding:0.5rem;"></th>
+                </tr>
+              </thead>
+              <tbody id="stripe-sync-tbody" data-testid="tbody-stripe-sync"></tbody>
+            </table>
+          </div>
+          <div id="stripe-sync-empty" class="empty-state" style="display:none; padding:1rem;" data-testid="text-stripe-sync-empty">No products yet.</div>
+        </div>
+      </details>
+
+      <!-- ========== Section 5: Recent payments ========== -->
+      <details class="dev-card" data-testid="card-stripe-checkouts">
+        <summary style="cursor:pointer; padding:1rem; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
+          <span>Recent Checkout Sessions</span>
+          <button class="btn-secondary" onclick="event.preventDefault(); stripeLoadCheckouts()" data-testid="button-stripe-checkouts-refresh" style="font-size:0.75rem; padding:0.25rem 0.625rem;">Refresh</button>
+        </summary>
+        <div style="padding:0 1rem 1rem 1rem;">
+          <p style="margin:0 0 0.75rem 0; font-size:0.8125rem; color:var(--admin-text-muted);">
+            Last 50 sessions for the current mode. Read-only mirror of <code>stripe.checkout.Session.list</code>.
+          </p>
+          <div id="stripe-checkouts-loading" style="font-size:0.8125rem; color:var(--admin-text-muted);" data-testid="text-stripe-checkouts-loading">Click Refresh to load.</div>
+          <div style="overflow-x:auto;">
+            <table style="width:100%; border-collapse:collapse; font-size:0.8125rem;">
+              <thead>
+                <tr style="text-align:left; border-bottom:1px solid var(--admin-border, #e5e7eb);">
+                  <th style="padding:0.5rem;">When</th>
+                  <th style="padding:0.5rem;">Amount</th>
+                  <th style="padding:0.5rem;">Status</th>
+                  <th style="padding:0.5rem;">Customer</th>
+                  <th style="padding:0.5rem;">Session</th>
+                </tr>
+              </thead>
+              <tbody id="stripe-checkouts-tbody" data-testid="tbody-stripe-checkouts"></tbody>
+            </table>
+          </div>
+        </div>
+      </details>
+
+    </div>
+  </div>

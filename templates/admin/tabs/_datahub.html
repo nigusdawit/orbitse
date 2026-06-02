@@ -1,0 +1,25 @@
+{# admin/tabs/_datahub.html — 'datahub' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-datahub" class="tab-content">
+    <div class="content-header">
+      <h2>Datahub</h2>
+      <div style="display:flex; gap:.5rem;">
+        <button class="btn-secondary" onclick="datahubAddConnection()" data-testid="button-datahub-add-conn">+ Connect a database</button>
+        <button class="btn-secondary" onclick="switchTab('admin-chat', document.querySelector('[data-testid=tab-admin-chat]')); loadAdminChat();" data-testid="button-datahub-ask">Ask the assistant</button>
+      </div>
+    </div>
+    <p style="color:var(--muted-fg,#888); max-width:70ch;">
+      Help the AI understand your data. Pick a connection, then click
+      <strong>✨ Auto-define</strong> — the assistant drafts descriptions,
+      relationships, and example queries for you to review and correct. Reviewed
+      definitions are what the Business Assistant uses when it writes SQL.
+    </p>
+    <div style="display:flex; gap:1rem; align-items:flex-start; margin-top:1rem; flex-wrap:wrap;">
+      <div id="datahub-connections" style="min-width:220px; display:flex; flex-direction:column; gap:.35rem;"
+           data-testid="datahub-connections"></div>
+      <div id="datahub-detail" style="flex:1; min-width:320px;" data-testid="datahub-detail">
+        <p style="color:var(--muted-fg,#888);">Select a connection to view its tables.</p>
+      </div>
+    </div>
+  </div>

@@ -1,0 +1,90 @@
+{# admin/tabs/_messaging-subscribers.html — 'messaging-subscribers' tab panel (task 076 F3). #}
+<div id="tab-messaging-subscribers" class="tab-content" data-navbtn="messaging">
+    <div class="gx-subtabs" role="tablist">
+      <button class="gx-subtab active" onclick="switchTab('messaging-subscribers'); loadMessagingSubscribers();">Subscribers</button>
+      <button class="gx-subtab" onclick="switchTab('messaging-templates'); loadMessagingTemplates();">Templates</button>
+      <button class="gx-subtab" onclick="switchTab('messaging-campaigns'); loadMessagingCampaigns();">Campaigns</button>
+    </div>
+    <div class="section-header-admin">
+      <div>
+        <h2>Subscribers</h2>
+        <p>People who can receive your email and SMS campaigns.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn btn-secondary btn-sm" onclick="loadMessagingSubscribers()" data-testid="button-subscribers-refresh">Refresh</button>
+        <button class="btn btn-primary btn-sm" onclick="openSubscriberForm()" data-testid="button-subscriber-add">+ Add subscriber</button>
+      </div>
+    </div>
+
+    <div id="messaging-status-banner" style="margin-bottom:1rem;"></div>
+
+    <div class="form-panel" id="subscriber-form-panel" style="display:none;">
+      <h3 id="subscriber-form-title">New subscriber</h3>
+      <input type="hidden" id="subscriber-id">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Email</label>
+          <input type="email" id="subscriber-email" placeholder="alex@example.com" data-testid="input-subscriber-email">
+        </div>
+        <div class="form-group">
+          <label>Phone (E.164, e.g. +15551234567)</label>
+          <input type="text" id="subscriber-phone" placeholder="+15551234567" data-testid="input-subscriber-phone">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Full name</label>
+          <input type="text" id="subscriber-name" placeholder="Alex Sample" data-testid="input-subscriber-name">
+        </div>
+        <div class="form-group">
+          <label>List</label>
+          <input type="text" id="subscriber-list" placeholder="default" value="default" data-testid="input-subscriber-list">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="display:flex;flex-direction:row;align-items:center;gap:0.5rem;">
+          <input type="checkbox" id="subscriber-opt-in" checked style="width:auto;">
+          <label for="subscriber-opt-in" style="margin:0;">Opted in</label>
+        </div>
+        <div class="form-group" style="display:flex;flex-direction:row;align-items:center;gap:0.5rem;">
+          <input type="checkbox" id="subscriber-opt-in-email" checked style="width:auto;">
+          <label for="subscriber-opt-in-email" style="margin:0;">Allow email</label>
+        </div>
+        <div class="form-group" style="display:flex;flex-direction:row;align-items:center;gap:0.5rem;">
+          <input type="checkbox" id="subscriber-opt-in-sms" checked style="width:auto;">
+          <label for="subscriber-opt-in-sms" style="margin:0;">Allow SMS</label>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="closeSubscriberForm()" data-testid="button-subscriber-cancel">Cancel</button>
+        <button class="btn btn-primary" onclick="saveSubscriber()" data-testid="button-subscriber-save">Save subscriber</button>
+      </div>
+    </div>
+
+    <div class="form-panel">
+      <h3>Import</h3>
+      <p style="color:var(--admin-text-muted); font-size:0.85rem; margin-bottom:0.75rem;">
+        Pull existing contacts in from your form submissions, or upload a CSV with <code>email</code>, <code>phone</code>, and <code>name</code> columns (extra columns become merge tags).
+      </p>
+      <div style="display:flex; gap:0.75rem; flex-wrap:wrap;">
+        <button class="btn btn-secondary btn-sm" onclick="importFromFormSubmissions()" data-testid="button-import-form-submissions">Import from form submissions</button>
+        <label class="btn btn-secondary btn-sm" style="cursor:pointer;">
+          Upload CSV
+          <input type="file" accept=".csv,text/csv" style="display:none;" onchange="importSubscriberCsv(this.files[0]); this.value='';" data-testid="input-csv-upload">
+        </label>
+      </div>
+    </div>
+
+    <div style="overflow-x:auto;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Name</th><th>Email</th><th>Phone</th><th>List</th><th>Opt-in</th><th>Source</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="subscribers-tbody">
+          <tr><td colspan="7" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>

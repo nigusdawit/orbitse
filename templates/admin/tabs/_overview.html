@@ -1,0 +1,89 @@
+{# admin/tabs/_overview.html — 'overview' tab panel (task 076 F3). #}
+<div id="tab-overview" class="tab-content active">
+    <div class="content-header">
+      <h2>Overview</h2>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <span id="overview-updated" style="font-size:0.8125rem; color:var(--muted-fg, #888);"></span>
+        <button class="btn-secondary" onclick="loadOverview()" data-testid="button-overview-refresh">Refresh</button>
+      </div>
+    </div>
+
+    <!-- First-run / missing-keys banner. Hidden by default; populated
+         by _loadOverviewSecretsBanner() which counts unmet
+         required+recommended env vars and surfaces a single CTA into
+         the Secrets tab. Lets a fresh deploy notice config gaps even
+         if the admin doesn't open the Secrets tab themselves. -->
+    <div id="overview-secrets-banner" data-testid="banner-overview-secrets" style="display:none;"></div>
+
+    <div class="kpi-grid" id="overview-kpi-grid">
+      <!-- Filled by loadOverview() -->
+      <div class="kpi-card kpi-skeleton"></div>
+      <div class="kpi-card kpi-skeleton"></div>
+      <div class="kpi-card kpi-skeleton"></div>
+      <div class="kpi-card kpi-skeleton"></div>
+    </div>
+
+    <div class="overview-feature-row" id="overview-feature-row" data-testid="row-overview-features">
+      <!-- Filled by loadOverview() with AI provider, skills, presentations -->
+    </div>
+
+    <!-- Activity Pulse — last-7-days aggregates across every feature
+         area (sales, bookings, AI engagement, automation/outreach,
+         growth). Filled by renderActivityPulse() from /admin/api/overview/stats.
+         Each group is silent-degrading: if a table is missing or empty
+         the values just read 0, the page never breaks. -->
+    <div class="overview-pulse-head">
+      <h3>Activity pulse</h3>
+      <span class="pulse-sub">Last 7 days, across all features</span>
+    </div>
+    <div class="overview-pulse-grid" id="overview-activity-pulse" data-testid="section-activity-pulse">
+      <!-- Filled by loadOverview() -->
+      <div class="pulse-group"><h4>Loading…</h4></div>
+      <div class="pulse-group"><h4>Loading…</h4></div>
+      <div class="pulse-group"><h4>Loading…</h4></div>
+    </div>
+
+    <div class="overview-row">
+      <div class="overview-panel">
+        <div class="overview-panel-head">
+          <h3>Visitors, last 14 days</h3>
+        </div>
+        <div class="overview-panel-body" style="height: 260px;">
+          <canvas id="overview-trend-chart"></canvas>
+        </div>
+      </div>
+      <div class="overview-panel">
+        <div class="overview-panel-head">
+          <h3>Recent submissions</h3>
+        </div>
+        <div class="overview-panel-body">
+          <div id="overview-recent-list" data-testid="list-overview-recent">
+            <div class="overview-empty">Loading…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="overview-row">
+      <div class="overview-panel">
+        <div class="overview-panel-head">
+          <h3>Top skills, last 7 days</h3>
+        </div>
+        <div class="overview-panel-body">
+          <div id="overview-top-skills" data-testid="list-overview-top-skills">
+            <div class="overview-empty">Loading…</div>
+          </div>
+        </div>
+      </div>
+      <div class="overview-panel">
+        <div class="overview-panel-head">
+          <h3>Recent chat sessions</h3>
+        </div>
+        <div class="overview-panel-body">
+          <div id="overview-recent-chats" data-testid="list-overview-recent-chats">
+            <div class="overview-empty">Loading…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>

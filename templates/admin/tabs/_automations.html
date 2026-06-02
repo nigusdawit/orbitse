@@ -1,0 +1,221 @@
+{# admin/tabs/_automations.html — 'automations' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-automations" class="tab-content">
+
+    <!-- LIST VIEW -->
+    <div id="automations-list-view">
+      <div class="section-header-admin">
+        <div>
+          <h2>Automations</h2>
+          <p>Build "if this happens, then do that" workflows. No code required.</p>
+        </div>
+        <div style="display:flex; gap:0.5rem;">
+          <button class="btn btn-secondary btn-sm" onclick="loadAutomations()" data-testid="button-automations-refresh">Refresh</button>
+          <button class="btn btn-secondary btn-sm" onclick="document.getElementById('automation-import-file').click()" data-testid="button-automation-import">Import</button>
+          <input type="file" id="automation-import-file" accept=".json,application/json" style="display:none;" onchange="importAutomationFromFile(event)">
+          <button class="btn btn-primary btn-sm" onclick="openAutomationEditor(null)" data-testid="button-automation-new">+ New automation</button>
+        </div>
+      </div>
+      <div id="automations-status-banner" style="margin-bottom:1rem;"></div>
+      <div style="overflow-x:auto;">
+        <table class="data-table">
+          <thead>
+            <tr><th>Name</th><th>Trigger</th><th>Enabled</th><th>Last run</th><th>Status</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="automations-tbody">
+            <tr><td colspan="6" class="empty-state">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!--
+        RETENTION SETTINGS — admins can change how long automation_runs
+        rows are kept around without redeploying. Empty input = "use the
+        env-var default" so a fresh install behaves exactly as before.
+        The effective values (whatever the cleanup tick will actually use
+        on its next pass) are echoed in the status banner above.
+      -->
+      <div class="form-panel" style="margin-top:1.5rem;" data-testid="panel-automation-settings">
+        <h3 style="margin-top:0;">Run history retention</h3>
+        <p style="color:var(--admin-text-muted); font-size:0.85rem; margin-top:0;">
+          Older run records are deleted automatically by a daily cleanup pass.
+          Pick how much history you want to keep — for example, "7 days" for a
+          chatty webhook, or "365 days" for a quiet nightly job. Leave a field
+          blank to fall back to the built-in default.
+        </p>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="automation-retention-days">Days of run history to keep</label>
+            <input type="number" id="automation-retention-days" min="1" max="3650" step="1"
+                   placeholder="default" data-testid="input-retention-days">
+            <small id="automation-retention-days-hint" style="color:var(--admin-text-muted); font-size:0.8rem;"></small>
+          </div>
+          <div class="form-group">
+            <label for="automation-retention-keep">Minimum runs to keep per automation</label>
+            <input type="number" id="automation-retention-keep" min="0" max="100000" step="1"
+                   placeholder="default" data-testid="input-retention-keep">
+            <small id="automation-retention-keep-hint" style="color:var(--admin-text-muted); font-size:0.8rem;"></small>
+          </div>
+        </div>
+        <div class="form-actions" style="display:flex; gap:0.5rem; align-items:center;">
+          <button class="btn btn-primary btn-sm" onclick="saveAutomationSettings()" data-testid="button-save-retention">Save</button>
+          <button class="btn btn-secondary btn-sm" onclick="resetAutomationSettings()" data-testid="button-reset-retention">Reset to defaults</button>
+          <span id="automation-settings-status" style="font-size:0.82rem; color:var(--admin-text-muted);"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- EDITOR VIEW -->
+    <div id="automations-editor-view" style="display:none;">
+      <div class="section-header-admin">
+        <div>
+          <h2 id="automation-editor-title">New automation</h2>
+          <p>One trigger, then a sequence of actions.</p>
+        </div>
+        <div style="display:flex; gap:0.5rem;">
+          <button class="btn btn-secondary btn-sm" onclick="closeAutomationEditor()" data-testid="button-automation-back">← Back</button>
+          <button class="btn btn-secondary btn-sm" id="button-automation-versions" onclick="openVersionHistory()" style="display:none;" data-testid="button-automation-versions">Version history</button>
+          <button class="btn btn-secondary btn-sm" id="button-automation-export" onclick="exportCurrentAutomation()" style="display:none;" data-testid="button-automation-export">Export</button>
+          <button class="btn btn-primary btn-sm" onclick="saveAutomation()" data-testid="button-automation-save">Save</button>
+        </div>
+      </div>
+
+      <div class="form-panel">
+        <input type="hidden" id="automation-id">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Name</label>
+            <input type="text" id="automation-name" placeholder="Notify staff when contact form is submitted" data-testid="input-automation-name">
+          </div>
+          <div class="form-group" style="display:flex;flex-direction:row;align-items:center;gap:0.5rem;">
+            <input type="checkbox" id="automation-enabled" style="width:auto;">
+            <label for="automation-enabled" style="margin:0;">Enabled (turn on once it's working)</label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Description (optional)</label>
+          <input type="text" id="automation-description" placeholder="What this automation does" data-testid="input-automation-description">
+        </div>
+      </div>
+
+      <div class="form-panel">
+        <h3 style="margin-top:0;">When this happens (trigger)</h3>
+        <div class="form-group">
+          <label>Trigger type</label>
+          <select id="automation-trigger-type" onchange="renderTriggerConfigForm()" data-testid="select-trigger-type"></select>
+        </div>
+        <div id="automation-trigger-config-form"></div>
+        <div id="automation-webhook-info" style="display:none; margin-top:0.75rem; padding:0.75rem; background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.3); border-radius:8px; font-size:0.85rem;"></div>
+      </div>
+
+      <div class="form-panel">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <h3 style="margin:0;">Then do this (actions)</h3>
+          <button class="btn btn-secondary btn-sm" onclick="openStepPicker()" data-testid="button-add-step">+ Add step</button>
+        </div>
+        <p style="color:var(--admin-text-muted); font-size:0.85rem; margin-top:0.5rem;">
+          Steps run in order. Use merge tags like
+          <code>{% raw %}{{trigger.fields.email}}{% endraw %}</code> or <code>{% raw %}{{step1.text}}{% endraw %}</code>
+          to reference earlier data inside any field.
+        </p>
+        <div id="automation-steps-list" style="margin-top:1rem;"></div>
+      </div>
+
+      <!-- "+ Add step" picker modal: progressive-disclosure UI so the
+           growing skills/MCP catalogue stays out of the way until the
+           admin asks for it. Common kinds (send_email, send_sms,
+           condition, etc.) sit on top; Skills & integrations is one
+           click away with a search box and category groups. -->
+      <div id="step-picker-modal" class="db-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="step-picker-modal-title">
+        <div class="db-modal-card db-modal-card-wide">
+          <div class="db-modal-head">
+            <h3 id="step-picker-modal-title" style="margin:0;">Add an action</h3>
+            <button class="db-modal-close" onclick="closeStepPicker()" aria-label="Close" data-testid="button-step-picker-close">&times;</button>
+          </div>
+          <div class="db-modal-body">
+            <div style="margin-bottom:1.25rem;">
+              <h4 style="margin:0 0 0.5rem 0; font-size:0.95rem;">Common actions</h4>
+              <div id="step-picker-common" class="step-picker-tiles"></div>
+            </div>
+            <div class="step-picker-accordion">
+              <button type="button" class="step-picker-accordion-head" onclick="toggleSkillsAccordion()" data-testid="button-skills-accordion">
+                <span id="step-picker-skills-arrow" style="display:inline-block; width:1em;">▸</span>
+                <span style="font-weight:600;">Skills &amp; integrations</span>
+                <span id="step-picker-skills-count" class="step-picker-count-badge" data-testid="text-skills-count"></span>
+              </button>
+              <div id="step-picker-skills-body" style="display:none; margin-top:0.75rem;">
+                <p style="color:var(--admin-text-muted); font-size:0.85rem; margin:0 0 0.6rem 0;">
+                  Use any built-in chat tool, MCP server tool, or custom skill as a step. Selecting one creates a
+                  <code>call_skill</code> step pre-filled with the right arguments.
+                </p>
+                <input type="search" id="step-picker-search" placeholder="Search by name, description, or category…"
+                       oninput="filterStepPickerSkills()" style="width:100%; margin-bottom:0.75rem;"
+                       data-testid="input-skill-search">
+                <div id="step-picker-skills-list"></div>
+              </div>
+            </div>
+          </div>
+          <div class="db-modal-foot">
+            <button class="btn btn-secondary btn-sm" onclick="closeStepPicker()" data-testid="button-step-picker-cancel">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-panel">
+        <h3 style="margin-top:0;">Test it</h3>
+        <p style="color:var(--admin-text-muted); font-size:0.85rem;">
+          Fire this automation right now using the sample trigger data below. The actions run for real (real emails, real saves) — toggle "dry-run" to mark this run as a test in the log.
+        </p>
+        <div class="form-group">
+          <label>Sample trigger data (JSON)</label>
+          <textarea id="automation-test-payload" rows="5" style="font-family:monospace; font-size:0.85rem;" placeholder='{"fields":{"email":"you@example.com","name":"Test"}}' data-testid="textarea-test-payload"></textarea>
+        </div>
+        <div class="form-actions" style="display:flex;align-items:center;gap:0.75rem;">
+          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.85rem;">
+            <input type="checkbox" id="automation-test-dry-run" checked style="width:auto;">
+            Mark as dry-run in the log
+          </label>
+          <button class="btn btn-secondary" onclick="testRunAutomation()" data-testid="button-test-run">Run now</button>
+        </div>
+        <div id="automation-test-result" style="margin-top:1rem;"></div>
+      </div>
+
+      <div class="form-panel">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <h3 style="margin:0;">Recent runs</h3>
+          <button class="btn btn-secondary btn-sm" onclick="loadAutomationRuns()" data-testid="button-runs-refresh">Refresh</button>
+        </div>
+        <div id="automation-runs-list" style="margin-top:1rem; font-size:0.85rem;">
+          <div class="empty-state">Save the automation first to see runs.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RUN DETAIL MODAL -->
+    <div id="automation-run-modal" style="display:none; position:fixed; inset:0; z-index:10000; background:rgba(0,0,0,0.85); padding:2rem; overflow-y:auto;">
+      <div style="max-width:900px; margin:0 auto; background:var(--admin-bg, #060b14); border-radius:12px; padding:2rem; color:var(--admin-text, #e7eaf0);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+          <h2 id="run-modal-title" style="margin:0;">Run detail</h2>
+          <button onclick="closeRunModal()" class="btn btn-secondary btn-sm" data-testid="button-close-run-modal">✕ Close</button>
+        </div>
+        <div id="run-modal-body"></div>
+      </div>
+    </div>
+
+    <!-- VERSION HISTORY MODAL -->
+    <div id="automation-versions-modal" style="display:none; position:fixed; inset:0; z-index:10000; background:rgba(0,0,0,0.85); padding:2rem; overflow-y:auto;">
+      <div style="max-width:780px; margin:0 auto; background:var(--admin-bg, #060b14); border-radius:12px; padding:2rem; color:var(--admin-text, #e7eaf0);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+          <h2 style="margin:0;">Version history</h2>
+          <button onclick="closeVersionHistory()" class="btn btn-secondary btn-sm" data-testid="button-close-versions-modal">✕ Close</button>
+        </div>
+        <p style="color:var(--admin-text-muted); font-size:0.85rem; margin-top:0;">
+          Every save adds a snapshot here. Click Restore to roll back; the rolled-back copy will keep the on/off setting it has now.
+        </p>
+        <div id="automation-versions-body" style="font-size:0.9rem;">
+          <div class="empty-state">Loading…</div>
+        </div>
+      </div>
+    </div>
+  </div>

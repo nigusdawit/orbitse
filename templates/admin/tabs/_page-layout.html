@@ -1,0 +1,112 @@
+{# admin/tabs/_page-layout.html — 'page-layout' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-page-layout" class="tab-content">
+    <div class="section-header-admin">
+      <div>
+        <h2>Page Layout</h2>
+        <p>Drag to reorder sections on the public site. Toggle visibility and manage custom sections.</p>
+      </div>
+      <button class="btn btn-primary" onclick="showAddSectionForm()" data-testid="button-add-section">+ Add Section</button>
+    </div>
+
+    <div id="add-section-form-panel" class="form-panel" style="display:none;">
+      <h3>Add Custom Section</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="new-section-title">Section Title</label>
+          <input type="text" id="new-section-title" placeholder="Our Partners" data-testid="input-new-section-title" oninput="autoGenerateSectionSlug()">
+        </div>
+        <div class="form-group">
+          <label for="new-section-slug">Slug (auto-generated)</label>
+          <input type="text" id="new-section-slug" placeholder="our-partners" data-testid="input-new-section-slug">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="new-section-template">Template</label>
+          <select id="new-section-template" data-testid="select-new-section-template">
+            <optgroup label="Layouts (you provide items)">
+              <option value="cards_grid">Cards Grid</option>
+              <option value="text_content">Text Content</option>
+              <option value="image_gallery">Image Gallery</option>
+              <option value="cta_banner">CTA Banner</option>
+              <option value="stats_counter">Stats / Counters</option>
+              <option value="icon_features">Icon Features</option>
+            </optgroup>
+            <optgroup label="Data showcases (auto-pulled from your library)">
+              <option value="events">Upcoming Events</option>
+              <option value="rsvp_form">RSVP / Ticket Form (single event)</option>
+              <option value="video_gallery">Video Gallery</option>
+              <option value="podcast">Podcast Episodes</option>
+              <option value="products">Products / Shop</option>
+              <option value="services">Services / Bookings</option>
+            </optgroup>
+          </select>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="hideAddSectionForm()" data-testid="button-cancel-add-section">Cancel</button>
+        <button class="btn btn-primary" onclick="createPageSection()" data-testid="button-save-new-section">Create Section</button>
+      </div>
+    </div>
+
+    <table class="data-table" id="page-sections-table">
+      <thead>
+        <tr>
+          <th style="width:30px;"></th>
+          <th>Section</th>
+          <th>Type</th>
+          <th>Background</th>
+          <th>Enabled</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="page-sections-tbody">
+        <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+
+    <!-- Hidden file input shared by every "Upload" button in the table.
+         A single input keeps the DOM small and avoids one input per row;
+         we stash the target section id on the input via dataset.sectionId
+         right before clicking. -->
+    <input type="file" id="page-section-bg-file" accept="image/*"
+           style="display:none;" onchange="handleSectionBgFile(this)"
+           data-testid="input-section-bg-file">
+
+    <div id="section-items-panel" class="form-panel" style="display:none; margin-top: 1.5rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <h3 id="section-items-title">Section Items</h3>
+        <div style="display: flex; gap: 0.5rem;">
+          <button class="btn btn-primary btn-sm" onclick="showSectionItemForm()" data-testid="button-add-section-item">+ Add Item</button>
+          <button class="btn btn-secondary btn-sm" onclick="closeSectionItemsPanel()" data-testid="button-close-section-items">Close</button>
+        </div>
+      </div>
+
+      <div id="section-item-form-panel" class="form-panel" style="display:none; margin-bottom: 1rem; background: var(--admin-bg); border: 1px solid var(--admin-border);">
+        <h3 id="section-item-form-title" style="font-size: 1rem;">Add Item</h3>
+        <input type="hidden" id="section-item-form-id">
+        <div id="section-item-fields"></div>
+        <div class="form-actions">
+          <button class="btn btn-secondary btn-sm" onclick="hideSectionItemForm()" data-testid="button-cancel-section-item">Cancel</button>
+          <button class="btn btn-primary btn-sm" onclick="saveSectionItem()" data-testid="button-save-section-item">Save Item</button>
+        </div>
+      </div>
+
+      <table class="data-table" id="section-items-table">
+        <thead>
+          <tr>
+            <th style="width:30px;"></th>
+            <th>Title</th>
+            <th>Subtitle</th>
+            <th>Content</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="section-items-tbody">
+          <tr><td colspan="5" class="empty-state">No items yet.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>

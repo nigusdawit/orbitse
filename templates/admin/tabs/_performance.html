@@ -1,0 +1,17 @@
+{# admin/tabs/_performance.html — 'performance' tab panel. Carved from dashboard.html
+   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
+   context (appearance / has_feature / is_super_admin). #}
+<div id="tab-performance" class="tab-content">
+    <div class="content-header">
+      <h2>Performance</h2>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <span id="performance-updated" style="font-size:0.8125rem; color:var(--admin-text-muted);" data-testid="text-performance-updated"></span>
+        <button class="btn-secondary" onclick="loadPerformance()" data-testid="button-performance-refresh">Refresh</button>
+      </div>
+    </div>
+    <p style="color:var(--admin-text-muted); margin:0 0 1rem 0; font-size:0.875rem;">
+      Status of the site's performance optimisations. Numbers refresh on tab open.
+    </p>
+    <div id="performance-loading" class="empty-state" style="padding:1.5rem;" data-testid="text-performance-loading">Loading…</div>
+    <div id="performance-grid" style="display:none; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:1rem;" data-testid="grid-performance"></div>
+  </div>
