@@ -2484,6 +2484,14 @@ TO CUSTOMIZE THIS DASHBOARD:
       padding:1.4rem 1.45rem; margin-bottom:1.1rem; }
     .form-card > h3{ font-family:var(--admin-head-font); font-size:1.05rem; font-weight:700; color:var(--admin-text); margin:0 0 .9rem; }
 
+    /* .dev-card (Stripe + Developer use <details class="dev-card">) was also
+       undefined → bare blocks. Render as collapsible glass cards (task 074).
+       Keep the native disclosure marker (some summaries are flex + have a
+       right-aligned badge, so a custom ::after chevron would mis-place). */
+    .dev-card{ background:var(--admin-surface); border:1px solid var(--admin-border); border-radius:var(--admin-radius);
+      -webkit-backdrop-filter:var(--admin-blur); backdrop-filter:var(--admin-blur); box-shadow:var(--admin-shadow); overflow:hidden; margin-bottom:.2rem; }
+    .dev-card > summary{ color:var(--admin-text); }
+
     /* Sidebar search + collapsible groups (task 073). */
     #gx-nav-search-wrap{ padding:.15rem .2rem .7rem; }
     #gx-nav-search{ width:100%; background:var(--admin-field); border:1px solid var(--admin-border); border-radius:9px;
@@ -7382,30 +7390,22 @@ TO CUSTOMIZE THIS DASHBOARD:
 
   <!-- Chat History Tab -->
   <div id="tab-chat-history" class="tab-content">
-    <div class="section-header-admin">
+    <div class="gx-head">
       <div>
-        <h2>Chat History</h2>
-        <p>View AI assistant conversations and analytics.</p>
+        <h2 class="gx-title">Chat History</h2>
+        <p class="gx-sub">View AI assistant conversations and analytics.</p>
       </div>
     </div>
 
-    <div id="chat-stats" class="form-panel" style="display: flex; gap: 2rem; flex-wrap: wrap;">
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Total Conversations</div>
-        <div id="stat-total-conversations" style="font-size: 1.5rem; font-weight: 600; color: #fff;">0</div>
-      </div>
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Messages Today</div>
-        <div id="stat-messages-today" style="font-size: 1.5rem; font-weight: 600; color: #fff;">0</div>
-      </div>
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Avg Messages / Conversation</div>
-        <div id="stat-avg-messages" style="font-size: 1.5rem; font-weight: 600; color: #fff;">0</div>
-      </div>
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Unique Visitors</div>
-        <div id="stat-unique-visitors" style="font-size: 1.5rem; font-weight: 600; color: #fff;">0</div>
-      </div>
+    <div id="chat-stats" class="gx-stats">
+      <div class="gx-stat"><div class="gx-stat-label">Total Conversations</div>
+        <div class="gx-stat-value" id="stat-total-conversations">0</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Messages Today</div>
+        <div class="gx-stat-value" id="stat-messages-today">0</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Avg Messages / Conversation</div>
+        <div class="gx-stat-value" id="stat-avg-messages">0</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Unique Visitors</div>
+        <div class="gx-stat-value" id="stat-unique-visitors">0</div></div>
     </div>
 
     <table class="data-table" id="chat-history-table">
@@ -7447,36 +7447,26 @@ TO CUSTOMIZE THIS DASHBOARD:
   drop entries that have gone stale.
   -->
   <div id="tab-knowledge-cache" class="tab-content">
-    <div class="section-header-admin">
+    <div class="gx-head">
       <div>
-        <h2>Knowledge Cache</h2>
-        <p>Reuse past concierge answers for repeat questions — saves an LLM completion AND an ElevenLabs voice render every time it hits.</p>
+        <h2 class="gx-title">Knowledge Cache</h2>
+        <p class="gx-sub">Reuse past concierge answers for repeat questions — saves an LLM completion AND an ElevenLabs voice render every time it hits.</p>
       </div>
     </div>
 
     <!-- Stats banner — counters refreshed every time the tab opens. -->
-    <div id="kc-stats" class="form-panel" style="display: flex; gap: 2rem; flex-wrap: wrap;">
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Cached Entries</div>
-        <div id="kc-stat-entries" data-testid="text-kc-entries" style="font-size: 1.5rem; font-weight: 600; color: #fff;">—</div>
-        <div id="kc-stat-entries-detail" style="color: var(--admin-text-muted); font-size: 0.75rem;">&nbsp;</div>
-      </div>
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Lifetime Hits</div>
-        <div id="kc-stat-hits" data-testid="text-kc-hits" style="font-size: 1.5rem; font-weight: 600; color: #fff;">—</div>
-      </div>
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Tokens Saved (est.)</div>
-        <div id="kc-stat-tokens" data-testid="text-kc-tokens" style="font-size: 1.5rem; font-weight: 600; color: #fff;">—</div>
-      </div>
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">TTS Chars Saved</div>
-        <div id="kc-stat-tts" data-testid="text-kc-tts" style="font-size: 1.5rem; font-weight: 600; color: #fff;">—</div>
-      </div>
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Content Version</div>
-        <div id="kc-stat-version" data-testid="text-kc-version" style="font-size: 1.5rem; font-weight: 600; color: #fff;">—</div>
-      </div>
+    <div id="kc-stats" class="gx-stats">
+      <div class="gx-stat"><div class="gx-stat-label">Cached Entries</div>
+        <div class="gx-stat-value" id="kc-stat-entries" data-testid="text-kc-entries">—</div>
+        <div id="kc-stat-entries-detail" style="color:var(--admin-text-muted); font-size:0.75rem;">&nbsp;</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Lifetime Hits</div>
+        <div class="gx-stat-value" id="kc-stat-hits" data-testid="text-kc-hits">—</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Tokens Saved (est.)</div>
+        <div class="gx-stat-value" id="kc-stat-tokens" data-testid="text-kc-tokens">—</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">TTS Chars Saved</div>
+        <div class="gx-stat-value" id="kc-stat-tts" data-testid="text-kc-tts">—</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Content Version</div>
+        <div class="gx-stat-value" id="kc-stat-version" data-testid="text-kc-version">—</div></div>
     </div>
 
     <!-- Settings: enable + similarity threshold. -->
@@ -10573,31 +10563,19 @@ TO CUSTOMIZE THIS DASHBOARD:
     </div>
 
     <!-- Summary Cards -->
-    <div id="analytics-summary-cards" class="form-panel" style="display: flex; gap: 2rem; flex-wrap: wrap; margin-bottom: 1.5rem;">
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Total Views</div>
-        <div id="av-total-views" style="font-size: 1.5rem; font-weight: 600; color: #fff;" data-testid="text-av-total-views">0</div>
-      </div>
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Unique Visitors</div>
-        <div id="av-unique-visitors" style="font-size: 1.5rem; font-weight: 600; color: #fff;" data-testid="text-av-unique-visitors">0</div>
-      </div>
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Sessions</div>
-        <div id="av-total-sessions" style="font-size: 1.5rem; font-weight: 600; color: #fff;" data-testid="text-av-total-sessions">0</div>
-      </div>
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Avg. Duration</div>
-        <div id="av-avg-duration" style="font-size: 1.5rem; font-weight: 600; color: #fff;" data-testid="text-av-avg-duration">0s</div>
-      </div>
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Today</div>
-        <div id="av-today-views" style="font-size: 1.5rem; font-weight: 600; color: #60a5fa;" data-testid="text-av-today-views">0</div>
-      </div>
-      <div>
-        <div style="color: var(--admin-text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">This Week</div>
-        <div id="av-week-views" style="font-size: 1.5rem; font-weight: 600; color: #60a5fa;" data-testid="text-av-week-views">0</div>
-      </div>
+    <div id="analytics-summary-cards" class="gx-stats" style="margin-bottom: 1.5rem;">
+      <div class="gx-stat"><div class="gx-stat-label">Total Views</div>
+        <div class="gx-stat-value" id="av-total-views" data-testid="text-av-total-views">0</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Unique Visitors</div>
+        <div class="gx-stat-value" id="av-unique-visitors" data-testid="text-av-unique-visitors">0</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Sessions</div>
+        <div class="gx-stat-value" id="av-total-sessions" data-testid="text-av-total-sessions">0</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Avg. Duration</div>
+        <div class="gx-stat-value" id="av-avg-duration" data-testid="text-av-avg-duration">0s</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">Today</div>
+        <div class="gx-stat-value" id="av-today-views" style="color:var(--admin-accent);" data-testid="text-av-today-views">0</div></div>
+      <div class="gx-stat"><div class="gx-stat-label">This Week</div>
+        <div class="gx-stat-value" id="av-week-views" style="color:var(--admin-accent);" data-testid="text-av-week-views">0</div></div>
     </div>
 
     <!-- Daily Views Bar Chart -->
@@ -10720,7 +10698,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           </div>
           <div style="display:flex; gap:0.5rem; align-items:center;">
             <label style="font-size:0.85rem; color:var(--admin-text-muted);">Status</label>
-            <select id="mi-drafts-status" onchange="loadMarketingInsights()" data-testid="select-marketing-drafts-status" style="padding:0.4rem 0.6rem; background:#0f1623; color:#e4e4e7; border:1px solid #243044; border-radius:4px; font-size:0.85rem;">
+            <select id="mi-drafts-status" onchange="loadMarketingInsights()" data-testid="select-marketing-drafts-status" class="gx-input" style="max-width:240px; padding:.45rem .6rem;">
               <option value="pending">Pending</option>
               <option value="approved">Approved &amp; published</option>
               <option value="rejected">Rejected</option>
@@ -10742,7 +10720,7 @@ TO CUSTOMIZE THIS DASHBOARD:
           </div>
           <div style="display:flex; gap:0.5rem; align-items:center;">
             <label style="font-size:0.85rem; color:var(--admin-text-muted);">Type</label>
-            <select id="mi-insights-type" onchange="loadMarketingInsights()" data-testid="select-marketing-insights-type" style="padding:0.4rem 0.6rem; background:#0f1623; color:#e4e4e7; border:1px solid #243044; border-radius:4px; font-size:0.85rem;">
+            <select id="mi-insights-type" onchange="loadMarketingInsights()" data-testid="select-marketing-insights-type" class="gx-input" style="max-width:240px; padding:.45rem .6rem;">
               <option value="">All types</option>
               <option value="chat_topics">Chat topics</option>
               <option value="page_library">Page library</option>
@@ -19525,46 +19503,40 @@ TO CUSTOMIZE THIS DASHBOARD:
       if (!el) return;
       if (!drafts.length) {
         el.innerHTML = `<div class="empty-state" style="padding:1.5rem 0; color:var(--admin-text-muted); text-align:center;">
-          No ${escapeHTML(status)} drafts. Ask the AI in <a href="#" onclick="switchTab('admin-chat', document.querySelector('[data-testid=tab-admin-chat]')); loadAdminChat(); return false;" style="color:#7dd3fc;">Admin Chat</a> to draft a blog post or FAQ entry — they'll appear here for approval.
+          No ${escapeHTML(status)} drafts. Ask the AI in <a href="#" onclick="switchTab('admin-chat', document.querySelector('[data-testid=tab-admin-chat]')); loadAdminChat(); return false;" style="color:var(--admin-accent);">Admin Chat</a> to draft a blog post or FAQ entry — they'll appear here for approval.
         </div>`;
         return;
       }
       el.innerHTML = drafts.map(d => {
         const created = d.created_at ? new Date(d.created_at).toLocaleString() : '';
         const kindLabel = d.kind === 'blog' ? 'Blog post' : d.kind === 'faq' ? 'FAQ entry' : (d.kind || 'Draft');
-        const kindColor = d.kind === 'blog' ? '#1e3a8a' : '#3f1d6e';
-        const kindFg    = d.kind === 'blog' ? '#bfdbfe' : '#e9d5ff';
         const isPending = d.status === 'pending';
         const statusBadge = isPending
-          ? '<span style="background:#92400e; color:#fcd34d; padding:2px 8px; border-radius:4px; font-size:0.7rem;">Pending</span>'
+          ? '<span class="gx-badge gx-badge-run">Pending</span>'
           : d.status === 'approved'
-            ? '<span style="background:#166534; color:#86efac; padding:2px 8px; border-radius:4px; font-size:0.7rem;">Approved</span>'
+            ? '<span class="gx-badge gx-badge-ok">Approved</span>'
             : d.status === 'rejected'
-              ? '<span style="background:#5b1a1a; color:#fca5a5; padding:2px 8px; border-radius:4px; font-size:0.7rem;">Rejected</span>'
-              : '<span style="background:#3f3f46; color:#d4d4d8; padding:2px 8px; border-radius:4px; font-size:0.7rem;">' + escapeHTML(d.status || '') + '</span>';
+              ? '<span class="gx-badge gx-badge-err">Rejected</span>'
+              : '<span class="gx-badge">' + escapeHTML(d.status || '') + '</span>';
         const errLine = d.error_text
-          ? `<div style="color:#fca5a5; font-size:0.8rem; margin-top:0.5rem;">Error: ${escapeHTML(d.error_text)}</div>`
+          ? `<div style="color:var(--admin-danger); font-size:0.8rem; margin-top:0.5rem;">Error: ${escapeHTML(d.error_text)}</div>`
           : '';
         const actions = isPending
-          ? `<div style="display:flex; gap:0.5rem; margin-top:0.75rem;">
-              <button class="btn btn-sm btn-primary" onclick="approveMarketingDraft(${d.id})" data-testid="button-marketing-approve-${d.id}">Approve & publish</button>
-              <button class="btn btn-sm btn-danger" onclick="rejectMarketingDraft(${d.id})" data-testid="button-marketing-reject-${d.id}">Reject</button>
+          ? `<div class="gx-foot" style="margin-top:0.75rem;">
+              <button class="gx-btn gx-btn-primary" onclick="approveMarketingDraft(${d.id})" data-testid="button-marketing-approve-${d.id}">Approve &amp; publish</button>
+              <button class="gx-btn gx-btn-ghost" onclick="rejectMarketingDraft(${d.id})" data-testid="button-marketing-reject-${d.id}">Reject</button>
             </div>`
           : '';
-        return `<div class="form-panel" style="background:#0f1623; padding:1rem; margin-bottom:0.75rem; border:1px solid #243044; border-radius:6px;" data-testid="row-marketing-draft-${d.id}">
-          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:1rem;">
-            <div style="flex:1; min-width:0;">
-              <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.4rem;">
-                <span style="background:${kindColor}; color:${kindFg}; padding:2px 8px; border-radius:4px; font-size:0.7rem; font-weight:600;">${escapeHTML(kindLabel)}</span>
-                ${statusBadge}
-                <span style="color:var(--admin-text-muted); font-size:0.75rem;">${escapeHTML(created)}</span>
-              </div>
-              <div style="font-weight:600; margin-bottom:0.3rem;" data-testid="text-marketing-draft-title-${d.id}">${escapeHTML(d.title || '')}</div>
-              <div style="color:#cbd5e1; font-size:0.85rem; white-space:pre-wrap; line-height:1.45;">${escapeHTML(d.body_preview || '')}${(d.body_preview || '').length >= 400 ? '…' : ''}</div>
-              ${errLine}
-              ${actions}
-            </div>
+        return `<div class="gx-card" style="margin-bottom:0.75rem;" data-testid="row-marketing-draft-${d.id}">
+          <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.4rem;">
+            <span class="gx-badge">${escapeHTML(kindLabel)}</span>
+            ${statusBadge}
+            <span style="color:var(--admin-text-muted); font-size:0.75rem;">${escapeHTML(created)}</span>
           </div>
+          <div style="font-weight:600; margin-bottom:0.3rem; color:var(--admin-text);" data-testid="text-marketing-draft-title-${d.id}">${escapeHTML(d.title || '')}</div>
+          <div style="color:var(--admin-text-muted); font-size:0.85rem; white-space:pre-wrap; line-height:1.45;">${escapeHTML(d.body_preview || '')}${(d.body_preview || '').length >= 400 ? '…' : ''}</div>
+          ${errLine}
+          ${actions}
         </div>`;
       }).join('');
     }
@@ -19574,7 +19546,7 @@ TO CUSTOMIZE THIS DASHBOARD:
       if (!el) return;
       if (!rows.length) {
         el.innerHTML = `<div class="empty-state" style="padding:1.5rem 0; color:var(--admin-text-muted); text-align:center;">
-          No insight reports yet. Ask the AI in <a href="#" onclick="switchTab('admin-chat', document.querySelector('[data-testid=tab-admin-chat]')); loadAdminChat(); return false;" style="color:#7dd3fc;">Admin Chat</a> to analyze visitor chat topics, page library reuse, or content gaps — results will be cached here.
+          No insight reports yet. Ask the AI in <a href="#" onclick="switchTab('admin-chat', document.querySelector('[data-testid=tab-admin-chat]')); loadAdminChat(); return false;" style="color:var(--admin-accent);">Admin Chat</a> to analyze visitor chat topics, page library reuse, or content gaps — results will be cached here.
         </div>`;
         return;
       }
@@ -19591,15 +19563,15 @@ TO CUSTOMIZE THIS DASHBOARD:
           try { return JSON.stringify(r.summary_json, null, 2); }
           catch (e) { return String(r.summary_json || ''); }
         })();
-        return `<details style="background:#0f1623; padding:0.75rem 1rem; margin-bottom:0.5rem; border:1px solid #243044; border-radius:6px;" data-testid="row-marketing-insight-${r.id}">
+        return `<details class="gx-card" style="padding:0.75rem 1rem; margin-bottom:0.5rem;" data-testid="row-marketing-insight-${r.id}">
           <summary style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; gap:1rem; list-style:none;">
             <span>
-              <span style="background:#1e3a5a; color:#bfdbfe; padding:2px 8px; border-radius:4px; font-size:0.7rem; font-weight:600; margin-right:0.5rem;">${escapeHTML(labelOf(r.insight_type))}</span>
-              <span style="color:#cbd5e1;">${escapeHTML(r.notes || '(no notes)')}</span>
+              <span class="gx-badge" style="margin-right:0.5rem;">${escapeHTML(labelOf(r.insight_type))}</span>
+              <span style="color:var(--admin-text);">${escapeHTML(r.notes || '(no notes)')}</span>
             </span>
             <span style="color:var(--admin-text-muted); font-size:0.75rem; white-space:nowrap;">${escapeHTML(window_ || created)}</span>
           </summary>
-          <pre style="margin:0.75rem 0 0; padding:0.75rem; background:#060b14; color:#a7f3d0; font-size:0.78rem; line-height:1.4; max-height:400px; overflow:auto; border-radius:4px; white-space:pre-wrap; word-break:break-word;">${escapeHTML(summary)}</pre>
+          <pre style="margin:0.75rem 0 0; padding:0.75rem; background:var(--admin-field); color:var(--admin-text); font-size:0.78rem; line-height:1.4; max-height:400px; overflow:auto; border-radius:8px; white-space:pre-wrap; word-break:break-word;">${escapeHTML(summary)}</pre>
           <div style="color:var(--admin-text-muted); font-size:0.7rem; margin-top:0.5rem;">Run at ${escapeHTML(created)} · id ${r.id}</div>
         </details>`;
       }).join('');
