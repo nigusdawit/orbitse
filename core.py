@@ -575,6 +575,12 @@ _FEATURE_REGISTRY = [
     ("datahub",              "Datahub (external data connections)", "growth", True, "AI"),
     ("research_hub",         "Research Hub",                 "growth",     True,  "AI"),
     ("content_studio",       "Content Studio",               "growth",     True,  "AI"),
+    # Visitor specialist router (speed, task 079 Phase 2): when ON, a hybrid
+    # keyword+embedding match (tiny AI classifier only on ambiguity) picks a
+    # specialist sub-prompt + minimal tool subset per turn so the model ingests
+    # far fewer tokens. Default OFF → today's single-agent flow runs unchanged.
+    # Fail-open. Lazy-seeded from _FEATURE_DEFAULTS on first lookup (no migration).
+    ("visitor_specialist_router", "Visitor specialist router (faster replies)", "growth", False, "AI"),
 ]
 _FEATURE_NAMES = {row[0] for row in _FEATURE_REGISTRY}
 _FEATURE_DEFAULTS = {row[0]: row[3] for row in _FEATURE_REGISTRY}
@@ -1491,180 +1497,74 @@ WHAT IS AUTO-INJECTED INTO THE IFRAME (use these directly, do NOT redefine them)
 
 YOU ARE A WORLD-CLASS WEB DESIGNER. Every generatePage must look like a seamless extension of THIS website — same hero image, same colors, same fonts, same glass cards, same spacing. Never produce plain, boring, or basic layouts. Never invent off-brand colors or fonts.
 
-DESIGN RULES FOR generatePage — these mirror the EXACT design system of THIS website. Follow them literally.
+DESIGN RULES FOR generatePage — these mirror the EXACT design system of THIS website. Follow them literally. The CANONICAL EXAMPLE below is the source of truth for the exact CSS contracts; copy its classes verbatim and swap in your content.
 
 THE GOLDEN RULE: A generatePage is a NEW PAGE OF THIS SAME WEBSITE. Same hero treatment. Same section rhythm. Same glass cards. Same accent color usage. Same eyebrow → title → subtitle pattern. NEVER produce a layout that looks like a generic dashboard or admin panel. NEVER produce hard-edged dark blocks with thin-bordered boxes. NEVER produce visible color seams between sections.
 
-═══════════════════════════════════════════════════════════════════════
 1. HERO SECTION — REQUIRED, must be the FIRST section
-═══════════════════════════════════════════════════════════════════════
 The hero MUST literally be:
-.hero{position:relative;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:0 1.5rem;background:linear-gradient(to bottom,rgba(0,0,0,0.4) 0%,rgba(0,0,0,0.3) 50%,rgba(0,0,0,0.85) 100%),var(--hero-image);background-size:cover;background-position:center;background-repeat:no-repeat}
-The bottom of the gradient (0.85 alpha) blends INTO the next section so there is NO visible seam. This is non-negotiable.
+the `.gp-hero` from the example — a full-height section, background linear-gradient(... rgba(0,0,0,0.85)),var(--hero-image), cover. The 0.85-alpha bottom blends into the next section so there is NO seam. Content order: uppercase accent eyebrow (letter-spacing 0.3em) → serif <h1> title clamp(3rem,8vw,6rem) with ONE word in <span class="accent"> → one short white-80% subtitle (max-width 36rem).
 
-Hero content layout (in this exact order):
-  <p class="hero-eyebrow">SHORT UPPERCASE TAGLINE</p>          ← uppercase, accent color, letter-spacing 0.3em
-  <h1 class="hero-title">Main <span class="accent">Title</span></h1>  ← serif, big clamp(3rem,8vw,6rem), one word in accent
-  <p class="hero-sub">One short evocative sentence under the title.</p>  ← white 80%, max-width 36rem
-
-═══════════════════════════════════════════════════════════════════════
 2. SECTION TRANSITIONS — NEVER produce hard color seams
-═══════════════════════════════════════════════════════════════════════
-This is the #1 visual flaw to avoid. The user's screenshot showed two sections of different darks meeting at a hard line — that looks broken.
+ALL content sections share ONE base color var(--color-bg), separated only by a gold `.gp-divider` line. Do NOT alternate var(--color-section-1)/var(--color-section-2) — they look like a seam. For a different mood, use a SUBTLE radial-gradient overlay on the SAME var(--color-bg).
 
-The ONLY acceptable section background pattern is:
-- Use ONE consistent base color: var(--color-bg) for ALL content sections
-- Separate sections with a `.section-divider` element (a 1px gold-tinted gradient line)
-- That's it. Do NOT alternate var(--color-section-1) / var(--color-section-2). They are too close in value to look intentional and too far apart to be invisible — they always look like a seam.
-
-If you want a different mood for one specific section (e.g., a "stats" section), use a SUBTLE radial-gradient overlay on the SAME var(--color-bg), not a different solid color.
-
-═══════════════════════════════════════════════════════════════════════
 3. EVERY CONTENT SECTION header MUST follow this pattern
-═══════════════════════════════════════════════════════════════════════
 Inside every section (other than the hero), the heading area MUST be:
   <p class="eyebrow">UPPERCASE LABEL</p>          ← REQUIRED. NEVER skip.
-  <h2 class="section-title">Title with <span class="accent">accent</span> word</h2>
-  <p class="section-sub">One-line subtitle in muted white.</p>
+  <h2 class="gp-title">Title with <span class="accent">accent</span> word</h2>
+  <p class="gp-sub">One-line subtitle in muted white.</p>
+For lists (Day 1 / Step 1 / Tier A …), each item is its own section and that label IS the eyebrow.
 
-The eyebrow is THE single most important element to make pages match this site. Skipping it makes the page look like a generic dashboard. ALWAYS include it.
-
-For lists like "Day 1 / Day 2 / Day 3", "Step 1 / Step 2", "Tier A / Tier B" — each item gets its own section, and the day/step/tier label IS the eyebrow:
-  <p class="eyebrow">DAY ONE</p>
-  <h2 class="section-title">Arrival & <span class="accent">Relaxation</span></h2>
-
-═══════════════════════════════════════════════════════════════════════
 4. CARDS — MUST match the site's actual experience-card style
-═══════════════════════════════════════════════════════════════════════
-.card{padding:1.5rem;border-radius:0.5rem;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);transition:transform 0.3s,border-color 0.3s,box-shadow 0.3s}
-.card:hover{transform:translateY(-3px);border-color:rgba(255,255,255,0.2);box-shadow:0 4px 20px rgba(255,255,255,0.05)}
-.card h3{font-family:var(--font-serif);font-size:1.125rem;color:#fff;margin:0 0 0.5rem 0}
-.card p{font-size:0.875rem;color:rgba(255,255,255,0.6);line-height:1.6;margin:0}
+Use `.gp-card`: radius 0.5rem, border rgba(255,255,255,0.1), background rgba(255,255,255,0.05), backdrop blur(8px), subtle translateY hover. Do NOT use huge radius (1.25rem+) or heavy blur (24px+) — it clashes with the site.
 
-NOTE: small radius (0.5rem), modest blur (8px), subtle hover. Do NOT make cards huge-rounded (1.25rem+) or heavy-blurred (24px+) — that's a different aesthetic and clashes with the site.
-
-═══════════════════════════════════════════════════════════════════════
 5. ACCENT COLOR USAGE — gold MUST appear throughout the body, not just the hero
-═══════════════════════════════════════════════════════════════════════
-- Every eyebrow uses var(--color-accent)
-- Every section title has ONE word wrapped in <span class="accent"> with var(--color-accent)
-- Section dividers are tinted gold: linear-gradient(90deg,transparent,rgba(201,169,110,0.18),transparent)
-- Bullet points / list markers use var(--color-accent)
-- Stats numbers use var(--color-accent)
-- Icon circles have rgba(201,169,110,0.12) background
+Eyebrows, one word per title, list markers and stat numbers use var(--color-accent); the divider uses rgba(201,169,110,0.18); icon circles use rgba(201,169,110,0.12) backgrounds. ZERO gold in a section = failed brand match.
 
-If a content section has ZERO gold accent visible, you've failed the brand match.
+6. TYPOGRAPHY: titles var(--font-serif), body var(--font-sans). Hero title clamp(3rem,8vw,6rem)/700; section title clamp(2rem,5vw,3rem)/700/#fff. Eyebrows 0.75rem uppercase letter-spacing 0.3em. Subtitles muted white (hero 80%/36rem, section 60%/32rem). Body rgba(255,255,255,0.7)/line-height 1.6.
 
-═══════════════════════════════════════════════════════════════════════
-6. TYPOGRAPHY (mirrors the actual site verbatim)
-═══════════════════════════════════════════════════════════════════════
-- Hero title: var(--font-serif), clamp(3rem,8vw,6rem), 700, line-height 1.1
-- Hero eyebrow: 0.75rem, uppercase, letter-spacing 0.3em, color rgba(255,255,255,0.7)
-- Hero subtitle: clamp(1rem,2vw,1.25rem), color rgba(255,255,255,0.8), max-width 36rem, weight 300
-- Section eyebrow: 0.75rem, uppercase, letter-spacing 0.3em, color var(--color-accent), margin-bottom 0.75rem
-- Section title: var(--font-serif), clamp(2rem,5vw,3rem), 700, color #fff
-- Section subtitle: rgba(255,255,255,0.6), max-width 32rem, line-height 1.5
-- Body text: var(--font-sans), color rgba(255,255,255,0.7), line-height 1.6
+7. SECTION SPACING & WIDTH: section padding 5rem 1.5rem (3rem mobile); inner wrapper max-width 72rem centered; header bottom margin ~3rem; card grid gap 1.5rem; grids collapse to 1 column under 768px.
 
-═══════════════════════════════════════════════════════════════════════
-7. SECTION SPACING & WIDTH
-═══════════════════════════════════════════════════════════════════════
-- Each content section: padding: 5rem 1.5rem (3rem on mobile)
-- Inner wrapper: max-width: 72rem; margin: 0 auto;
-- Section-header bottom margin: 3rem
-- Card grid gap: 1.5rem
+8. ANIMATIONS — keep them subtle: use the `.animate-in` → `.animate-in.visible` fade-up pair toggled by an IntersectionObserver (with .delay-1/.delay-2 stagger), as in the example. No heavy float/pulse/shimmer on body content.
 
-═══════════════════════════════════════════════════════════════════════
-8. ANIMATIONS — keep them subtle
-═══════════════════════════════════════════════════════════════════════
-@keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
-.animate-in{opacity:0;transform:translateY(20px);transition:opacity 0.7s cubic-bezier(0.22,1,0.36,1),transform 0.7s cubic-bezier(0.22,1,0.36,1)}
-.animate-in.visible{opacity:1;transform:translateY(0)}
-.delay-1{transition-delay:0.1s}.delay-2{transition-delay:0.2s}.delay-3{transition-delay:0.3s}
-+ IntersectionObserver toggles `.visible` on scroll into view.
-Avoid heavy float/pulse/shimmer animations on body content — they read as gimmicky. Reserve them for hero decoration only.
-
-═══════════════════════════════════════════════════════════════════════
-9. CANONICAL EXAMPLE — copy this structure, swap in your content
-═══════════════════════════════════════════════════════════════════════
-This example is what every generatePage should look like. Note: hero uses var(--hero-image), all body sections share var(--color-bg), gold dividers separate them, every section has eyebrow + title + subtitle, cards match the site's experience-card style.
+9. CANONICAL EXAMPLE — copy these exact classes and this structure:
 
 ```
 <style>
 @keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
-.gp-hero{position:relative;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:0 1.5rem;background:linear-gradient(to bottom,rgba(0,0,0,0.4) 0%,rgba(0,0,0,0.3) 50%,rgba(0,0,0,0.85) 100%),var(--hero-image);background-size:cover;background-position:center;background-repeat:no-repeat;animation:fadeUp 1s ease-out}
-.gp-hero-eyebrow{font-size:0.75rem;text-transform:uppercase;letter-spacing:0.3em;color:rgba(255,255,255,0.7);font-family:var(--font-sans);margin:0 0 1rem 0}
-.gp-hero-title{font-family:var(--font-serif);font-size:clamp(3rem,8vw,6rem);font-weight:700;color:#fff;line-height:1.1;margin:0 0 1.5rem 0;max-width:100%}
-.gp-hero-title .accent{color:var(--color-accent)}
-.gp-hero-sub{font-size:clamp(1rem,2vw,1.25rem);color:rgba(255,255,255,0.8);font-weight:300;max-width:36rem;line-height:1.6;margin:0}
-.gp-section{background:var(--color-bg);padding:5rem 1.5rem}
-.gp-section-inner{max-width:72rem;margin:0 auto}
-.gp-eyebrow{font-size:0.75rem;text-transform:uppercase;letter-spacing:0.3em;color:var(--color-accent);font-family:var(--font-sans);margin:0 0 0.75rem 0}
-.gp-title{font-family:var(--font-serif);font-size:clamp(2rem,5vw,3rem);font-weight:700;color:#fff;margin:0 0 1rem 0;line-height:1.15}
-.gp-title .accent{color:var(--color-accent)}
-.gp-sub{color:rgba(255,255,255,0.6);max-width:32rem;line-height:1.5;margin:0 0 3rem 0}
-.gp-divider{height:1px;background:linear-gradient(90deg,transparent,rgba(201,169,110,0.18),transparent);margin:0;border:0}
+.gp-hero{position:relative;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:0 1.5rem;background:linear-gradient(to bottom,rgba(0,0,0,0.4),rgba(0,0,0,0.3),rgba(0,0,0,0.85)),var(--hero-image);background-size:cover;background-position:center}
+.gp-section{background:var(--color-bg);padding:5rem 1.5rem}.gp-section-inner{max-width:72rem;margin:0 auto}
+.gp-eyebrow{font-size:0.75rem;text-transform:uppercase;letter-spacing:0.3em;color:var(--color-accent);font-family:var(--font-sans);margin-bottom:0.75rem}
+.gp-title{font-family:var(--font-serif);font-size:clamp(2rem,5vw,3rem);font-weight:700;color:#fff;margin:0}
+.gp-hero-title{font-family:var(--font-serif);font-size:clamp(3rem,8vw,6rem);font-weight:700;color:#fff;margin:1rem 0 1.5rem}
+.accent{color:var(--color-accent)}
+.gp-sub{color:rgba(255,255,255,0.6);max-width:32rem;margin-bottom:3rem}
+.gp-divider{height:1px;background:linear-gradient(90deg,transparent,rgba(201,169,110,0.18),transparent);border:0}
 .gp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1.5rem}
-.gp-card{padding:1.5rem;border-radius:0.5rem;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);transition:transform 0.3s,border-color 0.3s,box-shadow 0.3s}
-.gp-card:hover{transform:translateY(-3px);border-color:rgba(255,255,255,0.2);box-shadow:0 4px 20px rgba(255,255,255,0.05)}
-.gp-card h3{font-family:var(--font-serif);font-size:1.125rem;font-weight:600;color:#fff;margin:0 0 0.5rem 0}
-.gp-card p{font-size:0.875rem;color:rgba(255,255,255,0.6);line-height:1.6;margin:0}
-.gp-icon{width:2.5rem;height:2.5rem;border-radius:50%;background:rgba(201,169,110,0.12);display:flex;align-items:center;justify-content:center;margin-bottom:1rem;font-size:1.1rem}
-.gp-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1.5rem;text-align:center}
-.gp-stat-num{font-family:var(--font-serif);font-size:clamp(2rem,4vw,2.75rem);font-weight:700;color:var(--color-accent);line-height:1;margin:0}
-.gp-stat-label{color:rgba(255,255,255,0.55);font-size:0.7rem;text-transform:uppercase;letter-spacing:0.18em;margin-top:0.5rem}
-.animate-in{opacity:0;transform:translateY(20px);transition:opacity 0.7s cubic-bezier(0.22,1,0.36,1),transform 0.7s cubic-bezier(0.22,1,0.36,1)}
-.animate-in.visible{opacity:1;transform:translateY(0)}
-.delay-1{transition-delay:0.1s}.delay-2{transition-delay:0.2s}.delay-3{transition-delay:0.3s}
+.gp-card{padding:1.5rem;border-radius:0.5rem;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);transition:transform 0.3s,border-color 0.3s}
+.gp-card:hover{transform:translateY(-3px);border-color:rgba(255,255,255,0.2)}
+.gp-card h3{font-family:var(--font-serif);color:#fff;margin:0 0 0.5rem}.gp-card p{font-size:0.875rem;color:rgba(255,255,255,0.6);margin:0}
+.gp-icon{width:2.5rem;height:2.5rem;border-radius:50%;background:rgba(201,169,110,0.12);display:flex;align-items:center;justify-content:center;margin-bottom:1rem}
+.animate-in{opacity:0;transform:translateY(20px);transition:opacity 0.7s cubic-bezier(0.22,1,0.36,1),transform 0.7s cubic-bezier(0.22,1,0.36,1)}.animate-in.visible{opacity:1;transform:translateY(0)}
+.delay-1{transition-delay:0.1s}.delay-2{transition-delay:0.2s}
 @media(max-width:768px){.gp-section{padding:3rem 1.25rem}.gp-grid{grid-template-columns:1fr}}
 </style>
-
 <section class="gp-hero">
-  <p class="gp-hero-eyebrow">HOW IT WORKS</p>
+  <p class="gp-eyebrow" style="color:rgba(255,255,255,0.7)">HOW IT WORKS</p>
   <h1 class="gp-hero-title">Getting Started in <span class="accent">Three Steps</span></h1>
-  <p class="gp-hero-sub">A simple walkthrough of how to get the most out of what we offer, from first step to fully set up.</p>
+  <p class="gp-sub" style="color:rgba(255,255,255,0.8);max-width:36rem">A short walkthrough of how to get the most out of what we offer.</p>
 </section>
-
-<section class="gp-section">
-  <div class="gp-section-inner">
-    <p class="gp-eyebrow animate-in">STEP ONE</p>
-    <h2 class="gp-title animate-in">Get <span class="accent">Started</span></h2>
-    <p class="gp-sub animate-in">The easy first move — set things up the way that suits you.</p>
-    <div class="gp-grid">
-      <div class="gp-card animate-in delay-1"><div class="gp-icon">✨</div><h3>Welcome Aboard</h3><p>Create your account and tell us a little about what you're looking for.</p></div>
-      <div class="gp-card animate-in delay-2"><div class="gp-icon">⚙️</div><h3>Set Your Preferences</h3><p>Choose the options that match your needs so everything fits from day one.</p></div>
-    </div>
+<section class="gp-section"><div class="gp-section-inner">
+  <p class="gp-eyebrow animate-in">STEP ONE</p>
+  <h2 class="gp-title animate-in">Get <span class="accent">Started</span></h2>
+  <p class="gp-sub animate-in">The easy first move — set things up the way that suits you.</p>
+  <div class="gp-grid">
+    <div class="gp-card animate-in delay-1"><div class="gp-icon">✨</div><h3>Welcome Aboard</h3><p>Create your account and tell us what you're looking for.</p></div>
+    <div class="gp-card animate-in delay-2"><div class="gp-icon">⚙️</div><h3>Set Preferences</h3><p>Choose what matches your needs.</p></div>
   </div>
-</section>
-
+</div></section>
 <hr class="gp-divider"/>
-
-<section class="gp-section">
-  <div class="gp-section-inner">
-    <p class="gp-eyebrow animate-in">STEP TWO</p>
-    <h2 class="gp-title animate-in">Explore the <span class="accent">Essentials</span></h2>
-    <p class="gp-sub animate-in">Get comfortable with the core features most customers use every day.</p>
-    <div class="gp-grid">
-      <div class="gp-card animate-in delay-1"><div class="gp-icon">🧭</div><h3>Find Your Way</h3><p>A quick tour of the main areas so you always know where to go.</p></div>
-      <div class="gp-card animate-in delay-2"><div class="gp-icon">💡</div><h3>Helpful Tips</h3><p>Small shortcuts and best practices that save you time right away.</p></div>
-    </div>
-  </div>
-</section>
-
-<hr class="gp-divider"/>
-
-<section class="gp-section">
-  <div class="gp-section-inner">
-    <p class="gp-eyebrow animate-in">STEP THREE</p>
-    <h2 class="gp-title animate-in">Go <span class="accent">Further</span></h2>
-    <p class="gp-sub animate-in">Once you're settled, here's how to get even more value.</p>
-    <div class="gp-grid">
-      <div class="gp-card animate-in delay-1"><div class="gp-icon">🚀</div><h3>Level Up</h3><p>Discover advanced options that grow with you as your needs expand.</p></div>
-      <div class="gp-card animate-in delay-2"><div class="gp-icon">🤝</div><h3>We're Here to Help</h3><p>Reach out any time — support is always a message away.</p></div>
-    </div>
-  </div>
-</section>
-
+<!-- Repeat the gp-section + gp-divider pattern for each further step/topic. -->
 <script>
 const o=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting)e.target.classList.add('visible')}),{threshold:0.1,rootMargin:'0px 0px -50px 0px'});
 document.querySelectorAll('.animate-in').forEach(el=>o.observe(el));
@@ -2335,6 +2235,64 @@ PERSONA_ROUTER_PROMPT = (
     "  general — anything that doesn't clearly fit above"
 )
 
+# ---------------------------------------------------------------------------
+# VISITOR SPECIALIST ROUTER prompts (task 079 Phase 2) — editable via the
+# AI Prompts tab (category "Visitor Chat"), keys registered in
+# _ai_prompt_registry() and read through get_prompt(key, DEFAULT_CONST).
+#
+# These four specialist sub-prompts are SHORT and deliberately do NOT restate
+# the whole visitor SYSTEM_PROMPT — they ride on top of it (the model still
+# receives the full base prompt as the cacheable prefix; the specialist text is
+# inserted as a separate, adjacent system message). Each just sharpens focus for
+# one intent and reminds the model which command/tool rules apply for that lane.
+# They must stay NON-EMPTY (the test_ai_prompts gate asserts a non-blank default
+# for every key).
+VISITOR_SPECIALIST_BOOKING_PROMPT = (
+    "SPECIALIST FOCUS — BOOKING / SCHEDULING.\n"
+    "This turn is about booking, appointments, availability, or reservations. "
+    "Help the visitor pick a service/time and complete a booking efficiently. "
+    "Check live availability before promising a slot. The booking/scheduling "
+    "command rules from the base prompt still apply in full: use the "
+    "`bookService` / `openBookingModal` command blocks to actually start or "
+    "confirm a booking (and `bookingPartialSave` to save progress) — never just "
+    "describe the action. Stay concise."
+)
+VISITOR_SPECIALIST_PRICING_PROMPT = (
+    "SPECIALIST FOCUS — PRICING / PRODUCTS.\n"
+    "This turn is about prices, packages, products, or quotes. Give accurate, "
+    "specific pricing from the site's real data — look it up rather than "
+    "guessing, and never invent numbers. Compare options when it helps the "
+    "visitor decide, and surface any current offers that genuinely apply. If a "
+    "price isn't published, say so and offer the next step (e.g. a quote or "
+    "contact). All base-prompt command rules still apply. Stay concise."
+)
+VISITOR_SPECIALIST_GENERAL_PROMPT = (
+    "SPECIALIST FOCUS — GENERAL / FAQ.\n"
+    "This turn is a general question about the business — hours, location, "
+    "policies, what they offer, who they are, or other FAQ-style topics. Answer "
+    "from the site's real content (FAQ, business info, knowledge base, pages) "
+    "and prefer pointing the visitor to the most relevant existing section over "
+    "generating new content. All base-prompt command and decision-priority "
+    "rules still apply. Stay concise and friendly."
+)
+VISITOR_SPECIALIST_LEADCAP_PROMPT = (
+    "SPECIALIST FOCUS — LEAD CAPTURE / CONTACT.\n"
+    "This turn is about getting in touch, a callback, or leaving contact "
+    "details. Help the visitor reach the business and capture their request "
+    "cleanly. Collect the needed fields one or two at a time, then use the "
+    "`partialFormSave` and `submitForm` command blocks from the base prompt to "
+    "actually record the details — never just say you saved them. Never invent "
+    "contact information on the visitor's behalf. Stay concise."
+)
+# Cheap classifier prompt that PICKS the specialist. Keeps the {options} token
+# (replaced at call time with the live specialist list, mirroring the admin
+# persona router contract). Read via get_prompt("visitor_specialist_router_prompt", …).
+VISITOR_SPECIALIST_ROUTER_PROMPT = (
+    "You are a routing classifier for a website concierge. Pick the single best "
+    "specialist for the visitor's message from: {options}. Reply ONLY as JSON: "
+    '{"specialist": "<key>"}. If unsure, use "general".'
+)
+
 # Process-level cache. Loaded once from the ai_prompts table; refreshed only on
 # a super-admin save. Guarded by a lock so concurrent first-requests load once.
 _PROMPT_CACHE = {}
@@ -2355,8 +2313,10 @@ def _ai_prompt_registry():
             "category": "Visitor Chat",
             "description": "The core brain of the public website chatbot — its "
                            "persona, rules, and command formats. Keep the "
-                           "{THEME_PLACEHOLDER} token; it is replaced with the "
-                           "site's live theme on every turn.",
+                           "{THEME_PLACEHOLDER} token; it still drives the site's "
+                           "live theme on every turn — the values are now emitted "
+                           "in a dedicated 'SITE THEME' section of the prompt "
+                           "rather than inlined where the token sits.",
             "default": lambda: SYSTEM_PROMPT,
         },
         {
@@ -2392,6 +2352,51 @@ def _ai_prompt_registry():
                            "should answer. MUST keep the {options} token — it "
                            "is replaced with the live persona list.",
             "default": lambda: PERSONA_ROUTER_PROMPT,
+        },
+        # --- Visitor specialist router (task 079 Phase 2). Four specialist
+        # sub-prompts + one classifier prompt. Registered in this exact order;
+        # tests/test_ai_prompts.py EXPECTED_KEYS must match (exact-ordered gate).
+        {
+            "key": "visitor_specialist_booking",
+            "label": "Visitor Specialist — Booking/Scheduling",
+            "category": "Visitor Chat",
+            "description": "Specialist sub-prompt for booking/scheduling turns "
+                           "(visitor specialist router). Editable; falls back to "
+                           "the built-in default.",
+            "default": lambda: VISITOR_SPECIALIST_BOOKING_PROMPT,
+        },
+        {
+            "key": "visitor_specialist_pricing",
+            "label": "Visitor Specialist — Pricing/Products",
+            "category": "Visitor Chat",
+            "description": "Specialist sub-prompt for pricing/products turns "
+                           "(visitor specialist router).",
+            "default": lambda: VISITOR_SPECIALIST_PRICING_PROMPT,
+        },
+        {
+            "key": "visitor_specialist_general",
+            "label": "Visitor Specialist — General/FAQ",
+            "category": "Visitor Chat",
+            "description": "Specialist sub-prompt for general questions and FAQ "
+                           "(visitor specialist router).",
+            "default": lambda: VISITOR_SPECIALIST_GENERAL_PROMPT,
+        },
+        {
+            "key": "visitor_specialist_leadcap",
+            "label": "Visitor Specialist — Lead Capture",
+            "category": "Visitor Chat",
+            "description": "Specialist sub-prompt for lead-capture / contact turns "
+                           "(visitor specialist router).",
+            "default": lambda: VISITOR_SPECIALIST_LEADCAP_PROMPT,
+        },
+        {
+            "key": "visitor_specialist_router_prompt",
+            "label": "Visitor Specialist Router (classifier)",
+            "category": "Visitor Chat",
+            "description": "Cheap classifier that picks the specialist for a "
+                           "visitor turn. MUST keep the {options} token — it is "
+                           "replaced with the live specialist list.",
+            "default": lambda: VISITOR_SPECIALIST_ROUTER_PROMPT,
         },
         {
             "key": "scraper_url_intro",
@@ -2866,6 +2871,31 @@ def _ai_control_registry():
          "env": "VISITOR_PERSONA_ROUTER_MODEL",
          "description": "Model for the cheap per-turn persona classifier (e.g. gpt-4o-mini). "
                         "Blank = gpt-4o-mini."},
+        # Visitor specialist router (speed, task 079 Phase 2). Operator-wide
+        # master switch + classifier model + embedding confidence cutoff. The
+        # router activates only when THIS master AND the per-client
+        # `visitor_specialist_router` feature flag are ON (and the AI master kill
+        # is on). All default-inert → today's single-agent flow.
+        {"key": "visitor_specialist_router_enabled", "attr": "visitor_specialist_router_enabled", "type": "bool",
+         "group": "Visitor Personas", "label": "Route visitors to fast specialists",
+         "env": "VISITOR_SPECIALIST_ROUTER_ENABLED",
+         "description": "Operator master switch for the visitor specialist router (faster "
+                        "replies). When ON — and the per-client 'Visitor specialist router' "
+                        "feature is enabled — each visitor turn is classified (keyword → "
+                        "embedding → tiny classifier) into a specialist sub-prompt + a "
+                        "smaller tool subset so the model ingests fewer tokens. Off = one "
+                        "general agent with all enabled tools (current behavior). Fail-open."},
+        {"key": "visitor_specialist_router_model", "attr": "visitor_specialist_router_model", "type": "string",
+         "group": "Visitor Personas", "label": "Specialist classifier model",
+         "env": "VISITOR_SPECIALIST_ROUTER_MODEL",
+         "description": "Model for the cheap specialist classifier used only on ambiguous "
+                        "turns (e.g. gpt-4o-mini). Blank = gpt-4o-mini."},
+        {"key": "visitor_specialist_embed_threshold", "attr": "visitor_specialist_embed_threshold", "type": "float",
+         "group": "Visitor Personas", "label": "Specialist embedding confidence cutoff",
+         "env": "VISITOR_SPECIALIST_EMBED_THRESHOLD",
+         "description": "Cosine-similarity cutoff for the embedding match before falling back "
+                        "to the tiny AI classifier. Higher = stricter (more turns go to the "
+                        "classifier). Default 0.78."},
         # Handoff summary (Phase 6 / task 048)
         {"key": "handoff_summary_enabled", "attr": "handoff_summary_enabled", "type": "bool",
          "group": "Growth Tools", "label": "AI handoff summary on callback requests",
@@ -3021,6 +3051,12 @@ _AI_INERT = {
     "offers_enabled": False, "lead_capture_enabled": False,
     "callback_requests_enabled": False, "team_notifications_enabled": False,
     "visitor_persona_router_enabled": False, "handoff_summary_enabled": False,
+    # Visitor specialist router (task 079 Phase 2): force the master OFF and the
+    # classifier model blank under the AI master-kill, mirroring the persona
+    # router. The embedding-threshold amount-only knob doesn't need an inert
+    # entry — when the enable flag is forced off the router never runs (the knob
+    # falls back to its pylego.config default, same pattern as rate_limit_max).
+    "visitor_specialist_router_enabled": False, "visitor_specialist_router_model": "",
     "meetings_enabled": False, "live_call_enabled": False,
     "research_hub_enabled": False, "content_studio_enabled": False,
     "visual_content_enabled": False, "autopublish_enabled": False,
