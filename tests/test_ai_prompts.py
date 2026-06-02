@@ -35,6 +35,13 @@ EXPECTED_KEYS = [
     "presentation_narration",
     "seo_suggest",
     "persona_router",
+    # Visitor specialist router (task 079 Phase 2) — registered right after the
+    # admin persona_router, in this exact order.
+    "visitor_specialist_booking",
+    "visitor_specialist_pricing",
+    "visitor_specialist_general",
+    "visitor_specialist_leadcap",
+    "visitor_specialist_router_prompt",
     "scraper_url_intro",
     "scraper_objective_intro",
     "scraper_research",
@@ -209,6 +216,36 @@ def test_update_then_reset_ai_prompt_roundtrip():
             "INSERT INTO ai_prompts (prompt_key, content) VALUES (%s, %s) "
             "ON CONFLICT (prompt_key) DO UPDATE SET content = EXCLUDED.content",
             (key, app.SEO_SUGGEST_PROMPT),
+        )
+        app._invalidate_prompt_cache()
+
+
+def test_update_then_reset_visitor_specialist_prompt_roundtrip():
+    """Task 079 P2: one of the new visitor-specialist keys is editable through
+    the same PUT + reset cycle (pins the new registry rows end-to-end)."""
+    c = app.app.test_client()
+    assert _login(c, ADMIN_PW).status_code in (200, 302)
+    hdr = _csrf(c)
+    key = "visitor_specialist_booking"
+    default = app.VISITOR_SPECIALIST_BOOKING_PROMPT
+    try:
+        # PUT a new value.
+        r = c.put(f"/admin/api/ai-prompts/{key}",
+                  json={"content": "ROUTE-TEST booking specialist"}, headers=hdr)
+        assert r.status_code == 200, r.get_data(as_text=True)
+        assert r.get_json()["is_default"] is False
+        assert app.get_prompt(key, default) == "ROUTE-TEST booking specialist"
+        # Reset restores the hardcoded default.
+        r2 = c.post(f"/admin/api/ai-prompts/{key}/reset", headers=hdr)
+        assert r2.status_code == 200, r2.get_data(as_text=True)
+        assert r2.get_json()["is_default"] is True
+        assert r2.get_json()["content"] == default
+        assert app.get_prompt(key, default) == default
+    finally:
+        app.execute_db(
+            "INSERT INTO ai_prompts (prompt_key, content) VALUES (%s, %s) "
+            "ON CONFLICT (prompt_key) DO UPDATE SET content = EXCLUDED.content",
+            (key, default),
         )
         app._invalidate_prompt_cache()
 

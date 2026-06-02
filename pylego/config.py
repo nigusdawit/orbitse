@@ -135,6 +135,17 @@ class PylegoConfig:
     visitor_persona_router_enabled: bool
     visitor_persona_router_model: str  # classifier model ("" → gpt-4o-mini)
 
+    # ---- Visitor specialist router (task 079 Phase 2 — speed) ----------------
+    # Operator master for the hybrid keyword→embedding→tiny-classifier router
+    # that picks a specialist sub-prompt + smaller tool subset per visitor turn.
+    # Inert default OFF → single-agent behavior (today's flow). The model knob
+    # ("" → gpt-4o-mini) is the cheap classifier used only on ambiguity; the
+    # threshold is the embedding-match confidence cutoff before falling back to
+    # the classifier.
+    visitor_specialist_router_enabled: bool
+    visitor_specialist_router_model: str    # classifier model ("" → gpt-4o-mini)
+    visitor_specialist_embed_threshold: float  # cosine cutoff before AI classifier
+
     # ---- Handoff summary (task 048 — Epic F, no-creds part) -----------------
     # When on, request_callback generates a short AI summary of the conversation
     # for the team handoff (stored + included in the notification). Inert default
@@ -257,6 +268,10 @@ def _build() -> PylegoConfig:
         # Visitor persona router — wired in 046; inert default (single agent).
         visitor_persona_router_enabled=_env_bool("VISITOR_PERSONA_ROUTER_ENABLED", False),
         visitor_persona_router_model=os.environ.get("VISITOR_PERSONA_ROUTER_MODEL", "").strip(),
+        # Visitor specialist router — wired in 079 P2; inert default (single agent).
+        visitor_specialist_router_enabled=_env_bool("VISITOR_SPECIALIST_ROUTER_ENABLED", False),
+        visitor_specialist_router_model=os.environ.get("VISITOR_SPECIALIST_ROUTER_MODEL", "").strip(),
+        visitor_specialist_embed_threshold=_env_float("VISITOR_SPECIALIST_EMBED_THRESHOLD", 0.78),
         # Handoff summary — wired in 048; inert default (no summary).
         handoff_summary_enabled=_env_bool("HANDOFF_SUMMARY_ENABLED", False),
         handoff_summary_model=os.environ.get("HANDOFF_SUMMARY_MODEL", "").strip(),

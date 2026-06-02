@@ -60,6 +60,7 @@ _env_manager.load_env_file_into_environ()
 _GENERATED_PAGE_SLUG_RE = re.compile(r'^[a-z0-9][a-z0-9\-]{0,199}$')
 import contextvars
 import hashlib
+import math
 import secrets
 import threading
 import time as _time
@@ -663,6 +664,10 @@ from core import (  # noqa: E402 - re-export the DB layer that now lives in core
     # --- AI editable prompts (Track B / task 078, piece #1): constants + registry + cache ---
     SYSTEM_PROMPT, ADMIN_CHAT_SYSTEM_PROMPT,   # big visitor + admin system-prompt constants
     SLIDE_NARRATION_PROMPT, SEO_SUGGEST_PROMPT, PERSONA_ROUTER_PROMPT,  # editable-prompt defaults
+    # --- visitor specialist router prompt defaults (task 079 Phase 2) ---
+    VISITOR_SPECIALIST_BOOKING_PROMPT, VISITOR_SPECIALIST_PRICING_PROMPT,
+    VISITOR_SPECIALIST_GENERAL_PROMPT, VISITOR_SPECIALIST_LEADCAP_PROMPT,
+    VISITOR_SPECIALIST_ROUTER_PROMPT,
     _ai_prompt_registry, _ai_prompt_defaults,  # editable-prompt catalog + default resolver
     get_prompt, _invalidate_prompt_cache, _load_prompt_cache,  # in-memory prompt cache API
     _PROMPT_CACHE,                             # the cache dict (kept exported for parity)
@@ -20773,6 +20778,262 @@ def _visitor_classify_persona(message, persona_keys, model=None):
         return "general"
 
 
+# =============================================================================
+# VISITOR SPECIALIST ROUTER  (task 079 Phase 2 — speed)
+# =============================================================================
+# A lightweight, fail-open alternative to the persona router that needs NO admin
+# data setup: a hybrid keyword → embedding → tiny-AI classifier picks one of a
+# small fixed set of specialists per visitor turn. Each specialist supplies a
+# short sub-prompt (editable via the AI Prompts tab) and a smaller builtin-tool
+# subset, so the model ingests far fewer tokens for the matched turn.
+#
+# Activation requires ALL THREE: the AI master kill (ai_enhancements_enabled),
+# the operator master (visitor_specialist_router_enabled), AND the per-client
+# feature flag (visitor_specialist_router). With any OFF — the default for every
+# existing tenant — the routed branch is never entered and the turn runs exactly
+# as today ("general", today's full prompt + tools). ANY error anywhere returns
+# the inputs unchanged → chat never breaks.
+
+# Builtin-tool subsets per specialist. Names are EXACT CHAT_TOOLS function.name
+# strings (verified present). Narrowing is an intersection against these known
+# builtins only — custom/MCP skills (names not in CHAT_TOOLS) are NEVER pruned
+# (risk R4). lookup_service_availability is in the booking subset so the
+# availability chip still fires for booking-classified turns (risk R8).
+_SPECIALIST_TOOLS = {
+    "booking": {"lookup_services", "lookup_service_availability", "book_meeting",
+                "lookup_business_info"},
+    "pricing": {"lookup_pricing", "lookup_products", "lookup_services",
+                "lookup_offers"},
+    "general": {"lookup_faq", "lookup_business_info", "lookup_knowledge_base",
+                "lookup_gallery_cards", "lookup_blog", "lookup_team",
+                "lookup_testimonials", "lookup_events", "lookup_experiences"},
+    "leadcap": {"book_meeting", "lookup_business_info", "lookup_faq"},
+}
+
+# Fallback embedding-confidence cutoff. The live value comes from the AI-control
+# knob `visitor_specialist_embed_threshold` (default 0.78); this constant is the
+# last-resort default if that read ever fails.
+_SPECIALIST_EMBED_THRESHOLD = 0.78
+
+# Lazy module cache of specialist centroids: {key: averaged unit vector}. Built
+# on FIRST use only (never at import) and only when the router is actually
+# active, so importing app.py costs nothing and a fresh fork never makes an
+# embeddings call just by booting (risk R10).
+_specialist_centroids = None
+
+# A few short canonical example phrases per specialist. Their embeddings are
+# averaged into a centroid the live message is compared against. Kept tiny and
+# industry-agnostic; tune during manual testing.
+_SPECIALIST_CENTROID_SEEDS = {
+    "booking": ["book an appointment", "schedule a time", "check availability",
+                "reserve a slot", "make a booking"],
+    "pricing": ["how much does it cost", "what are your prices", "pricing and packages",
+                "get a quote", "buy this product"],
+    "general": ["what are your hours", "where are you located", "tell me about your business",
+                "do you have a FAQ", "what services do you offer"],
+    "leadcap": ["contact me", "call me back", "email me", "get in touch",
+                "leave my details"],
+}
+
+
+def _specialist_embed_threshold():
+    """Live embedding cutoff from the AI-control knob, fail-open to the constant.
+    Honors the master kill via get_ai_setting (no inert entry needed — when the
+    router master is forced off the router never runs)."""
+    try:
+        return float(get_ai_setting("visitor_specialist_embed_threshold"))
+    except Exception:
+        return _SPECIALIST_EMBED_THRESHOLD
+
+
+def _build_specialist_centroids():
+    """Embed the seed phrases once and average them into per-specialist unit
+    centroids. Fail-open: returns {} on any error (missing client / outage) so
+    the caller falls straight through to the AI classifier or 'general'. Never
+    raises, never called at import."""
+    out = {}
+    try:
+        if openai_client is None:
+            return {}
+        for key, phrases in _SPECIALIST_CENTROID_SEEDS.items():
+            vecs = []
+            for p in phrases:
+                try:
+                    vecs.append(_admin_respcache_embed(p))  # RAISES on failure
+                except Exception:
+                    continue
+            if not vecs:
+                continue
+            dim = len(vecs[0])
+            acc = [0.0] * dim
+            for v in vecs:
+                if len(v) != dim:
+                    continue
+                for i in range(dim):
+                    acc[i] += v[i]
+            n = float(len(vecs))
+            avg = [x / n for x in acc]
+            mag = math.sqrt(sum(x * x for x in avg)) or 1.0
+            out[key] = [x / mag for x in avg]
+    except Exception as e:
+        print(f"[specialist] centroid build skipped: {type(e).__name__}: {e}")
+        return {}
+    return out
+
+
+def _best_cosine(vec, centroids):
+    """Return (best_key, best_cosine) of `vec` against unit `centroids`.
+    Fail-open to ('general', 0.0). `vec` need not be unit — we normalize here."""
+    try:
+        if not vec or not centroids:
+            return ("general", 0.0)
+        mag = math.sqrt(sum(x * x for x in vec)) or 1.0
+        best_key, best = "general", -1.0
+        for key, c in centroids.items():
+            if not c or len(c) != len(vec):
+                continue
+            dot = 0.0
+            for i in range(len(vec)):
+                dot += vec[i] * c[i]
+            sim = dot / mag  # centroids are already unit vectors
+            if sim > best:
+                best_key, best = key, sim
+        return (best_key, best if best >= 0.0 else 0.0)
+    except Exception:
+        return ("general", 0.0)
+
+
+def _specialist_embed_match(msg_lower):
+    """Cosine of the message vs lazily-built specialist centroids. Fail-open to
+    ('general', 0.0): an embeddings outage or missing openai_client falls
+    straight through — never raises, never stalls beyond one embed call."""
+    global _specialist_centroids
+    try:
+        if openai_client is None:
+            return ("general", 0.0)
+        if _specialist_centroids is None:
+            _specialist_centroids = _build_specialist_centroids()  # may stay {}
+        if not _specialist_centroids:
+            return ("general", 0.0)
+        v = _admin_respcache_embed(msg_lower)  # tenant-neutral embed; RAISES on failure
+        return _best_cosine(v, _specialist_centroids)
+    except Exception:
+        return ("general", 0.0)
+
+
+def _specialist_ai_classify(message, keys):
+    """Tiny JSON-mode classifier — near-copy of _visitor_classify_persona, but
+    reads the EDITABLE prompt via get_prompt and uses the classifier-model knob.
+    Costs the call. Fail-open → 'general'."""
+    if not openai_client or not (message or "").strip():
+        return "general"
+    mdl = (get_ai_setting("visitor_specialist_router_model") or "").strip() or "gpt-4o-mini"
+    if mdl.lower().startswith("claude"):
+        mdl = "gpt-4o-mini"  # classifier uses OpenAI JSON mode
+    options = ", ".join(sorted(set(list(keys) + ["general"])))
+    sys = get_prompt("visitor_specialist_router_prompt",
+                     VISITOR_SPECIALIST_ROUTER_PROMPT).replace("{options}", options)
+    try:
+        resp = openai_client.with_options(timeout=15.0).chat.completions.create(
+            model=mdl, response_format={"type": "json_object"},
+            max_tokens=40, temperature=0.0,
+            messages=[{"role": "system", "content": sys},
+                      {"role": "user", "content": (message or "")[:1000]}])
+        try:
+            record_chat_cost_from_response(
+                resp, surface="visitor_chat", provider="openai", model=mdl)
+        except Exception:
+            pass
+        key = (json.loads(resp.choices[0].message.content or "{}")
+               .get("specialist") or "general").strip().lower()
+        return key if key in keys else "general"
+    except Exception as e:
+        print(f"[specialist] classify failed: {type(e).__name__}: {e}")
+        return "general"
+
+
+def _visitor_classify_specialist(message):
+    """Hybrid classifier: keyword → embedding → AI classifier. Fail-open to
+    'general'. The keyword pass handles the clear majority cheaply; the embed
+    pass catches paraphrases above the confidence cutoff; the AI classifier is
+    the last resort only on genuine ambiguity."""
+    try:
+        m = (message or "").strip().lower()
+        if not m:
+            return "general"
+        if any(k in m for k in ("book", "appointment", "schedule", "availability", "reserve")):
+            return "booking"
+        if any(k in m for k in ("price", "cost", "how much", "quote", "buy", "product", "package")):
+            return "pricing"
+        if any(k in m for k in ("contact", "call me", "email me", "get in touch")):
+            return "leadcap"
+        key, conf = _specialist_embed_match(m)
+        if conf >= _specialist_embed_threshold():
+            return key
+        return _specialist_ai_classify(message, set(_SPECIALIST_TOOLS.keys()))
+    except Exception:
+        return "general"
+
+
+def _insert_specialist_system(messages, text):
+    """Insert `text` as a NEW role=='system' message right AFTER messages[0]
+    (the cacheable byte-stable prefix) and BEFORE the per-turn reminder, so:
+      * messages[0] stays byte-identical → the Phase-1 prompt-cache prefix is
+        preserved (risk R1), and
+      * the per-turn reminder remains the LAST/highest-attention system message
+        → command-block compliance + presentation suppression are preserved
+        (risk R6).
+    No-op (returns False) if there is no leading system message."""
+    if messages and messages[0].get("role") == "system":
+        messages.insert(1, {"role": "system", "content": text})
+        return True
+    return False
+
+
+def _visitor_apply_specialist(message, model, provider, active_tools, messages):
+    """Specialist-router path. Classify the turn, narrow ONLY known builtins
+    (never drop custom/MCP skills), and insert the specialist sub-prompt as a
+    separate system message before the reminder. Returns
+    (model, provider, active_tools, specialist_key). Fail-open → inputs
+    unchanged, 'general'."""
+    try:
+        # Master-kill consistency (risk R11): honor the AI enhancements switch,
+        # matching how the persona router is blanked via _AI_INERT. (The branch
+        # caller already gates on get_ai_setting('visitor_specialist_router_enabled')
+        # — which is itself forced inert when the master kill is off — but we
+        # re-check the master here for defense in depth / direct callers.)
+        if not get_ai_setting("ai_enhancements_enabled"):
+            return model, provider, active_tools, "general"
+        key = _visitor_classify_specialist(message)
+        if key == "general" or key not in _SPECIALIST_TOOLS:
+            return model, provider, active_tools, "general"
+        allowed = _SPECIALIST_TOOLS[key]
+        suffix = get_prompt(f"visitor_specialist_{key}", "").strip()
+        # Strict fail-open (risk R-B3): only specialize when BOTH a non-empty
+        # subset AND a non-empty sub-prompt resolve; else behave like 'general'
+        # (full tools, no specialist block).
+        if not allowed or not suffix:
+            return model, provider, active_tools, "general"
+        # ADDITIVE-SAFE narrowing (risk R4): prune only KNOWN CHAT_TOOLS builtins;
+        # ALWAYS keep any tool whose name isn't a builtin (custom/webhook/SQL/MCP
+        # skills). A typo'd builtin name only over-narrows (drops a tool), never
+        # widens privilege.
+        builtin_names = {(t.get("function") or {}).get("name") for t in CHAT_TOOLS}
+        active_tools = [
+            t for t in active_tools
+            if (((t.get("function") or {}).get("name") or "") in allowed)
+            or (((t.get("function") or {}).get("name") or "") not in builtin_names)
+        ]
+        # Insert the specialist sub-prompt as a separate, adjacent system message
+        # (keeps the cache prefix byte-stable AND the reminder last).
+        _insert_specialist_system(messages, "SPECIALIST CONTEXT:\n" + suffix)
+        print(f"[specialist] key={key} tools={len(active_tools)}")
+        return model, provider, active_tools, key
+    except Exception as e:
+        print(f"[specialist] apply skipped: {type(e).__name__}: {e}")
+        return model, provider, active_tools, "general"
+
+
 def _visitor_apply_persona(message, model, provider, active_tools, messages):
     """When the router is enabled, classify the turn and apply the chosen
     persona: constrain the tool list, append its prompt_suffix to the system
@@ -20782,6 +21043,16 @@ def _visitor_apply_persona(message, model, provider, active_tools, messages):
     persona_key 'general'."""
     try:
         if not get_ai_setting("visitor_persona_router_enabled"):
+            # Persona router OFF → consider the task-079 specialist router, which
+            # is an INDEPENDENT, data-free fast path. It activates only when its
+            # operator master AND the per-client feature flag are ON (the master
+            # is itself forced inert when the AI master kill is off). With either
+            # OFF — the default for every existing tenant — this returns the
+            # inputs unchanged → today's EXACT single-agent flow.
+            if get_ai_setting("visitor_specialist_router_enabled") \
+                    and tenant_has_feature("visitor_specialist_router"):
+                return _visitor_apply_specialist(
+                    message, model, provider, active_tools, messages)
             return model, provider, active_tools, "general"
         personas = _visitor_load_personas(current_tenant_id())
         if not personas:
@@ -20797,10 +21068,15 @@ def _visitor_apply_persona(message, model, provider, active_tools, messages):
         if allowed:
             active_tools = [t for t in active_tools
                             if ((t.get("function") or {}).get("name") or "") in allowed]
-        # Prompt augmentation (mutate the system message in place).
+        # Prompt augmentation. CACHE FIX (risk R1, task 079): insert the persona
+        # suffix as a SEPARATE adjacent system message (after the cacheable
+        # prefix messages[0], before the per-turn reminder) instead of
+        # concatenating it into messages[0]. The model reads the SAME text in the
+        # SAME array order, but messages[0] stays byte-stable so the Phase-1
+        # prompt-cache prefix survives for persona-router tenants too.
         suffix = (p.get("prompt_suffix") or "").strip()
-        if suffix and messages and messages[0].get("role") == "system":
-            messages[0]["content"] = (messages[0].get("content") or "") + "\n\n" + suffix
+        if suffix:
+            _insert_specialist_system(messages, suffix)
         # Optional per-persona model override (only if its provider is available).
         pm = (p.get("model") or "").strip()
         if pm:
@@ -21819,11 +22095,16 @@ def api_chat():
                 return
             active_tools = get_active_chat_tools()
 
-            # Phase 6 (046): visitor persona router. When enabled, classify this
-            # turn into a super-admin-defined persona and constrain tools +
-            # augment the system prompt (+ optional model). Default-off → no
-            # change (single agent, all enabled tools). Mutates `messages[0]`
-            # (system) in place; fail-open leaves everything unchanged.
+            # Phase 6 (046) + task 079 P2: visitor router. When the persona
+            # router is enabled it classifies into a super-admin-defined persona;
+            # otherwise, when the task-079 specialist router (operator master +
+            # per-client feature flag) is on, it classifies into a fast
+            # specialist. Either path constrains tools + augments the prompt by
+            # INSERTING a separate adjacent system message (after the cacheable
+            # prefix messages[0], before the per-turn reminder) so the Phase-1
+            # cache prefix stays byte-stable and the reminder stays last.
+            # Default-off → no change (single agent, all enabled tools);
+            # fail-open leaves everything unchanged.
             model, provider, active_tools, _persona_key = _visitor_apply_persona(
                 message, model, provider, active_tools, messages)
 

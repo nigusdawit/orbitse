@@ -564,6 +564,12 @@ _FEATURE_REGISTRY = [
     ("fleet",                "Fleet sync / VELO",            "enterprise", False, "System"),
     ("llm_provider",         "LLM provider selector",        "growth",     False, "AI"),
     ("stripe",               "Stripe / billing config",      "growth",     False, "Billing"),
+    # Visitor specialist router (speed, task 079 Phase 2): when ON, a hybrid
+    # keyword+embedding match (tiny AI classifier only on ambiguity) picks a
+    # specialist sub-prompt + minimal tool subset per turn so the model ingests
+    # far fewer tokens. Default OFF → today's single-agent flow runs unchanged.
+    # Fail-open. Lazy-seeded from _FEATURE_DEFAULTS on first lookup (no migration).
+    ("visitor_specialist_router", "Visitor specialist router (faster replies)", "growth", False, "AI"),
 ]
 _FEATURE_NAMES = {row[0] for row in _FEATURE_REGISTRY}
 _FEATURE_DEFAULTS = {row[0]: row[3] for row in _FEATURE_REGISTRY}
@@ -2218,6 +2224,64 @@ PERSONA_ROUTER_PROMPT = (
     "  general — anything that doesn't clearly fit above"
 )
 
+# ---------------------------------------------------------------------------
+# VISITOR SPECIALIST ROUTER prompts (task 079 Phase 2) — editable via the
+# AI Prompts tab (category "Visitor Chat"), keys registered in
+# _ai_prompt_registry() and read through get_prompt(key, DEFAULT_CONST).
+#
+# These four specialist sub-prompts are SHORT and deliberately do NOT restate
+# the whole visitor SYSTEM_PROMPT — they ride on top of it (the model still
+# receives the full base prompt as the cacheable prefix; the specialist text is
+# inserted as a separate, adjacent system message). Each just sharpens focus for
+# one intent and reminds the model which command/tool rules apply for that lane.
+# They must stay NON-EMPTY (the test_ai_prompts gate asserts a non-blank default
+# for every key).
+VISITOR_SPECIALIST_BOOKING_PROMPT = (
+    "SPECIALIST FOCUS — BOOKING / SCHEDULING.\n"
+    "This turn is about booking, appointments, availability, or reservations. "
+    "Help the visitor pick a service/time and complete a booking efficiently. "
+    "Check live availability before promising a slot. The booking/scheduling "
+    "command rules from the base prompt still apply in full: use the "
+    "`bookService` / `openBookingModal` command blocks to actually start or "
+    "confirm a booking (and `bookingPartialSave` to save progress) — never just "
+    "describe the action. Stay concise."
+)
+VISITOR_SPECIALIST_PRICING_PROMPT = (
+    "SPECIALIST FOCUS — PRICING / PRODUCTS.\n"
+    "This turn is about prices, packages, products, or quotes. Give accurate, "
+    "specific pricing from the site's real data — look it up rather than "
+    "guessing, and never invent numbers. Compare options when it helps the "
+    "visitor decide, and surface any current offers that genuinely apply. If a "
+    "price isn't published, say so and offer the next step (e.g. a quote or "
+    "contact). All base-prompt command rules still apply. Stay concise."
+)
+VISITOR_SPECIALIST_GENERAL_PROMPT = (
+    "SPECIALIST FOCUS — GENERAL / FAQ.\n"
+    "This turn is a general question about the business — hours, location, "
+    "policies, what they offer, who they are, or other FAQ-style topics. Answer "
+    "from the site's real content (FAQ, business info, knowledge base, pages) "
+    "and prefer pointing the visitor to the most relevant existing section over "
+    "generating new content. All base-prompt command and decision-priority "
+    "rules still apply. Stay concise and friendly."
+)
+VISITOR_SPECIALIST_LEADCAP_PROMPT = (
+    "SPECIALIST FOCUS — LEAD CAPTURE / CONTACT.\n"
+    "This turn is about getting in touch, a callback, or leaving contact "
+    "details. Help the visitor reach the business and capture their request "
+    "cleanly. Collect the needed fields one or two at a time, then use the "
+    "`partialFormSave` and `submitForm` command blocks from the base prompt to "
+    "actually record the details — never just say you saved them. Never invent "
+    "contact information on the visitor's behalf. Stay concise."
+)
+# Cheap classifier prompt that PICKS the specialist. Keeps the {options} token
+# (replaced at call time with the live specialist list, mirroring the admin
+# persona router contract). Read via get_prompt("visitor_specialist_router_prompt", …).
+VISITOR_SPECIALIST_ROUTER_PROMPT = (
+    "You are a routing classifier for a website concierge. Pick the single best "
+    "specialist for the visitor's message from: {options}. Reply ONLY as JSON: "
+    '{"specialist": "<key>"}. If unsure, use "general".'
+)
+
 # Process-level cache. Loaded once from the ai_prompts table; refreshed only on
 # a super-admin save. Guarded by a lock so concurrent first-requests load once.
 _PROMPT_CACHE = {}
@@ -2277,6 +2341,51 @@ def _ai_prompt_registry():
                            "should answer. MUST keep the {options} token — it "
                            "is replaced with the live persona list.",
             "default": lambda: PERSONA_ROUTER_PROMPT,
+        },
+        # --- Visitor specialist router (task 079 Phase 2). Four specialist
+        # sub-prompts + one classifier prompt. Registered in this exact order;
+        # tests/test_ai_prompts.py EXPECTED_KEYS must match (exact-ordered gate).
+        {
+            "key": "visitor_specialist_booking",
+            "label": "Visitor Specialist — Booking/Scheduling",
+            "category": "Visitor Chat",
+            "description": "Specialist sub-prompt for booking/scheduling turns "
+                           "(visitor specialist router). Editable; falls back to "
+                           "the built-in default.",
+            "default": lambda: VISITOR_SPECIALIST_BOOKING_PROMPT,
+        },
+        {
+            "key": "visitor_specialist_pricing",
+            "label": "Visitor Specialist — Pricing/Products",
+            "category": "Visitor Chat",
+            "description": "Specialist sub-prompt for pricing/products turns "
+                           "(visitor specialist router).",
+            "default": lambda: VISITOR_SPECIALIST_PRICING_PROMPT,
+        },
+        {
+            "key": "visitor_specialist_general",
+            "label": "Visitor Specialist — General/FAQ",
+            "category": "Visitor Chat",
+            "description": "Specialist sub-prompt for general questions and FAQ "
+                           "(visitor specialist router).",
+            "default": lambda: VISITOR_SPECIALIST_GENERAL_PROMPT,
+        },
+        {
+            "key": "visitor_specialist_leadcap",
+            "label": "Visitor Specialist — Lead Capture",
+            "category": "Visitor Chat",
+            "description": "Specialist sub-prompt for lead-capture / contact turns "
+                           "(visitor specialist router).",
+            "default": lambda: VISITOR_SPECIALIST_LEADCAP_PROMPT,
+        },
+        {
+            "key": "visitor_specialist_router_prompt",
+            "label": "Visitor Specialist Router (classifier)",
+            "category": "Visitor Chat",
+            "description": "Cheap classifier that picks the specialist for a "
+                           "visitor turn. MUST keep the {options} token — it is "
+                           "replaced with the live specialist list.",
+            "default": lambda: VISITOR_SPECIALIST_ROUTER_PROMPT,
         },
         {
             "key": "scraper_url_intro",
@@ -2751,6 +2860,31 @@ def _ai_control_registry():
          "env": "VISITOR_PERSONA_ROUTER_MODEL",
          "description": "Model for the cheap per-turn persona classifier (e.g. gpt-4o-mini). "
                         "Blank = gpt-4o-mini."},
+        # Visitor specialist router (speed, task 079 Phase 2). Operator-wide
+        # master switch + classifier model + embedding confidence cutoff. The
+        # router activates only when THIS master AND the per-client
+        # `visitor_specialist_router` feature flag are ON (and the AI master kill
+        # is on). All default-inert → today's single-agent flow.
+        {"key": "visitor_specialist_router_enabled", "attr": "visitor_specialist_router_enabled", "type": "bool",
+         "group": "Visitor Personas", "label": "Route visitors to fast specialists",
+         "env": "VISITOR_SPECIALIST_ROUTER_ENABLED",
+         "description": "Operator master switch for the visitor specialist router (faster "
+                        "replies). When ON — and the per-client 'Visitor specialist router' "
+                        "feature is enabled — each visitor turn is classified (keyword → "
+                        "embedding → tiny classifier) into a specialist sub-prompt + a "
+                        "smaller tool subset so the model ingests fewer tokens. Off = one "
+                        "general agent with all enabled tools (current behavior). Fail-open."},
+        {"key": "visitor_specialist_router_model", "attr": "visitor_specialist_router_model", "type": "string",
+         "group": "Visitor Personas", "label": "Specialist classifier model",
+         "env": "VISITOR_SPECIALIST_ROUTER_MODEL",
+         "description": "Model for the cheap specialist classifier used only on ambiguous "
+                        "turns (e.g. gpt-4o-mini). Blank = gpt-4o-mini."},
+        {"key": "visitor_specialist_embed_threshold", "attr": "visitor_specialist_embed_threshold", "type": "float",
+         "group": "Visitor Personas", "label": "Specialist embedding confidence cutoff",
+         "env": "VISITOR_SPECIALIST_EMBED_THRESHOLD",
+         "description": "Cosine-similarity cutoff for the embedding match before falling back "
+                        "to the tiny AI classifier. Higher = stricter (more turns go to the "
+                        "classifier). Default 0.78."},
         # Handoff summary (Phase 6 / task 048)
         {"key": "handoff_summary_enabled", "attr": "handoff_summary_enabled", "type": "bool",
          "group": "Growth Tools", "label": "AI handoff summary on callback requests",
@@ -2906,6 +3040,12 @@ _AI_INERT = {
     "offers_enabled": False, "lead_capture_enabled": False,
     "callback_requests_enabled": False, "team_notifications_enabled": False,
     "visitor_persona_router_enabled": False, "handoff_summary_enabled": False,
+    # Visitor specialist router (task 079 Phase 2): force the master OFF and the
+    # classifier model blank under the AI master-kill, mirroring the persona
+    # router. The embedding-threshold amount-only knob doesn't need an inert
+    # entry — when the enable flag is forced off the router never runs (the knob
+    # falls back to its pylego.config default, same pattern as rate_limit_max).
+    "visitor_specialist_router_enabled": False, "visitor_specialist_router_model": "",
     "meetings_enabled": False, "live_call_enabled": False,
     "research_hub_enabled": False, "content_studio_enabled": False,
     "visual_content_enabled": False, "autopublish_enabled": False,
