@@ -24,10 +24,12 @@ WHAT'S HERE (B1, first slice)
 import os
 import sys
 import threading
+from functools import wraps
 
 import psycopg2
 import psycopg2.extras
 import psycopg2.extensions  # _PooledConnection subclasses psycopg2.extensions.connection
+from flask import session, request, jsonify, redirect, url_for  # used by the auth gates (below)
 
 # Database connection string. core reads it straight from the environment - the
 # same value app.py reads into its own DATABASE_URL - so the DB helpers below are
@@ -298,3 +300,79 @@ def execute_db(sql, params=None):
             return cur.rowcount
     finally:
         conn.close()
+
+
+# =============================================================================
+# AUTH GATES  (moved verbatim from app.py - Track B / B1)
+# Self-contained: only Flask session/request primitives. url_for("admin_login")
+# resolves at REQUEST time against whatever app the route is registered on, so
+# admin_login staying in app.py is fine. The LOGIN handlers + lockout caches
+# (_LOGIN_ATTEMPTS / _SUPER_ADMIN_ATTEMPTS) remain in app.py.
+# =============================================================================
+def admin_required(f):
+    """
+    Decorator that protects a route with admin authentication.
+
+    For HTML page routes: redirects to the login page if not logged in
+    (so the user sees the familiar password form).
+
+    For JSON API routes (anything under /admin/api/* or any request that
+    explicitly accepts JSON / sends JSON / is XHR): returns a JSON 401
+    instead of a redirect. Without this the browser fetch silently
+    follows the 302 to /admin/login, the response body is HTML, and the
+    dashboard JS shows a generic "Could not save settings" error after
+    the admin's session expires — extremely confusing for the user.
+    Returning a real 401 lets the dashboard prompt for re-login cleanly.
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get("admin_logged_in"):
+            wants_json = (
+                request.path.startswith("/admin/api/")
+                or request.is_json
+                or "application/json" in (request.headers.get("Accept") or "")
+                or request.headers.get("X-Requested-With") == "XMLHttpRequest"
+            )
+            if wants_json:
+                return jsonify({"error": "Admin session expired. Please log in again.", "auth_required": True}), 401
+            return redirect(url_for("admin_login"))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def _is_super_admin():
+    """True only for a logged-in session whose role is super_admin.
+
+    The role lives server-side in the signed Flask session (set at login /
+    SSO), so it can't be forged client-side. Two non-obvious rules:
+
+    * MUST be logged-in. We deliberately AND on `admin_logged_in` so that an
+      anonymous/public request (which has no session role) returns False — the
+      `"super_admin"` default below is only ever reached by a session that is
+      already logged in. This matters because `_enforce_feature_flags` early-
+      returns for super-admins; if anon callers defaulted to super_admin the
+      feature gates (incl. the anon-GET 404-leak guard and the public
+      automations-webhook gate) would stop applying to the public.
+    * Missing role defaults to super_admin — back-compat for sessions that were
+      established before roles existed (those are the operator's own).
+
+    Drives: feature-flag bypass (super admin sees/uses everything), the
+    Plans & Features tab, and the feature-toggle endpoint guard. Distinct from
+    the SUPER_ADMIN_KEY unlock-key step-up, which stays as-is.
+    """
+    if not session.get("admin_logged_in"):
+        return False
+    return session.get("admin_role", "super_admin") == "super_admin"
+
+
+def _require_super_admin_role():
+    """Return a 403 JSON response if the session is not the super-admin role,
+    else None. Used to hard-gate the feature-control endpoints so a client
+    session can never change what it was granted (the template hiding the tab
+    is cosmetic; THIS is the real boundary)."""
+    if not _is_super_admin():
+        return jsonify({
+            "error": "super_admin_role_required",
+            "message": "Only the super admin can manage feature visibility.",
+        }), 403
+    return None
