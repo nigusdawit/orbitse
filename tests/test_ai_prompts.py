@@ -12,8 +12,18 @@ re-export keeps them resolving unchanged after the move.
 
 Runs under the embedded-Postgres harness (_runner.py / conftest boots the app
 once against a throwaway pgserver). No live LLM calls.
+
+The HTTP-route tests at the bottom additionally pin the /admin/api/ai-prompts*
+endpoints (super-admin gating + the GET / PUT / reset cycle) before those routes
+are relocated from app.py into the ai_prompts blueprint (piece #1, part B). The
+route-snapshot test guards the URL surface; these guard the behavior.
 """
+import os
+
 import app
+
+ADMIN_PW = os.environ.get("ADMIN_PASSWORD", "admin")
+CLIENT_PW = os.environ.get("CLIENT_PASSWORD", "")
 
 
 # The canonical, ordered set of editable-prompt keys. Stable contract: the
@@ -126,3 +136,106 @@ def test_blank_override_falls_through_to_default():
             (key, app.PERSONA_ROUTER_PROMPT),
         )
         app._invalidate_prompt_cache()
+
+
+# =============================================================================
+# HTTP routes: /admin/api/ai-prompts* + /admin/api/default-system-prompt
+# =============================================================================
+# These pin the route behavior (super-admin gating + GET/PUT/reset cycle) so the
+# blueprint relocation (piece #1, part B) is proven non-behavior-changing.
+
+def _login(c, pw):
+    return c.post("/admin/login", data={"password": pw})
+
+
+def _csrf(c):
+    with c.session_transaction() as s:
+        s["_csrf_token"] = "tok"
+    return {"X-CSRF-Token": "tok"}
+
+
+def test_list_ai_prompts_super_admin_ok():
+    c = app.app.test_client()
+    assert _login(c, ADMIN_PW).status_code in (200, 302)
+    r = c.get("/admin/api/ai-prompts")
+    assert r.status_code == 200, r.get_data(as_text=True)
+    body = r.get_json()
+    keys = [p["key"] for p in body["prompts"]]
+    assert keys == EXPECTED_KEYS
+    # Every item carries the editor fields.
+    for p in body["prompts"]:
+        assert set(("key", "label", "category", "description", "content",
+                    "is_default", "updated_at", "updated_by")).issubset(p.keys())
+
+
+def test_list_ai_prompts_client_forbidden():
+    """A client session (not super-admin) is 403'd by _require_super_admin_role."""
+    if not CLIENT_PW:
+        return  # client role not enabled in this harness env
+    c = app.app.test_client()
+    assert _login(c, CLIENT_PW).status_code in (200, 302)
+    r = c.get("/admin/api/ai-prompts")
+    assert r.status_code == 403
+    assert r.get_json().get("error") == "super_admin_role_required"
+
+
+def test_list_ai_prompts_anon_blocked():
+    """No session at all → @admin_required returns 401 for the JSON API path."""
+    c = app.app.test_client()
+    r = c.get("/admin/api/ai-prompts")
+    assert r.status_code == 401
+
+
+def test_update_then_reset_ai_prompt_roundtrip():
+    c = app.app.test_client()
+    assert _login(c, ADMIN_PW).status_code in (200, 302)
+    hdr = _csrf(c)
+    key = "seo_suggest"
+    try:
+        # PUT a new value.
+        r = c.put(f"/admin/api/ai-prompts/{key}",
+                  json={"content": "ROUTE-TEST seo prompt"}, headers=hdr)
+        assert r.status_code == 200, r.get_data(as_text=True)
+        assert r.get_json()["is_default"] is False
+        assert app.get_prompt(key, app.SEO_SUGGEST_PROMPT) == "ROUTE-TEST seo prompt"
+        # Reset restores the hardcoded default.
+        r2 = c.post(f"/admin/api/ai-prompts/{key}/reset", headers=hdr)
+        assert r2.status_code == 200, r2.get_data(as_text=True)
+        assert r2.get_json()["is_default"] is True
+        assert r2.get_json()["content"] == app.SEO_SUGGEST_PROMPT
+        assert app.get_prompt(key, app.SEO_SUGGEST_PROMPT) == app.SEO_SUGGEST_PROMPT
+    finally:
+        app.execute_db(
+            "INSERT INTO ai_prompts (prompt_key, content) VALUES (%s, %s) "
+            "ON CONFLICT (prompt_key) DO UPDATE SET content = EXCLUDED.content",
+            (key, app.SEO_SUGGEST_PROMPT),
+        )
+        app._invalidate_prompt_cache()
+
+
+def test_update_ai_prompt_validation():
+    c = app.app.test_client()
+    assert _login(c, ADMIN_PW).status_code in (200, 302)
+    hdr = _csrf(c)
+    # Unknown key → 404.
+    r = c.put("/admin/api/ai-prompts/__nope__",
+              json={"content": "x"}, headers=hdr)
+    assert r.status_code == 404
+    assert r.get_json().get("error") == "unknown_prompt_key"
+    # Blank content → 400 empty_content.
+    r2 = c.put("/admin/api/ai-prompts/seo_suggest",
+               json={"content": "   "}, headers=hdr)
+    assert r2.status_code == 400
+    assert r2.get_json().get("error") == "empty_content"
+    # Missing content → 400 missing_content.
+    r3 = c.put("/admin/api/ai-prompts/seo_suggest", json={}, headers=hdr)
+    assert r3.status_code == 400
+    assert r3.get_json().get("error") == "missing_content"
+
+
+def test_default_system_prompt_route():
+    c = app.app.test_client()
+    assert _login(c, ADMIN_PW).status_code in (200, 302)
+    r = c.get("/admin/api/default-system-prompt")
+    assert r.status_code == 200
+    assert r.get_json().get("system_prompt") == app.SYSTEM_PROMPT

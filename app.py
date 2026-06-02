@@ -25855,126 +25855,11 @@ def admin_list_ai_activity():
 # Visitor-persona admin CRUD (super-admin only) moved to admin/personas.py (Track B); routes registered via personas_bp. Helpers _row_persona/_persona_payload moved with them.
 
 
-@app.route("/admin/api/ai-prompts", methods=["GET"])
-@admin_required
-def admin_list_ai_prompts():
-    """Return every editable prompt with its current text, its hardcoded
-    default, and whether the stored text still matches that default."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    # Current stored values (keyed by prompt_key).
-    stored = {}
-    try:
-        for r in (query_db("SELECT prompt_key, content, updated_at, updated_by "
-                           "FROM ai_prompts") or []):
-            stored[r["prompt_key"]] = r
-    except Exception as e:
-        print(f"[ai-prompts] list read failed: {e}")
-    defaults = _ai_prompt_defaults()
-    items = []
-    for meta in _ai_prompt_registry():
-        key = meta["key"]
-        default_text = defaults.get(key, "")
-        row = stored.get(key) or {}
-        content = row.get("content")
-        if content is None or not str(content).strip():
-            # Not seeded yet (brand-new DB before the boot seed ran) — show the
-            # default so the editor is never empty.
-            content = default_text
-        updated_at = row.get("updated_at")
-        items.append({
-            "key": key,
-            "label": meta["label"],
-            "category": meta["category"],
-            "description": meta["description"],
-            "content": content,
-            "is_default": (str(content).strip() == str(default_text).strip()),
-            "updated_at": updated_at.isoformat() if updated_at else None,
-            "updated_by": row.get("updated_by"),
-        })
-    return jsonify({"prompts": items})
-
-
-@app.route("/admin/api/ai-prompts/<key>", methods=["PUT"])
-@admin_required
-def admin_update_ai_prompt(key):
-    """Save new text for one prompt. Upserts the row and refreshes the cache so
-    the change is live everywhere on the very next AI call."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    valid_keys = {m["key"] for m in _ai_prompt_registry()}
-    if key not in valid_keys:
-        return jsonify({"error": "unknown_prompt_key"}), 404
-    data = request.get_json(silent=True) or {}
-    content = data.get("content")
-    if content is None:
-        return jsonify({"error": "missing_content"}), 400
-    content = str(content)
-    if not content.strip():
-        return jsonify({"error": "empty_content",
-                        "message": "Prompt text cannot be blank. Use Reset to "
-                                   "restore the default."}), 400
-    who = session.get("admin_username") or session.get("admin_role") or "super_admin"
-    try:
-        execute_db(
-            "INSERT INTO ai_prompts (prompt_key, content, updated_at, updated_by) "
-            "VALUES (%s, %s, NOW(), %s) "
-            "ON CONFLICT (prompt_key) DO UPDATE SET "
-            "content = EXCLUDED.content, updated_at = NOW(), "
-            "updated_by = EXCLUDED.updated_by",
-            (key, content, who),
-        )
-    except Exception as e:
-        print(f"[ai-prompts] save failed for {key}: {e}")
-        return jsonify({"error": "save_failed"}), 500
-    _invalidate_prompt_cache()
-    default_text = _ai_prompt_defaults().get(key, "")
-    return jsonify({"ok": True, "key": key,
-                    "is_default": (content.strip() == str(default_text).strip())})
-
-
-@app.route("/admin/api/ai-prompts/<key>/reset", methods=["POST"])
-@admin_required
-def admin_reset_ai_prompt(key):
-    """Restore one prompt to its current hardcoded default and refresh cache."""
-    guard = _require_super_admin_role()
-    if guard:
-        return guard
-    valid_keys = {m["key"] for m in _ai_prompt_registry()}
-    if key not in valid_keys:
-        return jsonify({"error": "unknown_prompt_key"}), 404
-    default_text = _ai_prompt_defaults().get(key, "")
-    who = session.get("admin_username") or session.get("admin_role") or "super_admin"
-    try:
-        execute_db(
-            "INSERT INTO ai_prompts (prompt_key, content, updated_at, updated_by) "
-            "VALUES (%s, %s, NOW(), %s) "
-            "ON CONFLICT (prompt_key) DO UPDATE SET "
-            "content = EXCLUDED.content, updated_at = NOW(), "
-            "updated_by = EXCLUDED.updated_by",
-            (key, default_text, who),
-        )
-    except Exception as e:
-        print(f"[ai-prompts] reset failed for {key}: {e}")
-        return jsonify({"error": "reset_failed"}), 500
-    _invalidate_prompt_cache()
-    return jsonify({"ok": True, "key": key, "content": default_text,
-                    "is_default": True})
-
-
-# --------------- Default System Prompt (public read for admin pre-fill) ------
-
-@app.route("/admin/api/default-system-prompt", methods=["GET"])
-@admin_required
-def admin_get_default_prompt():
-    """GET the hardcoded default system prompt so the admin can pre-fill."""
-    # Prompt privacy: the default prompt is part of the operator's IP too —
-    # only the super-admin may read it.
-    if not _is_super_admin():
-        return jsonify({"error": "forbidden"}), 403
-    return jsonify({"system_prompt": SYSTEM_PROMPT})
+# AI editable-prompts API (GET /admin/api/ai-prompts, PUT /admin/api/ai-prompts/<key>,
+# POST /admin/api/ai-prompts/<key>/reset, GET /admin/api/default-system-prompt)
+# moved to admin/ai_prompts.py (Track B / task 078, piece #1); routes registered via
+# ai_prompts_bp. Same URLs; @admin_required + in-body super-admin gate preserved. The
+# prompt registry/cache + SYSTEM_PROMPT now live in core (re-exported for app.py).
 
 
 # --------------- AI Knowledge Cache (semantic response cache) ---------------
@@ -41411,6 +41296,15 @@ app.register_blueprint(crm_bp)
 # imports it cleanly. Registered like the other admin blueprints.
 from admin.tenancy import tenancy_bp  # noqa: E402
 app.register_blueprint(tenancy_bp)
+
+# AI prompts blueprint (Track B / task 078, piece #1): the super-admin editable
+# system-prompt API — GET /admin/api/ai-prompts (list), PUT /admin/api/ai-prompts/<key>
+# (save), POST /admin/api/ai-prompts/<key>/reset (restore default), and GET
+# /admin/api/default-system-prompt (editor pre-fill). @admin_required + in-body
+# super-admin gate preserved (from core). The prompt registry/cache + SYSTEM_PROMPT
+# now live in core, so this blueprint imports them cleanly. Registered like the others.
+from admin.ai_prompts import ai_prompts_bp  # noqa: E402
+app.register_blueprint(ai_prompts_bp)
 
 
 def _resolve_velo_callback_url():
