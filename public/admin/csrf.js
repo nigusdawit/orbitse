@@ -1586,21 +1586,41 @@
     catch (e) { ann = {}; }
     if (schema.error) { detail.innerHTML = '<p style="color:#f87171;">' + datahubEsc(schema.error) + '</p>'; return; }
     const tables = schema.tables || [];
-    let html = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;">
+    // Header: "Define selected (N)" sits beside "Auto-define with AI". The
+    // selected-count starts at 0 and is kept in sync by datahubUpdateSelected()
+    // as per-row checkboxes toggle. The button is disabled until ≥1 is checked.
+    let html = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;gap:.5rem;flex-wrap:wrap;">
         <h3 style="margin:0;">Tables (${tables.length})</h3>
-        <button class="btn-primary" onclick="datahubAutoDefine(${cid})" data-testid="datahub-autodefine">✨ Auto-define with AI</button>
+        <div style="display:flex;gap:.4rem;">
+          <button class="btn-secondary" id="dh-define-selected" onclick="datahubDefineSelected(${cid})" disabled
+                  data-testid="datahub-define-selected">✨ Define selected (0)</button>
+          <button class="btn-primary" onclick="datahubAutoDefine(${cid})" data-testid="datahub-autodefine">✨ Auto-define with AI</button>
+        </div>
       </div>
-      <p style="color:var(--muted-fg,#888);font-size:.8rem;">Edit a description to mark it reviewed (the AI then treats it as ground truth).</p>`;
+      <p style="color:var(--muted-fg,#888);font-size:.8rem;">Edit a description to mark it reviewed (the AI then treats it as ground truth). Check tables to define a subset, or use ✨ on a single table/column.</p>`;
     html += '<div style="display:flex;flex-direction:column;gap:.4rem;">';
     tables.forEach(t => {
       const badge = t.reviewed
         ? '<span style="background:#16a34a22;color:#16a34a;padding:.1rem .4rem;border-radius:.3rem;font-size:.7rem;">reviewed</span>'
         : (t.description ? '<span style="background:#f59e0b22;color:#f59e0b;padding:.1rem .4rem;border-radius:.3rem;font-size:.7rem;">AI-suggested · review</span>' : '');
+      // A "view" badge marks objects discovered as views (still selectable +
+      // definable). Tables get no type badge to keep the list quiet.
+      const typeBadge = (t.type === 'view')
+        ? '<span style="background:#6366f122;color:#6366f1;padding:.1rem .4rem;border-radius:.3rem;font-size:.7rem;" title="This object is a database view">view</span>'
+        : '';
       const tn = datahubEsc(t.table);
       html += `<div style="border:1px solid var(--admin-border);border-radius:.5rem;padding:.5rem .75rem;">
           <div style="display:flex;justify-content:space-between;gap:.5rem;align-items:center;">
-            <span><strong>${tn}</strong> ${badge}</span>
-            <button class="acm-btn" style="font-size:.72rem;" onclick="datahubToggleCols('${tn}',${cid},this)">columns ▾</button>
+            <span style="display:flex;align-items:center;gap:.4rem;">
+              <input type="checkbox" data-dh-pick="${tn}" onchange="datahubUpdateSelected()"
+                     title="Select for 'Define selected'">
+              <strong>${tn}</strong> ${typeBadge} ${badge}
+            </span>
+            <span style="display:flex;gap:.3rem;align-items:center;">
+              <button class="acm-btn" style="font-size:.72rem;" onclick="datahubDefineOne(${cid},'${tn}')"
+                      title="Draft definitions for just this table with AI">✨ define</button>
+              <button class="acm-btn" style="font-size:.72rem;" onclick="datahubToggleCols('${tn}',${cid},this)">columns ▾</button>
+            </span>
           </div>
           <input data-dh-table="${tn}" value="${datahubEsc(t.description || '')}" placeholder="Describe this table…"
                  style="width:100%;margin-top:.4rem;padding:.3rem;border:1px solid var(--admin-border);border-radius:.3rem;"
@@ -1641,20 +1661,28 @@
     try { d = await (await fetch('/admin/api/datahub/' + cid + '/schema?table=' + encodeURIComponent(table), { credentials: 'same-origin' })).json(); }
     catch (e) { holder.innerHTML = '<span style="color:#f87171;">Failed</span>'; return; }
     const cols = (d.columns || []);
+    const tEsc = datahubEsc(table);
     holder.innerHTML = cols.map(c => {
       const cn = datahubEsc(c.column);
       const sens = c.is_sensitive ? 'checked' : '';
+      // Badge a column the AI drafted but a human hasn't reviewed yet, mirroring
+      // the table-level "AI-suggested · review" badge.
+      const aiBadge = (c.ai_generated && !c.reviewed)
+        ? '<span style="background:#f59e0b22;color:#f59e0b;padding:.05rem .3rem;border-radius:.3rem;font-size:.65rem;" title="AI-suggested — review">AI</span>'
+        : '';
       return `<div style="display:flex;gap:.4rem;align-items:center;margin:.2rem 0;">
-          <code style="min-width:130px;font-size:.78rem;">${cn} <span style="color:var(--muted-fg,#888);">${datahubEsc(c.type || '')}</span></code>
+          <button class="acm-btn" style="font-size:.72rem;padding:.1rem .3rem;" title="Draft a definition for just this column with AI"
+                  onclick="datahubDefineColumn(${cid},'${tEsc}','${cn}')">✨</button>
+          <code style="min-width:130px;font-size:.78rem;">${cn} <span style="color:var(--muted-fg,#888);">${datahubEsc(c.type || '')}</span> ${aiBadge}</code>
           <input data-dh-col="${cn}" value="${datahubEsc(c.description || '')}" placeholder="meaning…"
                  style="flex:1;padding:.25rem;border:1px solid var(--admin-border);border-radius:.3rem;font-size:.8rem;"
-                 onchange="datahubSaveCol(${cid},'${datahubEsc(table)}',this)">
+                 onchange="datahubSaveCol(${cid},'${tEsc}',this)">
           <input data-dh-sem value="${datahubEsc(c.semantic_type || '')}" placeholder="type"
                  style="width:90px;padding:.25rem;border:1px solid var(--admin-border);border-radius:.3rem;font-size:.78rem;"
-                 onchange="datahubSaveCol(${cid},'${datahubEsc(table)}',this.parentElement.querySelector('[data-dh-col]'))">
+                 onchange="datahubSaveCol(${cid},'${tEsc}',this.parentElement.querySelector('[data-dh-col]'))">
           <label title="Mark as sensitive (PII/secret) — masked in tool results" style="display:flex;align-items:center;gap:.2rem;font-size:.72rem;color:var(--muted-fg,#888);white-space:nowrap;">
             <input type="checkbox" data-dh-sens ${sens}
-                   onchange="datahubSaveCol(${cid},'${datahubEsc(table)}',this.parentElement.parentElement.querySelector('[data-dh-col]'))"> sensitive
+                   onchange="datahubSaveCol(${cid},'${tEsc}',this.parentElement.parentElement.querySelector('[data-dh-col]'))"> sensitive
           </label>
         </div>`;
     }).join('') || '<span style="color:var(--muted-fg,#888);">No columns.</span>';
@@ -1674,17 +1702,72 @@
     } catch (e) {}
   }
 
-  async function datahubAutoDefine(cid) {
+  // Shared engine for ALL four define entrypoints (auto-define-all, define
+  // selected subset, define one table, define one column). It posts `body` to
+  // the ai-define route, shows the loading line while in flight, surfaces the
+  // outcome via a toast (errors AND any partial-failure warnings / note), then
+  // reloads the detail pane. `label` tailors the loading + toast wording.
+  async function datahubRunDefine(cid, body, label) {
+    label = label || 'definitions';
     const detail = document.getElementById('datahub-detail');
+    // Avoid stacking multiple loading lines if a previous one is still present.
+    const existing = document.getElementById('dh-defining');
+    if (existing) existing.remove();
     if (detail) detail.insertAdjacentHTML('afterbegin',
-      '<div id="dh-defining" style="color:#6366f1;margin-bottom:.5rem;">✨ The assistant is drafting definitions… this can take a moment.</div>');
+      '<div id="dh-defining" style="color:#6366f1;margin-bottom:.5rem;">✨ The assistant is drafting ' +
+      datahubEsc(label) + '… this can take a moment.</div>');
+    let ok = false, j = {};
     try {
       const r = await fetch('/admin/api/datahub/' + cid + '/ai-define', {
-        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-      const j = await r.json();
-      if (!r.ok) alert(j.error || 'Auto-define failed.');
-    } catch (e) { alert('Auto-define failed.'); }
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {}) });
+      j = await r.json().catch(() => ({}));
+      ok = r.ok;
+    } catch (e) { ok = false; j = {}; }
+    if (!ok) {
+      showToast((j && j.error) || 'Auto-define failed.', 'error');
+    } else if (j && Array.isArray(j.warnings) && j.warnings.length) {
+      // Partial success — some tables couldn't be drafted. Never silent.
+      showToast(j.warnings.join(' '), 'error');
+    } else {
+      showToast((j && j.note) || ('Drafted ' + label + ' — review the AI suggestions.'), 'success');
+    }
     datahubLoadDetail(cid);
+  }
+
+  async function datahubAutoDefine(cid) {
+    return datahubRunDefine(cid, {}, 'definitions for all tables');
+  }
+
+  // Define just one table/view.
+  async function datahubDefineOne(cid, table) {
+    return datahubRunDefine(cid, { table: table }, 'definitions for ' + table);
+  }
+
+  // Define a single column of a table.
+  async function datahubDefineColumn(cid, table, column) {
+    return datahubRunDefine(cid, { table: table, column: column },
+      'a definition for ' + table + '.' + column);
+  }
+
+  // Keep the "Define selected (N)" button label + disabled state in sync with
+  // the per-row checkboxes.
+  function datahubUpdateSelected() {
+    const picks = Array.from(document.querySelectorAll('[data-dh-pick]:checked'));
+    const btn = document.getElementById('dh-define-selected');
+    if (!btn) return;
+    btn.textContent = '✨ Define selected (' + picks.length + ')';
+    btn.disabled = picks.length === 0;
+  }
+
+  // Define exactly the checked subset of tables/views in one batch request.
+  async function datahubDefineSelected(cid) {
+    const picks = Array.from(document.querySelectorAll('[data-dh-pick]:checked'))
+      .map(el => el.getAttribute('data-dh-pick')).filter(Boolean);
+    if (!picks.length) { showToast('Select at least one table first.', 'error'); return; }
+    return datahubRunDefine(cid, { tables: picks },
+      'definitions for ' + picks.length + ' selected table(s)');
   }
 
   async function datahubDel(kind, id, cid) {
