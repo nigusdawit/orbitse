@@ -65,6 +65,17 @@ class PylegoConfig:
     langfuse_secret_key: str
     langfuse_base_url: str
 
+    # ---- Error tracking / Sentry mute toggle (task 084) ---------------------
+    # Super-admin "mute" switch for Sentry. Defaults ON. This does NOT turn
+    # Sentry on by itself — Sentry only runs when the SENTRY_DSN secret is set
+    # (owner action). When a DSN IS set, flipping this OFF makes before_send
+    # drop every event (a live mute) without a restart. Deliberately NOT listed
+    # in core._AI_INERT: error tracking is observability and must survive the AI
+    # master kill-switch, so when the master is OFF this falls through to
+    # env/default (True) rather than being forced off. It can only MUTE — it is
+    # not a code-exec/RCE surface — so a DB-backed knob is acceptable here.
+    error_tracking_enabled: bool
+
     # ---- Reliability (task 027) — ALL default to no-op / current behavior ----
     # Each of these is inert at its default value: timeout 0 = "use SDK default"
     # (no change), retries 0 = "no extra attempts" (current behavior), fallback
@@ -255,6 +266,9 @@ def _build() -> PylegoConfig:
         langfuse_secret_key=os.environ.get("LANGFUSE_SECRET_KEY", "").strip(),
         langfuse_base_url=os.environ.get(
             "LANGFUSE_BASE_URL", "https://cloud.langfuse.com").strip(),
+        # Error tracking (Sentry) mute toggle — wired in 084. Default ON; only
+        # has any effect once SENTRY_DSN is set (then OFF = drop all events).
+        error_tracking_enabled=_env_bool("ERROR_TRACKING_ENABLED", True),
         # Reliability — wired in 027; defaults are INERT (= current behavior).
         llm_timeout_seconds=_env_float("ADMIN_CHAT_LLM_TIMEOUT", 0.0),     # 0 → SDK default
         llm_max_retries=_env_int("ADMIN_CHAT_LLM_MAX_RETRIES", 0),         # 0 → no extra attempts

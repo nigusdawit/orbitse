@@ -3042,6 +3042,23 @@ def _ai_control_registry():
          "group": "Visitor AI", "label": "Visitor: history token budget",
          "env": "VISITOR_CHAT_HISTORY_TOKEN_BUDGET",
          "description": "Trim old visitor turns to fit this many tokens. 0 = off."},
+        # Observability — error tracking (task 084). Live MUTE switch for Sentry.
+        # Deliberately NOT in _AI_INERT: error tracking is observability and must
+        # keep running even when the AI master switch is OFF, so it falls through
+        # to env/default (True) under the master-kill instead of being forced off.
+        # `attr` MUST match the pylego.config field name exactly (else
+        # get_ai_setting raises). before_send reads it at event time (fail-open).
+        {"key": "error_tracking_enabled", "attr": "error_tracking_enabled", "type": "bool",
+         "group": "Observability", "label": "Error tracking (Sentry)",
+         "env": "ERROR_TRACKING_ENABLED",
+         "description": "Master mute for Sentry error reporting. ON by default. This "
+                        "does NOT enable Sentry on its own — Sentry only runs when the "
+                        "SENTRY_DSN secret is configured (owner action). When a DSN is "
+                        "set, turning this OFF immediately silences ALL error events "
+                        "(no restart needed) and back ON resumes them. Independent of "
+                        "the AI master switch above: error tracking keeps working even "
+                        "when AI enhancements are turned off, so you never lose "
+                        "observability by disabling the AI features."},
     ]
 
 
