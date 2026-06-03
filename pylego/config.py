@@ -97,6 +97,28 @@ class PylegoConfig:
     # string = current request shape). OpenAI caches automatically — no knob.
     prompt_cache_enabled: bool
 
+    # ---- Datahub AI-define (task 083) ---------------------------------------
+    # Tunables for the Datahub "AI define" feature (drafting the semantic layer
+    # for a connected DB). These are deliberately NOT inert under the AI master
+    # kill-switch (see core._AI_INERT): AI-define is an explicit, super-admin
+    # action that must keep working even when the per-turn AI enhancements are
+    # off, so get_ai_setting falls through to these env/default values.
+    #   * max_tokens — output-token budget PER one-table LLM draft. The old code
+    #     hardcoded 2000 and sent ALL tables in one call, so a wide/large schema
+    #     overflowed and the JSON was silently truncated (the core bug). Raised
+    #     to 8000 AND the work is now split one-table-per-call, so each table
+    #     gets the full budget.
+    #   * max_tables — safety cap on how many objects an "all" run will define in
+    #     one request (each is its own LLM call → bounds cost/latency). Anything
+    #     beyond the cap is flagged `truncated` so the admin can re-run. Was an
+    #     internal 12 (a truncation workaround); 40 is sane now that calls split.
+    #   * input_chars — max characters of the per-call schema+samples blob sent to
+    #     the model (replaces the old global [:14000] that silently dropped whole
+    #     tables once the single combined blob got large).
+    datahub_define_max_tokens: int
+    datahub_define_max_tables: int
+    datahub_define_input_chars: int
+
     # ---- Visitor CRM / profiles (task 042 — Epic D) -------------------------
     # When enabled, a fail-open background updater extracts soft signals
     # (interests/needs/lead_score/consent) from each visitor turn and upserts a
@@ -252,6 +274,11 @@ def _build() -> PylegoConfig:
         fast_model=os.environ.get("MODEL_ROUTING_FAST_MODEL", "").strip(),
         routing_simple_max_chars=_env_int("MODEL_ROUTING_SIMPLE_MAX_CHARS", 280),
         prompt_cache_enabled=_env_bool("PROMPT_CACHE_ENABLED", False),
+        # Datahub AI-define — wired in 083. Defaults are the new healthy values;
+        # all overridable via env or the AI Control panel (group "Datahub").
+        datahub_define_max_tokens=_env_int("DATAHUB_DEFINE_MAX_TOKENS", 8000),
+        datahub_define_max_tables=_env_int("DATAHUB_DEFINE_MAX_TABLES", 40),
+        datahub_define_input_chars=_env_int("DATAHUB_DEFINE_INPUT_CHARS", 14000),
         # Visitor CRM — wired in 042; inert default (no profiling).
         visitor_profiles_enabled=_env_bool("VISITOR_PROFILES_ENABLED", False),
         visitor_profiles_model=os.environ.get("VISITOR_PROFILES_MODEL", "").strip(),

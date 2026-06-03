@@ -2802,6 +2802,32 @@ def _ai_control_registry():
                         "block so repeated turns reuse it — cheaper + faster after the "
                         "first turn. No effect on OpenAI (it caches automatically). "
                         "Off = system prompt sent normally."},
+        # Datahub AI-define (task 083) — tunables for drafting a connected DB's
+        # data dictionary. NOT listed in _AI_INERT on purpose: AI-define is an
+        # explicit super-admin action that must keep working when the AI master
+        # switch is off, so it falls through to env/default here. `attr` MUST
+        # match the pylego.config field name exactly (else get_ai_setting raises).
+        {"key": "datahub_define_max_tokens", "attr": "datahub_define_max_tokens", "type": "int",
+         "group": "Datahub", "label": "AI-define: output token budget (per table)",
+         "env": "DATAHUB_DEFINE_MAX_TOKENS",
+         "description": "Max output tokens the model may use to draft ONE table's "
+                        "definitions. AI-define now runs one small call per table, so "
+                        "each table gets this full budget — raising it lets the model "
+                        "fully describe a wide table without the response being cut off "
+                        "(the old single-call default of 2000 truncated large schemas)."},
+        {"key": "datahub_define_max_tables", "attr": "datahub_define_max_tables", "type": "int",
+         "group": "Datahub", "label": "AI-define: max tables per 'define all' run",
+         "env": "DATAHUB_DEFINE_MAX_TABLES",
+         "description": "Cap on how many tables/views a single 'Auto-define all' run will "
+                        "process (each is its own LLM call, so this bounds cost + time). "
+                        "Objects beyond the cap are skipped and the run is flagged as "
+                        "truncated so you can re-run or define the rest selectively."},
+        {"key": "datahub_define_input_chars", "attr": "datahub_define_input_chars", "type": "int",
+         "group": "Datahub", "label": "AI-define: max input characters (per table)",
+         "env": "DATAHUB_DEFINE_INPUT_CHARS",
+         "description": "Max characters of schema + sample-row context sent to the model "
+                        "for ONE table. Bounds the prompt size for a very wide table; "
+                        "samples are trimmed first so column names/types are preserved."},
         # Visitor CRM (Phase 6 / task 042) — accumulate per-visitor signals.
         {"key": "visitor_profiles_enabled", "attr": "visitor_profiles_enabled", "type": "bool",
          "group": "Visitor CRM", "label": "Build visitor profiles (interests / needs / lead score)",

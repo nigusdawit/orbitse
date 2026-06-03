@@ -13738,26 +13738,72 @@ def _dh_sql_connection(connection_id):
         return None, None, "Could not read the connection's configuration."
 
 
-def _dh_intro_tables(cid, kind, url):
-    """Table names for a connection (cid 0 = app DB). Postgres uses
-    information_schema; mysql / generic use the SQLAlchemy inspector (dialect-
-    agnostic). May raise on a connect failure — callers handle it."""
+def _dh_intro_objects(cid, kind, url):
+    """Introspect a connection's queryable objects as a list of
+    [{"name": str, "type": "table"|"view"}] (cid 0 = the app DB).
+
+    This is the type-aware sibling of _dh_intro_tables. VIEWS are first-class
+    here: previously the app DB filtered table_type='BASE TABLE', so views were
+    never discovered or definable — this surfaces them with a "view" tag so the
+    UI can badge them and AI-define can describe them like any other object.
+
+    Kind-aware:
+      * cid 0 (app DB): information_schema.tables with table_type IN
+        ('BASE TABLE','VIEW'), mapped to table/view.
+      * external postgres: same information_schema query (table_type added).
+      * mysql / generic 'sql': the SQLAlchemy inspector's get_table_names()
+        (tables) + get_view_names() (views). get_view_names is wrapped in
+        try/except so a dialect/driver without it degrades to tables-only
+        rather than raising.
+
+    May raise on a connect failure — callers handle it (same contract as the
+    original _dh_intro_tables)."""
+    def _map_type(raw):
+        # information_schema.table_type is 'BASE TABLE' | 'VIEW' (some engines
+        # also emit 'LOCAL TEMPORARY' etc.); anything not a VIEW is treated as a
+        # table for our purposes (we only sample/define real, queryable objects).
+        return "view" if str(raw or "").strip().upper() == "VIEW" else "table"
+
     if cid == 0:
-        return [t["table_name"] for t in (query_db(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema='public' AND table_type='BASE TABLE' "
-            "ORDER BY table_name") or [])]
+        rows = query_db(
+            "SELECT table_name, table_type FROM information_schema.tables "
+            "WHERE table_schema='public' AND table_type IN ('BASE TABLE','VIEW') "
+            "ORDER BY table_name") or []
+        return [{"name": r["table_name"], "type": _map_type(r["table_type"])}
+                for r in rows]
     if kind == "postgres":
         res = _run_external_postgres(
-            url, "SELECT table_name FROM information_schema.tables "
-                 "WHERE table_schema='public' ORDER BY table_name", max_rows=1000)
-        return [r[0] for r in res.get("rows", [])]
+            url, "SELECT table_name, table_type FROM information_schema.tables "
+                 "WHERE table_schema='public' AND table_type IN ('BASE TABLE','VIEW') "
+                 "ORDER BY table_name", max_rows=1000)
+        # _run_external_postgres returns rows as positional lists.
+        return [{"name": r[0], "type": _map_type(r[1])}
+                for r in res.get("rows", [])]
+    # mysql / generic: dialect-agnostic via the SQLAlchemy inspector.
     from sqlalchemy import inspect as _sa_inspect
     eng = _sa_engine(kind, url)
     try:
-        return sorted(_sa_inspect(eng).get_table_names())
+        insp = _sa_inspect(eng)
+        out = [{"name": n, "type": "table"} for n in sorted(insp.get_table_names())]
+        try:
+            out += [{"name": n, "type": "view"} for n in sorted(insp.get_view_names())]
+        except Exception:
+            # Some dialects/drivers don't implement get_view_names — degrade to
+            # tables-only rather than failing the whole introspection.
+            pass
+        return out
     finally:
         eng.dispose()
+
+
+def _dh_intro_tables(cid, kind, url):
+    """Object NAMES for a connection (cid 0 = app DB), as a list of strings.
+
+    BACK-COMPAT CONTRACT: two callers iterate this as plain name strings, so it
+    MUST keep returning strings. It now simply projects the names out of
+    _dh_intro_objects (which also discovers views) — so callers that only need
+    names get views too, while the type tag lives in _dh_intro_objects."""
+    return [o["name"] for o in _dh_intro_objects(cid, kind, url)]
 
 
 def _dh_intro_columns(cid, kind, url, table):
@@ -13813,17 +13859,21 @@ def _admin_tool_inspect_connection(connection_id=0, table=None, **_):
     if err:
         return {"error": err}
     if not table:
-        # Overview: table list (+ descriptions). Keep it bounded.
+        # Overview: object list (+ descriptions + table/view type). Keep it
+        # bounded. We introspect via _dh_intro_objects so VIEWS are included and
+        # each entry carries a "type" the UI can badge (and AI-define can target).
         try:
-            names = _dh_intro_tables(cid, kind, url)
+            objs = _dh_intro_objects(cid, kind, url)
         except Exception as e:
             print(f"[datahub] introspect tables failed (conn {cid}): "
                   f"{type(e).__name__}: {e}")
             return {"error": "Could not connect to that database to inspect it."}
         tables = []
-        for n in names[:200]:
+        for o in objs[:200]:
+            n = o["name"]
             d = tbl_desc.get(n) or {}
-            tables.append({"table": n, "description": d.get("description", ""),
+            tables.append({"table": n, "type": o.get("type", "table"),
+                           "description": d.get("description", ""),
                            "is_sensitive": bool(d.get("is_sensitive")),
                            "reviewed": bool(d.get("reviewed"))})
         return {"connection_id": cid, "tables": tables,
@@ -13849,6 +13899,11 @@ def _admin_tool_inspect_connection(connection_id=0, table=None, **_):
         c["description"] = d.get("description", "")
         c["semantic_type"] = d.get("semantic_type", "")
         c["is_sensitive"] = bool(d.get("is_sensitive"))
+        # Surface review state so the UI can badge an AI-suggested (drafted but
+        # not-yet-reviewed) column. col_desc already carries these flags from the
+        # saved annotation; default both False for an undocumented column.
+        c["reviewed"] = bool(d.get("reviewed"))
+        c["ai_generated"] = bool(d.get("ai_generated"))
     return {"connection_id": cid, "table": tname,
             "table_description": (tbl_desc.get(tname) or {}).get("description", ""),
             "columns": cols}
