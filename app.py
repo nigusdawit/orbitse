@@ -14040,14 +14040,53 @@ def _dh_sample_rows(cid, kind, url, table, cols, limit=3):
         return []
 
 
-def _dh_llm_draft(schema_blob, model=None):
+def _dh_define_max_tokens():
+    """Effective output-token budget for one AI-define draft (DB > env > default
+    8000). Read through the AI Control getter so a super-admin can tune it; never
+    raises (falls back to the env/default layer)."""
+    try:
+        return int(get_ai_setting("datahub_define_max_tokens"))
+    except Exception:
+        return 8000
+
+
+def _dh_define_input_chars():
+    """Effective per-call input-character cap for the schema+samples blob
+    (DB > env > default 14000). Never raises."""
+    try:
+        return int(get_ai_setting("datahub_define_input_chars"))
+    except Exception:
+        return 14000
+
+
+def _dh_llm_draft(schema_blob, model=None, max_tokens=None, input_chars=None,
+                  focus_column=None):
     """Ask the LLM (OpenAI JSON mode) to draft annotations from schema+samples.
-    Returns the parsed dict or None. Never raises."""
+    Returns the parsed dict or None. Never raises.
+
+    `schema_blob` is the list of {table, columns, samples} dicts to describe.
+    In the new design AI-define calls this ONE TABLE AT A TIME (so a wide table
+    never overflows the output budget — the original truncation bug), but the
+    function still accepts a multi-table blob unchanged.
+
+    Knob-driven (replacing the old hardcoded 2000 / [:14000] that silently
+    truncated large schemas):
+      * max_tokens — output budget (default: the datahub_define_max_tokens knob).
+      * input_chars — cap on the serialized prompt blob (default: the
+        datahub_define_input_chars knob). Samples are trimmed BEFORE columns
+        (see below) so a very wide table keeps its column names/types.
+      * focus_column — when set (used by per-column define), the model is told to
+        describe ONLY that column of the single table in the blob (no separate
+        function — same JSON contract, narrower instruction)."""
     if not openai_client:
         return None
     mdl = (model or "").strip() or "gpt-4o-mini"
     if mdl.lower().startswith("claude"):
         mdl = "gpt-4o-mini"
+    if max_tokens is None:
+        max_tokens = _dh_define_max_tokens()
+    if input_chars is None:
+        input_chars = _dh_define_input_chars()
     system = (
         "You are a data analyst documenting a database for a SQL assistant. "
         "Given tables with columns, types, and a few sample rows, return ONLY a "
@@ -14062,12 +14101,38 @@ def _dh_llm_draft(schema_blob, model=None):
         "descriptions. SQL examples must be read-only SELECTs. Mark is_sensitive "
         "true for PII/secrets."
     )
+    if focus_column:
+        # Per-column define: narrow the model to a single column of the single
+        # table in the blob. Still the same JSON shape; just describe one column
+        # (and the table). Relationships/examples are left to the batch pass.
+        fc_table = ""
+        if schema_blob:
+            fc_table = str(schema_blob[0].get("table") or "")
+        system += (
+            f" IMPORTANT: Describe ONLY the column named '{focus_column}' of table "
+            f"'{fc_table}'. Return that single column in \"columns\" (and you may "
+            "include the table in \"tables\"); leave \"relationships\" and "
+            "\"examples\" empty."
+        )
+    # Serialize the blob and bound its size. If the full blob is too large for a
+    # wide table, trim the SAMPLES first (the heaviest, least-essential part) so
+    # the column names/types — what the model most needs — are preserved, rather
+    # than the old global [:input_chars] truncation that could drop whole tables.
+    user_payload = json.dumps(schema_blob)
+    if len(user_payload) > input_chars:
+        trimmed = []
+        for entry in schema_blob:
+            e = dict(entry)
+            e["samples"] = []  # drop samples; keep table + columns + types
+            trimmed.append(e)
+        user_payload = json.dumps(trimmed)
+    user_payload = user_payload[:input_chars]
     try:
         resp = openai_client.with_options(timeout=40.0).chat.completions.create(
             model=mdl, response_format={"type": "json_object"},
-            max_tokens=2000, temperature=0.1,
+            max_tokens=int(max_tokens), temperature=0.1,
             messages=[{"role": "system", "content": system},
-                      {"role": "user", "content": json.dumps(schema_blob)[:14000]}])
+                      {"role": "user", "content": user_payload}])
         try:
             record_chat_cost_from_response(resp, surface="admin_chat",
                                            provider="openai", model=mdl)
@@ -14077,6 +14142,59 @@ def _dh_llm_draft(schema_blob, model=None):
         return data if isinstance(data, dict) else None
     except Exception as e:
         print(f"[datahub] AI define draft failed: {type(e).__name__}: {e}")
+        return None
+
+
+def _dh_llm_relationships(objects_with_cols, model=None, max_tokens=None):
+    """A SECOND, lightweight LLM pass that infers cross-table relationships +
+    example queries over a SET of objects. It is given ONLY {table, columns:
+    [{column,type}]} for each object — NO sample rows — so the prompt stays
+    small and fits the budget even for many tables, and recovers the cross-table
+    inference the per-table loop (which sees one table at a time) would lose.
+
+    Returns a dict shaped like _dh_llm_draft output but with only
+    {"relationships":[...], "examples":[...]} populated (no tables/columns), so
+    it can be fed straight to _dh_write_drafts. Returns None on failure / no
+    client (the caller treats a None here as "no relationships" — non-fatal)."""
+    if not openai_client or not objects_with_cols:
+        return None
+    mdl = (model or "").strip() or "gpt-4o-mini"
+    if mdl.lower().startswith("claude"):
+        mdl = "gpt-4o-mini"
+    if max_tokens is None:
+        max_tokens = _dh_define_max_tokens()
+    system = (
+        "You are a data analyst mapping how a database's tables relate. Given a "
+        "list of tables with their columns and types (NO data), return ONLY a "
+        "JSON object: {\"relationships\":[{\"from_table\":str,\"from_column\":str,"
+        "\"to_table\":str,\"to_column\":str,\"description\":str}], "
+        "\"examples\":[{\"question\":str,\"sql\":str}]}. Infer foreign keys from "
+        "*_id naming and matching column names across tables. SQL examples must be "
+        "read-only SELECTs that join related tables. Be concise; only include "
+        "relationships you are reasonably confident about."
+    )
+    # Keep the input bounded; this blob is names+types only (small), but a huge
+    # schema could still be large — reuse the same input cap for safety.
+    payload = json.dumps(objects_with_cols)[:_dh_define_input_chars()]
+    try:
+        resp = openai_client.with_options(timeout=40.0).chat.completions.create(
+            model=mdl, response_format={"type": "json_object"},
+            max_tokens=int(max_tokens), temperature=0.1,
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": payload}])
+        try:
+            record_chat_cost_from_response(resp, surface="admin_chat",
+                                           provider="openai", model=mdl)
+        except Exception:
+            pass
+        data = json.loads(resp.choices[0].message.content or "{}")
+        if not isinstance(data, dict):
+            return None
+        # Only the cross-table parts are meaningful from this pass.
+        return {"relationships": data.get("relationships") or [],
+                "examples": data.get("examples") or []}
+    except Exception as e:
+        print(f"[datahub] AI define relationships pass failed: {type(e).__name__}: {e}")
         return None
 
 
@@ -14143,10 +14261,79 @@ def _dh_write_drafts(cid, data):
     return {"tables": n_t, "columns": n_c, "relationships": n_r, "examples": n_e}
 
 
-def _dh_ai_define(connection_id=0, table=None, model=None, max_tables=12):
-    """Draft the semantic layer for a connection (or one table). Writes drafts
-    (ai_generated=true, reviewed=false), never overwriting reviewed rows. Returns
-    a summary or {"error": ...}."""
+# A single all-failed message reused for the "nothing drafted" case below. The
+# wording nudges the admin toward the granular entrypoints (fewer tables / one
+# table at a time), which is exactly what the loop makes reliable.
+_DH_DEFINE_ALL_FAILED = ("The AI response was incomplete — try fewer tables or "
+                         "one table at a time.")
+
+
+def _dh_define_one_table(cid, kind, url, name, model, max_tokens, input_chars):
+    """The PRIMITIVE: draft + write one table's annotations with a single small
+    LLM call (introspect columns → sample rows with secrets masked → one
+    _dh_llm_draft). Returns (counts_dict_or_None). None means the call failed /
+    came back empty (so the caller can surface it rather than swallow it).
+    Because it is one table per call, the output budget is never split across
+    many tables — this is the structural fix for the truncation bug."""
+    try:
+        cols = _dh_intro_columns(cid, kind, url, name)
+    except Exception:
+        cols = []
+    blob = [{"table": name, "columns": cols,
+             "samples": _dh_sample_rows(cid, kind, url, name, cols, limit=3)}]
+    data = _dh_llm_draft(blob, model, max_tokens=max_tokens, input_chars=input_chars)
+    if not data:
+        return None
+    return _dh_write_drafts(cid, data)
+
+
+def _dh_define_one_column(cid, kind, url, table, column, model, max_tokens, input_chars):
+    """Per-column define: draft + write a SINGLE column's annotation. Filters the
+    table's columns to the one requested (still samples the table so the model
+    sees example values, with secret-named columns masked by _dh_sample_rows),
+    prompts the model to describe ONLY that column, and writes via
+    _dh_write_drafts (which already guards WHERE reviewed=FALSE — no new writer).
+    No relationships pass. Returns counts_dict or None."""
+    try:
+        cols = _dh_intro_columns(cid, kind, url, table)
+    except Exception:
+        cols = []
+    if not cols:
+        return None
+    target = [c for c in cols if c.get("column") == column]
+    if not target:
+        # The requested column isn't on the table — signal "nothing to do" so the
+        # caller returns a clear error instead of an empty success.
+        return {"_no_such_column": True}
+    blob = [{"table": table, "columns": target,
+             "samples": _dh_sample_rows(cid, kind, url, table, cols, limit=3)}]
+    data = _dh_llm_draft(blob, model, max_tokens=max_tokens, input_chars=input_chars,
+                         focus_column=column)
+    if not data:
+        return None
+    return _dh_write_drafts(cid, data)
+
+
+def _dh_ai_define(connection_id=0, table=None, tables=None, column=None,
+                  model=None, max_tables=None, with_relationships=None):
+    """Draft the semantic layer for a connection — selectively + reliably.
+
+    Modes (back-compat preserved):
+      * column (requires `table`) → describe ONE column (focused call, no
+        relationships pass).
+      * table (no column)         → describe ONE table (the primitive: one small
+        call, no truncation).
+      * tables (a list)           → describe a SELECTED SUBSET: validate each
+        against the discovered objects, loop the primitive (one call per table),
+        then ONE relationships/examples pass over the set.
+      * {} (none of the above)    → describe ALL objects (tables AND views),
+        capped to the datahub_define_max_tables knob (caller may override via
+        `max_tables`), looping the primitive, then ONE relationships pass.
+
+    Writes drafts (ai_generated=true, reviewed=false), never overwriting reviewed
+    rows. NEVER silently truncates: large runs are split into one small call per
+    table and failures are surfaced — all-failed → {"error": ...}, some-failed →
+    success + a `warnings` list. Returns a summary or {"error": ...}."""
     if not openai_client:
         return {"error": "AI is not configured (no OpenAI key)."}
     try:
@@ -14156,42 +14343,137 @@ def _dh_ai_define(connection_id=0, table=None, model=None, max_tables=12):
     kind, url, err = _dh_sql_connection(cid)
     if err:
         return {"error": err}
+
+    max_tokens = _dh_define_max_tokens()
+    input_chars = _dh_define_input_chars()
+    if max_tables is None:
+        try:
+            max_tables = int(get_ai_setting("datahub_define_max_tables"))
+        except Exception:
+            max_tables = 40
+
+    # -- Per-column: the most focused sub-case (requires a table). -----------
+    if column:
+        tname = str(table or "").strip()
+        if not tname:
+            return {"error": "A table is required to define a single column."}
+        cname = str(column).strip()
+        counts = _dh_define_one_column(cid, kind, url, tname, cname,
+                                       model, max_tokens, input_chars)
+        if counts is None:
+            return {"error": "The AI could not draft a definition for that column."}
+        if counts.get("_no_such_column"):
+            return {"error": f"Column '{cname}' not found on table '{tname}'."}
+        return {"connection_id": cid, "table": tname, "column": cname,
+                "tables_scanned": 1, "truncated": False, "drafted": counts,
+                "note": "Draft is marked AI-suggested and needs super-admin review."}
+
+    # Resolve which objects to define. We need the typed object list both to
+    # validate a `tables` subset and to default `with_relationships`.
     try:
-        names = _dh_intro_tables(cid, kind, url)
+        objs = _dh_intro_objects(cid, kind, url)
     except Exception as e:
         print(f"[datahub] define introspect failed (conn {cid}): {type(e).__name__}: {e}")
         return {"error": "Could not read the database schema."}
+    all_names = [o["name"] for o in objs]
+
+    truncated = False
     if table:
-        names = [n for n in names if n == table]
-    truncated = len(names) > max_tables
-    names = names[:max_tables]
-    if not names:
-        return {"error": "No tables found to define."}
-    schema_blob = []
+        # -- Single table: the primitive, no relationships pass. -------------
+        tname = str(table).strip()
+        names = [n for n in all_names if n == tname]
+        if not names:
+            return {"error": "No tables found to define."}
+        if with_relationships is None:
+            with_relationships = False
+    elif tables is not None:
+        # -- Selected subset: validate against discovered objects, then loop. -
+        wanted = []
+        seen = set()
+        for t in tables:
+            tn = str(t or "").strip()
+            if tn and tn in seen:
+                continue
+            if tn:
+                seen.add(tn)
+                wanted.append(tn)
+        valid = [n for n in wanted if n in set(all_names)]
+        if not valid:
+            return {"error": "None of the requested tables exist on this connection."}
+        truncated = len(valid) > max_tables
+        names = valid[:max_tables]
+        if with_relationships is None:
+            with_relationships = True
+    else:
+        # -- All objects (tables AND views): cap, loop, relationships pass. ---
+        truncated = len(all_names) > max_tables
+        names = all_names[:max_tables]
+        if not names:
+            return {"error": "No tables found to define."}
+        if with_relationships is None:
+            with_relationships = True
+
+    # -- Loop the primitive: one small LLM call per table. -------------------
+    merged = {"tables": 0, "columns": 0, "relationships": 0, "examples": 0}
+    failed = []
     for n in names:
-        try:
-            cols = _dh_intro_columns(cid, kind, url, n)
-        except Exception:
-            cols = []
-        schema_blob.append({"table": n, "columns": cols,
-                            "samples": _dh_sample_rows(cid, kind, url, n, cols, limit=3)})
-    data = _dh_llm_draft(schema_blob, model)
-    if not data:
-        return {"error": "The AI could not draft definitions right now."}
-    counts = _dh_write_drafts(cid, data)
-    return {"connection_id": cid, "tables_scanned": len(names),
-            "truncated": truncated, "drafted": counts,
-            "note": "Drafts are marked AI-suggested and need super-admin review."}
+        counts = _dh_define_one_table(cid, kind, url, n, model, max_tokens, input_chars)
+        if counts is None:
+            failed.append(n)         # collect — do NOT abort the whole batch
+            continue
+        for k in merged:
+            merged[k] += counts.get(k, 0)
+
+    # All tables failed → surface the incomplete-response error (never silent).
+    if names and len(failed) == len(names):
+        return {"error": _DH_DEFINE_ALL_FAILED}
+
+    # -- One lightweight relationships/examples pass over the set (names+types
+    # only, NO samples) — recovers cross-table inference the per-table loop
+    # can't see. Gated by with_relationships; best-effort (a None is non-fatal).
+    if with_relationships and len(names) > 1:
+        defined_ok = [n for n in names if n not in failed]
+        objs_cols = []
+        for n in defined_ok:
+            try:
+                cols = _dh_intro_columns(cid, kind, url, n)
+            except Exception:
+                cols = []
+            objs_cols.append({"table": n, "columns": cols})
+        rel_data = _dh_llm_relationships(objs_cols, model, max_tokens=max_tokens)
+        if rel_data:
+            rel_counts = _dh_write_drafts(cid, rel_data)
+            merged["relationships"] += rel_counts.get("relationships", 0)
+            merged["examples"] += rel_counts.get("examples", 0)
+
+    result = {"connection_id": cid, "tables_scanned": len(names) - len(failed),
+              "truncated": truncated, "drafted": merged,
+              "note": "Drafts are marked AI-suggested and need super-admin review."}
+    if failed:
+        # Some tables failed but others succeeded — surface, don't swallow.
+        result["warnings"] = [
+            f"{len(failed)} of {len(names)} tables could not be drafted "
+            f"(incomplete AI response): {', '.join(failed[:20])}"
+            + ("…" if len(failed) > 20 else "")
+        ]
+    return result
 
 
-def _admin_tool_define_schema(connection_id=0, table=None, **_):
+def _admin_tool_define_schema(connection_id=0, table=None, tables=None,
+                              column=None, **_):
     """Have the assistant DRAFT the Datahub semantic layer for a connection. The
     drafts appear in the Datahub tab marked 'AI-suggested · review' for the
-    super-admin to confirm/edit. Read-only against the data."""
+    super-admin to confirm/edit. Read-only against the data.
+
+    Scope (all optional): no scope → define ALL tables/views; `table` → just that
+    one; `tables` (a list) → just those; `table`+`column` → just that one column.
+    The tool name is unchanged (back-compat); these are additive parameters."""
     guard = _admin_tool_superadmin_guard()   # Datahub is a super-admin-only surface
     if guard:
         return guard
-    return _dh_ai_define(connection_id=connection_id, table=table)
+    tbls = tables if isinstance(tables, list) else None
+    return _dh_ai_define(connection_id=connection_id, table=table,
+                         tables=tbls, column=column)
 
 
 def _admin_tool_save_query(name=None, sql=None, description=None,
@@ -17277,12 +17559,17 @@ ADMIN_TOOLS = [
         "DRAFT the Datahub data dictionary for a connection: inspect + sample it "
         "and write AI-suggested table/column descriptions, semantic types, "
         "relationships, and example queries. connection_id 0 = this site's DB. "
-        "Pass a `table` to define just one. The drafts appear in the Datahub tab "
-        "marked 'AI-suggested · review' for the super-admin to confirm or edit. "
-        "Read-only against the data.",
+        "Scope (all optional): pass nothing to define ALL tables and views; pass "
+        "`table` to define just one; pass `tables` (a list of names) to define a "
+        "selected subset; pass `table` + `column` to define a single column. "
+        "Large runs go table-by-table (no truncation). The drafts appear in the "
+        "Datahub tab marked 'AI-suggested · review' for the super-admin to confirm "
+        "or edit. Read-only against the data.",
         {"type": "object",
          "properties": {"connection_id": {"type": "integer", "default": 0},
-                        "table": {"type": "string"}}}),
+                        "table": {"type": "string"},
+                        "tables": {"type": "array", "items": {"type": "string"}},
+                        "column": {"type": "string"}}}),
     _admin_tool_schema(
         "admin_create_dashboard",
         "Create a PERSISTENT dashboard that appears in the Custom Dashboards tab. "
@@ -32705,13 +32992,29 @@ def admin_datahub_save_chart():
 @admin_required
 def admin_datahub_ai_define(cid):
     """Run the AI auto-define for a connection (the '✨ Auto-define' button).
-    Writes AI-suggested drafts; super-admin reviews them. Super-admin only."""
+    Writes AI-suggested drafts; super-admin reviews them. Super-admin only.
+
+    Body scope (all optional, additive — back-compat preserved):
+      * {}                  → define ALL tables/views (the original behavior).
+      * {"table": name}     → define just that one table/view.
+      * {"tables": [..]}    → define a SELECTED subset (capped server-side).
+      * {"table","column"}  → define a single column of that table.
+    Returns 200 with a summary, or 502 when the result carries an "error"."""
     guard = _require_super_admin_role()
     if guard:
         return guard
     b = request.get_json(silent=True) or {}
     table = (b.get("table") or "").strip() or None
-    result = _dh_ai_define(connection_id=cid, table=table)
+    column = (b.get("column") or "").strip() or None
+    # Parse an optional list of table names; keep only non-empty strings and cap
+    # the length defensively (each becomes its own LLM call). The deeper
+    # validation against the real schema + the knob cap happens in _dh_ai_define.
+    tables = None
+    raw_tables = b.get("tables")
+    if isinstance(raw_tables, list):
+        tables = [str(t).strip() for t in raw_tables if str(t or "").strip()][:200]
+    result = _dh_ai_define(connection_id=cid, table=table, tables=tables,
+                           column=column)
     status = 200 if "error" not in result else 502
     return jsonify(result), status
 
