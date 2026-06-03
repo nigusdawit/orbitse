@@ -34,7 +34,9 @@ Secrets present in this Repl but **still holding placeholder values** — the ma
 - `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` — SMS campaigns + STOP-keyword opt-out + inbound-SMS webhook will return errors until real Twilio creds are set
 - `GOOGLE_PLACES_API_KEY`, `YELP_API_KEY`, `TRIPADVISOR_API_KEY` — reviews aggregator (Reviews → Insights tab) returns empty / error responses for the matching providers
 
-Confirmed working with real values: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `BRAVE_SEARCH_API_KEY` (AI chat/voice/embeddings, Claude fallback, and AI web search), `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `ADMIN_PHONE`, `FLASK_SECRET_KEY`, `ELEVENLABS_API_KEY`, `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `SENTRY_DSN`, plus the Replit-managed integrations (Stripe, database).
+Confirmed working with real values: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `BRAVE_SEARCH_API_KEY` (AI chat/voice/embeddings, Claude fallback, and AI web search), `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `ADMIN_PHONE`, `FLASK_SECRET_KEY`, `ELEVENLABS_API_KEY`, `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, plus the Replit-managed integrations (Stripe, database).
+
+**Error tracking (Sentry):** the code is wired and hardened (release tag, tenant/request-kind tags, a noise filter that drops 4xx + client disconnects, surgical `capture_exception` on swallowed/background/SSE paths, and a super-admin **Error tracking (Sentry)** mute toggle in AI Control). But it is **only active when `SENTRY_DSN` is set** — set it (plus optional `SENTRY_ENV`) in the Secrets tab / Deployment env to turn it on. With no `SENTRY_DSN` there is **no Sentry client and zero overhead** (the SDK is never initialised, so all the new hooks no-op). `SENTRY_DSN` is **not** confirmed set on this deployment — verify in the Secrets tab. (Was previously, incorrectly, listed as "confirmed working.")
 
 Note: the Replit OpenAI **proxy** (`AI_INTEGRATIONS_OPENAI_API_KEY`) is not set, so `openai_client` falls back to the direct `OPENAI_API_KEY` against `api.openai.com` (see the client init in `app.py`).
 
