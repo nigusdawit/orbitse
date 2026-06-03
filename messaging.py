@@ -35,6 +35,9 @@ import urllib.error
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import httpx
+# task 084: error tracking. capture_exception is a no-op when Sentry has no DSN
+# (the SDK is configured in app.py), so importing it here is free and safe.
+import sentry_sdk
 
 
 # =============================================================================
@@ -513,8 +516,17 @@ def _scheduler_loop():
                 try:
                     cb()
                 except Exception as e:  # never let one tick kill the loop
+                    # task 084: this daemon thread never reaches Flask, so a
+                    # failing scheduler tick (campaign dispatch, weekly digest,
+                    # review requests) would otherwise be invisible. Capture,
+                    # keep the swallow so one bad tick can't stop the loop.
+                    sentry_sdk.capture_exception(e)
                     print(f"[messaging scheduler] tick error: {e}")
         except Exception as e:
+            # task 084: outer guard — should never fire (the inner loop catches
+            # per-tick), but if iterating the callback list itself blows up,
+            # report it before sleeping. Keep the loop alive.
+            sentry_sdk.capture_exception(e)
             print(f"[messaging scheduler] outer error: {e}")
         time.sleep(_TICK_INTERVAL)
 

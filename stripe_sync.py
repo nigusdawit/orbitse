@@ -171,6 +171,9 @@ def sync_product(local_id):
     try:
         product = _read_product(local_id)
     except Exception as e:
+        # task 084: a local DB read failing here silently aborts the Stripe
+        # sync (caller only sees out["error"]); report it. No-op without a DSN.
+        sentry_sdk.capture_exception(e)
         out["error"] = f"local read failed: {e}"
         return out
     if not product:
@@ -373,6 +376,9 @@ def backfill_all():
             "WHERE active = TRUE ORDER BY sort_order, id"
         ) or []
     except Exception as e:
+        # task 084: if we can't even list products, the whole backfill is a
+        # no-op and the admin only sees it in the returned summary — report it.
+        sentry_sdk.capture_exception(e)
         summary["errors"].append(f"product list failed: {e}")
         return summary
 
