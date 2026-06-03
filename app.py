@@ -112,15 +112,115 @@ except Exception:
 # To enable: set the SENTRY_DSN environment variable to your Sentry project DSN.
 # Get your DSN from https://sentry.io → Project Settings → Client Keys (DSN).
 # If SENTRY_DSN is not set, Sentry is silently disabled — no errors, no overhead.
+#
+# Everything below is FAIL-OPEN and a strict NO-OP when SENTRY_DSN is unset:
+# the release derivation and before_send helpers are defined unconditionally
+# (so tests can import them) but are only WIRED INTO sentry_sdk.init() inside
+# the `if sentry_dsn:` guard. With no DSN there is no client, so before_send is
+# never invoked and the app behaves exactly as it did before this change.
+
+
+def _derive_sentry_release():
+    """Best-effort release identifier for Sentry, derived once at boot. Order:
+    explicit SENTRY_RELEASE env → short git SHA (`git rev-parse --short HEAD`)
+    → None (omit `release=` entirely). NEVER raises: any failure (no git, no
+    .git dir, subprocess error, weird output) falls through to the next option
+    and ultimately to None, so release derivation can never break boot."""
+    try:
+        env_rel = (os.environ.get("SENTRY_RELEASE") or "").strip()
+        if env_rel:
+            return env_rel
+    except Exception:
+        pass
+    try:
+        import subprocess  # local import: only touched once, at boot
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            capture_output=True, text=True, timeout=5,
+        )
+        sha = (out.stdout or "").strip()
+        if out.returncode == 0 and sha:
+            return sha
+    except Exception:
+        pass
+    return None  # omit release= so Sentry auto-detects / leaves it blank
+
+
+# Computed ONCE as a module constant (never re-derived per request/event).
+SENTRY_RELEASE = _derive_sentry_release()
+
+# Network/disconnect noise we always drop (these are client-side, not bugs).
+_SENTRY_DROP_EXCEPTIONS = (BrokenPipeError, ConnectionResetError, GeneratorExit)
+
+
+def _sentry_before_send(event, hint):
+    """Sentry before_send hook — decides whether to send or drop an event.
+
+    Drops (returns None):
+      * the super-admin error-tracking toggle is OFF (live mute);
+      * client/network disconnects (BrokenPipeError / ConnectionResetError /
+        GeneratorExit) — these are normal, not application bugs;
+      * Werkzeug HTTPException with a 4xx status (404/401/403/etc.) — expected
+        client errors, not something to page a maintainer about.
+    Otherwise returns the event unchanged (we add NO PII here — privacy).
+
+    FULLY FAIL-OPEN: any unexpected error inside this hook returns the event
+    (send) rather than dropping it, so a bug here can never silently swallow
+    real errors. This runs at event time only (never at boot) and only when a
+    DSN is configured, so the DB-backed toggle read is safe (DB is up; cached)."""
+    try:
+        # Toggle (task 084): honored at event time. get_ai_setting is TTL-cached
+        # and never raises, but we still wrap defensively — fail-open ⇒ send.
+        try:
+            if not get_ai_setting("error_tracking_enabled"):
+                return None  # muted by super-admin / env
+        except Exception:
+            pass  # toggle unreadable → fall through and SEND (fail-open)
+
+        # Pull the originating exception from the hint, exactly as the SDK
+        # provides it. Absent (e.g. message events) → keep the event.
+        exc = None
+        try:
+            exc_info = (hint or {}).get("exc_info")
+            if exc_info:
+                exc = exc_info[1]
+        except Exception:
+            exc = None
+
+        if exc is not None:
+            if isinstance(exc, _SENTRY_DROP_EXCEPTIONS):
+                return None  # client/network disconnect — drop
+            try:
+                from werkzeug.exceptions import HTTPException
+                if isinstance(exc, HTTPException):
+                    code = getattr(exc, "code", None)
+                    if isinstance(code, int) and 400 <= code < 500:
+                        return None  # expected 4xx client error — drop
+            except Exception:
+                pass  # werkzeug missing / odd exception → keep the event
+
+        return event
+    except Exception:
+        # Anything unexpected in the filter itself must NOT drop the event.
+        return event
+
+
 sentry_dsn = os.environ.get("SENTRY_DSN")
 if sentry_dsn:
-    sentry_sdk.init(
+    # NOTE: release/before_send are only attached here, inside the DSN guard.
+    # With no DSN this whole block is skipped → no client, no hooks, no change.
+    _sentry_init_kwargs = dict(
         dsn=sentry_dsn,
         traces_sample_rate=0.2,       # Capture 20% of transactions for performance monitoring
         profiles_sample_rate=0.1,     # Profile 10% of sampled transactions
         environment=os.environ.get("SENTRY_ENV", "production"),
         send_default_pii=False,       # Don't send personally identifiable information
+        before_send=_sentry_before_send,  # noise filter + live mute toggle (fail-open)
     )
+    if SENTRY_RELEASE:                # omit entirely if we couldn't derive one
+        _sentry_init_kwargs["release"] = SENTRY_RELEASE
+    sentry_sdk.init(**_sentry_init_kwargs)
 
 # =============================================================================
 # APP CONFIGURATION
@@ -4443,6 +4543,27 @@ def _enforce_feature_flags():
     return _core_enforce_feature_flags()
 
 
+@app.before_request
+def _sentry_request_tags():
+    """Tag each Sentry event with the tenant + a coarse request kind so errors
+    are triageable (task 084). Tags are request-scoped by the Flask integration.
+
+    FULLY FAIL-OPEN: wrapped so it can NEVER break a request. set_tag is a cheap
+    no-op when Sentry isn't initialised (no DSN), so this stays free in dev.
+    Returns None (does not short-circuit the request)."""
+    try:
+        sentry_sdk.set_tag("tenant_id", current_tenant_id())
+        sentry_sdk.set_tag(
+            "request_kind",
+            "admin" if request.path.startswith("/admin") else "public",
+        )
+    except Exception:
+        # Tagging is observability only — a failure here must never affect the
+        # request. Intentional fail-open (no capture: this path runs per-request
+        # and a tagging error is itself a Sentry-noise source).
+        pass
+
+
 # =============================================================================
 # COST TRANSPARENCY  (Phase 2)
 # =============================================================================
@@ -4793,12 +4914,24 @@ def _async_warn_check(tenant_id):
             try:
                 messaging.send_email(to_email, subject, body)
             except Exception as e:
+                # task 084: a failed cost-cap alert email is report-worthy — the
+                # admin silently never learns they hit their spend cap. Keep the
+                # existing log + swallow (one bad address must not crash the
+                # thread). No-op without a Sentry DSN.
+                sentry_sdk.capture_exception(e)
                 print(f"[cost] warn email send failed: {e}")
         except Exception as e:
+            # task 084: top level of the fire-and-forget warn-check thread.
+            # Failures here never bubble to Flask, so capture them. Keep the
+            # existing swallow so the daemon thread can't crash the process.
+            sentry_sdk.capture_exception(e)
             print(f"[cost] _async_warn_check failed: {e}")
     try:
         threading.Thread(target=_run, daemon=True).start()
     except Exception as e:
+        # Intentional fail-open: a thread that fails to even start is benign
+        # (the warn-check is best-effort) and redundant with the _run capture
+        # above — just log and move on.
         print(f"[cost] async warn thread failed to start: {e}")
 
 
@@ -5217,6 +5350,10 @@ def _weekly_digest_tick():
                 "SELECT id, COALESCE(timezone,'UTC') AS tz FROM tenants"
             ) or []
         except Exception as e:
+            # task 084: digest runs in the scheduler thread (never reaches
+            # Flask). If we can't even enumerate tenants, NO digests go out —
+            # report it. Keep the existing log + early return.
+            sentry_sdk.capture_exception(e)
             print(f"[digest] tenant enumeration failed: {e}")
             return
         for trow in tenants:
@@ -5298,8 +5435,15 @@ def _weekly_digest_tick():
                     # it back so a permanently invalid address doesn't
                     # cause us to re-send every 30s. Operators can
                     # re-enable by deleting the row in psql.
+                    # task 084: report the send failure (the admin never gets
+                    # their digest and the row is already claimed).
+                    sentry_sdk.capture_exception(e)
                     print(f"[digest] tenant={tid} email send failed: {e}")
             except Exception as e:
+                # task 084: per-tenant digest failure (scheduler thread — never
+                # reaches Flask). Capture, keep the swallow so one bad tenant
+                # doesn't abort the others on this tick.
+                sentry_sdk.capture_exception(e)
                 print(f"[digest] tenant={tid} digest failed: {e}")
     finally:
         _DIGEST_TICK_LOCK.release()
@@ -14141,6 +14285,11 @@ def _dh_llm_draft(schema_blob, model=None, max_tokens=None, input_chars=None,
         data = json.loads(resp.choices[0].message.content or "{}")
         return data if isinstance(data, dict) else None
     except Exception as e:
+        # task 084: surface the swallowed AI-define failure to Sentry. This
+        # path classifies + returns None to the caller (the admin sees a
+        # cause-specific message), so without this the real error never left
+        # the process. No-op when Sentry has no DSN. Keep existing behavior.
+        sentry_sdk.capture_exception(e)
         print(f"[datahub] AI define draft failed: {type(e).__name__}: {e}")
         if err_sink is not None:
             err_sink.append(_dh_classify_llm_error(e))
@@ -20406,31 +20555,46 @@ def _kb_do_ingest(fname, data, mimetype, tenant_id):
     """Full KB ingest: extract+chunk+embed (rag.ingest_document) then persist the
     bytes to storage + patch storage_key/source_mtime. Returns the ingest result
     dict. Self-contained (no Flask request context) so it's safe to call inline
-    OR from the async ingestion daemon thread. Never raises out (storage failure
-    is logged; chunks are already in place)."""
-    res = rag.ingest_document(
-        fname, data, tenant_id=tenant_id,
-        mime=(mimetype or "")[:120], storage_key="", session_id="kb_upload")
-    if "id" not in res:
-        return res
-    doc_id = int(res["id"])
+    OR from the async ingestion daemon thread.
+
+    The extract+chunk+embed step CAN raise. When run inline (the default upload
+    path) that propagates to Flask and reaches Sentry normally; but when run in
+    the async daemon thread (task 039) it would die silently. task 084: capture
+    any top-level failure here so the THREAD path is observable too, then
+    re-raise so the inline path keeps its existing 500 behavior. The inner
+    storage save remains best-effort (chunks are already in place)."""
     try:
-        key = _kb_storage_subpath(doc_id, fname)
-        storage.get_storage().write_bytes(key, data, content_type=mimetype or None)
-        mtime = None
+        res = rag.ingest_document(
+            fname, data, tenant_id=tenant_id,
+            mime=(mimetype or "")[:120], storage_key="", session_id="kb_upload")
+        if "id" not in res:
+            return res
+        doc_id = int(res["id"])
         try:
-            full = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "uploads", key)
-            if os.path.exists(full):
-                mtime = os.path.getmtime(full)
-        except Exception:
+            key = _kb_storage_subpath(doc_id, fname)
+            storage.get_storage().write_bytes(key, data, content_type=mimetype or None)
             mtime = None
-        execute_db(
-            "UPDATE rag_documents SET storage_key=%s, source_mtime=%s WHERE id=%s",
-            (key, mtime, doc_id))
+            try:
+                full = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "uploads", key)
+                if os.path.exists(full):
+                    mtime = os.path.getmtime(full)
+            except Exception:
+                # Intentional fail-open: mtime is a best-effort freshness hint;
+                # missing it just means no source_mtime on the row.
+                mtime = None
+            execute_db(
+                "UPDATE rag_documents SET storage_key=%s, source_mtime=%s WHERE id=%s",
+                (key, mtime, doc_id))
+        except Exception as e:
+            print(f"[kb] storage save failed for doc {doc_id}: {e}")
+        return res
     except Exception as e:
-        print(f"[kb] storage save failed for doc {doc_id}: {e}")
-    return res
+        # Top-level failure (e.g. extraction/embedding blew up). Report it —
+        # in the async-thread case this is the ONLY place it can be seen — then
+        # re-raise to preserve the inline route's existing error handling.
+        sentry_sdk.capture_exception(e)
+        raise
 
 
 @app.route("/admin/api/kb/upload", methods=["POST"])
@@ -23108,6 +23272,13 @@ def api_chat():
         except Exception as e:
             import traceback
             traceback.print_exc()
+            # task 084: the visitor chat SSE stream runs OUTSIDE Flask's normal
+            # request error handling, so a failure here never reached Sentry —
+            # the visitor just saw the generic "Connection issue" line below.
+            # Capture before yielding the error event. Client disconnects
+            # (BrokenPipeError/GeneratorExit) are filtered out by before_send,
+            # so this won't flood on normal browser closes. No-op without a DSN.
+            sentry_sdk.capture_exception(e)
             _va["status"] = "error"
             _va["error"] = f"{type(e).__name__}: {e}"[:500]
             yield f"data: {json.dumps({'type': 'error', 'content': 'Connection issue. Please try again.'})}\n\n"
@@ -33467,6 +33638,11 @@ def _dispatch_due_campaigns():
         try:
             _send_campaign(claimed)
         except Exception as e:  # never let one campaign kill the loop
+            # task 084: campaign dispatch runs in the messaging scheduler thread
+            # (register_tick → never reaches Flask). A campaign blowing up
+            # mid-send is report-worthy; capture before recording the failed
+            # status below. Keep the swallow so one campaign can't kill the tick.
+            sentry_sdk.capture_exception(e)
             execute_db(
                 """
                 UPDATE messaging_campaigns
@@ -36585,14 +36761,20 @@ def _scrape_run_job(job_id: int) -> None:
 
         _scrape_finish_job(job_id, error=f"Unknown input mode '{input_mode}'.")
     except Exception as e:  # noqa: BLE001 — never let the worker thread die silently
+        # task 084: this is the TOP of the scrape worker DAEMON THREAD
+        # (_scrape_kick_off → Thread(target=_scrape_run_job)). Failures here
+        # never reach Flask, so capture before the best-effort logging/finish
+        # below. No-op without a Sentry DSN. Keep the existing swallow so the
+        # thread always records a terminal status.
+        sentry_sdk.capture_exception(e)
         try:
             _scrape_log_step(job_id, f"Internal error: {e}", level="error")
         except Exception:
-            pass
+            pass  # intentional fail-open: timeline logging is best-effort
         try:
             _scrape_finish_job(job_id, error=f"Internal error: {e}")
         except Exception:
-            pass
+            pass  # intentional fail-open: status write is best-effort
 
 
 def _scrape_finish_job(job_id: int, result=None, error: str = "") -> None:
