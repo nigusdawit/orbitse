@@ -14060,7 +14060,7 @@ def _dh_define_input_chars():
 
 
 def _dh_llm_draft(schema_blob, model=None, max_tokens=None, input_chars=None,
-                  focus_column=None):
+                  focus_column=None, err_sink=None):
     """Ask the LLM (OpenAI JSON mode) to draft annotations from schema+samples.
     Returns the parsed dict or None. Never raises.
 
@@ -14142,6 +14142,8 @@ def _dh_llm_draft(schema_blob, model=None, max_tokens=None, input_chars=None,
         return data if isinstance(data, dict) else None
     except Exception as e:
         print(f"[datahub] AI define draft failed: {type(e).__name__}: {e}")
+        if err_sink is not None:
+            err_sink.append(_dh_classify_llm_error(e))
         return None
 
 
@@ -14268,7 +14270,53 @@ _DH_DEFINE_ALL_FAILED = ("The AI response was incomplete — try fewer tables or
                          "one table at a time.")
 
 
-def _dh_define_one_table(cid, kind, url, name, model, max_tokens, input_chars):
+def _dh_classify_llm_error(exc):
+    """Categorize an LLM-call failure so the admin is told WHY a draft failed —
+    a config/key problem vs a rate limit vs a timeout vs a genuinely incomplete
+    (truncated/malformed) response — instead of always 'try fewer tables'.
+    Returns one of: 'auth' | 'rate_limit' | 'timeout' | 'incomplete' | 'error'.
+    Robust to the OpenAI SDK's exception classes without importing them (matches
+    on the exception's type name + message)."""
+    name = type(exc).__name__.lower()
+    msg = str(exc).lower()
+    # Truncated / malformed JSON (incl. an output cut off at the length cap) —
+    # json.loads raises this; it's the only "incomplete" signal.
+    if isinstance(exc, json.JSONDecodeError) or "jsondecode" in name:
+        return "incomplete"
+    if ("authentication" in name or "permission" in name or "api key" in msg
+            or "api_key" in msg or "invalid_api_key" in msg
+            or "incorrect api key" in msg or "401" in msg or "unauthor" in msg):
+        return "auth"
+    if ("ratelimit" in name or "rate limit" in msg or "429" in msg
+            or "quota" in msg or "insufficient_quota" in msg):
+        return "rate_limit"
+    if "timeout" in name or "timed out" in msg or "apiconnection" in name:
+        return "timeout"
+    return "error"
+
+
+def _dh_define_error_message(reasons, incomplete_msg):
+    """Pick a clear, cause-specific error string from the failure categories
+    collected during a define run (the `err_sink` filled by _dh_llm_draft). Auth
+    and rate-limit/timeout beat 'incomplete' because they're systemic — fewer
+    tables won't help. `incomplete_msg` is the scope-appropriate wording for a
+    genuine truncation (the 'try fewer tables' line for a multi-table run, or a
+    column-specific line for a single column)."""
+    rs = set(reasons or [])
+    if "auth" in rs:
+        return ("The AI request was rejected — check the OpenAI API key "
+                "(Secrets / AI settings).")
+    if "rate_limit" in rs:
+        return "The AI is rate-limited right now — wait a moment and try again."
+    if "timeout" in rs:
+        return "The AI timed out — try again, or one table at a time."
+    if "incomplete" in rs:
+        return incomplete_msg
+    return "The AI could not draft definitions right now — please try again."
+
+
+def _dh_define_one_table(cid, kind, url, name, model, max_tokens, input_chars,
+                         err_sink=None):
     """The PRIMITIVE: draft + write one table's annotations with a single small
     LLM call (introspect columns → sample rows with secrets masked → one
     _dh_llm_draft). Returns (counts_dict_or_None). None means the call failed /
@@ -14281,13 +14329,15 @@ def _dh_define_one_table(cid, kind, url, name, model, max_tokens, input_chars):
         cols = []
     blob = [{"table": name, "columns": cols,
              "samples": _dh_sample_rows(cid, kind, url, name, cols, limit=3)}]
-    data = _dh_llm_draft(blob, model, max_tokens=max_tokens, input_chars=input_chars)
+    data = _dh_llm_draft(blob, model, max_tokens=max_tokens, input_chars=input_chars,
+                         err_sink=err_sink)
     if not data:
         return None
     return _dh_write_drafts(cid, data)
 
 
-def _dh_define_one_column(cid, kind, url, table, column, model, max_tokens, input_chars):
+def _dh_define_one_column(cid, kind, url, table, column, model, max_tokens, input_chars,
+                          err_sink=None):
     """Per-column define: draft + write a SINGLE column's annotation. Filters the
     table's columns to the one requested (still samples the table so the model
     sees example values, with secret-named columns masked by _dh_sample_rows),
@@ -14308,7 +14358,7 @@ def _dh_define_one_column(cid, kind, url, table, column, model, max_tokens, inpu
     blob = [{"table": table, "columns": target,
              "samples": _dh_sample_rows(cid, kind, url, table, cols, limit=3)}]
     data = _dh_llm_draft(blob, model, max_tokens=max_tokens, input_chars=input_chars,
-                         focus_column=column)
+                         focus_column=column, err_sink=err_sink)
     if not data:
         return None
     return _dh_write_drafts(cid, data)
@@ -14358,10 +14408,13 @@ def _dh_ai_define(connection_id=0, table=None, tables=None, column=None,
         if not tname:
             return {"error": "A table is required to define a single column."}
         cname = str(column).strip()
+        col_errs = []
         counts = _dh_define_one_column(cid, kind, url, tname, cname,
-                                       model, max_tokens, input_chars)
+                                       model, max_tokens, input_chars, err_sink=col_errs)
         if counts is None:
-            return {"error": "The AI could not draft a definition for that column."}
+            return {"error": _dh_define_error_message(
+                col_errs, "The AI could not draft a definition for that column "
+                          "— please try again.")}
         if counts.get("_no_such_column"):
             return {"error": f"Column '{cname}' not found on table '{tname}'."}
         return {"connection_id": cid, "table": tname, "column": cname,
@@ -14416,17 +14469,20 @@ def _dh_ai_define(connection_id=0, table=None, tables=None, column=None,
     # -- Loop the primitive: one small LLM call per table. -------------------
     merged = {"tables": 0, "columns": 0, "relationships": 0, "examples": 0}
     failed = []
+    define_errs = []   # failure categories (auth/rate_limit/incomplete/…) for messaging
     for n in names:
-        counts = _dh_define_one_table(cid, kind, url, n, model, max_tokens, input_chars)
+        counts = _dh_define_one_table(cid, kind, url, n, model, max_tokens,
+                                      input_chars, err_sink=define_errs)
         if counts is None:
             failed.append(n)         # collect — do NOT abort the whole batch
             continue
         for k in merged:
             merged[k] += counts.get(k, 0)
 
-    # All tables failed → surface the incomplete-response error (never silent).
+    # All tables failed → surface the CAUSE (bad key / rate-limit / timeout vs a
+    # genuinely incomplete response), never silent.
     if names and len(failed) == len(names):
-        return {"error": _DH_DEFINE_ALL_FAILED}
+        return {"error": _dh_define_error_message(define_errs, _DH_DEFINE_ALL_FAILED)}
 
     # -- One lightweight relationships/examples pass over the set (names+types
     # only, NO samples) — recovers cross-table inference the per-table loop

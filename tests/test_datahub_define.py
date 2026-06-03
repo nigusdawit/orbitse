@@ -379,3 +379,66 @@ def test_define_route_accepts_tables_and_column():
     finally:
         app.openai_client = saved
         _wipe()
+
+
+# ----- Cause-specific error messages (task 083 refinement) ------------------
+# AI-define must tell the admin WHY a draft failed (bad/absent key vs rate-limit
+# vs timeout vs a genuinely incomplete/oversized response) instead of always
+# "try fewer tables". _dh_llm_draft classifies the exception into an err_sink
+# that _dh_ai_define turns into the right message.
+
+class _RaisingOpenAI:
+    """Stub whose chat.completions.create raises a chosen exception."""
+    def __init__(self, exc):
+        self._exc = exc
+        outer = self
+
+        class _Comp:
+            def create(self, **kw):
+                raise outer._exc
+        self.chat = type("C", (), {"completions": _Comp()})()
+
+    def with_options(self, **kw):
+        return self
+
+
+def test_classify_llm_error():
+    """The classifier buckets the common OpenAI failure modes (by type name +
+    message, without importing the SDK's exception classes)."""
+    assert app._dh_classify_llm_error(json.JSONDecodeError("Expecting value", "", 0)) == "incomplete"
+    assert app._dh_classify_llm_error(Exception("Incorrect API key provided")) == "auth"
+    assert app._dh_classify_llm_error(type("AuthenticationError", (Exception,), {})("nope")) == "auth"
+    assert app._dh_classify_llm_error(Exception("Rate limit reached, code 429")) == "rate_limit"
+    assert app._dh_classify_llm_error(Exception("Request timed out")) == "timeout"
+    assert app._dh_classify_llm_error(ValueError("boom")) == "error"
+
+
+def test_define_surfaces_auth_error_not_truncation():
+    """A bad/absent key surfaces a key/config message — NOT 'try fewer tables'."""
+    _wipe()
+    saved = app.openai_client
+    app.openai_client = _RaisingOpenAI(Exception("Incorrect API key provided: sk-xxx"))
+    try:
+        out = app._dh_ai_define(0, table="leads")
+        assert "error" in out, out
+        assert "key" in out["error"].lower(), out
+        assert "fewer tables" not in out["error"].lower(), out
+    finally:
+        app.openai_client = saved
+        _wipe()
+
+
+def test_define_incomplete_message_for_real_truncation():
+    """A genuinely truncated/malformed JSON response keeps the 'try fewer tables'
+    guidance (the real incomplete-response case)."""
+    _wipe()
+    saved = app.openai_client
+    # Truncated JSON -> json.loads raises JSONDecodeError -> classified 'incomplete'.
+    app.openai_client = _CaptureOpenAI('{"tables": [{"table": "lea')
+    try:
+        out = app._dh_ai_define(0, table="leads")
+        assert "error" in out, out
+        assert out["error"] == app._DH_DEFINE_ALL_FAILED, out
+    finally:
+        app.openai_client = saved
+        _wipe()
