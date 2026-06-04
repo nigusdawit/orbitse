@@ -345,9 +345,185 @@ def test_no_credentials_in_tool_output():
         _clear_grants()
 
 
+# =============================================================================
+# Phase 2 — visualize + persist for normal admins
+# =============================================================================
+
+def _wipe_dash(*names):
+    for n in names:
+        app.execute_db("DELETE FROM dashboards WHERE name=%s", (n,))
+
+
+def test_normal_admin_can_save_static_chart_no_grants():
+    """A static chart is numbers the AI already computed — always saveable, even
+    with zero grants."""
+    _clear_grants()
+    _wipe_dash("P2 Static")
+    ctx = _client_ctx()
+    try:
+        out = app._admin_tool_create_dashboard(name="P2 Static", widgets=[
+            {"name": "Rev", "chart": {"type": "bar", "labels": ["Jan"], "values": [10]}}])
+        assert out.get("ok") is True and out.get("widgets") == 1
+    finally:
+        ctx.pop()
+        _wipe_dash("P2 Static")
+
+
+def test_normal_admin_external_widget_requires_grant():
+    """An external_postgres widget whose query touches an ungranted table is
+    rejected (no dashboard left behind); the SAME widget on a granted table is
+    accepted."""
+    _clear_grants()
+    _wipe_dash("P2 Ext")
+    ctx = _client_ctx()
+    try:
+        # ungranted -> rejected, no dashboard created
+        bad = app._admin_tool_create_dashboard(name="P2 Ext", widgets=[
+            {"name": "W", "widget_type": "table", "source_type": "external_postgres",
+             "source_config": {"connection_id": 0, "query": "SELECT * FROM orders"}}])
+        assert "error" in bad
+        assert not app.query_db("SELECT 1 FROM dashboards WHERE name='P2 Ext'",
+                                fetchone=True)   # no dashboard left behind
+        # grant orders -> accepted
+        _grant("orders", connection_id=0)
+        ok = app._admin_tool_create_dashboard(name="P2 Ext", widgets=[
+            {"name": "W", "widget_type": "table", "source_type": "external_postgres",
+             "source_config": {"connection_id": 0, "query": "SELECT id FROM orders"}}])
+        assert ok.get("ok") is True
+    finally:
+        ctx.pop()
+        _wipe_dash("P2 Ext")
+        _clear_grants()
+
+
+def test_normal_admin_internal_db_widget_requires_grant():
+    _clear_grants()
+    _wipe_dash("P2 Int")
+    ctx = _client_ctx()
+    try:
+        bad = app._admin_tool_create_dashboard(name="P2 Int", widgets=[
+            {"name": "K", "widget_type": "kpi", "source_type": "internal_db",
+             "source_config": {"table": "orders", "agg_fn": "count"}}])
+        assert "don't have access" in (bad.get("error") or "")
+        _grant("orders", connection_id=0)
+        ok = app._admin_tool_create_dashboard(name="P2 Int", widgets=[
+            {"name": "K", "widget_type": "kpi", "source_type": "internal_db",
+             "source_config": {"table": "orders", "agg_fn": "count"}}])
+        assert ok.get("ok") is True
+    finally:
+        ctx.pop()
+        _wipe_dash("P2 Int")
+        _clear_grants()
+
+
+def test_normal_admin_builtin_widget_denied():
+    """builtin / external_rest sit outside the per-table grant model ⇒ denied
+    for a normal admin (fail-closed)."""
+    _clear_grants()
+    _wipe_dash("P2 Builtin")
+    ctx = _client_ctx()
+    try:
+        out = app._admin_tool_create_dashboard(name="P2 Builtin", widgets=[
+            {"name": "V", "widget_type": "kpi", "source_type": "builtin",
+             "source_config": {"metric": "visitors"}}])
+        assert "error" in out
+    finally:
+        ctx.pop()
+        _wipe_dash("P2 Builtin")
+
+
+def test_superadmin_create_dashboard_unrestricted():
+    """Super-admin keeps the old freedom: a builtin widget + an external query
+    on any table both succeed."""
+    _clear_grants()
+    _wipe_dash("P2 SA")
+    ctx = _super_ctx()
+    try:
+        out = app._admin_tool_create_dashboard(name="P2 SA", widgets=[
+            {"name": "V", "widget_type": "kpi", "source_type": "builtin",
+             "source_config": {"metric": "visitors"}},
+            {"name": "Q", "widget_type": "table", "source_type": "external_postgres",
+             "source_config": {"connection_id": 0, "query": "SELECT * FROM orders"}}])
+        assert out.get("ok") is True and out.get("widgets") == 2
+    finally:
+        ctx.pop()
+        _wipe_dash("P2 SA")
+
+
+def test_add_widget_grant_enforced():
+    _clear_grants()
+    _wipe_dash("P2 Add")
+    # out-of-request: create the dashboard unrestricted
+    base = app._admin_tool_create_dashboard(name="P2 Add", widgets=[])
+    did = base["dashboard_id"]
+    ctx = _client_ctx()
+    try:
+        # static chart appends fine with no grants
+        a = app._admin_tool_add_widget(dashboard_id=did, widget={
+            "name": "S", "chart": {"type": "kpi", "value": 1, "label": "x"}})
+        assert a.get("ok") is True and a.get("widget_id")
+        # external query on an ungranted table is refused
+        b = app._admin_tool_add_widget(dashboard_id=did, widget={
+            "name": "Q", "widget_type": "table", "source_type": "external_postgres",
+            "source_config": {"connection_id": 0, "query": "SELECT * FROM leads"}})
+        assert "leads" in (b.get("error") or "")
+        # unknown dashboard
+        assert "not found" in (app._admin_tool_add_widget(
+            dashboard_id=999999, widget={"chart": {"type": "kpi", "value": 1}}
+        ).get("error") or "")
+    finally:
+        ctx.pop()
+        _wipe_dash("P2 Add")
+
+
+def test_admin_context_playbook_and_grant_gating():
+    """The playbook is always present; for a normal admin the data dictionary is
+    grant-gated and the no-grants case says so plainly."""
+    app.execute_db("DELETE FROM db_table_annotations WHERE connection_id=0")
+    app.execute_db(
+        "INSERT INTO db_table_annotations (connection_id, table_name, description, reviewed) "
+        "VALUES (0,'orders','Customer orders',TRUE),(0,'leads','Sales leads',TRUE)")
+    _clear_grants()
+    try:
+        # No grants → no-access message (+ playbook), no schema leak.
+        ctx = _client_ctx()
+        try:
+            no = app._dh_admin_context()
+            assert "PLAYBOOK" in no and "hasn't given you access" in no
+            assert "Customer orders" not in no and "Sales leads" not in no
+        finally:
+            ctx.pop()
+        # Grant orders only → dictionary shows orders, NOT leads.
+        _grant("orders", connection_id=0)
+        ctx = _client_ctx()
+        try:
+            one = app._dh_admin_context()
+            assert "orders" in one and "Customer orders" in one
+            assert "leads" not in one.lower().split("playbook")[-1] or "Sales leads" not in one
+            assert "Sales leads" not in one
+        finally:
+            ctx.pop()
+        # Super-admin → full dictionary.
+        ctx = _super_ctx()
+        try:
+            full = app._dh_admin_context()
+            assert "Customer orders" in full and "Sales leads" in full
+        finally:
+            ctx.pop()
+    finally:
+        app.execute_db("DELETE FROM db_table_annotations WHERE connection_id=0")
+        _clear_grants()
+
+
 # --- registry ----------------------------------------------------------------
 
 def test_phase1_tool_registered():
     assert "admin_list_connections" in app.ADMIN_TOOL_FUNCTIONS
     names = {t["function"]["name"] for t in app.ADMIN_TOOLS}
     assert "admin_list_connections" in names
+
+
+def test_phase2_tools_registered():
+    assert "admin_add_widget" in app.ADMIN_TOOL_FUNCTIONS
+    names = {t["function"]["name"] for t in app.ADMIN_TOOLS}
+    assert "admin_add_widget" in names

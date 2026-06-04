@@ -137,13 +137,18 @@ def test_external_connect_error_has_no_dsn():
 
 def test_admin_context_empty_then_populated():
     app.execute_db("DELETE FROM db_table_annotations WHERE connection_id=0")
-    assert app._dh_admin_context() == ""        # nothing reviewed yet
+    # Task 085: the analytics PLAYBOOK is always present (out-of-request caller
+    # is unrestricted). With nothing reviewed there is NO data dictionary block.
+    empty_ctx = app._dh_admin_context()
+    assert "PLAYBOOK" in empty_ctx
+    assert "DATA DICTIONARY" not in empty_ctx
     app.execute_db(
         "INSERT INTO db_table_annotations (connection_id, table_name, description, reviewed) "
         "VALUES (0,'orders','Customer orders',TRUE)")
     try:
         ctx = app._dh_admin_context()
         assert "orders" in ctx and "Customer orders" in ctx
+        assert "DATA DICTIONARY" in ctx
         # An UNreviewed row must NOT appear (AI drafts aren't ground truth).
         app.execute_db(
             "INSERT INTO db_table_annotations (connection_id, table_name, description, "

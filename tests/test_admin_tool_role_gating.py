@@ -14,8 +14,13 @@ CLIENT_PW = os.environ.get("CLIENT_PASSWORD", "")
 
 
 def test_datahub_write_tools_block_client_role():
-    """AI-driven Datahub WRITES (semantic layer / SQL skill / dashboard) are
-    super-admin-only, regardless of connection."""
+    """AI-driven Datahub semantic-layer + SQL-skill WRITES stay super-admin-only.
+
+    NOTE (task 085): admin_create_dashboard is NO LONGER blanket super-admin —
+    it was relaxed so a normal admin can save a chart built from its GRANTED
+    data, with per-widget grant validation (see tests/test_datahub_grants.py).
+    define_schema (drafts the data dictionary) and save_query (creates a SQL
+    skill that later runs with DB access) remain super-admin-only."""
     with app.app.test_request_context("/"):
         from flask import session as s
         s["admin_logged_in"] = True
@@ -23,7 +28,6 @@ def test_datahub_write_tools_block_client_role():
         for fn, kw in (
             (app._admin_tool_define_schema, {"connection_id": 0}),
             (app._admin_tool_save_query, {"name": "q1", "sql": "SELECT 1"}),
-            (app._admin_tool_create_dashboard, {"name": "D", "widgets": []}),
         ):
             out = fn(**kw)
             assert "super-admin" in (out.get("error") or ""), f"{fn.__name__} not gated"

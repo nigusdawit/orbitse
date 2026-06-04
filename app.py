@@ -14350,13 +14350,49 @@ def _admin_tool_inspect_connection(connection_id=0, table=None, **_):
             "columns": cols}
 
 
+_DH_PLAYBOOK = (
+    "DATA ANALYTICS PLAYBOOK. When the owner asks about THEIR data, follow this "
+    "loop: (1) call admin_list_connections FIRST to see what data you've been "
+    "given access to; (2) ask 1-2 clarifying questions if the request is vague "
+    "(timeframe, metric, grouping); (3) call admin_inspect_connection on a "
+    "granted connection to see its tables + meanings; (4) write a READ-ONLY "
+    "SELECT against ONLY the granted tables (via admin_query_connection), OR run "
+    "an authorized saved query (admin_list_saved_queries -> admin_run_saved_"
+    "query); (5) show the result inline with render_chart (chart/KPI/table); "
+    "(6) offer to save it to a dashboard (admin_create_dashboard) or append it "
+    "to an existing one (admin_add_widget). You can only read tables you've been "
+    "granted — if a query is refused, tell the owner which table to ask their "
+    "administrator to grant.")
+
+
 def _dh_admin_context(max_tables=40, max_examples=8):
-    """Compact, prompt-ready summary of the APP DB's REVIEWED semantic layer
-    (connection 0) — table meanings, relationships, example queries — so the
-    Business Assistant understands the schema up front. Returns "" when nothing
-    has been reviewed yet (so it's a pure no-op until the Datahub is used).
-    Only REVIEWED rows are injected — AI-drafted-but-unreviewed rows are not
-    treated as ground truth."""
+    """Compact, prompt-ready guidance + the APP DB's REVIEWED semantic layer
+    (connection 0) so the Business Assistant understands the schema up front.
+
+    Task 085 changes:
+      * Always prepend the analytics PLAYBOOK (list -> clarify -> inspect ->
+        query/saved-query -> render -> save).
+      * For a NORMAL admin, grant-gate what we reveal: the data-dictionary table
+        list is filtered to GRANTED tables, and a "connected databases" summary
+        only lists connections the admin has a grant on. If the admin has NO
+        grants, say so plainly ("your administrator hasn't given you access")
+        instead of leaking the schema. Super-admins / out-of-request callers see
+        the full dictionary (unchanged behavior).
+      * Fail-OPEN on the CONTEXT BUILD itself: if anything here errors we still
+        return at least the playbook (or "") — but the ACTUAL data access stays
+        grant-enforced by the Phase-1 tool checks, so a fail-open context can
+        never grant access it shouldn't.
+
+    Only REVIEWED annotation rows are injected — AI drafts aren't ground truth."""
+    # Resolve the caller's grants on the app DB once. ALLOW_ALL ⇒ super-admin /
+    # system caller (full dictionary). A set ⇒ a normal admin bounded to it.
+    try:
+        allowed = _dh_allowed_tables(0)
+    except Exception:
+        allowed = set()   # fail-closed for the GATE even though the build below
+        #                   is fail-open: an error resolving grants must not widen
+        #                   what a normal admin sees in the prompt.
+    bounded = allowed is not _DH_ALLOW_ALL
     try:
         tabs = query_db(
             "SELECT table_name, description FROM db_table_annotations "
@@ -14370,26 +14406,47 @@ def _dh_admin_context(max_tables=40, max_examples=8):
             "SELECT question, sql FROM db_query_examples "
             "WHERE connection_id=0 AND reviewed=TRUE ORDER BY id DESC LIMIT %s",
             (max_examples,)) or []
-        if not tabs and not rels and not exs:
-            return ""
-        lines = ["DATA DICTIONARY (this site's database — admin-reviewed). Use "
-                 "these meanings when writing SQL; call admin_inspect_connection "
-                 "for column-level detail:"]
-        for t in tabs:
-            lines.append(f"  - {t['table_name']}: {t['description']}")
-        if rels:
-            lines.append("Relationships:")
-            for r in rels:
-                lines.append(f"  - {r['from_table']}.{r['from_column']} -> "
-                             f"{r['to_table']}.{r['to_column']}"
-                             + (f" ({r['description']})" if r.get('description') else ""))
-        if exs:
-            lines.append("Example queries:")
-            for e in exs:
-                lines.append(f"  Q: {e['question']}\n  SQL: {e['sql']}")
+        # For a normal admin, drop dictionary entries for tables they can't see
+        # (so the prompt doesn't enumerate ungranted tables). Relationships are
+        # filtered to grants on BOTH ends; examples are coarse text so we hide
+        # them entirely when bounded (they may reference ungranted tables).
+        if bounded:
+            tabs = [t for t in tabs
+                    if str(t["table_name"]).strip().lower() in allowed]
+            rels = [r for r in rels
+                    if str(r["from_table"]).strip().lower() in allowed
+                    and str(r["to_table"]).strip().lower() in allowed]
+            exs = []
+        # If a bounded admin has NO granted tables at all, say so plainly (still
+        # return the playbook so the assistant knows how to behave).
+        if bounded and not allowed:
+            return (_DH_PLAYBOOK + "\n\nYour administrator hasn't given you "
+                    "access to any data yet. If the owner asks about their data, "
+                    "tell them to ask their administrator to grant the tables "
+                    "they need.")
+        lines = [_DH_PLAYBOOK]
+        if tabs or rels or exs:
+            lines.append(
+                "\nDATA DICTIONARY (this site's database — admin-reviewed). Use "
+                "these meanings when writing SQL; call admin_inspect_connection "
+                "for column-level detail:")
+            for t in tabs:
+                lines.append(f"  - {t['table_name']}: {t['description']}")
+            if rels:
+                lines.append("Relationships:")
+                for r in rels:
+                    lines.append(f"  - {r['from_table']}.{r['from_column']} -> "
+                                 f"{r['to_table']}.{r['to_column']}"
+                                 + (f" ({r['description']})" if r.get('description') else ""))
+            if exs:
+                lines.append("Example queries:")
+                for e in exs:
+                    lines.append(f"  Q: {e['question']}\n  SQL: {e['sql']}")
         return "\n".join(lines)[:6000]
     except Exception:
-        return ""
+        # Fail-open on the build: still hand the assistant the playbook so it
+        # behaves correctly; access remains grant-enforced downstream.
+        return _DH_PLAYBOOK
 
 
 def _admin_tool_query_connection(connection_id=0, sql=None, **_):
@@ -15188,43 +15245,117 @@ def _admin_tool_publish_content(draft_id=None, capability_id=None, **_):
     return _rce_publish_draft(draft_id, capability_id, via="auto")
 
 
+def _dh_normalize_widget(w):
+    """Normalize one widget dict from the AI into the (widget_type, source_type,
+    source_config) triple the dashboard_widgets row stores. Shared by
+    _admin_tool_create_dashboard and admin_add_widget so both validate
+    identically. A {chart:{...}} widget becomes a 'static' widget (data stored
+    verbatim, no execution). Returns (widget_type, source_type, source_config)."""
+    if isinstance(w.get("chart"), dict):
+        wt, sc = _dh_spec_to_static_widget(w["chart"])
+        return wt, "static", sc
+    wt = str(w.get("widget_type") or "kpi").lower()
+    if wt not in ("kpi", "table", "line", "bar"):
+        wt = "kpi"
+    st = str(w.get("source_type") or "builtin")
+    if st not in ("builtin", "internal_db", "external_postgres",
+                  "external_rest", "static"):
+        st = "builtin"
+    sc = w.get("source_config") or {}
+    if not isinstance(sc, dict):
+        sc = {}
+    return wt, st, sc
+
+
+def _dh_widget_grant_error(source_type, source_config):
+    """Task 085 — validate ONE widget's data source against the caller's grants.
+    Returns an error STRING to reject the widget, or None if it's allowed.
+
+      * Super-admin / out-of-request caller ⇒ always None (unrestricted).
+      * 'static' ⇒ always None: the data is verbatim numbers the AI already
+        computed (and already had access to compute) — no live read, nothing to
+        gate here.
+      * 'external_postgres' ⇒ require a valid connection_id AND that EVERY table
+        the query touches is granted (same _dh_extract_tables + _dh_allowed_
+        tables path as admin_query_connection; unparseable ⇒ deny).
+      * 'internal_db' ⇒ a no-code widget over the APP DB (cid 0); require a grant
+        on its `table`.
+      * 'builtin' / 'external_rest' ⇒ DENY for a normal admin (fail-closed):
+        builtin metrics + REST connections sit outside the per-table grant model
+        and could expose data the admin wasn't granted. Super-admins may still
+        create them. (The owner can always build these in the dashboard UI.)"""
+    # _dh_allowed_tables(0) returns the ALLOW_ALL sentinel for trusted callers,
+    # so this single probe tells us whether ANY bounding applies to this caller.
+    if _dh_allowed_tables(0) is _DH_ALLOW_ALL:
+        return None
+    st = source_type
+    sc = source_config if isinstance(source_config, dict) else {}
+    if st == "static":
+        return None
+    if st == "external_postgres":
+        try:
+            cid = int(sc.get("connection_id") or 0)
+        except (TypeError, ValueError):
+            return "That widget's connection is invalid."
+        query = sc.get("query") or ""
+        if not query:
+            return "That widget needs a query."
+        # Reuse the exact read-path gate: single-statement/read-only first, then
+        # the per-table grant check (names the disallowed table / denies on
+        # unparseable).
+        safe, serr = _admin_safe_sql(query)
+        if serr:
+            return serr
+        return _dh_check_sql_grants(cid, safe)
+    if st == "internal_db":
+        table = str(sc.get("table") or "").strip()
+        if not table:
+            return "That widget needs a table."
+        allowed = _dh_allowed_tables(0)   # internal_db is always the app DB
+        if table.split(".")[-1].strip().lower() not in allowed:
+            return (f"You don't have access to the table '{table}' — ask your "
+                    "administrator to grant it.")
+        return None
+    # builtin / external_rest — outside the table-grant model ⇒ deny for normal
+    # admins (fail-closed).
+    return ("That widget type isn't available to you — ask your administrator "
+            "to build it, or use a chart you've already computed.")
+
+
 def _admin_tool_create_dashboard(name=None, description=None, widgets=None, **_):
     """Create a persistent dashboard (appears in the Custom Dashboards tab) with
     widgets. Each widget is either {name, chart:{...}} (a static chart you've
     computed) or {name, widget_type, source_type, source_config} (builtin metric
     / external_postgres query / etc.). Display-only; the super-admin can edit or
     delete it in the tab."""
-    # AI-driven creation of a persistent dashboard is a super-admin power (a
-    # widget can carry an external_postgres source). The /datahub/save-chart
-    # sibling is super-admin; the /admin/api/dashboards CRUD route is admin-level.
-    guard = _admin_tool_superadmin_guard()
-    if guard:
-        return guard
+    # Task 085 — relaxed for normal admins (so the client can SAVE a chart it
+    # built from its granted data). The blanket super-admin guard is gone; each
+    # widget is instead grant-validated by _dh_widget_grant_error: static charts
+    # always pass, external_postgres / internal_db must touch only granted
+    # tables, and source types outside the grant model are denied for normal
+    # admins. Super-admins / out-of-request callers remain unrestricted.
     nm = (name or "").strip()
     if not nm:
         return {"error": "name is required"}
+    # Validate ALL widgets BEFORE creating the dashboard so a rejected widget
+    # doesn't leave an empty/partial dashboard behind.
+    normalized = []
+    for i, w in enumerate((widgets or [])[:20]):
+        if not isinstance(w, dict):
+            continue
+        wname = str(w.get("name") or f"Widget {i + 1}")[:160]
+        wt, st, sc = _dh_normalize_widget(w)
+        gerr = _dh_widget_grant_error(st, sc)
+        if gerr:
+            return {"error": gerr}
+        normalized.append((wname, wt, st, sc))
     d = execute_db("INSERT INTO dashboards (name, description) VALUES (%s,%s) "
                    "RETURNING id", (nm[:160], (description or "").strip()[:1000]))
     did = d["id"] if d else None
     if not did:
         return {"error": "Could not create the dashboard."}
     made = 0
-    for i, w in enumerate((widgets or [])[:20]):
-        if not isinstance(w, dict):
-            continue
-        wname = str(w.get("name") or f"Widget {i + 1}")[:160]
-        if isinstance(w.get("chart"), dict):
-            wt, sc = _dh_spec_to_static_widget(w["chart"])
-            st = "static"
-        else:
-            wt = str(w.get("widget_type") or "kpi").lower()
-            if wt not in ("kpi", "table", "line", "bar"):
-                wt = "kpi"
-            st = str(w.get("source_type") or "builtin")
-            if st not in ("builtin", "internal_db", "external_postgres",
-                          "external_rest", "static"):
-                st = "builtin"
-            sc = w.get("source_config") or {}
+    for i, (wname, wt, st, sc) in enumerate(normalized):
         execute_db(
             "INSERT INTO dashboard_widgets (dashboard_id, name, widget_type, "
             " source_type, source_config, sort_order) "
@@ -15234,6 +15365,40 @@ def _admin_tool_create_dashboard(name=None, description=None, widgets=None, **_)
     return {"ok": True, "dashboard_id": did, "widgets": made,
             "note": f"Created dashboard '{nm}' with {made} widget(s) — it's in "
                     "the Custom Dashboards tab."}
+
+
+def _admin_tool_add_widget(dashboard_id=None, widget=None, **_):
+    """Append ONE widget to an existing dashboard ("add this to my Sales
+    dashboard"). Same grant validation as _admin_tool_create_dashboard: a normal
+    admin may add a static chart or a source that touches only granted tables;
+    super-admins are unrestricted. Mirrors the admin/dashboards.py
+    admin_create_widget write pattern (append at the end via MAX(sort_order)+1)."""
+    try:
+        did = int(dashboard_id)
+    except (TypeError, ValueError):
+        return {"error": "dashboard_id is required."}
+    if not isinstance(widget, dict):
+        return {"error": "widget object is required."}
+    dash = query_db("SELECT id, name FROM dashboards WHERE id=%s", (did,),
+                    fetchone=True)
+    if not dash:
+        return {"error": f"Dashboard {did} not found."}
+    wname = str(widget.get("name") or "Widget")[:160]
+    wt, st, sc = _dh_normalize_widget(widget)
+    gerr = _dh_widget_grant_error(st, sc)
+    if gerr:
+        return {"error": gerr}
+    last = query_db(
+        "SELECT COALESCE(MAX(sort_order), -1) AS m FROM dashboard_widgets "
+        "WHERE dashboard_id=%s", (did,), fetchone=True) or {"m": -1}
+    sort_order = int(last["m"]) + 1
+    row = execute_db(
+        "INSERT INTO dashboard_widgets (dashboard_id, name, widget_type, "
+        " source_type, source_config, sort_order) "
+        "VALUES (%s,%s,%s,%s,%s::jsonb,%s) RETURNING id",
+        (did, wname, wt, st, json.dumps(sc), sort_order))
+    return {"ok": True, "dashboard_id": did, "widget_id": (row["id"] if row else None),
+            "note": f"Added '{wname}' to dashboard '{dash['name']}'."}
 
 
 def _admin_tool_list_skills():
@@ -17840,6 +18005,9 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_save_query":             _admin_tool_save_query,
     "render_chart":                 _admin_tool_render_chart,
     "admin_create_dashboard":       _admin_tool_create_dashboard,
+    # Append a widget to an existing dashboard (task 085) — grant-validated
+    # like create_dashboard so a normal admin can grow their own boards.
+    "admin_add_widget":             _admin_tool_add_widget,
     "admin_list_skills":            _admin_tool_list_skills,
     "admin_recent_visitor_chats":   _admin_tool_recent_visitor_chats,
     "admin_recent_orders":          _admin_tool_recent_orders,
@@ -18106,6 +18274,19 @@ ADMIN_TOOLS = [
                         "description": {"type": "string"},
                         "widgets": {"type": "array", "items": {"type": "object"}}},
          "required": ["name"]}),
+    _admin_tool_schema(
+        "admin_add_widget",
+        "Add ONE widget to an EXISTING dashboard (use when the owner says 'add "
+        "this to my <name> dashboard'). Pass the dashboard_id and a single "
+        "widget: either {name, chart:{type,title,labels,values|value,label|"
+        "columns,rows}} for a static chart you computed, or {name, widget_type, "
+        "source_type, source_config} for a live source (e.g. external_postgres "
+        "{connection_id, query}). You can only reference data you've been granted "
+        "access to. Use admin_create_dashboard to make a new dashboard first.",
+        {"type": "object",
+         "properties": {"dashboard_id": {"type": "integer"},
+                        "widget": {"type": "object"}},
+         "required": ["dashboard_id", "widget"]}),
     _admin_tool_schema(
         "render_chart",
         "Draw a chart, KPI, or table INLINE in this chat to visualize data you've "
