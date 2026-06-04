@@ -51,6 +51,37 @@
   border-radius: var(--admin-radius);
   transition: padding .35s var(--acg-spring);
 }
+
+/* ---- Flagship full-height chat (task 088) ----
+   On desktop the ACTIVE admin-chat tab fills the viewport below the 56px top bar:
+   the conversation header pins to the top, the composer (command bar) pins to the
+   bottom, and the message stream scrolls between — a real chatbot shell. The tab
+   heading + description + the mode-help line are hidden for the clean flagship
+   look; the Admin/Visitor switcher is preserved. Mobile keeps the natural in-flow
+   layout (the shell falls back to its min-height). */
+#tab-admin-chat .section-header-admin,
+#tab-admin-chat #admin-chat-mode-help{ display: none; }
+@media (min-width: 901px){
+  #tab-admin-chat.tab-content.active{
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 56px);     /* 56px = the sticky admin top bar */
+    padding: 1rem 1.25rem;
+    box-sizing: border-box;
+  }
+  /* Mirror the proven .admin-chat-expanded height chain: bound the grid row, give
+     the grid children a DEFINITE height:100%, and clear the docked max-height on
+     the message stream — so messages SCROLL and the composer pins to the bottom
+     instead of overflowing below the fold. */
+  #tab-admin-chat.tab-content.active .admin-chat-shell{
+    flex: 1;                 /* basis 0 — take exactly the free space, not content height */
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr);
+  }
+  #tab-admin-chat.tab-content.active .admin-chat-shell > .admin-chat-side{ max-height: none; height: 100%; }
+  #tab-admin-chat.tab-content.active .admin-chat-shell > div{ min-height: 0; height: 100%; }
+  #tab-admin-chat.tab-content.active #admin-chat-messages{ flex: 1; max-height: none !important; min-height: 0 !important; }
+}
 /* Soft radial accent glow bloom behind the glass (token-driven via --admin-glow
    so the Appearance "glow" slider controls intensity). Non-interactive. */
 .admin-chat-shell::before{
@@ -225,6 +256,15 @@
   > [data-testid="bubble-admin-chat-assistant"] > div[style*="border-radius"]:first-child{
   border-bottom-left-radius: var(--acg-squared) !important;
   box-shadow: var(--admin-shadow);
+}
+/* theme.css applies an accent tint to `.chat-msg-user, .admin-chat-bubble-user`.
+   That's right for the visitor bubble (that element IS the bubble) but WRONG here:
+   in the admin chat .admin-chat-bubble-user is the full-width flex WRAPPER (the
+   inner div is the real bubble), so the tint paints a massive full-width box behind
+   the message. Neutralize the wrapper so ONLY the inner gradient bubble shows. */
+.admin-chat-shell .admin-chat-bubble-user{
+  background: transparent !important;
+  border: 0 !important;
 }
 .admin-chat-shell .admin-chat-bubble-user > div[style*="border-radius"]{
   border-bottom-right-radius: var(--acg-squared) !important;
