@@ -15086,6 +15086,74 @@ def _admin_tool_save_query(name=None, sql=None, description=None,
             "note": "Saved as a DISABLED skill — enable it in the Skills tab to make it live."}
 
 
+def _admin_tool_list_saved_queries(**_):
+    """List the AUTHORIZED (enabled) saved SQL queries so the assistant can offer
+    them (task 085, Phase 3). Returns each query's name, description, and its
+    parameter schema. ONLY enabled skills are listed: enabling a saved query in
+    the Skills tab is the super-admin's act of AUTHORIZING it for the client, so
+    a disabled (un-vetted) query is invisible and non-runnable here.
+
+    Available to normal admins AND super-admins identically — a saved query that
+    a super-admin enabled is, by definition, vetted SQL safe to expose. (Raw ad-
+    hoc SQL stays grant-bounded via Phase 1; this is the curated escape hatch.)"""
+    rows = query_db(
+        "SELECT name, description, args_schema_json FROM custom_sql_skills "
+        "WHERE enabled=TRUE ORDER BY name") or []
+    out = []
+    for r in rows:
+        schema = r.get("args_schema_json")
+        # args_schema_json is jsonb (psycopg2 -> dict) or, defensively, a string.
+        if isinstance(schema, str):
+            try:
+                schema = json.loads(schema)
+            except Exception:
+                schema = {}
+        params = {}
+        if isinstance(schema, dict):
+            params = schema.get("properties") or {}
+        out.append({"name": r["name"],
+                    "description": r.get("description") or "",
+                    "params": list(params.keys())})
+    return {"saved_queries": out, "count": len(out),
+            "note": ("These are the saved queries your administrator has "
+                     "authorized. Run one with admin_run_saved_query.")
+            if out else
+            ("No saved queries have been authorized yet. You can still write "
+             "read-only SQL against the tables you've been granted.")}
+
+
+def _admin_tool_run_saved_query(name=None, args=None, **_):
+    """Run an AUTHORIZED (enabled) saved SQL query by name (task 085, Phase 3).
+
+    Delegates to _exec_custom_sql, which (a) resolves the skill, (b) REFUSES if
+    it is disabled, and (c) runs it read-only with bound params + secret-column
+    redaction. This is the ONE place a normal admin can read data WITHOUT a raw
+    table grant — by design: the super-admin authored AND enabled the exact SQL,
+    so it is pre-vetted. A disabled (un-authorized) query is rejected for
+    everyone here (the enabled check lives in _exec_custom_sql), so a normal
+    admin can never run un-vetted SQL through this path.
+
+    `args` is an optional object of named parameters bound into the query."""
+    nm = (name or "").strip().lower()
+    if not nm:
+        return {"error": "name is required (the saved query's name)."}
+    if args is not None and not isinstance(args, dict):
+        return {"error": "args must be an object of named parameters."}
+    # Defense-in-depth: confirm a row by this name exists AND is enabled before
+    # we run it, so a normal admin gets a clear "not authorized" message rather
+    # than the generic _exec_custom_sql error for a missing/disabled skill.
+    sk = query_db("SELECT enabled FROM custom_sql_skills WHERE name=%s",
+                  (nm,), fetchone=True)
+    if not sk:
+        return {"error": f"No saved query named '{nm}'. Use "
+                         "admin_list_saved_queries to see the authorized ones."}
+    if not sk.get("enabled"):
+        return {"error": f"The saved query '{nm}' hasn't been authorized by "
+                         "your administrator yet."}
+    result, _row_count = _exec_custom_sql(nm, args or {})
+    return result
+
+
 def _admin_tool_render_chart(spec=None, type=None, title=None, labels=None,
                              values=None, value=None, label=None,
                              columns=None, rows=None, **_):
@@ -18008,6 +18076,11 @@ ADMIN_TOOL_FUNCTIONS = {
     # Append a widget to an existing dashboard (task 085) — grant-validated
     # like create_dashboard so a normal admin can grow their own boards.
     "admin_add_widget":             _admin_tool_add_widget,
+    # Authorized saved queries (task 085, Phase 3): a normal admin can list +
+    # run ENABLED (super-admin-vetted) saved SQL skills without a raw table
+    # grant. Saving/enabling stays super-admin-only (admin_save_query + Skills).
+    "admin_list_saved_queries":     _admin_tool_list_saved_queries,
+    "admin_run_saved_query":        _admin_tool_run_saved_query,
     "admin_list_skills":            _admin_tool_list_skills,
     "admin_recent_visitor_chats":   _admin_tool_recent_visitor_chats,
     "admin_recent_orders":          _admin_tool_recent_orders,
@@ -18317,6 +18390,28 @@ ADMIN_TOOLS = [
                         "description": {"type": "string"},
                         "connection_id": {"type": "integer", "default": 0}},
          "required": ["name", "sql"]}),
+    _admin_tool_schema(
+        "admin_list_saved_queries",
+        "List the saved queries your administrator has AUTHORIZED (enabled) — "
+        "each with its name, description, and parameter names. These are vetted "
+        "read-only reports you can run even on data you don't have a raw table "
+        "grant for. Offer a relevant one when it matches what the owner is "
+        "asking, then run it with admin_run_saved_query."),
+    _admin_tool_schema(
+        "admin_run_saved_query",
+        "Run an AUTHORIZED (enabled) saved query by name and return its rows. "
+        "Use admin_list_saved_queries first to see what's available and which "
+        "parameters it takes. Pass `args` as an object of named parameters when "
+        "the query needs them. Read-only. If the query isn't authorized you'll "
+        "get a clear message — tell the owner to ask their administrator to "
+        "enable it.",
+        {"type": "object",
+         "properties": {"name": {"type": "string",
+                                 "description": "The saved query's name."},
+                        "args": {"type": "object",
+                                 "description": "Named parameters for the query, "
+                                                "if it takes any."}},
+         "required": ["name"]}),
     _admin_tool_schema(
         "admin_list_skills",
         "List every AI skill (visitor agent tool) with its on/off state."),

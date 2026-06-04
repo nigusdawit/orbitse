@@ -515,6 +515,97 @@ def test_admin_context_playbook_and_grant_gating():
         _clear_grants()
 
 
+# =============================================================================
+# Phase 3 — authorized saved queries runnable by normal admins
+# =============================================================================
+
+def _cleanup_skill(name):
+    row = app.query_db("SELECT id FROM custom_sql_skills WHERE name=%s", (name,),
+                       fetchone=True)
+    if row:
+        app.execute_db("DELETE FROM custom_sql_skills WHERE id=%s", (row["id"],))
+    app.execute_db("DELETE FROM agent_skills WHERE name=%s", (name,))
+
+
+def _make_saved_query(name, sql, enabled):
+    """Create a saved SQL skill (out-of-request = trusted), optionally enabling
+    it. Enabling mirrors the super-admin authorizing it in the Skills tab."""
+    _cleanup_skill(name)
+    app._admin_tool_save_query(name=name, sql=sql, description=name + " report")
+    if enabled:
+        app.execute_db("UPDATE custom_sql_skills SET enabled=TRUE WHERE name=%s", (name,))
+        app.execute_db("UPDATE agent_skills SET enabled=TRUE WHERE name=%s", (name,))
+
+
+def test_enabled_saved_query_runs_for_normal_admin_without_grant():
+    """An ENABLED saved query reads data the normal admin has NO raw grant for —
+    the super-admin vetted the exact SQL by enabling it."""
+    _clear_grants()                       # no table grants at all
+    _make_saved_query("g_enabled", "SELECT count(*) AS n FROM leads", enabled=True)
+    ctx = _client_ctx()
+    try:
+        out = app._admin_tool_run_saved_query(name="g_enabled")
+        assert "error" not in out or not out["error"]
+        # Sanity: the same table via raw query IS refused (proves the bypass is
+        # the saved-query path, not a stray grant).
+        raw = app._admin_tool_query_connection(0, sql="SELECT count(*) FROM leads")
+        assert (raw.get("error") or "")
+    finally:
+        ctx.pop()
+        _cleanup_skill("g_enabled")
+
+
+def test_disabled_saved_query_refused_for_normal_admin():
+    _clear_grants()
+    _make_saved_query("g_disabled", "SELECT count(*) AS n FROM leads", enabled=False)
+    ctx = _client_ctx()
+    try:
+        out = app._admin_tool_run_saved_query(name="g_disabled")
+        assert "error" in out
+        assert "authorized" in out["error"].lower()
+    finally:
+        ctx.pop()
+        _cleanup_skill("g_disabled")
+
+
+def test_list_saved_queries_only_enabled_for_normal_admin():
+    _clear_grants()
+    _make_saved_query("g_on", "SELECT 1 AS x", enabled=True)
+    _make_saved_query("g_off", "SELECT 2 AS y", enabled=False)
+    ctx = _client_ctx()
+    try:
+        out = app._admin_tool_list_saved_queries()
+        names = {q["name"] for q in out.get("saved_queries", [])}
+        assert "g_on" in names
+        assert "g_off" not in names
+    finally:
+        ctx.pop()
+        _cleanup_skill("g_on")
+        _cleanup_skill("g_off")
+
+
+def test_run_saved_query_unknown_name():
+    ctx = _client_ctx()
+    try:
+        out = app._admin_tool_run_saved_query(name="does_not_exist_xyz")
+        assert "error" in out and "no saved query" in out["error"].lower()
+    finally:
+        ctx.pop()
+
+
+def test_saved_query_output_has_no_credentials():
+    _clear_grants()
+    _make_saved_query("g_secret", "SELECT count(*) AS n FROM leads", enabled=True)
+    ctx = _client_ctx()
+    try:
+        out = app._admin_tool_run_saved_query(name="g_secret")
+        blob = repr(out).lower()
+        assert "encrypted_config" not in blob and "://" not in blob
+    finally:
+        ctx.pop()
+        _cleanup_skill("g_secret")
+
+
 # --- registry ----------------------------------------------------------------
 
 def test_phase1_tool_registered():
@@ -527,3 +618,10 @@ def test_phase2_tools_registered():
     assert "admin_add_widget" in app.ADMIN_TOOL_FUNCTIONS
     names = {t["function"]["name"] for t in app.ADMIN_TOOLS}
     assert "admin_add_widget" in names
+
+
+def test_phase3_tools_registered():
+    for t in ("admin_run_saved_query", "admin_list_saved_queries"):
+        assert t in app.ADMIN_TOOL_FUNCTIONS
+    names = {t["function"]["name"] for t in app.ADMIN_TOOLS}
+    assert {"admin_run_saved_query", "admin_list_saved_queries"} <= names
