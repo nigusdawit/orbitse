@@ -1005,7 +1005,7 @@
           { id: 'icon', label: 'Icon', type: 'text' },
           { id: 'title', label: 'Title', type: 'text' },
           { id: 'lines', label: 'Bullet lines (one per line)', type: 'lines', full: true },
-          { id: 'examples', label: 'Example chips — one per line: label | seed | persona | action', type: 'examples', full: true },
+          { id: 'examples', label: 'Example chips — one per line: label || seed || persona || action', type: 'examples', full: true },
         ],
         flags: [{ id: 'grant_aware', label: 'Show data-access badge' }, { id: 'super', label: 'Super-admin only' }],
       },
@@ -1089,7 +1089,7 @@
         } else if (f.type === 'examples') {
           v = (Array.isArray(v) ? v : []).map(ex =>
             [ex.label || '', ex.seed || '', ex.persona || '', ex.action || '']
-              .join(' | ').replace(/(\s*\|\s*)+$/, '')).join('\n');
+              .join(' || ').replace(/(\s*\|\|\s*)+$/, '')).join('\n');
         } else {
           v = (v == null ? '' : v);
         }
@@ -1114,7 +1114,7 @@
           body[f.id] = val.split('\n').map(s => s.trim()).filter(Boolean);
         } else if (f.type === 'examples') {
           body[f.id] = val.split('\n').map(line => {
-            const parts = line.split('|').map(s => s.trim());
+            const parts = line.split('||').map(s => s.trim());
             if (!parts[0] && !parts[1]) return null;
             const o = { label: parts[0] || '', seed: parts[1] || '' };
             if (parts[2]) o.persona = parts[2];

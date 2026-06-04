@@ -75,7 +75,7 @@ def _coerce_str_list(v, cap_item=80, cap_len=50):
     return [str(x).strip()[:cap_item] for x in v if str(x).strip()][:cap_len]
 
 
-def _row_admin_persona(r, builtin_keys):
+def _row_admin_persona(r):
     """Serialize an admin_chat_personas row for the editor: ISO timestamps, the
     tri-state tool_prefixes (None = all tools), the extra_tools list, and
     is_default (a built-in that has never been human-edited → updated_by NULL)."""
@@ -157,13 +157,12 @@ def admin_ai_list_personas():
     guard = _require_super_admin_role()
     if guard:
         return guard
-    builtin_keys = {p["persona_key"] for p in _admin_persona_registry()}
     rows = query_db(
         "SELECT persona_key, label, icon, description, prompt_suffix, tool_prefixes, "
         "extra_tools, enabled, is_builtin, sort_order, updated_at, updated_by "
         "FROM admin_chat_personas WHERE tenant_id=%s ORDER BY sort_order, persona_key",
         (_ADMIN_AI_TENANT,)) or []
-    return jsonify({"personas": [_row_admin_persona(r, builtin_keys) for r in rows]})
+    return jsonify({"personas": [_row_admin_persona(r) for r in rows]})
 
 
 @admin_ai_bp.route("/admin/api/admin-ai/personas", methods=["POST"])
