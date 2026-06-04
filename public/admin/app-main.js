@@ -191,17 +191,82 @@
     */
     var _AP_DEFAULTS = {mode:'dark', accent:'#6c8cff', accent2:'#9a7cff', blur:18, radius:16, glass:0.55, glow:0.5,
       density:'comfortable', font_scale:'md', font_family:'sans', surface:'glass',
-      sidebar:'comfortable', high_contrast:false, reduce_motion:false};
+      sidebar:'comfortable', high_contrast:false, reduce_motion:false,
+      // task 089 — expanded controls (every default == today's look).
+      color_success:'#22c55e', color_warning:'#f59e0b', color_danger:'#ef4444', color_info:'#3b82f6',
+      accent3:'#22d3ee', color_link:'#6c8aff', color_focus:'#6c8cff',
+      glow_color_1:'#3b82f6', glow_color_2:'#8b5cf6',
+      head_font:'serif', font_weight:'normal', letter_spacing:0, line_height:1.5,
+      shadow:'medium', border_width:1, focus_style:'ring',
+      content_width:'full', header_style:'sticky', button_style:'solid', motion_speed:'normal',
+      bg_dark:'#0b1220', bg_light:'#eef2fb', surface_dark:'#1e2940', surface_light:'#ffffff',
+      text_dark:'#e8edf6', text_light:'#19233a', muted_dark:'#aab2c0', muted_light:'#5b6577',
+      border_dark:'#2a3344', border_light:'#d4dae6'};
     var AP = Object.assign({}, _AP_DEFAULTS, (window.__ADMIN_APPEARANCE__ || {}));
+    // custom_presets is real state we persist; the other server-computed
+    // presentation keys aren't part of the editable model — drop them so the
+    // PUT payload stays the flat knob set.
+    AP.custom_presets = (window.__ADMIN_APPEARANCE__ && window.__ADMIN_APPEARANCE__.custom_presets) || [];
+    ['css_vars','base_css_dark','base_css_light','base_overrides'].forEach(function(k){ delete AP[k]; });
 
-    // Curated one-click presets (task 073) — set accent/accent2/surface/mode together.
+    // Manifests for the expanded knobs (task 089), mirroring _ADMIN_APPEARANCE_EXTRA
+    // in app.py so live-apply + control sync stay declarative.
+    //   _AP_VARS  — :root colour/number vars; emitted only when != default (else
+    //               removed so base.css shows through, matching the server).
+    //   _AP_ATTRS — data-* enums; always set (the default value writes no rule).
+    //   _AP_BASE  — per-theme base colours; apply the CURRENT mode's value inline.
+    var _AP_VARS = [
+      {k:'color_success', v:'--admin-success',      d:'#22c55e'},
+      {k:'color_warning', v:'--admin-warning',      d:'#f59e0b'},
+      {k:'color_danger',  v:'--admin-danger',       d:'#ef4444'},
+      {k:'color_info',    v:'--admin-info',         d:'#3b82f6'},
+      {k:'accent3',       v:'--admin-accent-3',     d:'#22d3ee'},
+      {k:'color_link',    v:'--admin-link',         d:'#6c8aff'},
+      {k:'color_focus',   v:'--admin-focus',        d:'#6c8cff'},
+      {k:'glow_color_1',  v:'--admin-glow-1',       d:'#3b82f6'},
+      {k:'glow_color_2',  v:'--admin-glow-2',       d:'#8b5cf6'},
+      {k:'border_width',  v:'--admin-border-width', d:1, unit:'px'},
+      {k:'letter_spacing',v:'--admin-letter-spacing', d:0, unit:'em'},
+      {k:'line_height',   v:'--admin-line-height',  d:1.5}
+    ];
+    var _AP_ATTRS = [
+      {k:'shadow',        a:'data-admin-shadow',   d:'medium'},
+      {k:'head_font',     a:'data-admin-headfont', d:'serif'},
+      {k:'font_weight',   a:'data-admin-weight',   d:'normal'},
+      {k:'focus_style',   a:'data-admin-focus',    d:'ring'},
+      {k:'content_width', a:'data-admin-width',    d:'full'},
+      {k:'header_style',  a:'data-admin-header',   d:'sticky'},
+      {k:'button_style',  a:'data-admin-button',   d:'solid'},
+      {k:'motion_speed',  a:'data-admin-speed',    d:'normal'}
+    ];
+    var _AP_BASE = [
+      {k:'bg',      v:'--admin-bg',         dd:'#0b1220', dl:'#eef2fb'},
+      {k:'surface', v:'--admin-surface',    dd:'#1e2940', dl:'#ffffff', glass:true},
+      {k:'text',    v:'--admin-text',       dd:'#e8edf6', dl:'#19233a'},
+      {k:'muted',   v:'--admin-text-muted', dd:'#aab2c0', dl:'#5b6577'},
+      {k:'border',  v:'--admin-border',     dd:'#2a3344', dl:'#d4dae6'}
+    ];
+    var _AP_BASE_KEYS = {bg:1, surface:1, text:1, muted:1, border:1};
+    var _AP_NUM = {border_width:{lbl:'ap-border_width-v',unit:'px'},
+                   letter_spacing:{lbl:'ap-letter_spacing-v',unit:'em'},
+                   line_height:{lbl:'ap-line_height-v',unit:''}};
+
+    // Curated one-click presets (task 073, expanded task 089). A preset may set
+    // ANY knob — the new ones below also tune shadow/heading-font/button-style/
+    // glow colours/content-width to show off the expanded controls.
     var AP_PRESETS = {
       'indigo-glass':  {label:'Indigo Glass',  accent:'#6c8cff', accent2:'#9a7cff', surface:'glass',   mode:'dark'},
       'slate-solid':   {label:'Slate Solid',   accent:'#7c8da6', accent2:'#b6c2d6', surface:'solid',   mode:'dark'},
       'emerald-glass': {label:'Emerald',       accent:'#10b981', accent2:'#34d399', surface:'glass',   mode:'dark'},
       'rose-glass':    {label:'Rose',          accent:'#f43f5e', accent2:'#fb7185', surface:'glass',   mode:'dark'},
       'amber-light':   {label:'Amber Light',   accent:'#f59e0b', accent2:'#fbbf24', surface:'glass',   mode:'light'},
-      'minimal-light': {label:'Minimal Light', accent:'#3b82f6', accent2:'#6366f1', surface:'minimal', mode:'light'}
+      'minimal-light': {label:'Minimal Light', accent:'#3b82f6', accent2:'#6366f1', surface:'minimal', mode:'light'},
+      'midnight':      {label:'Midnight',      accent:'#5b8def', accent2:'#7c6cff', surface:'solid',   mode:'dark',  shadow:'strong', glow_color_1:'#1e3a8a', glow_color_2:'#3b0764'},
+      'mono-ink':      {label:'Mono Ink',      accent:'#9ca3af', accent2:'#d1d5db', surface:'minimal', mode:'dark',  head_font:'mono', button_style:'outline', shadow:'soft'},
+      'sunset':        {label:'Sunset',        accent:'#fb7185', accent2:'#fbbf24', surface:'glass',   mode:'dark',  glow_color_1:'#f43f5e', glow_color_2:'#f59e0b'},
+      'forest-light':  {label:'Forest',        accent:'#10b981', accent2:'#84cc16', surface:'glass',   mode:'light', head_font:'serif'},
+      'editorial':     {label:'Editorial',     accent:'#1d4ed8', accent2:'#7c3aed', surface:'minimal', mode:'light', head_font:'serif', content_width:'comfortable', shadow:'soft', button_style:'soft'},
+      'contrast-dark': {label:'High Contrast',  accent:'#ffd166', accent2:'#ef476f', surface:'solid',   mode:'dark',  high_contrast:true, shadow:'strong', button_style:'outline'}
     };
 
     function _apTxt(id, t){ var e=document.getElementById(id); if(e) e.textContent=t; }
@@ -229,6 +294,22 @@
       r.setAttribute('data-admin-sidebar', AP.sidebar);
       if(AP.high_contrast) r.setAttribute('data-admin-contrast','high'); else r.removeAttribute('data-admin-contrast');
       if(AP.reduce_motion) r.setAttribute('data-admin-motion','reduce'); else r.removeAttribute('data-admin-motion');
+      // task 089 — expanded knobs. Vars emit only when != default (else remove,
+      // so base.css shows through, matching the server). Attrs always set (the
+      // default value writes no CSS rule). Base colours: apply the CURRENT
+      // mode's value inline (highest specificity ⇒ live preview wins).
+      _AP_VARS.forEach(function(m){
+        var val=AP[m.k];
+        if(val===undefined || val===m.d){ r.style.removeProperty(m.v); return; }
+        r.style.setProperty(m.v, m.unit ? (val+m.unit) : String(val));
+      });
+      _AP_ATTRS.forEach(function(m){ r.setAttribute(m.a, AP[m.k] || m.d); });
+      var _isLight=(AP.mode==='light');
+      _AP_BASE.forEach(function(m){
+        var cv=AP[m.k+(_isLight?'_light':'_dark')], df=_isLight?m.dl:m.dd;
+        if(!cv || String(cv).toLowerCase()===df.toLowerCase()){ r.style.removeProperty(m.v); return; }
+        r.style.setProperty(m.v, m.glass ? ('color-mix(in srgb,'+cv+' calc(var(--admin-glass)*100%),transparent)') : cv);
+      });
       _apSyncToggleIcon();
       _apSyncSegs();
       if (window.adminRecolorCharts) window.adminRecolorCharts();
@@ -257,8 +338,30 @@
       if(g('ap-radius')) { g('ap-radius').value = AP.radius; _apTxt('ap-radius-v', AP.radius+'px'); }
       if(g('ap-glass'))  { var gp=Math.round(AP.glass*100); g('ap-glass').value = gp; _apTxt('ap-glass-v', gp+'%'); }
       if(g('ap-glow'))   { var gw=Math.round(AP.glow*100);  g('ap-glow').value  = gw; _apTxt('ap-glow-v', gw+'%'); }
+      apInitExtra();            // task 089 — colour + number controls
       apRenderPresets();
+      apRenderCustomPresets();  // task 089 — saved custom presets (P3)
       _apSyncSegs();
+    }
+    // task 089 — populate the expanded colour + number controls from AP.
+    function apInitExtra(){
+      var g=function(i){return document.getElementById(i);};
+      ['color_success','color_warning','color_danger','color_info','accent3','color_link','color_focus','glow_color_1','glow_color_2'].forEach(function(k){
+        var e=g('ap-'+k); if(e) e.value = AP[k];
+      });
+      Object.keys(_AP_NUM).forEach(function(k){
+        var e=g('ap-'+k); if(e){ e.value=AP[k]; var n=_AP_NUM[k]; _apTxt(n.lbl, AP[k]+(n.unit||'')); }
+      });
+      apInitBaseColors();
+    }
+    // Per-theme base-colour pickers are bound to the CURRENT mode; re-sync them
+    // whenever the mode changes so you edit the right theme's palette.
+    function apInitBaseColors(){
+      var g=function(i){return document.getElementById(i);}, isLight=(AP.mode==='light');
+      ['bg','surface','text','muted','border'].forEach(function(k){
+        var e=g('ap-'+k); if(e) e.value = AP[k+(isLight?'_light':'_dark')];
+      });
+      _apTxt('ap-basecolor-mode', isLight?'light':'dark');
     }
     function apLive(key, raw){
       if(key==='accent')       AP.accent  = raw;
@@ -267,16 +370,27 @@
       else if(key==='radius') { AP.radius = +raw; _apTxt('ap-radius-v', raw+'px'); }
       else if(key==='glass')  { AP.glass  = (+raw)/100; _apTxt('ap-glass-v', raw+'%'); }
       else if(key==='glow')   { AP.glow   = (+raw)/100; _apTxt('ap-glow-v', raw+'%'); }
+      else _apLiveExtra(key, raw);   // task 089 — colours / numbers / base colours
       apApply();
     }
-    // Enum/segment setter (density, font_scale, font_family, surface, sidebar).
-    function apSet(key, val){ AP[key]=val; apApply(); apPersist(true); }
+    // task 089 — live handler for the expanded inputs. Base-colour keys write to
+    // the current mode's slot; numbers update their value label; the rest are
+    // plain colour pickers.
+    function _apLiveExtra(key, raw){
+      if(_AP_BASE_KEYS[key]){ AP[key+(AP.mode==='light'?'_light':'_dark')] = raw; }
+      else if(_AP_NUM[key]){ AP[key]=+raw; var n=_AP_NUM[key]; _apTxt(n.lbl, raw+(n.unit||'')); }
+      else { AP[key]=raw; }
+    }
+    // Enum/segment setter (density, surface, …, plus the task-089 enums). On a
+    // mode change, re-bind the per-theme base-colour pickers to the new theme.
+    function apSet(key, val){ AP[key]=val; apApply(); if(key==='mode') apInitBaseColors(); apPersist(true); }
     // Boolean a11y toggle (high_contrast, reduce_motion).
     function apToggle(key, on){ AP[key]=!!on; apApply(); apPersist(true); }
-    // Apply a curated preset, then sync controls + save.
+    // Apply a curated built-in preset, then sync controls + save. Generic: a
+    // preset may carry ANY knob (task 089 presets set shadow/head_font/etc. too).
     function apPreset(id){
       var p=AP_PRESETS[id]; if(!p) return;
-      AP.accent=p.accent; AP.accent2=p.accent2; AP.surface=p.surface; AP.mode=p.mode;
+      Object.keys(p).forEach(function(k){ if(k!=='label') AP[k]=p[k]; });
       apApply(); apInitControls(); apPersist(true); _apTxt('ap-status','Applied the "'+p.label+'" preset.');
     }
     function apRenderPresets(){
@@ -288,8 +402,50 @@
           + '<span>'+p.label+'</span></button>';
       }).join('');
     }
-    function apSetMode(m){ AP.mode = m; apApply(); apPersist(true); }
-    function adminToggleTheme(){ AP.mode = (AP.mode==='light' ? 'dark' : 'light'); apApply(); apPersist(true); }
+    // task 089 — save-your-own presets. Snapshot the current theme as a named,
+    // re-applyable preset stored in AP.custom_presets and persisted via the
+    // normal PUT (the server caps the count + validates each one).
+    function _apHash(s){ var h=0,i; for(i=0;i<s.length;i++){ h=((h<<5)-h+s.charCodeAt(i))|0; } return h; }
+    function _apHex(v){ return /^#[0-9a-fA-F]{3,8}$/.test(v) ? v : '#6c8cff'; }
+    function apSavePreset(){
+      var inp=document.getElementById('ap-preset-name'), name=((inp&&inp.value)||'').trim();
+      if(!name){ _apTxt('ap-status','Name your preset first.'); if(inp) inp.focus(); return; }
+      var settings={};
+      Object.keys(_AP_DEFAULTS).forEach(function(k){ if(k!=='custom_presets') settings[k]=AP[k]; });
+      var id='c'+Math.abs(_apHash(name)).toString(36);
+      AP.custom_presets=(AP.custom_presets||[]).filter(function(p){ return p.id!==id; });
+      AP.custom_presets.push({id:id, label:name.slice(0,40), settings:settings});
+      if(inp) inp.value='';
+      apRenderCustomPresets(); apPersist(true); _apTxt('ap-status','Saved the "'+name+'" preset.');
+    }
+    function apApplyCustomPreset(id){
+      var p=(AP.custom_presets||[]).filter(function(x){ return x.id===id; })[0]; if(!p) return;
+      Object.keys(p.settings||{}).forEach(function(k){ AP[k]=p.settings[k]; });
+      apApply(); apInitControls(); apPersist(true); _apTxt('ap-status','Applied "'+p.label+'".');
+    }
+    function apDeletePreset(id, ev){
+      if(ev) ev.stopPropagation();
+      AP.custom_presets=(AP.custom_presets||[]).filter(function(p){ return p.id!==id; });
+      apRenderCustomPresets(); apPersist(true);
+    }
+    function apRenderCustomPresets(){
+      var host=document.getElementById('ap-custom-presets'); if(!host) return;
+      var list=AP.custom_presets||[];
+      if(!list.length){ host.innerHTML='<div class="gx-hint" style="grid-column:1/-1">No saved presets yet — tune the theme, name it, and hit “Save current”.</div>'; return; }
+      host.innerHTML=list.map(function(p){
+        var s=p.settings||{}, a=_apHex(s.accent||'#6c8cff'), a2=_apHex(s.accent2||a);
+        return '<button type="button" class="ap-preset" onclick="apApplyCustomPreset(\''+p.id+'\')">'
+          +'<span class="sw" style="background:linear-gradient(135deg,'+a+','+a2+')"></span>'
+          +'<span class="ap-preset-lbl"></span>'
+          +'<span class="ap-preset-x" title="Delete" onclick="apDeletePreset(\''+p.id+'\',event)">×</span></button>';
+      }).join('');
+      // Labels via textContent (never innerHTML) — XSS-safe even though the
+      // server also validates the label.
+      var lbls=host.querySelectorAll('.ap-preset-lbl');
+      list.forEach(function(p,i){ if(lbls[i]) lbls[i].textContent=p.label; });
+    }
+    function apSetMode(m){ AP.mode = m; apApply(); apInitBaseColors(); apPersist(true); }
+    function adminToggleTheme(){ AP.mode = (AP.mode==='light' ? 'dark' : 'light'); apApply(); apInitBaseColors(); apPersist(true); }
     async function apPersist(quiet){
       try{
         var r=await fetch('/admin/api/admin-appearance', {method:'PUT',
@@ -300,8 +456,19 @@
     }
     function apSave(){ apPersist(false); }
     function apReset(){
+      // Reset the theme to defaults but KEEP saved custom presets.
+      var _cp = AP.custom_presets || [];
       AP = Object.assign({}, _AP_DEFAULTS);
+      AP.custom_presets = _cp;
       apApply(); apInitControls(); apPersist(false);
+    }
+    // task 089 — reset just the per-theme base colours (recover from a bad combo)
+    // without touching the rest of the theme.
+    function apResetBaseColors(){
+      ['bg','surface','text','muted','border'].forEach(function(k){
+        AP[k+'_dark']=_AP_DEFAULTS[k+'_dark']; AP[k+'_light']=_AP_DEFAULTS[k+'_light'];
+      });
+      apApply(); apInitBaseColors(); apPersist(true); _apTxt('ap-status','Base colours reset to the theme defaults.');
     }
     document.addEventListener('DOMContentLoaded', function(){ apInitControls(); _apSyncToggleIcon(); });
 
