@@ -491,3 +491,17 @@ def test_chat_personas_consumption_endpoint():
         rr = cc.get("/admin/api/chat/personas")
         assert rr.status_code == 200
         assert "general" in [p["key"] for p in rr.get_json()["personas"]]
+
+
+def test_admin_dashboard_renders_admin_ai_tab():
+    """The dashboard renders for a super-admin with the new Admin AI tab wired
+    end-to-end (Jinja {% include %} of _admin-ai.html + nav button + loader).
+    Catches a template syntax error in the new partial."""
+    c = app.app.test_client()
+    assert _login(c, ADMIN_PW).status_code in (200, 302)
+    r = c.get("/admin")
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert 'id="tab-admin-ai"' in html              # partial included
+    assert 'data-testid="tab-admin-ai"' in html     # nav button present
+    assert "loadAdminAI()" in html                  # loader wired

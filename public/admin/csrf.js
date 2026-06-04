@@ -1444,6 +1444,8 @@
     // + slash-command palette + capabilities-tray Esc.
     adminChatInstallComposer();
     adminPickInstall();
+    // Task 088: rebuild the persona pill from the DB-backed personas (fail-open).
+    adminChatLoadPersonas();
     adminChatInstallSlashTrigger();
     adminChatInstallCapEsc();
     const sid = await adminChatEnsureActiveSession();
@@ -2418,10 +2420,11 @@
   // a 'change' event (so the select's own handler runs) before we reflect the
   // label on the trigger. Nothing here owns chat state.
 
-  // Persona metadata — icon + one-line description grounded in
-  // ADMIN_CHAT_PERSONAS (app.py ~19281) + the "Auto router" pin. Keys MUST
-  // match the native <option value>s.
-  const ADMIN_PERSONA_META = {
+  // Persona metadata — icon + one-line description. Task 088: this is now a
+  // FALLBACK seed; adminChatLoadPersonas() rebuilds it (and the native <select>)
+  // from /admin/api/chat/personas so super-admin edits + custom personas show in
+  // the pill. `let` (not const) so it can be reassigned. The '' key = Auto router.
+  let ADMIN_PERSONA_META = {
     '':            { icon: '🎭', name: 'Auto persona', desc: 'Router picks the best persona each turn' },
     'general':     { icon: '💬', name: 'General',      desc: 'Balanced assistant, every tool available' },
     'research':    { icon: '🔎', name: 'Research',     desc: 'Evidence-first; web search + KB, cites sources' },
@@ -2446,6 +2449,39 @@
       html += adminPickOptHtml(opt.value, m.icon, m.name, m.desc);
     }
     return html;
+  }
+
+  // Task 088: personas are DB-backed + super-admin-editable. Rebuild the native
+  // persona <select> options + ADMIN_PERSONA_META from /admin/api/chat/personas,
+  // then re-sync the glass pill (its menu rebuilds lazily on next open). FAIL-OPEN:
+  // on any error or empty payload, keep the static <option>s shipped in the
+  // template + the fallback meta above — the picker is never blanked or broken.
+  async function adminChatLoadPersonas() {
+    const sel = document.getElementById('admin-chat-persona');
+    if (!sel) return;
+    let personas;
+    try {
+      const res = await fetch('/admin/api/chat/personas');
+      if (!res.ok) return;
+      const data = await res.json();
+      personas = (data && data.personas) || [];
+    } catch (e) { return; }
+    if (!personas.length) return;
+    const prev = sel.value || '';
+    // Auto ('') is a client-side pin, always first; then the live personas.
+    const meta = { '': { icon: '🎭', name: 'Auto persona', desc: 'Router picks the best persona each turn' } };
+    let html = '<option value="">🎭 Auto persona</option>';
+    personas.forEach(p => {
+      const icon = p.icon || '•';
+      meta[p.key] = { icon: icon, name: p.label || p.key, desc: p.description || '' };
+      const label = (icon ? icon + ' ' : '') + (p.label || p.key);
+      html += '<option value="' + adminChatAttrEscape(p.key) + '">' + adminChatEscape(label) + '</option>';
+    });
+    sel.innerHTML = html;
+    sel.value = meta[prev] ? prev : '';   // keep the pin if it still exists, else Auto
+    ADMIN_PERSONA_META = meta;
+    const pickEl = document.getElementById('admin-pick-persona');
+    if (pickEl && typeof adminPickSyncTrigger === 'function') adminPickSyncTrigger(pickEl);
   }
   // Build the model menu by walking the native select's optgroups/options so
   // the model list stays defined ONCE (in the template) — we never duplicate it.

@@ -324,3 +324,60 @@
     .admin-chat-md-body th, .admin-chat-md-body td { border:1px solid var(--admin-border); padding:.25rem .5rem; font-size:.85rem; }
     .admin-chat-md-body h1, .admin-chat-md-body h2, .admin-chat-md-body h3 { margin:.5rem 0 .25rem; }
     .admin-chat-md-body ul, .admin-chat-md-body ol { margin:.25rem 0 .25rem 1.25rem; }
+
+    /* ===================================================================
+       ADMIN AI tab (task 088) — persona + (phase 3) palette editor.
+       Scoped under #tab-admin-ai; reuses the global .card/.btn; colours via
+       the --admin-* theme tokens so light + dark both work. No bare-element
+       selectors leak outside the tab.
+       =================================================================== */
+    #tab-admin-ai .admin-ai-sechead { display:flex; justify-content:space-between;
+      align-items:flex-start; gap:1rem; flex-wrap:wrap; margin:0 0 1rem; }
+    #tab-admin-ai .admin-ai-help { opacity:.72; font-size:.85rem; line-height:1.5;
+      max-width:64ch; margin:0; }
+    #tab-admin-ai .admin-ai-card { margin-bottom:1.1rem; padding:1.1rem 1.2rem; }
+    #tab-admin-ai .admin-ai-card-new { border:1px solid var(--admin-accent); }
+    #tab-admin-ai .admin-ai-card-head { display:flex; justify-content:space-between;
+      align-items:center; gap:1rem; flex-wrap:wrap; margin-bottom:.75rem; }
+    #tab-admin-ai .admin-ai-card-title { display:flex; align-items:center; gap:.5rem;
+      flex-wrap:wrap; font-size:1rem; }
+    #tab-admin-ai .admin-ai-card-title code { background:var(--admin-bg);
+      border:1px solid var(--admin-border); border-radius:.35rem; padding:.05rem .35rem;
+      font-size:.75rem; opacity:.8; }
+    #tab-admin-ai .admin-ai-pemoji { font-size:1.25rem; line-height:1; }
+    #tab-admin-ai .admin-ai-badge { font-size:.66rem; font-weight:600; letter-spacing:.02em;
+      text-transform:uppercase; padding:.12rem .45rem; border-radius:999px;
+      border:1px solid var(--admin-border); color:var(--admin-text-muted); }
+    #tab-admin-ai .admin-ai-badge.is-builtin { background:color-mix(in srgb, var(--admin-accent) 14%, transparent);
+      border-color:color-mix(in srgb, var(--admin-accent) 35%, transparent); color:var(--admin-text); }
+    #tab-admin-ai .admin-ai-badge.is-custom { background:color-mix(in srgb, var(--admin-accent) 8%, transparent); }
+    #tab-admin-ai .admin-ai-badge.is-lock { opacity:.7; }
+    #tab-admin-ai .admin-ai-grid { display:grid; grid-template-columns:2fr 1fr 1fr;
+      gap:.75rem; margin-bottom:.6rem; }
+    #tab-admin-ai .admin-ai-full { display:block; margin-bottom:.6rem; }
+    #tab-admin-ai .admin-ai-grid label, #tab-admin-ai .admin-ai-full,
+    #tab-admin-ai .admin-ai-tools label:not(.admin-ai-toggle) { font-size:.74rem;
+      font-weight:600; color:var(--admin-text-muted); text-transform:uppercase;
+      letter-spacing:.03em; display:flex; flex-direction:column; gap:.3rem; }
+    #tab-admin-ai .admin-ai-grid input,
+    #tab-admin-ai .admin-ai-full input,
+    #tab-admin-ai .admin-ai-full textarea,
+    #tab-admin-ai .admin-ai-tools input { width:100%; box-sizing:border-box;
+      font:inherit; font-weight:400; text-transform:none; letter-spacing:0;
+      padding:.5rem .6rem; border:1px solid var(--admin-border); border-radius:.5rem;
+      background:var(--admin-field, var(--admin-bg)); color:var(--admin-text); }
+    #tab-admin-ai .admin-ai-full textarea { resize:vertical; line-height:1.5;
+      font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:.82rem; }
+    #tab-admin-ai .admin-ai-tools { border:1px solid var(--admin-border);
+      border-radius:.6rem; padding:.8rem .9rem; margin:.2rem 0 .9rem;
+      background:color-mix(in srgb, var(--admin-bg) 55%, transparent); }
+    #tab-admin-ai .admin-ai-toggle { display:inline-flex; align-items:center; gap:.45rem;
+      font-size:.85rem; font-weight:500; color:var(--admin-text); cursor:pointer;
+      text-transform:none; letter-spacing:0; }
+    #tab-admin-ai .admin-ai-tools .admin-ai-toggle { margin-bottom:.6rem; }
+    #tab-admin-ai .admin-ai-hint { font-size:.72rem; opacity:.6; font-weight:400; }
+    #tab-admin-ai .admin-ai-actions { display:flex; gap:.6rem; flex-wrap:wrap;
+      margin-top:.4rem; }
+    #tab-admin-ai .admin-ai-del { color:#c0392b;
+      border-color:color-mix(in srgb, #c0392b 40%, transparent); }
+    @media (max-width:680px) { #tab-admin-ai .admin-ai-grid { grid-template-columns:1fr; } }

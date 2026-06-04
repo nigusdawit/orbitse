@@ -717,6 +717,253 @@
 
     /*
     ========================================================================
+    ADMIN AI TAB (task 088) — super-admin editor for the assistant's PERSONAS
+    (the slash-command / capability / starter palette sections are added by
+    phase 3). Calls the admin/admin_ai.py CRUD routes; CSRF is auto-attached by
+    csrf.js. Built-ins are editable + resettable; custom personas are deletable.
+    ========================================================================
+    */
+    // Entry point wired to the nav button (switchTab('admin-ai'); loadAdminAI()).
+    async function loadAdminAI() {
+      await adminAiLoadPersonas();
+    }
+
+    // Split a comma-separated input into a clean list of trimmed, non-empty items.
+    function _adminAiSplit(el) {
+      return (el && el.value ? el.value.split(',') : [])
+        .map(s => s.trim()).filter(Boolean);
+    }
+
+    // Read one persona editor form (prefix identifies the card) into a request
+    // body. tool_prefixes is TRI-STATE: the "restrict" toggle OFF → null (every
+    // tool); ON → the parsed prefix list. Mirrors the server's _admin_persona_payload.
+    function _adminAiReadPersona(prefix) {
+      const g = id => document.getElementById(prefix + '_' + id);
+      const restrict = !!(g('restrict') && g('restrict').checked);
+      return {
+        label: ((g('label') && g('label').value) || '').trim(),
+        icon: ((g('icon') && g('icon').value) || '').trim(),
+        description: ((g('desc') && g('desc').value) || '').trim(),
+        prompt_suffix: ((g('suffix') && g('suffix').value) || ''),
+        extra_tools: _adminAiSplit(g('extra')),
+        enabled: g('enabled') ? g('enabled').checked : true,
+        sort_order: g('sort') ? (parseInt(g('sort').value || '0', 10) || 0) : 0,
+        tool_prefixes: restrict ? _adminAiSplit(g('prefixes')) : null,
+      };
+    }
+
+    // Build the inner HTML for one persona card. Inputs are left EMPTY here and
+    // populated via .value in _adminAiFillPersona (so special chars never become
+    // markup). `isNew` adds a persona_key input + Create/Cancel instead of
+    // Save/Reset/Delete.
+    function _adminAiPersonaCardHTML(p, isNew) {
+      const key = isNew ? 'new' : p.persona_key;
+      const pfx = isNew ? 'aiapnew' : ('aiap_' + key);
+      let badge = '';
+      if (!isNew) {
+        if (p.is_builtin) {
+          badge = '<span class="admin-ai-badge is-builtin">'
+                + (p.is_default ? 'built-in' : 'built-in · edited') + '</span>';
+        } else {
+          badge = '<span class="admin-ai-badge is-custom">custom</span>';
+        }
+        if (p.protected) badge += '<span class="admin-ai-badge is-lock">fallback</span>';
+      }
+      const titleBits = isNew
+        ? '<strong>New persona</strong>'
+        : ('<span class="admin-ai-pemoji" id="' + pfx + '_emoji"></span>'
+           + '<strong id="' + pfx + '_titlelabel"></strong> '
+           + '<code>' + esc(key) + '</code> ' + badge);
+      const keyRow = isNew
+        ? ('<label class="admin-ai-full">Persona key (lowercase a–z, 0–9, underscore)'
+           + '<input id="aiapnew_key" placeholder="e.g. legal_review" autocomplete="off"></label>')
+        : '';
+      let actions;
+      if (isNew) {
+        actions = '<button class="btn btn-primary" onclick="adminAiCreatePersona()">Create persona</button>'
+                + '<button class="btn btn-secondary" onclick="adminAiCancelNewPersona()">Cancel</button>';
+      } else {
+        actions = '<button class="btn btn-primary" onclick="adminAiSavePersona(\'' + esc(key) + '\')">Save</button>';
+        if (p.is_builtin) {
+          actions += '<button class="btn btn-secondary" onclick="adminAiResetPersona(\'' + esc(key) + '\')">Reset to default</button>';
+        }
+        if (!p.is_builtin) {
+          actions += '<button class="btn btn-secondary admin-ai-del" onclick="adminAiDeletePersona(\'' + esc(key) + '\')">Delete</button>';
+        }
+      }
+      return ''
+        + '<div class="admin-ai-card-head">'
+        +   '<div class="admin-ai-card-title">' + titleBits + '</div>'
+        +   '<label class="admin-ai-toggle"><input type="checkbox" id="' + pfx + '_enabled"> Enabled</label>'
+        + '</div>'
+        + keyRow
+        + '<div class="admin-ai-grid">'
+        +   '<label>Label<input id="' + pfx + '_label"></label>'
+        +   '<label>Icon<input id="' + pfx + '_icon" maxlength="8" placeholder="🤖"></label>'
+        +   '<label>Order<input id="' + pfx + '_sort" type="number" value="0"></label>'
+        + '</div>'
+        + '<label class="admin-ai-full">Description (shown in the persona picker)'
+        +   '<input id="' + pfx + '_desc"></label>'
+        + '<label class="admin-ai-full">System-prompt addition — shapes how this persona answers'
+        +   '<textarea id="' + pfx + '_suffix" rows="4"></textarea></label>'
+        + '<div class="admin-ai-tools">'
+        +   '<label class="admin-ai-toggle"><input type="checkbox" id="' + pfx + '_restrict" '
+        +     'onchange="adminAiToggleRestrict(\'' + pfx + '\')"> Restrict tools '
+        +     '<span class="admin-ai-hint">(off = every tool available)</span></label>'
+        +   '<label class="admin-ai-full admin-ai-restrictrow" id="' + pfx + '_restrictrow">'
+        +     'Tool-name prefixes the persona may use (comma-separated)'
+        +     '<input id="' + pfx + '_prefixes" placeholder="admin_run_sql, admin_describe_, lookup_"></label>'
+        +   '<label class="admin-ai-full">Always-keep tools — exact names, kept even when restricted (comma-separated)'
+        +     '<input id="' + pfx + '_extra" placeholder="spawn_agents"></label>'
+        + '</div>'
+        + '<div class="admin-ai-actions">' + actions + '</div>';
+    }
+
+    // Populate a card's inputs from the persona object (post-insert, via .value).
+    function _adminAiFillPersona(p) {
+      const pfx = 'aiap_' + p.persona_key;
+      const set = (id, val) => { const el = document.getElementById(pfx + '_' + id); if (el) el.value = val; };
+      const emoji = document.getElementById(pfx + '_emoji');
+      if (emoji) emoji.textContent = p.icon || '🤖';
+      const tl = document.getElementById(pfx + '_titlelabel');
+      if (tl) tl.textContent = p.label || p.persona_key;
+      set('label', p.label || '');
+      set('icon', p.icon || '');
+      set('sort', p.sort_order || 0);
+      set('desc', p.description || '');
+      set('suffix', p.prompt_suffix || '');
+      const en = document.getElementById(pfx + '_enabled');
+      if (en) en.checked = p.enabled !== false;
+      // tri-state restore: null tool_prefixes → restrict OFF (every tool).
+      const restricted = Array.isArray(p.tool_prefixes);
+      const rc = document.getElementById(pfx + '_restrict');
+      if (rc) rc.checked = restricted;
+      if (restricted) set('prefixes', p.tool_prefixes.join(', '));
+      set('extra', (p.extra_tools || []).join(', '));
+      adminAiToggleRestrict(pfx);
+    }
+
+    // Show/hide the prefixes input depending on the restrict toggle.
+    function adminAiToggleRestrict(pfx) {
+      const rc = document.getElementById(pfx + '_restrict');
+      const row = document.getElementById(pfx + '_restrictrow');
+      if (row) row.style.display = (rc && rc.checked) ? '' : 'none';
+    }
+
+    async function adminAiLoadPersonas() {
+      const wrap = document.getElementById('admin-ai-personas-list');
+      if (!wrap) return;
+      wrap.innerHTML = '<p class="empty-state">Loading personas…</p>';
+      try {
+        const res = await fetch('/admin/api/admin-ai/personas');
+        if (!res.ok) {
+          wrap.innerHTML = '<p class="empty-state">Only the super admin can manage admin-AI personas.</p>';
+          return;
+        }
+        const data = await res.json();
+        const personas = (data && data.personas) || [];
+        wrap.innerHTML = '';
+        if (!personas.length) {
+          wrap.innerHTML = '<p class="empty-state">No personas yet. Use “+ Add persona”.</p>';
+          return;
+        }
+        personas.forEach(p => {
+          const card = document.createElement('div');
+          card.className = 'card admin-ai-card';
+          card.id = 'aiapcard_' + p.persona_key;
+          card.innerHTML = _adminAiPersonaCardHTML(p, false);
+          wrap.appendChild(card);
+          _adminAiFillPersona(p);
+        });
+      } catch (e) {
+        wrap.innerHTML = '<p class="empty-state">Failed to load personas.</p>';
+      }
+    }
+
+    // Prepend an inline "new persona" editor (only one at a time).
+    function adminAiAddPersona() {
+      if (document.getElementById('aiapcard_new')) {
+        document.getElementById('aiapnew_key').focus();
+        return;
+      }
+      const wrap = document.getElementById('admin-ai-personas-list');
+      if (!wrap) return;
+      const empty = wrap.querySelector('.empty-state');
+      if (empty) empty.remove();
+      const card = document.createElement('div');
+      card.className = 'card admin-ai-card admin-ai-card-new';
+      card.id = 'aiapcard_new';
+      card.innerHTML = _adminAiPersonaCardHTML({}, true);
+      wrap.insertBefore(card, wrap.firstChild);
+      // sensible defaults for the new form
+      const en = document.getElementById('aiapnew_enabled'); if (en) en.checked = true;
+      adminAiToggleRestrict('aiapnew');
+      const k = document.getElementById('aiapnew_key'); if (k) k.focus();
+    }
+
+    function adminAiCancelNewPersona() {
+      const card = document.getElementById('aiapcard_new');
+      if (card) card.remove();
+    }
+
+    async function adminAiCreatePersona() {
+      const body = _adminAiReadPersona('aiapnew');
+      const keyEl = document.getElementById('aiapnew_key');
+      body.persona_key = ((keyEl && keyEl.value) || '').trim().toLowerCase();
+      if (!body.persona_key) { showToast('Persona key is required.', 'error'); return; }
+      try {
+        const res = await fetch('/admin/api/admin-ai/personas', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Create failed', 'error'); return; }
+        showToast('Persona created — live on the next reply.', 'success');
+        await adminAiLoadPersonas();
+      } catch (e) { showToast('Create failed', 'error'); }
+    }
+
+    async function adminAiSavePersona(key) {
+      const body = _adminAiReadPersona('aiap_' + key);
+      try {
+        const res = await fetch('/admin/api/admin-ai/personas/' + encodeURIComponent(key), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Save failed', 'error'); return; }
+        showToast('Persona saved — live on the next reply.', 'success');
+        await adminAiLoadPersonas();
+      } catch (e) { showToast('Save failed', 'error'); }
+    }
+
+    async function adminAiResetPersona(key) {
+      if (!confirm('Restore this built-in persona to its default? Your edits will be replaced.')) return;
+      try {
+        const res = await fetch('/admin/api/admin-ai/personas/' + encodeURIComponent(key) + '/reset', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Reset failed', 'error'); return; }
+        showToast('Persona reset to default.', 'success');
+        await adminAiLoadPersonas();
+      } catch (e) { showToast('Reset failed', 'error'); }
+    }
+
+    async function adminAiDeletePersona(key) {
+      if (!confirm('Delete this custom persona? This cannot be undone.')) return;
+      try {
+        const res = await fetch('/admin/api/admin-ai/personas/' + encodeURIComponent(key), { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Delete failed', 'error'); return; }
+        showToast('Persona deleted.', 'success');
+        await adminAiLoadPersonas();
+      } catch (e) { showToast('Delete failed', 'error'); }
+    }
+
+
+    /*
+    ========================================================================
     TOAST NOTIFICATIONS
     ========================================================================
     Shows a temporary success/error message at the bottom-right of the screen.

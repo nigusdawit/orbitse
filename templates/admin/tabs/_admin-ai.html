@@ -1,0 +1,35 @@
+{# admin/tabs/_admin-ai.html — 'admin-ai' tab panel (task 088). Super-admin-only.
+   Manage the admin assistant's dynamic config: PERSONAS now; the slash-command /
+   capability / starter PALETTE sections are added in phase 3. Rendered into the
+   shell via {% include %}; the {% if is_super_admin() %} gate is on the nav button
+   + this whole tab in dashboard.html. Styling is scoped (.admin-ai-*) in
+   /admin/tabs.css; reuses the global .card/.btn/.empty-state components. #}
+<div id="tab-admin-ai" class="tab-content">
+  <div class="section-header-admin">
+    <div>
+      <h2>Admin AI</h2>
+      <p style="opacity:.7;margin-top:4px;">
+        Configure your admin assistant — the personas it can adopt and (soon) the
+        slash-commands &amp; capabilities it surfaces. Changes go live on the next
+        reply; no restart needed. Built-ins can be edited or reset to default; add
+        your own for custom workflows.
+      </p>
+    </div>
+  </div>
+
+  <section id="admin-ai-personas-section" class="admin-ai-section">
+    <div class="admin-ai-sechead">
+      <p class="admin-ai-help">
+        A <strong>persona</strong> shapes how the assistant answers (a system-prompt
+        addition) and which tools it focuses on (a tool filter). “Auto” lets the
+        router pick one per turn. After adding a persona, describe it in the
+        <strong>Persona Router</strong> prompt (AI Prompts tab) so Auto can route to it.
+      </p>
+      <button class="btn btn-primary" onclick="adminAiAddPersona()"
+              data-testid="button-admin-ai-add-persona">+ Add persona</button>
+    </div>
+    <div id="admin-ai-personas-list">
+      <p class="empty-state">Loading personas…</p>
+    </div>
+  </section>
+</div>
