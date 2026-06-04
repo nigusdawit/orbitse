@@ -2707,6 +2707,223 @@ def _invalidate_admin_persona_cache():
         _ADMIN_PERSONA_CACHE.clear()
 
 
+# -----------------------------------------------------------------------------
+# Admin-chat PALETTE registries (task 088 phase 3) — the slash-command palette,
+# the capabilities-tray groups, and the empty-state starter chips. These are
+# FRONT-END-ONLY (the backend never reads them; they just seed the composer +
+# optionally pin a persona client-side), so there is NO hot-path cache — the
+# consumption endpoint (/admin/api/chat/palette) queries the tables directly and
+# the chat fetches once per open. The registries below are the built-in defaults:
+# sync_admin_* (app.py) seeds them (preserve-edits) and the CRUD reset restores
+# from them. Ported VERBATIM from the former hardcoded consts in public/admin/csrf.js.
+# `super` (super-admin-only) is stored as the SQL column "super"; here it's the
+# dict key "super". sort_order gives display order.
+# -----------------------------------------------------------------------------
+def _admin_command_registry():
+    """Built-in slash-commands (keyed by `cmd`, e.g. '/sql'). Each seeds the
+    composer (+ optional persona); `tail` leaves the caret to type `arg`."""
+    def c(cmd, icon, group, tool, desc, seed, sort, arg="", tail=False,
+          persona="", sup=False):
+        return {"cmd": cmd, "icon": icon, "group_label": group, "tool": tool,
+                "description": desc, "seed": seed, "arg": arg, "tail": tail,
+                "persona": persona, "super": sup, "sort_order": sort}
+    return [
+        c("/tables", "🗂", "Data & SQL", "admin_list_tables",
+          "List the database tables (admin_list_tables)",
+          "List all the tables in my database and what each one is for.", 10),
+        c("/stats", "📈", "Data & SQL", "admin_overview_stats",
+          "7-day overview metrics (admin_overview_stats)",
+          "Give me a 7-day overview of my site: visitors, chats, orders and form submissions.",
+          20, persona="data_analyst"),
+        c("/sql", "🧮", "Data & SQL", "admin_run_sql",
+          "Run a read-only SQL query (admin_run_sql)",
+          "Run this read-only SQL: ", 30, arg="<query>", tail=True, persona="data_analyst"),
+        c("/chart", "📊", "Data & SQL", "render_chart",
+          "Visualize data as a chart (render_chart)",
+          "Query the data and render a chart of: ", 40, arg="<what to plot>",
+          tail=True, persona="data_analyst"),
+        c("/saved", "💾", "Data & SQL", "admin_list_saved_queries",
+          "List / run your saved queries (admin_list_saved_queries)",
+          "List my saved queries, then run the most relevant one and summarize the result.", 50),
+        c("/datahub", "🔌", "Datahub", "admin_list_connections",
+          "List + inspect your data connections (grant-bounded)",
+          "List my Datahub connections, then inspect the most useful one and tell me what I can query.", 60),
+        c("/dashboard", "🧭", "Dashboards", "admin_create_dashboard",
+          "Create a dashboard (admin_create_dashboard)",
+          "Create a dashboard that tracks: ", 70, arg="<topic>", tail=True),
+        c("/analyze", "🧠", "Analytics", "admin_analyze_chat_topics",
+          "Mine visitor-chat topics (admin_analyze_chat_topics)",
+          "Analyze my visitor chat topics from the last 30 days and surface the top themes and gaps.", 80),
+        c("/seo", "🔍", "Content & Marketing", "admin_suggest_seo_improvements",
+          "Find content gaps / SEO wins (admin_suggest_seo_improvements)",
+          "Review my site content and suggest concrete SEO improvements and content gaps to fill.", 90),
+        c("/blog", "✍️", "Content & Marketing", "admin_propose_draft_blog_post",
+          "Draft a blog post for approval (admin_propose_draft_blog_post)",
+          "Draft a blog post (for my approval) about: ", 100, arg="<topic>",
+          tail=True, persona="creative"),
+        c("/faq", "❓", "Content & Marketing", "admin_propose_draft_faq_entry",
+          "Draft an FAQ entry for approval (admin_propose_draft_faq_entry)",
+          "Draft an FAQ entry (for my approval) answering: ", 110, arg="<question>",
+          tail=True, persona="creative"),
+        c("/search", "🌐", "Research", "admin_web_search",
+          "Search the web (admin_web_search)",
+          "Search the web and summarize with sources: ", 120, arg="<query>", tail=True),
+        c("/kb", "📚", "Knowledge Base", "lookup_knowledge_base",
+          "Look something up in the KB (lookup_knowledge_base)",
+          "Search my Knowledge Base and answer with citations: ", 130, arg="<question>", tail=True),
+        c("/automations", "🤖", "Automations", "admin_list_automations",
+          "List your automations (admin_list_automations)",
+          "List my automations and tell me which are active and what each one does.", 140),
+        c("/skills", "🧰", "Skills", "admin_list_skills",
+          "List available AI skills (admin_list_skills)",
+          "List the AI skills available to you right now and what each can do.", 150),
+        c("/snapshots", "🗄", "Data & SQL", "admin_recent_snapshots",
+          "Recent content snapshots (admin_recent_snapshots)",
+          "Show my most recent content snapshots and what changed in each.", 160),
+        # ---- super-admin only ----
+        c("/research", "🔭", "Research", "run_research",
+          "Run a deep research task (run_research)",
+          "Run a deep research task on: ", 170, arg="<topic>", tail=True,
+          persona="research", sup=True),
+        c("/content", "📰", "Content & Marketing", "generate_content",
+          "Generate long-form content (generate_content)",
+          "Generate long-form content for: ", 180, arg="<brief>", tail=True, sup=True),
+        c("/design", "🎨", "Content & Marketing", "admin_propose_create_site_design",
+          "Propose a new site design (admin_propose_create_site_design)",
+          "Propose a new site design (for my approval) for: ", 190, arg="<page / vibe>",
+          tail=True, sup=True),
+        c("/theme", "🌈", "Content & Marketing", "admin_propose_create_site_theme",
+          "Propose a new site theme (admin_propose_create_site_theme)",
+          "Propose a new site theme (for my approval): ", 200, arg="<style>", tail=True, sup=True),
+        c("/define", "🧱", "Datahub", "admin_define_schema",
+          "Define / annotate Datahub schema (admin_define_schema)",
+          "Help me define and annotate the Datahub schema for: ", 210, arg="<table>",
+          tail=True, sup=True),
+        c("/mcp", "🛰", "Connectors (MCP)", "admin_mcp_list_servers",
+          "List MCP servers (admin_mcp_list_servers)",
+          "List my MCP servers, their status, and the tools they expose.", 220, sup=True),
+    ]
+
+
+def _admin_capability_registry():
+    """Built-in capability-tray groups (keyed by `cap_key`). `lines` = bullets;
+    `examples` = click-to-run chips ({label, seed, persona?, action?})."""
+    return [
+        {"cap_key": "data", "icon": "🧮", "title": "Data & SQL", "super": False,
+         "grant_aware": False, "sort_order": 10,
+         "lines": [
+             "List + describe your tables (admin_list_tables / admin_describe_table).",
+             "Run read-only SQL and summarize results (admin_run_sql).",
+             "Save + re-run queries (admin_save_query / admin_run_saved_query)."],
+         "examples": [
+             {"label": "List my tables", "seed": "List all the tables in my database and what each one is for."},
+             {"label": "Run a SQL query", "persona": "data_analyst", "seed": "Run this read-only SQL: "},
+             {"label": "Top 10 orders this month", "persona": "data_analyst", "seed": "Write and run read-only SQL for my top 10 orders this month."}]},
+        {"cap_key": "datahub", "icon": "🔌", "title": "Datahub", "super": False,
+         "grant_aware": True, "sort_order": 20,
+         "lines": [
+             "List the data connections you have access to (admin_list_connections).",
+             "Inspect a connection's annotated schema before querying (admin_inspect_connection).",
+             "Query within your granted tables (admin_query_connection) — access is grant-bounded."],
+         "examples": [
+             {"label": "Explore my Datahub", "seed": "List my Datahub connections, then inspect the most useful one and tell me what I can query."},
+             {"label": "What can I query?", "seed": "Which Datahub tables am I allowed to query, and what does each contain?"}]},
+        {"cap_key": "dashboards", "icon": "🧭", "title": "Dashboards", "super": False,
+         "grant_aware": False, "sort_order": 30,
+         "lines": [
+             "Create a dashboard from a question (admin_create_dashboard).",
+             "Add widgets / charts to a dashboard (admin_add_widget · render_chart)."],
+         "examples": [
+             {"label": "Build a sales dashboard", "seed": "Create a dashboard that tracks my sales: revenue, orders, and top products over time."},
+             {"label": "Chart visitors over time", "persona": "data_analyst", "seed": "Query my visitor data and render a chart of visitors per day for the last 30 days."}]},
+        {"cap_key": "analytics", "icon": "🧠", "title": "Analytics", "super": False,
+         "grant_aware": False, "sort_order": 40,
+         "lines": [
+             "Mine visitor-chat topics + sentiment (admin_analyze_chat_topics).",
+             "Surface recent activity — orders, forms, chats (admin_recent_*).",
+             "Skill usage stats (admin_skill_usage_stats)."],
+         "examples": [
+             {"label": "Analyze chat topics", "seed": "Analyze my visitor chat topics from the last 30 days and surface the top themes and gaps."},
+             {"label": "Recent form submissions", "persona": "ops", "seed": "Show my most recent form submissions and summarize what people are asking for."}]},
+        {"cap_key": "content", "icon": "✍️", "title": "Content & Marketing", "super": False,
+         "grant_aware": False, "sort_order": 50,
+         "lines": [
+             "Find content gaps + SEO wins (admin_suggest_seo_improvements).",
+             "Draft blog posts + FAQ entries for your approval (admin_propose_draft_*).",
+             "Web search with sources (admin_web_search)."],
+         "examples": [
+             {"label": "Find SEO gaps", "seed": "Review my site content and suggest concrete SEO improvements and content gaps to fill."},
+             {"label": "Draft a blog post", "persona": "creative", "seed": "Draft a blog post (for my approval) about: "},
+             {"label": "Draft an FAQ", "persona": "creative", "seed": "Draft an FAQ entry (for my approval) answering: "}]},
+        {"cap_key": "content_super", "icon": "🎨", "title": "Content Studio", "super": True,
+         "grant_aware": False, "sort_order": 60,
+         "lines": [
+             "Generate long-form content (generate_content).",
+             "Propose a new site design or theme for approval (admin_propose_create_site_design / _theme)."],
+         "examples": [
+             {"label": "Generate long-form content", "seed": "Generate long-form content for: "},
+             {"label": "Design a new homepage", "seed": "Propose a new site design (for my approval) for my homepage: "},
+             {"label": "Propose a new theme", "seed": "Propose a new site theme (for my approval): "}]},
+        {"cap_key": "research", "icon": "🔭", "title": "Research", "super": True,
+         "grant_aware": False, "sort_order": 70,
+         "lines": [
+             "Run a deep, multi-source research task (run_research).",
+             "Gather web sources into the Research Hub (gather_sources)."],
+         "examples": [
+             {"label": "Research a topic", "persona": "research", "seed": "Run a deep research task on: "}]},
+        {"cap_key": "automations", "icon": "🤖", "title": "Automations", "super": False,
+         "grant_aware": False, "sort_order": 80,
+         "lines": [
+             "List + inspect your automations (admin_list_automations / admin_get_automation).",
+             "Propose creating / toggling automations for your approval (admin_propose_*_automation)."],
+         "examples": [
+             {"label": "List my automations", "seed": "List my automations and tell me which are active and what each one does."}]},
+        {"cap_key": "mcp", "icon": "🛰", "title": "Connectors (MCP)", "super": True,
+         "grant_aware": False, "sort_order": 90,
+         "lines": [
+             "List your MCP servers + the tools they expose (admin_mcp_list_servers).",
+             "Propose adding / updating / toggling servers for approval (admin_mcp_propose_*)."],
+         "examples": [
+             {"label": "List my MCP servers", "seed": "List my MCP servers, their status, and the tools they expose."}]},
+        {"cap_key": "kb", "icon": "📚", "title": "Knowledge Base", "super": False,
+         "grant_aware": False, "sort_order": 100,
+         "lines": [
+             "Search your uploaded docs + quote passages with citations (lookup_knowledge_base).",
+             "Manage the docs the assistant can cite (open the KB panel)."],
+         "examples": [
+             {"label": "Search my KB", "seed": "Search my Knowledge Base and answer with citations: "},
+             {"label": "Manage KB docs", "action": "kb"}]},
+    ]
+
+
+def _admin_starter_registry():
+    """Built-in empty-state starter chips (keyed by `starter_key`)."""
+    def s(key, icon, label, seed, sort, persona="", sup=False):
+        return {"starter_key": key, "icon": icon, "label": label, "seed": seed,
+                "persona": persona, "super": sup, "sort_order": sort}
+    return [
+        s("overview_7d", "📈", "Give me a 7-day overview",
+          "Give me a 7-day overview of my site: visitors, chats, orders and form submissions.",
+          10, persona="data_analyst"),
+        s("analyze_topics", "🧠", "Analyze visitor chat topics",
+          "Analyze my visitor chat topics from the last 30 days and surface the top themes and gaps.", 20),
+        s("seo_gaps", "🔍", "Find content gaps (SEO)",
+          "Review my site content and suggest concrete SEO improvements and content gaps to fill.", 30),
+        s("draft_faq", "❓", "Draft an FAQ",
+          "Draft an FAQ entry (for my approval) answering: ", 40, persona="creative"),
+        s("run_sql", "🧮", "Run a SQL query",
+          "Run this read-only SQL: ", 50, persona="data_analyst"),
+        s("explore_datahub", "🔌", "Explore my Datahub",
+          "List my Datahub connections, then inspect the most useful one and tell me what I can query.", 60),
+        s("research_topic", "🔭", "Research a topic",
+          "Run a deep research task on: ", 70, persona="research", sup=True),
+        s("design_homepage", "🎨", "Design a new homepage",
+          "Propose a new site design (for my approval) for my homepage: ", 80, sup=True),
+        s("define_datahub", "🧱", "Define my Datahub tables",
+          "Help me define and annotate the Datahub schema for: ", 90, sup=True),
+    ]
+
+
 # =============================================================================
 # COST / BILLING INFRA  (moved from app.py - Track B / task 078, piece #2)
 # =============================================================================

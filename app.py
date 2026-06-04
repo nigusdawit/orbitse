@@ -777,6 +777,9 @@ from core import (  # noqa: E402 - re-export the DB layer that now lives in core
     _admin_persona_registry, _admin_persona_defaults,
     get_admin_personas, get_admin_personas_all, _invalidate_admin_persona_cache,
     _load_admin_persona_cache,
+    # task 088 phase 3: front-end-only palette default registries (slash-commands,
+    # capability-tray groups, starter chips) — seeded + reset from these.
+    _admin_command_registry, _admin_capability_registry, _admin_starter_registry,
     # --- cost/billing infra (Track B / task 078, piece #2): price cache + spend/cap readers ---
     _PRICE_CACHE, _PRICE_CACHE_EXP, _PRICE_CACHE_TTL_SEC,  # model_prices TTL cache (parity)
     _invalidate_price_cache, get_model_price,  # price-cache invalidator + lookup
@@ -19323,15 +19326,71 @@ def sync_admin_personas():
     _invalidate_admin_persona_cache()
 
 
+def _seed_admin_palette(table, key_col, rows, cols, jsonb_cols=()):
+    """Generic preserve-edits seeder for the front-end-only palette tables
+    (admin_chat_commands / _capabilities / _starters). Same contract as
+    sync_admin_personas: refresh a built-in row ONLY while it is machine-owned
+    (updated_by IS NULL) AND a seeded field differs, so super-admin edits survive.
+    `cols` are the data columns (excluding tenant_id/enabled/is_builtin/sort_order,
+    which are handled here); `jsonb_cols` get a ::jsonb cast + json.dumps."""
+    jset = set(jsonb_cols)
+    insert_cols = [key_col] + cols
+    placeholders = ", ".join("%s::jsonb" if c in jset else "%s" for c in insert_cols)
+    set_clause = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols)
+    distinct = " OR ".join(
+        f"{table}.{c} IS DISTINCT FROM EXCLUDED.{c}" for c in (cols + ["sort_order"]))
+    sql = (
+        f"INSERT INTO {table} (tenant_id, {', '.join(insert_cols)}, enabled, is_builtin, sort_order) "
+        f"VALUES (1, {placeholders}, TRUE, TRUE, %s) "
+        f"ON CONFLICT (tenant_id, {key_col}) DO UPDATE SET {set_clause}, "
+        f"is_builtin=TRUE, sort_order=EXCLUDED.sort_order, updated_at=NOW() "
+        f"WHERE {table}.updated_by IS NULL AND ({distinct})")
+    for r in rows:
+        try:
+            vals = []
+            for c in insert_cols:
+                v = r.get(c)
+                vals.append(json.dumps(v if v is not None else []) if c in jset else v)
+            vals.append(int(r.get("sort_order") or 0))
+            execute_db(sql, tuple(vals))
+        except Exception as e:
+            print(f"[admin-palette] seed {table} {r.get(key_col)} failed: {e}")
+
+
+def sync_admin_commands():
+    """Seed the slash-command palette (admin_chat_commands) from the registry."""
+    _seed_admin_palette(
+        "admin_chat_commands", "cmd", _admin_command_registry(),
+        ["icon", "group_label", "tool", "description", "seed", "arg", "tail", "persona", "super"])
+
+
+def sync_admin_capabilities():
+    """Seed the capability-tray groups (admin_chat_capabilities) from the registry."""
+    _seed_admin_palette(
+        "admin_chat_capabilities", "cap_key", _admin_capability_registry(),
+        ["icon", "title", "super", "grant_aware", "lines", "examples"],
+        jsonb_cols=("lines", "examples"))
+
+
+def sync_admin_starters():
+    """Seed the empty-state starter chips (admin_chat_starters) from the registry."""
+    _seed_admin_palette(
+        "admin_chat_starters", "starter_key", _admin_starter_registry(),
+        ["icon", "label", "seed", "persona", "super"])
+
+
 def sync_admin_ai_config():
     """Boot-time seed for ALL super-admin-editable admin-AI config (task 088):
-    personas now; the slash-command / capability / starter palette joins here in
-    phase 3. Idempotent + preserve-edits, so it is safe to run on every boot.
+    personas + the slash-command / capability / starter palette. Idempotent +
+    preserve-edits, so it is safe to run on every boot.
 
     MUST be wired into BOTH boot paths — main._bootstrap() AND app.py __main__ —
     or dev-run and prod-run diverge (see .agents/memory/boot-entrypoints.md, the
     exact lesson sync_ai_prompts() had to learn)."""
     sync_admin_personas()
+    sync_admin_commands()
+    sync_admin_capabilities()
+    sync_admin_starters()
 
 
 # =============================================================================

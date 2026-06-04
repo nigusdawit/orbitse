@@ -40,11 +40,16 @@ from core import (
     execute_db,
     admin_required,
     _require_super_admin_role,
+    _is_super_admin,
     _admin_persona_registry,
     _admin_persona_defaults,
     get_admin_personas,
     get_admin_personas_all,
     _invalidate_admin_persona_cache,
+    # task 088 phase 3: palette default registries (commands/capabilities/starters)
+    _admin_command_registry,
+    _admin_capability_registry,
+    _admin_starter_registry,
 )
 
 admin_ai_bp = Blueprint("admin_ai", __name__)
@@ -295,3 +300,303 @@ def admin_chat_personas_for_pill():
         "description": p.get("description") or "",
     } for p in ordered]
     return jsonify({"personas": out})
+
+
+# =========================================================================== #
+# PALETTE (task 088 phase 3) — slash-commands / capability groups / starters.  #
+# Front-end-only config (the chat just seeds the composer from these). One     #
+# generic CRUD, parametrized by <entity>, keyed by ROW ID (slash-commands hold #
+# a '/' so a key in the URL won't path-match). Built-ins reset/disable-only.   #
+# =========================================================================== #
+def _jload(v, fallback):
+    if v is None:
+        return fallback
+    if isinstance(v, (list, dict)):
+        return v
+    try:
+        return json.loads(v)
+    except Exception:
+        return fallback
+
+
+# Per-entity config. `fields` = (column, kind); kind drives coercion. `jsonb`
+# columns get a ::jsonb cast. Column names match both the table and the registry
+# dict keys, so the same list seeds, validates, serializes, and resets.
+_PALETTE = {
+    "commands": {
+        "table": "admin_chat_commands", "key_col": "cmd", "key_kind": "cmd",
+        "registry": _admin_command_registry, "jsonb": (),
+        "fields": [("icon", "str"), ("group_label", "str"), ("tool", "str"),
+                   ("description", "str"), ("seed", "str"), ("arg", "str"),
+                   ("tail", "bool"), ("persona", "str"), ("super", "bool")],
+    },
+    "capabilities": {
+        "table": "admin_chat_capabilities", "key_col": "cap_key", "key_kind": "slug",
+        "registry": _admin_capability_registry, "jsonb": ("lines", "examples"),
+        "fields": [("icon", "str"), ("title", "str"), ("super", "bool"),
+                   ("grant_aware", "bool"), ("lines", "jsonlist_str"),
+                   ("examples", "jsonlist_obj")],
+    },
+    "starters": {
+        "table": "admin_chat_starters", "key_col": "starter_key", "key_kind": "slug",
+        "registry": _admin_starter_registry, "jsonb": (),
+        "fields": [("icon", "str"), ("label", "str"), ("seed", "str"),
+                   ("persona", "str"), ("super", "bool")],
+    },
+}
+_PALETTE_STR_CAPS = {"icon": 16, "persona": 40, "group_label": 80, "tool": 120, "arg": 120}
+
+
+def _palette_cols(cfg):
+    return [c for c, _t in cfg["fields"]]
+
+
+def _coerce_example_list(v):
+    """Coerce a capability group's `examples` into [{label, seed, persona?, action?}]."""
+    if not isinstance(v, list):
+        return []
+    out = []
+    for ex in v[:20]:
+        if not isinstance(ex, dict):
+            continue
+        o = {"label": str(ex.get("label") or "").strip()[:120],
+             "seed": str(ex.get("seed") or "").strip()[:2000]}
+        if ex.get("persona"):
+            o["persona"] = str(ex.get("persona")).strip()[:40]
+        if ex.get("action"):
+            o["action"] = str(ex.get("action")).strip()[:40]
+        if o["label"] or o["seed"]:
+            out.append(o)
+    return out
+
+
+def _validate_palette_key(cfg, key):
+    """Validate a create key. Commands look like '/name'; cap/starter keys are
+    slugs. Built-in keys are reserved."""
+    if cfg["key_kind"] == "cmd":
+        if not re.match(r"^/[a-z0-9_-]{1,38}$", key or ""):
+            return "command must look like /name (lowercase a-z, 0-9, _, -)"
+    else:
+        if not re.match(r"^[a-z0-9_]{1,58}$", key or ""):
+            return "key must be 1-58 chars of a-z, 0-9, underscore"
+    builtin_keys = {d[cfg["key_col"]] for d in cfg["registry"]()}
+    if key in builtin_keys:
+        return "'%s' is reserved by a built-in" % key
+    return ""
+
+
+def _palette_coerce(cfg, body, for_create):
+    """Whitelist + coerce a create/update body (prevents mass-assignment of
+    is_builtin/tenant_id/updated_by). Returns (fields, error)."""
+    fields = {"enabled": bool(body.get("enabled", True))}
+    try:
+        fields["sort_order"] = int(body.get("sort_order") or 0)
+    except (TypeError, ValueError):
+        fields["sort_order"] = 0
+    for c, t in cfg["fields"]:
+        v = body.get(c)
+        if t == "bool":
+            fields[c] = bool(v)
+        elif t == "jsonlist_str":
+            fields[c] = json.dumps(_coerce_str_list(v, cap_item=400, cap_len=20))
+        elif t == "jsonlist_obj":
+            fields[c] = json.dumps(_coerce_example_list(v))
+        else:
+            fields[c] = (str(v) if v is not None else "").strip()[:_PALETTE_STR_CAPS.get(c, 4000)]
+    if for_create:
+        key = (body.get(cfg["key_col"]) or "").strip().lower()
+        err = _validate_palette_key(cfg, key)
+        if err:
+            return None, err
+        fields[cfg["key_col"]] = key
+    return fields, ""
+
+
+def _row_palette(cfg, r):
+    """Serialize a palette row for the editor (incl. id + is_default)."""
+    out = {"id": r.get("id"), cfg["key_col"]: r.get(cfg["key_col"])}
+    for c, _t in cfg["fields"]:
+        out[c] = _jload(r.get(c), []) if c in cfg["jsonb"] else r.get(c)
+    out["enabled"] = bool(r.get("enabled", True))
+    out["is_builtin"] = bool(r.get("is_builtin", False))
+    out["sort_order"] = r.get("sort_order") or 0
+    out["updated_by"] = r.get("updated_by")
+    out["is_default"] = out["is_builtin"] and r.get("updated_by") is None
+    return out
+
+
+def _palette_chat_shape(entity, r):
+    """Shape a palette row for the CHAT front-end — field names match the former
+    hardcoded csrf.js consts (group/desc, key/grant) so the renderers are unchanged."""
+    if entity == "commands":
+        return {"cmd": r.get("cmd"), "icon": r.get("icon") or "", "group": r.get("group_label") or "",
+                "tool": r.get("tool") or "", "desc": r.get("description") or "",
+                "seed": r.get("seed") or "", "arg": r.get("arg") or "",
+                "tail": bool(r.get("tail")), "persona": r.get("persona") or "",
+                "super": bool(r.get("super"))}
+    if entity == "capabilities":
+        return {"key": r.get("cap_key"), "icon": r.get("icon") or "", "title": r.get("title") or "",
+                "super": bool(r.get("super")), "grant": bool(r.get("grant_aware")),
+                "lines": _jload(r.get("lines"), []), "examples": _jload(r.get("examples"), [])}
+    return {"icon": r.get("icon") or "", "label": r.get("label") or "",
+            "seed": r.get("seed") or "", "persona": r.get("persona") or "",
+            "super": bool(r.get("super"))}
+
+
+@admin_ai_bp.route("/admin/api/admin-ai/<entity>", methods=["GET"])
+@admin_required
+def admin_ai_list_palette(entity):
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    cfg = _PALETTE.get(entity)
+    if not cfg:
+        return jsonify({"error": "unknown_entity"}), 404
+    rows = query_db(
+        f"SELECT * FROM {cfg['table']} WHERE tenant_id=%s ORDER BY sort_order, id",
+        (_ADMIN_AI_TENANT,)) or []
+    return jsonify({entity: [_row_palette(cfg, r) for r in rows]})
+
+
+@admin_ai_bp.route("/admin/api/admin-ai/<entity>", methods=["POST"])
+@admin_required
+def admin_ai_create_palette(entity):
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    cfg = _PALETTE.get(entity)
+    if not cfg:
+        return jsonify({"error": "unknown_entity"}), 404
+    fields, err = _palette_coerce(cfg, request.get_json(silent=True) or {}, for_create=True)
+    if err:
+        return jsonify({"error": err}), 400
+    keyc = cfg["key_col"]
+    if query_db(f"SELECT 1 FROM {cfg['table']} WHERE tenant_id=%s AND {keyc}=%s",
+                (_ADMIN_AI_TENANT, fields[keyc]), fetchone=True):
+        return jsonify({"error": "key already exists"}), 409
+    cols = _palette_cols(cfg)
+    allcols = [keyc] + cols
+    ph = ", ".join("%s::jsonb" if c in cfg["jsonb"] else "%s" for c in allcols)
+    params = [_ADMIN_AI_TENANT] + [fields[c] for c in allcols] + [fields["enabled"], fields["sort_order"], _who()]
+    try:
+        execute_db(
+            f"INSERT INTO {cfg['table']} (tenant_id, {', '.join(allcols)}, enabled, is_builtin, sort_order, updated_by) "
+            f"VALUES (%s, {ph}, %s, FALSE, %s, %s)", tuple(params))
+    except Exception as e:
+        print(f"[admin-ai] create {entity} failed: {e}")
+        return jsonify({"error": "create_failed"}), 500
+    return jsonify({"ok": True, "key": fields[keyc]}), 201
+
+
+@admin_ai_bp.route("/admin/api/admin-ai/<entity>/<int:item_id>", methods=["PUT"])
+@admin_required
+def admin_ai_update_palette(entity, item_id):
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    cfg = _PALETTE.get(entity)
+    if not cfg:
+        return jsonify({"error": "unknown_entity"}), 404
+    if not query_db(f"SELECT 1 FROM {cfg['table']} WHERE tenant_id=%s AND id=%s",
+                    (_ADMIN_AI_TENANT, item_id), fetchone=True):
+        return jsonify({"error": "not_found"}), 404
+    fields, err = _palette_coerce(cfg, request.get_json(silent=True) or {}, for_create=False)
+    if err:
+        return jsonify({"error": err}), 400
+    cols = _palette_cols(cfg)
+    set_parts, params = [], []
+    for c in cols:
+        set_parts.append(f"{c}=%s::jsonb" if c in cfg["jsonb"] else f"{c}=%s")
+        params.append(fields[c])
+    set_parts += ["enabled=%s", "sort_order=%s", "updated_by=%s", "updated_at=NOW()"]
+    params += [fields["enabled"], fields["sort_order"], _who(), _ADMIN_AI_TENANT, item_id]
+    try:
+        execute_db(
+            f"UPDATE {cfg['table']} SET {', '.join(set_parts)} WHERE tenant_id=%s AND id=%s",
+            tuple(params))
+    except Exception as e:
+        print(f"[admin-ai] update {entity} {item_id} failed: {e}")
+        return jsonify({"error": "update_failed"}), 500
+    return jsonify({"ok": True, "id": item_id})
+
+
+@admin_ai_bp.route("/admin/api/admin-ai/<entity>/<int:item_id>/reset", methods=["POST"])
+@admin_required
+def admin_ai_reset_palette(entity, item_id):
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    cfg = _PALETTE.get(entity)
+    if not cfg:
+        return jsonify({"error": "unknown_entity"}), 404
+    keyc = cfg["key_col"]
+    row = query_db(f"SELECT {keyc}, is_builtin FROM {cfg['table']} WHERE tenant_id=%s AND id=%s",
+                   (_ADMIN_AI_TENANT, item_id), fetchone=True)
+    if not row:
+        return jsonify({"error": "not_found"}), 404
+    if not row.get("is_builtin"):
+        return jsonify({"error": "not a built-in; nothing to reset"}), 400
+    defaults = {d[keyc]: d for d in cfg["registry"]()}
+    d = defaults.get(row.get(keyc))
+    if not d:
+        return jsonify({"error": "no built-in default for this key"}), 400
+    cols = _palette_cols(cfg)
+    set_parts, params = [], []
+    for c in cols:
+        set_parts.append(f"{c}=%s::jsonb" if c in cfg["jsonb"] else f"{c}=%s")
+        v = d.get(c)
+        params.append(json.dumps(v if v is not None else []) if c in cfg["jsonb"] else v)
+    set_parts += ["enabled=TRUE", "is_builtin=TRUE", "sort_order=%s", "updated_by=NULL", "updated_at=NOW()"]
+    params += [int(d.get("sort_order") or 0), _ADMIN_AI_TENANT, item_id]
+    try:
+        execute_db(
+            f"UPDATE {cfg['table']} SET {', '.join(set_parts)} WHERE tenant_id=%s AND id=%s",
+            tuple(params))
+    except Exception as e:
+        print(f"[admin-ai] reset {entity} {item_id} failed: {e}")
+        return jsonify({"error": "reset_failed"}), 500
+    return jsonify({"ok": True, "id": item_id, "is_default": True})
+
+
+@admin_ai_bp.route("/admin/api/admin-ai/<entity>/<int:item_id>", methods=["DELETE"])
+@admin_required
+def admin_ai_delete_palette(entity, item_id):
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    cfg = _PALETTE.get(entity)
+    if not cfg:
+        return jsonify({"error": "unknown_entity"}), 404
+    row = query_db(f"SELECT is_builtin FROM {cfg['table']} WHERE tenant_id=%s AND id=%s",
+                   (_ADMIN_AI_TENANT, item_id), fetchone=True)
+    if not row:
+        return jsonify({"error": "not_found"}), 404
+    if row.get("is_builtin"):
+        return jsonify({"error": "built-in items cannot be deleted — disable it instead"}), 409
+    execute_db(f"DELETE FROM {cfg['table']} WHERE tenant_id=%s AND id=%s",
+               (_ADMIN_AI_TENANT, item_id))
+    return jsonify({"ok": True, "deleted": item_id})
+
+
+@admin_ai_bp.route("/admin/api/chat/palette", methods=["GET"])
+@admin_required
+def admin_chat_palette():
+    """Enabled palette for the chat: {commands, capabilities, starters}. Server-side
+    role filter — super-admin-only rows are dropped for a non-super admin (the chat
+    keeps a client-side filter too as defense). Field names match the former csrf.js
+    consts so the renderers are unchanged."""
+    is_super = _is_super_admin()
+
+    def fetch(entity):
+        cfg = _PALETTE[entity]
+        sql = (f"SELECT * FROM {cfg['table']} WHERE tenant_id=%s AND enabled=TRUE "
+               + ("" if is_super else "AND super=FALSE ")
+               + "ORDER BY sort_order, id")
+        rows = query_db(sql, (_ADMIN_AI_TENANT,)) or []
+        return [_palette_chat_shape(entity, r) for r in rows]
+
+    return jsonify({
+        "commands": fetch("commands"),
+        "capabilities": fetch("capabilities"),
+        "starters": fetch("starters"),
+    })
