@@ -400,6 +400,27 @@
 .admin-chat-shell.admin-chat-expanded.has-canvas #admin-chat-canvas{ display: flex; }
 
 /* The sessions rail can collapse for focus (JS toggles .rail-collapsed). */
+/* ---- Conversations rail collapse (task 088) — user toggle, persisted ----
+   The header ⟨/⟩ button toggles .side-collapsed on the shell: the rail hides and
+   the grid reclaims its column. Works docked (2-col) AND expanded (3-col), and is
+   independent of the (unused) expanded-only .rail-collapsed mechanism below. */
+.admin-chat-shell.side-collapsed:not(.admin-chat-expanded){ grid-template-columns: 0 minmax(0,1fr); }
+.admin-chat-shell.admin-chat-expanded.side-collapsed{ grid-template-columns: 0fr minmax(0,1fr) 0fr; }
+.admin-chat-shell.admin-chat-expanded.side-collapsed.has-canvas{ grid-template-columns: 0fr minmax(0,4fr) minmax(0,6fr); }
+/* Hide the rail WITHOUT display:none — display:none drops it from the grid flow,
+   which shifts the main pane into the 0-width FIRST column (collapsing it to 0).
+   Keep it as a zero-width, invisible, inert grid item so the main pane stays in
+   column 2 and fills the reclaimed width. */
+.admin-chat-shell.side-collapsed > .admin-chat-side{
+  overflow: hidden;
+  min-width: 0;
+  padding: 0;
+  border-width: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.admin-chat-shell .admin-chat-header button.acm-btn.admin-chat-railtoggle{ padding: .32rem .52rem; font-size: .95rem; line-height: 1; }
+
 .admin-chat-shell.admin-chat-expanded.rail-collapsed{ grid-template-columns: 0fr minmax(0,1fr) 0fr; }
 .admin-chat-shell.admin-chat-expanded.rail-collapsed.has-canvas{ grid-template-columns: 0fr minmax(0,4fr) minmax(0,6fr); }
 .admin-chat-shell.admin-chat-expanded.rail-collapsed .admin-chat-side{

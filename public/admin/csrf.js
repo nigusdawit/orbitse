@@ -1448,6 +1448,7 @@
     // from the DB-backed config (both fail-open to the static fallbacks).
     adminChatLoadPersonas();
     adminChatLoadPalette();
+    adminChatRestoreRail();   // task 088: apply the persisted rail collapse state
     adminChatInstallSlashTrigger();
     adminChatInstallCapEsc();
     const sid = await adminChatEnsureActiveSession();
@@ -2353,6 +2354,29 @@
       // next expand starts with the sessions rail visible.
       shell.classList.remove('rail-collapsed');
     }
+  }
+
+  // Task 088: collapse / show the conversations rail (works docked AND expanded).
+  // User toggle, persisted in localStorage so it sticks across reloads. Separate
+  // from the (unused) expanded-only .rail-collapsed.
+  function adminChatToggleRail(force) {
+    const shell = document.getElementById('admin-chat-shell');
+    if (!shell) return;
+    const next = (typeof force === 'boolean') ? force : !shell.classList.contains('side-collapsed');
+    shell.classList.toggle('side-collapsed', next);
+    try { localStorage.setItem('adminChatRailCollapsed', next ? '1' : '0'); } catch (e) {}
+    const btn = document.querySelector('[data-testid="button-admin-chat-railtoggle"]');
+    if (btn) {
+      btn.textContent = next ? '⟩' : '⟨';
+      btn.setAttribute('aria-pressed', next ? 'true' : 'false');
+      btn.setAttribute('title', next ? 'Show the conversation list' : 'Hide the conversation list');
+    }
+  }
+  // Restore the persisted rail state on chat load (default: shown).
+  function adminChatRestoreRail() {
+    let v = '0';
+    try { v = localStorage.getItem('adminChatRailCollapsed') || '0'; } catch (e) {}
+    adminChatToggleRail(v === '1');
   }
 
   // Esc collapses the overlay. Installed once; the handler is a no-op unless the

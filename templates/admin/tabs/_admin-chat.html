@@ -46,6 +46,11 @@
 
         <!-- Header: title + model picker + per-session config buttons + export -->
         <div class="admin-chat-header" id="admin-chat-mainheader">
+          <!-- Task 088: collapse / show the conversations rail (persisted in
+               localStorage). Leftmost so it reads as the rail's own handle. -->
+          <button class="acm-btn admin-chat-railtoggle" type="button" onclick="adminChatToggleRail()"
+                  title="Hide the conversation list" aria-pressed="false"
+                  data-testid="button-admin-chat-railtoggle">⟨</button>
           <input id="admin-chat-title" type="text" placeholder="Untitled conversation"
                  onchange="adminChatSaveTitle()" 
                  style="flex:1; min-width:160px; background:transparent; border:0; outline:none; font-size:1rem; font-weight:600; color:var(--admin-text);"
