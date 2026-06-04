@@ -51,3 +51,4 @@ python-pptx
 rjsmin
 sentry-sdk
 pytest
+sqlglot>=25.0
