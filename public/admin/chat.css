@@ -330,6 +330,16 @@
 /* The canvas panel is hidden in the normal in-tab view. */
 #admin-chat-canvas{ display: none; }
 
+/* The expanded shell is position:fixed, but it lives inside #tab-admin-chat
+   (.tab-content), which is `position:relative; z-index:1` — its OWN stacking
+   context, which sits BELOW the sticky admin header (z:50) and sidebar (z:10)
+   at the parent level. A bare fixed overlay would therefore be trapped beneath
+   the chrome (the header/sidebar paint on top). Lift the tab panel's stacking
+   context above the chrome ONLY while the chat is expanded — scoped via :has()
+   so it never affects the normal in-tab view or any other tab. 120 > header(50)
+   > sidebar(10) ⇒ a true full-viewport immersive overlay. */
+#tab-admin-chat:has(.admin-chat-shell.admin-chat-expanded){ z-index: 120; }
+
 .admin-chat-shell.admin-chat-expanded{
   position: fixed;
   inset: 0;
