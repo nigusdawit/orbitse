@@ -1032,3 +1032,165 @@ html[data-admin-motion="reduce"] .admin-chat-shell{ transition: none; }
 html[data-admin-motion="reduce"] .admin-chat-shell .admin-chat-mic.is-recording .admin-chat-mic-pulse,
 html[data-admin-motion="reduce"] .admin-chat-shell .admin-chat-mic.is-recording .admin-chat-act-ico,
 html[data-admin-motion="reduce"] .admin-chat-voice-eq > i{ animation: none; }
+
+/* ==========================================================================
+   F. TASK 087 — PERSONA + MODEL PILL DROPDOWNS (.admin-pick-*)
+   The native <select id="admin-chat-persona|model"> stay in the DOM (the engine
+   reads/persists them) but are visually hidden; the .admin-pick glass dropdown
+   beside each one DRIVES it (csrf.js sets .value + fires change / calls the
+   save handler). Keyboard-navigable, light/dark via tokens, closes on
+   outside-click/Esc.
+   ========================================================================== */
+
+/* Hide the native selects but keep them in the layout flow at zero size so the
+   engine + adminChatSaveModel still work. Visually-hidden pattern (not
+   display:none, so .value/onchange stay reliable). This wins over the 086
+   `.admin-chat-header select` pill rules because it's later + more specific. */
+.admin-chat-shell .admin-chat-header select.admin-pick-native,
+.admin-chat-shell select.admin-pick-native{
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  border: 0 !important;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  overflow: hidden !important;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.admin-pick{ position: relative; display: inline-flex; }
+
+/* Trigger pill — same glass family as the header .acm-btn pills. */
+.admin-chat-shell .admin-pick-trigger{
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  background: var(--admin-field);
+  color: var(--admin-text);
+  border: 1px solid var(--admin-border);
+  border-radius: 999px;
+  padding: .32rem .6rem;
+  font-family: inherit;
+  font-size: .8rem;
+  cursor: pointer;
+  max-width: 14rem;
+  transition: border-color .14s, color .14s, background .14s, transform .04s;
+}
+.admin-chat-shell .admin-pick-trigger:hover{
+  border-color: var(--admin-accent);
+  color: var(--admin-accent);
+  background: color-mix(in srgb, var(--admin-accent) 10%, transparent);
+}
+.admin-chat-shell .admin-pick-trigger:active{ transform: translateY(1px); }
+.admin-chat-shell .admin-pick-trigger:focus-visible{
+  outline: none;
+  border-color: var(--admin-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--admin-accent) 26%, transparent);
+}
+.admin-pick.is-open .admin-pick-trigger{
+  border-color: color-mix(in srgb, var(--admin-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--admin-accent) 12%, transparent);
+  color: var(--admin-accent);
+}
+.admin-pick-ico{ font-size: .95rem; line-height: 1; }
+.admin-pick-label{
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+.admin-pick-caret{ font-size: .7rem; opacity: .7; margin-left: .1rem; }
+
+/* The dropdown menu — glass card floating below the trigger. */
+.admin-pick-menu{
+  position: absolute;
+  top: calc(100% + .4rem);
+  left: 0;
+  z-index: 60;
+  min-width: 16rem;
+  max-width: min(22rem, 80vw);
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: .35rem;
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border-light);
+  border-radius: var(--admin-radius);
+  box-shadow: var(--admin-shadow), 0 18px 50px rgba(0,0,0,.28);
+  -webkit-backdrop-filter: var(--admin-blur-heavy);
+  backdrop-filter: var(--admin-blur-heavy);
+  scrollbar-width: thin;
+  animation: adminPickMenuIn .18s var(--acg-spring, ease) both;
+}
+.admin-pick-menu[hidden]{ display: none; }
+/* When a pick is anchored near the right edge we flip it to align right. */
+.admin-pick.align-right .admin-pick-menu{ left: auto; right: 0; }
+
+/* Optgroup-style heading inside the model menu. */
+.admin-pick-group{
+  padding: .4rem .55rem .2rem;
+  font-size: .68rem;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--admin-text-muted);
+}
+
+/* Each option row: icon + (label + desc). */
+.admin-pick-opt{
+  display: flex;
+  align-items: flex-start;
+  gap: .55rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--admin-radius) - .3rem);
+  padding: .45rem .55rem;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--admin-text);
+  transition: background .12s;
+}
+.admin-pick-opt:hover,
+.admin-pick-opt.is-active{
+  background: color-mix(in srgb, var(--admin-accent) 12%, transparent);
+}
+.admin-pick-opt[aria-selected="true"]{
+  background: color-mix(in srgb, var(--admin-accent) 16%, transparent);
+}
+.admin-pick-opt-ico{
+  flex-shrink: 0;
+  width: 1.5rem;
+  text-align: center;
+  font-size: 1.05rem;
+  line-height: 1.3;
+}
+.admin-pick-opt-txt{ display: flex; flex-direction: column; min-width: 0; }
+.admin-pick-opt-name{ font-size: .85rem; font-weight: 600; line-height: 1.25; }
+.admin-pick-opt-desc{
+  font-size: .74rem;
+  color: var(--admin-text-muted);
+  line-height: 1.3;
+  margin-top: .05rem;
+}
+/* The selected check on the active option. */
+.admin-pick-opt-check{
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--admin-accent);
+  font-size: .85rem;
+  opacity: 0;
+}
+.admin-pick-opt[aria-selected="true"] .admin-pick-opt-check{ opacity: 1; }
+
+@keyframes adminPickMenuIn{
+  from{ opacity: 0; transform: translateY(-6px) scale(.98); }
+  to{ opacity: 1; transform: translateY(0) scale(1); }
+}
+@media (prefers-reduced-motion: reduce){
+  .admin-pick-menu{ animation: none; }
+}
+html[data-admin-motion="reduce"] .admin-pick-menu{ animation: none; }

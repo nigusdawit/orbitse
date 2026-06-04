@@ -50,9 +50,13 @@
                  onchange="adminChatSaveTitle()" 
                  style="flex:1; min-width:160px; background:transparent; border:0; outline:none; font-size:1rem; font-weight:600; color:var(--admin-text);"
                  data-testid="input-admin-chat-title">
-          <!-- Task #80: persona pin. Auto = router classifier picks per-turn. -->
-          <select id="admin-chat-persona" title="Persona — Auto lets the router pick per-turn" data-testid="select-admin-chat-persona"
-                  style="background:var(--admin-card); color:var(--admin-text); border:1px solid var(--admin-border); border-radius:.4rem; padding:.25rem .4rem;">
+          <!-- Task #80 / 087: persona pin. The raw <select> is KEPT (engine reads
+               #admin-chat-persona.value at send-time) but visually hidden; the
+               glass pill dropdown beside it DRIVES it (sets .value + fires change).
+               Auto = router classifier picks per-turn. -->
+          <select id="admin-chat-persona" class="admin-pick-native"
+                  title="Persona — Auto lets the router pick per-turn" data-testid="select-admin-chat-persona"
+                  tabindex="-1" aria-hidden="true">
             <option value="">🎭 Auto persona</option>
             <option value="general">General</option>
             <option value="research">🔎 Research</option>
@@ -61,7 +65,22 @@
             <option value="creative">🎨 Creative</option>
             <option value="ops">🛠 Ops</option>
           </select>
-          <select id="admin-chat-model" onchange="adminChatSaveModel()" data-testid="select-admin-chat-model">
+          <!-- Task 087: persona pill dropdown (built/synced by csrf.js). -->
+          <div class="admin-pick" id="admin-pick-persona" data-pick="persona" data-testid="admin-pick-persona">
+            <button type="button" class="admin-pick-trigger" data-testid="button-admin-pick-persona"
+                    aria-haspopup="listbox" aria-expanded="false" title="Persona">
+              <span class="admin-pick-ico" aria-hidden="true">🎭</span>
+              <span class="admin-pick-label">Auto persona</span>
+              <span class="admin-pick-caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="admin-pick-menu" role="listbox" aria-label="Persona" hidden></div>
+          </div>
+
+          <!-- Task 087: model pill dropdown. The raw <select> is KEPT (its
+               onchange=adminChatSaveModel persists the per-session model) but
+               hidden; the pill sets .value + calls the existing save handler. -->
+          <select id="admin-chat-model" class="admin-pick-native" onchange="adminChatSaveModel()"
+                  data-testid="select-admin-chat-model" tabindex="-1" aria-hidden="true">
             <option value="">Default model</option>
             <optgroup label="OpenAI">
               <option value="gpt-4o-mini">GPT-4o-mini</option>
@@ -75,6 +94,15 @@
               <option value="claude-sonnet-4-5">Claude Sonnet 4.5</option>
             </optgroup>
           </select>
+          <div class="admin-pick" id="admin-pick-model" data-pick="model" data-testid="admin-pick-model">
+            <button type="button" class="admin-pick-trigger" data-testid="button-admin-pick-model"
+                    aria-haspopup="listbox" aria-expanded="false" title="Model">
+              <span class="admin-pick-ico" aria-hidden="true">⚡</span>
+              <span class="admin-pick-label">Default model</span>
+              <span class="admin-pick-caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="admin-pick-menu" role="listbox" aria-label="Model" hidden></div>
+          </div>
           {% if is_super_admin() %}
           <button class="acm-btn" onclick="adminChatOpenPromptEditor()" title="System prompt for this conversation"
                   data-testid="button-admin-chat-prompt">⚙ Prompt</button>

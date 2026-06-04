@@ -356,6 +356,8 @@
       titleEl.value = adminChatActiveCfg.title || '';
     }
     if (modelEl) modelEl.value = adminChatActiveCfg.model || '';
+    // Task 087: keep the glass model pill in lockstep with the native select.
+    if (typeof adminPickSyncAll === 'function') adminPickSyncAll();
   }
   async function adminChatSaveTitle() {
     const sid = localStorage.getItem(ADMIN_CHAT_KEYS.admin);
@@ -1440,8 +1442,9 @@
     // dataset flag), so calling on every chat-tab open is safe.
     adminChatInstallDragDrop();
     adminChatInstallMicHandlers();
-    // Task 087: command-bar composer (auto-grow textarea).
+    // Task 087: command-bar composer (auto-grow textarea) + persona/model pills.
     adminChatInstallComposer();
+    adminPickInstall();
     const sid = await adminChatEnsureActiveSession();
     box.innerHTML = '<div style="color:var(--admin-text-muted); font-size:.9rem;">Loading…</div>';
     // Pull the full per-session config in parallel so the header (title,
@@ -2398,6 +2401,232 @@
     const body = adminChatCanvasActivate();
     if (!body) return;
     body.innerHTML = html;
+  }
+
+  // ===== Task 087: persona + model pill dropdowns =====
+  // The native <select id="admin-chat-persona|model"> are KEPT and remain the
+  // source of truth (the engine reads persona at send-time; model has an
+  // onchange=adminChatSaveModel that PATCHes the session). These pretty glass
+  // pills just DRIVE them: selecting an option sets the native .value and fires
+  // a 'change' event (so the select's own handler runs) before we reflect the
+  // label on the trigger. Nothing here owns chat state.
+
+  // Persona metadata — icon + one-line description grounded in
+  // ADMIN_CHAT_PERSONAS (app.py ~19281) + the "Auto router" pin. Keys MUST
+  // match the native <option value>s.
+  const ADMIN_PERSONA_META = {
+    '':            { icon: '🎭', name: 'Auto persona', desc: 'Router picks the best persona each turn' },
+    'general':     { icon: '💬', name: 'General',      desc: 'Balanced assistant, every tool available' },
+    'research':    { icon: '🔎', name: 'Research',     desc: 'Evidence-first; web search + KB, cites sources' },
+    'data_analyst':{ icon: '📊', name: 'Data analyst', desc: 'Grounds numbers in SQL + overview/recent tools' },
+    'code':        { icon: '💻', name: 'Code',         desc: 'Concise, precise; exact schema/column names' },
+    'creative':    { icon: '🎨', name: 'Creative',     desc: 'Drafts copy via approval-gated propose tools' },
+    'ops':         { icon: '🛠', name: 'Ops',          desc: 'Orders, forms, bookings, automations — terse' },
+  };
+  // Icon for a model value (cosmetic). Anthropic vs OpenAI vs default.
+  function adminPickModelIcon(val) {
+    if (!val) return '⚡';
+    if (val.indexOf('claude') === 0) return '🟣';
+    return '🟢';
+  }
+
+  // Build the persona menu from ADMIN_PERSONA_META (in the native <option>
+  // order so the two stay in lockstep). Returns the menu HTML.
+  function adminPickBuildPersonaMenu(sel) {
+    let html = '';
+    for (const opt of Array.from(sel.options)) {
+      const m = ADMIN_PERSONA_META[opt.value] || { icon: '•', name: opt.text, desc: '' };
+      html += adminPickOptHtml(opt.value, m.icon, m.name, m.desc);
+    }
+    return html;
+  }
+  // Build the model menu by walking the native select's optgroups/options so
+  // the model list stays defined ONCE (in the template) — we never duplicate it.
+  function adminPickBuildModelMenu(sel) {
+    let html = '';
+    for (const node of Array.from(sel.children)) {
+      if (node.tagName === 'OPTGROUP') {
+        html += '<div class="admin-pick-group">' + adminChatEscape(node.label) + '</div>';
+        for (const opt of Array.from(node.children)) {
+          html += adminPickOptHtml(opt.value, adminPickModelIcon(opt.value), opt.text, '');
+        }
+      } else if (node.tagName === 'OPTION') {
+        html += adminPickOptHtml(node.value, adminPickModelIcon(node.value), node.text, '');
+      }
+    }
+    return html;
+  }
+  function adminPickOptHtml(value, icon, name, desc) {
+    return '<button type="button" class="admin-pick-opt" role="option" '
+      + 'data-value="' + adminChatAttrEscape(value) + '">'
+      + '<span class="admin-pick-opt-ico" aria-hidden="true">' + adminChatEscape(icon) + '</span>'
+      + '<span class="admin-pick-opt-txt">'
+      +   '<span class="admin-pick-opt-name">' + adminChatEscape(name) + '</span>'
+      +   (desc ? '<span class="admin-pick-opt-desc">' + adminChatEscape(desc) + '</span>' : '')
+      + '</span>'
+      + '<span class="admin-pick-opt-check" aria-hidden="true">✓</span>'
+      + '</button>';
+  }
+
+  // Reflect the native select's current value onto the trigger pill (icon +
+  // label) and the menu's aria-selected. Called on open + after a change + on
+  // chat load (so the model pill shows the loaded session's model).
+  function adminPickSyncTrigger(pickEl) {
+    if (!pickEl) return;
+    const which = pickEl.dataset.pick;
+    const sel = document.getElementById('admin-chat-' + which);
+    if (!sel) return;
+    const val = sel.value || '';
+    const trigger = pickEl.querySelector('.admin-pick-trigger');
+    const icoEl = trigger && trigger.querySelector('.admin-pick-ico');
+    const labelEl = trigger && trigger.querySelector('.admin-pick-label');
+    let icon, label;
+    if (which === 'persona') {
+      const m = ADMIN_PERSONA_META[val] || ADMIN_PERSONA_META[''];
+      icon = m.icon; label = m.name;
+    } else {
+      const opt = Array.from(sel.options).find(o => o.value === val) || sel.options[0];
+      icon = adminPickModelIcon(val); label = opt ? opt.text : 'Default model';
+    }
+    if (icoEl) icoEl.textContent = icon;
+    if (labelEl) labelEl.textContent = label;
+    // Mark the matching menu option selected (if the menu is built).
+    pickEl.querySelectorAll('.admin-pick-opt').forEach(o => {
+      o.setAttribute('aria-selected', o.dataset.value === val ? 'true' : 'false');
+      o.classList.remove('is-active');
+    });
+  }
+
+  // Open one pick's menu (builds it lazily the first time), close any other.
+  function adminPickOpen(pickEl) {
+    if (!pickEl) return;
+    adminPickCloseAll(pickEl);
+    const which = pickEl.dataset.pick;
+    const sel = document.getElementById('admin-chat-' + which);
+    const menu = pickEl.querySelector('.admin-pick-menu');
+    if (!sel || !menu) return;
+    menu.innerHTML = (which === 'persona')
+      ? adminPickBuildPersonaMenu(sel)
+      : adminPickBuildModelMenu(sel);
+    menu.hidden = false;
+    pickEl.classList.add('is-open');
+    const trigger = pickEl.querySelector('.admin-pick-trigger');
+    if (trigger) trigger.setAttribute('aria-expanded', 'true');
+    adminPickSyncTrigger(pickEl);
+    // Focus the selected (or first) option for keyboard nav.
+    const selOpt = menu.querySelector('.admin-pick-opt[aria-selected="true"]')
+                 || menu.querySelector('.admin-pick-opt');
+    if (selOpt) { selOpt.classList.add('is-active'); try { selOpt.focus(); } catch (_) {} }
+    adminPickInstallOutside();
+  }
+  function adminPickClose(pickEl) {
+    if (!pickEl) return;
+    const menu = pickEl.querySelector('.admin-pick-menu');
+    if (menu) menu.hidden = true;
+    pickEl.classList.remove('is-open');
+    const trigger = pickEl.querySelector('.admin-pick-trigger');
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+  }
+  function adminPickCloseAll(except) {
+    document.querySelectorAll('.admin-pick.is-open').forEach(p => {
+      if (p !== except) adminPickClose(p);
+    });
+  }
+
+  // Commit a chosen value into the native select + fire its change handler,
+  // then reflect the trigger + close. This is the ONLY write path — it routes
+  // through the existing engine handlers (persona read-at-send; model save).
+  function adminPickChoose(pickEl, value) {
+    const which = pickEl.dataset.pick;
+    const sel = document.getElementById('admin-chat-' + which);
+    if (!sel) return;
+    sel.value = value;
+    // Fire change so the select's own onchange (model → adminChatSaveModel)
+    // runs exactly as if the user used the native control. Persona has no
+    // onchange (it's read at send-time) but dispatching is harmless + future-proof.
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    adminPickSyncTrigger(pickEl);
+    adminPickClose(pickEl);
+    const trigger = pickEl.querySelector('.admin-pick-trigger');
+    if (trigger) { try { trigger.focus(); } catch (_) {} }
+  }
+
+  // Keyboard nav within an open menu: ↑/↓ move, Home/End jump, Enter/Space
+  // choose, Esc closes. Bound per-menu on open via delegation on the pick.
+  function adminPickMenuKeydown(pickEl, ev) {
+    const menu = pickEl.querySelector('.admin-pick-menu');
+    if (!menu || menu.hidden) return;
+    const opts = Array.from(menu.querySelectorAll('.admin-pick-opt'));
+    if (!opts.length) return;
+    let idx = opts.findIndex(o => o.classList.contains('is-active'));
+    if (idx < 0) idx = 0;
+    const setActive = (n) => {
+      opts.forEach(o => o.classList.remove('is-active'));
+      const t = opts[(n + opts.length) % opts.length];
+      t.classList.add('is-active');
+      try { t.focus(); } catch (_) {}
+    };
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); setActive(idx + 1); }
+    else if (ev.key === 'ArrowUp') { ev.preventDefault(); setActive(idx - 1); }
+    else if (ev.key === 'Home') { ev.preventDefault(); setActive(0); }
+    else if (ev.key === 'End') { ev.preventDefault(); setActive(opts.length - 1); }
+    else if (ev.key === 'Enter' || ev.key === ' ') {
+      ev.preventDefault();
+      const active = opts[idx];
+      if (active) adminPickChoose(pickEl, active.dataset.value);
+    } else if (ev.key === 'Escape') {
+      ev.preventDefault();
+      adminPickClose(pickEl);
+      const trigger = pickEl.querySelector('.admin-pick-trigger');
+      if (trigger) try { trigger.focus(); } catch (_) {}
+    }
+  }
+
+  // Install per-pick listeners ONCE. Delegated clicks/keys keep it cheap.
+  let _adminPickBound = false;
+  function adminPickInstall() {
+    document.querySelectorAll('.admin-pick').forEach(pickEl => {
+      if (pickEl.dataset.pickBound === '1') return;
+      pickEl.dataset.pickBound = '1';
+      const trigger = pickEl.querySelector('.admin-pick-trigger');
+      if (trigger) {
+        trigger.addEventListener('click', (e) => {
+          e.preventDefault();
+          if (pickEl.classList.contains('is-open')) adminPickClose(pickEl);
+          else adminPickOpen(pickEl);
+        });
+        trigger.addEventListener('keydown', (e) => {
+          if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault(); adminPickOpen(pickEl);
+          }
+        });
+      }
+      const menu = pickEl.querySelector('.admin-pick-menu');
+      if (menu) {
+        menu.addEventListener('click', (e) => {
+          const opt = e.target.closest('.admin-pick-opt');
+          if (opt) { e.preventDefault(); adminPickChoose(pickEl, opt.dataset.value); }
+        });
+        menu.addEventListener('keydown', (e) => adminPickMenuKeydown(pickEl, e));
+      }
+      // Reflect the current native value on the resting trigger.
+      adminPickSyncTrigger(pickEl);
+    });
+    if (!_adminPickBound) {
+      _adminPickBound = true;
+      document.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.admin-pick')) return;
+        adminPickCloseAll(null);
+      });
+    }
+  }
+  // Bind the global outside-close once (called from adminPickOpen too, idempotent).
+  function adminPickInstallOutside() { adminPickInstall(); }
+
+  // Re-sync both triggers from the native selects (e.g. after a session loads
+  // and adminChatRefreshHeader set #admin-chat-model.value).
+  function adminPickSyncAll() {
+    document.querySelectorAll('.admin-pick').forEach(adminPickSyncTrigger);
   }
 
   // ===== Floating "Business Assistant" launcher (task 086) =====
