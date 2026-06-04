@@ -77,6 +77,10 @@ TO CUSTOMIZE THIS DASHBOARD:
   </style>
   <link rel="stylesheet" href="/admin/theme.css">
   <link rel="stylesheet" href="/admin/tabs.css">
+  <!-- Task 086: flagship glass restyle + expand/canvas + floating launcher for
+       the Admin Chat. Loaded AFTER tabs.css so its scoped .admin-chat-*/
+       .admin-asst-* rules win the cascade. Pure no-build CSS, token-driven. -->
+  <link rel="stylesheet" href="/admin/chat.css">
   <script>window.__ADMIN_APPEARANCE__ = {{ appearance|tojson }};</script>
 </head>
 
@@ -1503,6 +1507,59 @@ TO CUSTOMIZE THIS DASHBOARD:
   <script src="/admin/app-main.js"></script>
   </main>
   </div>
+
+  <!-- ====================================================================
+       TASK 086 — FLOATING "BUSINESS ASSISTANT" LAUNCHER (global)
+       ====================================================================
+       Placed at SHELL level (outside .admin-main / every .tab-content) so it
+       persists across all admin tabs. Gated with the SAME condition as the
+       admin-chat tab button so it only shows where the chat is available.
+       The launcher + popover are VIEWS that escalate into the ONE real chat —
+       no second message list. Clicking the pill toggles the quick-ask popover;
+       sending (or "Open full ⤢") switches to the admin-chat tab, opens the
+       immersive overlay, and forwards the text into the real composer +
+       adminChatSend(). All styling is scoped in /admin/chat.css. -->
+  {% if is_super_admin() or has_feature('admin_chat') %}
+  <button type="button" id="admin-asst-launcher" data-testid="admin-asst-launcher"
+          aria-haspopup="dialog" aria-expanded="false" aria-controls="admin-asst-quick"
+          title="Ask the Business Assistant" onclick="adminAsstToggleQuick()">
+    <span class="admin-asst-launcher-orb" aria-hidden="true">✦</span>
+    <span class="admin-asst-launcher-label">Business Assistant</span>
+  </button>
+
+  <div id="admin-asst-quick" data-testid="admin-asst-quick" role="dialog"
+       aria-label="Quick ask the Business Assistant">
+    <div class="admin-asst-quick-head">
+      <div>
+        <div class="admin-asst-quick-title">Business Assistant</div>
+        <div class="admin-asst-quick-sub">Ask anything about your site.</div>
+      </div>
+      <button type="button" class="admin-asst-quick-close" title="Close"
+              aria-label="Close" onclick="adminAsstCloseQuick()"
+              data-testid="button-admin-asst-close">×</button>
+    </div>
+
+    <div class="admin-asst-suggests" data-testid="admin-asst-suggests">
+      <button type="button" class="admin-asst-suggest" onclick="adminAsstQuickSuggest(this)"
+              data-testid="admin-asst-suggest-1">Summarize this week's activity</button>
+      <button type="button" class="admin-asst-suggest" onclick="adminAsstQuickSuggest(this)"
+              data-testid="admin-asst-suggest-2">Show top pages by views</button>
+      <button type="button" class="admin-asst-suggest" onclick="adminAsstQuickSuggest(this)"
+              data-testid="admin-asst-suggest-3">Draft an FAQ answer</button>
+    </div>
+
+    <form class="admin-asst-quick-form" onsubmit="event.preventDefault(); adminAsstQuickSend();">
+      <input id="admin-asst-quick-input" type="text" autocomplete="off"
+             placeholder="Ask the Business Assistant…"
+             data-testid="input-admin-asst-quick">
+      <button type="submit" class="admin-asst-quick-send" title="Send"
+              aria-label="Send" data-testid="button-admin-asst-send">↑</button>
+    </form>
+
+    <button type="button" class="admin-asst-quick-open" onclick="adminAsstOpenFull()"
+            data-testid="button-admin-asst-open-full">Open full ⤢</button>
+  </div>
+  {% endif %}
 
   <!-- ====================================================================
        SERVICES TAB — JS controller (CRUD + addons + availability + bookings)
