@@ -720,3 +720,315 @@ html[data-admin-motion="reduce"] .admin-chat-typing{ animation: none; }
 html[data-admin-motion="reduce"] #admin-asst-launcher .admin-asst-launcher-orb{ animation: none; }
 html[data-admin-motion="reduce"] #admin-asst-launcher,
 html[data-admin-motion="reduce"] .admin-chat-shell{ transition: none; }
+
+/* ==========================================================================
+   E. TASK 087 — FLAGSHIP CONTROLS (command-bar composer, voice state,
+   attachment chips, pill dropdowns, slash-command palette, capabilities tray,
+   starters, header overflow).
+
+   SCOPE CONTRACT (same as above): every selector below is namespaced to the
+   existing `.admin-chat-*` / `#admin-chat-*` subtree or the NEW
+   `.admin-cmd-*` (slash palette) / `.admin-cap-*` (capabilities) /
+   `.admin-pick-*` (pill dropdowns) classes. NOTHING here touches global
+   `.btn` / `.card` / `.badge` / `.form-input` / bare `input|select|textarea`.
+   The one global class restyled (the `.btn.btn-primary` Send) is reached ONLY
+   via a `.admin-chat-shell`-prefixed descendant selector, confining the
+   override to the chat subtree. Everything is driven by `--admin-*` tokens so
+   light + dark + the Appearance sliders all "just work".
+   ========================================================================== */
+
+/* ---- E1. Command-bar composer ----
+   The composer is now a vertical glass "card": auto-grow textarea on top, an
+   inline action row (attach · voice · "/" · send) below. The dock wraps it so
+   the slash palette can float above. */
+.admin-chat-composer-dock{
+  position: relative;
+  align-self: stretch;
+}
+.admin-chat-shell .admin-chat-cmdbar{
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  padding: .6rem .7rem .55rem;
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border);
+  border-radius: 1.25rem;
+  box-shadow: var(--admin-shadow);
+  -webkit-backdrop-filter: var(--admin-blur);
+  backdrop-filter: var(--admin-blur);
+  transition: border-color .15s, box-shadow .15s;
+}
+/* Lift the whole bar when the textarea inside is focused (focus-within). */
+.admin-chat-shell .admin-chat-cmdbar:focus-within{
+  border-color: color-mix(in srgb, var(--admin-accent) 55%, transparent);
+  box-shadow: var(--admin-shadow), 0 0 0 3px color-mix(in srgb, var(--admin-accent) 18%, transparent);
+}
+/* The textarea sits flush inside the bar — no inner border/fill of its own; the
+   bar IS the field. Overrides the 086 #admin-chat-input pill rules (this is a
+   later, equal-specificity rule in the same stylesheet, so it wins). */
+.admin-chat-shell .admin-chat-cmdbar .admin-chat-cmdbar-input{
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: .35rem .4rem 0;
+  margin: 0;
+  resize: none;                 /* csrf.js auto-grows it instead */
+  min-height: 1.5rem;
+  max-height: 220px;
+  overflow-y: auto;
+  line-height: 1.5;
+  color: var(--admin-text);
+  font-family: inherit;
+  font-size: .95rem;
+  scrollbar-width: thin;
+}
+.admin-chat-shell .admin-chat-cmdbar .admin-chat-cmdbar-input:focus{
+  outline: none;
+  border: none;
+  box-shadow: none;
+}
+.admin-chat-shell .admin-chat-cmdbar .admin-chat-cmdbar-input::placeholder{
+  color: var(--admin-text-muted);
+  opacity: .8;
+}
+
+/* The inline action row. */
+.admin-chat-cmdbar-actions{
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+}
+.admin-chat-cmdbar-spacer{ flex: 1; }
+
+/* Round glass icon buttons (attach / voice / slash). These REPLACE the 086
+   round-button rules for the mic/attach (later, more specific via the new
+   class), and add the "/" affordance in the same family. */
+.admin-chat-shell .admin-chat-act{
+  width: 2.3rem;
+  height: 2.3rem;
+  flex-shrink: 0;
+  padding: 0;
+  border-radius: 999px;
+  background: var(--admin-field);
+  border: 1px solid var(--admin-border);
+  color: var(--admin-text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  transition: border-color .14s, color .14s, background .14s, transform .04s;
+}
+.admin-chat-shell .admin-chat-act:hover{
+  border-color: var(--admin-accent);
+  color: var(--admin-accent);
+  background: color-mix(in srgb, var(--admin-accent) 10%, transparent);
+}
+.admin-chat-shell .admin-chat-act:active{ transform: translateY(1px); }
+.admin-chat-shell .admin-chat-act:focus-visible{
+  outline: none;
+  border-color: var(--admin-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--admin-accent) 26%, transparent);
+}
+.admin-chat-act-ico{ pointer-events: none; }
+/* The "/" affordance reads as monospace glyph. */
+.admin-chat-slash .admin-chat-act-ico{
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+/* Active state when the palette is open. */
+.admin-chat-shell .admin-chat-slash.is-open{
+  background: color-mix(in srgb, var(--admin-accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--admin-accent) 34%, transparent);
+  color: var(--admin-accent);
+}
+
+/* The Send button → circular gradient FAB. Re-declared here (later than the
+   086 rule, equal specificity) so it keeps the FAB look inside the new bar. */
+.admin-chat-shell .admin-chat-cmdbar #admin-chat-send-btn.btn.btn-primary{
+  width: 2.5rem;
+  height: 2.5rem;
+  min-width: 2.5rem;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0;
+  background: linear-gradient(135deg, var(--admin-accent), var(--admin-accent-2));
+  border: none;
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--admin-accent) 40%, transparent);
+  transition: filter .15s, transform .05s, box-shadow .15s;
+}
+.admin-chat-shell .admin-chat-cmdbar #admin-chat-send-btn.btn.btn-primary::before{
+  content: "\2191";
+  font-size: 1.1rem;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+}
+.admin-chat-shell .admin-chat-cmdbar #admin-chat-send-btn.btn.btn-primary:hover{ filter: brightness(1.08); }
+.admin-chat-shell .admin-chat-cmdbar #admin-chat-send-btn.btn.btn-primary:active{ transform: scale(.95); }
+.admin-chat-shell .admin-chat-cmdbar #admin-chat-send-btn.btn.btn-primary:disabled{ opacity: .55; }
+
+/* ---- E2. Voice recording state ----
+   csrf.js toggles `.is-recording` on the mic button + un-hides the status row.
+   The mic glyph pulses; a pulsing ring expands behind it. */
+.admin-chat-shell .admin-chat-mic.is-recording{
+  background: color-mix(in srgb, var(--admin-danger, #dc2626) 18%, transparent);
+  border-color: color-mix(in srgb, var(--admin-danger, #dc2626) 50%, transparent);
+  color: var(--admin-danger, #dc2626);
+}
+.admin-chat-mic-pulse{
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  pointer-events: none;
+  opacity: 0;
+}
+.admin-chat-shell .admin-chat-mic.is-recording .admin-chat-mic-pulse{
+  opacity: 1;
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--admin-danger, #dc2626) 55%, transparent);
+  animation: adminChatMicPulse 1.4s ease-out infinite;
+}
+.admin-chat-shell .admin-chat-mic.is-recording .admin-chat-act-ico{
+  animation: adminChatMicBlink 1s ease-in-out infinite;
+}
+/* The "listening… ⏹ stop" status row below the bar. */
+.admin-chat-voice-status{
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  margin-top: .5rem;
+  padding: .35rem .7rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--admin-danger, #dc2626) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--admin-danger, #dc2626) 32%, transparent);
+  color: var(--admin-text);
+  font-size: .82rem;
+  width: max-content;
+}
+.admin-chat-voice-status[hidden]{ display: none; }
+.admin-chat-voice-label{ color: var(--admin-text-muted); }
+/* Little animated equalizer bars. */
+.admin-chat-voice-eq{ display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; }
+.admin-chat-voice-eq > i{
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--admin-danger, #dc2626);
+  transform-origin: bottom;
+  animation: adminChatEq 1s ease-in-out infinite;
+}
+.admin-chat-voice-eq > i:nth-child(2){ animation-delay: .15s; }
+.admin-chat-voice-eq > i:nth-child(3){ animation-delay: .3s; }
+.admin-chat-voice-eq > i:nth-child(4){ animation-delay: .45s; }
+.admin-chat-voice-eq > i:nth-child(5){ animation-delay: .6s; }
+.admin-chat-voice-stop{
+  margin-left: .25rem;
+  background: var(--admin-danger, #dc2626);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: .2rem .6rem;
+  font-family: inherit;
+  font-size: .78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter .14s, transform .04s;
+}
+.admin-chat-voice-stop:hover{ filter: brightness(1.08); }
+.admin-chat-voice-stop:active{ transform: translateY(1px); }
+
+/* ---- E3. Flagship attachment chips ----
+   csrf.js renders chips into #admin-chat-attach-strip with the new
+   .admin-chat-att-chip markup (image thumb / doc glyph + size + remove). */
+.admin-chat-att-chip{
+  display: inline-flex;
+  align-items: center;
+  gap: .5rem;
+  max-width: 240px;
+  padding: .3rem .45rem .3rem .35rem;
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border);
+  border-radius: .7rem;
+  box-shadow: var(--admin-shadow);
+  -webkit-backdrop-filter: var(--admin-blur);
+  backdrop-filter: var(--admin-blur);
+  font-size: .8rem;
+  color: var(--admin-text);
+}
+.admin-chat-att-thumb{
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  border-radius: .45rem;
+  object-fit: cover;
+  border: 1px solid var(--admin-border);
+}
+.admin-chat-att-glyph{
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  border-radius: .45rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  background: color-mix(in srgb, var(--admin-accent) 14%, transparent);
+  color: var(--admin-accent);
+}
+.admin-chat-att-meta{ display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.admin-chat-att-name{
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.admin-chat-att-size{ color: var(--admin-text-muted); font-size: .7rem; }
+.admin-chat-att-rm{
+  margin-left: .15rem;
+  flex-shrink: 0;
+  width: 1.3rem;
+  height: 1.3rem;
+  border-radius: 50%;
+  border: none;
+  background: color-mix(in srgb, var(--admin-text) 8%, transparent);
+  color: var(--admin-text-muted);
+  cursor: pointer;
+  font-size: .85rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background .14s, color .14s;
+}
+.admin-chat-att-rm:hover{
+  background: color-mix(in srgb, var(--admin-danger, #dc2626) 18%, transparent);
+  color: var(--admin-danger, #dc2626);
+}
+
+/* ---- E-keyframes (namespaced) ---- */
+@keyframes adminChatMicPulse{
+  0%{ box-shadow: 0 0 0 0 color-mix(in srgb, var(--admin-danger, #dc2626) 55%, transparent); }
+  70%{ box-shadow: 0 0 0 12px color-mix(in srgb, var(--admin-danger, #dc2626) 0%, transparent); }
+  100%{ box-shadow: 0 0 0 0 color-mix(in srgb, var(--admin-danger, #dc2626) 0%, transparent); }
+}
+@keyframes adminChatMicBlink{ 0%,100%{ opacity: 1; } 50%{ opacity: .45; } }
+@keyframes adminChatEq{ 0%,100%{ transform: scaleY(.35); } 50%{ transform: scaleY(1); } }
+
+/* Reduced-motion: kill the new animations (keep the resting visuals). */
+@media (prefers-reduced-motion: reduce){
+  .admin-chat-shell .admin-chat-mic.is-recording .admin-chat-mic-pulse,
+  .admin-chat-shell .admin-chat-mic.is-recording .admin-chat-act-ico,
+  .admin-chat-voice-eq > i{ animation: none; }
+}
+html[data-admin-motion="reduce"] .admin-chat-shell .admin-chat-mic.is-recording .admin-chat-mic-pulse,
+html[data-admin-motion="reduce"] .admin-chat-shell .admin-chat-mic.is-recording .admin-chat-act-ico,
+html[data-admin-motion="reduce"] .admin-chat-voice-eq > i{ animation: none; }

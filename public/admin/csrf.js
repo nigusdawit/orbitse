@@ -764,33 +764,53 @@
   // Hides itself when empty. Each chip has an × button that drops the
   // attachment from the next turn (the underlying DB row is left in
   // place — cheap, and lets us reuse the id if the admin re-attaches).
+  // Task 087: format a byte count as a compact human size (e.g. "1.2 MB").
+  function adminChatFmtBytes(n) {
+    n = Number(n);
+    if (!isFinite(n) || n <= 0) return '';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (n >= 10 || i === 0 ? Math.round(n) : n.toFixed(1)) + ' ' + units[i];
+  }
+  // Pick a doc glyph from the filename extension (cosmetic).
+  function adminChatDocGlyph(name) {
+    const ext = (String(name || '').split('.').pop() || '').toLowerCase();
+    if (ext === 'pdf') return '📕';
+    if (ext === 'csv' || ext === 'xlsx' || ext === 'xls') return '📊';
+    if (ext === 'doc' || ext === 'docx') return '📝';
+    if (ext === 'ppt' || ext === 'pptx') return '📑';
+    if (ext === 'json') return '🧾';
+    return '📄';
+  }
+
   function adminChatRenderAttachStrip() {
     const strip = document.getElementById('admin-chat-attach-strip');
     if (!strip) return;
     const list = window.__adminChatPendingAttachments || [];
     if (!list.length) { strip.style.display = 'none'; strip.innerHTML = ''; return; }
     strip.style.display = 'flex';
-    // Task #80 fix: image chips render a real thumbnail. Fresh uploads
-    // get a data: URL via FileReader (a.previewUrl); rehydrated history
-    // attachments get a tenant-scoped /thumb URL (a.thumb_url) from the
-    // /admin/api/chat/history payload. Doc chips stay text-only.
+    // Task 087: flagship chips — image thumbnail OR a file-type glyph, with the
+    // filename + a human size + a round × remove. Fresh uploads carry a data:
+    // URL (a.previewUrl); rehydrated history attachments carry a tenant-scoped
+    // a.thumb_url. The scoped .admin-chat-att-* classes (chat.css) own the look.
     strip.innerHTML = list.map((a, i) => {
       const thumbSrc = a.previewUrl || a.thumb_url || '';
       const isImg = a.kind === 'image';
-      const preview = (isImg && thumbSrc)
-        ? '<img src="' + adminChatAttrEscape(thumbSrc) + '" '
-          + 'alt="" style="width:32px; height:32px; object-fit:cover; '
-          + 'border-radius:.25rem; border:1px solid var(--admin-border);">'
-        : (isImg ? '🖼' : '📄');
-      return '<span data-testid="chip-admin-chat-attach-' + (a.id || i) + '" '
-        + 'style="display:inline-flex; align-items:center; gap:.4rem; '
-        + 'background:var(--admin-card); border:1px solid var(--admin-border); '
-        + 'border-radius:.4rem; padding:.2rem .5rem; font-size:.8rem; color:var(--admin-text);">'
-        + preview + ' '
-        + adminChatEscape((a.filename || 'file').slice(0, 40))
-        + ' <button type="button" onclick="adminChatRemoveAttachment(' + i + ')" '
-        + 'style="background:none; border:0; color:var(--admin-text-muted); cursor:pointer; padding:0 .2rem;" '
-        + 'title="Remove">×</button>'
+      const visual = (isImg && thumbSrc)
+        ? '<img class="admin-chat-att-thumb" src="' + adminChatAttrEscape(thumbSrc) + '" alt="">'
+        : '<span class="admin-chat-att-glyph" aria-hidden="true">'
+          + (isImg ? '🖼' : adminChatDocGlyph(a.filename)) + '</span>';
+      const size = adminChatFmtBytes(a.size);
+      const name = adminChatEscape((a.filename || 'file').slice(0, 48));
+      return '<span class="admin-chat-att-chip" data-testid="chip-admin-chat-attach-' + (a.id || i) + '">'
+        + visual
+        + '<span class="admin-chat-att-meta">'
+        +   '<span class="admin-chat-att-name" title="' + adminChatAttrEscape(a.filename || '') + '">' + name + '</span>'
+        +   (size ? '<span class="admin-chat-att-size">' + size + '</span>' : '')
+        + '</span>'
+        + '<button type="button" class="admin-chat-att-rm" onclick="adminChatRemoveAttachment(' + i + ')" '
+        +   'title="Remove" aria-label="Remove attachment">×</button>'
         + '</span>';
     }).join('');
   }
@@ -898,15 +918,34 @@
     return __admChatProvider;
   }
 
+  // Task 087: flagship voice state. The mic button now keeps its glyph wrapper
+  // (.admin-chat-act-ico) so the pulsing-ring CSS can animate around it; we
+  // toggle .is-recording on the button and show/hide the "Listening… ⏹ Stop"
+  // status row (#admin-chat-voice-status) instead of swapping raw textContent.
+  // Falls back gracefully if the new markup isn't present (old structure).
   function adminChatMicSetState(state) {
     const btn = document.getElementById('admin-chat-mic-btn');
     if (!btn) return;
+    const ico = btn.querySelector('.admin-chat-act-ico');
+    const status = document.getElementById('admin-chat-voice-status');
+    const label = status ? status.querySelector('.admin-chat-voice-label') : null;
+    btn.classList.remove('is-recording');
+    if (status) status.hidden = true;
     if (state === 'recording') {
-      btn.textContent = '⏺'; btn.style.background = 'rgba(255,80,80,.20)';
+      btn.classList.add('is-recording');
+      if (ico) ico.textContent = '⏺'; else btn.textContent = '⏺';
+      if (label) label.textContent = 'Listening…';
+      if (status) status.hidden = false;
+      btn.setAttribute('aria-pressed', 'true');
     } else if (state === 'transcribing') {
-      btn.textContent = '⏳'; btn.style.background = '';
+      if (ico) ico.textContent = '⏳'; else btn.textContent = '⏳';
+      if (label) label.textContent = 'Transcribing…';
+      if (status) status.hidden = false;   // keep the row up during transcription
+      btn.setAttribute('aria-pressed', 'false');
     } else {
-      btn.textContent = '🎤'; btn.style.background = '';
+      if (ico) ico.textContent = '🎤'; else btn.textContent = '🎤';
+      btn.style.background = '';
+      btn.setAttribute('aria-pressed', 'false');
     }
   }
 
@@ -1040,6 +1079,43 @@
     btn.addEventListener('touchstart', start, {passive: false});
     btn.addEventListener('touchend', stop);
     btn.addEventListener('touchcancel', stop);
+  }
+
+  // ---- Task 087: command-bar composer (auto-grow) ---------------------
+  // The textarea (#admin-chat-input) auto-grows up to a CSS max-height as the
+  // admin types, then scrolls. Idempotent install (dataset flag) so calling on
+  // every chat-tab open is safe. Resetting after send is handled by a value
+  // observer hook below.
+  function adminChatAutoGrow() {
+    const ta = document.getElementById('admin-chat-input');
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 220) + 'px';
+  }
+  function adminChatInstallComposer() {
+    const ta = document.getElementById('admin-chat-input');
+    if (!ta || ta.dataset.cmdbarBound === '1') return;
+    ta.dataset.cmdbarBound = '1';
+    ta.addEventListener('input', adminChatAutoGrow);
+    // First-paint sizing.
+    adminChatAutoGrow();
+  }
+
+  // Task 087: the "/" affordance. The full filterable palette is wired in the
+  // slash-command section below (it REPLACES this opener at definition time by
+  // virtue of being declared later — but we keep a safe entry point here so the
+  // composer commit is independently runtime-safe). If the palette renderer is
+  // present it opens it; otherwise it just seeds a "/" into the composer.
+  function adminChatToggleCmdPalette() {
+    const ta = document.getElementById('admin-chat-input');
+    if (typeof adminChatOpenCmdPalette === 'function') {
+      const pal = document.getElementById('admin-chat-cmd-palette');
+      if (pal && !pal.hidden) { adminChatCloseCmdPalette(); return; }
+      if (ta && !ta.value) ta.value = '/';
+      adminChatOpenCmdPalette();
+      return;
+    }
+    if (ta) { if (!ta.value.startsWith('/')) ta.value = '/' + ta.value; ta.focus(); adminChatAutoGrow(); }
   }
 
   // ---- Rendering helpers ---------------------------------------------
@@ -1364,6 +1440,8 @@
     // dataset flag), so calling on every chat-tab open is safe.
     adminChatInstallDragDrop();
     adminChatInstallMicHandlers();
+    // Task 087: command-bar composer (auto-grow textarea).
+    adminChatInstallComposer();
     const sid = await adminChatEnsureActiveSession();
     box.innerHTML = '<div style="color:var(--admin-text-muted); font-size:.9rem;">Loading…</div>';
     // Pull the full per-session config in parallel so the header (title,
@@ -1982,6 +2060,8 @@
     box.insertAdjacentHTML('beforeend',
       `<div id="admin-chat-thinking" class="admin-chat-typing" aria-label="Assistant is typing" data-testid="admin-chat-thinking"><span class="admin-chat-typing-dot"></span><span class="admin-chat-typing-dot"></span><span class="admin-chat-typing-dot"></span></div>`);
     input.value = '';
+    // Task 087: collapse the auto-grown command bar back to one row.
+    try { adminChatAutoGrow(); } catch (_) {}
     sendBtn.disabled = true;
     // Clear the pending-attachment strip now that the turn is in flight.
     window.__adminChatPendingAttachments = [];
