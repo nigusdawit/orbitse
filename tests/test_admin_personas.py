@@ -23,6 +23,7 @@ import app
 import core
 
 ADMIN_PW = os.environ.get("ADMIN_PASSWORD", "admin")
+CLIENT_PW = os.environ.get("CLIENT_PASSWORD", "")  # runner sets "client" → super-admin gating tests run
 
 # The canonical, ordered built-in persona keys. Stable contract: the persona
 # pill, the router {options}, spawn_agents validation, and _admin_apply_persona
@@ -355,3 +356,138 @@ def test_persona_edit_cannot_escalate_privilege():
         assert "run_research" in kept  # ... but the call-time guard above blocks USE.
     finally:
         _delete_persona(key)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2 — CRUD routes (super-admin gating, delete/reset rules, validation)   #
+# + the /admin/api/chat/personas consumption endpoint.                         #
+# --------------------------------------------------------------------------- #
+def _login(c, pw):
+    return c.post("/admin/login", data={"password": pw})
+
+
+def _csrf(c):
+    with c.session_transaction() as s:
+        s["_csrf_token"] = "tok"
+    return {"X-CSRF-Token": "tok"}
+
+
+def test_admin_ai_personas_super_admin_gating():
+    """Every /admin/api/admin-ai/personas* route is super-admin only; a client
+    admin is 403'd and an anonymous caller 401'd (T9)."""
+    # super-admin can list
+    c = app.app.test_client()
+    assert _login(c, ADMIN_PW).status_code in (200, 302)
+    assert c.get("/admin/api/admin-ai/personas").status_code == 200
+    # anonymous → 401
+    an = app.app.test_client()
+    assert an.get("/admin/api/admin-ai/personas").status_code == 401
+    # client admin → 403 on read AND every mutation
+    if CLIENT_PW:
+        cc = app.app.test_client()
+        assert _login(cc, CLIENT_PW).status_code in (200, 302)
+        hdr = _csrf(cc)
+        assert cc.get("/admin/api/admin-ai/personas").status_code == 403
+        assert cc.post("/admin/api/admin-ai/personas",
+                       json={"persona_key": "x"}, headers=hdr).status_code == 403
+        assert cc.put("/admin/api/admin-ai/personas/general",
+                      json={}, headers=hdr).status_code == 403
+        assert cc.post("/admin/api/admin-ai/personas/research/reset",
+                       headers=hdr).status_code == 403
+        assert cc.delete("/admin/api/admin-ai/personas/x",
+                         headers=hdr).status_code == 403
+
+
+def test_admin_ai_persona_delete_and_reset_rules():
+    """Built-ins are reset/disable-only (delete → 409); custom personas delete OK;
+    reset restores a built-in to its default + re-machine-owns it (updated_by NULL);
+    resetting a non-built-in → 400 (T10)."""
+    app.sync_admin_personas()  # ensure built-ins exist
+    c = app.app.test_client()
+    assert _login(c, ADMIN_PW).status_code in (200, 302)
+    hdr = _csrf(c)
+    reg = {p["persona_key"]: p for p in app._admin_persona_registry()}
+
+    # delete a built-in → 409
+    assert c.delete("/admin/api/admin-ai/personas/research", headers=hdr).status_code == 409
+
+    # create + delete a custom → 201 then 200
+    key = "t10_custom"
+    try:
+        assert c.post("/admin/api/admin-ai/personas",
+                      json={"persona_key": key, "label": "T10"},
+                      headers=hdr).status_code == 201
+        assert c.delete(f"/admin/api/admin-ai/personas/{key}", headers=hdr).status_code == 200
+        # reset a non-built-in key → 400
+        assert c.post(f"/admin/api/admin-ai/personas/{key}/reset",
+                      headers=hdr).status_code == 400
+    finally:
+        _delete_persona(key)
+
+    # dirty a built-in (stamps updated_by), then reset → back to default + NULL
+    try:
+        c.put("/admin/api/admin-ai/personas/ops",
+              json={"label": "Dirty Ops", "prompt_suffix": "x"}, headers=hdr)
+        assert _persona_row("ops")["updated_by"] is not None
+        assert c.post("/admin/api/admin-ai/personas/ops/reset", headers=hdr).status_code == 200
+        row = _persona_row("ops")
+        assert row["updated_by"] is None
+        assert row["label"] == reg["ops"]["label"]
+    finally:
+        # leave 'ops' clean for downstream tests regardless
+        app.sync_admin_personas()
+        core._invalidate_admin_persona_cache()
+
+
+def test_admin_ai_persona_validation_and_mass_assignment():
+    """Bad slug → 400; reserved built-in key → 400; duplicate → 409; bogus
+    is_builtin/tenant_id in the body are IGNORED (whitelist) (T11)."""
+    c = app.app.test_client()
+    assert _login(c, ADMIN_PW).status_code in (200, 302)
+    hdr = _csrf(c)
+    assert c.post("/admin/api/admin-ai/personas",
+                  json={"persona_key": "Bad Key!"}, headers=hdr).status_code == 400
+    assert c.post("/admin/api/admin-ai/personas",
+                  json={"persona_key": "general"}, headers=hdr).status_code == 400
+    key = "t11_custom"
+    try:
+        r = c.post("/admin/api/admin-ai/personas",
+                   json={"persona_key": key, "label": "T11", "is_builtin": True,
+                         "tenant_id": 999, "tool_prefixes": ["admin_run_sql"],
+                         "extra_tools": ["spawn_agents"]},
+                   headers=hdr)
+        assert r.status_code == 201, r.get_data(as_text=True)
+        row = app.query_db(
+            "SELECT tenant_id, is_builtin, updated_by FROM admin_chat_personas "
+            "WHERE persona_key=%s", (key,), fetchone=True)
+        assert row["is_builtin"] is False     # bogus is_builtin ignored
+        assert row["tenant_id"] == 1          # bogus tenant_id ignored
+        assert row["updated_by"] is not None  # custom rows are human-stamped
+        # duplicate key → 409
+        assert c.post("/admin/api/admin-ai/personas",
+                      json={"persona_key": key}, headers=hdr).status_code == 409
+    finally:
+        _delete_persona(key)
+
+
+def test_chat_personas_consumption_endpoint():
+    """/admin/api/chat/personas returns the enabled personas (key/label/icon/desc)
+    for the chat's persona pill. Personas carry no role gate, so a client admin
+    sees the same enabled set (T13)."""
+    app.sync_admin_personas()
+    c = app.app.test_client()
+    assert _login(c, ADMIN_PW).status_code in (200, 302)
+    r = c.get("/admin/api/chat/personas")
+    assert r.status_code == 200
+    items = r.get_json()["personas"]
+    keys = [p["key"] for p in items]
+    assert set(EXPECTED_PERSONA_KEYS) <= set(keys)
+    assert keys[0] == "general"  # sort_order 0 → first
+    for p in items:
+        assert set(("key", "label", "icon", "description")).issubset(p.keys())
+    if CLIENT_PW:
+        cc = app.app.test_client()
+        assert _login(cc, CLIENT_PW).status_code in (200, 302)
+        rr = cc.get("/admin/api/chat/personas")
+        assert rr.status_code == 200
+        assert "general" in [p["key"] for p in rr.get_json()["personas"]]

@@ -1,4 +1,5 @@
 DELETE /admin/api/addons/<int:addon_id>
+DELETE /admin/api/admin-ai/personas/<key>
 DELETE /admin/api/ai-cache/<int:cache_id>
 DELETE /admin/api/automations/<int:aid>
 DELETE /admin/api/blog/<int:post_id>
@@ -60,6 +61,7 @@ GET /
 GET /<path:filename>
 GET /<section_slug>
 GET /admin
+GET /admin/api/admin-ai/personas
 GET /admin/api/ai-activity
 GET /admin/api/ai-cache/entries
 GET /admin/api/ai-cache/stats
@@ -86,6 +88,7 @@ GET /admin/api/chat-history/<int:conv_id>
 GET /admin/api/chat/action/<int:action_id>
 GET /admin/api/chat/attachments/<int:att_id>/thumb
 GET /admin/api/chat/history
+GET /admin/api/chat/personas
 GET /admin/api/chat/sessions
 GET /admin/api/chat/sessions/<session_id>
 GET /admin/api/chat/sessions/<session_id>/export
@@ -305,6 +308,8 @@ PATCH /admin/api/scrape-schedules/<int:schedule_id>
 PATCH /admin/api/sphere-settings/enabled
 PATCH /admin/api/tenant/features/<name>
 PATCH,PUT /admin/api/pages/<int:page_id>
+POST /admin/api/admin-ai/personas
+POST /admin/api/admin-ai/personas/<key>/reset
 POST /admin/api/ai-cache/backfill
 POST /admin/api/ai-cache/bump-version
 POST /admin/api/ai-cache/purge
@@ -465,6 +470,7 @@ POST /webhooks/twilio/sms-status
 POST /webhooks/twilio/voice
 POST /webhooks/twilio/voice-status
 PUT /admin/api/addons/<int:addon_id>
+PUT /admin/api/admin-ai/personas/<key>
 PUT /admin/api/admin-appearance
 PUT /admin/api/ai-control/<key>
 PUT /admin/api/ai-prompts/<key>

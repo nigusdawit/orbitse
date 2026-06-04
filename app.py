@@ -41678,6 +41678,13 @@ app.register_blueprint(tenancy_bp)
 from admin.ai_prompts import ai_prompts_bp  # noqa: E402
 app.register_blueprint(ai_prompts_bp)
 
+# Admin-AI dynamic config blueprint (task 088): super-admin CRUD for the admin
+# chat's editable PERSONAS (+ the slash/capability/starter palette in phase 3),
+# plus the @admin_required /admin/api/chat/personas consumption endpoint the chat
+# uses to build the persona pill. Registry/cache live in core; gating is in-body.
+from admin.admin_ai import admin_ai_bp  # noqa: E402
+app.register_blueprint(admin_ai_bp)
+
 # Cost blueprint (Track B / task 078, piece #2): the Cost transparency dashboard
 # API — 8 routes under /admin/api/cost/* (summary, series, by-surface, by-model,
 # prices GET/PATCH, cap GET/PUT). @admin_required + the cost_dashboard feature gate
