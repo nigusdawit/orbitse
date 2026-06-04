@@ -1103,21 +1103,15 @@
     adminChatAutoGrow();
   }
 
-  // Task 087: the "/" affordance. The full filterable palette is wired in the
-  // slash-command section below (it REPLACES this opener at definition time by
-  // virtue of being declared later — but we keep a safe entry point here so the
-  // composer commit is independently runtime-safe). If the palette renderer is
-  // present it opens it; otherwise it just seeds a "/" into the composer.
+  // Task 087: the "/" affordance toggles the slash-command palette (defined in
+  // the slash-command section below). Seeds a leading "/" so the palette shows
+  // the full list when opened from the button on an empty composer.
   function adminChatToggleCmdPalette() {
+    const pal = document.getElementById('admin-chat-cmd-palette');
     const ta = document.getElementById('admin-chat-input');
-    if (typeof adminChatOpenCmdPalette === 'function') {
-      const pal = document.getElementById('admin-chat-cmd-palette');
-      if (pal && !pal.hidden) { adminChatCloseCmdPalette(); return; }
-      if (ta && !ta.value) ta.value = '/';
-      adminChatOpenCmdPalette();
-      return;
-    }
-    if (ta) { if (!ta.value.startsWith('/')) ta.value = '/' + ta.value; ta.focus(); adminChatAutoGrow(); }
+    if (pal && !pal.hidden) { adminChatCloseCmdPalette(); return; }
+    if (ta && !ta.value) { ta.value = '/'; ta.focus(); adminChatAutoGrow(); }
+    adminChatOpenCmdPalette();
   }
 
   // ---- Rendering helpers ---------------------------------------------
@@ -1442,9 +1436,11 @@
     // dataset flag), so calling on every chat-tab open is safe.
     adminChatInstallDragDrop();
     adminChatInstallMicHandlers();
-    // Task 087: command-bar composer (auto-grow textarea) + persona/model pills.
+    // Task 087: command-bar composer (auto-grow textarea) + persona/model pills
+    // + slash-command palette.
     adminChatInstallComposer();
     adminPickInstall();
+    adminChatInstallSlashTrigger();
     const sid = await adminChatEnsureActiveSession();
     box.innerHTML = '<div style="color:var(--admin-text-muted); font-size:.9rem;">Loading…</div>';
     // Pull the full per-session config in parallel so the header (title,
@@ -2627,6 +2623,320 @@
   // and adminChatRefreshHeader set #admin-chat-model.value).
   function adminPickSyncAll() {
     document.querySelectorAll('.admin-pick').forEach(adminPickSyncTrigger);
+  }
+
+  // ===== Task 087: slash-command palette =====
+  // Typing "/" at the START of the composer (or the "/" button) opens a
+  // filterable glass menu of admin-AI-specific commands. Selecting one SEEDS a
+  // templated prompt into the composer (+ optionally routes a persona via the
+  // pill/native select) — the admin reviews + sends. PURE client-side: every
+  // command maps to a REAL admin tool (verified against ADMIN_TOOLS, app.py
+  // ~18197) but we never call tools directly; we just compose a message the one
+  // engine will act on. Role-aware: `super:true` commands are dropped for a
+  // normal admin (read from .admin-chat-shell[data-admin-role]).
+  //
+  // Field guide:
+  //   cmd      "/name" trigger
+  //   icon     glyph
+  //   group    palette section
+  //   desc     one-liner (names the underlying tool)
+  //   persona  optional persona key to pin (drives the persona pill/select)
+  //   seed     templated prompt dropped into the composer
+  //   arg      optional placeholder hint shown after the name (e.g. "<sql>")
+  //   tail     when true, leave the caret ready for the admin to type the arg
+  //   super    when true, super-admin only (hidden for normal admins)
+  const ADMIN_CMD_MAP = [
+    // ---- Data & SQL ----
+    { cmd: '/tables',     icon: '🗂', group: 'Data & SQL', tool: 'admin_list_tables',
+      desc: 'List the database tables (admin_list_tables)',
+      seed: 'List all the tables in my database and what each one is for.' },
+    { cmd: '/stats',      icon: '📈', group: 'Data & SQL', tool: 'admin_overview_stats', persona: 'data_analyst',
+      desc: '7-day overview metrics (admin_overview_stats)',
+      seed: 'Give me a 7-day overview of my site: visitors, chats, orders and form submissions.' },
+    { cmd: '/sql',        icon: '🧮', group: 'Data & SQL', tool: 'admin_run_sql', persona: 'data_analyst',
+      desc: 'Run a read-only SQL query (admin_run_sql)', arg: '<query>', tail: true,
+      seed: 'Run this read-only SQL: ' },
+    { cmd: '/chart',      icon: '📊', group: 'Data & SQL', tool: 'render_chart', persona: 'data_analyst',
+      desc: 'Visualize data as a chart (render_chart)', arg: '<what to plot>', tail: true,
+      seed: 'Query the data and render a chart of: ' },
+    { cmd: '/saved',      icon: '💾', group: 'Data & SQL', tool: 'admin_list_saved_queries',
+      desc: 'List / run your saved queries (admin_list_saved_queries)',
+      seed: 'List my saved queries, then run the most relevant one and summarize the result.' },
+    // ---- Datahub (grant-aware) ----
+    { cmd: '/datahub',    icon: '🔌', group: 'Datahub', tool: 'admin_list_connections',
+      desc: 'List + inspect your data connections (grant-bounded)',
+      seed: 'List my Datahub connections, then inspect the most useful one and tell me what I can query.' },
+    // ---- Dashboards ----
+    { cmd: '/dashboard',  icon: '🧭', group: 'Dashboards', tool: 'admin_create_dashboard',
+      desc: 'Create a dashboard (admin_create_dashboard)', arg: '<topic>', tail: true,
+      seed: 'Create a dashboard that tracks: ' },
+    // ---- Analytics ----
+    { cmd: '/analyze',    icon: '🧠', group: 'Analytics', tool: 'admin_analyze_chat_topics',
+      desc: 'Mine visitor-chat topics (admin_analyze_chat_topics)',
+      seed: 'Analyze my visitor chat topics from the last 30 days and surface the top themes and gaps.' },
+    // ---- Content & Marketing ----
+    { cmd: '/seo',        icon: '🔍', group: 'Content & Marketing', tool: 'admin_suggest_seo_improvements',
+      desc: 'Find content gaps / SEO wins (admin_suggest_seo_improvements)',
+      seed: 'Review my site content and suggest concrete SEO improvements and content gaps to fill.' },
+    { cmd: '/blog',       icon: '✍️', group: 'Content & Marketing', tool: 'admin_propose_draft_blog_post', persona: 'creative',
+      desc: 'Draft a blog post for approval (admin_propose_draft_blog_post)', arg: '<topic>', tail: true,
+      seed: 'Draft a blog post (for my approval) about: ' },
+    { cmd: '/faq',        icon: '❓', group: 'Content & Marketing', tool: 'admin_propose_draft_faq_entry', persona: 'creative',
+      desc: 'Draft an FAQ entry for approval (admin_propose_draft_faq_entry)', arg: '<question>', tail: true,
+      seed: 'Draft an FAQ entry (for my approval) answering: ' },
+    // ---- Research / Web ----
+    { cmd: '/search',     icon: '🌐', group: 'Research', tool: 'admin_web_search',
+      desc: 'Search the web (admin_web_search)', arg: '<query>', tail: true,
+      seed: 'Search the web and summarize with sources: ' },
+    // ---- Knowledge Base ----
+    { cmd: '/kb',         icon: '📚', group: 'Knowledge Base', tool: 'lookup_knowledge_base',
+      desc: 'Look something up in the KB (lookup_knowledge_base)', arg: '<question>', tail: true,
+      seed: 'Search my Knowledge Base and answer with citations: ' },
+    // ---- Automations ----
+    { cmd: '/automations',icon: '🤖', group: 'Automations', tool: 'admin_list_automations',
+      desc: 'List your automations (admin_list_automations)',
+      seed: 'List my automations and tell me which are active and what each one does.' },
+    // ---- Skills ----
+    { cmd: '/skills',     icon: '🧰', group: 'Skills', tool: 'admin_list_skills',
+      desc: 'List available AI skills (admin_list_skills)',
+      seed: 'List the AI skills available to you right now and what each can do.' },
+    // ---- Snapshots ----
+    { cmd: '/snapshots',  icon: '🗄', group: 'Data & SQL', tool: 'admin_recent_snapshots',
+      desc: 'Recent content snapshots (admin_recent_snapshots)',
+      seed: 'Show my most recent content snapshots and what changed in each.' },
+
+    // ---- SUPER-ADMIN ONLY (hidden for normal admins) ----
+    { cmd: '/research',   icon: '🔭', group: 'Research', tool: 'run_research', persona: 'research', super: true,
+      desc: 'Run a deep research task (run_research)', arg: '<topic>', tail: true,
+      seed: 'Run a deep research task on: ' },
+    { cmd: '/content',    icon: '📰', group: 'Content & Marketing', tool: 'generate_content', super: true,
+      desc: 'Generate long-form content (generate_content)', arg: '<brief>', tail: true,
+      seed: 'Generate long-form content for: ' },
+    { cmd: '/design',     icon: '🎨', group: 'Content & Marketing', tool: 'admin_propose_create_site_design', super: true,
+      desc: 'Propose a new site design (admin_propose_create_site_design)', arg: '<page / vibe>', tail: true,
+      seed: 'Propose a new site design (for my approval) for: ' },
+    { cmd: '/theme',      icon: '🌈', group: 'Content & Marketing', tool: 'admin_propose_create_site_theme', super: true,
+      desc: 'Propose a new site theme (admin_propose_create_site_theme)', arg: '<style>', tail: true,
+      seed: 'Propose a new site theme (for my approval): ' },
+    { cmd: '/define',     icon: '🧱', group: 'Datahub', tool: 'admin_define_schema', super: true,
+      desc: 'Define / annotate Datahub schema (admin_define_schema)', arg: '<table>', tail: true,
+      seed: 'Help me define and annotate the Datahub schema for: ' },
+    { cmd: '/mcp',        icon: '🛰', group: 'Connectors (MCP)', tool: 'admin_mcp_list_servers', super: true,
+      desc: 'List MCP servers (admin_mcp_list_servers)',
+      seed: 'List my MCP servers, their status, and the tools they expose.' },
+  ];
+
+  // True when the current shell is super-admin (data-admin-role). Defaults to
+  // NON-super (safer) if the attribute is missing.
+  function adminChatIsSuperAdmin() {
+    const shell = document.getElementById('admin-chat-shell');
+    return !!(shell && shell.getAttribute('data-admin-role') === 'super_admin');
+  }
+  // The role-filtered command list.
+  function adminChatVisibleCmds() {
+    const sup = adminChatIsSuperAdmin();
+    return ADMIN_CMD_MAP.filter(c => sup || !c.super);
+  }
+
+  let _adminCmdActiveIdx = 0;     // active row in the open palette
+  let _adminCmdFiltered = [];     // current filtered command list
+
+  // Filter commands by the text after "/" (matches cmd name + description).
+  function adminChatFilterCmds(query) {
+    const q = (query || '').replace(/^\//, '').trim().toLowerCase();
+    const all = adminChatVisibleCmds();
+    if (!q) return all;
+    return all.filter(c =>
+      c.cmd.slice(1).toLowerCase().indexOf(q) === 0 ||      // prefix on name
+      c.cmd.slice(1).toLowerCase().indexOf(q) !== -1 ||      // substring on name
+      (c.desc || '').toLowerCase().indexOf(q) !== -1);        // substring on desc
+  }
+
+  // Render the palette body from a filtered list, grouped by `group`.
+  function adminChatRenderCmdPalette(list) {
+    const pal = document.getElementById('admin-chat-cmd-palette');
+    if (!pal) return;
+    _adminCmdFiltered = list;
+    if (!list.length) {
+      pal.innerHTML = '<div class="admin-cmd-empty">No matching commands.</div>';
+      return;
+    }
+    let html = '<div class="admin-cmd-hint">Pick a command — it fills the composer; review then <b>Send</b>. <b>↑↓</b> navigate · <b>Enter</b> select · <b>Esc</b> close</div>';
+    let lastGroup = null;
+    let flatIdx = 0;
+    for (const c of list) {
+      if (c.group !== lastGroup) {
+        html += '<div class="admin-cmd-group">' + adminChatEscape(c.group) + '</div>';
+        lastGroup = c.group;
+      }
+      const argHtml = c.arg ? ' <span class="admin-cmd-arg">' + adminChatEscape(c.arg) + '</span>' : '';
+      const personaHtml = c.persona
+        ? '<span class="admin-cmd-persona">' + adminChatEscape((ADMIN_PERSONA_META[c.persona] || {}).name || c.persona) + '</span>'
+        : '';
+      const superHtml = c.super ? '<span class="admin-cmd-super">super</span>' : '';
+      html += '<button type="button" class="admin-cmd-item' + (flatIdx === _adminCmdActiveIdx ? ' is-active' : '') + '" '
+        + 'role="option" data-cmd="' + adminChatAttrEscape(c.cmd) + '" data-idx="' + flatIdx + '">'
+        + '<span class="admin-cmd-ico" aria-hidden="true">' + adminChatEscape(c.icon) + '</span>'
+        + '<span class="admin-cmd-body">'
+        +   '<span class="admin-cmd-name">' + adminChatEscape(c.cmd) + argHtml + '</span>'
+        +   '<span class="admin-cmd-desc">' + adminChatEscape(c.desc || '') + '</span>'
+        + '</span>'
+        + personaHtml + superHtml
+        + '</button>';
+      flatIdx++;
+    }
+    pal.innerHTML = html;
+  }
+
+  function adminChatOpenCmdPalette() {
+    const pal = document.getElementById('admin-chat-cmd-palette');
+    const ta = document.getElementById('admin-chat-input');
+    if (!pal) return;
+    _adminCmdActiveIdx = 0;
+    adminChatRenderCmdPalette(adminChatFilterCmds(ta ? ta.value : ''));
+    pal.hidden = false;
+    const slashBtn = document.querySelector('[data-testid="button-admin-chat-slash"]');
+    if (slashBtn) slashBtn.classList.add('is-open');
+    adminChatInstallCmdOutside();
+  }
+  function adminChatCloseCmdPalette() {
+    const pal = document.getElementById('admin-chat-cmd-palette');
+    if (pal) { pal.hidden = true; pal.innerHTML = ''; }
+    const slashBtn = document.querySelector('[data-testid="button-admin-chat-slash"]');
+    if (slashBtn) slashBtn.classList.remove('is-open');
+  }
+  function adminChatCmdPaletteOpen() {
+    const pal = document.getElementById('admin-chat-cmd-palette');
+    return !!(pal && !pal.hidden);
+  }
+
+  // Apply a chosen command: route its persona (if any) through the persona
+  // pill/native select, then seed its templated prompt into the composer. We
+  // do NOT auto-send — the admin reviews + edits the arg, then hits Send.
+  function adminChatApplyCmd(c) {
+    if (!c) return;
+    const ta = document.getElementById('admin-chat-input');
+    if (!ta) return;
+    // Route persona via the SAME path the pill uses (sets native value + change).
+    if (c.persona) {
+      const personaSel = document.getElementById('admin-chat-persona');
+      const pickEl = document.getElementById('admin-pick-persona');
+      if (personaSel) {
+        personaSel.value = c.persona;
+        personaSel.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      if (pickEl && typeof adminPickSyncTrigger === 'function') adminPickSyncTrigger(pickEl);
+    }
+    ta.value = c.seed || (c.cmd + ' ');
+    adminChatCloseCmdPalette();
+    ta.focus();
+    // Place caret at the end so the admin can type the argument straight away.
+    try { const n = ta.value.length; ta.setSelectionRange(n, n); } catch (_) {}
+    adminChatAutoGrow();
+  }
+  function adminChatApplyCmdByName(name) {
+    const c = adminChatVisibleCmds().find(x => x.cmd === name);
+    adminChatApplyCmd(c);
+  }
+
+  // Keyboard nav while the palette is open: ↑/↓ move the active row, Enter
+  // applies it, Esc closes, Tab applies the active row's command name. Bound on
+  // the textarea (see adminChatInstallSlashTrigger).
+  function adminChatCmdKeydown(ev) {
+    if (!adminChatCmdPaletteOpen()) return false;
+    const n = _adminCmdFiltered.length;
+    if (!n) {
+      if (ev.key === 'Escape') { adminChatCloseCmdPalette(); return true; }
+      return false;
+    }
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      _adminCmdActiveIdx = (_adminCmdActiveIdx + 1) % n;
+      adminChatHighlightCmd();
+      return true;
+    }
+    if (ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      _adminCmdActiveIdx = (_adminCmdActiveIdx - 1 + n) % n;
+      adminChatHighlightCmd();
+      return true;
+    }
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      adminChatApplyCmd(_adminCmdFiltered[_adminCmdActiveIdx]);
+      return true;
+    }
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      adminChatCloseCmdPalette();
+      return true;
+    }
+    return false;
+  }
+  function adminChatHighlightCmd() {
+    const pal = document.getElementById('admin-chat-cmd-palette');
+    if (!pal) return;
+    const items = Array.from(pal.querySelectorAll('.admin-cmd-item'));
+    items.forEach((el, i) => el.classList.toggle('is-active', i === _adminCmdActiveIdx));
+    const active = items[_adminCmdActiveIdx];
+    if (active && active.scrollIntoView) active.scrollIntoView({ block: 'nearest' });
+  }
+
+  // Wire the "/" trigger + palette interactions ONCE (idempotent via dataset).
+  // - typing "/" at composer start opens the palette; further typing filters;
+  //   deleting the "/" (or moving off the start) closes it.
+  // - palette clicks apply the command.
+  function adminChatInstallSlashTrigger() {
+    const ta = document.getElementById('admin-chat-input');
+    if (ta && ta.dataset.slashBound !== '1') {
+      ta.dataset.slashBound = '1';
+      // keydown for nav must run BEFORE the existing Enter-to-send inline
+      // handler. We attach in the CAPTURE phase and, when the palette consumes
+      // the key, call stopImmediatePropagation() so the event never reaches the
+      // target-phase inline onkeydown (Enter selects a command, not sends).
+      ta.addEventListener('keydown', (ev) => {
+        if (adminChatCmdKeydown(ev)) { ev.stopImmediatePropagation(); }
+      }, true);
+      // input: open/refresh/close the palette based on the leading "/".
+      ta.addEventListener('input', () => {
+        const v = ta.value || '';
+        if (v.charAt(0) === '/' && v.indexOf(' ') === -1) {
+          _adminCmdActiveIdx = 0;
+          adminChatRenderCmdPalette(adminChatFilterCmds(v));
+          const pal = document.getElementById('admin-chat-cmd-palette');
+          if (pal && pal.hidden) adminChatOpenCmdPalette();
+        } else if (adminChatCmdPaletteOpen()) {
+          adminChatCloseCmdPalette();
+        }
+      });
+    }
+    const pal = document.getElementById('admin-chat-cmd-palette');
+    if (pal && pal.dataset.cmdBound !== '1') {
+      pal.dataset.cmdBound = '1';
+      pal.addEventListener('click', (e) => {
+        const item = e.target.closest('.admin-cmd-item');
+        if (item) { e.preventDefault(); adminChatApplyCmdByName(item.dataset.cmd); }
+      });
+      pal.addEventListener('mousemove', (e) => {
+        const item = e.target.closest('.admin-cmd-item');
+        if (item && item.dataset.idx != null) {
+          _adminCmdActiveIdx = parseInt(item.dataset.idx, 10) || 0;
+          adminChatHighlightCmd();
+        }
+      });
+    }
+  }
+  // Outside-click close for the palette (bound once).
+  let _adminCmdOutsideBound = false;
+  function adminChatInstallCmdOutside() {
+    if (_adminCmdOutsideBound) return;
+    _adminCmdOutsideBound = true;
+    document.addEventListener('mousedown', (e) => {
+      if (!adminChatCmdPaletteOpen()) return;
+      const dock = document.getElementById('admin-chat-composer-dock');
+      if (dock && dock.contains(e.target)) return;  // clicks inside composer/palette
+      adminChatCloseCmdPalette();
+    });
   }
 
   // ===== Floating "Business Assistant" launcher (task 086) =====
