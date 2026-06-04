@@ -100,6 +100,13 @@ body.admin-chrome-hidden .sidebar{ top: 0; height: 100vh; }
 @media (prefers-reduced-motion: reduce){
   .admin-header, .admin-layout, #tab-admin-chat.tab-content.active{ transition: none; }
 }
+
+/* Hide the floating launcher (+ its quick popover) while the chat TAB is open —
+   it sits in the same bottom-right corner as the composer's send button (so it
+   covers it) and is redundant there (you're already in the chat). It stays
+   available on every OTHER tab as the entry point. */
+body:has(#tab-admin-chat.tab-content.active) #admin-asst-launcher,
+body:has(#tab-admin-chat.tab-content.active) #admin-asst-quick{ display: none !important; }
 /* Soft radial accent glow bloom behind the glass (token-driven via --admin-glow
    so the Appearance "glow" slider controls intensity). Non-interactive. */
 .admin-chat-shell::before{
