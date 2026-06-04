@@ -191,17 +191,82 @@
     */
     var _AP_DEFAULTS = {mode:'dark', accent:'#6c8cff', accent2:'#9a7cff', blur:18, radius:16, glass:0.55, glow:0.5,
       density:'comfortable', font_scale:'md', font_family:'sans', surface:'glass',
-      sidebar:'comfortable', high_contrast:false, reduce_motion:false};
+      sidebar:'comfortable', high_contrast:false, reduce_motion:false,
+      // task 089 — expanded controls (every default == today's look).
+      color_success:'#22c55e', color_warning:'#f59e0b', color_danger:'#ef4444', color_info:'#3b82f6',
+      accent3:'#22d3ee', color_link:'#6c8aff', color_focus:'#6c8cff',
+      glow_color_1:'#3b82f6', glow_color_2:'#8b5cf6',
+      head_font:'serif', font_weight:'normal', letter_spacing:0, line_height:1.3,
+      shadow:'medium', border_width:1, focus_style:'ring',
+      content_width:'full', header_style:'sticky', button_style:'solid', motion_speed:'normal',
+      bg_dark:'#0b1220', bg_light:'#eef2fb', surface_dark:'#1e2940', surface_light:'#ffffff',
+      text_dark:'#e8edf6', text_light:'#19233a', muted_dark:'#aab2c0', muted_light:'#5b6577',
+      border_dark:'#2a3344', border_light:'#d4dae6'};
     var AP = Object.assign({}, _AP_DEFAULTS, (window.__ADMIN_APPEARANCE__ || {}));
+    // custom_presets is real state we persist; the other server-computed
+    // presentation keys aren't part of the editable model — drop them so the
+    // PUT payload stays the flat knob set.
+    AP.custom_presets = (window.__ADMIN_APPEARANCE__ && window.__ADMIN_APPEARANCE__.custom_presets) || [];
+    ['css_vars','base_css_dark','base_css_light','base_overrides'].forEach(function(k){ delete AP[k]; });
 
-    // Curated one-click presets (task 073) — set accent/accent2/surface/mode together.
+    // Manifests for the expanded knobs (task 089), mirroring _ADMIN_APPEARANCE_EXTRA
+    // in app.py so live-apply + control sync stay declarative.
+    //   _AP_VARS  — :root colour/number vars; emitted only when != default (else
+    //               removed so base.css shows through, matching the server).
+    //   _AP_ATTRS — data-* enums; always set (the default value writes no rule).
+    //   _AP_BASE  — per-theme base colours; apply the CURRENT mode's value inline.
+    var _AP_VARS = [
+      {k:'color_success', v:'--admin-success',      d:'#22c55e'},
+      {k:'color_warning', v:'--admin-warning',      d:'#f59e0b'},
+      {k:'color_danger',  v:'--admin-danger',       d:'#ef4444'},
+      {k:'color_info',    v:'--admin-info',         d:'#3b82f6'},
+      {k:'accent3',       v:'--admin-accent-3',     d:'#22d3ee'},
+      {k:'color_link',    v:'--admin-link',         d:'#6c8aff'},
+      {k:'color_focus',   v:'--admin-focus',        d:'#6c8cff'},
+      {k:'glow_color_1',  v:'--admin-glow-1',       d:'#3b82f6'},
+      {k:'glow_color_2',  v:'--admin-glow-2',       d:'#8b5cf6'},
+      {k:'border_width',  v:'--admin-border-width', d:1, unit:'px'},
+      {k:'letter_spacing',v:'--admin-letter-spacing', d:0, unit:'em'},
+      {k:'line_height',   v:'--admin-line-height',  d:1.3}
+    ];
+    var _AP_ATTRS = [
+      {k:'shadow',        a:'data-admin-shadow',   d:'medium'},
+      {k:'head_font',     a:'data-admin-headfont', d:'serif'},
+      {k:'font_weight',   a:'data-admin-weight',   d:'normal'},
+      {k:'focus_style',   a:'data-admin-focus',    d:'ring'},
+      {k:'content_width', a:'data-admin-width',    d:'full'},
+      {k:'header_style',  a:'data-admin-header',   d:'sticky'},
+      {k:'button_style',  a:'data-admin-button',   d:'solid'},
+      {k:'motion_speed',  a:'data-admin-speed',    d:'normal'}
+    ];
+    var _AP_BASE = [
+      {k:'bg',      v:'--admin-bg',         dd:'#0b1220', dl:'#eef2fb'},
+      {k:'surface', v:'--admin-surface',    dd:'#1e2940', dl:'#ffffff', glass:true},
+      {k:'text',    v:'--admin-text',       dd:'#e8edf6', dl:'#19233a'},
+      {k:'muted',   v:'--admin-text-muted', dd:'#aab2c0', dl:'#5b6577'},
+      {k:'border',  v:'--admin-border',     dd:'#2a3344', dl:'#d4dae6'}
+    ];
+    var _AP_BASE_KEYS = {bg:1, surface:1, text:1, muted:1, border:1};
+    var _AP_NUM = {border_width:{lbl:'ap-border_width-v',unit:'px'},
+                   letter_spacing:{lbl:'ap-letter_spacing-v',unit:'em'},
+                   line_height:{lbl:'ap-line_height-v',unit:''}};
+
+    // Curated one-click presets (task 073, expanded task 089). A preset may set
+    // ANY knob — the new ones below also tune shadow/heading-font/button-style/
+    // glow colours/content-width to show off the expanded controls.
     var AP_PRESETS = {
       'indigo-glass':  {label:'Indigo Glass',  accent:'#6c8cff', accent2:'#9a7cff', surface:'glass',   mode:'dark'},
       'slate-solid':   {label:'Slate Solid',   accent:'#7c8da6', accent2:'#b6c2d6', surface:'solid',   mode:'dark'},
       'emerald-glass': {label:'Emerald',       accent:'#10b981', accent2:'#34d399', surface:'glass',   mode:'dark'},
       'rose-glass':    {label:'Rose',          accent:'#f43f5e', accent2:'#fb7185', surface:'glass',   mode:'dark'},
       'amber-light':   {label:'Amber Light',   accent:'#f59e0b', accent2:'#fbbf24', surface:'glass',   mode:'light'},
-      'minimal-light': {label:'Minimal Light', accent:'#3b82f6', accent2:'#6366f1', surface:'minimal', mode:'light'}
+      'minimal-light': {label:'Minimal Light', accent:'#3b82f6', accent2:'#6366f1', surface:'minimal', mode:'light'},
+      'midnight':      {label:'Midnight',      accent:'#5b8def', accent2:'#7c6cff', surface:'solid',   mode:'dark',  shadow:'strong', glow_color_1:'#1e3a8a', glow_color_2:'#3b0764'},
+      'mono-ink':      {label:'Mono Ink',      accent:'#9ca3af', accent2:'#d1d5db', surface:'minimal', mode:'dark',  head_font:'mono', button_style:'outline', shadow:'soft'},
+      'sunset':        {label:'Sunset',        accent:'#fb7185', accent2:'#fbbf24', surface:'glass',   mode:'dark',  glow_color_1:'#f43f5e', glow_color_2:'#f59e0b'},
+      'forest-light':  {label:'Forest',        accent:'#10b981', accent2:'#84cc16', surface:'glass',   mode:'light', head_font:'serif'},
+      'editorial':     {label:'Editorial',     accent:'#1d4ed8', accent2:'#7c3aed', surface:'minimal', mode:'light', head_font:'serif', content_width:'comfortable', shadow:'soft', button_style:'soft'},
+      'contrast-dark': {label:'High Contrast',  accent:'#ffd166', accent2:'#ef476f', surface:'solid',   mode:'dark',  high_contrast:true, shadow:'strong', button_style:'outline'}
     };
 
     function _apTxt(id, t){ var e=document.getElementById(id); if(e) e.textContent=t; }
@@ -229,6 +294,22 @@
       r.setAttribute('data-admin-sidebar', AP.sidebar);
       if(AP.high_contrast) r.setAttribute('data-admin-contrast','high'); else r.removeAttribute('data-admin-contrast');
       if(AP.reduce_motion) r.setAttribute('data-admin-motion','reduce'); else r.removeAttribute('data-admin-motion');
+      // task 089 — expanded knobs. Vars emit only when != default (else remove,
+      // so base.css shows through, matching the server). Attrs always set (the
+      // default value writes no CSS rule). Base colours: apply the CURRENT
+      // mode's value inline (highest specificity ⇒ live preview wins).
+      _AP_VARS.forEach(function(m){
+        var val=AP[m.k];
+        if(val===undefined || val===m.d){ r.style.removeProperty(m.v); return; }
+        r.style.setProperty(m.v, m.unit ? (val+m.unit) : String(val));
+      });
+      _AP_ATTRS.forEach(function(m){ r.setAttribute(m.a, AP[m.k] || m.d); });
+      var _isLight=(AP.mode==='light');
+      _AP_BASE.forEach(function(m){
+        var cv=AP[m.k+(_isLight?'_light':'_dark')], df=_isLight?m.dl:m.dd;
+        if(!cv || String(cv).toLowerCase()===df.toLowerCase()){ r.style.removeProperty(m.v); return; }
+        r.style.setProperty(m.v, m.glass ? ('color-mix(in srgb,'+cv+' calc(var(--admin-glass)*100%),transparent)') : cv);
+      });
       _apSyncToggleIcon();
       _apSyncSegs();
       if (window.adminRecolorCharts) window.adminRecolorCharts();
@@ -257,8 +338,30 @@
       if(g('ap-radius')) { g('ap-radius').value = AP.radius; _apTxt('ap-radius-v', AP.radius+'px'); }
       if(g('ap-glass'))  { var gp=Math.round(AP.glass*100); g('ap-glass').value = gp; _apTxt('ap-glass-v', gp+'%'); }
       if(g('ap-glow'))   { var gw=Math.round(AP.glow*100);  g('ap-glow').value  = gw; _apTxt('ap-glow-v', gw+'%'); }
+      apInitExtra();            // task 089 — colour + number controls
       apRenderPresets();
+      apRenderCustomPresets();  // task 089 — saved custom presets (P3)
       _apSyncSegs();
+    }
+    // task 089 — populate the expanded colour + number controls from AP.
+    function apInitExtra(){
+      var g=function(i){return document.getElementById(i);};
+      ['color_success','color_warning','color_danger','color_info','accent3','color_link','color_focus','glow_color_1','glow_color_2'].forEach(function(k){
+        var e=g('ap-'+k); if(e) e.value = AP[k];
+      });
+      Object.keys(_AP_NUM).forEach(function(k){
+        var e=g('ap-'+k); if(e){ e.value=AP[k]; var n=_AP_NUM[k]; _apTxt(n.lbl, AP[k]+(n.unit||'')); }
+      });
+      apInitBaseColors();
+    }
+    // Per-theme base-colour pickers are bound to the CURRENT mode; re-sync them
+    // whenever the mode changes so you edit the right theme's palette.
+    function apInitBaseColors(){
+      var g=function(i){return document.getElementById(i);}, isLight=(AP.mode==='light');
+      ['bg','surface','text','muted','border'].forEach(function(k){
+        var e=g('ap-'+k); if(e) e.value = AP[k+(isLight?'_light':'_dark')];
+      });
+      _apTxt('ap-basecolor-mode', isLight?'light':'dark');
     }
     function apLive(key, raw){
       if(key==='accent')       AP.accent  = raw;
@@ -267,16 +370,27 @@
       else if(key==='radius') { AP.radius = +raw; _apTxt('ap-radius-v', raw+'px'); }
       else if(key==='glass')  { AP.glass  = (+raw)/100; _apTxt('ap-glass-v', raw+'%'); }
       else if(key==='glow')   { AP.glow   = (+raw)/100; _apTxt('ap-glow-v', raw+'%'); }
+      else _apLiveExtra(key, raw);   // task 089 — colours / numbers / base colours
       apApply();
     }
-    // Enum/segment setter (density, font_scale, font_family, surface, sidebar).
-    function apSet(key, val){ AP[key]=val; apApply(); apPersist(true); }
+    // task 089 — live handler for the expanded inputs. Base-colour keys write to
+    // the current mode's slot; numbers update their value label; the rest are
+    // plain colour pickers.
+    function _apLiveExtra(key, raw){
+      if(_AP_BASE_KEYS[key]){ AP[key+(AP.mode==='light'?'_light':'_dark')] = raw; }
+      else if(_AP_NUM[key]){ AP[key]=+raw; var n=_AP_NUM[key]; _apTxt(n.lbl, raw+(n.unit||'')); }
+      else { AP[key]=raw; }
+    }
+    // Enum/segment setter (density, surface, …, plus the task-089 enums). On a
+    // mode change, re-bind the per-theme base-colour pickers to the new theme.
+    function apSet(key, val){ AP[key]=val; apApply(); if(key==='mode') apInitBaseColors(); apPersist(true); }
     // Boolean a11y toggle (high_contrast, reduce_motion).
     function apToggle(key, on){ AP[key]=!!on; apApply(); apPersist(true); }
-    // Apply a curated preset, then sync controls + save.
+    // Apply a curated built-in preset, then sync controls + save. Generic: a
+    // preset may carry ANY knob (task 089 presets set shadow/head_font/etc. too).
     function apPreset(id){
       var p=AP_PRESETS[id]; if(!p) return;
-      AP.accent=p.accent; AP.accent2=p.accent2; AP.surface=p.surface; AP.mode=p.mode;
+      Object.keys(p).forEach(function(k){ if(k!=='label') AP[k]=p[k]; });
       apApply(); apInitControls(); apPersist(true); _apTxt('ap-status','Applied the "'+p.label+'" preset.');
     }
     function apRenderPresets(){
@@ -288,8 +402,62 @@
           + '<span>'+p.label+'</span></button>';
       }).join('');
     }
-    function apSetMode(m){ AP.mode = m; apApply(); apPersist(true); }
-    function adminToggleTheme(){ AP.mode = (AP.mode==='light' ? 'dark' : 'light'); apApply(); apPersist(true); }
+    // task 089 — save-your-own presets. Snapshot the current theme as a named,
+    // re-applyable preset stored in AP.custom_presets and persisted via the
+    // normal PUT (the server caps the count + validates each one).
+    function _apHash(s){ var h=0,i; for(i=0;i<s.length;i++){ h=((h<<5)-h+s.charCodeAt(i))|0; } return h; }
+    function _apHex(v){ return /^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(v) ? v : '#6c8cff'; }
+    function apSavePreset(){
+      var inp=document.getElementById('ap-preset-name'), name=((inp&&inp.value)||'').trim();
+      if(!name){ _apTxt('ap-status','Name your preset first.'); if(inp) inp.focus(); return; }
+      var settings={};
+      Object.keys(_AP_DEFAULTS).forEach(function(k){ if(k!=='custom_presets') settings[k]=AP[k]; });
+      var id='c'+Math.abs(_apHash(name)).toString(36);
+      AP.custom_presets=(AP.custom_presets||[]).filter(function(p){ return p.id!==id; });
+      AP.custom_presets.push({id:id, label:name.slice(0,40), settings:settings});
+      if(inp) inp.value='';
+      apRenderCustomPresets(); apPersist(true); _apTxt('ap-status','Saved the "'+name+'" preset.');
+    }
+    function apApplyCustomPreset(id){
+      var p=(AP.custom_presets||[]).filter(function(x){ return x.id===id; })[0]; if(!p) return;
+      Object.keys(p.settings||{}).forEach(function(k){ AP[k]=p.settings[k]; });
+      apApply(); apInitControls(); apPersist(true); _apTxt('ap-status','Applied "'+p.label+'".');
+    }
+    function apDeletePreset(id, ev){
+      if(ev) ev.stopPropagation();
+      AP.custom_presets=(AP.custom_presets||[]).filter(function(p){ return p.id!==id; });
+      apRenderCustomPresets(); apPersist(true);
+    }
+    function _apId(v){ return String(v||'').replace(/[^a-z0-9]/g,''); }  // mirror server: ids are [a-z0-9] only
+    function apRenderCustomPresets(){
+      var host=document.getElementById('ap-custom-presets'); if(!host) return;
+      var list=AP.custom_presets||[];
+      if(!list.length){ host.innerHTML='<div class="gx-hint" style="grid-column:1/-1">No saved presets yet — tune the theme, name it, and hit “Save current”.</div>'; return; }
+      // SECURITY: build markup with NO inline handlers and only validated/derived
+      // values — the id is sanitized to [a-z0-9] (the server does the same on
+      // read+write), colours go through _apHex, and labels are set via textContent
+      // below. Handlers attach via addEventListener, so a malformed id can never
+      // break out of an attribute or execute as JS (defense-in-depth vs the
+      // server-side id whitelist).
+      host.innerHTML=list.map(function(p){
+        var s=p.settings||{}, a=_apHex(s.accent||'#6c8cff'), a2=_apHex(s.accent2||a);
+        return '<button type="button" class="ap-preset" data-pid="'+_apId(p.id)+'">'
+          +'<span class="sw" style="background:linear-gradient(135deg,'+a+','+a2+')"></span>'
+          +'<span class="ap-preset-lbl"></span>'
+          +'<span class="ap-preset-x" title="Delete" data-del="1">×</span></button>';
+      }).join('');
+      var lbls=host.querySelectorAll('.ap-preset-lbl');
+      list.forEach(function(p,i){ if(lbls[i]) lbls[i].textContent=p.label; });
+      host.querySelectorAll('.ap-preset[data-pid]').forEach(function(btn){
+        var id=btn.getAttribute('data-pid');
+        btn.addEventListener('click', function(ev){
+          if(ev.target && ev.target.getAttribute('data-del')){ ev.stopPropagation(); apDeletePreset(id); }
+          else apApplyCustomPreset(id);
+        });
+      });
+    }
+    function apSetMode(m){ AP.mode = m; apApply(); apInitBaseColors(); apPersist(true); }
+    function adminToggleTheme(){ AP.mode = (AP.mode==='light' ? 'dark' : 'light'); apApply(); apInitBaseColors(); apPersist(true); }
     async function apPersist(quiet){
       try{
         var r=await fetch('/admin/api/admin-appearance', {method:'PUT',
@@ -300,8 +468,19 @@
     }
     function apSave(){ apPersist(false); }
     function apReset(){
+      // Reset the theme to defaults but KEEP saved custom presets.
+      var _cp = AP.custom_presets || [];
       AP = Object.assign({}, _AP_DEFAULTS);
+      AP.custom_presets = _cp;
       apApply(); apInitControls(); apPersist(false);
+    }
+    // task 089 — reset just the per-theme base colours (recover from a bad combo)
+    // without touching the rest of the theme.
+    function apResetBaseColors(){
+      ['bg','surface','text','muted','border'].forEach(function(k){
+        AP[k+'_dark']=_AP_DEFAULTS[k+'_dark']; AP[k+'_light']=_AP_DEFAULTS[k+'_light'];
+      });
+      apApply(); apInitBaseColors(); apPersist(true); _apTxt('ap-status','Base colours reset to the theme defaults.');
     }
     document.addEventListener('DOMContentLoaded', function(){ apInitControls(); _apSyncToggleIcon(); });
 
@@ -717,6 +896,523 @@
 
     /*
     ========================================================================
+    ADMIN AI TAB (task 088) — super-admin editor for the assistant's PERSONAS
+    (the slash-command / capability / starter palette sections are added by
+    phase 3). Calls the admin/admin_ai.py CRUD routes; CSRF is auto-attached by
+    csrf.js. Built-ins are editable + resettable; custom personas are deletable.
+    ========================================================================
+    */
+    // Entry point wired to the nav button (switchTab('admin-ai'); loadAdminAI()).
+    // Reset to the Personas section on each open; each section lazy-loads on show.
+    function loadAdminAI() {
+      const tab = document.querySelector('#tab-admin-ai .admin-ai-subtab[data-aisec="personas"]');
+      adminAiShowSection('personas', tab);
+    }
+
+    // Sub-nav: reveal one section, mark its tab active, lazy-load its data.
+    function adminAiShowSection(section, btn) {
+      document.querySelectorAll('#tab-admin-ai .admin-ai-section').forEach(s => { s.hidden = true; });
+      const sec = document.getElementById('admin-ai-sec-' + section);
+      if (sec) sec.hidden = false;
+      document.querySelectorAll('#tab-admin-ai .admin-ai-subtab').forEach(b => b.classList.remove('is-active'));
+      const t = btn || document.querySelector('#tab-admin-ai .admin-ai-subtab[data-aisec="' + section + '"]');
+      if (t) t.classList.add('is-active');
+      if (section === 'personas') adminAiLoadPersonas();
+      else adminAiLoadPalette(section);
+    }
+
+    // Split a comma-separated input into a clean list of trimmed, non-empty items.
+    function _adminAiSplit(el) {
+      return (el && el.value ? el.value.split(',') : [])
+        .map(s => s.trim()).filter(Boolean);
+    }
+
+    // Read one persona editor form (prefix identifies the card) into a request
+    // body. tool_prefixes is TRI-STATE: the "restrict" toggle OFF → null (every
+    // tool); ON → the parsed prefix list. Mirrors the server's _admin_persona_payload.
+    function _adminAiReadPersona(prefix) {
+      const g = id => document.getElementById(prefix + '_' + id);
+      const restrict = !!(g('restrict') && g('restrict').checked);
+      return {
+        label: ((g('label') && g('label').value) || '').trim(),
+        icon: ((g('icon') && g('icon').value) || '').trim(),
+        description: ((g('desc') && g('desc').value) || '').trim(),
+        prompt_suffix: ((g('suffix') && g('suffix').value) || ''),
+        extra_tools: _adminAiSplit(g('extra')),
+        enabled: g('enabled') ? g('enabled').checked : true,
+        sort_order: g('sort') ? (parseInt(g('sort').value || '0', 10) || 0) : 0,
+        tool_prefixes: restrict ? _adminAiSplit(g('prefixes')) : null,
+      };
+    }
+
+    // Build the inner HTML for one persona card. Inputs are left EMPTY here and
+    // populated via .value in _adminAiFillPersona (so special chars never become
+    // markup). `isNew` adds a persona_key input + Create/Cancel instead of
+    // Save/Reset/Delete.
+    function _adminAiPersonaCardHTML(p, isNew) {
+      const key = isNew ? 'new' : p.persona_key;
+      const pfx = isNew ? 'aiapnew' : ('aiap_' + key);
+      let badge = '';
+      if (!isNew) {
+        if (p.is_builtin) {
+          badge = '<span class="admin-ai-badge is-builtin">'
+                + (p.is_default ? 'built-in' : 'built-in · edited') + '</span>';
+        } else {
+          badge = '<span class="admin-ai-badge is-custom">custom</span>';
+        }
+        if (p.protected) badge += '<span class="admin-ai-badge is-lock">fallback</span>';
+      }
+      const titleBits = isNew
+        ? '<strong>New persona</strong>'
+        : ('<span class="admin-ai-pemoji" id="' + pfx + '_emoji"></span>'
+           + '<strong id="' + pfx + '_titlelabel"></strong> '
+           + '<code>' + esc(key) + '</code> ' + badge);
+      const keyRow = isNew
+        ? ('<label class="admin-ai-full">Persona key (lowercase a–z, 0–9, underscore)'
+           + '<input id="aiapnew_key" placeholder="e.g. legal_review" autocomplete="off"></label>')
+        : '';
+      let actions;
+      if (isNew) {
+        actions = '<button class="btn btn-primary" onclick="adminAiCreatePersona()">Create persona</button>'
+                + '<button class="btn btn-secondary" onclick="adminAiCancelNewPersona()">Cancel</button>';
+      } else {
+        actions = '<button class="btn btn-primary" onclick="adminAiSavePersona(\'' + esc(key) + '\')">Save</button>';
+        if (p.is_builtin) {
+          actions += '<button class="btn btn-secondary" onclick="adminAiResetPersona(\'' + esc(key) + '\')">Reset to default</button>';
+        }
+        if (!p.is_builtin) {
+          actions += '<button class="btn btn-secondary admin-ai-del" onclick="adminAiDeletePersona(\'' + esc(key) + '\')">Delete</button>';
+        }
+      }
+      return ''
+        + '<div class="admin-ai-card-head">'
+        +   '<div class="admin-ai-card-title">' + titleBits + '</div>'
+        +   '<label class="admin-ai-toggle"><input type="checkbox" id="' + pfx + '_enabled"> Enabled</label>'
+        + '</div>'
+        + keyRow
+        + '<div class="admin-ai-grid">'
+        +   '<label>Label<input id="' + pfx + '_label"></label>'
+        +   '<label>Icon<input id="' + pfx + '_icon" maxlength="8" placeholder="🤖"></label>'
+        +   '<label>Order<input id="' + pfx + '_sort" type="number" value="0"></label>'
+        + '</div>'
+        + '<label class="admin-ai-full">Description (shown in the persona picker)'
+        +   '<input id="' + pfx + '_desc"></label>'
+        + '<label class="admin-ai-full">System-prompt addition — shapes how this persona answers'
+        +   '<textarea id="' + pfx + '_suffix" rows="4"></textarea></label>'
+        + '<div class="admin-ai-tools">'
+        +   '<label class="admin-ai-toggle"><input type="checkbox" id="' + pfx + '_restrict" '
+        +     'onchange="adminAiToggleRestrict(\'' + pfx + '\')"> Restrict tools '
+        +     '<span class="admin-ai-hint">(off = every tool available)</span></label>'
+        +   '<label class="admin-ai-full admin-ai-restrictrow" id="' + pfx + '_restrictrow">'
+        +     'Tool-name prefixes the persona may use (comma-separated)'
+        +     '<input id="' + pfx + '_prefixes" placeholder="admin_run_sql, admin_describe_, lookup_"></label>'
+        +   '<label class="admin-ai-full">Always-keep tools — exact names, kept even when restricted (comma-separated)'
+        +     '<input id="' + pfx + '_extra" placeholder="spawn_agents"></label>'
+        + '</div>'
+        + '<div class="admin-ai-actions">' + actions + '</div>';
+    }
+
+    // Populate a card's inputs from the persona object (post-insert, via .value).
+    function _adminAiFillPersona(p) {
+      const pfx = 'aiap_' + p.persona_key;
+      const set = (id, val) => { const el = document.getElementById(pfx + '_' + id); if (el) el.value = val; };
+      const emoji = document.getElementById(pfx + '_emoji');
+      if (emoji) emoji.textContent = p.icon || '🤖';
+      const tl = document.getElementById(pfx + '_titlelabel');
+      if (tl) tl.textContent = p.label || p.persona_key;
+      set('label', p.label || '');
+      set('icon', p.icon || '');
+      set('sort', p.sort_order || 0);
+      set('desc', p.description || '');
+      set('suffix', p.prompt_suffix || '');
+      const en = document.getElementById(pfx + '_enabled');
+      if (en) en.checked = p.enabled !== false;
+      // tri-state restore: null tool_prefixes → restrict OFF (every tool).
+      const restricted = Array.isArray(p.tool_prefixes);
+      const rc = document.getElementById(pfx + '_restrict');
+      if (rc) rc.checked = restricted;
+      if (restricted) set('prefixes', p.tool_prefixes.join(', '));
+      set('extra', (p.extra_tools || []).join(', '));
+      adminAiToggleRestrict(pfx);
+    }
+
+    // Show/hide the prefixes input depending on the restrict toggle.
+    function adminAiToggleRestrict(pfx) {
+      const rc = document.getElementById(pfx + '_restrict');
+      const row = document.getElementById(pfx + '_restrictrow');
+      if (row) row.style.display = (rc && rc.checked) ? '' : 'none';
+    }
+
+    async function adminAiLoadPersonas() {
+      const wrap = document.getElementById('admin-ai-personas-list');
+      if (!wrap) return;
+      wrap.innerHTML = '<p class="empty-state">Loading personas…</p>';
+      try {
+        const res = await fetch('/admin/api/admin-ai/personas');
+        if (!res.ok) {
+          wrap.innerHTML = '<p class="empty-state">Only the super admin can manage admin-AI personas.</p>';
+          return;
+        }
+        const data = await res.json();
+        const personas = (data && data.personas) || [];
+        wrap.innerHTML = '';
+        if (!personas.length) {
+          wrap.innerHTML = '<p class="empty-state">No personas yet. Use “+ Add persona”.</p>';
+          return;
+        }
+        personas.forEach(p => {
+          const card = document.createElement('div');
+          card.className = 'card admin-ai-card';
+          card.id = 'aiapcard_' + p.persona_key;
+          card.innerHTML = _adminAiPersonaCardHTML(p, false);
+          wrap.appendChild(card);
+          _adminAiFillPersona(p);
+        });
+      } catch (e) {
+        wrap.innerHTML = '<p class="empty-state">Failed to load personas.</p>';
+      }
+    }
+
+    // Prepend an inline "new persona" editor (only one at a time).
+    function adminAiAddPersona() {
+      if (document.getElementById('aiapcard_new')) {
+        document.getElementById('aiapnew_key').focus();
+        return;
+      }
+      const wrap = document.getElementById('admin-ai-personas-list');
+      if (!wrap) return;
+      const empty = wrap.querySelector('.empty-state');
+      if (empty) empty.remove();
+      const card = document.createElement('div');
+      card.className = 'card admin-ai-card admin-ai-card-new';
+      card.id = 'aiapcard_new';
+      card.innerHTML = _adminAiPersonaCardHTML({}, true);
+      wrap.insertBefore(card, wrap.firstChild);
+      // sensible defaults for the new form
+      const en = document.getElementById('aiapnew_enabled'); if (en) en.checked = true;
+      adminAiToggleRestrict('aiapnew');
+      const k = document.getElementById('aiapnew_key'); if (k) k.focus();
+    }
+
+    function adminAiCancelNewPersona() {
+      const card = document.getElementById('aiapcard_new');
+      if (card) card.remove();
+    }
+
+    async function adminAiCreatePersona() {
+      const body = _adminAiReadPersona('aiapnew');
+      const keyEl = document.getElementById('aiapnew_key');
+      body.persona_key = ((keyEl && keyEl.value) || '').trim().toLowerCase();
+      if (!body.persona_key) { showToast('Persona key is required.', 'error'); return; }
+      try {
+        const res = await fetch('/admin/api/admin-ai/personas', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Create failed', 'error'); return; }
+        showToast('Persona created — live on the next reply.', 'success');
+        await adminAiLoadPersonas();
+      } catch (e) { showToast('Create failed', 'error'); }
+    }
+
+    async function adminAiSavePersona(key) {
+      const body = _adminAiReadPersona('aiap_' + key);
+      try {
+        const res = await fetch('/admin/api/admin-ai/personas/' + encodeURIComponent(key), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Save failed', 'error'); return; }
+        showToast('Persona saved — live on the next reply.', 'success');
+        await adminAiLoadPersonas();
+      } catch (e) { showToast('Save failed', 'error'); }
+    }
+
+    async function adminAiResetPersona(key) {
+      if (!confirm('Restore this built-in persona to its default? Your edits will be replaced.')) return;
+      try {
+        const res = await fetch('/admin/api/admin-ai/personas/' + encodeURIComponent(key) + '/reset', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Reset failed', 'error'); return; }
+        showToast('Persona reset to default.', 'success');
+        await adminAiLoadPersonas();
+      } catch (e) { showToast('Reset failed', 'error'); }
+    }
+
+    async function adminAiDeletePersona(key) {
+      if (!confirm('Delete this custom persona? This cannot be undone.')) return;
+      try {
+        const res = await fetch('/admin/api/admin-ai/personas/' + encodeURIComponent(key), { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Delete failed', 'error'); return; }
+        showToast('Persona deleted.', 'success');
+        await adminAiLoadPersonas();
+      } catch (e) { showToast('Delete failed', 'error'); }
+    }
+
+    /*
+    ------------------------------------------------------------------------
+    PALETTE editor (task 088 phase 3) — slash-commands / capability groups /
+    starters. One generic, field-driven editor for all three entities; the CRUD
+    is keyed by row id (matches admin/admin_ai.py). Field specs below mirror the
+    server columns. `lines`/`examples` (capabilities) edit as text:
+      lines    → one bullet per line
+      examples → one per line: "label | seed | persona | action" (last two optional)
+    ------------------------------------------------------------------------
+    */
+    const ADMIN_AI_PALETTE_FIELDS = {
+      commands: {
+        keyField: 'cmd', keyLabel: 'Command (/name)', keyPlaceholder: '/mycommand',
+        fields: [
+          { id: 'icon', label: 'Icon', type: 'text' },
+          { id: 'group_label', label: 'Group', type: 'text' },
+          { id: 'tool', label: 'Tool (hint)', type: 'text' },
+          { id: 'persona', label: 'Persona', type: 'text' },
+          { id: 'arg', label: 'Arg hint', type: 'text' },
+          { id: 'description', label: 'Description', type: 'text', full: true },
+          { id: 'seed', label: 'Seed prompt', type: 'textarea', full: true },
+        ],
+        flags: [{ id: 'tail', label: 'Leave caret to type arg' }, { id: 'super', label: 'Super-admin only' }],
+      },
+      capabilities: {
+        keyField: 'cap_key', keyLabel: 'Key (slug)', keyPlaceholder: 'my_group',
+        fields: [
+          { id: 'icon', label: 'Icon', type: 'text' },
+          { id: 'title', label: 'Title', type: 'text' },
+          { id: 'lines', label: 'Bullet lines (one per line)', type: 'lines', full: true },
+          { id: 'examples', label: 'Example chips — one per line: label || seed || persona || action', type: 'examples', full: true },
+        ],
+        flags: [{ id: 'grant_aware', label: 'Show data-access badge' }, { id: 'super', label: 'Super-admin only' }],
+      },
+      starters: {
+        keyField: 'starter_key', keyLabel: 'Key (slug)', keyPlaceholder: 'my_starter',
+        fields: [
+          { id: 'icon', label: 'Icon', type: 'text' },
+          { id: 'label', label: 'Label', type: 'text' },
+          { id: 'persona', label: 'Persona', type: 'text' },
+          { id: 'seed', label: 'Seed prompt', type: 'textarea', full: true },
+        ],
+        flags: [{ id: 'super', label: 'Super-admin only' }],
+      },
+    };
+
+    function _adminAiPaletteCardHTML(entity, item, isNew) {
+      const cfg = ADMIN_AI_PALETTE_FIELDS[entity];
+      const id = isNew ? 'new' : item.id;
+      const pfx = 'aip_' + entity + '_' + id;
+      let title, badge = '';
+      if (isNew) {
+        title = '<strong>New ' + esc(entity.replace(/s$/, '')) + '</strong>';
+      } else {
+        title = '<code>' + esc(String(item[cfg.keyField] || '')) + '</code>';
+        badge = item.is_builtin
+          ? '<span class="admin-ai-badge is-builtin">' + (item.is_default ? 'built-in' : 'built-in · edited') + '</span>'
+          : '<span class="admin-ai-badge is-custom">custom</span>';
+      }
+      const keyRow = isNew
+        ? '<label class="admin-ai-full">' + esc(cfg.keyLabel)
+          + '<input id="' + pfx + '_key" placeholder="' + esc(cfg.keyPlaceholder) + '" autocomplete="off"></label>'
+        : '';
+      let smalls = '', fulls = '';
+      cfg.fields.forEach(f => {
+        const fid = pfx + '_' + f.id;
+        if (f.type === 'textarea' || f.type === 'lines' || f.type === 'examples' || f.full) {
+          if (f.type === 'text') {
+            fulls += '<label class="admin-ai-full">' + esc(f.label) + '<input id="' + fid + '"></label>';
+          } else {
+            const rows = f.type === 'examples' ? 4 : 3;
+            fulls += '<label class="admin-ai-full">' + esc(f.label)
+                  + '<textarea id="' + fid + '" rows="' + rows + '"></textarea></label>';
+          }
+        } else {
+          smalls += '<label>' + esc(f.label) + '<input id="' + fid + '"></label>';
+        }
+      });
+      let flags = '';
+      (cfg.flags || []).forEach(fl => {
+        flags += '<label class="admin-ai-toggle"><input type="checkbox" id="' + pfx + '_' + fl.id + '"> '
+              + esc(fl.label) + '</label>';
+      });
+      let actions;
+      if (isNew) {
+        actions = '<button class="btn btn-primary" onclick="adminAiCreatePaletteItem(\'' + entity + '\')">Create</button>'
+                + '<button class="btn btn-secondary" onclick="adminAiCancelNewPalette(\'' + entity + '\')">Cancel</button>';
+      } else {
+        actions = '<button class="btn btn-primary" onclick="adminAiSavePaletteItem(\'' + entity + '\',' + id + ')">Save</button>';
+        actions += item.is_builtin
+          ? '<button class="btn btn-secondary" onclick="adminAiResetPaletteItem(\'' + entity + '\',' + id + ')">Reset</button>'
+          : '<button class="btn btn-secondary admin-ai-del" onclick="adminAiDeletePaletteItem(\'' + entity + '\',' + id + ')">Delete</button>';
+      }
+      return '<div class="admin-ai-card-head"><div class="admin-ai-card-title">' + title + ' ' + badge + '</div>'
+        + '<label class="admin-ai-toggle"><input type="checkbox" id="' + pfx + '_enabled"> Enabled</label></div>'
+        + keyRow
+        + '<div class="admin-ai-grid is-auto">' + smalls
+        + '<label>Order<input id="' + pfx + '_sort" type="number" value="0"></label></div>'
+        + fulls
+        + (flags ? '<div class="admin-ai-flags">' + flags + '</div>' : '')
+        + '<div class="admin-ai-actions">' + actions + '</div>';
+    }
+
+    function _adminAiFillPalette(entity, item) {
+      const cfg = ADMIN_AI_PALETTE_FIELDS[entity];
+      const pfx = 'aip_' + entity + '_' + item.id;
+      const set = (suffix, val) => { const el = document.getElementById(pfx + '_' + suffix); if (el) el.value = val; };
+      cfg.fields.forEach(f => {
+        let v = item[f.id];
+        if (f.type === 'lines') {
+          v = (Array.isArray(v) ? v : []).join('\n');
+        } else if (f.type === 'examples') {
+          v = (Array.isArray(v) ? v : []).map(ex =>
+            [ex.label || '', ex.seed || '', ex.persona || '', ex.action || '']
+              .join(' || ').replace(/(\s*\|\|\s*)+$/, '')).join('\n');
+        } else {
+          v = (v == null ? '' : v);
+        }
+        set(f.id, v);
+      });
+      set('sort', item.sort_order || 0);
+      const en = document.getElementById(pfx + '_enabled'); if (en) en.checked = item.enabled !== false;
+      (cfg.flags || []).forEach(fl => {
+        const el = document.getElementById(pfx + '_' + fl.id); if (el) el.checked = !!item[fl.id];
+      });
+    }
+
+    function _adminAiReadPalette(entity, id) {
+      const cfg = ADMIN_AI_PALETTE_FIELDS[entity];
+      const pfx = 'aip_' + entity + '_' + id;
+      const g = suffix => document.getElementById(pfx + '_' + suffix);
+      const body = {};
+      cfg.fields.forEach(f => {
+        const el = g(f.id);
+        const val = el ? el.value : '';
+        if (f.type === 'lines') {
+          body[f.id] = val.split('\n').map(s => s.trim()).filter(Boolean);
+        } else if (f.type === 'examples') {
+          body[f.id] = val.split('\n').map(line => {
+            const parts = line.split('||').map(s => s.trim());
+            if (!parts[0] && !parts[1]) return null;
+            const o = { label: parts[0] || '', seed: parts[1] || '' };
+            if (parts[2]) o.persona = parts[2];
+            if (parts[3]) o.action = parts[3];
+            return o;
+          }).filter(Boolean);
+        } else {
+          body[f.id] = val;
+        }
+      });
+      const sortEl = g('sort'); body.sort_order = sortEl ? (parseInt(sortEl.value || '0', 10) || 0) : 0;
+      const enEl = g('enabled'); body.enabled = enEl ? enEl.checked : true;
+      (cfg.flags || []).forEach(fl => { const el = g(fl.id); body[fl.id] = el ? el.checked : false; });
+      return body;
+    }
+
+    async function adminAiLoadPalette(entity) {
+      const wrap = document.getElementById('admin-ai-' + entity + '-list');
+      if (!wrap) return;
+      wrap.innerHTML = '<p class="empty-state">Loading…</p>';
+      try {
+        const res = await fetch('/admin/api/admin-ai/' + entity);
+        if (!res.ok) {
+          wrap.innerHTML = '<p class="empty-state">Only the super admin can manage this.</p>';
+          return;
+        }
+        const data = await res.json();
+        const items = (data && data[entity]) || [];
+        wrap.innerHTML = '';
+        if (!items.length) { wrap.innerHTML = '<p class="empty-state">Nothing yet. Use the “+ Add” button.</p>'; return; }
+        items.forEach(it => {
+          const card = document.createElement('div');
+          card.className = 'card admin-ai-card';
+          card.id = 'aipcard_' + entity + '_' + it.id;
+          card.innerHTML = _adminAiPaletteCardHTML(entity, it, false);
+          wrap.appendChild(card);
+          _adminAiFillPalette(entity, it);
+        });
+      } catch (e) {
+        wrap.innerHTML = '<p class="empty-state">Failed to load.</p>';
+      }
+    }
+
+    function adminAiAddPaletteItem(entity) {
+      if (document.getElementById('aipcard_' + entity + '_new')) {
+        const k = document.getElementById('aip_' + entity + '_new_key'); if (k) k.focus();
+        return;
+      }
+      const wrap = document.getElementById('admin-ai-' + entity + '-list');
+      if (!wrap) return;
+      const empty = wrap.querySelector('.empty-state'); if (empty) empty.remove();
+      const card = document.createElement('div');
+      card.className = 'card admin-ai-card admin-ai-card-new';
+      card.id = 'aipcard_' + entity + '_new';
+      card.innerHTML = _adminAiPaletteCardHTML(entity, {}, true);
+      wrap.insertBefore(card, wrap.firstChild);
+      const en = document.getElementById('aip_' + entity + '_new_enabled'); if (en) en.checked = true;
+      const k = document.getElementById('aip_' + entity + '_new_key'); if (k) k.focus();
+    }
+
+    function adminAiCancelNewPalette(entity) {
+      const card = document.getElementById('aipcard_' + entity + '_new'); if (card) card.remove();
+    }
+
+    async function adminAiCreatePaletteItem(entity) {
+      const cfg = ADMIN_AI_PALETTE_FIELDS[entity];
+      const body = _adminAiReadPalette(entity, 'new');
+      const keyEl = document.getElementById('aip_' + entity + '_new_key');
+      body[cfg.keyField] = ((keyEl && keyEl.value) || '').trim().toLowerCase();
+      if (!body[cfg.keyField]) { showToast('A key is required.', 'error'); return; }
+      try {
+        const res = await fetch('/admin/api/admin-ai/' + entity, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Create failed', 'error'); return; }
+        showToast('Created — live on the next reply.', 'success');
+        adminAiLoadPalette(entity);
+      } catch (e) { showToast('Create failed', 'error'); }
+    }
+
+    async function adminAiSavePaletteItem(entity, id) {
+      const body = _adminAiReadPalette(entity, id);
+      try {
+        const res = await fetch('/admin/api/admin-ai/' + entity + '/' + id, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Save failed', 'error'); return; }
+        showToast('Saved — live on the next reply.', 'success');
+        adminAiLoadPalette(entity);
+      } catch (e) { showToast('Save failed', 'error'); }
+    }
+
+    async function adminAiResetPaletteItem(entity, id) {
+      if (!confirm('Restore this built-in to its default? Your edits will be replaced.')) return;
+      try {
+        const res = await fetch('/admin/api/admin-ai/' + entity + '/' + id + '/reset', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Reset failed', 'error'); return; }
+        showToast('Reset to default.', 'success');
+        adminAiLoadPalette(entity);
+      } catch (e) { showToast('Reset failed', 'error'); }
+    }
+
+    async function adminAiDeletePaletteItem(entity, id) {
+      if (!confirm('Delete this item? This cannot be undone.')) return;
+      try {
+        const res = await fetch('/admin/api/admin-ai/' + entity + '/' + id, { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Delete failed', 'error'); return; }
+        showToast('Deleted.', 'success');
+        adminAiLoadPalette(entity);
+      } catch (e) { showToast('Delete failed', 'error'); }
+    }
+
+
+    /*
+    ========================================================================
     TOAST NOTIFICATIONS
     ========================================================================
     Shows a temporary success/error message at the bottom-right of the screen.
@@ -734,6 +1430,50 @@
 
       /* Auto-remove after 3 seconds */
       setTimeout(() => toast.remove(), 3000);
+    }
+
+
+    /*
+    ========================================================================
+    AUTO-HIDE ADMIN TOP BAR (task 088)
+    ========================================================================
+    The top bar slides up out of view; bringing the mouse near the top of the
+    screen (≤14px), hovering the bar, or focusing a control in it reveals it.
+    Toggles body.admin-chrome-hidden (CSS in /admin/chat.css does the slide +
+    reclaims the 56px). Starts hidden after a short grace period so the user
+    sees the bar first. Pointer-only (no touch) — touch devices keep the bar.
+    */
+    function adminChromeAutoHideInit() {
+      var header = document.querySelector('.admin-header');
+      if (!header || header.dataset.autohideBound === '1') return;
+      header.dataset.autohideBound = '1';
+      // Publish the layout's natural top offset so the CSS reclaims EXACTLY that
+      // distance when hidden (the bar + its gap is ~85px, not the 56px the layout
+      // math assumes). Measure only while shown (when hidden the layout is pulled up).
+      var layoutEl = document.querySelector('.admin-layout');
+      function syncHeaderH() {
+        if (document.body.classList.contains('admin-chrome-hidden')) return;
+        var px = layoutEl ? Math.round(layoutEl.getBoundingClientRect().top + window.scrollY) : header.offsetHeight;
+        document.documentElement.style.setProperty('--admin-header-h', px + 'px');
+      }
+      syncHeaderH();
+      window.addEventListener('resize', syncHeaderH);
+      var hideT;
+      function show() { clearTimeout(hideT); document.body.classList.remove('admin-chrome-hidden'); }
+      function hideSoon() { clearTimeout(hideT); hideT = setTimeout(function () { document.body.classList.add('admin-chrome-hidden'); }, 600); }
+      document.addEventListener('mousemove', function (e) {
+        if (e.clientY <= 14) show();
+        else if (e.clientY > 90) hideSoon();
+      });
+      header.addEventListener('mouseenter', show);
+      header.addEventListener('focusin', show);
+      header.addEventListener('focusout', hideSoon);
+      hideSoon();   // auto-hide shortly after load
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', adminChromeAutoHideInit);
+    } else {
+      adminChromeAutoHideInit();
     }
 
 

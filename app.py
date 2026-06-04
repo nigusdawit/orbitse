@@ -771,6 +771,15 @@ from core import (  # noqa: E402 - re-export the DB layer that now lives in core
     _ai_prompt_registry, _ai_prompt_defaults,  # editable-prompt catalog + default resolver
     get_prompt, _invalidate_prompt_cache, _load_prompt_cache,  # in-memory prompt cache API
     _PROMPT_CACHE,                             # the cache dict (kept exported for parity)
+    # --- dynamic admin-AI personas (task 088): registry of built-in defaults +
+    #     fail-open cached accessor + cache invalidator. ADMIN_CHAT_PERSONAS is
+    #     derived from the registry below; the live read path uses get_admin_personas().
+    _admin_persona_registry, _admin_persona_defaults,
+    get_admin_personas, get_admin_personas_all, _invalidate_admin_persona_cache,
+    _load_admin_persona_cache,
+    # task 088 phase 3: front-end-only palette default registries (slash-commands,
+    # capability-tray groups, starter chips) — seeded + reset from these.
+    _admin_command_registry, _admin_capability_registry, _admin_starter_registry,
     # --- cost/billing infra (Track B / task 078, piece #2): price cache + spend/cap readers ---
     _PRICE_CACHE, _PRICE_CACHE_EXP, _PRICE_CACHE_TTL_SEC,  # model_prices TTL cache (parity)
     _invalidate_price_cache, get_model_price,  # price-cache invalidator + lookup
@@ -19044,8 +19053,22 @@ ADMIN_TOOLS = [
                                                     "sub-agent should "
                                                     "answer or do."},
                          "persona": {"type": "string",
-                                     "enum": list(ADMIN_CHAT_PERSONAS.keys()) if False else ["general","research","data_analyst","code","creative","ops"],
-                                     "description": "Persona to apply."},
+                                     # task 088: personas are dynamic — NO static
+                                     # enum here. This schema is built once at
+                                     # import (before the persona store/cache
+                                     # exist) and a super-admin can add custom
+                                     # personas, so any baked-in enum would be
+                                     # stale. The model names a persona; the
+                                     # Python validation in
+                                     # _admin_run_subagent_once() checks it
+                                     # against the LIVE persona list.
+                                     "description": "Persona for this sub-task: "
+                                                    "a built-in (general, "
+                                                    "research, data_analyst, "
+                                                    "code, creative, ops) or any "
+                                                    "custom persona key from the "
+                                                    "Admin AI tab. Unknown -> "
+                                                    "general."},
                          "model":   {"type": "string",
                                      "description": "Optional model "
                                                     "override (e.g. "
@@ -19259,6 +19282,117 @@ def sync_ai_prompts():
     _invalidate_prompt_cache()
 
 
+# --- task 088: seed the editable admin-AI config (personas + palette) ---------
+def sync_admin_personas():
+    """Seed admin_chat_personas with the built-in registry defaults, preserving
+    super-admin edits — the structured analog of sync_ai_prompts().
+
+    Per row, the upsert only refreshes when ``updated_by IS NULL`` (machine-seeded,
+    never human-touched) AND a built-in field actually differs from the code
+    default — so changing a registry default propagates on the next boot WITHOUT
+    clobbering a super-admin's saved edit (their save stamps ``updated_by`` and the
+    WHERE clause then skips the whole row) and WITHOUT needless updated_at churn.
+    tool_prefixes is stored tri-state: a registry None → SQL NULL (= every tool),
+    a list → JSONB array."""
+    for p in _admin_persona_registry():
+        try:
+            tp = p.get("tool_prefixes")
+            execute_db(
+                "INSERT INTO admin_chat_personas "
+                "(tenant_id, persona_key, label, icon, description, prompt_suffix, "
+                " tool_prefixes, extra_tools, enabled, is_builtin, sort_order) "
+                "VALUES (1, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, TRUE, TRUE, %s) "
+                "ON CONFLICT (tenant_id, persona_key) DO UPDATE SET "
+                "  label=EXCLUDED.label, icon=EXCLUDED.icon, "
+                "  description=EXCLUDED.description, prompt_suffix=EXCLUDED.prompt_suffix, "
+                "  tool_prefixes=EXCLUDED.tool_prefixes, extra_tools=EXCLUDED.extra_tools, "
+                "  is_builtin=TRUE, sort_order=EXCLUDED.sort_order, updated_at=NOW() "
+                "WHERE admin_chat_personas.updated_by IS NULL AND ("
+                "     admin_chat_personas.label         IS DISTINCT FROM EXCLUDED.label "
+                "  OR admin_chat_personas.icon          IS DISTINCT FROM EXCLUDED.icon "
+                "  OR admin_chat_personas.description    IS DISTINCT FROM EXCLUDED.description "
+                "  OR admin_chat_personas.prompt_suffix  IS DISTINCT FROM EXCLUDED.prompt_suffix "
+                "  OR admin_chat_personas.tool_prefixes  IS DISTINCT FROM EXCLUDED.tool_prefixes "
+                "  OR admin_chat_personas.extra_tools    IS DISTINCT FROM EXCLUDED.extra_tools "
+                "  OR admin_chat_personas.sort_order     IS DISTINCT FROM EXCLUDED.sort_order)",
+                (p["persona_key"], p.get("label") or "", p.get("icon") or "",
+                 p.get("description") or "", p.get("prompt_suffix") or "",
+                 json.dumps(tp) if tp is not None else None,
+                 json.dumps(p.get("extra_tools") or []),
+                 int(p.get("sort_order") or 0)),
+            )
+        except Exception as e:
+            print(f"[admin_personas] seed failed for {p.get('persona_key')}: {e}")
+    _invalidate_admin_persona_cache()
+
+
+def _seed_admin_palette(table, key_col, rows, cols, jsonb_cols=()):
+    """Generic preserve-edits seeder for the front-end-only palette tables
+    (admin_chat_commands / _capabilities / _starters). Same contract as
+    sync_admin_personas: refresh a built-in row ONLY while it is machine-owned
+    (updated_by IS NULL) AND a seeded field differs, so super-admin edits survive.
+    `cols` are the data columns (excluding tenant_id/enabled/is_builtin/sort_order,
+    which are handled here); `jsonb_cols` get a ::jsonb cast + json.dumps."""
+    jset = set(jsonb_cols)
+    insert_cols = [key_col] + cols
+    placeholders = ", ".join("%s::jsonb" if c in jset else "%s" for c in insert_cols)
+    set_clause = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols)
+    distinct = " OR ".join(
+        f"{table}.{c} IS DISTINCT FROM EXCLUDED.{c}" for c in (cols + ["sort_order"]))
+    sql = (
+        f"INSERT INTO {table} (tenant_id, {', '.join(insert_cols)}, enabled, is_builtin, sort_order) "
+        f"VALUES (1, {placeholders}, TRUE, TRUE, %s) "
+        f"ON CONFLICT (tenant_id, {key_col}) DO UPDATE SET {set_clause}, "
+        f"is_builtin=TRUE, sort_order=EXCLUDED.sort_order, updated_at=NOW() "
+        f"WHERE {table}.updated_by IS NULL AND ({distinct})")
+    for r in rows:
+        try:
+            vals = []
+            for c in insert_cols:
+                v = r.get(c)
+                vals.append(json.dumps(v if v is not None else []) if c in jset else v)
+            vals.append(int(r.get("sort_order") or 0))
+            execute_db(sql, tuple(vals))
+        except Exception as e:
+            print(f"[admin-palette] seed {table} {r.get(key_col)} failed: {e}")
+
+
+def sync_admin_commands():
+    """Seed the slash-command palette (admin_chat_commands) from the registry."""
+    _seed_admin_palette(
+        "admin_chat_commands", "cmd", _admin_command_registry(),
+        ["icon", "group_label", "tool", "description", "seed", "arg", "tail", "persona", "super"])
+
+
+def sync_admin_capabilities():
+    """Seed the capability-tray groups (admin_chat_capabilities) from the registry."""
+    _seed_admin_palette(
+        "admin_chat_capabilities", "cap_key", _admin_capability_registry(),
+        ["icon", "title", "super", "grant_aware", "lines", "examples"],
+        jsonb_cols=("lines", "examples"))
+
+
+def sync_admin_starters():
+    """Seed the empty-state starter chips (admin_chat_starters) from the registry."""
+    _seed_admin_palette(
+        "admin_chat_starters", "starter_key", _admin_starter_registry(),
+        ["icon", "label", "seed", "persona", "super"])
+
+
+def sync_admin_ai_config():
+    """Boot-time seed for ALL super-admin-editable admin-AI config (task 088):
+    personas + the slash-command / capability / starter palette. Idempotent +
+    preserve-edits, so it is safe to run on every boot.
+
+    MUST be wired into BOTH boot paths — main._bootstrap() AND app.py __main__ —
+    or dev-run and prod-run diverge (see .agents/memory/boot-entrypoints.md, the
+    exact lesson sync_ai_prompts() had to learn)."""
+    sync_admin_personas()
+    sync_admin_commands()
+    sync_admin_capabilities()
+    sync_admin_starters()
+
+
 # =============================================================================
 # Task #80 — Admin chat multimodal + persona router + parallel subagents.
 #
@@ -19278,74 +19412,27 @@ def sync_ai_prompts():
 #      machinery.
 # =============================================================================
 
-ADMIN_CHAT_PERSONAS = {
-    # name → {label, prompt_suffix, tool_prefixes (substring match list),
-    #         extra_tools (always-included exact names)}
-    "general": {
-        "label": "General",
-        "prompt_suffix": "",
-        "tool_prefixes": None,  # None = no filtering; every tool available
-        "extra_tools": [],
-    },
-    "research": {
-        "label": "Research",
-        "prompt_suffix": (
-            "\n\nPERSONA: Research. Prefer evidence over opinion. When the "
-            "answer depends on facts you don't have, call admin_web_search "
-            "or lookup_knowledge_base before answering. Cite sources with "
-            "their URL or [source: …] markers."),
-        "tool_prefixes": ("admin_web_search", "lookup_", "admin_describe_",
-                          "admin_list_tables", "admin_run_sql"),
-        "extra_tools": ["spawn_agents"],
-    },
-    "data_analyst": {
-        "label": "Data Analyst",
-        "prompt_suffix": (
-            "\n\nPERSONA: Data Analyst. Use admin_run_sql and the "
-            "admin_overview_* / admin_recent_* / admin_skill_usage_stats "
-            "tools to ground every number. Show small tables when listing "
-            "comparisons. Prefer concrete counts over adjectives."),
-        "tool_prefixes": ("admin_run_sql", "admin_describe_", "admin_list_",
-                          "admin_recent_", "admin_overview_",
-                          "admin_skill_usage_stats", "admin_analyze_"),
-        "extra_tools": ["spawn_agents"],
-    },
-    "code": {
-        "label": "Code",
-        "prompt_suffix": (
-            "\n\nPERSONA: Code. Be concise and precise. Use fenced code "
-            "blocks with language hints. Reference column / table / file "
-            "names exactly. Prefer admin_describe_table over guessing a "
-            "schema."),
-        "tool_prefixes": ("admin_describe_", "admin_list_", "admin_run_sql",
-                          "admin_web_search"),
-        "extra_tools": ["spawn_agents"],
-    },
-    "creative": {
-        "label": "Creative",
-        "prompt_suffix": (
-            "\n\nPERSONA: Creative. Draft confident, original copy. When "
-            "the admin asks for ideas, suggest 2-3 distinct directions. "
-            "Use admin_propose_* tools to draft content the owner can "
-            "approve."),
-        "tool_prefixes": ("admin_propose_draft_", "admin_propose_create_",
-                          "admin_propose_insert", "admin_propose_update",
-                          "lookup_"),
-        "extra_tools": ["spawn_agents"],
-    },
-    "ops": {
-        "label": "Ops",
-        "prompt_suffix": (
-            "\n\nPERSONA: Ops. Focus on day-to-day operations: orders, "
-            "form submissions, bookings, messaging, automations. Always "
-            "use the dedicated admin_recent_* and admin_list_automations "
-            "tools first. Be terse — operators want answers, not essays."),
-        "tool_prefixes": ("admin_recent_", "admin_list_automations",
-                          "admin_get_automation", "admin_propose_",
-                          "admin_mcp_", "lookup_business_info"),
-        "extra_tools": ["spawn_agents"],
-    },
-}
+# Task #80 / #088: the 6 BUILT-IN admin-chat personas. The canonical definitions
+# now live in core._admin_persona_registry() so they can (a) seed the editable
+# admin_chat_personas table and (b) serve as the fail-open fallback for
+# get_admin_personas(). This module-level dict is DERIVED from that registry and
+# kept for backward-compatible reads + as the literal fallback object. The LIVE
+# read path is get_admin_personas() (DB → cache → registry); the task-088 phase-1
+# rewrite routes the persona read sites through it so super-admin edits + custom
+# personas take effect. (tool_prefixes is now a list rather than the old tuple —
+# _admin_apply_persona iterates it identically; None still = "every tool".)
+ADMIN_CHAT_PERSONAS = {p["persona_key"]: p for p in _admin_persona_registry()}
+
+
+def _admin_persona_get(key):
+    """Live persona lookup for the read sites (task 088): the active persona dict
+    for *key*, else the 'general' fallback. Reads get_admin_personas() (DB →
+    cache → registry) so super-admin edits + custom personas take effect, and
+    never KeyErrors on the hot path — a persona can be disabled/deleted between
+    an earlier validate and a later read on a live turn, so always fall back to
+    'general' (which get_admin_personas() guarantees is present)."""
+    personas = get_admin_personas()
+    return personas.get(key) or personas["general"]
 
 
 def _admin_classify_persona(user_message, model="gpt-4o-mini"):
@@ -19356,7 +19443,7 @@ def _admin_classify_persona(user_message, model="gpt-4o-mini"):
         return ("general", "openai client unavailable")
     if not (user_message or "").strip():
         return ("general", "empty input")
-    options = ", ".join(ADMIN_CHAT_PERSONAS.keys())
+    options = ", ".join(get_admin_personas().keys())
     # Editable from the admin "AI Prompts" tab (key: persona_router); the
     # {options} token is filled with the live persona list.
     sys = get_prompt("persona_router", PERSONA_ROUTER_PROMPT).replace(
@@ -19380,7 +19467,7 @@ def _admin_classify_persona(user_message, model="gpt-4o-mini"):
         txt = (resp.choices[0].message.content or "{}").strip()
         data = json.loads(txt)
         key = (data.get("persona") or "general").lower().strip()
-        if key not in ADMIN_CHAT_PERSONAS:
+        if key not in get_admin_personas():
             key = "general"
         reason = str(data.get("reason") or "")[:200]
         return (key, reason)
@@ -19393,10 +19480,15 @@ def _admin_apply_persona(tools, persona_key):
     """Filter the round's tool list by persona. Always retains static
     admin reads (admin_list_tables, admin_describe_table) so the model
     can still orient itself, plus any tool whose name matches a prefix
-    in the persona's tool_prefixes list, plus any extra_tools."""
-    p = ADMIN_CHAT_PERSONAS.get(persona_key) or ADMIN_CHAT_PERSONAS["general"]
+    in the persona's tool_prefixes list, plus any extra_tools.
+
+    task 088: the persona dict now comes from get_admin_personas() (DB → cache →
+    registry) so super-admin edits + custom personas take effect. tool_prefixes
+    stays tri-state — None or [] → no filtering (every tool); a non-empty list →
+    only those prefixes survive — behaviour-identical to the old module-dict read."""
+    p = _admin_persona_get(persona_key)
     pfx = p.get("tool_prefixes")
-    if not pfx:
+    if not pfx:               # None or [] → no filtering (every tool)
         return tools
     always_keep = {"admin_list_tables", "admin_describe_table",
                    "spawn_agents"}
@@ -19598,7 +19690,7 @@ def _admin_run_subagent_once(parent_session_id, sub_task, persona,
     via the existing tool-loop primitives."""
     import time as _time
     started = _time.time()
-    persona_key = persona if persona in ADMIN_CHAT_PERSONAS else "general"
+    persona_key = persona if persona in get_admin_personas() else "general"
     # Default model: gpt-4o-mini — subagents are deliberately cheap
     # and short. The admin can override per-call from spawn_agents.
     use_model = (model or "gpt-4o-mini").strip()
@@ -19607,7 +19699,7 @@ def _admin_run_subagent_once(parent_session_id, sub_task, persona,
         use_model = "gpt-4o-mini"
         _is_claude = False
 
-    persona_meta = ADMIN_CHAT_PERSONAS[persona_key]
+    persona_meta = _admin_persona_get(persona_key)
     sys_text = (get_prompt("admin_assistant", ADMIN_CHAT_SYSTEM_PROMPT)
                 + persona_meta.get("prompt_suffix", "")
                 + "\n\nYou are a focused SUB-AGENT spawned by the main "
@@ -19754,7 +19846,7 @@ def _admin_tool_spawn_agents(tasks=None, _session_id="", **_):
         if not prompt:
             continue
         persona = (t.get("persona") or "general").lower().strip()
-        if persona not in ADMIN_CHAT_PERSONAS:
+        if persona not in get_admin_personas():
             persona = "general"
         cleaned.append({"prompt": prompt[:4000],
                         "persona": persona,
@@ -20146,12 +20238,12 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8,
     # otherwise classify the user message with a cheap gpt-4o-mini call.
     # The persona augments the system prompt and trims the tool list to
     # a relevant subset each round.
-    if persona_override and persona_override in ADMIN_CHAT_PERSONAS:
+    if persona_override and persona_override in get_admin_personas():
         persona_key = persona_override
         persona_reason = "pinned"
     else:
         persona_key, persona_reason = _admin_classify_persona(user_message)
-    persona_meta = ADMIN_CHAT_PERSONAS.get(persona_key, ADMIN_CHAT_PERSONAS["general"])
+    persona_meta = _admin_persona_get(persona_key)
     if persona_meta.get("prompt_suffix"):
         messages[0]["content"] = (messages[0]["content"] or "") + persona_meta["prompt_suffix"]
     yield {"type": "persona",
@@ -20600,7 +20692,7 @@ def admin_agent_chat_stream():
     if not isinstance(attachment_ids, list):
         attachment_ids = []
     persona_override = (data.get("persona") or "").strip().lower() or None
-    if persona_override and persona_override not in ADMIN_CHAT_PERSONAS:
+    if persona_override and persona_override not in get_admin_personas():
         persona_override = None
     # Allow empty `message` when at least one attachment is present
     # (admin can drop a file and just say "what's in this?" by sending
@@ -23957,12 +24049,263 @@ _ADMIN_APPEARANCE_ENUMS = {
     "sidebar": ("comfortable", "compact", "icons"),
 }
 
+# -----------------------------------------------------------------------------
+# Task 089 — "a lot more" Appearance controls. Everything below is stored in the
+# single site_settings.admin_theme_extra JSONB blob (migration 0033), NOT in new
+# columns: adding a knob is a registry entry + a UI control, never a migration.
+#
+# Each spec:
+#   kind    : "color" | "num" | "enum" | "bool" | "pcolor"
+#   default : the SAFE value == today's look. For "pcolor" a {"dark","light"} pair
+#             (the colour-picker's starting hex per theme; only emitted when the
+#             super-admin actually changes it, so the built-in palette keeps
+#             flowing from theme.css for every un-customized colour).
+#   lo / hi : numeric clamp (kind="num")
+#   choices : allowed values (kind="enum")
+#
+# How each value reaches CSS (a :root var, a data-admin-* attr, or a per-theme
+# var) is the template/JS's concern — the backend only STORES + VALIDATES. Defaults
+# reproduce the current appearance exactly, so an empty blob is a no-op.
+# -----------------------------------------------------------------------------
+_ADMIN_APPEARANCE_EXTRA = {
+    # A · semantic + utility + extra-accent colours (theme-agnostic :root vars)
+    "color_success": {"kind": "color", "default": "#22c55e"},
+    "color_warning": {"kind": "color", "default": "#f59e0b"},
+    "color_danger":  {"kind": "color", "default": "#ef4444"},
+    "color_info":    {"kind": "color", "default": "#3b82f6"},
+    "accent3":       {"kind": "color", "default": "#22d3ee"},
+    "color_link":    {"kind": "color", "default": "#6c8aff"},
+    "color_focus":   {"kind": "color", "default": "#6c8cff"},
+    "glow_color_1":  {"kind": "color", "default": "#3b82f6"},  # body::before glow
+    "glow_color_2":  {"kind": "color", "default": "#8b5cf6"},  # body::after glow
+    # B · typography
+    "head_font":      {"kind": "enum", "default": "serif",
+                       "choices": ("serif", "sans", "mono", "inherit")},
+    "font_weight":    {"kind": "enum", "default": "normal",
+                       "choices": ("light", "normal", "medium", "semibold")},
+    "letter_spacing": {"kind": "num", "default": 0.0, "lo": -0.02, "hi": 0.08},
+    "line_height":    {"kind": "num", "default": 1.3, "lo": 1.2, "hi": 1.9},  # 1.3 ≈ the body's "normal", so the default stays a no-op (honest slider)
+    # C · shape & depth
+    "shadow":       {"kind": "enum", "default": "medium",
+                     "choices": ("none", "soft", "medium", "strong")},
+    "border_width": {"kind": "num", "default": 1.0, "lo": 0.0, "hi": 3.0},
+    "focus_style":  {"kind": "enum", "default": "ring",
+                     "choices": ("ring", "glow", "solid")},
+    # D · layout & motion
+    "content_width": {"kind": "enum", "default": "full",
+                      "choices": ("full", "wide", "comfortable", "narrow")},
+    "header_style":  {"kind": "enum", "default": "sticky",
+                      "choices": ("sticky", "static")},
+    "button_style":  {"kind": "enum", "default": "solid",
+                      "choices": ("solid", "soft", "outline")},
+    "motion_speed":  {"kind": "enum", "default": "normal",
+                      "choices": ("instant", "fast", "normal", "slow")},
+    # E · per-theme base colours (stored + emitted only when customized)
+    "bg":      {"kind": "pcolor", "default": {"dark": "#0b1220", "light": "#eef2fb"}},
+    "surface": {"kind": "pcolor", "default": {"dark": "#1e2940", "light": "#ffffff"}},
+    "text":    {"kind": "pcolor", "default": {"dark": "#e8edf6", "light": "#19233a"}},
+    "muted":   {"kind": "pcolor", "default": {"dark": "#aab2c0", "light": "#5b6577"}},
+    "border":  {"kind": "pcolor", "default": {"dark": "#2a3344", "light": "#d4dae6"}},
+}
+
+_HEX_RE = re.compile(r"^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\Z")  # valid CSS hex lengths only; \Z (not $) so a trailing newline can't slip through
+# How many saved custom presets we keep (defensive cap so the blob can't grow
+# unbounded) and the max length of a preset's display label.
+_ADMIN_PRESET_CAP = 24
+_ADMIN_PRESET_LABEL_MAX = 40
+
+
+def _coerce_appearance_extra(src):
+    """Validate a FLAT source dict (the stored JSONB blob OR an incoming PUT
+    payload) against _ADMIN_APPEARANCE_EXTRA.
+
+    Returns (flat, base_overrides):
+      * flat           — every extra key present with a safe value (per-theme
+                         colours flattened to bg_dark/bg_light/…). Drives the
+                         pickers + the live front-end; defaults fill any gap.
+      * base_overrides — ONLY the per-theme base-colour keys whose value is a
+                         valid hex DIFFERENT from the registry default. These are
+                         the ones the template actually emits, so un-customized
+                         base colours keep flowing from theme.css.
+
+    Pure validation, never raises — an unknown/garbage value silently becomes
+    the safe default (fail-open)."""
+    flat, base_overrides = {}, {}
+    src = src if isinstance(src, dict) else {}
+    for key, spec in _ADMIN_APPEARANCE_EXTRA.items():
+        kind = spec["kind"]
+        if kind == "color":
+            v = str(src.get(key) or "").strip()
+            flat[key] = v if _HEX_RE.match(v) else spec["default"]
+        elif kind == "num":
+            try:
+                v = float(src.get(key, spec["default"]))
+            except (TypeError, ValueError):
+                v = spec["default"]
+            flat[key] = max(spec["lo"], min(spec["hi"], v))
+        elif kind == "enum":
+            v = str(src.get(key) or "").strip()
+            flat[key] = v if v in spec["choices"] else spec["default"]
+        elif kind == "bool":
+            flat[key] = bool(src.get(key))
+        elif kind == "pcolor":
+            for theme in ("dark", "light"):
+                fk = "%s_%s" % (key, theme)
+                dflt = spec["default"][theme]
+                v = str(src.get(fk) or "").strip()
+                if _HEX_RE.match(v):
+                    flat[fk] = v
+                    if v.lower() != dflt.lower():
+                        base_overrides[fk] = v
+                else:
+                    flat[fk] = dflt
+    return flat, base_overrides
+
+
+def _appearance_extra_blob(data):
+    """Build the MINIMAL admin_theme_extra blob to persist from a PUT payload:
+    only knobs that differ from their code default (so future default changes
+    still reach untouched knobs) + only customized per-theme base colours +
+    the validated custom-preset list. Returns (blob_dict, flat, base_overrides,
+    presets) where flat/base_overrides/presets are the validated values to echo
+    back."""
+    flat, base_overrides = _coerce_appearance_extra(data)
+    blob = dict(base_overrides)  # customized per-theme base colours only
+    for key, spec in _ADMIN_APPEARANCE_EXTRA.items():
+        if spec["kind"] == "pcolor":
+            continue
+        if flat[key] != spec["default"]:
+            blob[key] = flat[key]
+    presets = _coerce_custom_presets((data or {}).get("custom_presets"))
+    if presets:
+        blob["custom_presets"] = presets
+    return blob, flat, base_overrides, presets
+
+
+def _sanitize_preset_settings(settings):
+    """Whitelist a custom preset's settings to KNOWN appearance keys with only
+    primitive (str/num/bool) values. Defense-in-depth: presets are re-validated
+    by the normal save path when applied, but this keeps the blob bounded and
+    blocks any unknown/nested junk from being stored."""
+    allowed = set(_ADMIN_APPEARANCE_DEFAULTS) | set(_ADMIN_APPEARANCE_ENUMS)
+    for key, spec in _ADMIN_APPEARANCE_EXTRA.items():
+        if spec["kind"] == "pcolor":
+            allowed.add("%s_dark" % key)
+            allowed.add("%s_light" % key)
+        else:
+            allowed.add(key)
+    out = {}
+    if not isinstance(settings, dict):
+        return out
+    for k, v in settings.items():
+        if k not in allowed:
+            continue
+        if isinstance(v, bool) or isinstance(v, (int, float)):
+            out[k] = v
+        elif isinstance(v, str):
+            out[k] = v[:64]
+    return out
+
+
+def _coerce_custom_presets(raw):
+    """Validate the saved custom-preset list: cap the count, require id+label,
+    clamp the label, and sanitize each preset's settings. Never raises."""
+    out = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw[:_ADMIN_PRESET_CAP]:
+        if not isinstance(item, dict):
+            continue
+        # SECURITY: the id is reflected into client-side preset-swatch markup, so
+        # constrain it to [a-z0-9] (matches the client's hashed-id shape). This
+        # runs on READ and WRITE, so any crafted/pre-existing bad id is sanitized
+        # before it can reach the DOM — prevents stored DOM-XSS via a preset id.
+        pid = re.sub(r"[^a-z0-9]", "", str(item.get("id") or "").lower())[:_ADMIN_PRESET_LABEL_MAX]
+        label = str(item.get("label") or "").strip()[:_ADMIN_PRESET_LABEL_MAX]
+        if not pid or not label:
+            continue
+        out.append({"id": pid, "label": label,
+                    "settings": _sanitize_preset_settings(item.get("settings"))})
+    return out
+
+
+# Mapping from an expanded knob → the --admin-* CSS variable it drives, plus the
+# unit. Theme-agnostic vars only (per-theme base colours are handled separately).
+# The dashboard injects these into an inline <style> so they apply before paint.
+_ADMIN_EXTRA_VAR_MAP = {
+    "color_success":  ("--admin-success",       "hex"),
+    "color_warning":  ("--admin-warning",       "hex"),
+    "color_danger":   ("--admin-danger",        "hex"),
+    "color_info":     ("--admin-info",          "hex"),
+    "accent3":        ("--admin-accent-3",      "hex"),
+    "color_link":     ("--admin-link",          "hex"),
+    "color_focus":    ("--admin-focus",         "hex"),
+    "glow_color_1":   ("--admin-glow-1",        "hex"),
+    "glow_color_2":   ("--admin-glow-2",        "hex"),
+    "border_width":   ("--admin-border-width",  "px"),
+    "letter_spacing": ("--admin-letter-spacing", "em"),
+    "line_height":    ("--admin-line-height",   "raw"),
+}
+# Per-theme base-colour key → token. surface is special (keeps its glassiness).
+_ADMIN_BASE_COLOR_TOKENS = {
+    "bg": "--admin-bg", "text": "--admin-text",
+    "muted": "--admin-text-muted", "border": "--admin-border",
+}
+
+
+def _appearance_css_vars(flat):
+    """Build the :root declarations for the theme-agnostic expanded knobs —
+    ONLY the ones that differ from the code default. Un-customized knobs emit
+    nothing, so they fall through to base.css (byte-identical) and a future
+    default change still reaches them. Inputs are already validated, so the
+    string is CSS-injection-safe (hex/clamped-number only)."""
+    parts = []
+    for key, (token, unit) in _ADMIN_EXTRA_VAR_MAP.items():
+        v = flat.get(key)
+        if v is None or v == _ADMIN_APPEARANCE_EXTRA[key]["default"]:
+            continue
+        if unit == "px":
+            parts.append("%s:%spx;" % (token, v))
+        elif unit == "em":
+            parts.append("%s:%sem;" % (token, v))
+        else:  # "raw" (unitless, e.g. line-height) or "hex"
+            parts.append("%s:%s;" % (token, v))
+    return "".join(parts)
+
+
+def _appearance_base_css(base_overrides):
+    """Build the per-theme base-colour declarations from base_overrides (already
+    only the customized colours). Returns {'dark': '...', 'light': '...'} so the
+    dashboard can emit html[data-admin-theme="dark"]{…}/…="light"]{…} AFTER
+    theme.css (equal specificity + later source order ⇒ wins). surface keeps its
+    glassiness via color-mix with --admin-glass."""
+    out = {"dark": [], "light": []}
+    for fk, v in (base_overrides or {}).items():
+        if "_" not in fk:
+            continue
+        base, theme = fk.rsplit("_", 1)
+        if theme not in out:
+            continue
+        if base == "surface":
+            out[theme].append(
+                "--admin-surface:color-mix(in srgb,%s calc(var(--admin-glass)*100%%),transparent);" % v)
+        elif base in _ADMIN_BASE_COLOR_TOKENS:
+            out[theme].append("%s:%s;" % (_ADMIN_BASE_COLOR_TOKENS[base], v))
+    return {"dark": "".join(out["dark"]), "light": "".join(out["light"])}
+
 
 def _admin_appearance():
     """Read the admin-panel appearance settings from site_settings, falling back
     to defaults for any missing/invalid value (pre-migration safe). Returns a
     dict consumed by the dashboard template's inline CSS-variable block."""
     d = dict(_ADMIN_APPEARANCE_DEFAULTS)
+    # task 089 — seed the expanded-control defaults so every key is ALWAYS present
+    # (fail-open: even with no row, a missing column, or a read error the pickers
+    # and live front-end still get safe values; base_overrides/custom_presets empty).
+    _extra_flat, _ = _coerce_appearance_extra({})
+    d.update(_extra_flat)
+    d["base_overrides"] = {}
+    d["custom_presets"] = []
     try:
         row = query_db("SELECT * FROM site_settings WHERE id=1", fetchone=True)
         if row:
@@ -23994,8 +24337,29 @@ def _admin_appearance():
                              ("reduce_motion", "admin_theme_reduce_motion")):
                 if row.get(col) is not None:
                     d[key] = bool(row[col])
+            # task 089 — expanded controls live in the admin_theme_extra JSONB
+            # blob (migration 0033). psycopg returns JSONB as a dict; tolerate a
+            # string too. Absent column (pre-0033 DB) → None → all safe defaults.
+            raw = row.get("admin_theme_extra")
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw or "{}")
+                except (ValueError, TypeError):
+                    raw = {}
+            flat, overrides = _coerce_appearance_extra(raw)
+            d.update(flat)
+            d["base_overrides"] = overrides
+            d["custom_presets"] = _coerce_custom_presets(
+                raw.get("custom_presets") if isinstance(raw, dict) else None)
     except Exception:
         pass
+    # task 089 — pre-build the inline-<style> payloads from the resolved values.
+    # Only non-defaults emit, so an un-customized admin stays byte-identical;
+    # on any read error above these are simply empty (fail-open).
+    d["css_vars"] = _appearance_css_vars(d)
+    _bc = _appearance_base_css(d.get("base_overrides"))
+    d["base_css_dark"] = _bc["dark"]
+    d["base_css_light"] = _bc["light"]
     return d
 
 
@@ -28504,6 +28868,11 @@ def admin_update_appearance():
     sidebar = _enum("sidebar")
     high_contrast = _bool("high_contrast")
     reduce_motion = _bool("reduce_motion")
+    # task 089 — expanded controls + custom presets, all stored in the single
+    # admin_theme_extra JSONB blob. Only non-default knobs + customized per-theme
+    # base colours are persisted (so a future code-default change still reaches
+    # any knob the super-admin never touched), plus the validated preset list.
+    extra_blob, extra_flat, base_overrides, presets = _appearance_extra_blob(data)
     try:
         execute_db(
             "UPDATE site_settings SET admin_theme_mode=%s, admin_theme_accent=%s, "
@@ -28511,17 +28880,26 @@ def admin_update_appearance():
             "admin_theme_glass=%s, admin_theme_glow=%s, admin_theme_density=%s, "
             "admin_theme_font_scale=%s, admin_theme_font_family=%s, admin_theme_surface=%s, "
             "admin_theme_sidebar=%s, admin_theme_high_contrast=%s, admin_theme_reduce_motion=%s, "
+            "admin_theme_extra=%s::jsonb, "
             "updated_at=NOW() WHERE id=1",
             (mode, accent, accent2, blur, radius, glass, glow, density, font_scale,
-             font_family, surface, sidebar, high_contrast, reduce_motion))
+             font_family, surface, sidebar, high_contrast, reduce_motion,
+             json.dumps(extra_blob)))
     except Exception as e:
         print(f"[appearance] save failed: {type(e).__name__}: {e}")
         return jsonify({"error": "Could not save appearance."}), 500
-    return jsonify({"ok": True, "mode": mode, "accent": accent, "accent2": accent2,
-                    "blur": blur, "radius": radius, "glass": glass, "glow": glow,
-                    "density": density, "font_scale": font_scale, "font_family": font_family,
-                    "surface": surface, "sidebar": sidebar, "high_contrast": high_contrast,
-                    "reduce_motion": reduce_motion})
+    # Echo the authoritative validated values: the existing 14 keys (unchanged
+    # response contract) + every expanded knob (flattened, incl. per-theme base
+    # colours) + which base colours are actually overridden + the saved presets.
+    resp = {"ok": True, "mode": mode, "accent": accent, "accent2": accent2,
+            "blur": blur, "radius": radius, "glass": glass, "glow": glow,
+            "density": density, "font_scale": font_scale, "font_family": font_family,
+            "surface": surface, "sidebar": sidebar, "high_contrast": high_contrast,
+            "reduce_motion": reduce_motion}
+    resp.update(extra_flat)
+    resp["base_overrides"] = base_overrides
+    resp["custom_presets"] = presets
+    return jsonify(resp)
 
 
 @app.route("/admin/api/curated-font-pairs", methods=["GET"])
@@ -41645,6 +42023,13 @@ app.register_blueprint(tenancy_bp)
 from admin.ai_prompts import ai_prompts_bp  # noqa: E402
 app.register_blueprint(ai_prompts_bp)
 
+# Admin-AI dynamic config blueprint (task 088): super-admin CRUD for the admin
+# chat's editable PERSONAS (+ the slash/capability/starter palette in phase 3),
+# plus the @admin_required /admin/api/chat/personas consumption endpoint the chat
+# uses to build the persona pill. Registry/cache live in core; gating is in-body.
+from admin.admin_ai import admin_ai_bp  # noqa: E402
+app.register_blueprint(admin_ai_bp)
+
 # Cost blueprint (Track B / task 078, piece #2): the Cost transparency dashboard
 # API — 8 routes under /admin/api/cost/* (summary, series, by-surface, by-model,
 # prices GET/PATCH, cap GET/PUT). @admin_required + the cost_dashboard feature gate
@@ -41905,4 +42290,6 @@ if __name__ == "__main__":
     # Pre-fill the ai_prompts table with current defaults so the super-admin
     # "AI Prompts" editor is never empty (mirrors main._bootstrap()).
     sync_ai_prompts()
+    # Task 088: pre-fill the editable admin-AI config (personas + palette).
+    sync_admin_ai_config()
     app.run(host="0.0.0.0", port=5000, debug=True)

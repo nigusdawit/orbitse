@@ -1,0 +1,87 @@
+{# admin/tabs/_admin-ai.html — 'admin-ai' tab panel (task 088). Super-admin-only.
+   Manage the admin assistant's dynamic config: PERSONAS + the slash-command /
+   capability-tray / starter-chip PALETTE. Rendered into the shell via {% include %};
+   the {% if is_super_admin() %} gate is on the nav button in dashboard.html.
+   Styling is scoped (.admin-ai-*) in /admin/tabs.css; reuses .card/.btn/.empty-state.
+   Each section lazy-loads on first open via adminAiShowSection() (app-main.js). #}
+<div id="tab-admin-ai" class="tab-content">
+  <div class="section-header-admin">
+    <div>
+      <h2>Admin AI</h2>
+      <p style="opacity:.7;margin-top:4px;">
+        Configure your admin assistant — the personas it can adopt and the
+        slash-commands, capability cards &amp; starter chips it surfaces in the chat.
+        Changes go live on the next reply; no restart needed. Built-ins can be edited
+        or reset to default; add your own for custom workflows.
+      </p>
+    </div>
+  </div>
+
+  <div class="admin-ai-subnav" role="tablist">
+    <button class="admin-ai-subtab is-active" data-aisec="personas"
+            onclick="adminAiShowSection('personas', this)" data-testid="subtab-admin-ai-personas">Personas</button>
+    <button class="admin-ai-subtab" data-aisec="commands"
+            onclick="adminAiShowSection('commands', this)" data-testid="subtab-admin-ai-commands">Slash-commands</button>
+    <button class="admin-ai-subtab" data-aisec="capabilities"
+            onclick="adminAiShowSection('capabilities', this)" data-testid="subtab-admin-ai-capabilities">Capabilities</button>
+    <button class="admin-ai-subtab" data-aisec="starters"
+            onclick="adminAiShowSection('starters', this)" data-testid="subtab-admin-ai-starters">Starters</button>
+  </div>
+
+  {# ---- Personas ---- #}
+  <section id="admin-ai-sec-personas" class="admin-ai-section">
+    <div class="admin-ai-sechead">
+      <p class="admin-ai-help">
+        A <strong>persona</strong> shapes how the assistant answers (a system-prompt
+        addition) and which tools it focuses on (a tool filter). “Auto” lets the router
+        pick one per turn. After adding a persona, describe it in the
+        <strong>Persona Router</strong> prompt (AI Prompts tab) so Auto can route to it.
+      </p>
+      <button class="btn btn-primary" onclick="adminAiAddPersona()"
+              data-testid="button-admin-ai-add-persona">+ Add persona</button>
+    </div>
+    <div id="admin-ai-personas-list"><p class="empty-state">Loading personas…</p></div>
+  </section>
+
+  {# ---- Slash-commands ---- #}
+  <section id="admin-ai-sec-commands" class="admin-ai-section" hidden>
+    <div class="admin-ai-sechead">
+      <p class="admin-ai-help">
+        <strong>Slash-commands</strong> appear in the chat's “/” palette. Each seeds a
+        prompt into the composer (and can pin a persona). Use <em>Leave caret to type
+        arg</em> when the command ends mid-sentence for the operator to finish.
+      </p>
+      <button class="btn btn-primary" onclick="adminAiAddPaletteItem('commands')"
+              data-testid="button-admin-ai-add-command">+ Add command</button>
+    </div>
+    <div id="admin-ai-commands-list"><p class="empty-state">Loading…</p></div>
+  </section>
+
+  {# ---- Capabilities ---- #}
+  <section id="admin-ai-sec-capabilities" class="admin-ai-section" hidden>
+    <div class="admin-ai-sechead">
+      <p class="admin-ai-help">
+        <strong>Capability groups</strong> are the cards in the chat's “What can I do?”
+        tray. Each has bullet lines (one per line) and click-to-run example chips — one
+        per line as <code>label || seed prompt || persona || action</code> (persona &amp;
+        action optional).
+      </p>
+      <button class="btn btn-primary" onclick="adminAiAddPaletteItem('capabilities')"
+              data-testid="button-admin-ai-add-capability">+ Add capability</button>
+    </div>
+    <div id="admin-ai-capabilities-list"><p class="empty-state">Loading…</p></div>
+  </section>
+
+  {# ---- Starters ---- #}
+  <section id="admin-ai-sec-starters" class="admin-ai-section" hidden>
+    <div class="admin-ai-sechead">
+      <p class="admin-ai-help">
+        <strong>Starter chips</strong> show on an empty chat to kick off a conversation.
+        Each seeds a prompt (and can pin a persona).
+      </p>
+      <button class="btn btn-primary" onclick="adminAiAddPaletteItem('starters')"
+              data-testid="button-admin-ai-add-starter">+ Add starter</button>
+    </div>
+    <div id="admin-ai-starters-list"><p class="empty-state">Loading…</p></div>
+  </section>
+</div>

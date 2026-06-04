@@ -2485,6 +2485,445 @@ def _invalidate_prompt_cache():
         _PROMPT_CACHE_LOADED = False
         _PROMPT_CACHE.clear()
 
+
+# =============================================================================
+# ADMIN-AI DYNAMIC CONFIG  (task 088) — admin-chat PERSONAS as code-defaults a
+# super-admin can override in the DB (via the "Admin AI" tab). Mirrors the
+# editable-prompt machinery above: a registry of built-in defaults, a process
+# cache for the hot path (personas are read on EVERY admin-chat turn), and a
+# FAIL-OPEN accessor that degrades to the code defaults if the table is missing
+# or empty (brand-new DB pre-seed) or the DB errors. The boot-time seed/sync
+# (preserve human edits) lives in app.py beside sync_ai_prompts(); the
+# super-admin CRUD lives in admin/admin_ai.py. The slash-command/capability/
+# starter PALETTE is front-end-only (the backend never reads it), so it has no
+# hot-path cache here — its registry + endpoint are added in phase 3.
+# =============================================================================
+
+# Process-level persona cache. Loaded once from admin_chat_personas; refreshed
+# only on a super-admin save/reset (via _invalidate_admin_persona_cache()).
+_ADMIN_PERSONA_CACHE = {}
+_ADMIN_PERSONA_CACHE_LOADED = False
+_ADMIN_PERSONA_CACHE_LOCK = threading.Lock()
+
+
+def _admin_persona_registry():
+    """Ordered catalog of the 6 BUILT-IN admin-chat personas — the single source
+    of truth that (a) app.py derives ADMIN_CHAT_PERSONAS from, (b) sync_admin_personas()
+    seeds the admin_chat_personas table from, and (c) get_admin_personas() falls
+    back to when the DB is unavailable. Fields:
+
+      persona_key   stable id (the value sent as the pinned persona / router output)
+      label         human name (shown in the persona pill + the SSE 'persona' event)
+      icon/description  UI-ONLY (persona pill + Admin AI editor); never reach the model
+      prompt_suffix appended to the system prompt when this persona is active
+      tool_prefixes substring/exact name-prefixes that survive the per-round tool
+                    filter; None = "every tool" (a real tri-state vs [] = "only the
+                    always-keep set" admin_list_tables/admin_describe_table/spawn_agents)
+      extra_tools   exact tool names always kept regardless of tool_prefixes
+      sort_order    display order
+
+    To add a built-in persona: add an entry here. A super-admin adds CUSTOM
+    personas through the Admin AI tab (stored as is_builtin=FALSE rows)."""
+    return [
+        {"persona_key": "general", "label": "General", "icon": "💬",
+         "description": "Balanced assistant, every tool available",
+         "prompt_suffix": "",
+         "tool_prefixes": None, "extra_tools": [], "sort_order": 0},
+        {"persona_key": "research", "label": "Research", "icon": "🔎",
+         "description": "Evidence-first; web search + KB, cites sources",
+         "prompt_suffix": (
+             "\n\nPERSONA: Research. Prefer evidence over opinion. When the "
+             "answer depends on facts you don't have, call admin_web_search "
+             "or lookup_knowledge_base before answering. Cite sources with "
+             "their URL or [source: …] markers."),
+         "tool_prefixes": ["admin_web_search", "lookup_", "admin_describe_",
+                           "admin_list_tables", "admin_run_sql"],
+         "extra_tools": ["spawn_agents"], "sort_order": 10},
+        {"persona_key": "data_analyst", "label": "Data Analyst", "icon": "📊",
+         "description": "Grounds numbers in SQL + overview/recent tools",
+         "prompt_suffix": (
+             "\n\nPERSONA: Data Analyst. Use admin_run_sql and the "
+             "admin_overview_* / admin_recent_* / admin_skill_usage_stats "
+             "tools to ground every number. Show small tables when listing "
+             "comparisons. Prefer concrete counts over adjectives."),
+         "tool_prefixes": ["admin_run_sql", "admin_describe_", "admin_list_",
+                           "admin_recent_", "admin_overview_",
+                           "admin_skill_usage_stats", "admin_analyze_"],
+         "extra_tools": ["spawn_agents"], "sort_order": 20},
+        {"persona_key": "code", "label": "Code", "icon": "💻",
+         "description": "Concise, precise; exact schema/column names",
+         "prompt_suffix": (
+             "\n\nPERSONA: Code. Be concise and precise. Use fenced code "
+             "blocks with language hints. Reference column / table / file "
+             "names exactly. Prefer admin_describe_table over guessing a "
+             "schema."),
+         "tool_prefixes": ["admin_describe_", "admin_list_", "admin_run_sql",
+                           "admin_web_search"],
+         "extra_tools": ["spawn_agents"], "sort_order": 30},
+        {"persona_key": "creative", "label": "Creative", "icon": "🎨",
+         "description": "Drafts copy via approval-gated propose tools",
+         "prompt_suffix": (
+             "\n\nPERSONA: Creative. Draft confident, original copy. When "
+             "the admin asks for ideas, suggest 2-3 distinct directions. "
+             "Use admin_propose_* tools to draft content the owner can "
+             "approve."),
+         "tool_prefixes": ["admin_propose_draft_", "admin_propose_create_",
+                           "admin_propose_insert", "admin_propose_update",
+                           "lookup_"],
+         "extra_tools": ["spawn_agents"], "sort_order": 40},
+        {"persona_key": "ops", "label": "Ops", "icon": "🛠",
+         "description": "Orders, forms, bookings, automations — terse",
+         "prompt_suffix": (
+             "\n\nPERSONA: Ops. Focus on day-to-day operations: orders, "
+             "form submissions, bookings, messaging, automations. Always "
+             "use the dedicated admin_recent_* and admin_list_automations "
+             "tools first. Be terse — operators want answers, not essays."),
+         "tool_prefixes": ["admin_recent_", "admin_list_automations",
+                           "admin_get_automation", "admin_propose_",
+                           "admin_mcp_", "lookup_business_info"],
+         "extra_tools": ["spawn_agents"], "sort_order": 50},
+    ]
+
+
+def _admin_persona_defaults():
+    """{persona_key: full-dict copy} for the built-ins — the fail-open + seed
+    source. Returns fresh dict copies so callers can't mutate the registry."""
+    return {p["persona_key"]: dict(p) for p in _admin_persona_registry()}
+
+
+def _admin_persona_row_to_dict(r):
+    """Normalize a DB row from admin_chat_personas into the same dict shape the
+    registry uses. Handles JSONB columns whether the driver returns them already
+    parsed (list/None) or as raw JSON text. tool_prefixes stays tri-state: SQL
+    NULL → None (= every tool)."""
+    import json as _json
+
+    def _jload(v, fallback):
+        if v is None:
+            return fallback
+        if isinstance(v, (list, dict)):
+            return v
+        try:
+            return _json.loads(v)
+        except Exception:
+            return fallback
+
+    tp = r.get("tool_prefixes")
+    tool_prefixes = None if tp is None else _jload(tp, None)
+    return {
+        "persona_key": r["persona_key"],
+        "label": r.get("label") or "",
+        "icon": r.get("icon") or "",
+        "description": r.get("description") or "",
+        "prompt_suffix": r.get("prompt_suffix") or "",
+        "tool_prefixes": tool_prefixes,
+        "extra_tools": _jload(r.get("extra_tools"), []) or [],
+        "enabled": bool(r.get("enabled", True)),
+        "is_builtin": bool(r.get("is_builtin", False)),
+        "sort_order": r.get("sort_order") or 0,
+    }
+
+
+def _load_admin_persona_cache():
+    """Load all ENABLED persona rows into the process cache exactly once."""
+    global _ADMIN_PERSONA_CACHE_LOADED
+    with _ADMIN_PERSONA_CACHE_LOCK:
+        if _ADMIN_PERSONA_CACHE_LOADED:
+            return
+        cache = {}
+        try:
+            rows = query_db(
+                "SELECT persona_key, label, icon, description, prompt_suffix, "
+                "tool_prefixes, extra_tools, enabled, is_builtin, sort_order "
+                "FROM admin_chat_personas WHERE enabled = TRUE "
+                "ORDER BY sort_order, persona_key")
+            for r in rows or []:
+                cache[r["persona_key"]] = _admin_persona_row_to_dict(r)
+        except Exception as e:
+            # Table may not exist yet on a brand-new DB before migrate/seed —
+            # fine: get_admin_personas() falls back to the registry defaults.
+            print(f"[admin_personas] cache load skipped: {e}")
+            cache = {}
+        _ADMIN_PERSONA_CACHE.clear()
+        _ADMIN_PERSONA_CACHE.update(cache)
+        _ADMIN_PERSONA_CACHE_LOADED = True
+
+
+def get_admin_personas():
+    """Active admin-chat personas keyed by persona_key, served from the process
+    cache (free at request time, no DB round-trip).
+
+    FAIL-OPEN: any DB error OR an empty/never-seeded table yields the built-in
+    registry defaults, so the admin chat's persona routing + tool-filtering never
+    breaks. ALWAYS contains a 'general' entry — it is the universal fallback used
+    by _admin_apply_persona(), so even if a super-admin somehow removed/disabled
+    it we re-add it from the registry."""
+    if not _ADMIN_PERSONA_CACHE_LOADED:
+        _load_admin_persona_cache()
+    if not _ADMIN_PERSONA_CACHE:
+        return _admin_persona_defaults()
+    out = dict(_ADMIN_PERSONA_CACHE)
+    if "general" not in out:
+        out["general"] = _admin_persona_defaults()["general"]
+    return out
+
+
+def get_admin_personas_all():
+    """ALL persona rows (incl. disabled) for the super-admin CRUD editor, ordered
+    for display. Direct query (not the hot-path cache). Fail-open to the built-in
+    registry list (marked as defaults) so the editor still renders on a fresh DB."""
+    try:
+        rows = query_db(
+            "SELECT persona_key, label, icon, description, prompt_suffix, "
+            "tool_prefixes, extra_tools, enabled, is_builtin, sort_order, "
+            "updated_by, updated_at "
+            "FROM admin_chat_personas ORDER BY sort_order, persona_key")
+        if rows:
+            out = []
+            for r in rows:
+                d = _admin_persona_row_to_dict(r)
+                d["updated_by"] = r.get("updated_by")
+                out.append(d)
+            return out
+    except Exception as e:
+        print(f"[admin_personas] list-all skipped: {e}")
+    # Fail-open: present the built-ins as enabled defaults.
+    out = []
+    for p in _admin_persona_registry():
+        d = dict(p)
+        d.update({"enabled": True, "is_builtin": True, "updated_by": None})
+        out.append(d)
+    return out
+
+
+def _invalidate_admin_persona_cache():
+    """Force the next get_admin_personas() to reload from the DB. Called after a
+    super-admin save/reset/delete and by sync_admin_personas() at boot. Takes the
+    same lock the loader uses, so an invalidation can never be lost to a load
+    in-flight (same guarantee as _invalidate_prompt_cache())."""
+    global _ADMIN_PERSONA_CACHE_LOADED
+    with _ADMIN_PERSONA_CACHE_LOCK:
+        _ADMIN_PERSONA_CACHE_LOADED = False
+        _ADMIN_PERSONA_CACHE.clear()
+
+
+# -----------------------------------------------------------------------------
+# Admin-chat PALETTE registries (task 088 phase 3) — the slash-command palette,
+# the capabilities-tray groups, and the empty-state starter chips. These are
+# FRONT-END-ONLY (the backend never reads them; they just seed the composer +
+# optionally pin a persona client-side), so there is NO hot-path cache — the
+# consumption endpoint (/admin/api/chat/palette) queries the tables directly and
+# the chat fetches once per open. The registries below are the built-in defaults:
+# sync_admin_* (app.py) seeds them (preserve-edits) and the CRUD reset restores
+# from them. Ported VERBATIM from the former hardcoded consts in public/admin/csrf.js.
+# `super` (super-admin-only) is stored as the SQL column "super"; here it's the
+# dict key "super". sort_order gives display order.
+# -----------------------------------------------------------------------------
+def _admin_command_registry():
+    """Built-in slash-commands (keyed by `cmd`, e.g. '/sql'). Each seeds the
+    composer (+ optional persona); `tail` leaves the caret to type `arg`."""
+    def c(cmd, icon, group, tool, desc, seed, sort, arg="", tail=False,
+          persona="", sup=False):
+        return {"cmd": cmd, "icon": icon, "group_label": group, "tool": tool,
+                "description": desc, "seed": seed, "arg": arg, "tail": tail,
+                "persona": persona, "super": sup, "sort_order": sort}
+    return [
+        c("/tables", "🗂", "Data & SQL", "admin_list_tables",
+          "List the database tables (admin_list_tables)",
+          "List all the tables in my database and what each one is for.", 10),
+        c("/stats", "📈", "Data & SQL", "admin_overview_stats",
+          "7-day overview metrics (admin_overview_stats)",
+          "Give me a 7-day overview of my site: visitors, chats, orders and form submissions.",
+          20, persona="data_analyst"),
+        c("/sql", "🧮", "Data & SQL", "admin_run_sql",
+          "Run a read-only SQL query (admin_run_sql)",
+          "Run this read-only SQL: ", 30, arg="<query>", tail=True, persona="data_analyst"),
+        c("/chart", "📊", "Data & SQL", "render_chart",
+          "Visualize data as a chart (render_chart)",
+          "Query the data and render a chart of: ", 40, arg="<what to plot>",
+          tail=True, persona="data_analyst"),
+        c("/saved", "💾", "Data & SQL", "admin_list_saved_queries",
+          "List / run your saved queries (admin_list_saved_queries)",
+          "List my saved queries, then run the most relevant one and summarize the result.", 50),
+        c("/datahub", "🔌", "Datahub", "admin_list_connections",
+          "List + inspect your data connections (grant-bounded)",
+          "List my Datahub connections, then inspect the most useful one and tell me what I can query.", 60),
+        c("/dashboard", "🧭", "Dashboards", "admin_create_dashboard",
+          "Create a dashboard (admin_create_dashboard)",
+          "Create a dashboard that tracks: ", 70, arg="<topic>", tail=True),
+        c("/analyze", "🧠", "Analytics", "admin_analyze_chat_topics",
+          "Mine visitor-chat topics (admin_analyze_chat_topics)",
+          "Analyze my visitor chat topics from the last 30 days and surface the top themes and gaps.", 80),
+        c("/seo", "🔍", "Content & Marketing", "admin_suggest_seo_improvements",
+          "Find content gaps / SEO wins (admin_suggest_seo_improvements)",
+          "Review my site content and suggest concrete SEO improvements and content gaps to fill.", 90),
+        c("/blog", "✍️", "Content & Marketing", "admin_propose_draft_blog_post",
+          "Draft a blog post for approval (admin_propose_draft_blog_post)",
+          "Draft a blog post (for my approval) about: ", 100, arg="<topic>",
+          tail=True, persona="creative"),
+        c("/faq", "❓", "Content & Marketing", "admin_propose_draft_faq_entry",
+          "Draft an FAQ entry for approval (admin_propose_draft_faq_entry)",
+          "Draft an FAQ entry (for my approval) answering: ", 110, arg="<question>",
+          tail=True, persona="creative"),
+        c("/search", "🌐", "Research", "admin_web_search",
+          "Search the web (admin_web_search)",
+          "Search the web and summarize with sources: ", 120, arg="<query>", tail=True),
+        c("/kb", "📚", "Knowledge Base", "lookup_knowledge_base",
+          "Look something up in the KB (lookup_knowledge_base)",
+          "Search my Knowledge Base and answer with citations: ", 130, arg="<question>", tail=True),
+        c("/automations", "🤖", "Automations", "admin_list_automations",
+          "List your automations (admin_list_automations)",
+          "List my automations and tell me which are active and what each one does.", 140),
+        c("/skills", "🧰", "Skills", "admin_list_skills",
+          "List available AI skills (admin_list_skills)",
+          "List the AI skills available to you right now and what each can do.", 150),
+        c("/snapshots", "🗄", "Data & SQL", "admin_recent_snapshots",
+          "Recent content snapshots (admin_recent_snapshots)",
+          "Show my most recent content snapshots and what changed in each.", 160),
+        # ---- super-admin only ----
+        c("/research", "🔭", "Research", "run_research",
+          "Run a deep research task (run_research)",
+          "Run a deep research task on: ", 170, arg="<topic>", tail=True,
+          persona="research", sup=True),
+        c("/content", "📰", "Content & Marketing", "generate_content",
+          "Generate long-form content (generate_content)",
+          "Generate long-form content for: ", 180, arg="<brief>", tail=True, sup=True),
+        c("/design", "🎨", "Content & Marketing", "admin_propose_create_site_design",
+          "Propose a new site design (admin_propose_create_site_design)",
+          "Propose a new site design (for my approval) for: ", 190, arg="<page / vibe>",
+          tail=True, sup=True),
+        c("/theme", "🌈", "Content & Marketing", "admin_propose_create_site_theme",
+          "Propose a new site theme (admin_propose_create_site_theme)",
+          "Propose a new site theme (for my approval): ", 200, arg="<style>", tail=True, sup=True),
+        c("/define", "🧱", "Datahub", "admin_define_schema",
+          "Define / annotate Datahub schema (admin_define_schema)",
+          "Help me define and annotate the Datahub schema for: ", 210, arg="<table>",
+          tail=True, sup=True),
+        c("/mcp", "🛰", "Connectors (MCP)", "admin_mcp_list_servers",
+          "List MCP servers (admin_mcp_list_servers)",
+          "List my MCP servers, their status, and the tools they expose.", 220, sup=True),
+    ]
+
+
+def _admin_capability_registry():
+    """Built-in capability-tray groups (keyed by `cap_key`). `lines` = bullets;
+    `examples` = click-to-run chips ({label, seed, persona?, action?})."""
+    return [
+        {"cap_key": "data", "icon": "🧮", "title": "Data & SQL", "super": False,
+         "grant_aware": False, "sort_order": 10,
+         "lines": [
+             "List + describe your tables (admin_list_tables / admin_describe_table).",
+             "Run read-only SQL and summarize results (admin_run_sql).",
+             "Save + re-run queries (admin_save_query / admin_run_saved_query)."],
+         "examples": [
+             {"label": "List my tables", "seed": "List all the tables in my database and what each one is for."},
+             {"label": "Run a SQL query", "persona": "data_analyst", "seed": "Run this read-only SQL: "},
+             {"label": "Top 10 orders this month", "persona": "data_analyst", "seed": "Write and run read-only SQL for my top 10 orders this month."}]},
+        {"cap_key": "datahub", "icon": "🔌", "title": "Datahub", "super": False,
+         "grant_aware": True, "sort_order": 20,
+         "lines": [
+             "List the data connections you have access to (admin_list_connections).",
+             "Inspect a connection's annotated schema before querying (admin_inspect_connection).",
+             "Query within your granted tables (admin_query_connection) — access is grant-bounded."],
+         "examples": [
+             {"label": "Explore my Datahub", "seed": "List my Datahub connections, then inspect the most useful one and tell me what I can query."},
+             {"label": "What can I query?", "seed": "Which Datahub tables am I allowed to query, and what does each contain?"}]},
+        {"cap_key": "dashboards", "icon": "🧭", "title": "Dashboards", "super": False,
+         "grant_aware": False, "sort_order": 30,
+         "lines": [
+             "Create a dashboard from a question (admin_create_dashboard).",
+             "Add widgets / charts to a dashboard (admin_add_widget · render_chart)."],
+         "examples": [
+             {"label": "Build a sales dashboard", "seed": "Create a dashboard that tracks my sales: revenue, orders, and top products over time."},
+             {"label": "Chart visitors over time", "persona": "data_analyst", "seed": "Query my visitor data and render a chart of visitors per day for the last 30 days."}]},
+        {"cap_key": "analytics", "icon": "🧠", "title": "Analytics", "super": False,
+         "grant_aware": False, "sort_order": 40,
+         "lines": [
+             "Mine visitor-chat topics + sentiment (admin_analyze_chat_topics).",
+             "Surface recent activity — orders, forms, chats (admin_recent_*).",
+             "Skill usage stats (admin_skill_usage_stats)."],
+         "examples": [
+             {"label": "Analyze chat topics", "seed": "Analyze my visitor chat topics from the last 30 days and surface the top themes and gaps."},
+             {"label": "Recent form submissions", "persona": "ops", "seed": "Show my most recent form submissions and summarize what people are asking for."}]},
+        {"cap_key": "content", "icon": "✍️", "title": "Content & Marketing", "super": False,
+         "grant_aware": False, "sort_order": 50,
+         "lines": [
+             "Find content gaps + SEO wins (admin_suggest_seo_improvements).",
+             "Draft blog posts + FAQ entries for your approval (admin_propose_draft_*).",
+             "Web search with sources (admin_web_search)."],
+         "examples": [
+             {"label": "Find SEO gaps", "seed": "Review my site content and suggest concrete SEO improvements and content gaps to fill."},
+             {"label": "Draft a blog post", "persona": "creative", "seed": "Draft a blog post (for my approval) about: "},
+             {"label": "Draft an FAQ", "persona": "creative", "seed": "Draft an FAQ entry (for my approval) answering: "}]},
+        {"cap_key": "content_super", "icon": "🎨", "title": "Content Studio", "super": True,
+         "grant_aware": False, "sort_order": 60,
+         "lines": [
+             "Generate long-form content (generate_content).",
+             "Propose a new site design or theme for approval (admin_propose_create_site_design / _theme)."],
+         "examples": [
+             {"label": "Generate long-form content", "seed": "Generate long-form content for: "},
+             {"label": "Design a new homepage", "seed": "Propose a new site design (for my approval) for my homepage: "},
+             {"label": "Propose a new theme", "seed": "Propose a new site theme (for my approval): "}]},
+        {"cap_key": "research", "icon": "🔭", "title": "Research", "super": True,
+         "grant_aware": False, "sort_order": 70,
+         "lines": [
+             "Run a deep, multi-source research task (run_research).",
+             "Gather web sources into the Research Hub (gather_sources)."],
+         "examples": [
+             {"label": "Research a topic", "persona": "research", "seed": "Run a deep research task on: "}]},
+        {"cap_key": "automations", "icon": "🤖", "title": "Automations", "super": False,
+         "grant_aware": False, "sort_order": 80,
+         "lines": [
+             "List + inspect your automations (admin_list_automations / admin_get_automation).",
+             "Propose creating / toggling automations for your approval (admin_propose_*_automation)."],
+         "examples": [
+             {"label": "List my automations", "seed": "List my automations and tell me which are active and what each one does."}]},
+        {"cap_key": "mcp", "icon": "🛰", "title": "Connectors (MCP)", "super": True,
+         "grant_aware": False, "sort_order": 90,
+         "lines": [
+             "List your MCP servers + the tools they expose (admin_mcp_list_servers).",
+             "Propose adding / updating / toggling servers for approval (admin_mcp_propose_*)."],
+         "examples": [
+             {"label": "List my MCP servers", "seed": "List my MCP servers, their status, and the tools they expose."}]},
+        {"cap_key": "kb", "icon": "📚", "title": "Knowledge Base", "super": False,
+         "grant_aware": False, "sort_order": 100,
+         "lines": [
+             "Search your uploaded docs + quote passages with citations (lookup_knowledge_base).",
+             "Manage the docs the assistant can cite (open the KB panel)."],
+         "examples": [
+             {"label": "Search my KB", "seed": "Search my Knowledge Base and answer with citations: "},
+             {"label": "Manage KB docs", "action": "kb"}]},
+    ]
+
+
+def _admin_starter_registry():
+    """Built-in empty-state starter chips (keyed by `starter_key`)."""
+    def s(key, icon, label, seed, sort, persona="", sup=False):
+        return {"starter_key": key, "icon": icon, "label": label, "seed": seed,
+                "persona": persona, "super": sup, "sort_order": sort}
+    return [
+        s("overview_7d", "📈", "Give me a 7-day overview",
+          "Give me a 7-day overview of my site: visitors, chats, orders and form submissions.",
+          10, persona="data_analyst"),
+        s("analyze_topics", "🧠", "Analyze visitor chat topics",
+          "Analyze my visitor chat topics from the last 30 days and surface the top themes and gaps.", 20),
+        s("seo_gaps", "🔍", "Find content gaps (SEO)",
+          "Review my site content and suggest concrete SEO improvements and content gaps to fill.", 30),
+        s("draft_faq", "❓", "Draft an FAQ",
+          "Draft an FAQ entry (for my approval) answering: ", 40, persona="creative"),
+        s("run_sql", "🧮", "Run a SQL query",
+          "Run this read-only SQL: ", 50, persona="data_analyst"),
+        s("explore_datahub", "🔌", "Explore my Datahub",
+          "List my Datahub connections, then inspect the most useful one and tell me what I can query.", 60),
+        s("research_topic", "🔭", "Research a topic",
+          "Run a deep research task on: ", 70, persona="research", sup=True),
+        s("design_homepage", "🎨", "Design a new homepage",
+          "Propose a new site design (for my approval) for my homepage: ", 80, sup=True),
+        s("define_datahub", "🧱", "Define my Datahub tables",
+          "Help me define and annotate the Datahub schema for: ", 90, sup=True),
+    ]
+
+
 # =============================================================================
 # COST / BILLING INFRA  (moved from app.py - Track B / task 078, piece #2)
 # =============================================================================

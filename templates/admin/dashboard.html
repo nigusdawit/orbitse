@@ -38,6 +38,16 @@ TO CUSTOMIZE THIS DASHBOARD:
       data-admin-sidebar="{{ appearance.sidebar if appearance else 'comfortable' }}"
       data-admin-font="{{ appearance.font_family if appearance else 'sans' }}"
       data-admin-fontscale="{{ appearance.font_scale if appearance else 'md' }}"
+      {# Task 089 — expanded controls. Each default value is a no-op (theme.css
+         writes no rule for it), so an un-customized admin is byte-identical. #}
+      data-admin-shadow="{{ appearance.shadow if appearance else 'medium' }}"
+      data-admin-headfont="{{ appearance.head_font if appearance else 'serif' }}"
+      data-admin-weight="{{ appearance.font_weight if appearance else 'normal' }}"
+      data-admin-focus="{{ appearance.focus_style if appearance else 'ring' }}"
+      data-admin-width="{{ appearance.content_width if appearance else 'full' }}"
+      data-admin-header="{{ appearance.header_style if appearance else 'sticky' }}"
+      data-admin-button="{{ appearance.button_style if appearance else 'solid' }}"
+      data-admin-speed="{{ appearance.motion_speed if appearance else 'normal' }}"
       {% if appearance and appearance.high_contrast %}data-admin-contrast="high"{% endif %}
       {% if appearance and appearance.reduce_motion %}data-admin-motion="reduce"{% endif %}>
 <head>
@@ -73,10 +83,28 @@ TO CUSTOMIZE THIS DASHBOARD:
       /* alias: several components (Admin Chat, etc.) reference --admin-card; map
          it to the glass surface so they aren't transparent/broken. */
       --admin-card: var(--admin-surface);
+      {# Task 089 — expanded theme-agnostic knobs (semantic/utility colours,
+         border width, letter-spacing, line-height). Server emits ONLY values
+         that differ from the code default, so untouched knobs fall through to
+         base.css. Values are validated (hex / clamped number) -> CSS-safe. #}
+      {{ appearance.css_vars | safe }}
     }
   </style>
   <link rel="stylesheet" href="/admin/theme.css">
   <link rel="stylesheet" href="/admin/tabs.css">
+  <!-- Task 086: flagship glass restyle + expand/canvas + floating launcher for
+       the Admin Chat. Loaded AFTER tabs.css so its scoped .admin-chat-*/
+       .admin-asst-* rules win the cascade. Pure no-build CSS, token-driven. -->
+  <link rel="stylesheet" href="/admin/chat.css">
+  <!-- Task 089 — per-theme base-colour overrides (background/surface/text/muted/
+       border). Emitted AFTER theme.css so equal-specificity html[data-admin-theme]
+       rules win by source order; only the colours the super-admin actually
+       customized appear here, so the built-in light/dark palette keeps flowing
+       for everything untouched. Values are validated hex -> CSS-injection-safe. -->
+  <style id="admin-appearance-theme-vars">
+    {% if appearance and appearance.base_css_dark %}html[data-admin-theme="dark"]{ {{ appearance.base_css_dark | safe }} }{% endif %}
+    {% if appearance and appearance.base_css_light %}html[data-admin-theme="light"]{ {{ appearance.base_css_light | safe }} }{% endif %}
+  </style>
   <script>window.__ADMIN_APPEARANCE__ = {{ appearance|tojson }};</script>
 </head>
 
@@ -314,6 +342,10 @@ TO CUSTOMIZE THIS DASHBOARD:
     <button class="tab-btn" onclick="switchTab('ai-control', this); loadAiControl();" data-testid="tab-ai-control">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
       AI Control
+    </button>
+    <button class="tab-btn" onclick="switchTab('admin-ai', this); loadAdminAI();" data-testid="tab-admin-ai">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="14" rx="3"/><path d="M12 2v3"/><circle cx="9" cy="11" r="1"/><circle cx="15" cy="11" r="1"/><path d="M9 15.5c1.2.7 4.8.7 6 0"/></svg>
+      Admin AI
     </button>
     <button class="tab-btn" onclick="switchTab('ai-activity', this); loadAiActivity();" data-testid="tab-ai-activity">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
@@ -1149,6 +1181,9 @@ TO CUSTOMIZE THIS DASHBOARD:
   <!-- TAB: AI CONTROL — super-admin-tunable Admin AI knobs (live, no restart) -->
   {% include "admin/tabs/_ai-control.html" %}
 
+  <!-- TAB: ADMIN AI — super-admin editor for the assistant's personas + palette (task 088) -->
+  {% include "admin/tabs/_admin-ai.html" %}
+
   <!-- TAB: AI ACTIVITY — recent Admin AI turns (metadata + redacted Q/A) -->
   {% include "admin/tabs/_ai-activity.html" %}
 
@@ -1503,6 +1538,65 @@ TO CUSTOMIZE THIS DASHBOARD:
   <script src="/admin/app-main.js"></script>
   </main>
   </div>
+
+  <!-- ====================================================================
+       TASK 086 — FLOATING "BUSINESS ASSISTANT" LAUNCHER (global)
+       ====================================================================
+       Placed at SHELL level (outside .admin-main / every .tab-content) so it
+       persists across all admin tabs. Gated with the SAME condition as the
+       admin-chat tab button so it only shows where the chat is available.
+       The launcher + popover are VIEWS that escalate into the ONE real chat —
+       no second message list. Clicking the pill toggles the quick-ask popover;
+       sending (or "Open full ⤢") switches to the admin-chat tab, opens the
+       immersive overlay, and forwards the text into the real composer +
+       adminChatSend(). All styling is scoped in /admin/chat.css. -->
+  {% if is_super_admin() or has_feature('admin_chat') %}
+  <button type="button" id="admin-asst-launcher" data-testid="admin-asst-launcher"
+          aria-haspopup="dialog" aria-expanded="false" aria-controls="admin-asst-quick"
+          title="Ask the Business Assistant" onclick="adminAsstToggleQuick()">
+    <span class="admin-asst-launcher-orb" aria-hidden="true">✦</span>
+    <span class="admin-asst-launcher-label">Business Assistant</span>
+  </button>
+
+  <div id="admin-asst-quick" data-testid="admin-asst-quick" role="dialog"
+       aria-label="Quick ask the Business Assistant">
+    <div class="admin-asst-quick-head">
+      <div>
+        <div class="admin-asst-quick-title">Business Assistant</div>
+        <div class="admin-asst-quick-sub">Ask anything about your site.</div>
+      </div>
+      <button type="button" class="admin-asst-quick-close" title="Close"
+              aria-label="Close" onclick="adminAsstCloseQuick()"
+              data-testid="button-admin-asst-close">×</button>
+    </div>
+
+    <div class="admin-asst-suggests" data-testid="admin-asst-suggests">
+      <button type="button" class="admin-asst-suggest" onclick="adminAsstQuickSuggest(this)"
+              data-testid="admin-asst-suggest-1">Summarize this week's activity</button>
+      <button type="button" class="admin-asst-suggest" onclick="adminAsstQuickSuggest(this)"
+              data-testid="admin-asst-suggest-2">Show top pages by views</button>
+      <button type="button" class="admin-asst-suggest" onclick="adminAsstQuickSuggest(this)"
+              data-testid="admin-asst-suggest-3">Draft an FAQ answer</button>
+    </div>
+
+    <!-- Task 088: inline answer area. Hidden until the first ask; the popover then
+         streams the answer here (no tab switch). Long/rich answers auto-open the
+         full chat overlay. -->
+    <div id="admin-asst-quick-msgs" class="admin-asst-quick-msgs"
+         data-testid="admin-asst-quick-msgs" hidden></div>
+
+    <form class="admin-asst-quick-form" onsubmit="event.preventDefault(); adminAsstQuickSend();">
+      <input id="admin-asst-quick-input" type="text" autocomplete="off"
+             placeholder="Ask the Business Assistant…"
+             data-testid="input-admin-asst-quick">
+      <button type="submit" class="admin-asst-quick-send" title="Send"
+              aria-label="Send" data-testid="button-admin-asst-send">↑</button>
+    </form>
+
+    <button type="button" class="admin-asst-quick-open" onclick="adminAsstOpenFull()"
+            data-testid="button-admin-asst-open-full">Open full ⤢</button>
+  </div>
+  {% endif %}
 
   <!-- ====================================================================
        SERVICES TAB — JS controller (CRUD + addons + availability + bookings)

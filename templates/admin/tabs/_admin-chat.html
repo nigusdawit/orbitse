@@ -18,7 +18,12 @@
       The admin assistant can run read-only SQL, manage AI skills, edit narrow content (FAQ, business info, blog drafts), and surface recent activity.
     </p>
 
-    <div class="admin-chat-shell" id="admin-chat-shell">
+    <!-- Task 087: data-admin-role lets the slash-palette / capabilities tray /
+         starters hide super-admin-only entries for a normal admin. COSMETIC ONLY —
+         the server enforces the real boundary; this just avoids offering what the
+         caller can't run. -->
+    <div class="admin-chat-shell" id="admin-chat-shell"
+         data-admin-role="{{ 'super_admin' if is_super_admin() else 'admin' }}">
 
       <!-- Sessions sidebar (admin mode only — hidden in visitor preview) -->
       <aside class="admin-chat-side" id="admin-chat-sidebar" data-testid="admin-chat-sidebar">
@@ -41,13 +46,22 @@
 
         <!-- Header: title + model picker + per-session config buttons + export -->
         <div class="admin-chat-header" id="admin-chat-mainheader">
+          <!-- Task 088: collapse / show the conversations rail (persisted in
+               localStorage). Leftmost so it reads as the rail's own handle. -->
+          <button class="acm-btn admin-chat-railtoggle" type="button" onclick="adminChatToggleRail()"
+                  title="Hide the conversation list" aria-pressed="false"
+                  data-testid="button-admin-chat-railtoggle">⟨</button>
           <input id="admin-chat-title" type="text" placeholder="Untitled conversation"
                  onchange="adminChatSaveTitle()" 
                  style="flex:1; min-width:160px; background:transparent; border:0; outline:none; font-size:1rem; font-weight:600; color:var(--admin-text);"
                  data-testid="input-admin-chat-title">
-          <!-- Task #80: persona pin. Auto = router classifier picks per-turn. -->
-          <select id="admin-chat-persona" title="Persona — Auto lets the router pick per-turn" data-testid="select-admin-chat-persona"
-                  style="background:var(--admin-card); color:var(--admin-text); border:1px solid var(--admin-border); border-radius:.4rem; padding:.25rem .4rem;">
+          <!-- Task #80 / 087: persona pin. The raw <select> is KEPT (engine reads
+               #admin-chat-persona.value at send-time) but visually hidden; the
+               glass pill dropdown beside it DRIVES it (sets .value + fires change).
+               Auto = router classifier picks per-turn. -->
+          <select id="admin-chat-persona" class="admin-pick-native"
+                  title="Persona — Auto lets the router pick per-turn" data-testid="select-admin-chat-persona"
+                  tabindex="-1" aria-hidden="true">
             <option value="">🎭 Auto persona</option>
             <option value="general">General</option>
             <option value="research">🔎 Research</option>
@@ -56,7 +70,22 @@
             <option value="creative">🎨 Creative</option>
             <option value="ops">🛠 Ops</option>
           </select>
-          <select id="admin-chat-model" onchange="adminChatSaveModel()" data-testid="select-admin-chat-model">
+          <!-- Task 087: persona pill dropdown (built/synced by csrf.js). -->
+          <div class="admin-pick" id="admin-pick-persona" data-pick="persona" data-testid="admin-pick-persona">
+            <button type="button" class="admin-pick-trigger" data-testid="button-admin-pick-persona"
+                    aria-haspopup="listbox" aria-expanded="false" title="Persona">
+              <span class="admin-pick-ico" aria-hidden="true">🎭</span>
+              <span class="admin-pick-label">Auto persona</span>
+              <span class="admin-pick-caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="admin-pick-menu" role="listbox" aria-label="Persona" hidden></div>
+          </div>
+
+          <!-- Task 087: model pill dropdown. The raw <select> is KEPT (its
+               onchange=adminChatSaveModel persists the per-session model) but
+               hidden; the pill sets .value + calls the existing save handler. -->
+          <select id="admin-chat-model" class="admin-pick-native" onchange="adminChatSaveModel()"
+                  data-testid="select-admin-chat-model" tabindex="-1" aria-hidden="true">
             <option value="">Default model</option>
             <optgroup label="OpenAI">
               <option value="gpt-4o-mini">GPT-4o-mini</option>
@@ -70,26 +99,69 @@
               <option value="claude-sonnet-4-5">Claude Sonnet 4.5</option>
             </optgroup>
           </select>
-          {% if is_super_admin() %}
-          <button class="acm-btn" onclick="adminChatOpenPromptEditor()" title="System prompt for this conversation"
-                  data-testid="button-admin-chat-prompt">⚙ Prompt</button>
-          {% endif %}
-          <button class="acm-btn" onclick="adminChatOpenSkills()" title="Tools available to this conversation"
-                  data-testid="button-admin-chat-skills">🧰 Skills</button>
-          <!-- Task #79: Knowledge Base panel — upload docs the AI can cite -->
-          <button class="acm-btn" onclick="adminChatOpenKB()" title="Upload PDFs / docs the AI can search and cite"
-                  data-testid="button-admin-chat-kb">📚 KB</button>
-          <button class="acm-btn" onclick="adminChatExport('md')" title="Download Markdown"
-                  data-testid="button-admin-chat-export-md">↓ .md</button>
-          <button class="acm-btn" onclick="adminChatExport('json')" title="Download JSON"
-                  data-testid="button-admin-chat-export-json">↓ .json</button>
-          <button class="acm-btn" onclick="adminChatClear()" title="Clear messages (keeps the session; use Del in the sidebar to remove the session entirely)"
-                  data-testid="button-admin-chat-clear">Clear msgs</button>
+          <div class="admin-pick" id="admin-pick-model" data-pick="model" data-testid="admin-pick-model">
+            <button type="button" class="admin-pick-trigger" data-testid="button-admin-pick-model"
+                    aria-haspopup="listbox" aria-expanded="false" title="Model">
+              <span class="admin-pick-ico" aria-hidden="true">⚡</span>
+              <span class="admin-pick-label">Default model</span>
+              <span class="admin-pick-caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="admin-pick-menu" role="listbox" aria-label="Model" hidden></div>
+          </div>
+          <!-- Task 087: "Capabilities" tray opener — the flagship "what can I
+               do?" surface (grouped, role-aware, click-to-run + skill toggles).
+               Kept prominent in the header alongside the pickers + Expand. -->
+          <button class="acm-btn admin-cap-open-btn" onclick="adminChatOpenCapabilities()"
+                  title="What the assistant can do — capabilities + skills"
+                  data-testid="button-admin-chat-capabilities">✦ Capabilities</button>
+
+          <!-- Task 086: expand the chat into a full-viewport glass overlay with a
+               split canvas for charts/tables. Pure VIEW toggle — adds/removes
+               .admin-chat-expanded on .admin-chat-shell; collapse/Esc restores
+               the in-tab layout exactly. -->
+          <button class="acm-btn admin-chat-expand-btn" onclick="adminChatToggleExpand()"
+                  title="Expand to full screen (Esc to collapse)"
+                  aria-pressed="false" data-testid="button-admin-chat-expand">⤢ Expand</button>
+
+          <!-- Task 087: header overflow ⋯ — the less-frequent controls
+               (Prompt / Skills / KB / Export / Clear) moved off the toolbar to
+               declutter. The existing handlers are unchanged; this is purely a
+               relocation of the buttons into a scoped glass menu. -->
+          <div class="admin-chat-overflow" id="admin-chat-overflow" data-testid="admin-chat-overflow">
+            <button type="button" class="acm-btn admin-chat-overflow-btn" onclick="adminChatToggleOverflow()"
+                    title="More" aria-haspopup="menu" aria-expanded="false"
+                    data-testid="button-admin-chat-overflow">⋯</button>
+            <div class="admin-chat-overflow-menu" role="menu" hidden>
+              {% if is_super_admin() %}
+              <button class="admin-chat-overflow-item" role="menuitem" onclick="adminChatOverflowRun('adminChatOpenPromptEditor')"
+                      data-testid="button-admin-chat-prompt">⚙ System prompt</button>
+              {% endif %}
+              <button class="admin-chat-overflow-item" role="menuitem" onclick="adminChatOverflowRun('adminChatOpenSkills')"
+                      data-testid="button-admin-chat-skills">🧰 Skills &amp; tools</button>
+              <button class="admin-chat-overflow-item" role="menuitem" onclick="adminChatOverflowRun('adminChatOpenKB')"
+                      data-testid="button-admin-chat-kb">📚 Knowledge Base</button>
+              <div class="admin-chat-overflow-sep" role="separator"></div>
+              <button class="admin-chat-overflow-item" role="menuitem" onclick="adminChatOverflowRun('adminChatExport', 'md')"
+                      data-testid="button-admin-chat-export-md">↓ Export .md</button>
+              <button class="admin-chat-overflow-item" role="menuitem" onclick="adminChatOverflowRun('adminChatExport', 'json')"
+                      data-testid="button-admin-chat-export-json">↓ Export .json</button>
+              <div class="admin-chat-overflow-sep" role="separator"></div>
+              <button class="admin-chat-overflow-item admin-chat-overflow-danger" role="menuitem" onclick="adminChatOverflowRun('adminChatClear')"
+                      data-testid="button-admin-chat-clear">🧹 Clear messages</button>
+            </div>
+          </div>
         </div>
 
         <div id="admin-chat-messages" data-testid="admin-chat-messages" style="flex:1; min-height:400px; max-height:60vh; overflow-y:auto; padding:1rem; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:.75rem; display:flex; flex-direction:column; gap:.75rem;">
           <div style="color:var(--admin-text-muted); font-size:.9rem;">Start a conversation below.</div>
         </div>
+
+        <!-- Task 087: empty-state starter chips. csrf.js (adminChatRenderStarters)
+             fills + shows this only when the message list has no real bubbles,
+             and hides it once a conversation begins. Role-aware: super-admin-only
+             starters are dropped for a normal admin. Clicking a chip seeds the
+             composer (+ optionally routes a persona) — the admin reviews + sends. -->
+        <div id="admin-chat-starters" class="admin-cap-starters" data-testid="admin-chat-starters" hidden></div>
 
         <!-- Task #80: pending-attachment chip strip. Hidden until the
              admin actually drops/picks something. Each chip carries the
@@ -99,27 +171,109 @@
         <div id="admin-chat-attach-strip" data-testid="admin-chat-attach-strip"
              style="display:none; flex-wrap:wrap; gap:.4rem;"></div>
 
-        <form onsubmit="event.preventDefault(); adminChatSend();" style="display:flex; gap:.5rem; align-items:flex-end;">
-          <!-- Hidden file input driven by the 📎 button. accept covers
-               images + docs the backend whitelists. -->
-          <input type="file" id="admin-chat-file-input"
-                 accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.docx,.pptx,.csv,.txt,.json,image/*"
-                 multiple style="display:none;"
-                 onchange="adminChatHandleFiles(this.files); this.value='';"
-                 data-testid="input-admin-chat-file">
-          <button type="button" class="acm-btn" title="Attach image or document (≤25MB)"
-                  onclick="document.getElementById('admin-chat-file-input').click();"
-                  style="align-self:stretch; padding:0 .75rem;"
-                  data-testid="button-admin-chat-attach">📎</button>
-          <button type="button" id="admin-chat-mic-btn" class="acm-btn"
-                  title="Hold to dictate"
-                  style="align-self:stretch; padding:0 .75rem;"
-                  data-testid="button-admin-chat-mic">🎤</button>
-          <textarea id="admin-chat-input" rows="2" placeholder="Ask the admin assistant anything about your site, or talk to your visitor agent..." style="flex:1; padding:.75rem; border:1px solid var(--admin-border); border-radius:.5rem; font-family:inherit; resize:vertical;" onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault(); adminChatSend();}" data-testid="input-admin-chat"></textarea>
-          <button type="submit" id="admin-chat-send-btn" class="btn btn-primary" style="align-self:stretch; padding:0 1.25rem;" data-testid="button-admin-chat-send">Send</button>
-        </form>
+        <!-- Task 087: command-bar composer. The whole composer is wrapped in a
+             relatively-positioned dock so the slash-command palette (built by
+             csrf.js into #admin-chat-cmd-palette) can float ABOVE the textarea.
+             The textarea keeps its id/testid + Enter-to-send so the engine is
+             untouched; csrf.js adds auto-grow + the "/" trigger on top. -->
+        <div class="admin-chat-composer-dock" id="admin-chat-composer-dock">
+
+          <!-- Slash-command palette popover (populated + toggled by csrf.js).
+               Lives inside the dock so it anchors to the composer. -->
+          <div id="admin-chat-cmd-palette" class="admin-cmd-palette" data-testid="admin-chat-cmd-palette"
+               role="listbox" aria-label="Slash commands" hidden></div>
+
+          <form class="admin-chat-cmdbar" onsubmit="event.preventDefault(); adminChatSend();">
+            <!-- Hidden file input driven by the 📎 button. accept covers
+                 images + docs the backend whitelists. -->
+            <input type="file" id="admin-chat-file-input"
+                   accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.docx,.pptx,.csv,.txt,.json,image/*"
+                   multiple style="display:none;"
+                   onchange="adminChatHandleFiles(this.files); this.value='';"
+                   data-testid="input-admin-chat-file">
+
+            <textarea id="admin-chat-input" rows="1"
+                      placeholder="Message the Business Assistant…  Type / for commands"
+                      class="admin-chat-cmdbar-input"
+                      onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault(); adminChatSend();}"
+                      data-testid="input-admin-chat"></textarea>
+
+            <!-- Inline action row: attach · voice · "/" hint · circular send. -->
+            <div class="admin-chat-cmdbar-actions">
+              <button type="button" class="admin-chat-act" title="Attach image or document (≤25MB)"
+                      onclick="document.getElementById('admin-chat-file-input').click();"
+                      data-testid="button-admin-chat-attach" aria-label="Attach file">
+                <span class="admin-chat-act-ico" aria-hidden="true">📎</span>
+              </button>
+              <button type="button" id="admin-chat-mic-btn" class="admin-chat-act admin-chat-mic"
+                      title="Hold to dictate"
+                      data-testid="button-admin-chat-mic" aria-label="Dictate">
+                <span class="admin-chat-act-ico" aria-hidden="true">🎤</span>
+                <span class="admin-chat-mic-pulse" aria-hidden="true"></span>
+              </button>
+              <button type="button" class="admin-chat-act admin-chat-slash"
+                      title="Slash commands — what the assistant can do"
+                      onclick="adminChatToggleCmdPalette()"
+                      data-testid="button-admin-chat-slash" aria-label="Slash commands">
+                <span class="admin-chat-act-ico" aria-hidden="true">/</span>
+              </button>
+              <span class="admin-chat-cmdbar-spacer"></span>
+              <button type="submit" id="admin-chat-send-btn" class="btn btn-primary"
+                      data-testid="button-admin-chat-send" aria-label="Send">Send</button>
+            </div>
+          </form>
+
+          <!-- Voice "listening" status line (shown by csrf.js while recording). -->
+          <div id="admin-chat-voice-status" class="admin-chat-voice-status" data-testid="admin-chat-voice-status" hidden>
+            <span class="admin-chat-voice-eq" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+            <span class="admin-chat-voice-label">Listening…</span>
+            <button type="button" class="admin-chat-voice-stop" onclick="adminChatMicStop()" data-testid="button-admin-chat-voice-stop">⏹ Stop</button>
+          </div>
+        </div>
 
       </div>
+
+      <!-- Task 086: split CANVAS panel. Third direct child of .admin-chat-shell
+           so it becomes the right column of the grid ONLY when the shell is
+           .admin-chat-expanded.has-canvas (otherwise display:none). Charts /
+           tables / KPI artifacts the assistant renders inline are mirrored +
+           enlarged here by adminChatPushCanvas() while expanded. No second chat
+           engine — this is a view of the latest artifact. -->
+      <section id="admin-chat-canvas" data-testid="admin-chat-canvas" aria-label="Chat canvas">
+        <div class="admin-chat-canvas-head">
+          <span class="admin-chat-canvas-title">Canvas</span>
+        </div>
+        <div id="admin-chat-canvas-body" class="admin-chat-canvas-body" data-testid="admin-chat-canvas-body">
+          <div class="admin-chat-canvas-empty" data-testid="admin-chat-canvas-empty">Your charts &amp; tables appear here.</div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Task 087: Capabilities tray — a glass drawer that slides in from the
+         right with grouped "what the assistant can do" cards + click-to-run
+         example prompts + the per-conversation skill toggles (via the existing
+         /admin/api/chat/skills GET + /sessions PATCH). Built + role-gated by
+         csrf.js (adminChatRenderCapabilities reads .admin-chat-shell
+         [data-admin-role]). PURE front-end: the examples just seed the composer
+         and the skill toggles reuse the existing endpoints. -->
+    <div class="admin-cap-backdrop" id="admin-chat-cap-backdrop"
+         data-testid="admin-chat-cap-backdrop"
+         onclick="if(event.target===this) adminChatCloseCapabilities()" hidden>
+      <aside class="admin-cap-tray" id="admin-chat-cap-tray" role="dialog"
+             aria-label="Assistant capabilities" aria-modal="true"
+             data-testid="admin-chat-cap-tray">
+        <div class="admin-cap-head">
+          <div class="admin-cap-head-txt">
+            <span class="admin-cap-head-title">What I can do</span>
+            <span class="admin-cap-head-sub">Click any example to drop it into the composer — review, then send.</span>
+          </div>
+          <button type="button" class="admin-cap-close" onclick="adminChatCloseCapabilities()"
+                  title="Close" aria-label="Close" data-testid="button-admin-chat-cap-close">×</button>
+        </div>
+        <div class="admin-cap-body" id="admin-chat-cap-body" data-testid="admin-chat-cap-body">
+          <div class="admin-cap-loading" style="color:var(--admin-text-muted); padding:1rem;">Loading…</div>
+        </div>
+      </aside>
     </div>
 
     <!-- System prompt editor modal -->

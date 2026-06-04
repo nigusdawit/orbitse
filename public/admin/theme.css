@@ -404,10 +404,76 @@
     html[data-admin-contrast="high"] .gx-card, html[data-admin-contrast="high"] .gx-input,
     html[data-admin-contrast="high"] .gx-table-wrap, html[data-admin-contrast="high"] .gx-row{ border-width:1.5px; }
 
-    /* Keyboard focus rings everywhere (a11y baseline, both themes). */
+    /* Keyboard focus rings everywhere (a11y baseline, both themes). Uses
+       --admin-focus, which defaults to var(--admin-accent) so this is unchanged
+       until the Appearance "focus colour" picker overrides it (task 089). */
     .gx-btn:focus-visible, .gx-input:focus-visible, .gx-subtab:focus-visible,
     .gx-icon-btn:focus-visible, .tab-btn:focus-visible, .gx-seg button:focus-visible,
-    .gx-drawer-close:focus-visible{ outline:2px solid var(--admin-accent); outline-offset:2px; }
+    .gx-drawer-close:focus-visible{ outline:2px solid var(--admin-focus); outline-offset:2px; }
+
+    /* ================================================================== */
+    /* APPEARANCE VARIANTS (task 089) — "a lot more" controls. Same model    */
+    /* as task 073: data-* attrs on <html> (server-set, no-flash; live-      */
+    /* updated by the customizer JS). Every DEFAULT value is a NO-OP (no     */
+    /* rule, or one matching today's look) so an un-customized admin renders */
+    /* byte-identical. Colours/numerics come in via the inline <style>.      */
+    /* ================================================================== */
+
+    /* Shadow depth (default "medium" = the theme's --admin-shadow → no rule). */
+    html[data-admin-shadow="none"]{ --admin-shadow:none; }
+    html[data-admin-shadow="soft"]{ --admin-shadow:0 4px 14px rgba(0,0,0,.18); }
+    html[data-admin-shadow="soft"][data-admin-theme="light"]{ --admin-shadow:0 4px 14px rgba(30,45,80,.08); }
+    html[data-admin-shadow="strong"]{ --admin-shadow:0 18px 50px rgba(0,0,0,.55),0 6px 18px rgba(0,0,0,.4); }
+    html[data-admin-shadow="strong"][data-admin-theme="light"]{ --admin-shadow:0 18px 50px rgba(30,45,80,.22),0 6px 18px rgba(30,45,80,.14); }
+
+    /* Heading font (default "serif" = var(--font-serif) → no rule). */
+    html[data-admin-headfont="sans"]{ --admin-head-font:var(--admin-ui-font); }
+    html[data-admin-headfont="mono"]{ --admin-head-font:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+    html[data-admin-headfont="inherit"]{ --admin-head-font:inherit; }
+
+    /* Base font weight (default "normal" = 400 → no rule). Bumps body text only;
+       headings/buttons keep their explicit weights. */
+    html[data-admin-weight="light"] body{ font-weight:300; }
+    html[data-admin-weight="medium"] body{ font-weight:500; }
+    html[data-admin-weight="semibold"] body{ font-weight:600; }
+
+    /* Focus-ring style (default "ring" = the baseline outline above → no rule).
+       "glow" = soft halo; "solid" = thick solid ring. Both use --admin-focus. */
+    html[data-admin-focus="glow"] .gx-btn:focus-visible, html[data-admin-focus="glow"] .gx-input:focus-visible,
+    html[data-admin-focus="glow"] .gx-subtab:focus-visible, html[data-admin-focus="glow"] .gx-icon-btn:focus-visible,
+    html[data-admin-focus="glow"] .tab-btn:focus-visible, html[data-admin-focus="glow"] .gx-seg button:focus-visible,
+    html[data-admin-focus="glow"] .gx-drawer-close:focus-visible{
+      outline:none; box-shadow:0 0 0 3px color-mix(in srgb,var(--admin-focus) 55%,transparent),0 0 14px color-mix(in srgb,var(--admin-focus) 45%,transparent); }
+    html[data-admin-focus="solid"] .gx-btn:focus-visible, html[data-admin-focus="solid"] .gx-input:focus-visible,
+    html[data-admin-focus="solid"] .gx-subtab:focus-visible, html[data-admin-focus="solid"] .gx-icon-btn:focus-visible,
+    html[data-admin-focus="solid"] .tab-btn:focus-visible, html[data-admin-focus="solid"] .gx-seg button:focus-visible,
+    html[data-admin-focus="solid"] .gx-drawer-close:focus-visible{ outline:3px solid var(--admin-focus); outline-offset:1px; }
+
+    /* Content width (default "full" = no max → no rule). Centers the tab body. */
+    html[data-admin-width="wide"] .tab-content{ max-width:1500px; margin-inline:auto; }
+    html[data-admin-width="comfortable"] .tab-content{ max-width:1200px; margin-inline:auto; }
+    html[data-admin-width="narrow"] .tab-content{ max-width:980px; margin-inline:auto; }
+
+    /* Header behaviour (default "sticky" = position:sticky from base.css). */
+    html[data-admin-header="static"] .admin-header{ position:static; }
+
+    /* Button style (default "solid" = the gradient .btn-primary → no rule).
+       "soft" = tinted accent fill; "outline" = bordered + transparent. */
+    html[data-admin-button="soft"] .btn-primary, html[data-admin-button="soft"] .gx-btn-primary{
+      background:color-mix(in srgb,var(--admin-accent) 20%,transparent) !important; color:var(--admin-accent) !important; box-shadow:none !important; }
+    html[data-admin-button="outline"] .btn-primary, html[data-admin-button="outline"] .gx-btn-primary{
+      background:transparent !important; color:var(--admin-accent) !important; border:1px solid var(--admin-accent) !important; box-shadow:none !important; }
+
+    /* Animation speed (default "normal" = per-component durations → no rule).
+       Mirrors the reduce-motion global override; a flat global duration. */
+    html[data-admin-speed="instant"] *{ transition-duration:.001ms !important; animation-duration:.001ms !important; }
+    html[data-admin-speed="fast"] *{ transition-duration:90ms !important; }
+    html[data-admin-speed="slow"] *{ transition-duration:380ms !important; }
+
+    /* Border width — main glass surfaces + fields opt in. Default 1px == today;
+       the longhand overrides each component's `border:1px solid …` shorthand. */
+    .card, .form-panel, .form-card, .dev-card, .kpi-card, .overview-panel,
+    .gx-card, .gx-stat, .gx-row, .gx-table-wrap, .gx-input{ border-width:var(--admin-border-width,1px); }
 
     /* Unify the legacy .section-header-admin / .content-header with the gx-head
        look so every not-individually-converted tab still reads as redesigned

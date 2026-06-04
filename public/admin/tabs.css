@@ -20,6 +20,31 @@
     .ap-preset .sw{ width:26px; height:26px; border-radius:8px; flex-shrink:0; box-shadow:0 1px 4px rgba(0,0,0,.2); }
     .ap-seg-wrap .gx-seg{ flex-wrap:wrap; }
 
+    /* ===== Appearance customizer — task 089 expanded controls ===== */
+    /* Compact grid for the many colour pickers (status/utility + base colours). */
+    .ap-color-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(132px,1fr)); gap:.55rem .7rem; }
+    /* "editing dark/light" chip in the Base-colours card header. */
+    .ap-mode-pill{ margin-left:auto; font-size:var(--admin-fs-1); font-weight:600; color:var(--admin-text-muted);
+      background:var(--admin-field); border:1px solid var(--admin-border); border-radius:999px; padding:.1rem .55rem; }
+    .ap-mode-pill b{ color:var(--admin-accent); text-transform:capitalize; }
+    /* Save-your-own presets: subhead, name+save row, custom swatch label + delete. */
+    .ap-subhead{ font-size:var(--admin-fs-1); font-weight:700; color:var(--admin-text-muted);
+      text-transform:uppercase; letter-spacing:.04em; margin:.95rem 0 .5rem; }
+    .ap-save-row{ display:flex; gap:.5rem; margin-top:.6rem; }
+    .ap-save-row .gx-input{ flex:1; min-width:0; }
+    .ap-preset-lbl{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .ap-preset-x{ flex-shrink:0; width:18px; height:18px; line-height:16px; text-align:center; border-radius:50%;
+      color:var(--admin-text-muted); font-size:14px; }
+    .ap-preset-x:hover{ background:color-mix(in srgb,var(--admin-danger) 22%,transparent); color:var(--admin-danger); }
+    /* Preview status chips + sample link — directly reflect the colour tokens. */
+    .ap-chip-row{ display:flex; gap:.4rem; flex-wrap:wrap; align-items:center; margin-top:.7rem; }
+    .ap-chip{ font-size:var(--admin-fs-1); font-weight:600; padding:.18rem .55rem; border-radius:999px; }
+    .ap-chip-success{ background:color-mix(in srgb,var(--admin-success) 18%,transparent); color:var(--admin-success); }
+    .ap-chip-warning{ background:color-mix(in srgb,var(--admin-warning) 18%,transparent); color:var(--admin-warning); }
+    .ap-chip-danger{ background:color-mix(in srgb,var(--admin-danger) 20%,transparent); color:var(--admin-danger); }
+    .ap-chip-info{ background:color-mix(in srgb,var(--admin-info) 18%,transparent); color:var(--admin-info); }
+    .ap-sample-link{ color:var(--admin-link); font-size:var(--admin-fs-2); text-decoration:underline; }
+
 /* ===== Services tab — master/detail editor ===== */
 /* Master/detail layout for services — stacks on mobile, sidebar
          becomes a horizontal scroll strip so users can still flip
@@ -324,3 +349,73 @@
     .admin-chat-md-body th, .admin-chat-md-body td { border:1px solid var(--admin-border); padding:.25rem .5rem; font-size:.85rem; }
     .admin-chat-md-body h1, .admin-chat-md-body h2, .admin-chat-md-body h3 { margin:.5rem 0 .25rem; }
     .admin-chat-md-body ul, .admin-chat-md-body ol { margin:.25rem 0 .25rem 1.25rem; }
+
+    /* ===================================================================
+       ADMIN AI tab (task 088) — persona + (phase 3) palette editor.
+       Scoped under #tab-admin-ai; reuses the global .card/.btn; colours via
+       the --admin-* theme tokens so light + dark both work. No bare-element
+       selectors leak outside the tab.
+       =================================================================== */
+    #tab-admin-ai .admin-ai-sechead { display:flex; justify-content:space-between;
+      align-items:flex-start; gap:1rem; flex-wrap:wrap; margin:0 0 1rem; }
+    #tab-admin-ai .admin-ai-help { opacity:.72; font-size:.85rem; line-height:1.5;
+      max-width:64ch; margin:0; }
+    #tab-admin-ai .admin-ai-card { margin-bottom:1.1rem; padding:1.1rem 1.2rem; }
+    #tab-admin-ai .admin-ai-card-new { border:1px solid var(--admin-accent); }
+    #tab-admin-ai .admin-ai-card-head { display:flex; justify-content:space-between;
+      align-items:center; gap:1rem; flex-wrap:wrap; margin-bottom:.75rem; }
+    #tab-admin-ai .admin-ai-card-title { display:flex; align-items:center; gap:.5rem;
+      flex-wrap:wrap; font-size:1rem; }
+    #tab-admin-ai .admin-ai-card-title code { background:var(--admin-bg);
+      border:1px solid var(--admin-border); border-radius:.35rem; padding:.05rem .35rem;
+      font-size:.75rem; opacity:.8; }
+    #tab-admin-ai .admin-ai-pemoji { font-size:1.25rem; line-height:1; }
+    #tab-admin-ai .admin-ai-badge { font-size:.66rem; font-weight:600; letter-spacing:.02em;
+      text-transform:uppercase; padding:.12rem .45rem; border-radius:999px;
+      border:1px solid var(--admin-border); color:var(--admin-text-muted); }
+    #tab-admin-ai .admin-ai-badge.is-builtin { background:color-mix(in srgb, var(--admin-accent) 14%, transparent);
+      border-color:color-mix(in srgb, var(--admin-accent) 35%, transparent); color:var(--admin-text); }
+    #tab-admin-ai .admin-ai-badge.is-custom { background:color-mix(in srgb, var(--admin-accent) 8%, transparent); }
+    #tab-admin-ai .admin-ai-badge.is-lock { opacity:.7; }
+    #tab-admin-ai .admin-ai-grid { display:grid; grid-template-columns:2fr 1fr 1fr;
+      gap:.75rem; margin-bottom:.6rem; }
+    #tab-admin-ai .admin-ai-full { display:block; margin-bottom:.6rem; }
+    #tab-admin-ai .admin-ai-grid label, #tab-admin-ai .admin-ai-full,
+    #tab-admin-ai .admin-ai-tools label:not(.admin-ai-toggle) { font-size:.74rem;
+      font-weight:600; color:var(--admin-text-muted); text-transform:uppercase;
+      letter-spacing:.03em; display:flex; flex-direction:column; gap:.3rem; }
+    #tab-admin-ai .admin-ai-grid input,
+    #tab-admin-ai .admin-ai-full input,
+    #tab-admin-ai .admin-ai-full textarea,
+    #tab-admin-ai .admin-ai-tools input { width:100%; box-sizing:border-box;
+      font:inherit; font-weight:400; text-transform:none; letter-spacing:0;
+      padding:.5rem .6rem; border:1px solid var(--admin-border); border-radius:.5rem;
+      background:var(--admin-field, var(--admin-bg)); color:var(--admin-text); }
+    #tab-admin-ai .admin-ai-full textarea { resize:vertical; line-height:1.5;
+      font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:.82rem; }
+    #tab-admin-ai .admin-ai-tools { border:1px solid var(--admin-border);
+      border-radius:.6rem; padding:.8rem .9rem; margin:.2rem 0 .9rem;
+      background:color-mix(in srgb, var(--admin-bg) 55%, transparent); }
+    #tab-admin-ai .admin-ai-toggle { display:inline-flex; align-items:center; gap:.45rem;
+      font-size:.85rem; font-weight:500; color:var(--admin-text); cursor:pointer;
+      text-transform:none; letter-spacing:0; }
+    #tab-admin-ai .admin-ai-tools .admin-ai-toggle { margin-bottom:.6rem; }
+    #tab-admin-ai .admin-ai-hint { font-size:.72rem; opacity:.6; font-weight:400; }
+    #tab-admin-ai .admin-ai-actions { display:flex; gap:.6rem; flex-wrap:wrap;
+      margin-top:.4rem; }
+    #tab-admin-ai .admin-ai-del { color:#c0392b;
+      border-color:color-mix(in srgb, #c0392b 40%, transparent); }
+    @media (max-width:680px) { #tab-admin-ai .admin-ai-grid { grid-template-columns:1fr; } }
+    /* palette editor: sub-nav + auto-fit field grid + flag-checkbox row */
+    #tab-admin-ai .admin-ai-subnav { display:flex; gap:.4rem; flex-wrap:wrap; margin:0 0 1.2rem;
+      border-bottom:1px solid var(--admin-border); padding-bottom:.6rem; }
+    #tab-admin-ai .admin-ai-subtab { font:inherit; font-size:.85rem; font-weight:600; cursor:pointer;
+      padding:.4rem .85rem; border-radius:.5rem; border:1px solid transparent; background:transparent;
+      color:var(--admin-text-muted); }
+    #tab-admin-ai .admin-ai-subtab:hover { color:var(--admin-text);
+      background:color-mix(in srgb, var(--admin-bg) 60%, transparent); }
+    #tab-admin-ai .admin-ai-subtab.is-active { color:var(--admin-text);
+      background:color-mix(in srgb, var(--admin-accent) 14%, transparent);
+      border-color:color-mix(in srgb, var(--admin-accent) 35%, transparent); }
+    #tab-admin-ai .admin-ai-grid.is-auto { grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); }
+    #tab-admin-ai .admin-ai-flags { display:flex; gap:1.2rem; flex-wrap:wrap; margin:.2rem 0 .9rem; }

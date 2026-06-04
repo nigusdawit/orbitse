@@ -356,6 +356,8 @@
       titleEl.value = adminChatActiveCfg.title || '';
     }
     if (modelEl) modelEl.value = adminChatActiveCfg.model || '';
+    // Task 087: keep the glass model pill in lockstep with the native select.
+    if (typeof adminPickSyncAll === 'function') adminPickSyncAll();
   }
   async function adminChatSaveTitle() {
     const sid = localStorage.getItem(ADMIN_CHAT_KEYS.admin);
@@ -399,6 +401,8 @@
     }
     document.getElementById('admin-chat-messages').innerHTML =
       '<div style="color:var(--admin-text-muted); font-size:.9rem;">Conversation cleared.</div>';
+    // Task 087: an empty conversation re-shows the starter chips.
+    if (typeof adminChatRenderStarters === 'function') adminChatRenderStarters();
     await adminChatLoadSessions();
   }
 
@@ -764,33 +768,53 @@
   // Hides itself when empty. Each chip has an × button that drops the
   // attachment from the next turn (the underlying DB row is left in
   // place — cheap, and lets us reuse the id if the admin re-attaches).
+  // Task 087: format a byte count as a compact human size (e.g. "1.2 MB").
+  function adminChatFmtBytes(n) {
+    n = Number(n);
+    if (!isFinite(n) || n <= 0) return '';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (n >= 10 || i === 0 ? Math.round(n) : n.toFixed(1)) + ' ' + units[i];
+  }
+  // Pick a doc glyph from the filename extension (cosmetic).
+  function adminChatDocGlyph(name) {
+    const ext = (String(name || '').split('.').pop() || '').toLowerCase();
+    if (ext === 'pdf') return '📕';
+    if (ext === 'csv' || ext === 'xlsx' || ext === 'xls') return '📊';
+    if (ext === 'doc' || ext === 'docx') return '📝';
+    if (ext === 'ppt' || ext === 'pptx') return '📑';
+    if (ext === 'json') return '🧾';
+    return '📄';
+  }
+
   function adminChatRenderAttachStrip() {
     const strip = document.getElementById('admin-chat-attach-strip');
     if (!strip) return;
     const list = window.__adminChatPendingAttachments || [];
     if (!list.length) { strip.style.display = 'none'; strip.innerHTML = ''; return; }
     strip.style.display = 'flex';
-    // Task #80 fix: image chips render a real thumbnail. Fresh uploads
-    // get a data: URL via FileReader (a.previewUrl); rehydrated history
-    // attachments get a tenant-scoped /thumb URL (a.thumb_url) from the
-    // /admin/api/chat/history payload. Doc chips stay text-only.
+    // Task 087: flagship chips — image thumbnail OR a file-type glyph, with the
+    // filename + a human size + a round × remove. Fresh uploads carry a data:
+    // URL (a.previewUrl); rehydrated history attachments carry a tenant-scoped
+    // a.thumb_url. The scoped .admin-chat-att-* classes (chat.css) own the look.
     strip.innerHTML = list.map((a, i) => {
       const thumbSrc = a.previewUrl || a.thumb_url || '';
       const isImg = a.kind === 'image';
-      const preview = (isImg && thumbSrc)
-        ? '<img src="' + adminChatAttrEscape(thumbSrc) + '" '
-          + 'alt="" style="width:32px; height:32px; object-fit:cover; '
-          + 'border-radius:.25rem; border:1px solid var(--admin-border);">'
-        : (isImg ? '🖼' : '📄');
-      return '<span data-testid="chip-admin-chat-attach-' + (a.id || i) + '" '
-        + 'style="display:inline-flex; align-items:center; gap:.4rem; '
-        + 'background:var(--admin-card); border:1px solid var(--admin-border); '
-        + 'border-radius:.4rem; padding:.2rem .5rem; font-size:.8rem; color:var(--admin-text);">'
-        + preview + ' '
-        + adminChatEscape((a.filename || 'file').slice(0, 40))
-        + ' <button type="button" onclick="adminChatRemoveAttachment(' + i + ')" '
-        + 'style="background:none; border:0; color:var(--admin-text-muted); cursor:pointer; padding:0 .2rem;" '
-        + 'title="Remove">×</button>'
+      const visual = (isImg && thumbSrc)
+        ? '<img class="admin-chat-att-thumb" src="' + adminChatAttrEscape(thumbSrc) + '" alt="">'
+        : '<span class="admin-chat-att-glyph" aria-hidden="true">'
+          + (isImg ? '🖼' : adminChatDocGlyph(a.filename)) + '</span>';
+      const size = adminChatFmtBytes(a.size);
+      const name = adminChatEscape((a.filename || 'file').slice(0, 48));
+      return '<span class="admin-chat-att-chip" data-testid="chip-admin-chat-attach-' + (a.id || i) + '">'
+        + visual
+        + '<span class="admin-chat-att-meta">'
+        +   '<span class="admin-chat-att-name" title="' + adminChatAttrEscape(a.filename || '') + '">' + name + '</span>'
+        +   (size ? '<span class="admin-chat-att-size">' + size + '</span>' : '')
+        + '</span>'
+        + '<button type="button" class="admin-chat-att-rm" onclick="adminChatRemoveAttachment(' + i + ')" '
+        +   'title="Remove" aria-label="Remove attachment">×</button>'
         + '</span>';
     }).join('');
   }
@@ -898,15 +922,34 @@
     return __admChatProvider;
   }
 
+  // Task 087: flagship voice state. The mic button now keeps its glyph wrapper
+  // (.admin-chat-act-ico) so the pulsing-ring CSS can animate around it; we
+  // toggle .is-recording on the button and show/hide the "Listening… ⏹ Stop"
+  // status row (#admin-chat-voice-status) instead of swapping raw textContent.
+  // Falls back gracefully if the new markup isn't present (old structure).
   function adminChatMicSetState(state) {
     const btn = document.getElementById('admin-chat-mic-btn');
     if (!btn) return;
+    const ico = btn.querySelector('.admin-chat-act-ico');
+    const status = document.getElementById('admin-chat-voice-status');
+    const label = status ? status.querySelector('.admin-chat-voice-label') : null;
+    btn.classList.remove('is-recording');
+    if (status) status.hidden = true;
     if (state === 'recording') {
-      btn.textContent = '⏺'; btn.style.background = 'rgba(255,80,80,.20)';
+      btn.classList.add('is-recording');
+      if (ico) ico.textContent = '⏺'; else btn.textContent = '⏺';
+      if (label) label.textContent = 'Listening…';
+      if (status) status.hidden = false;
+      btn.setAttribute('aria-pressed', 'true');
     } else if (state === 'transcribing') {
-      btn.textContent = '⏳'; btn.style.background = '';
+      if (ico) ico.textContent = '⏳'; else btn.textContent = '⏳';
+      if (label) label.textContent = 'Transcribing…';
+      if (status) status.hidden = false;   // keep the row up during transcription
+      btn.setAttribute('aria-pressed', 'false');
     } else {
-      btn.textContent = '🎤'; btn.style.background = '';
+      if (ico) ico.textContent = '🎤'; else btn.textContent = '🎤';
+      btn.style.background = '';
+      btn.setAttribute('aria-pressed', 'false');
     }
   }
 
@@ -1040,6 +1083,37 @@
     btn.addEventListener('touchstart', start, {passive: false});
     btn.addEventListener('touchend', stop);
     btn.addEventListener('touchcancel', stop);
+  }
+
+  // ---- Task 087: command-bar composer (auto-grow) ---------------------
+  // The textarea (#admin-chat-input) auto-grows up to a CSS max-height as the
+  // admin types, then scrolls. Idempotent install (dataset flag) so calling on
+  // every chat-tab open is safe. Resetting after send is handled by a value
+  // observer hook below.
+  function adminChatAutoGrow() {
+    const ta = document.getElementById('admin-chat-input');
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 220) + 'px';
+  }
+  function adminChatInstallComposer() {
+    const ta = document.getElementById('admin-chat-input');
+    if (!ta || ta.dataset.cmdbarBound === '1') return;
+    ta.dataset.cmdbarBound = '1';
+    ta.addEventListener('input', adminChatAutoGrow);
+    // First-paint sizing.
+    adminChatAutoGrow();
+  }
+
+  // Task 087: the "/" affordance toggles the slash-command palette (defined in
+  // the slash-command section below). Seeds a leading "/" so the palette shows
+  // the full list when opened from the button on an empty composer.
+  function adminChatToggleCmdPalette() {
+    const pal = document.getElementById('admin-chat-cmd-palette');
+    const ta = document.getElementById('admin-chat-input');
+    if (pal && !pal.hidden) { adminChatCloseCmdPalette(); return; }
+    if (ta && !ta.value) { ta.value = '/'; ta.focus(); adminChatAutoGrow(); }
+    adminChatOpenCmdPalette();
   }
 
   // ---- Rendering helpers ---------------------------------------------
@@ -1299,10 +1373,7 @@
     if (idAttr !== '') _adminChatBranchTextById[idAttr] = String(text || '');
     return `<div class="admin-chat-bubble-user" style="display:flex; flex-direction:column; align-items:flex-end; gap:.25rem; position:relative;" data-testid="bubble-admin-chat-user${idAttr ? '-' + idAttr : ''}">
       ${attHtml}
-      <div style="max-width:80%; background:rgba(59,130,246,0.18); color:#dbeafe; padding:.75rem 1rem; border-radius:.75rem; border:1px solid rgba(59,130,246,0.35); white-space:pre-wrap; word-wrap:break-word; position:relative;">
-        ${safeText}
-        ${idAttr !== '' ? `<div class="acu-actions"><button type="button" class="admin-chat-branch-btn" data-branch-id="${idAttr}" data-testid="button-edit-rerun-${idAttr}" title="Edit &amp; re-run">✎</button></div>` : ''}
-      </div>
+      <div style="max-width:min(85%,40rem); background:linear-gradient(135deg,var(--admin-accent),var(--admin-accent-2)); color:#fff; padding:.55rem .9rem; border-radius:.9rem; border:1px solid transparent; white-space:pre-wrap; word-wrap:break-word; position:relative;">${safeText}${idAttr !== '' ? `<div class="acu-actions"><button type="button" class="admin-chat-branch-btn" data-branch-id="${idAttr}" data-testid="button-edit-rerun-${idAttr}" title="Edit &amp; re-run">✎</button></div>` : ''}</div>
     </div>`;
   }
 
@@ -1354,6 +1425,8 @@
     if (!box) return;
     if (adminChatMode === 'visitor') {
       box.innerHTML = '<div style="color:var(--admin-text-muted); font-size:.9rem;">Visitor preview — your messages go straight to the public agent.</div>';
+      // Task 087: starters + capabilities are admin-only — hide on visitor.
+      if (typeof adminChatRenderStarters === 'function') adminChatRenderStarters();
       return;
     }
     // Kick off (or refresh) the sessions sidebar in parallel with the
@@ -1364,6 +1437,17 @@
     // dataset flag), so calling on every chat-tab open is safe.
     adminChatInstallDragDrop();
     adminChatInstallMicHandlers();
+    // Task 087: command-bar composer (auto-grow textarea) + persona/model pills
+    // + slash-command palette + capabilities-tray Esc.
+    adminChatInstallComposer();
+    adminPickInstall();
+    // Task 088: rebuild the persona pill + the slash/capability/starter palette
+    // from the DB-backed config (both fail-open to the static fallbacks).
+    adminChatLoadPersonas();
+    adminChatLoadPalette();
+    adminChatRestoreRail();   // task 088: apply the persisted rail collapse state
+    adminChatInstallSlashTrigger();
+    adminChatInstallCapEsc();
     const sid = await adminChatEnsureActiveSession();
     box.innerHTML = '<div style="color:var(--admin-text-muted); font-size:.9rem;">Loading…</div>';
     // Pull the full per-session config in parallel so the header (title,
@@ -1377,7 +1461,9 @@
       if (cfg) { adminChatActiveCfg = cfg; adminChatRefreshHeader(); }
       const msgs = data.messages || [];
       if (!msgs.length) {
-        box.innerHTML = '<div style="color:var(--admin-text-muted); font-size:.9rem;">Ask me anything about your site. Try: "Give me a 7-day overview" or "List the AI skills".</div>';
+        box.innerHTML = '<div style="color:var(--admin-text-muted); font-size:.9rem;">Ask me anything about your site — or pick a starter below.</div>';
+        // Task 087: show the role-aware empty-state starter chips.
+        adminChatRenderStarters();
         return;
       }
       // Pair each assistant message that has tool_calls with the tool
@@ -1451,6 +1537,8 @@
       box.innerHTML = html;
       adminChatHighlightWithin(box);
       adminChatBindBranchClicks();
+      // Task 087: a populated conversation hides the empty-state starters.
+      adminChatRenderStarters();
       adminChatScrollDown();
     } catch (e) {
       box.innerHTML = '<div style="color:var(--admin-text-muted);">Could not load history.</div>';
@@ -1980,12 +2068,16 @@
       if (lastBubble) lastBubble.insertAdjacentHTML('beforeend', userBubbleExtras);
     }
     box.insertAdjacentHTML('beforeend',
-      `<div id="admin-chat-thinking" style="color:var(--admin-text-muted); font-size:.9rem; align-self:flex-start;">Thinking…</div>`);
+      `<div id="admin-chat-thinking" class="admin-chat-typing" aria-label="Assistant is typing" data-testid="admin-chat-thinking"><span class="admin-chat-typing-dot"></span><span class="admin-chat-typing-dot"></span><span class="admin-chat-typing-dot"></span></div>`);
     input.value = '';
+    // Task 087: collapse the auto-grown command bar back to one row.
+    try { adminChatAutoGrow(); } catch (_) {}
     sendBtn.disabled = true;
     // Clear the pending-attachment strip now that the turn is in flight.
     window.__adminChatPendingAttachments = [];
     adminChatRenderAttachStrip();
+    // Task 087: a conversation has begun — hide the empty-state starters.
+    adminChatRenderStarters();
     adminChatScrollDown();
 
     try {
@@ -2119,6 +2211,13 @@
                 } else {
                   toolBox.insertAdjacentHTML('beforeend', html);
                 }
+                // Task 086: mirror the finished tool card into the split canvas
+                // when expanded, so the latest artifact is visible enlarged on
+                // the right. We push a fresh copy built from the same markup
+                // (never move the inline node out of the message stream).
+                try {
+                  if (typeof adminChatPushCanvasHtml === 'function') adminChatPushCanvasHtml(html);
+                } catch (e) {}
                 const proposal = adminChatPickProposal(t.result_preview);
                 if (proposal) {
                   toolBox.insertAdjacentHTML('beforeend',
@@ -2128,6 +2227,13 @@
               } else if (evt.type === 'chart' && evt.spec) {
                 // Datahub (task 057): the assistant drew a chart/KPI/table inline.
                 try { adminChatRenderChart(toolBox, evt.spec); } catch (e) {}
+                // Task 086: when the immersive overlay is open, ALSO mirror this
+                // artifact (enlarged) into the split canvas. Re-render from the
+                // spec into a fresh node so the canvas copy is independent of the
+                // inline one (no DOM move that would disturb the message stream).
+                try {
+                  if (typeof adminChatPushCanvasChart === 'function') adminChatPushCanvasChart(evt.spec);
+                } catch (e) {}
                 adminChatScrollDown();
               } else if (evt.type === 'usage' && evt.usage) {
                 // Per-round token + cost badge appended under bubble.
@@ -2206,4 +2312,1254 @@
       sendBtn.disabled = false;
       adminChatScrollDown();
     }
+  }
+
+  // ===== Admin Chat — Expand / immersive overlay + split canvas (task 086) =====
+  // PURE FRONT-END VIEW over the one chat engine. Toggling adds/removes the
+  // .admin-chat-expanded class on .admin-chat-shell; all the layout (fullscreen
+  // glass overlay, split chat|canvas) is CSS-driven in /admin/chat.css. The
+  // existing #admin-chat-* element ids + markup are untouched, so streaming,
+  // sessions, modals, etc. all keep working in either state.
+
+  function adminChatIsExpanded() {
+    const shell = document.getElementById('admin-chat-shell');
+    return !!(shell && shell.classList.contains('admin-chat-expanded'));
+  }
+
+  // Toggle (or force) the immersive overlay. `force` true=expand, false=collapse,
+  // undefined=toggle. Idempotent; safe to call when the chat tab isn't built yet.
+  function adminChatToggleExpand(force) {
+    const shell = document.getElementById('admin-chat-shell');
+    if (!shell) return;
+    const next = (typeof force === 'boolean') ? force : !shell.classList.contains('admin-chat-expanded');
+    shell.classList.toggle('admin-chat-expanded', next);
+    // Reflect state on the header button (label + a11y).
+    const btn = document.querySelector('[data-testid="button-admin-chat-expand"]');
+    if (btn) {
+      btn.textContent = next ? '⤡ Collapse' : '⤢ Expand';
+      btn.setAttribute('aria-pressed', next ? 'true' : 'false');
+      btn.setAttribute('title', next ? 'Collapse to the tab (Esc)' : 'Expand to full screen (Esc to collapse)');
+    }
+    // The launcher pill hides while the overlay is up (the chat is already open).
+    document.body.classList.toggle('admin-asst-overlay-open', next);
+    if (next) {
+      // Bind a one-shot Esc-to-collapse for this session of the overlay.
+      adminChatInstallEscCollapse();
+      adminChatScrollDown();
+    } else {
+      // Collapsing returns to today's tab exactly; reset focus-rail state so the
+      // next expand starts with the sessions rail visible.
+      shell.classList.remove('rail-collapsed');
+    }
+  }
+
+  // Task 088: collapse / show the conversations rail (works docked AND expanded).
+  // User toggle, persisted in localStorage so it sticks across reloads. Separate
+  // from the (unused) expanded-only .rail-collapsed.
+  function adminChatToggleRail(force) {
+    const shell = document.getElementById('admin-chat-shell');
+    if (!shell) return;
+    const next = (typeof force === 'boolean') ? force : !shell.classList.contains('side-collapsed');
+    shell.classList.toggle('side-collapsed', next);
+    try { localStorage.setItem('adminChatRailCollapsed', next ? '1' : '0'); } catch (e) {}
+    const btn = document.querySelector('[data-testid="button-admin-chat-railtoggle"]');
+    if (btn) {
+      btn.textContent = next ? '⟩' : '⟨';
+      btn.setAttribute('aria-pressed', next ? 'true' : 'false');
+      btn.setAttribute('title', next ? 'Show the conversation list' : 'Hide the conversation list');
+    }
+  }
+  // Restore the persisted rail state on chat load (default: shown).
+  function adminChatRestoreRail() {
+    let v = '0';
+    try { v = localStorage.getItem('adminChatRailCollapsed') || '0'; } catch (e) {}
+    adminChatToggleRail(v === '1');
+  }
+
+  // Esc collapses the overlay. Installed once; the handler is a no-op unless the
+  // shell is currently expanded, so it never interferes with the in-tab view or
+  // the modals (which manage their own Esc/backdrop close).
+  let _adminChatEscBound = false;
+  function adminChatInstallEscCollapse() {
+    if (_adminChatEscBound) return;
+    _adminChatEscBound = true;
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Escape') return;
+      if (!adminChatIsExpanded()) return;
+      // Don't steal Esc from an open chat modal (prompt/skills/kb/cite/branch).
+      if (document.querySelector('.admin-chat-modal-backdrop.open')) return;
+      adminChatToggleExpand(false);
+    });
+  }
+
+  // Reveal the canvas column (sets .has-canvas) and clear the empty-state the
+  // first time an artifact lands. No-op if the canvas elements aren't present.
+  function adminChatCanvasActivate() {
+    const shell = document.getElementById('admin-chat-shell');
+    const body  = document.getElementById('admin-chat-canvas-body');
+    if (!shell || !body) return null;
+    shell.classList.add('has-canvas');
+    const empty = body.querySelector('.admin-chat-canvas-empty');
+    if (empty) empty.remove();
+    return body;
+  }
+
+  // v1 canvas behaviour = show the LATEST artifact. Replace prior content so the
+  // canvas always mirrors the most recent chart/table/tool result. (Kept simple
+  // + extensible: swap the innerHTML reset for an append to stack multiples.)
+  function adminChatPushCanvas(node) {
+    if (!adminChatIsExpanded()) return;          // only mirror while immersive
+    const body = adminChatCanvasActivate();
+    if (!body || !node) return;
+    body.innerHTML = '';
+    body.appendChild(node);
+  }
+
+  // Mirror a CHART/TABLE/KPI artifact into the canvas by RE-RENDERING from its
+  // spec (so the canvas copy is a fresh, independent node — never a move of the
+  // inline one). adminChatRenderChart appends into the container we pass.
+  function adminChatPushCanvasChart(spec) {
+    if (!adminChatIsExpanded() || !spec) return;
+    const body = adminChatCanvasActivate();
+    if (!body) return;
+    body.innerHTML = '';
+    try { adminChatRenderChart(body, spec); } catch (e) {}
+  }
+
+  // Mirror an already-built artifact HTML string (e.g. a tool card) into the
+  // canvas. We parse it into a node so no live inline element is relocated.
+  function adminChatPushCanvasHtml(html) {
+    if (!adminChatIsExpanded() || !html) return;
+    const body = adminChatCanvasActivate();
+    if (!body) return;
+    body.innerHTML = html;
+  }
+
+  // ===== Task 087: persona + model pill dropdowns =====
+  // The native <select id="admin-chat-persona|model"> are KEPT and remain the
+  // source of truth (the engine reads persona at send-time; model has an
+  // onchange=adminChatSaveModel that PATCHes the session). These pretty glass
+  // pills just DRIVE them: selecting an option sets the native .value and fires
+  // a 'change' event (so the select's own handler runs) before we reflect the
+  // label on the trigger. Nothing here owns chat state.
+
+  // Persona metadata — icon + one-line description. Task 088: this is now a
+  // FALLBACK seed; adminChatLoadPersonas() rebuilds it (and the native <select>)
+  // from /admin/api/chat/personas so super-admin edits + custom personas show in
+  // the pill. `let` (not const) so it can be reassigned. The '' key = Auto router.
+  let ADMIN_PERSONA_META = {
+    '':            { icon: '🎭', name: 'Auto persona', desc: 'Router picks the best persona each turn' },
+    'general':     { icon: '💬', name: 'General',      desc: 'Balanced assistant, every tool available' },
+    'research':    { icon: '🔎', name: 'Research',     desc: 'Evidence-first; web search + KB, cites sources' },
+    'data_analyst':{ icon: '📊', name: 'Data analyst', desc: 'Grounds numbers in SQL + overview/recent tools' },
+    'code':        { icon: '💻', name: 'Code',         desc: 'Concise, precise; exact schema/column names' },
+    'creative':    { icon: '🎨', name: 'Creative',     desc: 'Drafts copy via approval-gated propose tools' },
+    'ops':         { icon: '🛠', name: 'Ops',          desc: 'Orders, forms, bookings, automations — terse' },
+  };
+  // Icon for a model value (cosmetic). Anthropic vs OpenAI vs default.
+  function adminPickModelIcon(val) {
+    if (!val) return '⚡';
+    if (val.indexOf('claude') === 0) return '🟣';
+    return '🟢';
+  }
+
+  // Build the persona menu from ADMIN_PERSONA_META (in the native <option>
+  // order so the two stay in lockstep). Returns the menu HTML.
+  function adminPickBuildPersonaMenu(sel) {
+    let html = '';
+    for (const opt of Array.from(sel.options)) {
+      const m = ADMIN_PERSONA_META[opt.value] || { icon: '•', name: opt.text, desc: '' };
+      html += adminPickOptHtml(opt.value, m.icon, m.name, m.desc);
+    }
+    return html;
+  }
+
+  // Task 088: personas are DB-backed + super-admin-editable. Rebuild the native
+  // persona <select> options + ADMIN_PERSONA_META from /admin/api/chat/personas,
+  // then re-sync the glass pill (its menu rebuilds lazily on next open). FAIL-OPEN:
+  // on any error or empty payload, keep the static <option>s shipped in the
+  // template + the fallback meta above — the picker is never blanked or broken.
+  async function adminChatLoadPersonas() {
+    const sel = document.getElementById('admin-chat-persona');
+    if (!sel) return;
+    let personas;
+    try {
+      const res = await fetch('/admin/api/chat/personas');
+      if (!res.ok) return;
+      const data = await res.json();
+      personas = (data && data.personas) || [];
+    } catch (e) { return; }
+    if (!personas.length) return;
+    const prev = sel.value || '';
+    // Auto ('') is a client-side pin, always first; then the live personas.
+    const meta = { '': { icon: '🎭', name: 'Auto persona', desc: 'Router picks the best persona each turn' } };
+    let html = '<option value="">🎭 Auto persona</option>';
+    personas.forEach(p => {
+      const icon = p.icon || '•';
+      meta[p.key] = { icon: icon, name: p.label || p.key, desc: p.description || '' };
+      const label = (icon ? icon + ' ' : '') + (p.label || p.key);
+      html += '<option value="' + adminChatAttrEscape(p.key) + '">' + adminChatEscape(label) + '</option>';
+    });
+    sel.innerHTML = html;
+    sel.value = meta[prev] ? prev : '';   // keep the pin if it still exists, else Auto
+    ADMIN_PERSONA_META = meta;
+    const pickEl = document.getElementById('admin-pick-persona');
+    if (pickEl && typeof adminPickSyncTrigger === 'function') adminPickSyncTrigger(pickEl);
+  }
+
+  // Task 088: the slash-command palette, capability groups, and starter chips are
+  // DB-backed + super-admin-editable. Replace the static fallback arrays with the
+  // server's role-filtered set (super-only rows are already dropped server-side for
+  // a normal admin; the existing client .filter stays as defense). FAIL-OPEN: on any
+  // error or empty payload, keep the static consts so the palette is never blank.
+  async function adminChatLoadPalette() {
+    let data;
+    try {
+      const res = await fetch('/admin/api/chat/palette');
+      if (!res.ok) return;
+      data = await res.json();
+    } catch (e) { return; }
+    if (!data) return;
+    if (Array.isArray(data.commands) && data.commands.length) ADMIN_CMD_MAP = data.commands;
+    if (Array.isArray(data.capabilities) && data.capabilities.length) ADMIN_CAP_GROUPS = data.capabilities;
+    if (Array.isArray(data.starters) && data.starters.length) ADMIN_STARTERS = data.starters;
+    // The empty-state starters may have rendered from the fallback before this
+    // resolved — re-render so they reflect the live set.
+    if (typeof adminChatRenderStarters === 'function') adminChatRenderStarters();
+  }
+  // Build the model menu by walking the native select's optgroups/options so
+  // the model list stays defined ONCE (in the template) — we never duplicate it.
+  function adminPickBuildModelMenu(sel) {
+    let html = '';
+    for (const node of Array.from(sel.children)) {
+      if (node.tagName === 'OPTGROUP') {
+        html += '<div class="admin-pick-group">' + adminChatEscape(node.label) + '</div>';
+        for (const opt of Array.from(node.children)) {
+          html += adminPickOptHtml(opt.value, adminPickModelIcon(opt.value), opt.text, '');
+        }
+      } else if (node.tagName === 'OPTION') {
+        html += adminPickOptHtml(node.value, adminPickModelIcon(node.value), node.text, '');
+      }
+    }
+    return html;
+  }
+  function adminPickOptHtml(value, icon, name, desc) {
+    return '<button type="button" class="admin-pick-opt" role="option" '
+      + 'data-value="' + adminChatAttrEscape(value) + '">'
+      + '<span class="admin-pick-opt-ico" aria-hidden="true">' + adminChatEscape(icon) + '</span>'
+      + '<span class="admin-pick-opt-txt">'
+      +   '<span class="admin-pick-opt-name">' + adminChatEscape(name) + '</span>'
+      +   (desc ? '<span class="admin-pick-opt-desc">' + adminChatEscape(desc) + '</span>' : '')
+      + '</span>'
+      + '<span class="admin-pick-opt-check" aria-hidden="true">✓</span>'
+      + '</button>';
+  }
+
+  // Reflect the native select's current value onto the trigger pill (icon +
+  // label) and the menu's aria-selected. Called on open + after a change + on
+  // chat load (so the model pill shows the loaded session's model).
+  function adminPickSyncTrigger(pickEl) {
+    if (!pickEl) return;
+    const which = pickEl.dataset.pick;
+    const sel = document.getElementById('admin-chat-' + which);
+    if (!sel) return;
+    const val = sel.value || '';
+    const trigger = pickEl.querySelector('.admin-pick-trigger');
+    const icoEl = trigger && trigger.querySelector('.admin-pick-ico');
+    const labelEl = trigger && trigger.querySelector('.admin-pick-label');
+    let icon, label;
+    if (which === 'persona') {
+      const m = ADMIN_PERSONA_META[val] || ADMIN_PERSONA_META[''];
+      icon = m.icon; label = m.name;
+    } else {
+      const opt = Array.from(sel.options).find(o => o.value === val) || sel.options[0];
+      icon = adminPickModelIcon(val); label = opt ? opt.text : 'Default model';
+    }
+    if (icoEl) icoEl.textContent = icon;
+    if (labelEl) labelEl.textContent = label;
+    // Mark the matching menu option selected (if the menu is built).
+    pickEl.querySelectorAll('.admin-pick-opt').forEach(o => {
+      o.setAttribute('aria-selected', o.dataset.value === val ? 'true' : 'false');
+      o.classList.remove('is-active');
+    });
+  }
+
+  // Open one pick's menu (builds it lazily the first time), close any other.
+  function adminPickOpen(pickEl) {
+    if (!pickEl) return;
+    adminPickCloseAll(pickEl);
+    const which = pickEl.dataset.pick;
+    const sel = document.getElementById('admin-chat-' + which);
+    const menu = pickEl.querySelector('.admin-pick-menu');
+    if (!sel || !menu) return;
+    menu.innerHTML = (which === 'persona')
+      ? adminPickBuildPersonaMenu(sel)
+      : adminPickBuildModelMenu(sel);
+    menu.hidden = false;
+    pickEl.classList.add('is-open');
+    const trigger = pickEl.querySelector('.admin-pick-trigger');
+    if (trigger) trigger.setAttribute('aria-expanded', 'true');
+    adminPickSyncTrigger(pickEl);
+    // Focus the selected (or first) option for keyboard nav.
+    const selOpt = menu.querySelector('.admin-pick-opt[aria-selected="true"]')
+                 || menu.querySelector('.admin-pick-opt');
+    if (selOpt) { selOpt.classList.add('is-active'); try { selOpt.focus(); } catch (_) {} }
+    adminPickInstallOutside();
+  }
+  function adminPickClose(pickEl) {
+    if (!pickEl) return;
+    const menu = pickEl.querySelector('.admin-pick-menu');
+    if (menu) menu.hidden = true;
+    pickEl.classList.remove('is-open');
+    const trigger = pickEl.querySelector('.admin-pick-trigger');
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+  }
+  function adminPickCloseAll(except) {
+    document.querySelectorAll('.admin-pick.is-open').forEach(p => {
+      if (p !== except) adminPickClose(p);
+    });
+  }
+
+  // Commit a chosen value into the native select + fire its change handler,
+  // then reflect the trigger + close. This is the ONLY write path — it routes
+  // through the existing engine handlers (persona read-at-send; model save).
+  function adminPickChoose(pickEl, value) {
+    const which = pickEl.dataset.pick;
+    const sel = document.getElementById('admin-chat-' + which);
+    if (!sel) return;
+    sel.value = value;
+    // Fire change so the select's own onchange (model → adminChatSaveModel)
+    // runs exactly as if the user used the native control. Persona has no
+    // onchange (it's read at send-time) but dispatching is harmless + future-proof.
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    adminPickSyncTrigger(pickEl);
+    adminPickClose(pickEl);
+    const trigger = pickEl.querySelector('.admin-pick-trigger');
+    if (trigger) { try { trigger.focus(); } catch (_) {} }
+  }
+
+  // Keyboard nav within an open menu: ↑/↓ move, Home/End jump, Enter/Space
+  // choose, Esc closes. Bound per-menu on open via delegation on the pick.
+  function adminPickMenuKeydown(pickEl, ev) {
+    const menu = pickEl.querySelector('.admin-pick-menu');
+    if (!menu || menu.hidden) return;
+    const opts = Array.from(menu.querySelectorAll('.admin-pick-opt'));
+    if (!opts.length) return;
+    let idx = opts.findIndex(o => o.classList.contains('is-active'));
+    if (idx < 0) idx = 0;
+    const setActive = (n) => {
+      opts.forEach(o => o.classList.remove('is-active'));
+      const t = opts[(n + opts.length) % opts.length];
+      t.classList.add('is-active');
+      try { t.focus(); } catch (_) {}
+    };
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); setActive(idx + 1); }
+    else if (ev.key === 'ArrowUp') { ev.preventDefault(); setActive(idx - 1); }
+    else if (ev.key === 'Home') { ev.preventDefault(); setActive(0); }
+    else if (ev.key === 'End') { ev.preventDefault(); setActive(opts.length - 1); }
+    else if (ev.key === 'Enter' || ev.key === ' ') {
+      ev.preventDefault();
+      const active = opts[idx];
+      if (active) adminPickChoose(pickEl, active.dataset.value);
+    } else if (ev.key === 'Escape') {
+      ev.preventDefault();
+      adminPickClose(pickEl);
+      const trigger = pickEl.querySelector('.admin-pick-trigger');
+      if (trigger) try { trigger.focus(); } catch (_) {}
+    }
+  }
+
+  // Install per-pick listeners ONCE. Delegated clicks/keys keep it cheap.
+  let _adminPickBound = false;
+  function adminPickInstall() {
+    document.querySelectorAll('.admin-pick').forEach(pickEl => {
+      if (pickEl.dataset.pickBound === '1') return;
+      pickEl.dataset.pickBound = '1';
+      const trigger = pickEl.querySelector('.admin-pick-trigger');
+      if (trigger) {
+        trigger.addEventListener('click', (e) => {
+          e.preventDefault();
+          if (pickEl.classList.contains('is-open')) adminPickClose(pickEl);
+          else adminPickOpen(pickEl);
+        });
+        trigger.addEventListener('keydown', (e) => {
+          if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault(); adminPickOpen(pickEl);
+          }
+        });
+      }
+      const menu = pickEl.querySelector('.admin-pick-menu');
+      if (menu) {
+        menu.addEventListener('click', (e) => {
+          const opt = e.target.closest('.admin-pick-opt');
+          if (opt) { e.preventDefault(); adminPickChoose(pickEl, opt.dataset.value); }
+        });
+        menu.addEventListener('keydown', (e) => adminPickMenuKeydown(pickEl, e));
+      }
+      // Reflect the current native value on the resting trigger.
+      adminPickSyncTrigger(pickEl);
+    });
+    if (!_adminPickBound) {
+      _adminPickBound = true;
+      document.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.admin-pick')) return;
+        adminPickCloseAll(null);
+      });
+    }
+  }
+  // Bind the global outside-close once (called from adminPickOpen too, idempotent).
+  function adminPickInstallOutside() { adminPickInstall(); }
+
+  // Re-sync both triggers from the native selects (e.g. after a session loads
+  // and adminChatRefreshHeader set #admin-chat-model.value).
+  function adminPickSyncAll() {
+    document.querySelectorAll('.admin-pick').forEach(adminPickSyncTrigger);
+  }
+
+  // ===== Task 087: slash-command palette =====
+  // Typing "/" at the START of the composer (or the "/" button) opens a
+  // filterable glass menu of admin-AI-specific commands. Selecting one SEEDS a
+  // templated prompt into the composer (+ optionally routes a persona via the
+  // pill/native select) — the admin reviews + sends. PURE client-side: every
+  // command maps to a REAL admin tool (verified against ADMIN_TOOLS, app.py
+  // ~18197) but we never call tools directly; we just compose a message the one
+  // engine will act on. Role-aware: `super:true` commands are dropped for a
+  // normal admin (read from .admin-chat-shell[data-admin-role]).
+  //
+  // Field guide:
+  //   cmd      "/name" trigger
+  //   icon     glyph
+  //   group    palette section
+  //   desc     one-liner (names the underlying tool)
+  //   persona  optional persona key to pin (drives the persona pill/select)
+  //   seed     templated prompt dropped into the composer
+  //   arg      optional placeholder hint shown after the name (e.g. "<sql>")
+  //   tail     when true, leave the caret ready for the admin to type the arg
+  //   super    when true, super-admin only (hidden for normal admins)
+  // Task 088: FALLBACK slash-commands. adminChatLoadPalette() replaces this (and
+  // the two arrays below) from /admin/api/chat/palette so super-admin edits show;
+  // `let` so it can be reassigned. Kept as the fail-open default if the fetch fails.
+  let ADMIN_CMD_MAP = [
+    // ---- Data & SQL ----
+    { cmd: '/tables',     icon: '🗂', group: 'Data & SQL', tool: 'admin_list_tables',
+      desc: 'List the database tables (admin_list_tables)',
+      seed: 'List all the tables in my database and what each one is for.' },
+    { cmd: '/stats',      icon: '📈', group: 'Data & SQL', tool: 'admin_overview_stats', persona: 'data_analyst',
+      desc: '7-day overview metrics (admin_overview_stats)',
+      seed: 'Give me a 7-day overview of my site: visitors, chats, orders and form submissions.' },
+    { cmd: '/sql',        icon: '🧮', group: 'Data & SQL', tool: 'admin_run_sql', persona: 'data_analyst',
+      desc: 'Run a read-only SQL query (admin_run_sql)', arg: '<query>', tail: true,
+      seed: 'Run this read-only SQL: ' },
+    { cmd: '/chart',      icon: '📊', group: 'Data & SQL', tool: 'render_chart', persona: 'data_analyst',
+      desc: 'Visualize data as a chart (render_chart)', arg: '<what to plot>', tail: true,
+      seed: 'Query the data and render a chart of: ' },
+    { cmd: '/saved',      icon: '💾', group: 'Data & SQL', tool: 'admin_list_saved_queries',
+      desc: 'List / run your saved queries (admin_list_saved_queries)',
+      seed: 'List my saved queries, then run the most relevant one and summarize the result.' },
+    // ---- Datahub (grant-aware) ----
+    { cmd: '/datahub',    icon: '🔌', group: 'Datahub', tool: 'admin_list_connections',
+      desc: 'List + inspect your data connections (grant-bounded)',
+      seed: 'List my Datahub connections, then inspect the most useful one and tell me what I can query.' },
+    // ---- Dashboards ----
+    { cmd: '/dashboard',  icon: '🧭', group: 'Dashboards', tool: 'admin_create_dashboard',
+      desc: 'Create a dashboard (admin_create_dashboard)', arg: '<topic>', tail: true,
+      seed: 'Create a dashboard that tracks: ' },
+    // ---- Analytics ----
+    { cmd: '/analyze',    icon: '🧠', group: 'Analytics', tool: 'admin_analyze_chat_topics',
+      desc: 'Mine visitor-chat topics (admin_analyze_chat_topics)',
+      seed: 'Analyze my visitor chat topics from the last 30 days and surface the top themes and gaps.' },
+    // ---- Content & Marketing ----
+    { cmd: '/seo',        icon: '🔍', group: 'Content & Marketing', tool: 'admin_suggest_seo_improvements',
+      desc: 'Find content gaps / SEO wins (admin_suggest_seo_improvements)',
+      seed: 'Review my site content and suggest concrete SEO improvements and content gaps to fill.' },
+    { cmd: '/blog',       icon: '✍️', group: 'Content & Marketing', tool: 'admin_propose_draft_blog_post', persona: 'creative',
+      desc: 'Draft a blog post for approval (admin_propose_draft_blog_post)', arg: '<topic>', tail: true,
+      seed: 'Draft a blog post (for my approval) about: ' },
+    { cmd: '/faq',        icon: '❓', group: 'Content & Marketing', tool: 'admin_propose_draft_faq_entry', persona: 'creative',
+      desc: 'Draft an FAQ entry for approval (admin_propose_draft_faq_entry)', arg: '<question>', tail: true,
+      seed: 'Draft an FAQ entry (for my approval) answering: ' },
+    // ---- Research / Web ----
+    { cmd: '/search',     icon: '🌐', group: 'Research', tool: 'admin_web_search',
+      desc: 'Search the web (admin_web_search)', arg: '<query>', tail: true,
+      seed: 'Search the web and summarize with sources: ' },
+    // ---- Knowledge Base ----
+    { cmd: '/kb',         icon: '📚', group: 'Knowledge Base', tool: 'lookup_knowledge_base',
+      desc: 'Look something up in the KB (lookup_knowledge_base)', arg: '<question>', tail: true,
+      seed: 'Search my Knowledge Base and answer with citations: ' },
+    // ---- Automations ----
+    { cmd: '/automations',icon: '🤖', group: 'Automations', tool: 'admin_list_automations',
+      desc: 'List your automations (admin_list_automations)',
+      seed: 'List my automations and tell me which are active and what each one does.' },
+    // ---- Skills ----
+    { cmd: '/skills',     icon: '🧰', group: 'Skills', tool: 'admin_list_skills',
+      desc: 'List available AI skills (admin_list_skills)',
+      seed: 'List the AI skills available to you right now and what each can do.' },
+    // ---- Snapshots ----
+    { cmd: '/snapshots',  icon: '🗄', group: 'Data & SQL', tool: 'admin_recent_snapshots',
+      desc: 'Recent content snapshots (admin_recent_snapshots)',
+      seed: 'Show my most recent content snapshots and what changed in each.' },
+
+    // ---- SUPER-ADMIN ONLY (hidden for normal admins) ----
+    { cmd: '/research',   icon: '🔭', group: 'Research', tool: 'run_research', persona: 'research', super: true,
+      desc: 'Run a deep research task (run_research)', arg: '<topic>', tail: true,
+      seed: 'Run a deep research task on: ' },
+    { cmd: '/content',    icon: '📰', group: 'Content & Marketing', tool: 'generate_content', super: true,
+      desc: 'Generate long-form content (generate_content)', arg: '<brief>', tail: true,
+      seed: 'Generate long-form content for: ' },
+    { cmd: '/design',     icon: '🎨', group: 'Content & Marketing', tool: 'admin_propose_create_site_design', super: true,
+      desc: 'Propose a new site design (admin_propose_create_site_design)', arg: '<page / vibe>', tail: true,
+      seed: 'Propose a new site design (for my approval) for: ' },
+    { cmd: '/theme',      icon: '🌈', group: 'Content & Marketing', tool: 'admin_propose_create_site_theme', super: true,
+      desc: 'Propose a new site theme (admin_propose_create_site_theme)', arg: '<style>', tail: true,
+      seed: 'Propose a new site theme (for my approval): ' },
+    { cmd: '/define',     icon: '🧱', group: 'Datahub', tool: 'admin_define_schema', super: true,
+      desc: 'Define / annotate Datahub schema (admin_define_schema)', arg: '<table>', tail: true,
+      seed: 'Help me define and annotate the Datahub schema for: ' },
+    { cmd: '/mcp',        icon: '🛰', group: 'Connectors (MCP)', tool: 'admin_mcp_list_servers', super: true,
+      desc: 'List MCP servers (admin_mcp_list_servers)',
+      seed: 'List my MCP servers, their status, and the tools they expose.' },
+  ];
+
+  // True when the current shell is super-admin (data-admin-role). Defaults to
+  // NON-super (safer) if the attribute is missing.
+  function adminChatIsSuperAdmin() {
+    const shell = document.getElementById('admin-chat-shell');
+    return !!(shell && shell.getAttribute('data-admin-role') === 'super_admin');
+  }
+  // The role-filtered command list.
+  function adminChatVisibleCmds() {
+    const sup = adminChatIsSuperAdmin();
+    return ADMIN_CMD_MAP.filter(c => sup || !c.super);
+  }
+
+  let _adminCmdActiveIdx = 0;     // active row in the open palette
+  let _adminCmdFiltered = [];     // current filtered command list
+
+  // Filter commands by the text after "/" (matches cmd name + description).
+  function adminChatFilterCmds(query) {
+    const q = (query || '').replace(/^\//, '').trim().toLowerCase();
+    const all = adminChatVisibleCmds();
+    if (!q) return all;
+    return all.filter(c =>
+      c.cmd.slice(1).toLowerCase().indexOf(q) === 0 ||      // prefix on name
+      c.cmd.slice(1).toLowerCase().indexOf(q) !== -1 ||      // substring on name
+      (c.desc || '').toLowerCase().indexOf(q) !== -1);        // substring on desc
+  }
+
+  // Render the palette body from a filtered list, grouped by `group`.
+  function adminChatRenderCmdPalette(list) {
+    const pal = document.getElementById('admin-chat-cmd-palette');
+    if (!pal) return;
+    _adminCmdFiltered = list;
+    if (!list.length) {
+      pal.innerHTML = '<div class="admin-cmd-empty">No matching commands.</div>';
+      return;
+    }
+    let html = '<div class="admin-cmd-hint">Pick a command — it fills the composer; review then <b>Send</b>. <b>↑↓</b> navigate · <b>Enter</b> select · <b>Esc</b> close</div>';
+    let lastGroup = null;
+    let flatIdx = 0;
+    for (const c of list) {
+      if (c.group !== lastGroup) {
+        html += '<div class="admin-cmd-group">' + adminChatEscape(c.group) + '</div>';
+        lastGroup = c.group;
+      }
+      const argHtml = c.arg ? ' <span class="admin-cmd-arg">' + adminChatEscape(c.arg) + '</span>' : '';
+      const personaHtml = c.persona
+        ? '<span class="admin-cmd-persona">' + adminChatEscape((ADMIN_PERSONA_META[c.persona] || {}).name || c.persona) + '</span>'
+        : '';
+      const superHtml = c.super ? '<span class="admin-cmd-super">super</span>' : '';
+      html += '<button type="button" class="admin-cmd-item' + (flatIdx === _adminCmdActiveIdx ? ' is-active' : '') + '" '
+        + 'role="option" data-cmd="' + adminChatAttrEscape(c.cmd) + '" data-idx="' + flatIdx + '">'
+        + '<span class="admin-cmd-ico" aria-hidden="true">' + adminChatEscape(c.icon) + '</span>'
+        + '<span class="admin-cmd-body">'
+        +   '<span class="admin-cmd-name">' + adminChatEscape(c.cmd) + argHtml + '</span>'
+        +   '<span class="admin-cmd-desc">' + adminChatEscape(c.desc || '') + '</span>'
+        + '</span>'
+        + personaHtml + superHtml
+        + '</button>';
+      flatIdx++;
+    }
+    pal.innerHTML = html;
+  }
+
+  function adminChatOpenCmdPalette() {
+    const pal = document.getElementById('admin-chat-cmd-palette');
+    const ta = document.getElementById('admin-chat-input');
+    if (!pal) return;
+    _adminCmdActiveIdx = 0;
+    adminChatRenderCmdPalette(adminChatFilterCmds(ta ? ta.value : ''));
+    pal.hidden = false;
+    const slashBtn = document.querySelector('[data-testid="button-admin-chat-slash"]');
+    if (slashBtn) slashBtn.classList.add('is-open');
+    adminChatInstallCmdOutside();
+  }
+  function adminChatCloseCmdPalette() {
+    const pal = document.getElementById('admin-chat-cmd-palette');
+    if (pal) { pal.hidden = true; pal.innerHTML = ''; }
+    const slashBtn = document.querySelector('[data-testid="button-admin-chat-slash"]');
+    if (slashBtn) slashBtn.classList.remove('is-open');
+  }
+  function adminChatCmdPaletteOpen() {
+    const pal = document.getElementById('admin-chat-cmd-palette');
+    return !!(pal && !pal.hidden);
+  }
+
+  // Seed the composer with a prompt and (optionally) route a persona via the
+  // SAME path the pill uses (sets the native select value + fires change). The
+  // shared primitive behind slash-commands, starters, and capability examples.
+  // Never auto-sends — the admin reviews + edits, then hits Send.
+  function adminChatSeedComposer(seed, persona) {
+    const ta = document.getElementById('admin-chat-input');
+    if (!ta) return;
+    if (persona) {
+      const personaSel = document.getElementById('admin-chat-persona');
+      const pickEl = document.getElementById('admin-pick-persona');
+      if (personaSel) {
+        personaSel.value = persona;
+        personaSel.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      if (pickEl && typeof adminPickSyncTrigger === 'function') adminPickSyncTrigger(pickEl);
+    }
+    ta.value = seed || '';
+    ta.focus();
+    // Place caret at the end so the admin can type the argument straight away.
+    try { const n = ta.value.length; ta.setSelectionRange(n, n); } catch (_) {}
+    adminChatAutoGrow();
+  }
+
+  // Apply a chosen slash-command: seed its templated prompt + route its persona,
+  // then close the palette.
+  function adminChatApplyCmd(c) {
+    if (!c) return;
+    adminChatCloseCmdPalette();
+    adminChatSeedComposer(c.seed || (c.cmd + ' '), c.persona);
+  }
+  function adminChatApplyCmdByName(name) {
+    const c = adminChatVisibleCmds().find(x => x.cmd === name);
+    adminChatApplyCmd(c);
+  }
+
+  // Keyboard nav while the palette is open: ↑/↓ move the active row, Enter
+  // applies it, Esc closes, Tab applies the active row's command name. Bound on
+  // the textarea (see adminChatInstallSlashTrigger).
+  function adminChatCmdKeydown(ev) {
+    if (!adminChatCmdPaletteOpen()) return false;
+    const n = _adminCmdFiltered.length;
+    if (!n) {
+      if (ev.key === 'Escape') { adminChatCloseCmdPalette(); return true; }
+      return false;
+    }
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      _adminCmdActiveIdx = (_adminCmdActiveIdx + 1) % n;
+      adminChatHighlightCmd();
+      return true;
+    }
+    if (ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      _adminCmdActiveIdx = (_adminCmdActiveIdx - 1 + n) % n;
+      adminChatHighlightCmd();
+      return true;
+    }
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      adminChatApplyCmd(_adminCmdFiltered[_adminCmdActiveIdx]);
+      return true;
+    }
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      adminChatCloseCmdPalette();
+      return true;
+    }
+    return false;
+  }
+  function adminChatHighlightCmd() {
+    const pal = document.getElementById('admin-chat-cmd-palette');
+    if (!pal) return;
+    const items = Array.from(pal.querySelectorAll('.admin-cmd-item'));
+    items.forEach((el, i) => el.classList.toggle('is-active', i === _adminCmdActiveIdx));
+    const active = items[_adminCmdActiveIdx];
+    if (active && active.scrollIntoView) active.scrollIntoView({ block: 'nearest' });
+  }
+
+  // Wire the "/" trigger + palette interactions ONCE (idempotent via dataset).
+  // - typing "/" at composer start opens the palette; further typing filters;
+  //   deleting the "/" (or moving off the start) closes it.
+  // - palette clicks apply the command.
+  function adminChatInstallSlashTrigger() {
+    const ta = document.getElementById('admin-chat-input');
+    if (ta && ta.dataset.slashBound !== '1') {
+      ta.dataset.slashBound = '1';
+      // keydown for nav must run BEFORE the existing Enter-to-send inline
+      // handler. We attach in the CAPTURE phase and, when the palette consumes
+      // the key, call stopImmediatePropagation() so the event never reaches the
+      // target-phase inline onkeydown (Enter selects a command, not sends).
+      ta.addEventListener('keydown', (ev) => {
+        if (adminChatCmdKeydown(ev)) { ev.stopImmediatePropagation(); }
+      }, true);
+      // input: open/refresh/close the palette based on the leading "/".
+      ta.addEventListener('input', () => {
+        const v = ta.value || '';
+        if (v.charAt(0) === '/' && v.indexOf(' ') === -1) {
+          _adminCmdActiveIdx = 0;
+          adminChatRenderCmdPalette(adminChatFilterCmds(v));
+          const pal = document.getElementById('admin-chat-cmd-palette');
+          if (pal && pal.hidden) adminChatOpenCmdPalette();
+        } else if (adminChatCmdPaletteOpen()) {
+          adminChatCloseCmdPalette();
+        }
+      });
+    }
+    const pal = document.getElementById('admin-chat-cmd-palette');
+    if (pal && pal.dataset.cmdBound !== '1') {
+      pal.dataset.cmdBound = '1';
+      pal.addEventListener('click', (e) => {
+        const item = e.target.closest('.admin-cmd-item');
+        if (item) { e.preventDefault(); adminChatApplyCmdByName(item.dataset.cmd); }
+      });
+      pal.addEventListener('mousemove', (e) => {
+        const item = e.target.closest('.admin-cmd-item');
+        if (item && item.dataset.idx != null) {
+          _adminCmdActiveIdx = parseInt(item.dataset.idx, 10) || 0;
+          adminChatHighlightCmd();
+        }
+      });
+    }
+  }
+  // Outside-click close for the palette (bound once).
+  let _adminCmdOutsideBound = false;
+  function adminChatInstallCmdOutside() {
+    if (_adminCmdOutsideBound) return;
+    _adminCmdOutsideBound = true;
+    document.addEventListener('mousedown', (e) => {
+      if (!adminChatCmdPaletteOpen()) return;
+      const dock = document.getElementById('admin-chat-composer-dock');
+      if (dock && dock.contains(e.target)) return;  // clicks inside composer/palette
+      adminChatCloseCmdPalette();
+    });
+  }
+
+  // ===== Task 087: header overflow ⋯ menu =====
+  // Pure relocation of Prompt/Skills/KB/Export/Clear off the toolbar. Each item
+  // calls the EXISTING handler by name (adminChatOverflowRun) so behaviour is
+  // unchanged; this only declutters the header.
+  function adminChatToggleOverflow() {
+    const wrap = document.getElementById('admin-chat-overflow');
+    if (!wrap) return;
+    const menu = wrap.querySelector('.admin-chat-overflow-menu');
+    const btn = wrap.querySelector('.admin-chat-overflow-btn');
+    if (!menu) return;
+    const open = menu.hidden;
+    menu.hidden = !open;
+    if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) adminChatInstallOverflowOutside();
+  }
+  function adminChatCloseOverflow() {
+    const wrap = document.getElementById('admin-chat-overflow');
+    if (!wrap) return;
+    const menu = wrap.querySelector('.admin-chat-overflow-menu');
+    const btn = wrap.querySelector('.admin-chat-overflow-btn');
+    if (menu) menu.hidden = true;
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  }
+  // Close the menu, then invoke the named global handler with optional args.
+  function adminChatOverflowRun(fnName, arg) {
+    adminChatCloseOverflow();
+    try {
+      const fn = window[fnName];
+      if (typeof fn === 'function') fn(arg);
+    } catch (e) { console.warn('[admin-chat] overflow action failed', fnName, e); }
+  }
+  let _adminOverflowOutsideBound = false;
+  function adminChatInstallOverflowOutside() {
+    if (_adminOverflowOutsideBound) return;
+    _adminOverflowOutsideBound = true;
+    document.addEventListener('mousedown', (e) => {
+      const wrap = document.getElementById('admin-chat-overflow');
+      if (!wrap) return;
+      const menu = wrap.querySelector('.admin-chat-overflow-menu');
+      if (!menu || menu.hidden) return;
+      if (wrap.contains(e.target)) return;
+      adminChatCloseOverflow();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') adminChatCloseOverflow();
+    });
+  }
+
+  // ===== Task 087: empty-state starters =====
+  // Role-aware chips shown only when the message list has no real bubbles. Each
+  // seeds the composer (+ optional persona) via adminChatSeedComposer.
+  let ADMIN_STARTERS = [   // task 088: fallback; replaced by adminChatLoadPalette()
+    { icon: '📈', label: 'Give me a 7-day overview', persona: 'data_analyst',
+      seed: 'Give me a 7-day overview of my site: visitors, chats, orders and form submissions.' },
+    { icon: '🧠', label: 'Analyze visitor chat topics',
+      seed: 'Analyze my visitor chat topics from the last 30 days and surface the top themes and gaps.' },
+    { icon: '🔍', label: 'Find content gaps (SEO)',
+      seed: 'Review my site content and suggest concrete SEO improvements and content gaps to fill.' },
+    { icon: '❓', label: 'Draft an FAQ', persona: 'creative',
+      seed: 'Draft an FAQ entry (for my approval) answering: ' },
+    { icon: '🧮', label: 'Run a SQL query', persona: 'data_analyst',
+      seed: 'Run this read-only SQL: ' },
+    { icon: '🔌', label: 'Explore my Datahub',
+      seed: 'List my Datahub connections, then inspect the most useful one and tell me what I can query.' },
+    // super-admin only
+    { icon: '🔭', label: 'Research a topic', persona: 'research', super: true,
+      seed: 'Run a deep research task on: ' },
+    { icon: '🎨', label: 'Design a new homepage', super: true,
+      seed: 'Propose a new site design (for my approval) for my homepage: ' },
+    { icon: '🧱', label: 'Define my Datahub tables', super: true,
+      seed: 'Help me define and annotate the Datahub schema for: ' },
+  ];
+
+  // True when the messages pane has no real chat bubbles (only the placeholder
+  // / empty / cleared text). We key off the engine's data-testid bubbles.
+  function adminChatHasMessages() {
+    const box = document.getElementById('admin-chat-messages');
+    if (!box) return false;
+    return !!box.querySelector('[data-testid^="bubble-admin-chat"]');
+  }
+  function adminChatRenderStarters() {
+    const wrap = document.getElementById('admin-chat-starters');
+    if (!wrap) return;
+    // Only in admin mode + only when the conversation is empty.
+    if (adminChatMode !== 'admin' || adminChatHasMessages()) {
+      wrap.hidden = true; wrap.innerHTML = ''; return;
+    }
+    const sup = adminChatIsSuperAdmin();
+    const list = ADMIN_STARTERS.filter(s => sup || !s.super);
+    wrap.innerHTML = list.map((s, i) =>
+      '<button type="button" class="admin-cap-starter" data-starter="' + i + '" '
+      + 'data-testid="button-admin-chat-starter-' + i + '">'
+      + '<span class="admin-cap-starter-ico" aria-hidden="true">' + adminChatEscape(s.icon) + '</span>'
+      + adminChatEscape(s.label)
+      + '</button>').join('');
+    // Bind clicks (the visible list is rebuilt each call, so bind fresh).
+    wrap.querySelectorAll('.admin-cap-starter').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const s = list[parseInt(btn.dataset.starter, 10)];
+        if (s) adminChatSeedComposer(s.seed, s.persona);
+      });
+    });
+    wrap.hidden = false;
+  }
+
+  // ===== Task 087: capabilities tray =====
+  // Grouped "what the assistant can do" cards + click-to-run examples + the
+  // per-conversation skill toggles (reusing /admin/api/chat/skills + the
+  // /sessions PATCH). Role-aware: super-admin-only groups are dropped for a
+  // normal admin. The example chips seed the composer (no auto-send); the skill
+  // toggles persist exactly like the existing Skills modal.
+  //
+  // Each group: { key, icon, title, super?, lines:[…], examples:[{label, persona?, seed}] }.
+  // Tools referenced are REAL (verified against ADMIN_TOOLS, app.py ~18197).
+  let ADMIN_CAP_GROUPS = [   // task 088: fallback; replaced by adminChatLoadPalette()
+    { key: 'data', icon: '🧮', title: 'Data & SQL',
+      lines: [
+        'List + describe your tables (admin_list_tables / admin_describe_table).',
+        'Run read-only SQL and summarize results (admin_run_sql).',
+        'Save + re-run queries (admin_save_query / admin_run_saved_query).',
+      ],
+      examples: [
+        { label: 'List my tables', seed: 'List all the tables in my database and what each one is for.' },
+        { label: 'Run a SQL query', persona: 'data_analyst', seed: 'Run this read-only SQL: ' },
+        { label: 'Top 10 orders this month', persona: 'data_analyst', seed: 'Write and run read-only SQL for my top 10 orders this month.' },
+      ] },
+    { key: 'datahub', icon: '🔌', title: 'Datahub', grant: true,
+      lines: [
+        'List the data connections you have access to (admin_list_connections).',
+        'Inspect a connection\'s annotated schema before querying (admin_inspect_connection).',
+        'Query within your granted tables (admin_query_connection) — access is grant-bounded.',
+      ],
+      examples: [
+        { label: 'Explore my Datahub', seed: 'List my Datahub connections, then inspect the most useful one and tell me what I can query.' },
+        { label: 'What can I query?', seed: 'Which Datahub tables am I allowed to query, and what does each contain?' },
+      ] },
+    { key: 'dashboards', icon: '🧭', title: 'Dashboards',
+      lines: [
+        'Create a dashboard from a question (admin_create_dashboard).',
+        'Add widgets / charts to a dashboard (admin_add_widget · render_chart).',
+      ],
+      examples: [
+        { label: 'Build a sales dashboard', seed: 'Create a dashboard that tracks my sales: revenue, orders, and top products over time.' },
+        { label: 'Chart visitors over time', persona: 'data_analyst', seed: 'Query my visitor data and render a chart of visitors per day for the last 30 days.' },
+      ] },
+    { key: 'analytics', icon: '🧠', title: 'Analytics',
+      lines: [
+        'Mine visitor-chat topics + sentiment (admin_analyze_chat_topics).',
+        'Surface recent activity — orders, forms, chats (admin_recent_*).',
+        'Skill usage stats (admin_skill_usage_stats).',
+      ],
+      examples: [
+        { label: 'Analyze chat topics', seed: 'Analyze my visitor chat topics from the last 30 days and surface the top themes and gaps.' },
+        { label: 'Recent form submissions', persona: 'ops', seed: 'Show my most recent form submissions and summarize what people are asking for.' },
+      ] },
+    { key: 'content', icon: '✍️', title: 'Content & Marketing',
+      lines: [
+        'Find content gaps + SEO wins (admin_suggest_seo_improvements).',
+        'Draft blog posts + FAQ entries for your approval (admin_propose_draft_*).',
+        'Web search with sources (admin_web_search).',
+      ],
+      examples: [
+        { label: 'Find SEO gaps', seed: 'Review my site content and suggest concrete SEO improvements and content gaps to fill.' },
+        { label: 'Draft a blog post', persona: 'creative', seed: 'Draft a blog post (for my approval) about: ' },
+        { label: 'Draft an FAQ', persona: 'creative', seed: 'Draft an FAQ entry (for my approval) answering: ' },
+      ] },
+    { key: 'content_super', icon: '🎨', title: 'Content Studio', super: true,
+      lines: [
+        'Generate long-form content (generate_content).',
+        'Propose a new site design or theme for approval (admin_propose_create_site_design / _theme).',
+      ],
+      examples: [
+        { label: 'Generate long-form content', seed: 'Generate long-form content for: ' },
+        { label: 'Design a new homepage', seed: 'Propose a new site design (for my approval) for my homepage: ' },
+        { label: 'Propose a new theme', seed: 'Propose a new site theme (for my approval): ' },
+      ] },
+    { key: 'research', icon: '🔭', title: 'Research', super: true,
+      lines: [
+        'Run a deep, multi-source research task (run_research).',
+        'Gather web sources into the Research Hub (gather_sources).',
+      ],
+      examples: [
+        { label: 'Research a topic', persona: 'research', seed: 'Run a deep research task on: ' },
+      ] },
+    { key: 'automations', icon: '🤖', title: 'Automations',
+      lines: [
+        'List + inspect your automations (admin_list_automations / admin_get_automation).',
+        'Propose creating / toggling automations for your approval (admin_propose_*_automation).',
+      ],
+      examples: [
+        { label: 'List my automations', seed: 'List my automations and tell me which are active and what each one does.' },
+      ] },
+    { key: 'mcp', icon: '🛰', title: 'Connectors (MCP)', super: true,
+      lines: [
+        'List your MCP servers + the tools they expose (admin_mcp_list_servers).',
+        'Propose adding / updating / toggling servers for approval (admin_mcp_propose_*).',
+      ],
+      examples: [
+        { label: 'List my MCP servers', seed: 'List my MCP servers, their status, and the tools they expose.' },
+      ] },
+    { key: 'kb', icon: '📚', title: 'Knowledge Base',
+      lines: [
+        'Search your uploaded docs + quote passages with citations (lookup_knowledge_base).',
+        'Manage the docs the assistant can cite (open the KB panel).',
+      ],
+      examples: [
+        { label: 'Search my KB', seed: 'Search my Knowledge Base and answer with citations: ' },
+        { label: 'Manage KB docs', action: 'kb' },
+      ] },
+  ];
+
+  function adminChatOpenCapabilities() {
+    if (adminChatMode !== 'admin') { alert('Switch to the admin assistant to use capabilities.'); return; }
+    const bd = document.getElementById('admin-chat-cap-backdrop');
+    if (!bd) return;
+    bd.hidden = false;
+    adminChatRenderCapabilities();
+    adminChatInstallCapEsc();
+  }
+  function adminChatCloseCapabilities() {
+    const bd = document.getElementById('admin-chat-cap-backdrop');
+    if (bd) bd.hidden = true;
+  }
+
+  // Build the grouped tray + load the live skill toggles. Role-gated.
+  function adminChatRenderCapabilities() {
+    const body = document.getElementById('admin-chat-cap-body');
+    if (!body) return;
+    const sup = adminChatIsSuperAdmin();
+    const groups = ADMIN_CAP_GROUPS.filter(g => sup || !g.super);
+    let html = '';
+    for (const g of groups) {
+      const linesHtml = (g.lines || []).map(l => '<li>' + adminChatEscape(l) + '</li>').join('');
+      const exHtml = (g.examples || []).map((ex, i) =>
+        '<button type="button" class="admin-cap-ex" data-cap-group="' + adminChatAttrEscape(g.key) + '" data-cap-ex="' + i + '">'
+        + adminChatEscape(ex.label) + '</button>').join('');
+      const superTag = g.super ? '<span class="admin-cap-super-tag">super-admin</span>'
+                    : (g.grant ? '<span class="admin-cap-super-tag" style="background:color-mix(in srgb,var(--admin-accent) 16%,transparent);color:var(--admin-accent);">grant-aware</span>' : '');
+      html += '<section class="admin-cap-group" data-cap-key="' + adminChatAttrEscape(g.key) + '">'
+        + '<div class="admin-cap-group-head">'
+        +   '<span class="admin-cap-group-ico" aria-hidden="true">' + adminChatEscape(g.icon) + '</span>'
+        +   '<span class="admin-cap-group-title">' + adminChatEscape(g.title) + '</span>'
+        +   superTag
+        + '</div>'
+        + '<div class="admin-cap-group-body">'
+        +   '<ul class="admin-cap-lines">' + linesHtml + '</ul>'
+        +   '<div class="admin-cap-examples">' + exHtml + '</div>'
+        + '</div>'
+        + '</section>';
+    }
+    // Skills group — populated async with the live per-conversation toggles.
+    html += '<section class="admin-cap-group" data-cap-key="skills">'
+      + '<div class="admin-cap-group-head">'
+      +   '<span class="admin-cap-group-ico" aria-hidden="true">🧰</span>'
+      +   '<span class="admin-cap-group-title">Skills</span>'
+      + '</div>'
+      + '<div class="admin-cap-group-body">'
+      +   '<p style="font-size:.78rem;color:var(--admin-text-muted);margin:.1rem 0 .5rem;line-height:1.4;">Turn tools on/off for THIS conversation. Changes apply on your next message.</p>'
+      +   '<div id="admin-cap-skills" data-testid="admin-cap-skills"><div class="admin-cap-skill-empty">Loading…</div></div>'
+      + '</div>'
+      + '</section>';
+    body.innerHTML = html;
+
+    // Wire example chips → seed composer (+ persona) or open the KB panel.
+    body.querySelectorAll('.admin-cap-ex').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const g = groups.find(x => x.key === btn.dataset.capGroup)
+               || ADMIN_CAP_GROUPS.find(x => x.key === btn.dataset.capGroup);
+        if (!g) return;
+        const ex = (g.examples || [])[parseInt(btn.dataset.capEx, 10)];
+        if (!ex) return;
+        if (ex.action === 'kb') { adminChatCloseCapabilities(); adminChatOpenKB(); return; }
+        adminChatCloseCapabilities();
+        adminChatSeedComposer(ex.seed, ex.persona);
+      });
+    });
+
+    adminChatRenderCapSkills();
+  }
+
+  // Load the per-conversation skills into the tray's Skills group, reusing the
+  // SAME /admin/api/chat/skills GET the modal uses. A Save button PATCHes the
+  // session's disabled_tools (same shape as adminChatSkillsSave).
+  async function adminChatRenderCapSkills() {
+    const host = document.getElementById('admin-cap-skills');
+    if (!host) return;
+    const sid = localStorage.getItem(ADMIN_CHAT_KEYS.admin);
+    if (!sid) { host.innerHTML = '<div class="admin-cap-skill-empty">Select a conversation first.</div>'; return; }
+    try {
+      const r = await fetch('/admin/api/chat/skills?session_id=' + encodeURIComponent(sid));
+      const data = await r.json();
+      // Same payload shape as the Skills modal: { static:[…], dynamic:[…] },
+      // each item { name, description, category, disabled }. "On" = !disabled
+      // (and the Save below collects unchecked → disabled_tools, identical to
+      // adminChatSkillsSave) so the tray and the modal stay consistent.
+      const items = [].concat(data.static || [], data.dynamic || []);
+      if (!items.length) { host.innerHTML = '<div class="admin-cap-skill-empty">No skills available.</div>'; return; }
+      let html = '';
+      for (const it of items) {
+        const name = it.name || '';
+        const cat = it.category ? ' <span style="font-weight:400;font-size:.7rem;color:var(--admin-text-muted);">' + adminChatEscape(it.category) + '</span>' : '';
+        const on = !it.disabled;
+        html += '<label class="admin-cap-skill-row">'
+          + '<input type="checkbox" data-cap-skill-name="' + adminChatAttrEscape(name) + '"' + (on ? ' checked' : '') + '>'
+          + '<span class="admin-cap-skill-name">' + adminChatEscape(name) + cat + '</span>'
+          + '</label>';
+      }
+      html += '<div class="admin-cap-skill-foot">'
+        + '<button type="button" class="admin-cap-skill-save" onclick="adminChatCapSkillsSave()" data-testid="button-admin-cap-skills-save">Save skills</button>'
+        + '</div>';
+      host.innerHTML = html;
+    } catch (e) {
+      host.innerHTML = '<div class="admin-cap-skill-empty">Couldn\'t load skills.</div>';
+    }
+  }
+  // Persist the tray's skill toggles (mirrors adminChatSkillsSave's PATCH; we
+  // leave the KB auto-search toggle to the dedicated Skills modal).
+  async function adminChatCapSkillsSave() {
+    const sid = localStorage.getItem(ADMIN_CHAT_KEYS.admin);
+    const host = document.getElementById('admin-cap-skills');
+    if (!sid || !host) return;
+    const disabled = [];
+    host.querySelectorAll('input[data-cap-skill-name]').forEach(cb => {
+      if (!cb.checked) disabled.push(cb.dataset.capSkillName);
+    });
+    await fetch('/admin/api/chat/sessions/' + encodeURIComponent(sid), {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ disabled_tools: disabled }),
+    });
+    const save = host.querySelector('.admin-cap-skill-save');
+    if (save) { const t = save.textContent; save.textContent = 'Saved ✓'; setTimeout(() => { save.textContent = t; }, 1400); }
+    try { await adminChatLoadSessions(); } catch (_) {}
+  }
+
+  // Esc closes the tray (bound once; no-op while the tray is hidden).
+  let _adminCapEscBound = false;
+  function adminChatInstallCapEsc() {
+    if (_adminCapEscBound) return;
+    _adminCapEscBound = true;
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      const bd = document.getElementById('admin-chat-cap-backdrop');
+      if (bd && !bd.hidden) { e.preventDefault(); adminChatCloseCapabilities(); }
+    });
+  }
+
+  // ===== Floating "Business Assistant" launcher (task 086) =====
+  // A global entry point that ESCALATES into the one real chat. The popover has
+  // a quick composer + suggestions + "Open full"; it never renders its own
+  // message list — sending forwards the text into the real #admin-chat-input and
+  // calls adminChatSend() (after switching to the tab + opening the overlay).
+
+  function adminAsstQuickEl()    { return document.getElementById('admin-asst-quick'); }
+  function adminAsstLauncherEl() { return document.getElementById('admin-asst-launcher'); }
+
+  function adminAsstOpenQuick() {
+    const pop = adminAsstQuickEl();
+    if (!pop) return;
+    pop.classList.add('open');
+    const btn = adminAsstLauncherEl();
+    if (btn) btn.setAttribute('aria-expanded', 'true');
+    const inp = document.getElementById('admin-asst-quick-input');
+    if (inp) setTimeout(function () { try { inp.focus(); } catch (e) {} }, 30);
+    adminAsstInstallOutsideClose();
+  }
+  function adminAsstCloseQuick() {
+    const pop = adminAsstQuickEl();
+    if (!pop) return;
+    pop.classList.remove('open');
+    const btn = adminAsstLauncherEl();
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  }
+  function adminAsstToggleQuick() {
+    const pop = adminAsstQuickEl();
+    if (!pop) return;
+    if (pop.classList.contains('open')) adminAsstCloseQuick();
+    else adminAsstOpenQuick();
+  }
+
+  // Close the popover on outside-click / Esc. Bound once; the listeners are
+  // cheap no-ops while the popover is closed.
+  let _adminAsstOutsideBound = false;
+  function adminAsstInstallOutsideClose() {
+    if (_adminAsstOutsideBound) return;
+    _adminAsstOutsideBound = true;
+    document.addEventListener('mousedown', function (ev) {
+      const pop = adminAsstQuickEl();
+      if (!pop || !pop.classList.contains('open')) return;
+      const btn = adminAsstLauncherEl();
+      if (pop.contains(ev.target) || (btn && btn.contains(ev.target))) return;
+      adminAsstCloseQuick();
+    });
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Escape') return;
+      const pop = adminAsstQuickEl();
+      if (pop && pop.classList.contains('open')) adminAsstCloseQuick();
+    });
+  }
+
+  // Tap a suggested prompt → fill the quick input (and send immediately).
+  function adminAsstQuickSuggest(btn) {
+    const inp = document.getElementById('admin-asst-quick-input');
+    if (inp && btn) inp.value = btn.textContent.trim();
+    adminAsstQuickSend();
+  }
+
+  // Bring up the real chat in immersive mode: switch to the admin-chat tab,
+  // load it, force admin (not visitor) mode, and expand. Shared by send +
+  // Task 088: open the FULL chat as an immersive overlay OVER the current screen,
+  // WITHOUT switching the active tab. The CSS rule
+  // `#tab-admin-chat:has(.admin-chat-expanded){ display:block }` reveals the chat
+  // tab as a fixed overlay on top of whatever tab is showing; collapsing/Esc hides
+  // it again, so the user returns to the exact screen they were on (never the chat
+  // tab). The popover + this overlay share the SAME admin session, so escalating
+  // shows the identical conversation.
+  async function adminAsstEnterFullChat() {
+    adminAsstCloseQuick();
+    try { if (typeof adminChatSetMode === 'function') adminChatSetMode('admin'); } catch (e) {}
+    adminChatToggleExpand(true);                       // reveal the overlay (CSS shows it over the current tab)
+    if (typeof loadAdminChat === 'function') { try { await loadAdminChat(); } catch (e) {} }
+  }
+
+  // "Open full ⤢" — escalate to the overlay, carrying any half-typed text.
+  function adminAsstOpenFull() {
+    const q = (document.getElementById('admin-asst-quick-input') || {}).value || '';
+    adminAsstEnterFullChat().then(function () {
+      const real = document.getElementById('admin-chat-input');
+      if (real && q.trim()) real.value = q;
+      if (real) { try { real.focus(); } catch (e) {} }
+    });
+  }
+
+  // Reveal the popover's inline answer area (and hide the empty-state suggestions).
+  function adminAsstQuickShowMsgs() {
+    const m = document.getElementById('admin-asst-quick-msgs');
+    if (m) m.hidden = false;
+    const sug = document.querySelector('#admin-asst-quick .admin-asst-suggests');
+    if (sug) sug.style.display = 'none';
+    return m;
+  }
+  function adminAsstQuickAppendUser(msgs, text) {
+    if (!msgs) return;
+    const d = document.createElement('div');
+    d.className = 'admin-asst-msg admin-asst-msg-user';
+    d.textContent = text;   // textContent — user text is never interpolated as HTML
+    msgs.appendChild(d);
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  // Task 088: the bubble answers INLINE in the popover. Streams the SAME
+  // /admin/api/chat/stream turn the full chat uses, under the SAME admin session,
+  // so escalating shows the identical conversation. A rich (tool/chart/KB) or long
+  // answer auto-opens the full chat overlay (which renders the persisted turn fully)
+  // — matching "if the answer is too large, open the expanded chat".
+  let _adminAsstStreaming = false;
+  async function adminAsstQuickStream(text, msgs) {
+    if (_adminAsstStreaming) return;
+    _adminAsstStreaming = true;
+    const a = document.createElement('div');
+    a.className = 'admin-asst-msg admin-asst-msg-bot admin-chat-md-body';
+    a.innerHTML = '<span class="admin-asst-typing">● ● ●</span>';
+    if (msgs) { msgs.appendChild(a); msgs.scrollTop = msgs.scrollHeight; }
+    let acc = '', rich = false;
+    const LONG = 700;   // chars; a long answer escalates to the comfortable full view
+    try {
+      const sid = await adminChatEnsureActiveSession();
+      const r = await fetch('/admin/api/chat/stream', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sid, message: text }),
+      });
+      if (!r.ok) {
+        let e = ''; try { e = (await r.json()).error || ''; } catch (_) {}
+        a.innerHTML = '<em>' + adminChatEscape(e || ('HTTP ' + r.status)) + '</em>';
+        return;
+      }
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n'); buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue;
+          const p = line.slice(5).trim(); if (!p) continue;
+          let evt; try { evt = JSON.parse(p); } catch (_) { continue; }
+          if (evt.type === 'token' && evt.content) {
+            acc += evt.content; a.innerHTML = adminChatRenderMd(acc);
+            if (msgs) msgs.scrollTop = msgs.scrollHeight;
+          } else if (evt.type === 'tool_start' || evt.type === 'tool_end'
+                     || evt.type === 'chart' || evt.type === 'kb_retrieval') {
+            rich = true;   // the popover can't render rich artifacts — escalate after the turn
+          } else if (evt.type === 'text' && evt.content) {
+            acc = evt.content; a.innerHTML = adminChatRenderMd(acc);
+            if (msgs) msgs.scrollTop = msgs.scrollHeight;
+          } else if (evt.type === 'done') {
+            if (!acc && evt.content) { acc = evt.content; a.innerHTML = adminChatRenderMd(acc); }
+          } else if (evt.type === 'error') {
+            acc += (acc ? '\n' : '') + '[error] ' + (evt.content || evt.message || '');
+            a.innerHTML = adminChatRenderMd(acc);
+          }
+        }
+      }
+      if (!acc) a.innerHTML = '<em>(no response)</em>';
+      // "too large" / rich → open the full chat overlay (now-persisted turn, full fidelity).
+      if (rich || acc.length > LONG) adminAsstEnterFullChat();
+    } catch (e) {
+      a.innerHTML = '<em>Network error.</em>';
+    } finally {
+      _adminAsstStreaming = false;
+    }
+  }
+
+  // Send from the popover — answers INLINE (never switches tabs). Empty = no-op.
+  function adminAsstQuickSend() {
+    const inp = document.getElementById('admin-asst-quick-input');
+    const text = (inp && inp.value ? inp.value : '').trim();
+    if (!text) return;
+    if (inp) inp.value = '';
+    const msgs = adminAsstQuickShowMsgs();
+    adminAsstQuickAppendUser(msgs, text);
+    adminAsstQuickStream(text, msgs);
   }

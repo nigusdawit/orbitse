@@ -1,0 +1,1748 @@
+/* ==========================================================================
+   admin/chat.css — FLAGSHIP GLASSMORPHIC restyle for the Admin "Business
+   Assistant" chat (the `admin-chat` tab) + the global floating launcher.
+   Task 086. Loaded AFTER tabs.css in templates/admin/dashboard.html so these
+   rules win the cascade for the chat surfaces.
+
+   SCOPE CONTRACT (do not break): every selector here is namespaced to
+   `.admin-chat-*` / `#admin-chat-*` (the existing chat) or the NEW
+   `.admin-asst-*` / `#admin-asst-*` (the launcher). NOTHING here touches the
+   GLOBAL `.btn` / `.btn-primary` / `.btn-secondary` / `.card` / `.badge` /
+   `.form-input` / bare `input|select|textarea` — those are shared by ~60 tabs.
+   The few global classes that DO appear inside the chat markup (e.g. the
+   `.btn.btn-primary` Send button, `.btn` mode pills) are re-skinned ONLY via a
+   `.admin-chat-shell`-prefixed descendant selector, so the override is confined
+   to the chat subtree and the global look is untouched everywhere else.
+
+   THEMING: everything is driven off the admin glass TOKENS
+   (--admin-surface / --admin-blur[-heavy] / --admin-shadow / --admin-accent[-2]
+   / --admin-radius / --admin-border[-light] / --admin-text[-muted] /
+   --admin-field / --admin-bg / --admin-glow). Those auto-adapt under
+   html[data-admin-theme="light|dark"] and flow the appearance sliders
+   (glass / blur / radius / glow) through — so light + dark + custom knobs all
+   "just work" with no hardcoded rgba.
+
+   The visitor chat (public/styles.css) is the FEEL reference: strong backdrop
+   blur, translucent surface, hairline border, layered soft shadow, ~1rem
+   radius, bubbles with one squared corner + fadeInUp entrance, a pill composer
+   with a circular gradient send button, 3-dot typing indicator, spring easing
+   for expand/popover, thin 4px scrollbars. Recreated here via the tokens.
+   ========================================================================== */
+
+/* Local easing/util tokens, scoped so they can't leak. The spring matches the
+   visitor chat's cubic-bezier(0.22,1,0.36,1). */
+.admin-chat-shell,
+#admin-asst-launcher,
+#admin-asst-quick{
+  --acg-spring: cubic-bezier(0.22, 1, 0.36, 1);
+  --acg-squared: 0.28rem;   /* the single squared bubble corner */
+}
+
+/* ==========================================================================
+   A. GLASS MATERIAL RESTYLE — the in-tab `admin-chat` workspace
+   ========================================================================== */
+
+/* The whole workspace = one rounded glass slab with a soft accent glow behind
+   it (mirrors gx-card / the shell's radial wash). position:relative so the glow
+   pseudo-element anchors here; isolation keeps the glow under the content. */
+.admin-chat-shell{
+  position: relative;
+  isolation: isolate;
+  border-radius: var(--admin-radius);
+  transition: padding .35s var(--acg-spring);
+}
+
+/* ---- Flagship full-height chat (task 088) ----
+   On desktop the ACTIVE admin-chat tab fills the viewport below the 56px top bar:
+   the conversation header pins to the top, the composer (command bar) pins to the
+   bottom, and the message stream scrolls between — a real chatbot shell. The tab
+   heading + description + the mode-help line are hidden for the clean flagship
+   look; the Admin/Visitor switcher is preserved. Mobile keeps the natural in-flow
+   layout (the shell falls back to its min-height). */
+#tab-admin-chat .section-header-admin,
+#tab-admin-chat #admin-chat-mode-help{ display: none; }
+@media (min-width: 901px){
+  #tab-admin-chat.tab-content.active{
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 56px);     /* 56px = the sticky admin top bar */
+    padding: 1rem 1.25rem;
+    box-sizing: border-box;
+  }
+  /* Mirror the proven .admin-chat-expanded height chain: bound the grid row, give
+     the grid children a DEFINITE height:100%, and clear the docked max-height on
+     the message stream — so messages SCROLL and the composer pins to the bottom
+     instead of overflowing below the fold. */
+  #tab-admin-chat.tab-content.active .admin-chat-shell{
+    flex: 1;                 /* basis 0 — take exactly the free space, not content height */
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr);
+  }
+  #tab-admin-chat.tab-content.active .admin-chat-shell > .admin-chat-side{ max-height: none; height: 100%; }
+  #tab-admin-chat.tab-content.active .admin-chat-shell > div{ min-height: 0; height: 100%; }
+  #tab-admin-chat.tab-content.active #admin-chat-messages{ flex: 1; max-height: none !important; min-height: 0 !important; }
+}
+
+/* ---- Auto-hide admin top bar (task 088) ----
+   The 56px top bar slides up out of view; moving the mouse near the top of the
+   screen (or focusing a header control) reveals it (app-main.js toggles
+   body.admin-chrome-hidden). When hidden, the layout reclaims the 56px so the
+   content — especially the full-height chat — fills the whole viewport. */
+.admin-header{ transition: transform .28s ease; will-change: transform; }
+body.admin-chrome-hidden .admin-header{ transform: translateY(-100%); }
+.admin-layout{ transition: margin-top .28s ease; }
+body.admin-chrome-hidden .admin-layout{ margin-top: calc(-1 * var(--admin-header-h, 56px)); min-height: 100vh; }
+body.admin-chrome-hidden .sidebar{ top: 0; height: 100vh; }
+@media (min-width: 901px){
+  #tab-admin-chat.tab-content.active{ transition: height .28s ease; }
+  body.admin-chrome-hidden #tab-admin-chat.tab-content.active{ height: 100vh; }
+}
+@media (prefers-reduced-motion: reduce){
+  .admin-header, .admin-layout, #tab-admin-chat.tab-content.active{ transition: none; }
+}
+
+/* Hide the floating launcher (+ its quick popover) while the chat TAB is open —
+   it sits in the same bottom-right corner as the composer's send button (so it
+   covers it) and is redundant there (you're already in the chat). It stays
+   available on every OTHER tab as the entry point. */
+body:has(#tab-admin-chat.tab-content.active) #admin-asst-launcher,
+body:has(#tab-admin-chat.tab-content.active) #admin-asst-quick{ display: none !important; }
+/* Soft radial accent glow bloom behind the glass (token-driven via --admin-glow
+   so the Appearance "glow" slider controls intensity). Non-interactive. */
+.admin-chat-shell::before{
+  content: "";
+  position: absolute;
+  inset: -1px;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    radial-gradient(620px 320px at 6% -8%,
+      color-mix(in srgb, var(--admin-accent) calc(var(--admin-glow, 1) * 22%), transparent), transparent 60%),
+    radial-gradient(560px 320px at 100% 0%,
+      color-mix(in srgb, var(--admin-accent-2) calc(var(--admin-glow, 1) * 18%), transparent), transparent 58%);
+  opacity: .9;
+}
+
+/* ---- Sessions rail: translucent glass card ---- */
+.admin-chat-shell .admin-chat-side{
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-radius);
+  box-shadow: var(--admin-shadow);
+  -webkit-backdrop-filter: var(--admin-blur);
+  backdrop-filter: var(--admin-blur);
+  gap: .55rem;
+}
+/* New-chat button inside the rail: the one global .btn-primary that lives here
+   gets a fuller gradient pill, scoped to the chat subtree only. */
+.admin-chat-shell .admin-chat-side .btn.btn-primary{
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--admin-accent), var(--admin-accent-2));
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--admin-accent) 36%, transparent);
+  border: none;
+  letter-spacing: .01em;
+  transition: filter .15s, transform .04s, box-shadow .15s;
+}
+.admin-chat-shell .admin-chat-side .btn.btn-primary:hover{ filter: brightness(1.08); }
+.admin-chat-shell .admin-chat-side .btn.btn-primary:active{ transform: translateY(1px); }
+/* Search field in the rail → pill, themed fill + accent focus ring. Scoped to
+   the chat sidebar so the bare-input override never bleeds to other tabs. */
+.admin-chat-shell #admin-chat-search{
+  background: var(--admin-field);
+  border: 1px solid var(--admin-border);
+  border-radius: 999px;
+  color: var(--admin-text);
+  transition: border-color .15s, box-shadow .15s, background .15s;
+}
+.admin-chat-shell #admin-chat-search::placeholder{ color: var(--admin-text-muted); opacity: .75; }
+.admin-chat-shell #admin-chat-search:focus{
+  outline: none;
+  border-color: var(--admin-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--admin-accent) 26%, transparent);
+}
+
+/* ---- Session list rows ---- */
+.admin-chat-session-item{ transition: background .14s, border-color .14s, transform .04s; }
+.admin-chat-session-item:hover{
+  background: color-mix(in srgb, var(--admin-accent) 8%, transparent);
+  border-color: color-mix(in srgb, var(--admin-accent) 18%, transparent);
+}
+.admin-chat-session-item.active{
+  background: color-mix(in srgb, var(--admin-accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--admin-accent) 32%, transparent);
+}
+.admin-chat-session-item.active .acs-title{ color: var(--admin-accent); }
+
+/* ---- Header toolbar: frosted glass bar ---- */
+.admin-chat-shell .admin-chat-header{
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-radius);
+  box-shadow: var(--admin-shadow);
+  -webkit-backdrop-filter: var(--admin-blur);
+  backdrop-filter: var(--admin-blur);
+  padding: .6rem .8rem;
+  /* Lift the header above the messages stream. BOTH set backdrop-filter (each
+     is its own stacking context) and are flex siblings with no z-index, so the
+     later-painted #admin-chat-messages was covering the OPEN persona/model/⋯
+     dropdowns (which live inside this header). A positive z-index on the header
+     makes its menus paint above the messages. */
+  position: relative;
+  z-index: 40;
+}
+.admin-chat-shell .admin-chat-header #admin-chat-title{ color: var(--admin-text); }
+.admin-chat-shell .admin-chat-header #admin-chat-title::placeholder{ color: var(--admin-text-muted); opacity: .8; }
+/* The header's selects + .acm-btn share one pill look (scoped to the header). */
+.admin-chat-shell .admin-chat-header select,
+.admin-chat-shell .admin-chat-header button.acm-btn{
+  background: var(--admin-field);
+  color: var(--admin-text);
+  border: 1px solid var(--admin-border);
+  border-radius: 999px;
+  padding: .32rem .6rem;
+  font-size: .8rem;
+  cursor: pointer;
+  transition: border-color .14s, color .14s, background .14s, transform .04s;
+}
+.admin-chat-shell .admin-chat-header button.acm-btn:hover{
+  border-color: var(--admin-accent);
+  color: var(--admin-accent);
+  background: color-mix(in srgb, var(--admin-accent) 10%, transparent);
+}
+.admin-chat-shell .admin-chat-header button.acm-btn:active{ transform: translateY(1px); }
+.admin-chat-shell .admin-chat-header button.acm-btn.active{
+  background: color-mix(in srgb, var(--admin-accent) 18%, transparent);
+  color: var(--admin-accent);
+  border-color: color-mix(in srgb, var(--admin-accent) 32%, transparent);
+}
+.admin-chat-shell .admin-chat-header select:focus,
+.admin-chat-shell .admin-chat-header button.acm-btn:focus-visible{
+  outline: none;
+  border-color: var(--admin-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--admin-accent) 26%, transparent);
+}
+
+/* The Expand / Collapse control (added to the header in the template). Tonal
+   accent pill so it reads as the primary "lift to fullscreen" affordance. */
+.admin-chat-expand-btn{ margin-left: auto; }
+.admin-chat-shell .admin-chat-header button.acm-btn.admin-chat-expand-btn{
+  background: color-mix(in srgb, var(--admin-accent) 14%, transparent);
+  color: var(--admin-accent);
+  border-color: color-mix(in srgb, var(--admin-accent) 28%, transparent);
+}
+.admin-chat-shell .admin-chat-header button.acm-btn.admin-chat-expand-btn:hover{
+  background: color-mix(in srgb, var(--admin-accent) 22%, transparent);
+}
+
+/* ---- Messages stream: glass panel + thin scrollbar ---- */
+.admin-chat-shell #admin-chat-messages{
+  background: var(--admin-surface) !important;
+  border: 1px solid var(--admin-border) !important;
+  border-radius: var(--admin-radius) !important;
+  box-shadow: var(--admin-shadow);
+  -webkit-backdrop-filter: var(--admin-blur);
+  backdrop-filter: var(--admin-blur);
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--admin-text) 22%, transparent) transparent;
+  scroll-behavior: smooth;
+}
+.admin-chat-shell #admin-chat-messages::-webkit-scrollbar{ width: 4px; }
+.admin-chat-shell #admin-chat-messages::-webkit-scrollbar-thumb{
+  background: color-mix(in srgb, var(--admin-text) 22%, transparent);
+  border-radius: 2px;
+}
+.admin-chat-shell #admin-chat-messages::-webkit-scrollbar-thumb:hover{
+  background: color-mix(in srgb, var(--admin-text) 34%, transparent);
+}
+
+/* ---- Message bubbles ----
+   The bubble markup is built inline in csrf.js with element-level `style=`
+   attributes (background/border/radius). We can't restyle those inline values
+   from CSS, so instead we target the bubble WRAPPERS — the per-message flex
+   columns the engine emits — to add the flagship entrance + the single squared
+   corner + a soft hairline lift on the inner block. data-testid hooks
+   ("bubble-admin-chat-user|assistant") are stable, engine-emitted, and used
+   ONLY for styling here (never for behavior), so this stays additive. */
+.admin-chat-shell #admin-chat-messages > [data-testid^="bubble-admin-chat"]{
+  animation: adminChatFadeInUp .3s ease-out both;
+}
+/* The inner bubble block is the only direct child <div> that carries a
+   border-radius inline. Round the matching squared corner (user → bottom-right,
+   assistant → bottom-left) to mirror the visitor chat's one-squared-corner look
+   and add a subtle shadow lift. We scope to the direct child block so we don't
+   touch nested cards (tool cards, charts, action cards) which set their own. */
+.admin-chat-shell #admin-chat-messages
+  > [data-testid="bubble-admin-chat-user"] > div[style*="border-radius"]{
+  border-bottom-right-radius: var(--acg-squared) !important;
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--admin-accent) 16%, transparent);
+}
+.admin-chat-shell #admin-chat-messages
+  > [data-testid="bubble-admin-chat-assistant"] > div[style*="border-radius"]:first-child{
+  border-bottom-left-radius: var(--acg-squared) !important;
+  box-shadow: var(--admin-shadow);
+}
+/* theme.css applies an accent tint to `.chat-msg-user, .admin-chat-bubble-user`.
+   That's right for the visitor bubble (that element IS the bubble) but WRONG here:
+   in the admin chat .admin-chat-bubble-user is the full-width flex WRAPPER (the
+   inner div is the real bubble), so the tint paints a massive full-width box behind
+   the message. Neutralize the wrapper so ONLY the inner gradient bubble shows. */
+.admin-chat-shell .admin-chat-bubble-user{
+  background: transparent !important;
+  border: 0 !important;
+}
+.admin-chat-shell .admin-chat-bubble-user > div[style*="border-radius"]{
+  border-bottom-right-radius: var(--acg-squared) !important;
+}
+/* The "Edit & re-run" pencil sits inside the user bubble (now an accent-gradient
+   fill). Render it as a subtle white-on-accent chip so it reads on the bubble in
+   both themes (bare <button> default would clash). */
+.admin-chat-shell .admin-chat-bubble-user .acu-actions{
+  display: flex; justify-content: flex-end; margin-top: .3rem;
+}
+.admin-chat-shell .admin-chat-bubble-user .admin-chat-branch-btn{
+  background: rgba(255,255,255,.18);
+  border: 1px solid rgba(255,255,255,.28);
+  color: #fff;
+  border-radius: 999px;
+  font-size: .72rem;
+  line-height: 1;
+  padding: .18rem .4rem;
+  cursor: pointer;
+  transition: background .14s;
+}
+.admin-chat-shell .admin-chat-bubble-user .admin-chat-branch-btn:hover{
+  background: rgba(255,255,255,.3);
+}
+
+/* ---- Composer: pill textarea + circular gradient send button ----
+   The composer is the <form> that is the last flex child of the main chat
+   column. We restyle its parts by id/scoped descendant only. */
+.admin-chat-shell #admin-chat-input{
+  background: var(--admin-field);
+  color: var(--admin-text);
+  border: 1px solid var(--admin-border);
+  border-radius: 1.25rem;
+  padding: .7rem 1rem;
+  transition: border-color .15s, box-shadow .15s, background .15s;
+}
+.admin-chat-shell #admin-chat-input::placeholder{ color: var(--admin-text-muted); opacity: .75; }
+.admin-chat-shell #admin-chat-input:focus{
+  outline: none;
+  border-color: var(--admin-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--admin-accent) 26%, transparent);
+}
+/* Attach (📎) + mic (🎤) become round glass icon buttons, scoped to the shell. */
+.admin-chat-shell #admin-chat-mic-btn,
+.admin-chat-shell button[data-testid="button-admin-chat-attach"]{
+  width: 2.6rem;
+  align-self: stretch;
+  border-radius: 999px !important;
+  background: var(--admin-field) !important;
+  border: 1px solid var(--admin-border) !important;
+  color: var(--admin-text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color .14s, color .14s, transform .04s;
+}
+.admin-chat-shell #admin-chat-mic-btn:hover,
+.admin-chat-shell button[data-testid="button-admin-chat-attach"]:hover{
+  border-color: var(--admin-accent) !important;
+  color: var(--admin-accent);
+}
+.admin-chat-shell #admin-chat-mic-btn:active,
+.admin-chat-shell button[data-testid="button-admin-chat-attach"]:active{ transform: translateY(1px); }
+/* The Send button (global .btn.btn-primary) → circular gradient FAB, scoped to
+   the chat shell only so the global primary button is unaffected elsewhere. */
+.admin-chat-shell #admin-chat-send-btn.btn.btn-primary{
+  width: 2.9rem;
+  height: 2.9rem;
+  min-width: 2.9rem;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0;            /* hide the literal "Send" text; show the glyph below */
+  background: linear-gradient(135deg, var(--admin-accent), var(--admin-accent-2));
+  border: none;
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--admin-accent) 40%, transparent);
+  transition: filter .15s, transform .05s, box-shadow .15s;
+}
+.admin-chat-shell #admin-chat-send-btn.btn.btn-primary::before{
+  content: "\2191";        /* ↑ send glyph, font-size restored locally */
+  font-size: 1.15rem;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+}
+.admin-chat-shell #admin-chat-send-btn.btn.btn-primary:hover{ filter: brightness(1.08); }
+.admin-chat-shell #admin-chat-send-btn.btn.btn-primary:active{ transform: translateY(1px) scale(.97); }
+.admin-chat-shell #admin-chat-send-btn.btn.btn-primary:disabled{ opacity: .55; }
+
+/* Pending-attachment chip strip: align with the composer. */
+.admin-chat-shell #admin-chat-attach-strip{ align-self: stretch; }
+
+/* ---- Usage badge → soft pill ---- */
+.admin-chat-usage-badge{
+  background: color-mix(in srgb, var(--admin-text) 6%, transparent);
+  border: 1px solid var(--admin-border);
+  border-radius: 999px;
+  color: var(--admin-text-muted);
+}
+
+/* ---- Modals: frosted glass card + accent-tinted heading ---- */
+.admin-chat-modal{
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border-light);
+  border-radius: var(--admin-radius);
+  box-shadow: var(--admin-shadow), 0 30px 80px rgba(0,0,0,.35);
+  -webkit-backdrop-filter: var(--admin-blur-heavy);
+  backdrop-filter: var(--admin-blur-heavy);
+}
+.admin-chat-modal h3{ color: var(--admin-text); }
+.admin-chat-modal-backdrop{
+  background: color-mix(in srgb, var(--admin-bg) 55%, rgba(0,0,0,.55));
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+}
+.admin-chat-modal-backdrop.open .admin-chat-modal{
+  animation: adminChatPopIn .28s var(--acg-spring) both;
+}
+
+/* ==========================================================================
+   B. EXPAND → fullscreen glass overlay + split canvas
+   Toggling adds `.admin-chat-expanded` to `.admin-chat-shell` (JS:
+   adminChatToggleExpand). Pure CSS turns the shell into a fixed full-viewport
+   overlay; the canvas panel (#admin-chat-canvas) reveals as a right column.
+   ========================================================================== */
+
+/* The canvas panel is hidden in the normal in-tab view. */
+#admin-chat-canvas{ display: none; }
+
+/* The expanded shell is position:fixed, but it lives inside #tab-admin-chat
+   (.tab-content), which is `position:relative; z-index:1` — its OWN stacking
+   context, which sits BELOW the sticky admin header (z:50) and sidebar (z:10)
+   at the parent level. A bare fixed overlay would therefore be trapped beneath
+   the chrome (the header/sidebar paint on top). Lift the tab panel's stacking
+   context above the chrome ONLY while the chat is expanded — scoped via :has()
+   so it never affects the normal in-tab view or any other tab. 120 > header(50)
+   > sidebar(10) ⇒ a true full-viewport immersive overlay. */
+/* Task 088: also FORCE the chat tab visible while expanded, so the launcher can
+   open the immersive overlay OVER whatever tab is active WITHOUT switchTab. When
+   collapsed, the :has() no longer matches and the tab returns to its normal
+   (hidden-when-inactive) state — so the user lands back on the screen they were
+   on, never the chat tab. */
+#tab-admin-chat:has(.admin-chat-shell.admin-chat-expanded){ z-index: 120; display: block !important; }
+
+.admin-chat-shell.admin-chat-expanded{
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  margin: 0;
+  padding: clamp(.75rem, 2vw, 1.5rem);
+  display: grid;
+  /* sessions rail | chat column | canvas. Canvas track collapses to 0 until
+     the .has-canvas flag is set (JS sets it when an artifact is pushed). */
+  grid-template-columns: 264px minmax(0, 1fr) 0fr;
+  gap: clamp(.75rem, 1.6vw, 1.25rem);
+  /* Full-viewport frosted backdrop over the admin (token bg + heavy blur). */
+  background:
+    radial-gradient(900px 520px at 10% -6%,
+      color-mix(in srgb, var(--admin-accent) calc(var(--admin-glow,1) * 16%), transparent), transparent 60%),
+    radial-gradient(820px 520px at 100% 0%,
+      color-mix(in srgb, var(--admin-accent-2) calc(var(--admin-glow,1) * 14%), transparent), transparent 58%),
+    color-mix(in srgb, var(--admin-bg) 82%, transparent);
+  -webkit-backdrop-filter: var(--admin-blur-heavy);
+  backdrop-filter: var(--admin-blur-heavy);
+  animation: adminChatOverlayIn .34s var(--acg-spring) both;
+}
+/* Suppress the in-tab glow bloom while expanded (the overlay paints its own). */
+.admin-chat-shell.admin-chat-expanded::before{ display: none; }
+
+/* When expanded WITH an artifact, reveal the canvas as a ~60% column and
+   narrow the chat toward ~40% (mirrors the visitor split-overlay 2/3 ratio). */
+.admin-chat-shell.admin-chat-expanded.has-canvas{
+  grid-template-columns: 240px minmax(0, 4fr) minmax(0, 6fr);
+}
+.admin-chat-shell.admin-chat-expanded.has-canvas #admin-chat-canvas{ display: flex; }
+
+/* The sessions rail can collapse for focus (JS toggles .rail-collapsed). */
+/* ---- Conversations rail collapse (task 088) — user toggle, persisted ----
+   The header ⟨/⟩ button toggles .side-collapsed on the shell: the rail hides and
+   the grid reclaims its column. Works docked (2-col) AND expanded (3-col), and is
+   independent of the (unused) expanded-only .rail-collapsed mechanism below. */
+.admin-chat-shell.side-collapsed:not(.admin-chat-expanded){ grid-template-columns: 0 minmax(0,1fr); }
+.admin-chat-shell.admin-chat-expanded.side-collapsed{ grid-template-columns: 0fr minmax(0,1fr) 0fr; }
+.admin-chat-shell.admin-chat-expanded.side-collapsed.has-canvas{ grid-template-columns: 0fr minmax(0,4fr) minmax(0,6fr); }
+/* Hide the rail WITHOUT display:none — display:none drops it from the grid flow,
+   which shifts the main pane into the 0-width FIRST column (collapsing it to 0).
+   Keep it as a zero-width, invisible, inert grid item so the main pane stays in
+   column 2 and fills the reclaimed width. */
+.admin-chat-shell.side-collapsed > .admin-chat-side{
+  overflow: hidden;
+  min-width: 0;
+  padding: 0;
+  border-width: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.admin-chat-shell .admin-chat-header button.acm-btn.admin-chat-railtoggle{ padding: .32rem .52rem; font-size: .95rem; line-height: 1; }
+
+.admin-chat-shell.admin-chat-expanded.rail-collapsed{ grid-template-columns: 0fr minmax(0,1fr) 0fr; }
+.admin-chat-shell.admin-chat-expanded.rail-collapsed.has-canvas{ grid-template-columns: 0fr minmax(0,4fr) minmax(0,6fr); }
+.admin-chat-shell.admin-chat-expanded.rail-collapsed .admin-chat-side{
+  opacity: 0; pointer-events: none; overflow: hidden;
+}
+
+/* In the expanded overlay the chat column + rail fill the viewport height and
+   the message stream stretches; messages are centered/widened for reading. */
+.admin-chat-shell.admin-chat-expanded > .admin-chat-side{ max-height: none; height: 100%; }
+.admin-chat-shell.admin-chat-expanded > div{ min-height: 0; height: 100%; }
+.admin-chat-shell.admin-chat-expanded #admin-chat-messages{
+  flex: 1;
+  max-height: none !important;
+  min-height: 0 !important;
+}
+/* Center + cap the message column width when expanded WITHOUT a canvas, so a
+   full-width monitor doesn't stretch lines edge-to-edge. With a canvas the
+   chat is already narrow (~40%), so let it fill that column. */
+.admin-chat-shell.admin-chat-expanded:not(.has-canvas) #admin-chat-messages > *{
+  width: 100%;
+  max-width: 860px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* ---- The canvas panel itself (right column) ---- */
+#admin-chat-canvas{
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-radius);
+  box-shadow: var(--admin-shadow);
+  -webkit-backdrop-filter: var(--admin-blur);
+  backdrop-filter: var(--admin-blur);
+  overflow: hidden;
+}
+.admin-chat-canvas-head{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .7rem 1rem;
+  border-bottom: 1px solid var(--admin-border);
+  flex-shrink: 0;
+}
+.admin-chat-canvas-title{
+  font-size: .8rem;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--admin-text-muted);
+}
+.admin-chat-canvas-body{
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 1.1rem;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--admin-text) 22%, transparent) transparent;
+}
+.admin-chat-canvas-body::-webkit-scrollbar{ width: 4px; }
+.admin-chat-canvas-body::-webkit-scrollbar-thumb{
+  background: color-mix(in srgb, var(--admin-text) 22%, transparent); border-radius: 2px;
+}
+/* Mirrored artifacts fill the canvas width (engine cards cap at max-width:80%;
+   override only inside the canvas so the enlarged copy uses the full panel). */
+.admin-chat-canvas-body > *{ max-width: 100% !important; width: 100%; box-sizing: border-box; }
+.admin-chat-canvas-body > * + *{ margin-top: 1rem; }
+.admin-chat-canvas-empty{
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--admin-text-muted);
+  font-size: .92rem;
+  padding: 2rem;
+}
+
+/* Mobile / narrow: stack the overlay (canvas above the chat), like the visitor
+   split on small screens. */
+@media (max-width: 860px){
+  .admin-chat-shell.admin-chat-expanded,
+  .admin-chat-shell.admin-chat-expanded.has-canvas{
+    grid-template-columns: 1fr;
+    grid-auto-rows: auto;
+  }
+  .admin-chat-shell.admin-chat-expanded > .admin-chat-side{ display: none; }
+}
+
+/* ==========================================================================
+   C. FLOATING LAUNCHER — global glass pill + quick-ask popover
+   Lives at shell level in dashboard.html (outside .tab-content), gated to chat
+   availability. Bottom-right; opening sets `.open` on the launcher (JS).
+   ========================================================================== */
+
+#admin-asst-launcher{
+  position: fixed;
+  right: clamp(1rem, 2.5vw, 2rem);
+  bottom: clamp(1rem, 2.5vw, 2rem);
+  z-index: 80;
+  display: inline-flex;
+  align-items: center;
+  gap: .55rem;
+  padding: .6rem 1.05rem .6rem .7rem;
+  border-radius: 999px;
+  cursor: pointer;
+  color: var(--admin-text);
+  font-family: inherit;
+  font-size: .9rem;
+  font-weight: 600;
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border-light);
+  box-shadow: var(--admin-shadow);
+  -webkit-backdrop-filter: var(--admin-blur);
+  backdrop-filter: var(--admin-blur);
+  transition: transform .18s var(--acg-spring), box-shadow .18s ease, border-color .18s ease;
+}
+#admin-asst-launcher:hover{
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--admin-accent) 45%, transparent);
+  box-shadow: var(--admin-shadow), 0 10px 30px color-mix(in srgb, var(--admin-accent) 24%, transparent);
+}
+#admin-asst-launcher:active{ transform: translateY(0); }
+#admin-asst-launcher:focus-visible{
+  outline: 2px solid var(--admin-accent);
+  outline-offset: 2px;
+}
+/* The round gradient avatar dot on the launcher pill. */
+.admin-asst-launcher-orb{
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  color: #fff;
+  background: linear-gradient(135deg, var(--admin-accent), var(--admin-accent-2));
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--admin-accent) 40%, transparent);
+}
+.admin-asst-launcher-label{ white-space: nowrap; }
+/* Idle micro-bob to draw the eye (disabled under reduce-motion below). */
+#admin-asst-launcher .admin-asst-launcher-orb{ animation: adminAsstBob 3.4s ease-in-out infinite; }
+/* Hide the pill while the immersive overlay is up (the chat is already open). */
+.admin-asst-overlay-open #admin-asst-launcher{ display: none; }
+
+/* ---- Quick-ask popover (glass card, springs up from the launcher) ---- */
+#admin-asst-quick{
+  position: fixed;
+  right: clamp(1rem, 2.5vw, 2rem);
+  bottom: calc(clamp(1rem, 2.5vw, 2rem) + 3.6rem);
+  z-index: 81;
+  width: min(360px, calc(100vw - 2rem));
+  display: none;
+  flex-direction: column;
+  gap: .75rem;
+  padding: 1rem;
+  border-radius: var(--admin-radius);
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border-light);
+  box-shadow: var(--admin-shadow), 0 24px 70px rgba(0,0,0,.32);
+  -webkit-backdrop-filter: var(--admin-blur-heavy);
+  backdrop-filter: var(--admin-blur-heavy);
+  transform-origin: bottom right;
+}
+#admin-asst-quick.open{
+  display: flex;
+  animation: adminAsstPopover .26s var(--acg-spring) both;
+}
+.admin-asst-quick-head{
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+}
+.admin-asst-quick-title{
+  font-weight: 700;
+  font-size: .95rem;
+  color: var(--admin-text);
+  line-height: 1.2;
+}
+.admin-asst-quick-sub{
+  font-size: .78rem;
+  color: var(--admin-text-muted);
+  margin-top: .1rem;
+}
+.admin-asst-quick-close{
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--admin-text-muted);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: .1rem .35rem;
+  border-radius: 8px;
+}
+.admin-asst-quick-close:hover{ background: color-mix(in srgb, var(--admin-text) 8%, transparent); color: var(--admin-text); }
+
+/* Suggested-prompt chips. */
+.admin-asst-suggests{ display: flex; flex-wrap: wrap; gap: .4rem; }
+.admin-asst-suggest{
+  font-family: inherit;
+  font-size: .78rem;
+  color: var(--admin-text);
+  background: color-mix(in srgb, var(--admin-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--admin-accent) 24%, transparent);
+  border-radius: 999px;
+  padding: .35rem .7rem;
+  cursor: pointer;
+  transition: background .14s, border-color .14s, transform .04s;
+}
+.admin-asst-suggest:hover{ background: color-mix(in srgb, var(--admin-accent) 18%, transparent); }
+.admin-asst-suggest:active{ transform: translateY(1px); }
+
+/* Quick composer row: pill input + circular gradient send. */
+.admin-asst-quick-form{ display: flex; align-items: center; gap: .5rem; }
+#admin-asst-quick-input{
+  flex: 1;
+  min-width: 0;
+  background: var(--admin-field);
+  color: var(--admin-text);
+  border: 1px solid var(--admin-border);
+  border-radius: 999px;
+  padding: .55rem .9rem;
+  font-size: .85rem;
+  font-family: inherit;
+  transition: border-color .15s, box-shadow .15s;
+}
+#admin-asst-quick-input::placeholder{ color: var(--admin-text-muted); opacity: .75; }
+#admin-asst-quick-input:focus{
+  outline: none;
+  border-color: var(--admin-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--admin-accent) 26%, transparent);
+}
+.admin-asst-quick-send{
+  width: 2.3rem;
+  height: 2.3rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 1.05rem;
+  background: linear-gradient(135deg, var(--admin-accent), var(--admin-accent-2));
+  box-shadow: 0 5px 14px color-mix(in srgb, var(--admin-accent) 40%, transparent);
+  transition: filter .15s, transform .05s;
+}
+.admin-asst-quick-send:hover{ filter: brightness(1.08); }
+.admin-asst-quick-send:active{ transform: scale(.95); }
+.admin-asst-quick-send:focus-visible{ outline: 2px solid var(--admin-accent); outline-offset: 2px; }
+
+/* "Open full ⤢" link-button at the foot of the popover. */
+.admin-asst-quick-open{
+  background: transparent;
+  border: none;
+  color: var(--admin-accent);
+  font-family: inherit;
+  font-size: .8rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: .15rem .2rem;
+  align-self: flex-start;
+  border-radius: 6px;
+}
+.admin-asst-quick-open:hover{ text-decoration: underline; }
+.admin-asst-quick-open:focus-visible{ outline: 2px solid var(--admin-accent); outline-offset: 2px; }
+
+/* Task 088: inline answer area — the bubble answers right in the popover. Scrolls
+   within a capped height; a long/rich answer auto-opens the full chat overlay. */
+.admin-asst-quick-msgs{
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  max-height: 42vh;
+  overflow-y: auto;
+  padding: .15rem;
+  scrollbar-width: thin;
+}
+.admin-asst-quick-msgs[hidden]{ display: none; }
+.admin-asst-msg{
+  font-size: .85rem;
+  line-height: 1.5;
+  border-radius: .7rem;
+  padding: .45rem .7rem;
+  max-width: 92%;
+  word-wrap: break-word;
+}
+.admin-asst-msg-user{
+  align-self: flex-end;
+  background: linear-gradient(135deg, var(--admin-accent), var(--admin-accent-2));
+  color: #fff;
+  white-space: pre-wrap;
+}
+.admin-asst-msg-bot{
+  align-self: flex-start;
+  background: var(--admin-field);
+  color: var(--admin-text);
+  border: 1px solid var(--admin-border);
+}
+.admin-asst-typing{ opacity: .55; letter-spacing: .1em; }
+
+/* ==========================================================================
+   D. SCOPED KEYFRAMES (namespaced — cannot collide with the visitor chat's)
+   ========================================================================== */
+@keyframes adminChatFadeInUp{
+  from{ opacity: 0; transform: translateY(12px); }
+  to{ opacity: 1; transform: translateY(0); }
+}
+@keyframes adminChatTypingBounce{
+  0%, 80%, 100%{ transform: translateY(0); opacity: .4; }
+  40%{ transform: translateY(-4px); opacity: 1; }
+}
+@keyframes adminChatOverlayIn{
+  from{ opacity: 0; transform: scale(.985); }
+  to{ opacity: 1; transform: scale(1); }
+}
+@keyframes adminChatPopIn{
+  from{ opacity: 0; transform: translateY(10px) scale(.98); }
+  to{ opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes adminAsstPopover{
+  from{ opacity: 0; transform: translateY(14px) scale(.94); }
+  to{ opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes adminAsstBob{
+  0%, 100%{ transform: translateY(0); }
+  50%{ transform: translateY(-2px); }
+}
+
+/* ---- Typing indicator (3 bouncing dots) — the JS renders
+   .admin-chat-typing > .admin-chat-typing-dot ×3 in place of "Thinking…". ---- */
+.admin-chat-typing{
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: .6rem .85rem;
+  border-radius: 1rem;
+  border-bottom-left-radius: var(--acg-squared);
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border);
+  align-self: flex-start;
+  animation: adminChatFadeInUp .3s ease-out both;
+}
+.admin-chat-typing-dot{
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--admin-text) 45%, transparent);
+  animation: adminChatTypingBounce 1.2s ease-in-out infinite;
+}
+.admin-chat-typing-dot:nth-child(2){ animation-delay: .2s; }
+.admin-chat-typing-dot:nth-child(3){ animation-delay: .4s; }
+
+/* ---- Reduced motion: honor OS pref + the admin a11y toggle
+   (html[data-admin-motion="reduce"]). Disable transforms/entrances; keep
+   opacity so things still appear, matching the gx-kit's approach. ---- */
+@media (prefers-reduced-motion: reduce){
+  .admin-chat-shell #admin-chat-messages > [data-testid^="bubble-admin-chat"],
+  .admin-chat-shell.admin-chat-expanded,
+  .admin-chat-modal-backdrop.open .admin-chat-modal,
+  #admin-asst-quick.open,
+  .admin-chat-typing{ animation: none; }
+  #admin-asst-launcher .admin-asst-launcher-orb{ animation: none; }
+  #admin-asst-launcher{ transition: none; }
+  .admin-chat-shell{ transition: none; }
+}
+html[data-admin-motion="reduce"] .admin-chat-shell #admin-chat-messages > [data-testid^="bubble-admin-chat"],
+html[data-admin-motion="reduce"] .admin-chat-shell.admin-chat-expanded,
+html[data-admin-motion="reduce"] .admin-chat-modal-backdrop.open .admin-chat-modal,
+html[data-admin-motion="reduce"] #admin-asst-quick.open,
+html[data-admin-motion="reduce"] .admin-chat-typing{ animation: none; }
+html[data-admin-motion="reduce"] #admin-asst-launcher .admin-asst-launcher-orb{ animation: none; }
+html[data-admin-motion="reduce"] #admin-asst-launcher,
+html[data-admin-motion="reduce"] .admin-chat-shell{ transition: none; }
+
+/* ==========================================================================
+   E. TASK 087 — FLAGSHIP CONTROLS (command-bar composer, voice state,
+   attachment chips, pill dropdowns, slash-command palette, capabilities tray,
+   starters, header overflow).
+
+   SCOPE CONTRACT (same as above): every selector below is namespaced to the
+   existing `.admin-chat-*` / `#admin-chat-*` subtree or the NEW
+   `.admin-cmd-*` (slash palette) / `.admin-cap-*` (capabilities) /
+   `.admin-pick-*` (pill dropdowns) classes. NOTHING here touches global
+   `.btn` / `.card` / `.badge` / `.form-input` / bare `input|select|textarea`.
+   The one global class restyled (the `.btn.btn-primary` Send) is reached ONLY
+   via a `.admin-chat-shell`-prefixed descendant selector, confining the
+   override to the chat subtree. Everything is driven by `--admin-*` tokens so
+   light + dark + the Appearance sliders all "just work".
+   ========================================================================== */
+
+/* ---- E1. Command-bar composer ----
+   The composer is now a vertical glass "card": auto-grow textarea on top, an
+   inline action row (attach · voice · "/" · send) below. The dock wraps it so
+   the slash palette can float above. */
+.admin-chat-composer-dock{
+  position: relative;
+  align-self: stretch;
+}
+.admin-chat-shell .admin-chat-cmdbar{
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  padding: .6rem .7rem .55rem;
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border);
+  border-radius: 1.25rem;
+  box-shadow: var(--admin-shadow);
+  -webkit-backdrop-filter: var(--admin-blur);
+  backdrop-filter: var(--admin-blur);
+  transition: border-color .15s, box-shadow .15s;
+}
+/* Lift the whole bar when the textarea inside is focused (focus-within). */
+.admin-chat-shell .admin-chat-cmdbar:focus-within{
+  border-color: color-mix(in srgb, var(--admin-accent) 55%, transparent);
+  box-shadow: var(--admin-shadow), 0 0 0 3px color-mix(in srgb, var(--admin-accent) 18%, transparent);
+}
+/* The textarea sits flush inside the bar — no inner border/fill of its own; the
+   bar IS the field. Overrides the 086 #admin-chat-input pill rules (this is a
+   later, equal-specificity rule in the same stylesheet, so it wins). */
+.admin-chat-shell .admin-chat-cmdbar .admin-chat-cmdbar-input{
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: .35rem .4rem 0;
+  margin: 0;
+  resize: none;                 /* csrf.js auto-grows it instead */
+  min-height: 1.5rem;
+  max-height: 220px;
+  overflow-y: auto;
+  line-height: 1.5;
+  color: var(--admin-text);
+  font-family: inherit;
+  font-size: .95rem;
+  scrollbar-width: thin;
+}
+.admin-chat-shell .admin-chat-cmdbar .admin-chat-cmdbar-input:focus{
+  outline: none;
+  border: none;
+  box-shadow: none;
+}
+.admin-chat-shell .admin-chat-cmdbar .admin-chat-cmdbar-input::placeholder{
+  color: var(--admin-text-muted);
+  opacity: .8;
+}
+
+/* The inline action row. */
+.admin-chat-cmdbar-actions{
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+}
+.admin-chat-cmdbar-spacer{ flex: 1; }
+
+/* Round glass icon buttons (attach / voice / slash). These REPLACE the 086
+   round-button rules for the mic/attach (later, more specific via the new
+   class), and add the "/" affordance in the same family. */
+.admin-chat-shell .admin-chat-act{
+  width: 2.3rem;
+  height: 2.3rem;
+  flex-shrink: 0;
+  padding: 0;
+  border-radius: 999px;
+  background: var(--admin-field);
+  border: 1px solid var(--admin-border);
+  color: var(--admin-text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  transition: border-color .14s, color .14s, background .14s, transform .04s;
+}
+/* The mic + attach buttons keep their #id / [data-testid] (the engine relies on
+   them), so the 086 round-button rules (`.admin-chat-shell #admin-chat-mic-btn`,
+   `…button[data-testid="button-admin-chat-attach"]`) still match at HIGHER
+   specificity than `.admin-chat-act` and would force the old width/align-self.
+   Re-assert the command-bar geometry at EQUAL specificity but LATER in the
+   cascade so the new compact circular size + centered alignment win. */
+.admin-chat-shell #admin-chat-mic-btn.admin-chat-act,
+.admin-chat-shell button[data-testid="button-admin-chat-attach"].admin-chat-act{
+  width: 2.3rem;
+  height: 2.3rem;
+  align-self: center;
+}
+.admin-chat-shell .admin-chat-act:hover{
+  border-color: var(--admin-accent);
+  color: var(--admin-accent);
+  background: color-mix(in srgb, var(--admin-accent) 10%, transparent);
+}
+.admin-chat-shell .admin-chat-act:active{ transform: translateY(1px); }
+.admin-chat-shell .admin-chat-act:focus-visible{
+  outline: none;
+  border-color: var(--admin-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--admin-accent) 26%, transparent);
+}
+.admin-chat-act-ico{ pointer-events: none; }
+/* The "/" affordance reads as monospace glyph. */
+.admin-chat-slash .admin-chat-act-ico{
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+/* Active state when the palette is open. */
+.admin-chat-shell .admin-chat-slash.is-open{
+  background: color-mix(in srgb, var(--admin-accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--admin-accent) 34%, transparent);
+  color: var(--admin-accent);
+}
+
+/* The Send button → circular gradient FAB. Re-declared here (later than the
+   086 rule, equal specificity) so it keeps the FAB look inside the new bar. */
+.admin-chat-shell .admin-chat-cmdbar #admin-chat-send-btn.btn.btn-primary{
+  width: 2.5rem;
+  height: 2.5rem;
+  min-width: 2.5rem;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0;
+  background: linear-gradient(135deg, var(--admin-accent), var(--admin-accent-2));
+  border: none;
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--admin-accent) 40%, transparent);
+  transition: filter .15s, transform .05s, box-shadow .15s;
+}
+.admin-chat-shell .admin-chat-cmdbar #admin-chat-send-btn.btn.btn-primary::before{
+  content: "\2191";
+  font-size: 1.1rem;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+}
+.admin-chat-shell .admin-chat-cmdbar #admin-chat-send-btn.btn.btn-primary:hover{ filter: brightness(1.08); }
+.admin-chat-shell .admin-chat-cmdbar #admin-chat-send-btn.btn.btn-primary:active{ transform: scale(.95); }
+.admin-chat-shell .admin-chat-cmdbar #admin-chat-send-btn.btn.btn-primary:disabled{ opacity: .55; }
+
+/* ---- E2. Voice recording state ----
+   csrf.js toggles `.is-recording` on the mic button + un-hides the status row.
+   The mic glyph pulses; a pulsing ring expands behind it. The 086 mic rule sets
+   `background: var(--admin-field) !important`, so the recording fill/border use
+   !important to win over it (scoped to the recording state only). */
+.admin-chat-shell #admin-chat-mic-btn.admin-chat-mic.is-recording,
+.admin-chat-shell .admin-chat-mic.is-recording{
+  background: color-mix(in srgb, var(--admin-danger, #dc2626) 18%, transparent) !important;
+  border-color: color-mix(in srgb, var(--admin-danger, #dc2626) 50%, transparent) !important;
+  color: var(--admin-danger, #dc2626);
+}
+.admin-chat-mic-pulse{
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  pointer-events: none;
+  opacity: 0;
+}
+.admin-chat-shell .admin-chat-mic.is-recording .admin-chat-mic-pulse{
+  opacity: 1;
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--admin-danger, #dc2626) 55%, transparent);
+  animation: adminChatMicPulse 1.4s ease-out infinite;
+}
+.admin-chat-shell .admin-chat-mic.is-recording .admin-chat-act-ico{
+  animation: adminChatMicBlink 1s ease-in-out infinite;
+}
+/* The "listening… ⏹ stop" status row below the bar. */
+.admin-chat-voice-status{
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  margin-top: .5rem;
+  padding: .35rem .7rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--admin-danger, #dc2626) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--admin-danger, #dc2626) 32%, transparent);
+  color: var(--admin-text);
+  font-size: .82rem;
+  width: max-content;
+}
+.admin-chat-voice-status[hidden]{ display: none; }
+.admin-chat-voice-label{ color: var(--admin-text-muted); }
+/* Little animated equalizer bars. */
+.admin-chat-voice-eq{ display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; }
+.admin-chat-voice-eq > i{
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--admin-danger, #dc2626);
+  transform-origin: bottom;
+  animation: adminChatEq 1s ease-in-out infinite;
+}
+.admin-chat-voice-eq > i:nth-child(2){ animation-delay: .15s; }
+.admin-chat-voice-eq > i:nth-child(3){ animation-delay: .3s; }
+.admin-chat-voice-eq > i:nth-child(4){ animation-delay: .45s; }
+.admin-chat-voice-eq > i:nth-child(5){ animation-delay: .6s; }
+.admin-chat-voice-stop{
+  margin-left: .25rem;
+  background: var(--admin-danger, #dc2626);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: .2rem .6rem;
+  font-family: inherit;
+  font-size: .78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter .14s, transform .04s;
+}
+.admin-chat-voice-stop:hover{ filter: brightness(1.08); }
+.admin-chat-voice-stop:active{ transform: translateY(1px); }
+
+/* ---- E3. Flagship attachment chips ----
+   csrf.js renders chips into #admin-chat-attach-strip with the new
+   .admin-chat-att-chip markup (image thumb / doc glyph + size + remove). */
+.admin-chat-att-chip{
+  display: inline-flex;
+  align-items: center;
+  gap: .5rem;
+  max-width: 240px;
+  padding: .3rem .45rem .3rem .35rem;
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border);
+  border-radius: .7rem;
+  box-shadow: var(--admin-shadow);
+  -webkit-backdrop-filter: var(--admin-blur);
+  backdrop-filter: var(--admin-blur);
+  font-size: .8rem;
+  color: var(--admin-text);
+}
+.admin-chat-att-thumb{
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  border-radius: .45rem;
+  object-fit: cover;
+  border: 1px solid var(--admin-border);
+}
+.admin-chat-att-glyph{
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  border-radius: .45rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  background: color-mix(in srgb, var(--admin-accent) 14%, transparent);
+  color: var(--admin-accent);
+}
+.admin-chat-att-meta{ display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.admin-chat-att-name{
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.admin-chat-att-size{ color: var(--admin-text-muted); font-size: .7rem; }
+.admin-chat-att-rm{
+  margin-left: .15rem;
+  flex-shrink: 0;
+  width: 1.3rem;
+  height: 1.3rem;
+  border-radius: 50%;
+  border: none;
+  background: color-mix(in srgb, var(--admin-text) 8%, transparent);
+  color: var(--admin-text-muted);
+  cursor: pointer;
+  font-size: .85rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background .14s, color .14s;
+}
+.admin-chat-att-rm:hover{
+  background: color-mix(in srgb, var(--admin-danger, #dc2626) 18%, transparent);
+  color: var(--admin-danger, #dc2626);
+}
+
+/* ---- E-keyframes (namespaced) ---- */
+@keyframes adminChatMicPulse{
+  0%{ box-shadow: 0 0 0 0 color-mix(in srgb, var(--admin-danger, #dc2626) 55%, transparent); }
+  70%{ box-shadow: 0 0 0 12px color-mix(in srgb, var(--admin-danger, #dc2626) 0%, transparent); }
+  100%{ box-shadow: 0 0 0 0 color-mix(in srgb, var(--admin-danger, #dc2626) 0%, transparent); }
+}
+@keyframes adminChatMicBlink{ 0%,100%{ opacity: 1; } 50%{ opacity: .45; } }
+@keyframes adminChatEq{ 0%,100%{ transform: scaleY(.35); } 50%{ transform: scaleY(1); } }
+
+/* Reduced-motion: kill the new animations (keep the resting visuals). */
+@media (prefers-reduced-motion: reduce){
+  .admin-chat-shell .admin-chat-mic.is-recording .admin-chat-mic-pulse,
+  .admin-chat-shell .admin-chat-mic.is-recording .admin-chat-act-ico,
+  .admin-chat-voice-eq > i{ animation: none; }
+}
+html[data-admin-motion="reduce"] .admin-chat-shell .admin-chat-mic.is-recording .admin-chat-mic-pulse,
+html[data-admin-motion="reduce"] .admin-chat-shell .admin-chat-mic.is-recording .admin-chat-act-ico,
+html[data-admin-motion="reduce"] .admin-chat-voice-eq > i{ animation: none; }
+
+/* ==========================================================================
+   F. TASK 087 — PERSONA + MODEL PILL DROPDOWNS (.admin-pick-*)
+   The native <select id="admin-chat-persona|model"> stay in the DOM (the engine
+   reads/persists them) but are visually hidden; the .admin-pick glass dropdown
+   beside each one DRIVES it (csrf.js sets .value + fires change / calls the
+   save handler). Keyboard-navigable, light/dark via tokens, closes on
+   outside-click/Esc.
+   ========================================================================== */
+
+/* Hide the native selects but keep them in the layout flow at zero size so the
+   engine + adminChatSaveModel still work. Visually-hidden pattern (not
+   display:none, so .value/onchange stay reliable). This wins over the 086
+   `.admin-chat-header select` pill rules because it's later + more specific. */
+.admin-chat-shell .admin-chat-header select.admin-pick-native,
+.admin-chat-shell select.admin-pick-native{
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  border: 0 !important;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  overflow: hidden !important;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.admin-pick{ position: relative; display: inline-flex; }
+
+/* Trigger pill — same glass family as the header .acm-btn pills. */
+.admin-chat-shell .admin-pick-trigger{
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  background: var(--admin-field);
+  color: var(--admin-text);
+  border: 1px solid var(--admin-border);
+  border-radius: 999px;
+  padding: .32rem .6rem;
+  font-family: inherit;
+  font-size: .8rem;
+  cursor: pointer;
+  max-width: 14rem;
+  transition: border-color .14s, color .14s, background .14s, transform .04s;
+}
+.admin-chat-shell .admin-pick-trigger:hover{
+  border-color: var(--admin-accent);
+  color: var(--admin-accent);
+  background: color-mix(in srgb, var(--admin-accent) 10%, transparent);
+}
+.admin-chat-shell .admin-pick-trigger:active{ transform: translateY(1px); }
+.admin-chat-shell .admin-pick-trigger:focus-visible{
+  outline: none;
+  border-color: var(--admin-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--admin-accent) 26%, transparent);
+}
+.admin-pick.is-open .admin-pick-trigger{
+  border-color: color-mix(in srgb, var(--admin-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--admin-accent) 12%, transparent);
+  color: var(--admin-accent);
+}
+.admin-pick-ico{ font-size: .95rem; line-height: 1; }
+.admin-pick-label{
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+.admin-pick-caret{ font-size: .7rem; opacity: .7; margin-left: .1rem; }
+
+/* The dropdown menu — glass card floating below the trigger. */
+.admin-pick-menu{
+  position: absolute;
+  top: calc(100% + .4rem);
+  left: 0;
+  z-index: 60;
+  min-width: 16rem;
+  max-width: min(22rem, 80vw);
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: .35rem;
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border-light);
+  border-radius: var(--admin-radius);
+  box-shadow: var(--admin-shadow), 0 18px 50px rgba(0,0,0,.28);
+  -webkit-backdrop-filter: var(--admin-blur-heavy);
+  backdrop-filter: var(--admin-blur-heavy);
+  scrollbar-width: thin;
+  animation: adminPickMenuIn .18s var(--acg-spring, ease) both;
+}
+.admin-pick-menu[hidden]{ display: none; }
+/* When a pick is anchored near the right edge we flip it to align right. */
+.admin-pick.align-right .admin-pick-menu{ left: auto; right: 0; }
+
+/* Optgroup-style heading inside the model menu. */
+.admin-pick-group{
+  padding: .4rem .55rem .2rem;
+  font-size: .68rem;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--admin-text-muted);
+}
+
+/* Each option row: icon + (label + desc). */
+.admin-pick-opt{
+  display: flex;
+  align-items: flex-start;
+  gap: .55rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--admin-radius) - .3rem);
+  padding: .45rem .55rem;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--admin-text);
+  transition: background .12s;
+}
+.admin-pick-opt:hover,
+.admin-pick-opt.is-active{
+  background: color-mix(in srgb, var(--admin-accent) 12%, transparent);
+}
+.admin-pick-opt[aria-selected="true"]{
+  background: color-mix(in srgb, var(--admin-accent) 16%, transparent);
+}
+.admin-pick-opt-ico{
+  flex-shrink: 0;
+  width: 1.5rem;
+  text-align: center;
+  font-size: 1.05rem;
+  line-height: 1.3;
+}
+.admin-pick-opt-txt{ display: flex; flex-direction: column; min-width: 0; }
+.admin-pick-opt-name{ font-size: .85rem; font-weight: 600; line-height: 1.25; }
+.admin-pick-opt-desc{
+  font-size: .74rem;
+  color: var(--admin-text-muted);
+  line-height: 1.3;
+  margin-top: .05rem;
+}
+/* The selected check on the active option. */
+.admin-pick-opt-check{
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--admin-accent);
+  font-size: .85rem;
+  opacity: 0;
+}
+.admin-pick-opt[aria-selected="true"] .admin-pick-opt-check{ opacity: 1; }
+
+@keyframes adminPickMenuIn{
+  from{ opacity: 0; transform: translateY(-6px) scale(.98); }
+  to{ opacity: 1; transform: translateY(0) scale(1); }
+}
+@media (prefers-reduced-motion: reduce){
+  .admin-pick-menu{ animation: none; }
+}
+html[data-admin-motion="reduce"] .admin-pick-menu{ animation: none; }
+
+/* ==========================================================================
+   G. TASK 087 — SLASH-COMMAND PALETTE (.admin-cmd-*)
+   A filterable glass menu floated ABOVE the composer (inside
+   .admin-chat-composer-dock). csrf.js opens it on "/" at composer start or the
+   "/" button, filters as you type, ↑/↓/Enter/Esc navigate, and selecting a
+   command SEEDS the composer (+ optionally routes a persona). Role-aware:
+   super-admin-only commands are dropped for a normal admin (data-admin-role).
+   ========================================================================== */
+.admin-cmd-palette{
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + .5rem);   /* float above the command bar */
+  z-index: 65;
+  max-height: 50vh;
+  overflow-y: auto;
+  padding: .35rem;
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border-light);
+  border-radius: var(--admin-radius);
+  box-shadow: var(--admin-shadow), 0 18px 50px rgba(0,0,0,.3);
+  -webkit-backdrop-filter: var(--admin-blur-heavy);
+  backdrop-filter: var(--admin-blur-heavy);
+  scrollbar-width: thin;
+  animation: adminCmdIn .18s var(--acg-spring, ease) both;
+}
+.admin-cmd-palette[hidden]{ display: none; }
+/* A small caption row at the top of the palette. */
+.admin-cmd-hint{
+  padding: .35rem .55rem .45rem;
+  font-size: .72rem;
+  color: var(--admin-text-muted);
+  border-bottom: 1px solid var(--admin-border);
+  margin-bottom: .25rem;
+}
+.admin-cmd-hint b{ color: var(--admin-text); font-weight: 700; }
+/* Group label inside the palette. */
+.admin-cmd-group{
+  padding: .4rem .55rem .2rem;
+  font-size: .67rem;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--admin-text-muted);
+}
+/* One command row: /name + description, optional persona chip. */
+.admin-cmd-item{
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--admin-radius) - .3rem);
+  padding: .45rem .55rem;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--admin-text);
+  transition: background .12s;
+}
+.admin-cmd-item:hover,
+.admin-cmd-item.is-active{
+  background: color-mix(in srgb, var(--admin-accent) 12%, transparent);
+}
+.admin-cmd-ico{
+  flex-shrink: 0;
+  width: 1.6rem;
+  text-align: center;
+  font-size: 1.05rem;
+}
+.admin-cmd-body{ display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.admin-cmd-name{
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .82rem;
+  font-weight: 700;
+  color: var(--admin-text);
+}
+.admin-cmd-name .admin-cmd-arg{ color: var(--admin-text-muted); font-weight: 500; }
+.admin-cmd-desc{
+  font-size: .74rem;
+  color: var(--admin-text-muted);
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Persona chip shown when a command routes a persona. */
+.admin-cmd-persona{
+  flex-shrink: 0;
+  font-size: .68rem;
+  padding: .12rem .45rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--admin-accent) 14%, transparent);
+  color: var(--admin-accent);
+  border: 1px solid color-mix(in srgb, var(--admin-accent) 26%, transparent);
+  white-space: nowrap;
+}
+/* Super-admin-only badge. */
+.admin-cmd-super{
+  flex-shrink: 0;
+  font-size: .62rem;
+  font-weight: 700;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  padding: .1rem .4rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--admin-accent-2) 16%, transparent);
+  color: var(--admin-accent-2);
+}
+.admin-cmd-empty{
+  padding: .8rem .6rem;
+  color: var(--admin-text-muted);
+  font-size: .82rem;
+  text-align: center;
+}
+@keyframes adminCmdIn{
+  from{ opacity: 0; transform: translateY(8px) scale(.98); }
+  to{ opacity: 1; transform: translateY(0) scale(1); }
+}
+@media (prefers-reduced-motion: reduce){ .admin-cmd-palette{ animation: none; } }
+html[data-admin-motion="reduce"] .admin-cmd-palette{ animation: none; }
+
+/* ==========================================================================
+   H. TASK 087 — CAPABILITIES TRAY (.admin-cap-*), STARTERS, HEADER OVERFLOW
+   ========================================================================== */
+
+/* ---- H1. Header "Capabilities" button: tonal accent pill (sits next to
+   Expand as a co-primary affordance). ---- */
+.admin-chat-shell .admin-chat-header button.acm-btn.admin-cap-open-btn{
+  background: color-mix(in srgb, var(--admin-accent) 14%, transparent);
+  color: var(--admin-accent);
+  border-color: color-mix(in srgb, var(--admin-accent) 28%, transparent);
+  font-weight: 600;
+}
+.admin-chat-shell .admin-chat-header button.acm-btn.admin-cap-open-btn:hover{
+  background: color-mix(in srgb, var(--admin-accent) 22%, transparent);
+  color: var(--admin-accent);
+}
+/* Keep Expand pushed to the right edge but let Capabilities sit just before it.
+   (086 set .admin-chat-expand-btn margin-left:auto; we now want BOTH grouped at
+   the right with the overflow last.) */
+.admin-chat-shell .admin-chat-header .admin-cap-open-btn{ margin-left: auto; }
+.admin-chat-shell .admin-chat-header .admin-chat-expand-btn{ margin-left: .1rem; }
+
+/* ---- H2. Header overflow ⋯ menu ---- */
+.admin-chat-overflow{ position: relative; display: inline-flex; }
+.admin-chat-shell .admin-chat-header button.acm-btn.admin-chat-overflow-btn{
+  font-size: 1.05rem;
+  line-height: 1;
+  padding: .32rem .55rem;
+}
+.admin-chat-overflow-menu{
+  position: absolute;
+  top: calc(100% + .4rem);
+  right: 0;
+  z-index: 62;
+  min-width: 12.5rem;
+  padding: .3rem;
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border-light);
+  border-radius: var(--admin-radius);
+  box-shadow: var(--admin-shadow), 0 16px 44px rgba(0,0,0,.28);
+  -webkit-backdrop-filter: var(--admin-blur-heavy);
+  backdrop-filter: var(--admin-blur-heavy);
+  animation: adminPickMenuIn .16s var(--acg-spring, ease) both;
+}
+.admin-chat-overflow-menu[hidden]{ display: none; }
+.admin-chat-overflow-item{
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--admin-radius) - .3rem);
+  padding: .5rem .6rem;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: .85rem;
+  color: var(--admin-text);
+  transition: background .12s, color .12s;
+}
+.admin-chat-overflow-item:hover{ background: color-mix(in srgb, var(--admin-accent) 12%, transparent); }
+.admin-chat-overflow-item.admin-chat-overflow-danger:hover{
+  background: color-mix(in srgb, var(--admin-danger, #dc2626) 14%, transparent);
+  color: var(--admin-danger, #dc2626);
+}
+.admin-chat-overflow-sep{
+  height: 1px;
+  margin: .25rem .3rem;
+  background: var(--admin-border);
+}
+@media (prefers-reduced-motion: reduce){ .admin-chat-overflow-menu{ animation: none; } }
+html[data-admin-motion="reduce"] .admin-chat-overflow-menu{ animation: none; }
+
+/* ---- H3. Empty-state starter chips ---- */
+.admin-cap-starters{
+  display: flex;
+  flex-wrap: wrap;
+  gap: .45rem;
+  padding: .25rem .1rem .1rem;
+  align-self: stretch;
+}
+.admin-cap-starters[hidden]{ display: none; }
+.admin-cap-starter{
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  font-family: inherit;
+  font-size: .82rem;
+  color: var(--admin-text);
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border);
+  border-radius: 999px;
+  padding: .4rem .8rem;
+  cursor: pointer;
+  box-shadow: var(--admin-shadow);
+  -webkit-backdrop-filter: var(--admin-blur);
+  backdrop-filter: var(--admin-blur);
+  transition: border-color .14s, background .14s, transform .04s, color .14s;
+}
+.admin-cap-starter:hover{
+  border-color: var(--admin-accent);
+  background: color-mix(in srgb, var(--admin-accent) 10%, transparent);
+  color: var(--admin-accent);
+}
+.admin-cap-starter:active{ transform: translateY(1px); }
+.admin-cap-starter-ico{ font-size: .95rem; line-height: 1; }
+
+/* ---- H4. Capabilities tray (right-side glass drawer) ---- */
+.admin-cap-backdrop{
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: flex;
+  justify-content: flex-end;
+  background: color-mix(in srgb, var(--admin-bg) 45%, rgba(0,0,0,.5));
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  animation: adminCapFade .2s ease both;
+}
+.admin-cap-backdrop[hidden]{ display: none; }
+.admin-cap-tray{
+  width: min(420px, 92vw);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--admin-surface);
+  border-left: 1px solid var(--admin-border-light);
+  box-shadow: -24px 0 70px rgba(0,0,0,.34);
+  -webkit-backdrop-filter: var(--admin-blur-heavy);
+  backdrop-filter: var(--admin-blur-heavy);
+  animation: adminCapSlide .28s var(--acg-spring, ease) both;
+}
+.admin-cap-head{
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1rem 1.1rem;
+  border-bottom: 1px solid var(--admin-border);
+  flex-shrink: 0;
+}
+.admin-cap-head-txt{ display: flex; flex-direction: column; gap: .15rem; min-width: 0; }
+.admin-cap-head-title{ font-size: 1.05rem; font-weight: 700; color: var(--admin-text); }
+.admin-cap-head-sub{ font-size: .78rem; color: var(--admin-text-muted); line-height: 1.35; }
+.admin-cap-close{
+  margin-left: auto;
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--admin-text-muted);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: .1rem .4rem;
+  border-radius: 8px;
+}
+.admin-cap-close:hover{ background: color-mix(in srgb, var(--admin-text) 8%, transparent); color: var(--admin-text); }
+.admin-cap-body{
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: .9rem 1.1rem 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: .9rem;
+  scrollbar-width: thin;
+}
+
+/* A capability group card. */
+.admin-cap-group{
+  /* The tray body is a flex column with overflow-y:auto. Without this, each card
+     is a shrinkable flex item (default flex-shrink:1) and `overflow:hidden` then
+     CLIPS the body (bullet lines + click-to-run example chips) down to just the
+     header when the groups don't all fit — making the tray look empty. Pin the
+     intrinsic height so every card shows its body and the BODY scrolls instead. */
+  flex: 0 0 auto;
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-radius);
+  background: color-mix(in srgb, var(--admin-surface) 70%, transparent);
+  overflow: hidden;
+}
+.admin-cap-group-head{
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  padding: .6rem .75rem;
+  background: color-mix(in srgb, var(--admin-accent) 7%, transparent);
+  border-bottom: 1px solid var(--admin-border);
+}
+.admin-cap-group-ico{ font-size: 1.1rem; line-height: 1; }
+.admin-cap-group-title{ font-size: .9rem; font-weight: 700; color: var(--admin-text); }
+.admin-cap-super-tag{
+  margin-left: auto;
+  font-size: .6rem;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  padding: .1rem .4rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--admin-accent-2) 16%, transparent);
+  color: var(--admin-accent-2);
+}
+.admin-cap-group-body{ padding: .65rem .75rem .8rem; }
+/* "What it can do" bullet lines. */
+.admin-cap-lines{ margin: 0 0 .6rem; padding-left: 1.05rem; }
+.admin-cap-lines li{ font-size: .8rem; color: var(--admin-text-muted); line-height: 1.5; }
+/* Click-to-run example chips. */
+.admin-cap-examples{ display: flex; flex-wrap: wrap; gap: .35rem; }
+.admin-cap-ex{
+  font-family: inherit;
+  font-size: .76rem;
+  color: var(--admin-text);
+  background: var(--admin-field);
+  border: 1px solid var(--admin-border);
+  border-radius: 999px;
+  padding: .3rem .6rem;
+  cursor: pointer;
+  transition: border-color .14s, background .14s, color .14s, transform .04s;
+}
+.admin-cap-ex:hover{
+  border-color: var(--admin-accent);
+  background: color-mix(in srgb, var(--admin-accent) 10%, transparent);
+  color: var(--admin-accent);
+}
+.admin-cap-ex:active{ transform: translateY(1px); }
+
+/* The Skills group renders live per-conversation toggles. */
+.admin-cap-skill-row{
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .4rem .15rem;
+  border-bottom: 1px solid var(--admin-border);
+}
+.admin-cap-skill-row:last-child{ border-bottom: none; }
+.admin-cap-skill-name{ font-size: .82rem; color: var(--admin-text); flex: 1; min-width: 0; }
+.admin-cap-skill-empty{ font-size: .8rem; color: var(--admin-text-muted); padding: .4rem .15rem; }
+.admin-cap-skill-foot{ display: flex; justify-content: flex-end; gap: .5rem; margin-top: .7rem; }
+.admin-cap-skill-save{
+  background: linear-gradient(135deg, var(--admin-accent), var(--admin-accent-2));
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: .35rem .85rem;
+  font-family: inherit;
+  font-size: .8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter .14s, transform .04s;
+}
+.admin-cap-skill-save:hover{ filter: brightness(1.08); }
+.admin-cap-skill-save:active{ transform: translateY(1px); }
+/* Small toggle checkbox styling — accent the native control only inside the tray. */
+.admin-cap-skill-row input[type="checkbox"]{ accent-color: var(--admin-accent); width: 1rem; height: 1rem; flex-shrink: 0; cursor: pointer; }
+
+@keyframes adminCapFade{ from{ opacity: 0; } to{ opacity: 1; } }
+@keyframes adminCapSlide{ from{ transform: translateX(100%); } to{ transform: translateX(0); } }
+@media (prefers-reduced-motion: reduce){
+  .admin-cap-backdrop, .admin-cap-tray{ animation: none; }
+  .admin-cap-starter, .admin-cap-ex{ transition: none; }
+}
+html[data-admin-motion="reduce"] .admin-cap-backdrop,
+html[data-admin-motion="reduce"] .admin-cap-tray{ animation: none; }

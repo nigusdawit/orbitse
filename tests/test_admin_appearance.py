@@ -140,3 +140,158 @@ def test_ext_save_validate_and_persist():
                 "surface": "glass", "sidebar": "comfortable",
                 "high_contrast": False, "reduce_motion": False},
           headers={"X-CSRF-Token": "t"})
+
+
+# ---------------------------------------------------------------------------
+# Task 089 — "a lot more" Appearance controls (migration 0033): semantic/extra
+# colours, typography, shape & depth, layout & motion, per-theme base colours,
+# and save-your-own presets — all in the single admin_theme_extra JSONB blob.
+# ---------------------------------------------------------------------------
+
+def _reset_extra(c):
+    """Clear all expanded knobs back to defaults (a PUT with no extra keys writes
+    an empty blob) so later tests / the live UI start clean."""
+    c.put("/admin/api/admin-appearance",
+          json={"mode": "dark", "accent": "#6c8cff", "accent2": "#9a7cff",
+                "blur": 18, "radius": 16, "glass": 0.55, "glow": 0.5,
+                "density": "comfortable", "font_scale": "md", "font_family": "sans",
+                "surface": "glass", "sidebar": "comfortable",
+                "high_contrast": False, "reduce_motion": False},
+          headers={"X-CSRF-Token": "t"})
+
+
+def test_extra_column_exists():
+    # A SELECT of the new column proves migration 0033 ran (no error).
+    app.query_db("SELECT admin_theme_extra FROM site_settings WHERE id=1", fetchone=True)
+
+
+def test_extra_defaults():
+    d = app._admin_appearance()
+    # Theme-agnostic colour + enum + numeric defaults == today's look.
+    assert d["color_success"] == "#22c55e"
+    assert d["color_warning"] == "#f59e0b"
+    assert d["color_danger"] == "#ef4444"
+    assert d["head_font"] == "serif"
+    assert d["font_weight"] == "normal"
+    assert d["shadow"] == "medium"
+    assert d["focus_style"] == "ring"
+    assert d["content_width"] == "full"
+    assert d["header_style"] == "sticky"
+    assert d["button_style"] == "solid"
+    assert d["motion_speed"] == "normal"
+    assert d["line_height"] == 1.3
+    assert d["border_width"] == 1.0
+    # Per-theme base colours flattened to <key>_dark/<key>_light for the pickers.
+    assert d["bg_dark"] == "#0b1220" and d["bg_light"] == "#eef2fb"
+    assert d["text_dark"] == "#e8edf6" and d["text_light"] == "#19233a"
+    # Nothing customized out of the box.
+    assert d["base_overrides"] == {}
+    assert d["custom_presets"] == []
+
+
+def test_extra_save_validate_persist():
+    c = _sa()
+    app.execute_db("INSERT INTO site_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+    # Valid expanded values persist + echo back.
+    r = c.put("/admin/api/admin-appearance",
+              json={"mode": "dark", "color_success": "#aabbcc", "shadow": "strong",
+                    "head_font": "mono", "button_style": "outline", "line_height": 1.7,
+                    "border_width": 2, "bg_dark": "#123456"},
+              headers={"X-CSRF-Token": "t"})
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["color_success"] == "#aabbcc" and j["shadow"] == "strong"
+    assert j["head_font"] == "mono" and j["button_style"] == "outline"
+    assert j["line_height"] == 1.7 and j["border_width"] == 2.0
+    assert j["bg_dark"] == "#123456"
+    # bg_dark differs from default -> it's an override; bg_light untouched -> not.
+    assert j["base_overrides"].get("bg_dark") == "#123456"
+    assert "bg_light" not in j["base_overrides"]
+    # Persisted + read back through the defensive reader.
+    d = app._admin_appearance()
+    assert d["color_success"] == "#aabbcc" and d["shadow"] == "strong"
+    assert d["bg_dark"] == "#123456" and d["base_overrides"].get("bg_dark") == "#123456"
+    # Invalid values fall back to safe defaults (never stored verbatim).
+    j2 = c.put("/admin/api/admin-appearance",
+               json={"color_success": "notahex", "shadow": "ginormous",
+                     "head_font": "comic", "button_style": "neon", "bg_dark": "xyz"},
+               headers={"X-CSRF-Token": "t"}).get_json()
+    assert j2["color_success"] == "#22c55e" and j2["shadow"] == "medium"
+    assert j2["head_font"] == "serif" and j2["button_style"] == "solid"
+    assert j2["bg_dark"] == "#0b1220" and j2["base_overrides"] == {}
+    _reset_extra(c)
+
+
+def test_extra_numeric_clamp():
+    c = _sa()
+    j = c.put("/admin/api/admin-appearance",
+              json={"line_height": 99, "border_width": 99, "letter_spacing": 99},
+              headers={"X-CSRF-Token": "t"}).get_json()
+    assert j["line_height"] == 1.9 and j["border_width"] == 3.0 and j["letter_spacing"] == 0.08
+    j = c.put("/admin/api/admin-appearance",
+              json={"line_height": -99, "border_width": -99, "letter_spacing": -99},
+              headers={"X-CSRF-Token": "t"}).get_json()
+    assert j["line_height"] == 1.2 and j["border_width"] == 0.0 and j["letter_spacing"] == -0.02
+    _reset_extra(c)
+
+
+def test_custom_presets_roundtrip_cap_sanitize():
+    c = _sa()
+    # junk first (so it's within the cap), then a label-less one (dropped), then
+    # 30 valid presets (pushes the total past the cap of 24).
+    presets = [
+        {"id": "junk", "label": "Junk",
+         "settings": {"evil": "x", "nested": {"a": 1}, "accent": "#abcdef"}},
+        {"id": "nolabel", "label": "", "settings": {}},
+    ]
+    presets += [{"id": "p%d" % i, "label": "P%d" % i, "settings": {"shadow": "soft"}}
+                for i in range(30)]
+    j = c.put("/admin/api/admin-appearance",
+              json={"custom_presets": presets}, headers={"X-CSRF-Token": "t"}).get_json()
+    saved = j["custom_presets"]
+    assert len(saved) <= 24                              # capped
+    assert all(p["id"] and p["label"] for p in saved)    # id + label required
+    assert not any(p["id"] == "nolabel" for p in saved)  # label-less dropped
+    # Settings sanitized: known key kept, unknown + nested dropped.
+    junk = [p for p in saved if p["id"] == "junk"]
+    assert junk, "the in-cap junk preset should survive"
+    s = junk[0]["settings"]
+    assert "evil" not in s and "nested" not in s and s.get("accent") == "#abcdef"
+    # Persisted.
+    d = app._admin_appearance()
+    assert len(d["custom_presets"]) == len(saved)
+    _reset_extra(c)
+
+
+def test_custom_preset_id_sanitized_against_xss():
+    # SECURITY regression (task 089 review): a custom-preset id is reflected into
+    # client-side markup, so a crafted id carrying HTML/JS must be stripped to
+    # [a-z0-9] on BOTH save and read — never stored or echoed verbatim.
+    c = _sa()
+    evil = {"id": "x'><img src=x onerror=alert(1)>", "label": "Evil",
+            "settings": {"accent": "#abcdef"}}
+    j = c.put("/admin/api/admin-appearance",
+              json={"custom_presets": [evil]}, headers={"X-CSRF-Token": "t"}).get_json()
+    saved = j["custom_presets"]
+    assert len(saved) == 1
+    pid = saved[0]["id"]
+    assert pid and all(ch.islower() or ch.isdigit() for ch in pid)   # [a-z0-9] only
+    for bad in ("<", ">", "'", '"', " ", "(", ")", "="):
+        assert bad not in pid
+    # the read path sanitizes too (so a pre-existing bad row can't reach the DOM)
+    rid = app._admin_appearance()["custom_presets"][0]["id"]
+    assert "<" not in rid and "'" not in rid and ">" not in rid
+    _reset_extra(c)
+
+
+def test_fail_open_garbage_blob():
+    # A corrupt (non-dict) blob must NEVER break the reader — it falls back to
+    # all defaults instead of raising.
+    app.execute_db("UPDATE site_settings SET admin_theme_extra=%s::jsonb WHERE id=1",
+                   ('"corrupt-not-an-object"',))
+    d = app._admin_appearance()
+    assert d["color_success"] == "#22c55e"
+    assert d["bg_dark"] == "#0b1220"
+    assert d["base_overrides"] == {} and d["custom_presets"] == []
+    # Reset to a clean empty object.
+    app.execute_db("UPDATE site_settings SET admin_theme_extra='{}'::jsonb WHERE id=1")

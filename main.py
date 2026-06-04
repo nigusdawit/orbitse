@@ -102,6 +102,8 @@ def _bootstrap() -> None:
         _app._backfill_admin_chat_sessions()
         # 6. Pre-fill the editable AI prompt table with current defaults.
         _app.sync_ai_prompts()
+        # 7. Pre-fill the editable admin-AI config (personas + palette) defaults.
+        _app.sync_admin_ai_config()
     except Exception as exc:  # noqa: BLE001 — we re-raise; this only reshapes the message.
         if _looks_like_missing_pgvector(exc):
             raise RuntimeError(
