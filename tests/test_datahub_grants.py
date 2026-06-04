@@ -625,3 +625,95 @@ def test_phase3_tools_registered():
         assert t in app.ADMIN_TOOL_FUNCTIONS
     names = {t["function"]["name"] for t in app.ADMIN_TOOLS}
     assert {"admin_run_saved_query", "admin_list_saved_queries"} <= names
+
+
+# =============================================================================
+# Phase 4 — super-admin grant-management routes
+# =============================================================================
+
+def _super_client():
+    c = app.app.test_client()
+    c.post("/admin/login", data={"password": ADMIN_PW})
+    with c.session_transaction() as s:
+        s["_csrf_token"] = "t"
+    return c
+
+
+def test_grant_routes_require_super_admin():
+    """The grant CRUD is super-admin-only (a client gets 403 on every verb)."""
+    if not CLIENT_PW:
+        return
+    c = app.app.test_client()
+    c.post("/admin/login", data={"password": CLIENT_PW})
+    with c.session_transaction() as s:
+        s["_csrf_token"] = "t"
+    assert c.get("/admin/api/datahub/grants").status_code == 403
+    assert c.post("/admin/api/datahub/grants",
+                  json={"connection_id": 0, "table_name": "leads"},
+                  headers={"X-CSRF-Token": "t"}).status_code == 403
+    assert c.delete("/admin/api/datahub/grants/1",
+                    headers={"X-CSRF-Token": "t"}).status_code == 403
+    assert c.get("/admin/api/datahub/0/grantable-tables").status_code == 403
+
+
+def test_grant_route_crud_roundtrip_super_admin():
+    _clear_grants()
+    c = _super_client()
+    try:
+        # add
+        r = c.post("/admin/api/datahub/grants",
+                   json={"connection_id": 0, "table_name": "Leads", "note": "ok"},
+                   headers={"X-CSRF-Token": "t"})
+        assert r.status_code == 201, r.get_data(as_text=True)
+        gid = r.get_json()["id"]
+        assert r.get_json()["table_name"] == "leads"   # normalized lowercase
+        # list
+        lst = c.get("/admin/api/datahub/grants").get_json()
+        assert any(g["id"] == gid and g["table_name"] == "leads"
+                   for g in lst["grants"])
+        # the grant is live for a normal admin
+        ctx = _client_ctx()
+        try:
+            assert app._dh_allowed_tables(0) == {"leads"}
+        finally:
+            ctx.pop()
+        # remove
+        assert c.delete("/admin/api/datahub/grants/" + str(gid),
+                        headers={"X-CSRF-Token": "t"}).status_code == 200
+        lst2 = c.get("/admin/api/datahub/grants").get_json()
+        assert not any(g["id"] == gid for g in lst2["grants"])
+    finally:
+        _clear_grants()
+
+
+def test_grantable_tables_route_flags_granted():
+    _clear_grants()
+    c = _super_client()
+    try:
+        c.post("/admin/api/datahub/grants",
+               json={"connection_id": 0, "table_name": "leads"},
+               headers={"X-CSRF-Token": "t"})
+        j = c.get("/admin/api/datahub/0/grantable-tables").get_json()
+        assert j["connection_id"] == 0 and j["all_granted"] is False
+        by_name = {t["table"]: t["granted"] for t in j["tables"]}
+        assert by_name.get("leads") is True
+        assert by_name.get("orders") is False
+        # no credential/url leakage in the picker payload
+        blob = repr(j).lower()
+        assert "encrypted_config" not in blob and "://" not in blob
+    finally:
+        _clear_grants()
+
+
+def test_grant_star_then_grantable_shows_all_granted():
+    _clear_grants()
+    c = _super_client()
+    try:
+        c.post("/admin/api/datahub/grants",
+               json={"connection_id": 0, "table_name": "*"},
+               headers={"X-CSRF-Token": "t"})
+        j = c.get("/admin/api/datahub/0/grantable-tables").get_json()
+        assert j["all_granted"] is True
+        assert all(t["granted"] for t in j["tables"])   # '*' covers everything
+    finally:
+        _clear_grants()

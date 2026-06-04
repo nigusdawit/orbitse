@@ -33658,6 +33658,134 @@ def admin_datahub_connections():
     return jsonify({"connections": _dh_list_connections()})
 
 
+# =============================================================================
+# DATAHUB — grant management (task 085, Phase 4). SUPER-ADMIN ONLY.
+# =============================================================================
+# These routes are how a super-admin authorizes a normal admin's data access:
+# add/remove per-(connection, table) grant rows in datahub_table_grants (with a
+# '*' shortcut for a whole connection) and list a connection's tables for the
+# picker. Every route mirrors the existing /admin/api/datahub/* boundary:
+# @admin_required + _require_super_admin_role() (the template hides the section,
+# but THIS is the real boundary). The grants written here are what the Phase-1
+# tool checks read; nothing here changes a normal admin's access except via the
+# grant rows themselves.
+
+@app.route("/admin/api/datahub/grants", methods=["GET"])
+@admin_required
+def admin_datahub_list_grants():
+    """List all grant rows for the current tenant (optionally for one
+    ?connection_id=). Returns id / connection_id / table_name / note / granted_at
+    so the UI can render + offer a remove for each."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    tid = current_tenant_id()
+    cid_arg = request.args.get("connection_id")
+    if cid_arg not in (None, ""):
+        try:
+            cid = int(cid_arg)
+        except (TypeError, ValueError):
+            return jsonify({"error": "connection_id must be an integer"}), 400
+        rows = query_db(
+            "SELECT id, connection_id, table_name, note, granted_at "
+            "FROM datahub_table_grants WHERE tenant_id=%s AND connection_id=%s "
+            "ORDER BY connection_id, table_name", (tid, cid)) or []
+    else:
+        rows = query_db(
+            "SELECT id, connection_id, table_name, note, granted_at "
+            "FROM datahub_table_grants WHERE tenant_id=%s "
+            "ORDER BY connection_id, table_name", (tid,)) or []
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d.get("granted_at"):
+            d["granted_at"] = d["granted_at"].isoformat()
+        out.append(d)
+    return jsonify({"grants": out})
+
+
+@app.route("/admin/api/datahub/grants", methods=["POST"])
+@admin_required
+def admin_datahub_add_grant():
+    """Grant a table (or '*' = all tables on the connection) to normal admins for
+    the current tenant. Idempotent (ON CONFLICT DO NOTHING on the UNIQUE
+    constraint). connection_id 0 = the app's own database."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    b = request.get_json(silent=True) or {}
+    try:
+        cid = int(b.get("connection_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "connection_id is required (0 = this site's DB)"}), 400
+    table = (b.get("table_name") or "").strip()
+    if not table:
+        return jsonify({"error": "table_name is required ('*' grants all tables)"}), 400
+    # Normalize a real table name (lowercase, strip schema) so it matches what
+    # _dh_allowed_tables / _dh_extract_tables compare against. The '*' sentinel
+    # is stored verbatim.
+    if table != "*":
+        table = table.split(".")[-1].strip().lower()
+    note = (b.get("note") or "").strip()[:500]
+    tid = current_tenant_id()
+    row = execute_db(
+        "INSERT INTO datahub_table_grants (tenant_id, connection_id, table_name, note) "
+        "VALUES (%s,%s,%s,%s) "
+        "ON CONFLICT (tenant_id, connection_id, table_name) DO UPDATE "
+        "  SET note=EXCLUDED.note RETURNING id",
+        (tid, cid, table, note))
+    return jsonify({"ok": True, "id": (row["id"] if row else None),
+                    "connection_id": cid, "table_name": table}), 201
+
+
+@app.route("/admin/api/datahub/grants/<int:grant_id>", methods=["DELETE"])
+@admin_required
+def admin_datahub_remove_grant(grant_id):
+    """Revoke a grant by id (scoped to the current tenant so one tenant can't
+    delete another's grant)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    tid = current_tenant_id()
+    execute_db("DELETE FROM datahub_table_grants WHERE id=%s AND tenant_id=%s",
+               (grant_id, tid))
+    return jsonify({"ok": True})
+
+
+@app.route("/admin/api/datahub/<int:cid>/grantable-tables", methods=["GET"])
+@admin_required
+def admin_datahub_grantable_tables(cid):
+    """List a connection's physical tables/views for the grant picker, each
+    flagged with whether it (or a '*' grant) is already granted. Super-admin
+    only, so the introspection runs unrestricted (the request session is the
+    super-admin) — never exposes the connection URL/config."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    kind, url, err = _dh_sql_connection(cid)
+    if err:
+        return jsonify({"error": err}), 400
+    try:
+        objs = _dh_intro_objects(cid, kind, url)
+    except Exception as e:
+        print(f"[datahub] grantable-tables introspect failed (conn {cid}): "
+              f"{type(e).__name__}: {e}")
+        return jsonify({"error": "Could not connect to that database."}), 502
+    tid = current_tenant_id()
+    grant_rows = query_db(
+        "SELECT table_name FROM datahub_table_grants "
+        "WHERE tenant_id=%s AND connection_id=%s", (tid, cid)) or []
+    granted = {(g["table_name"] or "").strip().lower() for g in grant_rows}
+    star = "*" in {(g["table_name"] or "").strip() for g in grant_rows}
+    tables = []
+    for o in objs[:500]:
+        n = str(o.get("name", ""))
+        tables.append({"table": n, "type": o.get("type", "table"),
+                       # granted if there's an explicit row OR a '*' grant covers it
+                       "granted": star or (n.strip().lower() in granted)})
+    return jsonify({"connection_id": cid, "all_granted": star, "tables": tables})
+
+
 @app.route("/admin/api/datahub/<int:cid>/annotations", methods=["GET"])
 @admin_required
 def admin_datahub_get_annotations(cid):

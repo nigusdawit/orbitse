@@ -10,6 +10,7 @@ DELETE /admin/api/custom-webhooks/<int:rid>
 DELETE /admin/api/dashboards/<int:did>
 DELETE /admin/api/dashboards/<int:did>/widgets/<int:wid>
 DELETE /admin/api/datahub/annotation/<kind>/<int:rid>
+DELETE /admin/api/datahub/grants/<int:grant_id>
 DELETE /admin/api/embed-keys/<int:kid>
 DELETE /admin/api/event-rsvps/<int:rsvp_id>
 DELETE /admin/api/events/<int:event_id>
@@ -112,8 +113,10 @@ GET /admin/api/dashboards/<int:did>
 GET /admin/api/dashboards/builtin-metrics
 GET /admin/api/dashboards/db-tables
 GET /admin/api/datahub/<int:cid>/annotations
+GET /admin/api/datahub/<int:cid>/grantable-tables
 GET /admin/api/datahub/<int:cid>/schema
 GET /admin/api/datahub/connections
+GET /admin/api/datahub/grants
 GET /admin/api/default-system-prompt
 GET /admin/api/devconsole/snapshot
 GET /admin/api/embed-keys
@@ -340,6 +343,7 @@ POST /admin/api/dashboards/widgets/<int:wid>/run
 POST /admin/api/datahub/<int:cid>/ai-define
 POST /admin/api/datahub/<int:cid>/example
 POST /admin/api/datahub/<int:cid>/relationship
+POST /admin/api/datahub/grants
 POST /admin/api/datahub/save-chart
 POST /admin/api/devconsole/reregister-velo
 POST /admin/api/devconsole/test-email

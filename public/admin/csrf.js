@@ -1561,6 +1561,9 @@
     }
     datahubRenderConns();
     if (__datahubConns.length) datahubLoadDetail(__datahubActive);
+    // Task 085: populate the super-admin grant manager from the same connection
+    // list (the whole Datahub tab is super-admin-only, so this section is too).
+    datahubGrantsInit();
   }
 
   function datahubRenderConns() {
@@ -1789,6 +1792,139 @@
     } else {
       alert('The connections manager is unavailable on this page.');
     }
+  }
+
+  // =========================================================================
+  // Datahub data-access GRANTS (task 085) — super-admin only.
+  // The super-admin grants a normal (client) admin's AI assistant access to
+  // specific tables (default: none). All mutating calls go through the global
+  // CSRF-aware fetch wrapper; reads are same-origin GETs. Styling reuses the
+  // existing datahub patterns (CSS vars => light/dark, no build step).
+  // =========================================================================
+  let __dhGrantConn = null;   // currently selected connection id (string/number)
+
+  // Populate the connection dropdown from the already-loaded __datahubConns.
+  function datahubGrantsInit() {
+    const sel = document.getElementById('dh-grant-conn');
+    if (!sel) return;   // section not on the page (non-super-admin shells)
+    const prev = sel.value;
+    sel.innerHTML = (__datahubConns || []).map(c =>
+      `<option value="${c.id}">${datahubEsc(c.name)} (${datahubEsc(c.kind)})</option>`
+    ).join('');
+    // Keep the previous selection if it still exists, else pick the first.
+    if (prev && Array.from(sel.options).some(o => o.value === prev)) {
+      sel.value = prev;
+    }
+    __dhGrantConn = sel.value || (sel.options.length ? sel.options[0].value : null);
+    if (__dhGrantConn != null && __dhGrantConn !== '') datahubGrantsLoad();
+    else {
+      const box = document.getElementById('dh-grant-tables');
+      if (box) box.innerHTML = '<p style="color:var(--muted-fg,#888);">No connections yet — connect a database first.</p>';
+    }
+  }
+
+  // Load a connection's tables + their current grant state into the picker.
+  async function datahubGrantsLoad() {
+    const sel = document.getElementById('dh-grant-conn');
+    const box = document.getElementById('dh-grant-tables');
+    if (!sel || !box) return;
+    __dhGrantConn = sel.value;
+    box.innerHTML = '<p style="color:var(--muted-fg,#888);">Loading tables…</p>';
+    let j = {};
+    try {
+      j = await (await fetch('/admin/api/datahub/' + encodeURIComponent(__dhGrantConn) +
+        '/grantable-tables', { credentials: 'same-origin' })).json();
+    } catch (e) { j = { error: 'Could not load tables.' }; }
+    if (j.error) { box.innerHTML = '<p style="color:#f87171;">' + datahubEsc(j.error) + '</p>'; return; }
+    const tables = j.tables || [];
+    const allBadge = j.all_granted
+      ? '<span style="background:#16a34a22;color:#16a34a;padding:.1rem .45rem;border-radius:.3rem;font-size:.72rem;">all tables granted (*)</span>'
+      : '';
+    let html = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;gap:.5rem;flex-wrap:wrap;">
+        <h3 style="margin:0;">Tables (${tables.length})</h3>${allBadge}
+      </div>
+      <p style="color:var(--muted-fg,#888);font-size:.8rem;">Toggle a table to grant or revoke the client assistant's access to it.</p>`;
+    html += '<div style="display:flex;flex-direction:column;gap:.3rem;">';
+    tables.forEach(t => {
+      const tn = datahubEsc(t.table);
+      const checked = t.granted ? 'checked' : '';
+      // When "all (*)" is active, the per-table checkboxes are shown checked but
+      // disabled (the '*' row covers them) — clearer than toggling individuals.
+      const disabled = j.all_granted ? 'disabled' : '';
+      const typeBadge = (t.type === 'view')
+        ? '<span style="background:#6366f122;color:#6366f1;padding:.05rem .35rem;border-radius:.3rem;font-size:.68rem;" title="database view">view</span>'
+        : '';
+      html += `<label style="display:flex;align-items:center;gap:.5rem;border:1px solid var(--admin-border);border-radius:.4rem;padding:.4rem .6rem;cursor:${disabled ? 'default' : 'pointer'};">
+          <input type="checkbox" data-dh-grant="${tn}" ${checked} ${disabled}
+                 onchange="datahubGrantToggle(this)" data-testid="datahub-grant-toggle-${tn}">
+          <strong style="font-size:.9rem;">${tn}</strong> ${typeBadge}
+        </label>`;
+    });
+    html += '</div>';
+    box.innerHTML = html || '<p style="color:var(--muted-fg,#888);">No tables found.</p>';
+  }
+
+  // Grant or revoke a single table (driven by the checkbox state).
+  async function datahubGrantToggle(el) {
+    const table = el.getAttribute('data-dh-grant');
+    const cid = parseInt(__dhGrantConn, 10);
+    try {
+      if (el.checked) {
+        const r = await fetch('/admin/api/datahub/grants', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ connection_id: cid, table_name: table }) });
+        if (!r.ok) throw new Error('grant failed');
+        showToast('Granted access to ' + table + '.', 'success');
+      } else {
+        // Find the grant id for this (conn,table) and delete it.
+        const list = await (await fetch('/admin/api/datahub/grants?connection_id=' + cid,
+          { credentials: 'same-origin' })).json();
+        const match = (list.grants || []).find(g =>
+          String(g.table_name).toLowerCase() === String(table).toLowerCase());
+        if (match) {
+          const r = await fetch('/admin/api/datahub/grants/' + match.id,
+            { method: 'DELETE', credentials: 'same-origin' });
+          if (!r.ok) throw new Error('revoke failed');
+        }
+        showToast('Revoked access to ' + table + '.', 'success');
+      }
+    } catch (e) {
+      showToast('Could not update the grant.', 'error');
+      el.checked = !el.checked;   // revert the visual toggle on failure
+    }
+  }
+
+  // Grant the whole connection with the '*' shortcut.
+  async function datahubGrantAll() {
+    const cid = parseInt(__dhGrantConn, 10);
+    if (isNaN(cid)) { showToast('Pick a connection first.', 'error'); return; }
+    try {
+      const r = await fetch('/admin/api/datahub/grants', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connection_id: cid, table_name: '*' }) });
+      if (!r.ok) throw new Error();
+      showToast('Granted access to all tables on this connection.', 'success');
+      datahubGrantsLoad();
+    } catch (e) { showToast('Could not grant all.', 'error'); }
+  }
+
+  // Remove every grant on the selected connection (per-table rows AND the '*').
+  async function datahubRevokeAll() {
+    const cid = parseInt(__dhGrantConn, 10);
+    if (isNaN(cid)) { showToast('Pick a connection first.', 'error'); return; }
+    if (!confirm('Remove ALL data-access grants on this connection for the client assistant?')) return;
+    try {
+      const list = await (await fetch('/admin/api/datahub/grants?connection_id=' + cid,
+        { credentials: 'same-origin' })).json();
+      for (const g of (list.grants || [])) {
+        await fetch('/admin/api/datahub/grants/' + g.id,
+          { method: 'DELETE', credentials: 'same-origin' });
+      }
+      showToast('Revoked all grants on this connection.', 'success');
+      datahubGrantsLoad();
+    } catch (e) { showToast('Could not revoke all.', 'error'); }
   }
 
   async function adminChatSend() {

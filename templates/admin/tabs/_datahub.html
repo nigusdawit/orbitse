@@ -22,4 +22,41 @@
         <p style="color:var(--muted-fg,#888);">Select a connection to view its tables.</p>
       </div>
     </div>
+
+    {# ---- Data-access grants (task 085) — SUPER-ADMIN ONLY -------------------
+       The whole Datahub tab is already gated `is_super_admin() and
+       has_feature('datahub')` in dashboard.html, so this section is only ever
+       rendered for the super-admin. It is the surface where they authorize what
+       a normal (client) admin's AI assistant may read: by default a client sees
+       NOTHING; granting a table here lets the assistant inspect + query it. The
+       server routes enforce the same _require_super_admin_role() boundary. #}
+    <div style="margin-top:2rem; border-top:1px solid var(--admin-border); padding-top:1.25rem;"
+         data-testid="datahub-grants-section">
+      <div class="content-header" style="margin-bottom:.25rem;">
+        <h2 style="font-size:1.15rem;">Data access for the client assistant</h2>
+      </div>
+      <p style="color:var(--muted-fg,#888); max-width:74ch;">
+        By default, a client admin's assistant can see <strong>none</strong> of
+        your data. Pick a connection, then grant the specific tables the client
+        is allowed to analyze (or grant the whole connection with
+        <strong>Grant all</strong>). Saved queries you enable in the
+        <em>Skills</em> tab are also runnable by the client even without a table
+        grant — enabling a saved query authorizes it.
+      </p>
+      <div style="display:flex; gap:1rem; align-items:flex-start; margin-top:1rem; flex-wrap:wrap;">
+        <div style="min-width:220px; display:flex; flex-direction:column; gap:.5rem;">
+          <label style="font-size:.8rem; color:var(--muted-fg,#888);">Connection</label>
+          <select id="dh-grant-conn" onchange="datahubGrantsLoad()"
+                  data-testid="datahub-grant-conn"
+                  style="padding:.4rem; border:1px solid var(--admin-border); border-radius:.4rem; background:var(--admin-bg,inherit); color:inherit;"></select>
+          <button class="btn-secondary" onclick="datahubGrantAll()" data-testid="datahub-grant-all"
+                  title="Grant the client access to every table on this connection">✚ Grant all (*)</button>
+          <button class="btn-secondary" onclick="datahubRevokeAll()" data-testid="datahub-revoke-all"
+                  title="Remove all grants on this connection">✕ Revoke all</button>
+        </div>
+        <div id="dh-grant-tables" style="flex:1; min-width:320px;" data-testid="datahub-grant-tables">
+          <p style="color:var(--muted-fg,#888);">Select a connection to manage grants.</p>
+        </div>
+      </div>
+    </div>
   </div>
