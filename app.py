@@ -13809,6 +13809,14 @@ def _admin_tool_run_sql(sql=None, **_):
     safe, err = _admin_safe_sql(sql or "")
     if err:
         return {"error": err}
+    # Task 085 — per-table grant gate on the APP DB (connection 0). This tool
+    # always runs against cid 0 (and admin_query_connection(cid=0) delegates
+    # here), so a NORMAL admin's ad-hoc SQL is now bounded to their granted
+    # tables; an unparseable query is denied (fail-closed). Super-admins and
+    # out-of-request/system callers are unaffected (the check returns None).
+    gerr = _dh_check_sql_grants(0, safe)
+    if gerr:
+        return {"error": gerr}
     # Optional pylego defense-in-depth: an independent read-only-SQL validator
     # layered ON TOP of _admin_safe_sql. Disabled by default; when enabled it
     # can only REJECT more (never permit more), so turning it on can't open a
@@ -13975,6 +13983,283 @@ def _dh_intro_columns(cid, kind, url, table):
         eng.dispose()
 
 
+# =============================================================================
+# DATAHUB — per-table access grants (task 085): default-DENY for normal admins
+# =============================================================================
+# A normal client admin (logged-in session whose admin_role != 'super_admin')
+# gets ZERO Datahub access until a super-admin grants specific tables in the
+# datahub_table_grants table (migration 0031). Super-admins — and any
+# out-of-request / system / automation / test caller — keep FULL, unrestricted
+# access. Everything below is the permission BOUNDARY; it is intentionally
+# fail-CLOSED for normal admins (an empty grant set or ANY error ⇒ deny).
+#
+# The two helpers here are consumed by the re-gated read tools
+# (_admin_tool_inspect_connection / _admin_tool_query_connection /
+# _admin_tool_run_sql) and the Phase-2 dashboard widget validation.
+
+# Sentinel returned by _dh_allowed_tables() meaning "no restriction at all"
+# (super-admin or out-of-request caller). Callers MUST treat this as a bypass —
+# never as a literal table name. We use a module-level object identity (not the
+# string "ALL", which could collide with a real table) so the bypass check is
+# unambiguous: `allowed is _DH_ALLOW_ALL`.
+_DH_ALLOW_ALL = "ALL"
+
+
+def _dh_grants_apply():
+    """Return True iff the CURRENT caller is a normal admin who must be bounded
+    by datahub_table_grants. Mirrors _admin_tool_superadmin_guard() EXACTLY so
+    the permission boundary lines up with the rest of the AI-tool surface:
+
+      * Outside a Flask request context (has_request_context() is False) the
+        caller is a trusted server-side actor (automation / scheduler / test /
+        direct call) ⇒ NOT bounded (return False).
+      * A logged-in super_admin — OR a session missing admin_role, which
+        defaults to super_admin for pre-roles back-compat — is NOT bounded.
+      * ONLY an in-request session that is logged in with admin_role !=
+        'super_admin' (i.e. a client) is bounded (return True).
+
+    Any exception ⇒ treat as NOT bounded (return False). This matches the
+    superadmin guard's except->None (trusted) behavior so we never accidentally
+    lock out a super-admin / system caller because of an unrelated error. The
+    fail-CLOSED behavior for normal admins lives in _dh_allowed_tables (empty
+    set / deny), not here — here we only decide *whether* bounding applies."""
+    try:
+        from flask import has_request_context
+        if not has_request_context():
+            return False
+        if session.get("admin_logged_in") and \
+                session.get("admin_role", "super_admin") != "super_admin":
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _dh_allowed_tables(connection_id):
+    """The set of physical table names a normal admin may touch on `connection_id`
+    — or the _DH_ALLOW_ALL sentinel meaning "no restriction".
+
+    Returns:
+      * _DH_ALLOW_ALL — for super-admins and out-of-request/system/test callers
+        (via _dh_grants_apply() == False). Callers must bypass all checks.
+      * a `set[str]` of LOWERCASED, schema-stripped table names — for a normal
+        admin, built from datahub_table_grants for (current_tenant_id(), cid).
+        A grant whose table_name is '*' expands to EVERY table on that connection
+        (resolved live via _dh_intro_objects). An empty set ⇒ deny-all.
+      * an EMPTY set — on ANY error while resolving grants for a normal admin
+        (fail-CLOSED: a permission-check failure must never widen access).
+
+    Normalization (lowercase + strip schema) matches _dh_extract_tables() so the
+    membership test in the callers is apples-to-apples regardless of how the
+    model qualified a name (public.orders vs Orders vs orders)."""
+    # Super-admin / system / test caller ⇒ unrestricted.
+    if not _dh_grants_apply():
+        return _DH_ALLOW_ALL
+    # Normal admin ⇒ build the grant set, fail-closed on any error.
+    try:
+        cid = int(connection_id or 0)
+    except (TypeError, ValueError):
+        cid = 0
+    try:
+        tid = current_tenant_id()
+        rows = query_db(
+            "SELECT table_name FROM datahub_table_grants "
+            "WHERE tenant_id=%s AND connection_id=%s", (tid, cid)) or []
+        names = {(r["table_name"] or "").strip() for r in rows}
+        # A '*' grant authorizes the whole connection. Resolve it to the live
+        # set of object names so the membership test downstream uses real table
+        # names (and so a later-added table is automatically covered). We only
+        # introspect when a '*' row exists, to keep the common path cheap.
+        if "*" in names:
+            kind, url, err = _dh_sql_connection(cid)
+            if err:
+                # Can't resolve the connection ⇒ fail-closed (deny), don't fall
+                # back to a partial/over-broad set.
+                return set()
+            try:
+                objs = _dh_intro_objects(cid, kind, url)
+            except Exception as e:
+                print(f"[datahub] '*' grant introspection failed (conn {cid}): "
+                      f"{type(e).__name__}: {e}")
+                return set()
+            return {str(o["name"]).strip().lower() for o in objs}
+        # Otherwise the explicit per-table grants, normalized (drop '*' if it
+        # somehow co-exists; lowercase + strip any schema qualifier).
+        out = set()
+        for n in names:
+            if not n or n == "*":
+                continue
+            out.add(n.split(".")[-1].strip().lower())
+        return out
+    except Exception as e:
+        # Fail-CLOSED: any unexpected error denies all access for the normal
+        # admin rather than leaking tables.
+        print(f"[datahub] grant lookup failed (conn {connection_id}): "
+              f"{type(e).__name__}: {e}")
+        return set()
+
+
+def _dh_extract_tables(sql):
+    """Return the set of EVERY real table a query references — lowercased and
+    schema-stripped — or None if the SQL cannot be parsed.
+
+    This is the keystone of the per-table grant check: a normal admin must not
+    be able to reach an ungranted table through a JOIN, a CTE (WITH) body, a
+    subquery, a schema-qualified name, or an aliased reference. So we parse the
+    statement with sqlglot (dialect-agnostic) and walk the AST collecting every
+    `Table` node, then SUBTRACT the names DEFINED by CTEs (a CTE alias is a
+    query-local name, NOT a physical table, so it must not itself require a
+    grant — but the real tables the CTE SELECTs FROM are collected normally and
+    DO require grants).
+
+    Contract for callers:
+      * a `set[str]` of normalized table names ⇒ check each ∈ allowed set.
+      * None ⇒ "could not verify what this query touches" ⇒ the caller REJECTS
+        for a normal admin (fail-CLOSED). Super-admins skip the check entirely
+        (their caller never reaches here under bounding), so a parse failure
+        only ever DENIES a normal admin — it can never widen access.
+
+    We deliberately err toward over-collection: anything that looks like a table
+    reference is included. Subtracting only CTE-defined names (never base tables)
+    means the worst case is requiring a grant for something that wasn't strictly
+    necessary — i.e. fail-closed, never fail-open."""
+    if not sql or not isinstance(sql, str):
+        return None
+    try:
+        import sqlglot
+        from sqlglot import exp
+    except Exception as e:
+        # If the parser itself is unavailable we cannot verify the query ⇒
+        # fail-closed (None) so a normal admin is denied rather than allowed
+        # through unchecked. (sqlglot is a hard dependency; this only guards a
+        # broken/partial install.)
+        print(f"[datahub] sqlglot unavailable: {type(e).__name__}: {e}")
+        return None
+    try:
+        # parse() handles a single statement (our callers already enforce
+        # single-statement via _admin_safe_sql, but parse_one would also work).
+        # No dialect pinned ⇒ permissive parsing across postgres/mysql/generic.
+        statements = sqlglot.parse(sql)
+    except Exception as e:
+        # Any parse error (incl. SQL that sqlglot can't understand) ⇒ None ⇒
+        # caller denies for a normal admin. Comment is load-bearing: this is the
+        # "unparseable SQL ⇒ DENY" invariant.
+        print(f"[datahub] SQL parse failed (deny for normal admin): "
+              f"{type(e).__name__}: {e}")
+        return None
+    referenced = set()   # every Table node we see (real tables + CTE aliases)
+    cte_names = set()     # names DEFINED by WITH ... AS (...) — query-local
+    try:
+        for stmt in statements:
+            if stmt is None:
+                continue
+            # 1) Collect the names introduced by CTEs so we can exclude them
+            #    from the "must be granted" set. exp.CTE.alias is the CTE's
+            #    local name; the real tables inside its subquery are picked up
+            #    by the Table walk below and DO require grants.
+            for cte in stmt.find_all(exp.CTE):
+                alias = cte.alias
+                if alias:
+                    cte_names.add(str(alias).strip().lower())
+            # 2) Collect EVERY table reference anywhere in the tree — main
+            #    query, JOINs, subqueries, CTE bodies, set operations. exp.Table
+            #    nodes carry `.name` (table) and optionally `.db`/`.catalog`
+            #    (schema) — we keep only the bare table name, lowercased, which
+            #    drops any schema qualifier (public.orders -> orders).
+            for tbl in stmt.find_all(exp.Table):
+                nm = tbl.name
+                if nm:
+                    referenced.add(str(nm).strip().lower())
+    except Exception as e:
+        # A failure WALKING the AST is also "cannot verify" ⇒ fail-closed.
+        print(f"[datahub] SQL AST walk failed (deny for normal admin): "
+              f"{type(e).__name__}: {e}")
+        return None
+    # Real physical tables = everything referenced MINUS the CTE-defined aliases.
+    # (A CTE alias used in a FROM is a Table node too, hence the subtraction.)
+    return {t for t in referenced if t and t not in cte_names}
+
+
+def _dh_check_sql_grants(connection_id, safe_sql):
+    """Shared grant gate for read-only SQL on a connection (task 085). Returns
+    an error STRING if a normal admin's query touches a table they aren't
+    granted (or the query can't be parsed), else None (allowed).
+
+    Used by both _admin_tool_run_sql (app DB, cid 0) and the external branch of
+    _admin_tool_query_connection so the rule is identical everywhere:
+
+      * Super-admin / out-of-request ⇒ _dh_allowed_tables is _DH_ALLOW_ALL ⇒
+        None (no restriction).
+      * Normal admin ⇒ parse the query with _dh_extract_tables; if it can't be
+        parsed (None) ⇒ DENY (fail-closed); else require EVERY referenced table
+        ∈ the grant set, naming the first disallowed one in the message.
+
+    `safe_sql` must already have passed _admin_safe_sql (single-statement,
+    SELECT/WITH, dangerous-keyword + secret-table + banned-identifier blocks) —
+    this layers the per-table grant check ON TOP, it does not replace it."""
+    allowed = _dh_allowed_tables(connection_id)
+    if allowed is _DH_ALLOW_ALL:
+        return None   # super-admin / system caller — unrestricted
+    # Normal admin: enumerate the tables the query touches. None ⇒ unparseable
+    # ⇒ fail-CLOSED (a normal admin must not reach an ungranted table via a SQL
+    # trick we can't analyze).
+    used = _dh_extract_tables(safe_sql)
+    if used is None:
+        return ("That query couldn't be verified against your data-access "
+                "grants, so it was blocked. Try a simpler SELECT, or ask your "
+                "administrator to grant the tables you need.")
+    # Every referenced REAL table must be granted. Report the first gap by name
+    # so the assistant can relay exactly what to ask for.
+    for t in sorted(used):
+        if t not in allowed:
+            return (f"You don't have access to the table '{t}' — ask your "
+                    "administrator to grant it.")
+    return None
+
+
+def _admin_tool_list_connections(**_):
+    """List the data connections the caller may use (task 085 keystone).
+
+    Returns id / name / kind / builtin only — NEVER any connection URL or
+    config (it wraps _dh_list_connections, which already omits encrypted_config).
+
+      * Super-admins / out-of-request callers: ALL connections (the app DB +
+        every external connection).
+      * Normal admins: only connections with at least ONE grant in
+        datahub_table_grants (including cid 0 if the app DB has a grant). An
+        ungranted normal admin gets an empty list + a plain-language note so the
+        assistant can say "your administrator hasn't given you access yet"
+        instead of erroring.
+
+    This is the "call me FIRST" discovery step: the assistant lists connections,
+    then inspects a granted one, then queries within its grants."""
+    conns = _dh_list_connections()
+    # Super-admin / system caller via the ALLOW_ALL sentinel on ANY connection
+    # id — we probe cid 0 since the sentinel is caller-scoped (not connection-
+    # scoped): _dh_allowed_tables returns _DH_ALLOW_ALL for the trusted caller
+    # regardless of which id we pass.
+    if _dh_allowed_tables(0) is _DH_ALLOW_ALL:
+        return {"connections": conns}
+    # Normal admin: keep only connections that have >=1 granted table.
+    visible = []
+    for c in conns:
+        try:
+            allowed = _dh_allowed_tables(c["id"])
+        except Exception:
+            allowed = set()   # fail-closed: hide on error
+        # allowed is a set here (never the sentinel — we're a bounded caller);
+        # a non-empty set means at least one table is granted on this connection.
+        if allowed:
+            visible.append({"id": c["id"], "name": c["name"],
+                            "kind": c["kind"], "builtin": c.get("builtin", False)})
+    out = {"connections": visible}
+    if not visible:
+        out["note"] = ("Your administrator hasn't given you access to any data "
+                       "yet. Ask them to grant you the tables you need in the "
+                       "Datahub settings.")
+    return out
+
+
 def _admin_tool_inspect_connection(connection_id=0, table=None, **_):
     """Introspect a connection's schema MERGED with the saved semantic layer.
     Without `table`: an overview (table names + their descriptions + relationships
@@ -13985,13 +14270,12 @@ def _admin_tool_inspect_connection(connection_id=0, table=None, **_):
         cid = int(connection_id or 0)
     except (TypeError, ValueError):
         cid = 0
-    if cid != 0:
-        # Reading an EXTERNAL connection is super-admin-only (mirrors the
-        # super-admin /admin/api/datahub/* + external-connections routes). The
-        # app's own DB (cid 0) stays open — same boundary as admin_describe_table.
-        guard = _admin_tool_superadmin_guard()
-        if guard:
-            return guard
+    # Task 085 — default-DENY per-table grants. Super-admins and out-of-request
+    # callers get _DH_ALLOW_ALL (no restriction). A NORMAL admin is bounded to
+    # the tables granted on this connection — including cid 0 (the app DB),
+    # which is now grant-gated too (the flagged behavior change). An ungranted
+    # normal admin therefore sees an EMPTY overview and cannot inspect any table.
+    allowed = _dh_allowed_tables(cid)
     ann = _dh_annotations(cid)
     tbl_desc = {t["table_name"]: t for t in ann["tables"]}
     col_desc = {}
@@ -14012,6 +14296,12 @@ def _admin_tool_inspect_connection(connection_id=0, table=None, **_):
             print(f"[datahub] introspect tables failed (conn {cid}): "
                   f"{type(e).__name__}: {e}")
             return {"error": "Could not connect to that database to inspect it."}
+        # For a normal admin, drop any object NOT in their grant set so the
+        # overview only reveals tables they're allowed to see (an ungranted
+        # admin gets []). Super-admins/out-of-request keep the full list.
+        if allowed is not _DH_ALLOW_ALL:
+            objs = [o for o in objs
+                    if str(o.get("name", "")).strip().lower() in allowed]
         tables = []
         for o in objs[:200]:
             n = o["name"]
@@ -14029,6 +14319,13 @@ def _admin_tool_inspect_connection(connection_id=0, table=None, **_):
                 "hint": "Call again with a `table` to see its columns + meanings."}
     # Single-table column detail.
     tname = str(table)
+    # Grant gate (task 085): a normal admin may only inspect a granted table.
+    # _DH_ALLOW_ALL (super-admin / out-of-request) bypasses this. The compare is
+    # normalized (lowercase + schema-strip) to match _dh_allowed_tables().
+    if allowed is not _DH_ALLOW_ALL and \
+            tname.split(".")[-1].strip().lower() not in allowed:
+        return {"error": "You don't have access to that table — ask your "
+                         "administrator to grant it."}
     try:
         cols = _dh_intro_columns(cid, kind, url, tname)
     except Exception as e:
@@ -14105,18 +14402,24 @@ def _admin_tool_query_connection(connection_id=0, sql=None, **_):
     except (TypeError, ValueError):
         cid = 0
     if cid == 0:
-        return _admin_tool_run_sql(sql=sql)   # app DB — same boundary as admin_run_sql
-    # Querying an EXTERNAL connection is super-admin-only (mirrors the super-admin
-    # /admin/api/datahub/* + external-connections routes).
-    guard = _admin_tool_superadmin_guard()
-    if guard:
-        return guard
+        return _admin_tool_run_sql(sql=sql)   # app DB — run_sql owns the grant gate
+    # Task 085 — EXTERNAL connection. Previously super-admin-only; now grant-aware:
+    # super-admins / out-of-request callers stay unrestricted, while a NORMAL
+    # admin may query only the tables granted on this connection. We resolve the
+    # connection + validate the SQL FIRST (so the per-table grant check below
+    # operates on a single, read-only, already-sanitized statement), then apply
+    # the grant gate via _dh_check_sql_grants (None ⇒ allowed). An ungranted
+    # admin — or a query touching an ungranted table / one we can't parse — is
+    # rejected before the query ever reaches the external database.
     kind, url, err = _dh_sql_connection(cid)
     if err:
         return {"error": err}
     safe, serr = _admin_safe_sql(sql or "")   # read-only / single-statement / keyword guard
     if serr:
         return {"error": serr}
+    gerr = _dh_check_sql_grants(cid, safe)
+    if gerr:
+        return {"error": gerr}
     try:
         if get_ai_setting("sqlguard_enabled"):
             from pylego import sqlguard as _sg
@@ -17522,6 +17825,10 @@ ADMIN_TOOL_FUNCTIONS = {
     "admin_list_tables":            _admin_tool_list_tables,
     "admin_describe_table":         _admin_tool_describe_table,
     "admin_run_sql":                _admin_tool_run_sql,
+    # Datahub discovery + access (task 085). admin_list_connections is the
+    # "call me first" grant-filtered discovery step; inspect/query enforce
+    # per-table grants for normal admins (super-admins unrestricted).
+    "admin_list_connections":       _admin_tool_list_connections,
     "admin_inspect_connection":     _admin_tool_inspect_connection,
     "admin_query_connection":       _admin_tool_query_connection,
     "admin_define_schema":          _admin_tool_define_schema,
@@ -17669,6 +17976,16 @@ ADMIN_TOOLS = [
          "properties": {"sql": {"type": "string",
                                 "description": "A single SELECT statement."}},
          "required": ["sql"]}),
+    _admin_tool_schema(
+        "admin_list_connections",
+        "List the data connections you can use, with their id, name, and kind. "
+        "ALWAYS call this FIRST when the owner asks about their data — it tells "
+        "you which databases/tables you've been given access to. connection_id 0 "
+        "is this site's own database; other ids are external connections. If the "
+        "list is empty, the owner hasn't been granted any data access yet — say "
+        "so plainly. After listing, use admin_inspect_connection on a connection "
+        "to see its tables, then admin_query_connection to read within your "
+        "granted tables."),
     _admin_tool_schema(
         "admin_inspect_connection",
         "Inspect a connected database's schema MERGED with its saved "

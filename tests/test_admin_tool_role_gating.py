@@ -33,24 +33,28 @@ def test_datahub_write_tools_block_client_role():
         assert "super-admin" not in (out.get("error") or "")
 
 
-def test_external_connection_reads_block_client_but_app_db_open():
-    """Reading an EXTERNAL connection (cid != 0) is super-admin-only; the app's
-    own DB (cid 0) stays open to the client business assistant — same boundary
-    as the already-open admin_run_sql / admin_describe_table."""
+def test_external_connection_reads_bounded_by_grants_for_client():
+    """Task 085 inverted the Datahub read boundary to default-DENY per-table
+    grants. A normal admin no longer gets a "super-admin only" refusal — instead
+    inspect/query are BOUNDED by datahub_table_grants (cid 0 included). With no
+    grants the overview is empty and a specific-table inspect/query is refused
+    with the friendly "ask your administrator" message (NOT the role-guard
+    string). See tests/test_datahub_grants.py for the full grant matrix."""
+    app.execute_db("DELETE FROM datahub_table_grants")
     with app.app.test_request_context("/"):
         from flask import session as s
         s["admin_logged_in"] = True
         s["admin_role"] = "client"
-        # external connection → blocked
-        assert "super-admin" in (
-            app._admin_tool_inspect_connection(connection_id=999).get("error") or "")
-        assert "super-admin" in (
-            app._admin_tool_query_connection(connection_id=999, sql="SELECT 1").get("error") or "")
-        # app DB (cid 0) → NOT a role refusal
-        assert "super-admin" not in (
-            app._admin_tool_query_connection(connection_id=0, sql="SELECT 1 AS one").get("error") or "")
-        assert "super-admin" not in (
-            app._admin_tool_inspect_connection(connection_id=0).get("error") or "")
+        # No grants → app-DB overview is empty (deny-all), not a role refusal.
+        ov = app._admin_tool_inspect_connection(connection_id=0)
+        assert ov.get("tables") == []
+        assert "super-admin" not in (ov.get("error") or "")
+        # A specific ungranted table → the friendly grant refusal.
+        ins = app._admin_tool_inspect_connection(connection_id=0, table="leads")
+        assert "don't have access" in (ins.get("error") or "")
+        q = app._admin_tool_query_connection(connection_id=0, sql="SELECT 1 AS one FROM leads")
+        assert (q.get("error") or "")   # refused (no grant on leads)
+        assert "super-admin" not in (q.get("error") or "")
 
 
 def test_datahub_tools_allowed_outside_request_context():
@@ -102,14 +106,19 @@ def test_external_connections_routes_require_super_admin():
     assert a.get("/admin/api/external-connections").status_code == 200
 
 
-def test_ungated_read_tool_still_open_to_client():
-    """Sanity: we did NOT broaden the gate to admin_run_sql (the established
-    admin read-SQL boundary) — a client session still passes the role guard for
-    it (its own sqlguard remains the boundary)."""
+def test_ungated_read_tool_no_role_guard_for_client():
+    """admin_run_sql has no super-admin ROLE guard (its boundary is sqlguard +,
+    now, the task-085 per-table grant check). A literal `SELECT 1` references NO
+    table, so the grant check finds nothing to deny — a client session runs it.
+    (A query that DID touch an ungranted table would be refused with the
+    'ask your administrator' message — covered in test_datahub_grants.py.)"""
+    app.execute_db("DELETE FROM datahub_table_grants")
     with app.app.test_request_context("/"):
         from flask import session as s
         s["admin_logged_in"] = True
         s["admin_role"] = "client"
         out = app._admin_tool_run_sql(sql="SELECT 1 AS one")
-        # whatever it returns, it must NOT be the role-guard refusal
+        # No role-guard refusal AND no grant refusal (no table referenced).
         assert "super-admin" not in (out.get("error") or "")
+        assert "don't have access" not in (out.get("error") or "")
+        assert out.get("row_count") == 1 or out.get("rows")

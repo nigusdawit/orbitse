@@ -13,6 +13,11 @@ pillow>=12.2.0
 psycopg2-binary>=2.9.11
 pymupdf>=1.27.2.3
 python-pptx>=1.0.2
+# sqlglot: pure-python SQL parser. Powers the Datahub per-table grant check
+# (task 085) — _dh_extract_tables() parses a query to enumerate every table it
+# touches (JOINs/CTEs/subqueries) so a normal admin can't reach an ungranted
+# table. No native deps; safe for slim buildpacks / Docker.
+sqlglot>=25.0
 requests>=2.33.1
 sentry-sdk[flask]>=2.53.0
 stripe>=15.1.0
