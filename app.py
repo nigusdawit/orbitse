@@ -41315,6 +41315,21 @@ def admin_list_voice_calls():
     return jsonify({"calls": [_iso_row(r, "created_at") for r in rows]})
 
 
+@app.route("/admin/api/voice-calls/<int:call_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_voice_call(call_id):
+    """Delete a logged voice call (super-admin only). Telephony status is owned
+    by the provider, so the operator can only clear a row, not edit it."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    n = execute_db("DELETE FROM voice_calls WHERE id=%s AND tenant_id=%s",
+                   (call_id, current_tenant_id()))
+    if not n:
+        return jsonify({"error": "Call not found."}), 404
+    return jsonify({"ok": True})
+
+
 # =============================================================================
 # RESEARCH & CONTENT ENGINE — read APIs (Phase 8 / task 062)
 # =============================================================================

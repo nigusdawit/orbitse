@@ -7183,65 +7183,273 @@
       } catch (e) { showToast('Delete failed', 'error'); }
     }
 
-    // ---- Leads & CRM (read-only multi-pane) -----------------------------
+    // ---- Leads & CRM (live, actionable multi-pane) ----------------------
+    // The concierge captures leads / callbacks / meetings / voice calls /
+    // visitor profiles whenever the matching capability is enabled (the
+    // toggles at the top of the tab). This pane lists each entity, badges new
+    // captures, lets the operator change status / edit notes / delete / add a
+    // lead, and quietly auto-refreshes while the tab is open so fresh captures
+    // appear without a manual reload.
+
+    // Per-list config: list+base url, the JSON key rows arrive under, the
+    // table columns, optional editable status options, and whether the entity
+    // supports a notes field (null statuses = no status column).
+    const CRM_LISTS = {
+      leads: {
+        url: '/admin/api/leads', rowsKey: 'leads',
+        statuses: ['new','contacted','qualified','won','lost','archived'],
+        cols: [{key:'created_at',label:'When'},{key:'name',label:'Name'},{key:'email',label:'Email'},
+               {key:'phone',label:'Phone'},{key:'interest',label:'Interest'},{key:'message',label:'Message'}],
+      },
+      callbacks: {
+        url: '/admin/api/callbacks', rowsKey: 'callbacks',
+        statuses: ['new','contacted','done','cancelled'],
+        cols: [{key:'created_at',label:'When'},{key:'name',label:'Name'},{key:'phone',label:'Phone'},
+               {key:'preferred_time',label:'Preferred time'},{key:'reason',label:'Reason'},{key:'ai_summary',label:'AI summary'}],
+      },
+      meetings: {
+        url: '/admin/api/meetings', rowsKey: 'meetings', notes: true,
+        statuses: ['requested','booked','confirmed','completed','cancelled','declined'],
+        cols: [{key:'created_at',label:'When'},{key:'name',label:'Name'},{key:'email',label:'Email'},
+               {key:'requested_time',label:'Requested'},{key:'start_iso',label:'Resolved (ISO)'},
+               {key:'duration_minutes',label:'Min'},{key:'notes',label:'Notes'}],
+      },
+      voice: {
+        url: '/admin/api/voice-calls', rowsKey: 'calls', statuses: null,
+        cols: [{key:'created_at',label:'When'},{key:'from_number',label:'From'},{key:'to_number',label:'To'},
+               {key:'status',label:'Status'},{key:'summary',label:'Summary'}],
+      },
+      profiles: {
+        url: '/admin/api/visitor-profiles', rowsKey: 'profiles', statuses: null,
+        cols: [{key:'updated_at',label:'Updated'},{key:'visitor_id',label:'Visitor'},
+               {key:'interests',label:'Interests'},{key:'needs',label:'Needs'},
+               {key:'lead_score',label:'Lead score'},{key:'summary',label:'Summary'}],
+      },
+    };
+    const CRM_ORDER = ['leads','callbacks','meetings','voice','profiles'];
+    let _crmActive = 'leads';            // which pane is currently visible
+    let _crmPollTimer = null;            // live auto-refresh handle
+
+    function _crmToast(msg, ok) {
+      if (typeof showToast === 'function') showToast(msg, ok === false ? 'error' : 'success');
+    }
+
+    // --- unseen-badge bookkeeping (remember the highest id we've shown) ----
+    function _crmSeen(which) { return parseInt(localStorage.getItem('crmSeen_' + which) || '0', 10) || 0; }
+    function _crmMaxId(rows) { return (rows || []).reduce((m, r) => Math.max(m, parseInt(r.id, 10) || 0), 0); }
+    function _crmSetBadge(which, n) {
+      const b = document.getElementById('crm-badge-' + which);
+      if (!b) return;
+      if (n > 0) { b.textContent = String(n); b.hidden = false; } else { b.hidden = true; }
+    }
+    function _crmMarkSeen(which, rows) {
+      localStorage.setItem('crmSeen_' + which, String(_crmMaxId(rows)));
+      _crmSetBadge(which, 0);
+    }
+
     function crmShow(which, btn) {
+      _crmActive = which;
       document.querySelectorAll('#crm-subnav .crm-sub').forEach(b => b.classList.remove('active'));
       if (btn) btn.classList.add('active');
-      ['leads','callbacks','meetings','voice','profiles'].forEach(k => {
+      CRM_ORDER.forEach(k => {
         const el = document.getElementById('crm-' + k);
         if (el) el.style.display = (k === which) ? 'block' : 'none';
       });
+      // Viewing a list clears its "new" badge.
+      const el = document.getElementById('crm-' + which);
+      if (el && el._rows) _crmMarkSeen(which, el._rows);
     }
 
-    function _crmTable(rows, cols) {
+    // Build the per-row Actions cell (status <select>, Notes, Delete).
+    function _crmActionsCell(which, r) {
+      const cfg = CRM_LISTS[which];
+      let h = '<td style="padding:6px;white-space:nowrap;">';
+      if (cfg.statuses) {
+        h += '<select onchange="crmSetStatus(\'' + which + '\',' + r.id + ',this)" '
+           + 'style="font-size:12px;padding:3px;border-radius:6px;">';
+        cfg.statuses.forEach(s => {
+          h += '<option value="' + s + '"' + (r.status === s ? ' selected' : '') + '>' + _esc6(s) + '</option>';
+        });
+        h += '</select> ';
+      }
+      if (cfg.notes) {
+        h += '<button class="btn-secondary" style="padding:3px 8px;font-size:12px;" '
+           + 'onclick="crmEditNotes(\'' + which + '\',' + r.id + ')">Notes</button> ';
+      }
+      h += '<button class="btn-secondary" style="padding:3px 8px;font-size:12px;" '
+         + 'onclick="crmDelete(\'' + which + '\',' + r.id + ')">Delete</button>';
+      return h + '</td>';
+    }
+
+    function _crmTable(which, rows) {
+      const cfg = CRM_LISTS[which];
       if (!rows || !rows.length) return '<p class="empty-state">Nothing here yet.</p>';
       let h = '<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr style="text-align:left;opacity:.7;">';
-      cols.forEach(c => { h += '<th style="padding:6px;">' + _esc6(c.label) + '</th>'; });
-      h += '</tr></thead><tbody>';
+      cfg.cols.forEach(c => { h += '<th style="padding:6px;">' + _esc6(c.label) + '</th>'; });
+      h += '<th style="padding:6px;">Actions</th></tr></thead><tbody>';
+      const seen = _crmSeen(which);
       rows.forEach(r => {
-        h += '<tr style="border-top:1px solid rgba(255,255,255,.06);">';
-        cols.forEach(c => {
+        const isNew = (parseInt(r.id, 10) || 0) > seen;
+        h += '<tr style="border-top:1px solid rgba(255,255,255,.06);' + (isNew ? 'background:rgba(99,102,241,.10);' : '') + '">';
+        cfg.cols.forEach(c => {
           let v = r[c.key];
           if (/_at$/.test(c.key) && v) v = new Date(v).toLocaleString();
           if (Array.isArray(v)) v = v.join(', ');
           h += '<td style="padding:6px;">' + _esc6(v == null ? '' : String(v)) + '</td>';
         });
+        h += _crmActionsCell(which, r);
         h += '</tr>';
       });
       return h + '</tbody></table>';
     }
 
-    async function _crmLoad(paneId, url, cols, rowsKey) {
-      const el = document.getElementById(paneId);
+    async function _crmLoad(which) {
+      const cfg = CRM_LISTS[which];
+      const el = document.getElementById('crm-' + which);
       if (!el) return;
       try {
-        const res = await fetch(url);
+        const res = await fetch(cfg.url);
         if (!res.ok) { el.innerHTML = '<p class="empty-state">Super admin only.</p>'; return; }
         const data = await res.json();
-        el.innerHTML = _crmTable((data && data[rowsKey]) || [], cols);
+        const rows = (data && data[cfg.rowsKey]) || [];
+        el._rows = rows;
+        el.innerHTML = _crmTable(which, rows);
+        // The pane the operator is looking at counts as "seen"; the others
+        // get a badge for any rows newer than what was last viewed.
+        if (which === _crmActive) _crmMarkSeen(which, rows);
+        else _crmSetBadge(which, rows.filter(r => (parseInt(r.id, 10) || 0) > _crmSeen(which)).length);
       } catch (e) { el.innerHTML = '<p class="empty-state">Failed to load.</p>'; }
     }
 
     function loadCrm() {
-      _crmLoad('crm-leads', '/admin/api/leads', [
-        {key:'created_at',label:'When'},{key:'name',label:'Name'},{key:'email',label:'Email'},
-        {key:'phone',label:'Phone'},{key:'interest',label:'Interest'},{key:'message',label:'Message'},
-        {key:'status',label:'Status'}], 'leads');
-      _crmLoad('crm-callbacks', '/admin/api/callbacks', [
-        {key:'created_at',label:'When'},{key:'name',label:'Name'},{key:'phone',label:'Phone'},
-        {key:'preferred_time',label:'Preferred time'},{key:'reason',label:'Reason'},
-        {key:'ai_summary',label:'AI summary'},{key:'status',label:'Status'}], 'callbacks');
-      _crmLoad('crm-meetings', '/admin/api/meetings', [
-        {key:'created_at',label:'When'},{key:'name',label:'Name'},{key:'email',label:'Email'},
-        {key:'requested_time',label:'Requested'},{key:'start_iso',label:'Resolved (ISO)'},
-        {key:'duration_minutes',label:'Min'},{key:'status',label:'Status'}], 'meetings');
-      _crmLoad('crm-voice', '/admin/api/voice-calls', [
-        {key:'created_at',label:'When'},{key:'from_number',label:'From'},{key:'to_number',label:'To'},
-        {key:'status',label:'Status'},{key:'summary',label:'Summary'}], 'calls');
-      _crmLoad('crm-profiles', '/admin/api/visitor-profiles', [
-        {key:'updated_at',label:'Updated'},{key:'visitor_id',label:'Visitor'},
-        {key:'interests',label:'Interests'},{key:'needs',label:'Needs'},
-        {key:'lead_score',label:'Lead score'},{key:'summary',label:'Summary'}], 'profiles');
+      CRM_ORDER.forEach(_crmLoad);
+      crmLoadCaptureSettings();
+      crmStartPolling();
+    }
+
+    // Live auto-refresh: re-pull every list every 25s, but only while the CRM
+    // tab is actually on-screen (cheap, and avoids work in a hidden tab).
+    function crmStartPolling() {
+      if (_crmPollTimer) return;
+      _crmPollTimer = setInterval(() => {
+        const tab = document.getElementById('tab-crm');
+        if (!tab || !tab.classList.contains('active') || document.hidden) return;
+        CRM_ORDER.forEach(_crmLoad);
+      }, 25000);
+    }
+
+    // --- row actions -----------------------------------------------------
+    async function crmSetStatus(which, id, sel) {
+      const cfg = CRM_LISTS[which];
+      try {
+        const res = await adminFetch(cfg.url + '/' + id, {
+          method: 'PATCH', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({status: sel.value}),
+        });
+        if (!res.ok) throw new Error('save failed');
+        _crmToast('Status updated');
+      } catch (e) { _crmToast('Could not update status', false); _crmLoad(which); }
+    }
+
+    async function crmEditNotes(which, id) {
+      const cfg = CRM_LISTS[which];
+      const note = window.prompt('Notes for this record:');
+      if (note === null) return;
+      try {
+        const res = await adminFetch(cfg.url + '/' + id, {
+          method: 'PATCH', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({notes: note}),
+        });
+        if (!res.ok) throw new Error('save failed');
+        _crmToast('Notes saved'); _crmLoad(which);
+      } catch (e) { _crmToast('Could not save notes', false); }
+    }
+
+    async function crmDelete(which, id) {
+      if (!confirm('Delete this record? This cannot be undone.')) return;
+      const cfg = CRM_LISTS[which];
+      try {
+        const res = await adminFetch(cfg.url + '/' + id, {method: 'DELETE'});
+        if (!res.ok) throw new Error('delete failed');
+        _crmToast('Deleted'); _crmLoad(which);
+      } catch (e) { _crmToast('Could not delete', false); }
+    }
+
+    function crmAddLead() {
+      const st = 'width:100%;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,.15);'
+               + 'background:rgba(0,0,0,.15);color:inherit;font:inherit;';
+      const html =
+        '<div class="form-group"><label>Name</label><input id="crm-add-name" type="text" style="' + st + '"></div>'
+      + '<div class="form-group"><label>Email</label><input id="crm-add-email" type="email" style="' + st + '"></div>'
+      + '<div class="form-group"><label>Phone</label><input id="crm-add-phone" type="text" style="' + st + '"></div>'
+      + '<div class="form-group"><label>Interest</label><input id="crm-add-interest" type="text" style="' + st + '"></div>'
+      + '<div class="form-group"><label>Message</label><textarea id="crm-add-message" rows="3" style="' + st + '"></textarea></div>';
+      gxOpenDrawer('Add lead', html, {
+        saveLabel: 'Add lead',
+        onSave: async function () {
+          const val = id => (document.getElementById(id) || {}).value || '';
+          const body = {
+            name: val('crm-add-name'), email: val('crm-add-email'), phone: val('crm-add-phone'),
+            interest: val('crm-add-interest'), message: val('crm-add-message'),
+          };
+          if (!body.name && !body.email && !body.phone) { _crmToast('Add a name, email or phone', false); return; }
+          try {
+            const res = await adminFetch('/admin/api/leads', {
+              method: 'POST', headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify(body),
+            });
+            if (!res.ok) throw new Error('create failed');
+            gxCloseDrawer(); _crmToast('Lead added'); _crmLoad('leads');
+          } catch (e) { _crmToast('Could not add lead', false); }
+        },
+      });
+    }
+
+    // --- capture enablement toggles --------------------------------------
+    // These flip the AI-Control knobs that decide whether the concierge is
+    // allowed to save each kind of record. Off by default; reused GET/PUT
+    // /admin/api/ai-control endpoints (super-admin only).
+    const CRM_CAPTURE_KEYS = [
+      {key:'lead_capture_enabled',     label:'Capture leads',           hint:'Save contact details when a visitor wants follow-up.'},
+      {key:'callback_requests_enabled',label:'Take callback requests',  hint:'Log phone + preferred time for your team to call back.'},
+      {key:'meetings_enabled',         label:'Book meetings',           hint:'Record meeting requests from the conversation.'},
+      {key:'visitor_profiles_enabled', label:'Build visitor profiles',  hint:'Summarise each visitor\'s interests, needs & lead score.'},
+      {key:'live_call_enabled',        label:'Route phone calls to AI', hint:'Send inbound phone calls to the concierge.'},
+    ];
+
+    async function crmLoadCaptureSettings() {
+      const host = document.getElementById('crm-capture-toggles');
+      if (!host) return;
+      try {
+        const res = await fetch('/admin/api/ai-control');
+        if (!res.ok) { host.innerHTML = '<p class="empty-state" style="grid-column:1/-1;">Super admin only.</p>'; return; }
+        const data = await res.json();
+        const byKey = {};
+        ((data && data.settings) || []).forEach(s => { byKey[s.key] = s.value; });
+        // If a master AI kill-switch exists and is off, capture is inert — note it.
+        const masterOff = byKey.hasOwnProperty('ai_enabled') && !byKey['ai_enabled'];
+        const note = document.getElementById('crm-capture-master-note');
+        if (note) note.style.display = masterOff ? 'inline-block' : 'none';
+        host.innerHTML = CRM_CAPTURE_KEYS.map(c => {
+          const on = !!byKey[c.key];
+          return '<label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer;padding:8px;border:1px solid rgba(255,255,255,.08);border-radius:10px;">'
+            + '<input type="checkbox" ' + (on ? 'checked' : '') + ' onchange="crmToggleCapture(\'' + c.key + '\',this)" style="margin-top:3px;">'
+            + '<span><strong>' + _esc6(c.label) + '</strong><br><span style="opacity:.65;font-size:12px;">' + _esc6(c.hint) + '</span></span>'
+            + '</label>';
+        }).join('');
+      } catch (e) { host.innerHTML = '<p class="empty-state" style="grid-column:1/-1;">Failed to load settings.</p>'; }
+    }
+
+    async function crmToggleCapture(key, cb) {
+      const want = cb.checked;
+      try {
+        const res = await adminFetch('/admin/api/ai-control/' + key, {
+          method: 'PUT', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({value: want}),
+        });
+        if (!res.ok) throw new Error('save failed');
+        _crmToast(want ? 'Capture turned on' : 'Capture turned off');
+      } catch (e) { cb.checked = !want; _crmToast('Could not change setting', false); }
     }
 
     async function adminFetch(url, options) {

@@ -1647,6 +1647,30 @@ document.addEventListener('click', (e) => {
 }, false);
 
 
+/* ─────────────────────────────────────────────────────────────────
+   ESCAPE = EXIT THE FULL-SCREEN CANVAS, BACK TO THE SITE
+   ─────────────────────────────────────────────────────────────────
+   The AI's long or generated answers take over the screen as an
+   evolving "canvas": either the markdown #fullscreen-canvas or the
+   immersive generatePage iframe (#immersive-page-overlay). Esc is the
+   universal "get me back" key — it closes whichever surface is open and
+   drops the visitor back on the normal site, mirroring the on-screen
+   Back button exactly. Only fires when a surface is actually open, so it
+   never interferes with normal typing. */
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const immersive = document.getElementById('immersive-page-overlay');
+  const canvas = document.getElementById('fullscreen-canvas');
+  if (immersive && immersive.classList.contains('active')) {
+    closeImmersivePage(true);
+    closeSidePanel();
+  } else if (canvas && canvas.classList.contains('active')) {
+    closeFullscreenCanvas();
+    closeSidePanel();
+  }
+});
+
+
 /**
  * Maps built-in section slugs to their DOM element IDs.
  */

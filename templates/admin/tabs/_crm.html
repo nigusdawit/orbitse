@@ -6,19 +6,44 @@
       <div>
         <h2>Leads &amp; CRM</h2>
         <p style="opacity:.7;margin-top:4px;">
-          What the AI concierge captured. Each section fills only when its tool
-          is enabled in <strong>AI Control</strong>.
+          What the AI concierge captured from visitor conversations. Turn each
+          capability on below — new captures then appear here automatically.
         </p>
       </div>
       <button class="btn-secondary" onclick="loadCrm()" data-testid="crm-refresh">Refresh</button>
     </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;" id="crm-subnav">
-      <button class="tab-btn crm-sub active" onclick="crmShow('leads', this)">Leads</button>
-      <button class="tab-btn crm-sub" onclick="crmShow('callbacks', this)">Callbacks</button>
-      <button class="tab-btn crm-sub" onclick="crmShow('meetings', this)">Meetings</button>
-      <button class="tab-btn crm-sub" onclick="crmShow('voice', this)">Voice calls</button>
-      <button class="tab-btn crm-sub" onclick="crmShow('profiles', this)">Visitor profiles</button>
+
+    {# ---- Capture settings: turn the concierge's data-capture on/off -------- #}
+    <div class="card" id="crm-capture-card" style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+        <div>
+          <h3 style="margin:0;">Let the concierge capture data</h3>
+          <p style="opacity:.7;margin:4px 0 0;font-size:13px;">
+            Off by default. When on, the concierge naturally saves what visitors
+            share into the lists below (only with the visitor's consent).
+          </p>
+        </div>
+        <span class="badge" id="crm-capture-master-note" style="display:none;">
+          Master AI switch is off — capture is paused.
+        </span>
+      </div>
+      <div id="crm-capture-toggles" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin-top:14px;">
+        <p class="empty-state" style="grid-column:1/-1;">Loading…</p>
+      </div>
     </div>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;" id="crm-subnav">
+      <button class="tab-btn crm-sub active" onclick="crmShow('leads', this)">Leads <span class="crm-badge" id="crm-badge-leads" hidden>0</span></button>
+      <button class="tab-btn crm-sub" onclick="crmShow('callbacks', this)">Callbacks <span class="crm-badge" id="crm-badge-callbacks" hidden>0</span></button>
+      <button class="tab-btn crm-sub" onclick="crmShow('meetings', this)">Meetings <span class="crm-badge" id="crm-badge-meetings" hidden>0</span></button>
+      <button class="tab-btn crm-sub" onclick="crmShow('voice', this)">Voice calls <span class="crm-badge" id="crm-badge-voice" hidden>0</span></button>
+      <button class="tab-btn crm-sub" onclick="crmShow('profiles', this)">Visitor profiles <span class="crm-badge" id="crm-badge-profiles" hidden>0</span></button>
+    </div>
+
+    <div style="margin-bottom:10px;">
+      <button class="btn-secondary" onclick="crmAddLead()" data-testid="crm-add-lead">+ Add lead manually</button>
+    </div>
+
     <div id="crm-leads" class="crm-pane"><p class="empty-state">Loading…</p></div>
     <div id="crm-callbacks" class="crm-pane" style="display:none;"><p class="empty-state">Loading…</p></div>
     <div id="crm-meetings" class="crm-pane" style="display:none;"><p class="empty-state">Loading…</p></div>

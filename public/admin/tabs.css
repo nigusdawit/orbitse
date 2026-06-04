@@ -419,3 +419,19 @@
       border-color:color-mix(in srgb, var(--admin-accent) 35%, transparent); }
     #tab-admin-ai .admin-ai-grid.is-auto { grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); }
     #tab-admin-ai .admin-ai-flags { display:flex; gap:1.2rem; flex-wrap:wrap; margin:.2rem 0 .9rem; }
+
+/* CRM tab — "new capture" count badge on the sub-nav buttons (task: live CRM). */
+.crm-badge {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 6px;
+  margin-left: 4px;
+  border-radius: 999px;
+  background: #6366f1;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  vertical-align: middle;
+}

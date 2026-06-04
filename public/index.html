@@ -1100,11 +1100,12 @@ FONTS:
   Content on the left, frosted glass chat on the right.
   -->
   <div id="fullscreen-canvas" class="fullscreen-canvas" data-testid="fullscreen-canvas">
-    <button class="canvas-close-btn" onclick="closeFullscreenCanvas(); closeSidePanel();" data-testid="button-canvas-close">
+    <button class="canvas-close-btn" onclick="closeFullscreenCanvas(); closeSidePanel();" data-testid="button-canvas-close" aria-label="Back to the site (press Escape)">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="m15 18-6-6 6-6"/>
       </svg>
-      Back
+      Back to site
+      <span class="canvas-close-kbd" aria-hidden="true">Esc</span>
     </button>
     <div id="fullscreen-canvas-content" class="fullscreen-canvas-content"></div>
   </div>
@@ -1119,11 +1120,12 @@ FONTS:
   The site's theme (colors, fonts, glass effects) is auto-injected.
   -->
   <div id="immersive-page-overlay" class="immersive-page-overlay" data-testid="immersive-page-overlay">
-    <button class="canvas-close-btn" onclick="closeImmersivePage(true); closeSidePanel();" data-testid="button-immersive-close">
+    <button class="canvas-close-btn" onclick="closeImmersivePage(true); closeSidePanel();" data-testid="button-immersive-close" aria-label="Back to the site (press Escape)">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="m15 18-6-6 6-6"/>
       </svg>
-      Back
+      Back to site
+      <span class="canvas-close-kbd" aria-hidden="true">Esc</span>
     </button>
     <iframe id="immersive-page-frame" class="immersive-page-frame" sandbox="allow-scripts" data-testid="immersive-page-frame"></iframe>
   </div>

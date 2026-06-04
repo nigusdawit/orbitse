@@ -5256,6 +5256,18 @@ body.theme-accent-gradient .section-divider {
   color: var(--color-accent, #c9a96e);
 }
 
+/* Small "Esc" hint pill inside the canvas Back button — tells visitors they
+   can also press Escape to leave the full-screen canvas. */
+.canvas-close-kbd {
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 0.4rem;
+  font-size: 0.65rem;
+  line-height: 1.3;
+  opacity: 0.7;
+}
+
 /*
   NAVIGATE MODE — Gallery slide in split-screen.
   Shows the card's background image with overlay text.

@@ -25,6 +25,7 @@ from flask import Blueprint, request, jsonify
 
 from core import (
     query_db,
+    execute_db,
     admin_required,
     _require_super_admin_role,
     current_tenant_id,
@@ -33,6 +34,22 @@ from core import (
 )
 
 crm_bp = Blueprint("crm", __name__)
+
+# ---------------------------------------------------------------------------
+# Allowed status values per CRM entity. Admin write routes validate against
+# these so a stray payload can't poke arbitrary text into the status column.
+# Kept deliberately small + human-friendly; extend here if the pipeline grows.
+# ---------------------------------------------------------------------------
+_LEAD_STATUSES = {"new", "contacted", "qualified", "won", "lost", "archived"}
+_CALLBACK_STATUSES = {"new", "contacted", "done", "cancelled"}
+_MEETING_STATUSES = {
+    "requested", "booked", "confirmed", "completed", "cancelled", "declined",
+}
+
+
+def _json_body():
+    """Parse the JSON request body, tolerating an empty/blank body."""
+    return request.get_json(silent=True) or {}
 
 
 @crm_bp.route("/admin/api/visitor-profiles", methods=["GET"])
@@ -131,3 +148,163 @@ def admin_list_meetings():
         "notes, status, calendar_event_id, created_at FROM meetings "
         "WHERE tenant_id=%s ORDER BY id DESC LIMIT %s", (tid, limit)) or []
     return jsonify({"meetings": [_iso_row(r, "created_at") for r in rows]})
+
+
+# ===========================================================================
+# CRM WRITE actions — let the operator ACT on what the concierge captured
+# (change status, add a manual lead, delete an entry). Every route is
+# super-admin-only (same gate as the read routes above) and tenant-scoped, so
+# one operator can never touch another's CRM data. CSRF is enforced globally
+# by app.py's before_request hook, so nothing extra is needed here.
+# ===========================================================================
+
+# ---- Leads --------------------------------------------------------------
+@crm_bp.route("/admin/api/leads", methods=["POST"])
+@admin_required
+def admin_create_lead():
+    """Manually add a lead (e.g. one that came in by phone/email off-site).
+    Needs at least a name, email, or phone. Stored with source='manual'."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    body = _json_body()
+    name = (body.get("name") or "").strip()[:200]
+    email = (body.get("email") or "").strip().lower()[:320]
+    phone = (body.get("phone") or "").strip()[:50]
+    interest = (body.get("interest") or "").strip()[:300]
+    message = (body.get("message") or "").strip()[:4000]
+    if not (name or email or phone):
+        return jsonify({"error": "Provide at least a name, email, or phone."}), 400
+    row = execute_db(
+        "INSERT INTO leads (tenant_id, name, email, phone, interest, message, source) "
+        "VALUES (%s,%s,%s,%s,%s,%s,'manual') RETURNING id",
+        (current_tenant_id(), name, email, phone, interest, message))
+    if not row:
+        return jsonify({"error": "Could not save the lead."}), 500
+    return jsonify({"ok": True, "id": row["id"]})
+
+
+@crm_bp.route("/admin/api/leads/<int:lead_id>", methods=["PATCH"])
+@admin_required
+def admin_update_lead(lead_id):
+    """Update a lead's pipeline status (new/contacted/qualified/won/lost/archived)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    status = (_json_body().get("status") or "").strip().lower()
+    if status not in _LEAD_STATUSES:
+        return jsonify({"error": "Invalid status."}), 400
+    n = execute_db(
+        "UPDATE leads SET status=%s WHERE id=%s AND tenant_id=%s",
+        (status, lead_id, current_tenant_id()))
+    if not n:
+        return jsonify({"error": "Lead not found."}), 404
+    return jsonify({"ok": True, "status": status})
+
+
+@crm_bp.route("/admin/api/leads/<int:lead_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_lead(lead_id):
+    """Delete a lead (super-admin only)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    n = execute_db("DELETE FROM leads WHERE id=%s AND tenant_id=%s",
+                   (lead_id, current_tenant_id()))
+    if not n:
+        return jsonify({"error": "Lead not found."}), 404
+    return jsonify({"ok": True})
+
+
+# ---- Callbacks ----------------------------------------------------------
+@crm_bp.route("/admin/api/callbacks/<int:cb_id>", methods=["PATCH"])
+@admin_required
+def admin_update_callback(cb_id):
+    """Update a callback request's status (new/contacted/done/cancelled)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    status = (_json_body().get("status") or "").strip().lower()
+    if status not in _CALLBACK_STATUSES:
+        return jsonify({"error": "Invalid status."}), 400
+    n = execute_db(
+        "UPDATE callback_requests SET status=%s WHERE id=%s AND tenant_id=%s",
+        (status, cb_id, current_tenant_id()))
+    if not n:
+        return jsonify({"error": "Callback not found."}), 404
+    return jsonify({"ok": True, "status": status})
+
+
+@crm_bp.route("/admin/api/callbacks/<int:cb_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_callback(cb_id):
+    """Delete a callback request (super-admin only)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    n = execute_db("DELETE FROM callback_requests WHERE id=%s AND tenant_id=%s",
+                   (cb_id, current_tenant_id()))
+    if not n:
+        return jsonify({"error": "Callback not found."}), 404
+    return jsonify({"ok": True})
+
+
+# ---- Meetings -----------------------------------------------------------
+@crm_bp.route("/admin/api/meetings/<int:mt_id>", methods=["PATCH"])
+@admin_required
+def admin_update_meeting(mt_id):
+    """Update a meeting's status and/or notes. Status must be one of
+    requested/booked/confirmed/completed/cancelled/declined."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    body = _json_body()
+    sets, params = [], []
+    if "status" in body:
+        status = (body.get("status") or "").strip().lower()
+        if status not in _MEETING_STATUSES:
+            return jsonify({"error": "Invalid status."}), 400
+        sets.append("status=%s")
+        params.append(status)
+    if "notes" in body:
+        sets.append("notes=%s")
+        params.append((body.get("notes") or "").strip()[:2000])
+    if not sets:
+        return jsonify({"error": "Nothing to update."}), 400
+    params.extend([mt_id, current_tenant_id()])
+    n = execute_db(
+        "UPDATE meetings SET " + ", ".join(sets) + " WHERE id=%s AND tenant_id=%s",
+        tuple(params))
+    if not n:
+        return jsonify({"error": "Meeting not found."}), 404
+    return jsonify({"ok": True})
+
+
+@crm_bp.route("/admin/api/meetings/<int:mt_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_meeting(mt_id):
+    """Delete a meeting request (super-admin only)."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    n = execute_db("DELETE FROM meetings WHERE id=%s AND tenant_id=%s",
+                   (mt_id, current_tenant_id()))
+    if not n:
+        return jsonify({"error": "Meeting not found."}), 404
+    return jsonify({"ok": True})
+
+
+# ---- Visitor profiles (PII — delete only) -------------------------------
+@crm_bp.route("/admin/api/visitor-profiles/<int:vp_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_visitor_profile(vp_id):
+    """Delete a visitor profile (super-admin only). Profiles are PII, so this
+    gives the operator a clean way to honour an erase request."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    n = execute_db("DELETE FROM visitor_profiles WHERE id=%s AND tenant_id=%s",
+                   (vp_id, current_tenant_id()))
+    if not n:
+        return jsonify({"error": "Profile not found."}), 404
+    return jsonify({"ok": True})
