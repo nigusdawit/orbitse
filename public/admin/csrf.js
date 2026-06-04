@@ -401,6 +401,8 @@
     }
     document.getElementById('admin-chat-messages').innerHTML =
       '<div style="color:var(--admin-text-muted); font-size:.9rem;">Conversation cleared.</div>';
+    // Task 087: an empty conversation re-shows the starter chips.
+    if (typeof adminChatRenderStarters === 'function') adminChatRenderStarters();
     await adminChatLoadSessions();
   }
 
@@ -1426,6 +1428,8 @@
     if (!box) return;
     if (adminChatMode === 'visitor') {
       box.innerHTML = '<div style="color:var(--admin-text-muted); font-size:.9rem;">Visitor preview — your messages go straight to the public agent.</div>';
+      // Task 087: starters + capabilities are admin-only — hide on visitor.
+      if (typeof adminChatRenderStarters === 'function') adminChatRenderStarters();
       return;
     }
     // Kick off (or refresh) the sessions sidebar in parallel with the
@@ -1437,10 +1441,11 @@
     adminChatInstallDragDrop();
     adminChatInstallMicHandlers();
     // Task 087: command-bar composer (auto-grow textarea) + persona/model pills
-    // + slash-command palette.
+    // + slash-command palette + capabilities-tray Esc.
     adminChatInstallComposer();
     adminPickInstall();
     adminChatInstallSlashTrigger();
+    adminChatInstallCapEsc();
     const sid = await adminChatEnsureActiveSession();
     box.innerHTML = '<div style="color:var(--admin-text-muted); font-size:.9rem;">Loading…</div>';
     // Pull the full per-session config in parallel so the header (title,
@@ -1454,7 +1459,9 @@
       if (cfg) { adminChatActiveCfg = cfg; adminChatRefreshHeader(); }
       const msgs = data.messages || [];
       if (!msgs.length) {
-        box.innerHTML = '<div style="color:var(--admin-text-muted); font-size:.9rem;">Ask me anything about your site. Try: "Give me a 7-day overview" or "List the AI skills".</div>';
+        box.innerHTML = '<div style="color:var(--admin-text-muted); font-size:.9rem;">Ask me anything about your site — or pick a starter below.</div>';
+        // Task 087: show the role-aware empty-state starter chips.
+        adminChatRenderStarters();
         return;
       }
       // Pair each assistant message that has tool_calls with the tool
@@ -1528,6 +1535,8 @@
       box.innerHTML = html;
       adminChatHighlightWithin(box);
       adminChatBindBranchClicks();
+      // Task 087: a populated conversation hides the empty-state starters.
+      adminChatRenderStarters();
       adminChatScrollDown();
     } catch (e) {
       box.innerHTML = '<div style="color:var(--admin-text-muted);">Could not load history.</div>';
@@ -2065,6 +2074,8 @@
     // Clear the pending-attachment strip now that the turn is in flight.
     window.__adminChatPendingAttachments = [];
     adminChatRenderAttachStrip();
+    // Task 087: a conversation has begun — hide the empty-state starters.
+    adminChatRenderStarters();
     adminChatScrollDown();
 
     try {
@@ -2810,29 +2821,35 @@
     return !!(pal && !pal.hidden);
   }
 
-  // Apply a chosen command: route its persona (if any) through the persona
-  // pill/native select, then seed its templated prompt into the composer. We
-  // do NOT auto-send — the admin reviews + edits the arg, then hits Send.
-  function adminChatApplyCmd(c) {
-    if (!c) return;
+  // Seed the composer with a prompt and (optionally) route a persona via the
+  // SAME path the pill uses (sets the native select value + fires change). The
+  // shared primitive behind slash-commands, starters, and capability examples.
+  // Never auto-sends — the admin reviews + edits, then hits Send.
+  function adminChatSeedComposer(seed, persona) {
     const ta = document.getElementById('admin-chat-input');
     if (!ta) return;
-    // Route persona via the SAME path the pill uses (sets native value + change).
-    if (c.persona) {
+    if (persona) {
       const personaSel = document.getElementById('admin-chat-persona');
       const pickEl = document.getElementById('admin-pick-persona');
       if (personaSel) {
-        personaSel.value = c.persona;
+        personaSel.value = persona;
         personaSel.dispatchEvent(new Event('change', { bubbles: true }));
       }
       if (pickEl && typeof adminPickSyncTrigger === 'function') adminPickSyncTrigger(pickEl);
     }
-    ta.value = c.seed || (c.cmd + ' ');
-    adminChatCloseCmdPalette();
+    ta.value = seed || '';
     ta.focus();
     // Place caret at the end so the admin can type the argument straight away.
     try { const n = ta.value.length; ta.setSelectionRange(n, n); } catch (_) {}
     adminChatAutoGrow();
+  }
+
+  // Apply a chosen slash-command: seed its templated prompt + route its persona,
+  // then close the palette.
+  function adminChatApplyCmd(c) {
+    if (!c) return;
+    adminChatCloseCmdPalette();
+    adminChatSeedComposer(c.seed || (c.cmd + ' '), c.persona);
   }
   function adminChatApplyCmdByName(name) {
     const c = adminChatVisibleCmds().find(x => x.cmd === name);
@@ -2936,6 +2953,353 @@
       const dock = document.getElementById('admin-chat-composer-dock');
       if (dock && dock.contains(e.target)) return;  // clicks inside composer/palette
       adminChatCloseCmdPalette();
+    });
+  }
+
+  // ===== Task 087: header overflow ⋯ menu =====
+  // Pure relocation of Prompt/Skills/KB/Export/Clear off the toolbar. Each item
+  // calls the EXISTING handler by name (adminChatOverflowRun) so behaviour is
+  // unchanged; this only declutters the header.
+  function adminChatToggleOverflow() {
+    const wrap = document.getElementById('admin-chat-overflow');
+    if (!wrap) return;
+    const menu = wrap.querySelector('.admin-chat-overflow-menu');
+    const btn = wrap.querySelector('.admin-chat-overflow-btn');
+    if (!menu) return;
+    const open = menu.hidden;
+    menu.hidden = !open;
+    if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) adminChatInstallOverflowOutside();
+  }
+  function adminChatCloseOverflow() {
+    const wrap = document.getElementById('admin-chat-overflow');
+    if (!wrap) return;
+    const menu = wrap.querySelector('.admin-chat-overflow-menu');
+    const btn = wrap.querySelector('.admin-chat-overflow-btn');
+    if (menu) menu.hidden = true;
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  }
+  // Close the menu, then invoke the named global handler with optional args.
+  function adminChatOverflowRun(fnName, arg) {
+    adminChatCloseOverflow();
+    try {
+      const fn = window[fnName];
+      if (typeof fn === 'function') fn(arg);
+    } catch (e) { console.warn('[admin-chat] overflow action failed', fnName, e); }
+  }
+  let _adminOverflowOutsideBound = false;
+  function adminChatInstallOverflowOutside() {
+    if (_adminOverflowOutsideBound) return;
+    _adminOverflowOutsideBound = true;
+    document.addEventListener('mousedown', (e) => {
+      const wrap = document.getElementById('admin-chat-overflow');
+      if (!wrap) return;
+      const menu = wrap.querySelector('.admin-chat-overflow-menu');
+      if (!menu || menu.hidden) return;
+      if (wrap.contains(e.target)) return;
+      adminChatCloseOverflow();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') adminChatCloseOverflow();
+    });
+  }
+
+  // ===== Task 087: empty-state starters =====
+  // Role-aware chips shown only when the message list has no real bubbles. Each
+  // seeds the composer (+ optional persona) via adminChatSeedComposer.
+  const ADMIN_STARTERS = [
+    { icon: '📈', label: 'Give me a 7-day overview', persona: 'data_analyst',
+      seed: 'Give me a 7-day overview of my site: visitors, chats, orders and form submissions.' },
+    { icon: '🧠', label: 'Analyze visitor chat topics',
+      seed: 'Analyze my visitor chat topics from the last 30 days and surface the top themes and gaps.' },
+    { icon: '🔍', label: 'Find content gaps (SEO)',
+      seed: 'Review my site content and suggest concrete SEO improvements and content gaps to fill.' },
+    { icon: '❓', label: 'Draft an FAQ', persona: 'creative',
+      seed: 'Draft an FAQ entry (for my approval) answering: ' },
+    { icon: '🧮', label: 'Run a SQL query', persona: 'data_analyst',
+      seed: 'Run this read-only SQL: ' },
+    { icon: '🔌', label: 'Explore my Datahub',
+      seed: 'List my Datahub connections, then inspect the most useful one and tell me what I can query.' },
+    // super-admin only
+    { icon: '🔭', label: 'Research a topic', persona: 'research', super: true,
+      seed: 'Run a deep research task on: ' },
+    { icon: '🎨', label: 'Design a new homepage', super: true,
+      seed: 'Propose a new site design (for my approval) for my homepage: ' },
+    { icon: '🧱', label: 'Define my Datahub tables', super: true,
+      seed: 'Help me define and annotate the Datahub schema for: ' },
+  ];
+
+  // True when the messages pane has no real chat bubbles (only the placeholder
+  // / empty / cleared text). We key off the engine's data-testid bubbles.
+  function adminChatHasMessages() {
+    const box = document.getElementById('admin-chat-messages');
+    if (!box) return false;
+    return !!box.querySelector('[data-testid^="bubble-admin-chat"]');
+  }
+  function adminChatRenderStarters() {
+    const wrap = document.getElementById('admin-chat-starters');
+    if (!wrap) return;
+    // Only in admin mode + only when the conversation is empty.
+    if (adminChatMode !== 'admin' || adminChatHasMessages()) {
+      wrap.hidden = true; wrap.innerHTML = ''; return;
+    }
+    const sup = adminChatIsSuperAdmin();
+    const list = ADMIN_STARTERS.filter(s => sup || !s.super);
+    wrap.innerHTML = list.map((s, i) =>
+      '<button type="button" class="admin-cap-starter" data-starter="' + i + '" '
+      + 'data-testid="button-admin-chat-starter-' + i + '">'
+      + '<span class="admin-cap-starter-ico" aria-hidden="true">' + adminChatEscape(s.icon) + '</span>'
+      + adminChatEscape(s.label)
+      + '</button>').join('');
+    // Bind clicks (the visible list is rebuilt each call, so bind fresh).
+    wrap.querySelectorAll('.admin-cap-starter').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const s = list[parseInt(btn.dataset.starter, 10)];
+        if (s) adminChatSeedComposer(s.seed, s.persona);
+      });
+    });
+    wrap.hidden = false;
+  }
+
+  // ===== Task 087: capabilities tray =====
+  // Grouped "what the assistant can do" cards + click-to-run examples + the
+  // per-conversation skill toggles (reusing /admin/api/chat/skills + the
+  // /sessions PATCH). Role-aware: super-admin-only groups are dropped for a
+  // normal admin. The example chips seed the composer (no auto-send); the skill
+  // toggles persist exactly like the existing Skills modal.
+  //
+  // Each group: { key, icon, title, super?, lines:[…], examples:[{label, persona?, seed}] }.
+  // Tools referenced are REAL (verified against ADMIN_TOOLS, app.py ~18197).
+  const ADMIN_CAP_GROUPS = [
+    { key: 'data', icon: '🧮', title: 'Data & SQL',
+      lines: [
+        'List + describe your tables (admin_list_tables / admin_describe_table).',
+        'Run read-only SQL and summarize results (admin_run_sql).',
+        'Save + re-run queries (admin_save_query / admin_run_saved_query).',
+      ],
+      examples: [
+        { label: 'List my tables', seed: 'List all the tables in my database and what each one is for.' },
+        { label: 'Run a SQL query', persona: 'data_analyst', seed: 'Run this read-only SQL: ' },
+        { label: 'Top 10 orders this month', persona: 'data_analyst', seed: 'Write and run read-only SQL for my top 10 orders this month.' },
+      ] },
+    { key: 'datahub', icon: '🔌', title: 'Datahub', grant: true,
+      lines: [
+        'List the data connections you have access to (admin_list_connections).',
+        'Inspect a connection\'s annotated schema before querying (admin_inspect_connection).',
+        'Query within your granted tables (admin_query_connection) — access is grant-bounded.',
+      ],
+      examples: [
+        { label: 'Explore my Datahub', seed: 'List my Datahub connections, then inspect the most useful one and tell me what I can query.' },
+        { label: 'What can I query?', seed: 'Which Datahub tables am I allowed to query, and what does each contain?' },
+      ] },
+    { key: 'dashboards', icon: '🧭', title: 'Dashboards',
+      lines: [
+        'Create a dashboard from a question (admin_create_dashboard).',
+        'Add widgets / charts to a dashboard (admin_add_widget · render_chart).',
+      ],
+      examples: [
+        { label: 'Build a sales dashboard', seed: 'Create a dashboard that tracks my sales: revenue, orders, and top products over time.' },
+        { label: 'Chart visitors over time', persona: 'data_analyst', seed: 'Query my visitor data and render a chart of visitors per day for the last 30 days.' },
+      ] },
+    { key: 'analytics', icon: '🧠', title: 'Analytics',
+      lines: [
+        'Mine visitor-chat topics + sentiment (admin_analyze_chat_topics).',
+        'Surface recent activity — orders, forms, chats (admin_recent_*).',
+        'Skill usage stats (admin_skill_usage_stats).',
+      ],
+      examples: [
+        { label: 'Analyze chat topics', seed: 'Analyze my visitor chat topics from the last 30 days and surface the top themes and gaps.' },
+        { label: 'Recent form submissions', persona: 'ops', seed: 'Show my most recent form submissions and summarize what people are asking for.' },
+      ] },
+    { key: 'content', icon: '✍️', title: 'Content & Marketing',
+      lines: [
+        'Find content gaps + SEO wins (admin_suggest_seo_improvements).',
+        'Draft blog posts + FAQ entries for your approval (admin_propose_draft_*).',
+        'Web search with sources (admin_web_search).',
+      ],
+      examples: [
+        { label: 'Find SEO gaps', seed: 'Review my site content and suggest concrete SEO improvements and content gaps to fill.' },
+        { label: 'Draft a blog post', persona: 'creative', seed: 'Draft a blog post (for my approval) about: ' },
+        { label: 'Draft an FAQ', persona: 'creative', seed: 'Draft an FAQ entry (for my approval) answering: ' },
+      ] },
+    { key: 'content_super', icon: '🎨', title: 'Content Studio', super: true,
+      lines: [
+        'Generate long-form content (generate_content).',
+        'Propose a new site design or theme for approval (admin_propose_create_site_design / _theme).',
+      ],
+      examples: [
+        { label: 'Generate long-form content', seed: 'Generate long-form content for: ' },
+        { label: 'Design a new homepage', seed: 'Propose a new site design (for my approval) for my homepage: ' },
+        { label: 'Propose a new theme', seed: 'Propose a new site theme (for my approval): ' },
+      ] },
+    { key: 'research', icon: '🔭', title: 'Research', super: true,
+      lines: [
+        'Run a deep, multi-source research task (run_research).',
+        'Gather web sources into the Research Hub (gather_sources).',
+      ],
+      examples: [
+        { label: 'Research a topic', persona: 'research', seed: 'Run a deep research task on: ' },
+      ] },
+    { key: 'automations', icon: '🤖', title: 'Automations',
+      lines: [
+        'List + inspect your automations (admin_list_automations / admin_get_automation).',
+        'Propose creating / toggling automations for your approval (admin_propose_*_automation).',
+      ],
+      examples: [
+        { label: 'List my automations', seed: 'List my automations and tell me which are active and what each one does.' },
+      ] },
+    { key: 'mcp', icon: '🛰', title: 'Connectors (MCP)', super: true,
+      lines: [
+        'List your MCP servers + the tools they expose (admin_mcp_list_servers).',
+        'Propose adding / updating / toggling servers for approval (admin_mcp_propose_*).',
+      ],
+      examples: [
+        { label: 'List my MCP servers', seed: 'List my MCP servers, their status, and the tools they expose.' },
+      ] },
+    { key: 'kb', icon: '📚', title: 'Knowledge Base',
+      lines: [
+        'Search your uploaded docs + quote passages with citations (lookup_knowledge_base).',
+        'Manage the docs the assistant can cite (open the KB panel).',
+      ],
+      examples: [
+        { label: 'Search my KB', seed: 'Search my Knowledge Base and answer with citations: ' },
+        { label: 'Manage KB docs', action: 'kb' },
+      ] },
+  ];
+
+  function adminChatOpenCapabilities() {
+    if (adminChatMode !== 'admin') { alert('Switch to the admin assistant to use capabilities.'); return; }
+    const bd = document.getElementById('admin-chat-cap-backdrop');
+    if (!bd) return;
+    bd.hidden = false;
+    adminChatRenderCapabilities();
+    adminChatInstallCapEsc();
+  }
+  function adminChatCloseCapabilities() {
+    const bd = document.getElementById('admin-chat-cap-backdrop');
+    if (bd) bd.hidden = true;
+  }
+
+  // Build the grouped tray + load the live skill toggles. Role-gated.
+  function adminChatRenderCapabilities() {
+    const body = document.getElementById('admin-chat-cap-body');
+    if (!body) return;
+    const sup = adminChatIsSuperAdmin();
+    const groups = ADMIN_CAP_GROUPS.filter(g => sup || !g.super);
+    let html = '';
+    for (const g of groups) {
+      const linesHtml = (g.lines || []).map(l => '<li>' + adminChatEscape(l) + '</li>').join('');
+      const exHtml = (g.examples || []).map((ex, i) =>
+        '<button type="button" class="admin-cap-ex" data-cap-group="' + adminChatAttrEscape(g.key) + '" data-cap-ex="' + i + '">'
+        + adminChatEscape(ex.label) + '</button>').join('');
+      const superTag = g.super ? '<span class="admin-cap-super-tag">super-admin</span>'
+                    : (g.grant ? '<span class="admin-cap-super-tag" style="background:color-mix(in srgb,var(--admin-accent) 16%,transparent);color:var(--admin-accent);">grant-aware</span>' : '');
+      html += '<section class="admin-cap-group" data-cap-key="' + adminChatAttrEscape(g.key) + '">'
+        + '<div class="admin-cap-group-head">'
+        +   '<span class="admin-cap-group-ico" aria-hidden="true">' + adminChatEscape(g.icon) + '</span>'
+        +   '<span class="admin-cap-group-title">' + adminChatEscape(g.title) + '</span>'
+        +   superTag
+        + '</div>'
+        + '<div class="admin-cap-group-body">'
+        +   '<ul class="admin-cap-lines">' + linesHtml + '</ul>'
+        +   '<div class="admin-cap-examples">' + exHtml + '</div>'
+        + '</div>'
+        + '</section>';
+    }
+    // Skills group — populated async with the live per-conversation toggles.
+    html += '<section class="admin-cap-group" data-cap-key="skills">'
+      + '<div class="admin-cap-group-head">'
+      +   '<span class="admin-cap-group-ico" aria-hidden="true">🧰</span>'
+      +   '<span class="admin-cap-group-title">Skills</span>'
+      + '</div>'
+      + '<div class="admin-cap-group-body">'
+      +   '<p style="font-size:.78rem;color:var(--admin-text-muted);margin:.1rem 0 .5rem;line-height:1.4;">Turn tools on/off for THIS conversation. Changes apply on your next message.</p>'
+      +   '<div id="admin-cap-skills" data-testid="admin-cap-skills"><div class="admin-cap-skill-empty">Loading…</div></div>'
+      + '</div>'
+      + '</section>';
+    body.innerHTML = html;
+
+    // Wire example chips → seed composer (+ persona) or open the KB panel.
+    body.querySelectorAll('.admin-cap-ex').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const g = groups.find(x => x.key === btn.dataset.capGroup)
+               || ADMIN_CAP_GROUPS.find(x => x.key === btn.dataset.capGroup);
+        if (!g) return;
+        const ex = (g.examples || [])[parseInt(btn.dataset.capEx, 10)];
+        if (!ex) return;
+        if (ex.action === 'kb') { adminChatCloseCapabilities(); adminChatOpenKB(); return; }
+        adminChatCloseCapabilities();
+        adminChatSeedComposer(ex.seed, ex.persona);
+      });
+    });
+
+    adminChatRenderCapSkills();
+  }
+
+  // Load the per-conversation skills into the tray's Skills group, reusing the
+  // SAME /admin/api/chat/skills GET the modal uses. A Save button PATCHes the
+  // session's disabled_tools (same shape as adminChatSkillsSave).
+  async function adminChatRenderCapSkills() {
+    const host = document.getElementById('admin-cap-skills');
+    if (!host) return;
+    const sid = localStorage.getItem(ADMIN_CHAT_KEYS.admin);
+    if (!sid) { host.innerHTML = '<div class="admin-cap-skill-empty">Select a conversation first.</div>'; return; }
+    try {
+      const r = await fetch('/admin/api/chat/skills?session_id=' + encodeURIComponent(sid));
+      const data = await r.json();
+      // Same payload shape as the Skills modal: { static:[…], dynamic:[…] },
+      // each item { name, description, category, disabled }. "On" = !disabled
+      // (and the Save below collects unchecked → disabled_tools, identical to
+      // adminChatSkillsSave) so the tray and the modal stay consistent.
+      const items = [].concat(data.static || [], data.dynamic || []);
+      if (!items.length) { host.innerHTML = '<div class="admin-cap-skill-empty">No skills available.</div>'; return; }
+      let html = '';
+      for (const it of items) {
+        const name = it.name || '';
+        const cat = it.category ? ' <span style="font-weight:400;font-size:.7rem;color:var(--admin-text-muted);">' + adminChatEscape(it.category) + '</span>' : '';
+        const on = !it.disabled;
+        html += '<label class="admin-cap-skill-row">'
+          + '<input type="checkbox" data-cap-skill-name="' + adminChatAttrEscape(name) + '"' + (on ? ' checked' : '') + '>'
+          + '<span class="admin-cap-skill-name">' + adminChatEscape(name) + cat + '</span>'
+          + '</label>';
+      }
+      html += '<div class="admin-cap-skill-foot">'
+        + '<button type="button" class="admin-cap-skill-save" onclick="adminChatCapSkillsSave()" data-testid="button-admin-cap-skills-save">Save skills</button>'
+        + '</div>';
+      host.innerHTML = html;
+    } catch (e) {
+      host.innerHTML = '<div class="admin-cap-skill-empty">Couldn\'t load skills.</div>';
+    }
+  }
+  // Persist the tray's skill toggles (mirrors adminChatSkillsSave's PATCH; we
+  // leave the KB auto-search toggle to the dedicated Skills modal).
+  async function adminChatCapSkillsSave() {
+    const sid = localStorage.getItem(ADMIN_CHAT_KEYS.admin);
+    const host = document.getElementById('admin-cap-skills');
+    if (!sid || !host) return;
+    const disabled = [];
+    host.querySelectorAll('input[data-cap-skill-name]').forEach(cb => {
+      if (!cb.checked) disabled.push(cb.dataset.capSkillName);
+    });
+    await fetch('/admin/api/chat/sessions/' + encodeURIComponent(sid), {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ disabled_tools: disabled }),
+    });
+    const save = host.querySelector('.admin-cap-skill-save');
+    if (save) { const t = save.textContent; save.textContent = 'Saved ✓'; setTimeout(() => { save.textContent = t; }, 1400); }
+    try { await adminChatLoadSessions(); } catch (_) {}
+  }
+
+  // Esc closes the tray (bound once; no-op while the tray is hidden).
+  let _adminCapEscBound = false;
+  function adminChatInstallCapEsc() {
+    if (_adminCapEscBound) return;
+    _adminCapEscBound = true;
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      const bd = document.getElementById('admin-chat-cap-backdrop');
+      if (bd && !bd.hidden) { e.preventDefault(); adminChatCloseCapabilities(); }
     });
   }
 

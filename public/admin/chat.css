@@ -1317,3 +1317,259 @@ html[data-admin-motion="reduce"] .admin-pick-menu{ animation: none; }
 }
 @media (prefers-reduced-motion: reduce){ .admin-cmd-palette{ animation: none; } }
 html[data-admin-motion="reduce"] .admin-cmd-palette{ animation: none; }
+
+/* ==========================================================================
+   H. TASK 087 — CAPABILITIES TRAY (.admin-cap-*), STARTERS, HEADER OVERFLOW
+   ========================================================================== */
+
+/* ---- H1. Header "Capabilities" button: tonal accent pill (sits next to
+   Expand as a co-primary affordance). ---- */
+.admin-chat-shell .admin-chat-header button.acm-btn.admin-cap-open-btn{
+  background: color-mix(in srgb, var(--admin-accent) 14%, transparent);
+  color: var(--admin-accent);
+  border-color: color-mix(in srgb, var(--admin-accent) 28%, transparent);
+  font-weight: 600;
+}
+.admin-chat-shell .admin-chat-header button.acm-btn.admin-cap-open-btn:hover{
+  background: color-mix(in srgb, var(--admin-accent) 22%, transparent);
+  color: var(--admin-accent);
+}
+/* Keep Expand pushed to the right edge but let Capabilities sit just before it.
+   (086 set .admin-chat-expand-btn margin-left:auto; we now want BOTH grouped at
+   the right with the overflow last.) */
+.admin-chat-shell .admin-chat-header .admin-cap-open-btn{ margin-left: auto; }
+.admin-chat-shell .admin-chat-header .admin-chat-expand-btn{ margin-left: .1rem; }
+
+/* ---- H2. Header overflow ⋯ menu ---- */
+.admin-chat-overflow{ position: relative; display: inline-flex; }
+.admin-chat-shell .admin-chat-header button.acm-btn.admin-chat-overflow-btn{
+  font-size: 1.05rem;
+  line-height: 1;
+  padding: .32rem .55rem;
+}
+.admin-chat-overflow-menu{
+  position: absolute;
+  top: calc(100% + .4rem);
+  right: 0;
+  z-index: 62;
+  min-width: 12.5rem;
+  padding: .3rem;
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border-light);
+  border-radius: var(--admin-radius);
+  box-shadow: var(--admin-shadow), 0 16px 44px rgba(0,0,0,.28);
+  -webkit-backdrop-filter: var(--admin-blur-heavy);
+  backdrop-filter: var(--admin-blur-heavy);
+  animation: adminPickMenuIn .16s var(--acg-spring, ease) both;
+}
+.admin-chat-overflow-menu[hidden]{ display: none; }
+.admin-chat-overflow-item{
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--admin-radius) - .3rem);
+  padding: .5rem .6rem;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: .85rem;
+  color: var(--admin-text);
+  transition: background .12s, color .12s;
+}
+.admin-chat-overflow-item:hover{ background: color-mix(in srgb, var(--admin-accent) 12%, transparent); }
+.admin-chat-overflow-item.admin-chat-overflow-danger:hover{
+  background: color-mix(in srgb, var(--admin-danger, #dc2626) 14%, transparent);
+  color: var(--admin-danger, #dc2626);
+}
+.admin-chat-overflow-sep{
+  height: 1px;
+  margin: .25rem .3rem;
+  background: var(--admin-border);
+}
+@media (prefers-reduced-motion: reduce){ .admin-chat-overflow-menu{ animation: none; } }
+html[data-admin-motion="reduce"] .admin-chat-overflow-menu{ animation: none; }
+
+/* ---- H3. Empty-state starter chips ---- */
+.admin-cap-starters{
+  display: flex;
+  flex-wrap: wrap;
+  gap: .45rem;
+  padding: .25rem .1rem .1rem;
+  align-self: stretch;
+}
+.admin-cap-starters[hidden]{ display: none; }
+.admin-cap-starter{
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  font-family: inherit;
+  font-size: .82rem;
+  color: var(--admin-text);
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border);
+  border-radius: 999px;
+  padding: .4rem .8rem;
+  cursor: pointer;
+  box-shadow: var(--admin-shadow);
+  -webkit-backdrop-filter: var(--admin-blur);
+  backdrop-filter: var(--admin-blur);
+  transition: border-color .14s, background .14s, transform .04s, color .14s;
+}
+.admin-cap-starter:hover{
+  border-color: var(--admin-accent);
+  background: color-mix(in srgb, var(--admin-accent) 10%, transparent);
+  color: var(--admin-accent);
+}
+.admin-cap-starter:active{ transform: translateY(1px); }
+.admin-cap-starter-ico{ font-size: .95rem; line-height: 1; }
+
+/* ---- H4. Capabilities tray (right-side glass drawer) ---- */
+.admin-cap-backdrop{
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: flex;
+  justify-content: flex-end;
+  background: color-mix(in srgb, var(--admin-bg) 45%, rgba(0,0,0,.5));
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  animation: adminCapFade .2s ease both;
+}
+.admin-cap-backdrop[hidden]{ display: none; }
+.admin-cap-tray{
+  width: min(420px, 92vw);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--admin-surface);
+  border-left: 1px solid var(--admin-border-light);
+  box-shadow: -24px 0 70px rgba(0,0,0,.34);
+  -webkit-backdrop-filter: var(--admin-blur-heavy);
+  backdrop-filter: var(--admin-blur-heavy);
+  animation: adminCapSlide .28s var(--acg-spring, ease) both;
+}
+.admin-cap-head{
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1rem 1.1rem;
+  border-bottom: 1px solid var(--admin-border);
+  flex-shrink: 0;
+}
+.admin-cap-head-txt{ display: flex; flex-direction: column; gap: .15rem; min-width: 0; }
+.admin-cap-head-title{ font-size: 1.05rem; font-weight: 700; color: var(--admin-text); }
+.admin-cap-head-sub{ font-size: .78rem; color: var(--admin-text-muted); line-height: 1.35; }
+.admin-cap-close{
+  margin-left: auto;
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--admin-text-muted);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: .1rem .4rem;
+  border-radius: 8px;
+}
+.admin-cap-close:hover{ background: color-mix(in srgb, var(--admin-text) 8%, transparent); color: var(--admin-text); }
+.admin-cap-body{
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: .9rem 1.1rem 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: .9rem;
+  scrollbar-width: thin;
+}
+
+/* A capability group card. */
+.admin-cap-group{
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-radius);
+  background: color-mix(in srgb, var(--admin-surface) 70%, transparent);
+  overflow: hidden;
+}
+.admin-cap-group-head{
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  padding: .6rem .75rem;
+  background: color-mix(in srgb, var(--admin-accent) 7%, transparent);
+  border-bottom: 1px solid var(--admin-border);
+}
+.admin-cap-group-ico{ font-size: 1.1rem; line-height: 1; }
+.admin-cap-group-title{ font-size: .9rem; font-weight: 700; color: var(--admin-text); }
+.admin-cap-super-tag{
+  margin-left: auto;
+  font-size: .6rem;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  padding: .1rem .4rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--admin-accent-2) 16%, transparent);
+  color: var(--admin-accent-2);
+}
+.admin-cap-group-body{ padding: .65rem .75rem .8rem; }
+/* "What it can do" bullet lines. */
+.admin-cap-lines{ margin: 0 0 .6rem; padding-left: 1.05rem; }
+.admin-cap-lines li{ font-size: .8rem; color: var(--admin-text-muted); line-height: 1.5; }
+/* Click-to-run example chips. */
+.admin-cap-examples{ display: flex; flex-wrap: wrap; gap: .35rem; }
+.admin-cap-ex{
+  font-family: inherit;
+  font-size: .76rem;
+  color: var(--admin-text);
+  background: var(--admin-field);
+  border: 1px solid var(--admin-border);
+  border-radius: 999px;
+  padding: .3rem .6rem;
+  cursor: pointer;
+  transition: border-color .14s, background .14s, color .14s, transform .04s;
+}
+.admin-cap-ex:hover{
+  border-color: var(--admin-accent);
+  background: color-mix(in srgb, var(--admin-accent) 10%, transparent);
+  color: var(--admin-accent);
+}
+.admin-cap-ex:active{ transform: translateY(1px); }
+
+/* The Skills group renders live per-conversation toggles. */
+.admin-cap-skill-row{
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .4rem .15rem;
+  border-bottom: 1px solid var(--admin-border);
+}
+.admin-cap-skill-row:last-child{ border-bottom: none; }
+.admin-cap-skill-name{ font-size: .82rem; color: var(--admin-text); flex: 1; min-width: 0; }
+.admin-cap-skill-empty{ font-size: .8rem; color: var(--admin-text-muted); padding: .4rem .15rem; }
+.admin-cap-skill-foot{ display: flex; justify-content: flex-end; gap: .5rem; margin-top: .7rem; }
+.admin-cap-skill-save{
+  background: linear-gradient(135deg, var(--admin-accent), var(--admin-accent-2));
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: .35rem .85rem;
+  font-family: inherit;
+  font-size: .8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter .14s, transform .04s;
+}
+.admin-cap-skill-save:hover{ filter: brightness(1.08); }
+.admin-cap-skill-save:active{ transform: translateY(1px); }
+/* Small toggle checkbox styling — accent the native control only inside the tray. */
+.admin-cap-skill-row input[type="checkbox"]{ accent-color: var(--admin-accent); width: 1rem; height: 1rem; flex-shrink: 0; cursor: pointer; }
+
+@keyframes adminCapFade{ from{ opacity: 0; } to{ opacity: 1; } }
+@keyframes adminCapSlide{ from{ transform: translateX(100%); } to{ transform: translateX(0); } }
+@media (prefers-reduced-motion: reduce){
+  .admin-cap-backdrop, .admin-cap-tray{ animation: none; }
+  .admin-cap-starter, .admin-cap-ex{ transition: none; }
+}
+html[data-admin-motion="reduce"] .admin-cap-backdrop,
+html[data-admin-motion="reduce"] .admin-cap-tray{ animation: none; }
