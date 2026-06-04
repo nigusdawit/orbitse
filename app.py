@@ -24049,12 +24049,193 @@ _ADMIN_APPEARANCE_ENUMS = {
     "sidebar": ("comfortable", "compact", "icons"),
 }
 
+# -----------------------------------------------------------------------------
+# Task 089 — "a lot more" Appearance controls. Everything below is stored in the
+# single site_settings.admin_theme_extra JSONB blob (migration 0033), NOT in new
+# columns: adding a knob is a registry entry + a UI control, never a migration.
+#
+# Each spec:
+#   kind    : "color" | "num" | "enum" | "bool" | "pcolor"
+#   default : the SAFE value == today's look. For "pcolor" a {"dark","light"} pair
+#             (the colour-picker's starting hex per theme; only emitted when the
+#             super-admin actually changes it, so the built-in palette keeps
+#             flowing from theme.css for every un-customized colour).
+#   lo / hi : numeric clamp (kind="num")
+#   choices : allowed values (kind="enum")
+#
+# How each value reaches CSS (a :root var, a data-admin-* attr, or a per-theme
+# var) is the template/JS's concern — the backend only STORES + VALIDATES. Defaults
+# reproduce the current appearance exactly, so an empty blob is a no-op.
+# -----------------------------------------------------------------------------
+_ADMIN_APPEARANCE_EXTRA = {
+    # A · semantic + utility + extra-accent colours (theme-agnostic :root vars)
+    "color_success": {"kind": "color", "default": "#22c55e"},
+    "color_warning": {"kind": "color", "default": "#f59e0b"},
+    "color_danger":  {"kind": "color", "default": "#ef4444"},
+    "color_info":    {"kind": "color", "default": "#3b82f6"},
+    "accent3":       {"kind": "color", "default": "#22d3ee"},
+    "color_link":    {"kind": "color", "default": "#6c8aff"},
+    "color_focus":   {"kind": "color", "default": "#6c8cff"},
+    "glow_color_1":  {"kind": "color", "default": "#3b82f6"},  # body::before glow
+    "glow_color_2":  {"kind": "color", "default": "#8b5cf6"},  # body::after glow
+    # B · typography
+    "head_font":      {"kind": "enum", "default": "serif",
+                       "choices": ("serif", "sans", "mono", "inherit")},
+    "font_weight":    {"kind": "enum", "default": "normal",
+                       "choices": ("light", "normal", "medium", "semibold")},
+    "letter_spacing": {"kind": "num", "default": 0.0, "lo": -0.02, "hi": 0.08},
+    "line_height":    {"kind": "num", "default": 1.5, "lo": 1.2, "hi": 1.9},
+    # C · shape & depth
+    "shadow":       {"kind": "enum", "default": "medium",
+                     "choices": ("none", "soft", "medium", "strong")},
+    "border_width": {"kind": "num", "default": 1.0, "lo": 0.0, "hi": 3.0},
+    "focus_style":  {"kind": "enum", "default": "ring",
+                     "choices": ("ring", "glow", "solid")},
+    # D · layout & motion
+    "content_width": {"kind": "enum", "default": "full",
+                      "choices": ("full", "wide", "comfortable", "narrow")},
+    "header_style":  {"kind": "enum", "default": "sticky",
+                      "choices": ("sticky", "static")},
+    "button_style":  {"kind": "enum", "default": "solid",
+                      "choices": ("solid", "soft", "outline")},
+    "motion_speed":  {"kind": "enum", "default": "normal",
+                      "choices": ("instant", "fast", "normal", "slow")},
+    # E · per-theme base colours (stored + emitted only when customized)
+    "bg":      {"kind": "pcolor", "default": {"dark": "#0b1220", "light": "#eef2fb"}},
+    "surface": {"kind": "pcolor", "default": {"dark": "#1e2940", "light": "#ffffff"}},
+    "text":    {"kind": "pcolor", "default": {"dark": "#e8edf6", "light": "#19233a"}},
+    "muted":   {"kind": "pcolor", "default": {"dark": "#aab2c0", "light": "#5b6577"}},
+    "border":  {"kind": "pcolor", "default": {"dark": "#2a3344", "light": "#d4dae6"}},
+}
+
+_HEX_RE = re.compile(r"^#[0-9a-fA-F]{3,8}$")
+# How many saved custom presets we keep (defensive cap so the blob can't grow
+# unbounded) and the max length of a preset's display label.
+_ADMIN_PRESET_CAP = 24
+_ADMIN_PRESET_LABEL_MAX = 40
+
+
+def _coerce_appearance_extra(src):
+    """Validate a FLAT source dict (the stored JSONB blob OR an incoming PUT
+    payload) against _ADMIN_APPEARANCE_EXTRA.
+
+    Returns (flat, base_overrides):
+      * flat           — every extra key present with a safe value (per-theme
+                         colours flattened to bg_dark/bg_light/…). Drives the
+                         pickers + the live front-end; defaults fill any gap.
+      * base_overrides — ONLY the per-theme base-colour keys whose value is a
+                         valid hex DIFFERENT from the registry default. These are
+                         the ones the template actually emits, so un-customized
+                         base colours keep flowing from theme.css.
+
+    Pure validation, never raises — an unknown/garbage value silently becomes
+    the safe default (fail-open)."""
+    flat, base_overrides = {}, {}
+    src = src if isinstance(src, dict) else {}
+    for key, spec in _ADMIN_APPEARANCE_EXTRA.items():
+        kind = spec["kind"]
+        if kind == "color":
+            v = str(src.get(key) or "").strip()
+            flat[key] = v if _HEX_RE.match(v) else spec["default"]
+        elif kind == "num":
+            try:
+                v = float(src.get(key, spec["default"]))
+            except (TypeError, ValueError):
+                v = spec["default"]
+            flat[key] = max(spec["lo"], min(spec["hi"], v))
+        elif kind == "enum":
+            v = str(src.get(key) or "").strip()
+            flat[key] = v if v in spec["choices"] else spec["default"]
+        elif kind == "bool":
+            flat[key] = bool(src.get(key))
+        elif kind == "pcolor":
+            for theme in ("dark", "light"):
+                fk = "%s_%s" % (key, theme)
+                dflt = spec["default"][theme]
+                v = str(src.get(fk) or "").strip()
+                if _HEX_RE.match(v):
+                    flat[fk] = v
+                    if v.lower() != dflt.lower():
+                        base_overrides[fk] = v
+                else:
+                    flat[fk] = dflt
+    return flat, base_overrides
+
+
+def _appearance_extra_blob(data):
+    """Build the MINIMAL admin_theme_extra blob to persist from a PUT payload:
+    only knobs that differ from their code default (so future default changes
+    still reach untouched knobs) + only customized per-theme base colours +
+    the validated custom-preset list. Returns (blob_dict, flat, base_overrides)
+    where flat/base_overrides are the validated values to echo back."""
+    flat, base_overrides = _coerce_appearance_extra(data)
+    blob = dict(base_overrides)  # customized per-theme base colours only
+    for key, spec in _ADMIN_APPEARANCE_EXTRA.items():
+        if spec["kind"] == "pcolor":
+            continue
+        if flat[key] != spec["default"]:
+            blob[key] = flat[key]
+    presets = _coerce_custom_presets((data or {}).get("custom_presets"))
+    if presets:
+        blob["custom_presets"] = presets
+    return blob, flat, base_overrides, presets
+
+
+def _sanitize_preset_settings(settings):
+    """Whitelist a custom preset's settings to KNOWN appearance keys with only
+    primitive (str/num/bool) values. Defense-in-depth: presets are re-validated
+    by the normal save path when applied, but this keeps the blob bounded and
+    blocks any unknown/nested junk from being stored."""
+    allowed = set(_ADMIN_APPEARANCE_DEFAULTS) | set(_ADMIN_APPEARANCE_ENUMS)
+    for key, spec in _ADMIN_APPEARANCE_EXTRA.items():
+        if spec["kind"] == "pcolor":
+            allowed.add("%s_dark" % key)
+            allowed.add("%s_light" % key)
+        else:
+            allowed.add(key)
+    out = {}
+    if not isinstance(settings, dict):
+        return out
+    for k, v in settings.items():
+        if k not in allowed:
+            continue
+        if isinstance(v, bool) or isinstance(v, (int, float)):
+            out[k] = v
+        elif isinstance(v, str):
+            out[k] = v[:64]
+    return out
+
+
+def _coerce_custom_presets(raw):
+    """Validate the saved custom-preset list: cap the count, require id+label,
+    clamp the label, and sanitize each preset's settings. Never raises."""
+    out = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw[:_ADMIN_PRESET_CAP]:
+        if not isinstance(item, dict):
+            continue
+        pid = str(item.get("id") or "").strip()[:_ADMIN_PRESET_LABEL_MAX]
+        label = str(item.get("label") or "").strip()[:_ADMIN_PRESET_LABEL_MAX]
+        if not pid or not label:
+            continue
+        out.append({"id": pid, "label": label,
+                    "settings": _sanitize_preset_settings(item.get("settings"))})
+    return out
+
 
 def _admin_appearance():
     """Read the admin-panel appearance settings from site_settings, falling back
     to defaults for any missing/invalid value (pre-migration safe). Returns a
     dict consumed by the dashboard template's inline CSS-variable block."""
     d = dict(_ADMIN_APPEARANCE_DEFAULTS)
+    # task 089 — seed the expanded-control defaults so every key is ALWAYS present
+    # (fail-open: even with no row, a missing column, or a read error the pickers
+    # and live front-end still get safe values; base_overrides/custom_presets empty).
+    _extra_flat, _ = _coerce_appearance_extra({})
+    d.update(_extra_flat)
+    d["base_overrides"] = {}
+    d["custom_presets"] = []
     try:
         row = query_db("SELECT * FROM site_settings WHERE id=1", fetchone=True)
         if row:
@@ -24086,6 +24267,20 @@ def _admin_appearance():
                              ("reduce_motion", "admin_theme_reduce_motion")):
                 if row.get(col) is not None:
                     d[key] = bool(row[col])
+            # task 089 — expanded controls live in the admin_theme_extra JSONB
+            # blob (migration 0033). psycopg returns JSONB as a dict; tolerate a
+            # string too. Absent column (pre-0033 DB) → None → all safe defaults.
+            raw = row.get("admin_theme_extra")
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw or "{}")
+                except (ValueError, TypeError):
+                    raw = {}
+            flat, overrides = _coerce_appearance_extra(raw)
+            d.update(flat)
+            d["base_overrides"] = overrides
+            d["custom_presets"] = _coerce_custom_presets(
+                raw.get("custom_presets") if isinstance(raw, dict) else None)
     except Exception:
         pass
     return d
@@ -28596,6 +28791,11 @@ def admin_update_appearance():
     sidebar = _enum("sidebar")
     high_contrast = _bool("high_contrast")
     reduce_motion = _bool("reduce_motion")
+    # task 089 — expanded controls + custom presets, all stored in the single
+    # admin_theme_extra JSONB blob. Only non-default knobs + customized per-theme
+    # base colours are persisted (so a future code-default change still reaches
+    # any knob the super-admin never touched), plus the validated preset list.
+    extra_blob, extra_flat, base_overrides, presets = _appearance_extra_blob(data)
     try:
         execute_db(
             "UPDATE site_settings SET admin_theme_mode=%s, admin_theme_accent=%s, "
@@ -28603,17 +28803,26 @@ def admin_update_appearance():
             "admin_theme_glass=%s, admin_theme_glow=%s, admin_theme_density=%s, "
             "admin_theme_font_scale=%s, admin_theme_font_family=%s, admin_theme_surface=%s, "
             "admin_theme_sidebar=%s, admin_theme_high_contrast=%s, admin_theme_reduce_motion=%s, "
+            "admin_theme_extra=%s::jsonb, "
             "updated_at=NOW() WHERE id=1",
             (mode, accent, accent2, blur, radius, glass, glow, density, font_scale,
-             font_family, surface, sidebar, high_contrast, reduce_motion))
+             font_family, surface, sidebar, high_contrast, reduce_motion,
+             json.dumps(extra_blob)))
     except Exception as e:
         print(f"[appearance] save failed: {type(e).__name__}: {e}")
         return jsonify({"error": "Could not save appearance."}), 500
-    return jsonify({"ok": True, "mode": mode, "accent": accent, "accent2": accent2,
-                    "blur": blur, "radius": radius, "glass": glass, "glow": glow,
-                    "density": density, "font_scale": font_scale, "font_family": font_family,
-                    "surface": surface, "sidebar": sidebar, "high_contrast": high_contrast,
-                    "reduce_motion": reduce_motion})
+    # Echo the authoritative validated values: the existing 14 keys (unchanged
+    # response contract) + every expanded knob (flattened, incl. per-theme base
+    # colours) + which base colours are actually overridden + the saved presets.
+    resp = {"ok": True, "mode": mode, "accent": accent, "accent2": accent2,
+            "blur": blur, "radius": radius, "glass": glass, "glow": glow,
+            "density": density, "font_scale": font_scale, "font_family": font_family,
+            "surface": surface, "sidebar": sidebar, "high_contrast": high_contrast,
+            "reduce_motion": reduce_motion}
+    resp.update(extra_flat)
+    resp["base_overrides"] = base_overrides
+    resp["custom_presets"] = presets
+    return jsonify(resp)
 
 
 @app.route("/admin/api/curated-font-pairs", methods=["GET"])
