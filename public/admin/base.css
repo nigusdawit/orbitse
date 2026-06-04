@@ -54,6 +54,21 @@
       --admin-fs-4: calc(1.25rem * var(--admin-font-scale));
       --admin-fs-5: calc(1.55rem * var(--admin-font-scale));
       --admin-fs-6: calc(2rem    * var(--admin-font-scale));
+      /* Task 089 — "a lot more" Appearance tokens. Every default == today's
+         look, so an empty admin_theme_extra blob changes nothing. success/
+         danger already defined above; these add the rest. */
+      --admin-warning: #f59e0b;
+      --admin-info: #3b82f6;
+      --admin-accent-3: #22d3ee;
+      --admin-link: #6c8aff;
+      --admin-focus: var(--admin-accent);     /* focus ring tracks accent unless overridden */
+      --admin-glow-1: #3b82f6;                 /* body::before ambient glow */
+      --admin-glow-2: #8b5cf6;                 /* body::after ambient glow */
+      --admin-border-width: 1px;               /* opt-in surfaces read this */
+      --admin-letter-spacing: 0em;             /* 0 == browser "normal" for Latin text */
+      /* NOTE: --admin-line-height is intentionally NOT defined here. Body reads
+         var(--admin-line-height, normal) so the default stays the browser's
+         "normal"; the customizer only defines it when the user changes it. */
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -64,6 +79,11 @@
       color: var(--admin-text);
       min-height: 100vh;
       position: relative;
+      /* Task 089 — both inherit, so these tune text density admin-wide. Defaults
+         resolve to today's look: letter-spacing 0 (== normal) and line-height
+         falls back to "normal" (the var is only set when the user changes it). */
+      letter-spacing: var(--admin-letter-spacing);
+      line-height: var(--admin-line-height, normal);
     }
 
     body::before {
@@ -73,7 +93,9 @@
       left: -10%;
       width: 60%;
       height: 60%;
-      background: radial-gradient(circle, rgba(59,130,246,0.06) 0%, transparent 70%);
+      /* Task 089 — glow-1 picker drives this; default #3b82f6 @ 6% == the old
+         rgba(59,130,246,0.06), so an un-customized admin is unchanged. */
+      background: radial-gradient(circle, color-mix(in srgb, var(--admin-glow-1) 6%, transparent) 0%, transparent 70%);
       pointer-events: none;
       z-index: 0;
     }
@@ -85,7 +107,9 @@
       right: -10%;
       width: 50%;
       height: 50%;
-      background: radial-gradient(circle, rgba(139,92,246,0.04) 0%, transparent 70%);
+      /* Task 089 — glow-2 picker drives this; default #8b5cf6 @ 4% == the old
+         rgba(139,92,246,0.04). */
+      background: radial-gradient(circle, color-mix(in srgb, var(--admin-glow-2) 4%, transparent) 0%, transparent 70%);
       pointer-events: none;
       z-index: 0;
     }

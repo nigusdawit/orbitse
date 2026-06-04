@@ -38,6 +38,16 @@ TO CUSTOMIZE THIS DASHBOARD:
       data-admin-sidebar="{{ appearance.sidebar if appearance else 'comfortable' }}"
       data-admin-font="{{ appearance.font_family if appearance else 'sans' }}"
       data-admin-fontscale="{{ appearance.font_scale if appearance else 'md' }}"
+      {# Task 089 — expanded controls. Each default value is a no-op (theme.css
+         writes no rule for it), so an un-customized admin is byte-identical. #}
+      data-admin-shadow="{{ appearance.shadow if appearance else 'medium' }}"
+      data-admin-headfont="{{ appearance.head_font if appearance else 'serif' }}"
+      data-admin-weight="{{ appearance.font_weight if appearance else 'normal' }}"
+      data-admin-focus="{{ appearance.focus_style if appearance else 'ring' }}"
+      data-admin-width="{{ appearance.content_width if appearance else 'full' }}"
+      data-admin-header="{{ appearance.header_style if appearance else 'sticky' }}"
+      data-admin-button="{{ appearance.button_style if appearance else 'solid' }}"
+      data-admin-speed="{{ appearance.motion_speed if appearance else 'normal' }}"
       {% if appearance and appearance.high_contrast %}data-admin-contrast="high"{% endif %}
       {% if appearance and appearance.reduce_motion %}data-admin-motion="reduce"{% endif %}>
 <head>
@@ -73,6 +83,11 @@ TO CUSTOMIZE THIS DASHBOARD:
       /* alias: several components (Admin Chat, etc.) reference --admin-card; map
          it to the glass surface so they aren't transparent/broken. */
       --admin-card: var(--admin-surface);
+      {# Task 089 — expanded theme-agnostic knobs (semantic/utility colours,
+         border width, letter-spacing, line-height). Server emits ONLY values
+         that differ from the code default, so untouched knobs fall through to
+         base.css. Values are validated (hex / clamped number) -> CSS-safe. #}
+      {{ appearance.css_vars | safe }}
     }
   </style>
   <link rel="stylesheet" href="/admin/theme.css">
@@ -81,6 +96,15 @@ TO CUSTOMIZE THIS DASHBOARD:
        the Admin Chat. Loaded AFTER tabs.css so its scoped .admin-chat-*/
        .admin-asst-* rules win the cascade. Pure no-build CSS, token-driven. -->
   <link rel="stylesheet" href="/admin/chat.css">
+  <!-- Task 089 — per-theme base-colour overrides (background/surface/text/muted/
+       border). Emitted AFTER theme.css so equal-specificity html[data-admin-theme]
+       rules win by source order; only the colours the super-admin actually
+       customized appear here, so the built-in light/dark palette keeps flowing
+       for everything untouched. Values are validated hex -> CSS-injection-safe. -->
+  <style id="admin-appearance-theme-vars">
+    {% if appearance and appearance.base_css_dark %}html[data-admin-theme="dark"]{ {{ appearance.base_css_dark | safe }} }{% endif %}
+    {% if appearance and appearance.base_css_light %}html[data-admin-theme="light"]{ {{ appearance.base_css_light | safe }} }{% endif %}
+  </style>
   <script>window.__ADMIN_APPEARANCE__ = {{ appearance|tojson }};</script>
 </head>
 

@@ -24224,6 +24224,71 @@ def _coerce_custom_presets(raw):
     return out
 
 
+# Mapping from an expanded knob → the --admin-* CSS variable it drives, plus the
+# unit. Theme-agnostic vars only (per-theme base colours are handled separately).
+# The dashboard injects these into an inline <style> so they apply before paint.
+_ADMIN_EXTRA_VAR_MAP = {
+    "color_success":  ("--admin-success",       "hex"),
+    "color_warning":  ("--admin-warning",       "hex"),
+    "color_danger":   ("--admin-danger",        "hex"),
+    "color_info":     ("--admin-info",          "hex"),
+    "accent3":        ("--admin-accent-3",      "hex"),
+    "color_link":     ("--admin-link",          "hex"),
+    "color_focus":    ("--admin-focus",         "hex"),
+    "glow_color_1":   ("--admin-glow-1",        "hex"),
+    "glow_color_2":   ("--admin-glow-2",        "hex"),
+    "border_width":   ("--admin-border-width",  "px"),
+    "letter_spacing": ("--admin-letter-spacing", "em"),
+    "line_height":    ("--admin-line-height",   "raw"),
+}
+# Per-theme base-colour key → token. surface is special (keeps its glassiness).
+_ADMIN_BASE_COLOR_TOKENS = {
+    "bg": "--admin-bg", "text": "--admin-text",
+    "muted": "--admin-text-muted", "border": "--admin-border",
+}
+
+
+def _appearance_css_vars(flat):
+    """Build the :root declarations for the theme-agnostic expanded knobs —
+    ONLY the ones that differ from the code default. Un-customized knobs emit
+    nothing, so they fall through to base.css (byte-identical) and a future
+    default change still reaches them. Inputs are already validated, so the
+    string is CSS-injection-safe (hex/clamped-number only)."""
+    parts = []
+    for key, (token, unit) in _ADMIN_EXTRA_VAR_MAP.items():
+        v = flat.get(key)
+        if v is None or v == _ADMIN_APPEARANCE_EXTRA[key]["default"]:
+            continue
+        if unit == "px":
+            parts.append("%s:%spx;" % (token, v))
+        elif unit == "em":
+            parts.append("%s:%sem;" % (token, v))
+        else:  # "raw" (unitless, e.g. line-height) or "hex"
+            parts.append("%s:%s;" % (token, v))
+    return "".join(parts)
+
+
+def _appearance_base_css(base_overrides):
+    """Build the per-theme base-colour declarations from base_overrides (already
+    only the customized colours). Returns {'dark': '...', 'light': '...'} so the
+    dashboard can emit html[data-admin-theme="dark"]{…}/…="light"]{…} AFTER
+    theme.css (equal specificity + later source order ⇒ wins). surface keeps its
+    glassiness via color-mix with --admin-glass."""
+    out = {"dark": [], "light": []}
+    for fk, v in (base_overrides or {}).items():
+        if "_" not in fk:
+            continue
+        base, theme = fk.rsplit("_", 1)
+        if theme not in out:
+            continue
+        if base == "surface":
+            out[theme].append(
+                "--admin-surface:color-mix(in srgb,%s calc(var(--admin-glass)*100%%),transparent);" % v)
+        elif base in _ADMIN_BASE_COLOR_TOKENS:
+            out[theme].append("%s:%s;" % (_ADMIN_BASE_COLOR_TOKENS[base], v))
+    return {"dark": "".join(out["dark"]), "light": "".join(out["light"])}
+
+
 def _admin_appearance():
     """Read the admin-panel appearance settings from site_settings, falling back
     to defaults for any missing/invalid value (pre-migration safe). Returns a
@@ -24283,6 +24348,13 @@ def _admin_appearance():
                 raw.get("custom_presets") if isinstance(raw, dict) else None)
     except Exception:
         pass
+    # task 089 — pre-build the inline-<style> payloads from the resolved values.
+    # Only non-defaults emit, so an un-customized admin stays byte-identical;
+    # on any read error above these are simply empty (fail-open).
+    d["css_vars"] = _appearance_css_vars(d)
+    _bc = _appearance_base_css(d.get("base_overrides"))
+    d["base_css_dark"] = _bc["dark"]
+    d["base_css_light"] = _bc["light"]
     return d
 
 
