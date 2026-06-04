@@ -19050,8 +19050,22 @@ ADMIN_TOOLS = [
                                                     "sub-agent should "
                                                     "answer or do."},
                          "persona": {"type": "string",
-                                     "enum": list(ADMIN_CHAT_PERSONAS.keys()) if False else ["general","research","data_analyst","code","creative","ops"],
-                                     "description": "Persona to apply."},
+                                     # task 088: personas are dynamic — NO static
+                                     # enum here. This schema is built once at
+                                     # import (before the persona store/cache
+                                     # exist) and a super-admin can add custom
+                                     # personas, so any baked-in enum would be
+                                     # stale. The model names a persona; the
+                                     # Python validation in
+                                     # _admin_run_subagent_once() checks it
+                                     # against the LIVE persona list.
+                                     "description": "Persona for this sub-task: "
+                                                    "a built-in (general, "
+                                                    "research, data_analyst, "
+                                                    "code, creative, ops) or any "
+                                                    "custom persona key from the "
+                                                    "Admin AI tab. Unknown -> "
+                                                    "general."},
                          "model":   {"type": "string",
                                      "description": "Optional model "
                                                     "override (e.g. "
@@ -19351,6 +19365,17 @@ def sync_admin_ai_config():
 ADMIN_CHAT_PERSONAS = {p["persona_key"]: p for p in _admin_persona_registry()}
 
 
+def _admin_persona_get(key):
+    """Live persona lookup for the read sites (task 088): the active persona dict
+    for *key*, else the 'general' fallback. Reads get_admin_personas() (DB →
+    cache → registry) so super-admin edits + custom personas take effect, and
+    never KeyErrors on the hot path — a persona can be disabled/deleted between
+    an earlier validate and a later read on a live turn, so always fall back to
+    'general' (which get_admin_personas() guarantees is present)."""
+    personas = get_admin_personas()
+    return personas.get(key) or personas["general"]
+
+
 def _admin_classify_persona(user_message, model="gpt-4o-mini"):
     """Cheap one-shot classifier — gpt-4o-mini in JSON mode. Returns
     (persona_key, reasoning). Failure is NOT fatal: we default to
@@ -19359,7 +19384,7 @@ def _admin_classify_persona(user_message, model="gpt-4o-mini"):
         return ("general", "openai client unavailable")
     if not (user_message or "").strip():
         return ("general", "empty input")
-    options = ", ".join(ADMIN_CHAT_PERSONAS.keys())
+    options = ", ".join(get_admin_personas().keys())
     # Editable from the admin "AI Prompts" tab (key: persona_router); the
     # {options} token is filled with the live persona list.
     sys = get_prompt("persona_router", PERSONA_ROUTER_PROMPT).replace(
@@ -19383,7 +19408,7 @@ def _admin_classify_persona(user_message, model="gpt-4o-mini"):
         txt = (resp.choices[0].message.content or "{}").strip()
         data = json.loads(txt)
         key = (data.get("persona") or "general").lower().strip()
-        if key not in ADMIN_CHAT_PERSONAS:
+        if key not in get_admin_personas():
             key = "general"
         reason = str(data.get("reason") or "")[:200]
         return (key, reason)
@@ -19396,10 +19421,15 @@ def _admin_apply_persona(tools, persona_key):
     """Filter the round's tool list by persona. Always retains static
     admin reads (admin_list_tables, admin_describe_table) so the model
     can still orient itself, plus any tool whose name matches a prefix
-    in the persona's tool_prefixes list, plus any extra_tools."""
-    p = ADMIN_CHAT_PERSONAS.get(persona_key) or ADMIN_CHAT_PERSONAS["general"]
+    in the persona's tool_prefixes list, plus any extra_tools.
+
+    task 088: the persona dict now comes from get_admin_personas() (DB → cache →
+    registry) so super-admin edits + custom personas take effect. tool_prefixes
+    stays tri-state — None or [] → no filtering (every tool); a non-empty list →
+    only those prefixes survive — behaviour-identical to the old module-dict read."""
+    p = _admin_persona_get(persona_key)
     pfx = p.get("tool_prefixes")
-    if not pfx:
+    if not pfx:               # None or [] → no filtering (every tool)
         return tools
     always_keep = {"admin_list_tables", "admin_describe_table",
                    "spawn_agents"}
@@ -19601,7 +19631,7 @@ def _admin_run_subagent_once(parent_session_id, sub_task, persona,
     via the existing tool-loop primitives."""
     import time as _time
     started = _time.time()
-    persona_key = persona if persona in ADMIN_CHAT_PERSONAS else "general"
+    persona_key = persona if persona in get_admin_personas() else "general"
     # Default model: gpt-4o-mini — subagents are deliberately cheap
     # and short. The admin can override per-call from spawn_agents.
     use_model = (model or "gpt-4o-mini").strip()
@@ -19610,7 +19640,7 @@ def _admin_run_subagent_once(parent_session_id, sub_task, persona,
         use_model = "gpt-4o-mini"
         _is_claude = False
 
-    persona_meta = ADMIN_CHAT_PERSONAS[persona_key]
+    persona_meta = _admin_persona_get(persona_key)
     sys_text = (get_prompt("admin_assistant", ADMIN_CHAT_SYSTEM_PROMPT)
                 + persona_meta.get("prompt_suffix", "")
                 + "\n\nYou are a focused SUB-AGENT spawned by the main "
@@ -19757,7 +19787,7 @@ def _admin_tool_spawn_agents(tasks=None, _session_id="", **_):
         if not prompt:
             continue
         persona = (t.get("persona") or "general").lower().strip()
-        if persona not in ADMIN_CHAT_PERSONAS:
+        if persona not in get_admin_personas():
             persona = "general"
         cleaned.append({"prompt": prompt[:4000],
                         "persona": persona,
@@ -20149,12 +20179,12 @@ def _admin_chat_stream_loop(session_id, user_message, max_rounds=8,
     # otherwise classify the user message with a cheap gpt-4o-mini call.
     # The persona augments the system prompt and trims the tool list to
     # a relevant subset each round.
-    if persona_override and persona_override in ADMIN_CHAT_PERSONAS:
+    if persona_override and persona_override in get_admin_personas():
         persona_key = persona_override
         persona_reason = "pinned"
     else:
         persona_key, persona_reason = _admin_classify_persona(user_message)
-    persona_meta = ADMIN_CHAT_PERSONAS.get(persona_key, ADMIN_CHAT_PERSONAS["general"])
+    persona_meta = _admin_persona_get(persona_key)
     if persona_meta.get("prompt_suffix"):
         messages[0]["content"] = (messages[0]["content"] or "") + persona_meta["prompt_suffix"]
     yield {"type": "persona",
@@ -20603,7 +20633,7 @@ def admin_agent_chat_stream():
     if not isinstance(attachment_ids, list):
         attachment_ids = []
     persona_override = (data.get("persona") or "").strip().lower() or None
-    if persona_override and persona_override not in ADMIN_CHAT_PERSONAS:
+    if persona_override and persona_override not in get_admin_personas():
         persona_override = None
     # Allow empty `message` when at least one attachment is present
     # (admin can drop a file and just say "what's in this?" by sending

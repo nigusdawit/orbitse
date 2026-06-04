@@ -245,3 +245,113 @@ def test_migration_revision_linkage():
     spec.loader.exec_module(m)
     assert m.revision == "0032_admin_ai_config"
     assert m.down_revision == "0031_datahub_table_grants"
+
+
+# --------------------------------------------------------------------------- #
+# Phase 1 — read-site behaviour: _admin_apply_persona honors DB edits, custom  #
+# keys validate, and persona edits cannot escalate privilege.                  #
+# --------------------------------------------------------------------------- #
+def _insert_custom_persona(key, tool_prefixes, extra_tools, enabled=True):
+    """Insert/replace a CUSTOM (is_builtin FALSE) persona row directly, the way
+    the phase-2 CRUD will, then invalidate the cache so the accessor reloads."""
+    import json
+    app.execute_db(
+        "INSERT INTO admin_chat_personas "
+        "(tenant_id, persona_key, label, prompt_suffix, tool_prefixes, extra_tools, "
+        " enabled, is_builtin, sort_order, updated_by) "
+        "VALUES (1, %s, %s, '', %s::jsonb, %s::jsonb, %s, FALSE, 99, 'test') "
+        "ON CONFLICT (tenant_id, persona_key) DO UPDATE SET "
+        "  tool_prefixes = EXCLUDED.tool_prefixes, extra_tools = EXCLUDED.extra_tools, "
+        "  enabled = EXCLUDED.enabled, updated_by = 'test'",
+        (key, key.replace("_", " ").title(),
+         json.dumps(tool_prefixes) if tool_prefixes is not None else None,
+         json.dumps(extra_tools or []), enabled),
+    )
+    core._invalidate_admin_persona_cache()
+
+
+def _delete_persona(key):
+    app.execute_db(
+        "DELETE FROM admin_chat_personas WHERE tenant_id = 1 AND persona_key = %s",
+        (key,))
+    core._invalidate_admin_persona_cache()
+
+
+def test_apply_persona_honors_db_edited_persona():
+    """_admin_apply_persona reads the LIVE persona (DB → cache): a custom persona's
+    tool_prefixes + extra_tools drive the filter; tool_prefixes None → every tool.
+    Always-keep set (admin_list_tables/admin_describe_table/spawn_agents) survives."""
+    key = "t5_sqlonly"
+    fake_tools = [
+        {"function": {"name": "admin_run_sql"}},
+        {"function": {"name": "admin_list_tables"}},      # always-keep
+        {"function": {"name": "admin_describe_table"}},   # always-keep
+        {"function": {"name": "spawn_agents"}},           # always-keep
+        {"function": {"name": "lookup_business_info"}},   # via extra_tools
+        {"function": {"name": "admin_web_search"}},        # should be filtered OUT
+        {"function": {"name": "admin_create_dashboard"}},  # should be filtered OUT
+    ]
+    all_names = {t["function"]["name"] for t in fake_tools}
+    try:
+        _insert_custom_persona(key, ["admin_run_sql"], ["lookup_business_info"])
+        kept = {t["function"]["name"] for t in app._admin_apply_persona(fake_tools, key)}
+        assert "admin_run_sql" in kept                      # prefix match
+        assert {"admin_list_tables", "admin_describe_table", "spawn_agents"} <= kept
+        assert "lookup_business_info" in kept               # extra_tools
+        assert "admin_web_search" not in kept               # filtered
+        assert "admin_create_dashboard" not in kept         # filtered
+
+        # tool_prefixes None (every tool) — the tri-state's permissive end.
+        _insert_custom_persona(key, None, [])
+        kept_all = {t["function"]["name"] for t in app._admin_apply_persona(fake_tools, key)}
+        assert kept_all == all_names
+    finally:
+        _delete_persona(key)
+
+
+def test_custom_persona_membership_drives_validation():
+    """The four persona validators (pin/request/spawn/classify) all gate on
+    `key in get_admin_personas()`. So an ENABLED custom key is accepted; a DISABLED
+    one (enabled-only accessor) and an unknown one are not (→ coerced to general)."""
+    enabled_key, disabled_key = "t6_enabled", "t6_disabled"
+    try:
+        _insert_custom_persona(enabled_key, ["admin_run_sql"], [])
+        _insert_custom_persona(disabled_key, ["admin_run_sql"], [], enabled=False)
+        personas = app.get_admin_personas()
+        assert enabled_key in personas
+        assert disabled_key not in personas
+        assert "__no_such_persona__" not in personas
+    finally:
+        _delete_persona(enabled_key)
+        _delete_persona(disabled_key)
+
+
+def test_persona_edit_cannot_escalate_privilege():
+    """Security (T8): editing a persona's tool scope changes tool VISIBILITY, not
+    AUTHORITY. A real super-admin-only tool still rejects a non-super caller at
+    call time via _admin_tool_superadmin_guard() — even though a persona can
+    surface it. The guard is exercised for real (not mocked)."""
+    # The guard + a real privileged tool, in a NON-super request context.
+    with app.app.test_request_context("/"):
+        from flask import session
+        session["admin_logged_in"] = True
+        session["admin_role"] = "client"
+        assert app._admin_tool_superadmin_guard() == {
+            "error": "This action requires the super-admin role."}
+        # _admin_tool_run_research early-returns the guard error before doing work.
+        res = app._admin_tool_run_research(question="anything")
+        assert isinstance(res, dict) and "super-admin" in (res.get("error") or "")
+        # Super-admin clears the guard.
+        session["admin_role"] = "super_admin"
+        assert app._admin_tool_superadmin_guard() is None
+
+    # A persona CAN surface a privileged-named tool (visibility) ...
+    key = "t8_escalate"
+    fake_tools = [{"function": {"name": "run_research"}},
+                  {"function": {"name": "admin_run_sql"}}]
+    try:
+        _insert_custom_persona(key, ["run_research", "admin_run_sql"], [])
+        kept = {t["function"]["name"] for t in app._admin_apply_persona(fake_tools, key)}
+        assert "run_research" in kept  # ... but the call-time guard above blocks USE.
+    finally:
+        _delete_persona(key)
