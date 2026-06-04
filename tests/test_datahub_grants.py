@@ -20,6 +20,7 @@ request context (admin_logged_in=True, admin_role="client"); a super-admin
 session uses admin_role="super_admin". The grant rows are written directly with
 execute_db (the same path the Phase-4 super-admin UI uses).
 """
+import json
 import os
 
 import app
@@ -716,4 +717,51 @@ def test_grant_star_then_grantable_shows_all_granted():
         assert j["all_granted"] is True
         assert all(t["granted"] for t in j["tables"])   # '*' covers everything
     finally:
+        _clear_grants()
+
+
+# =============================================================================
+# Security regression — the widget-RUN executor must enforce grants
+# =============================================================================
+# Security review of task 085 found that the per-table grant model was enforced
+# only on the AI-tool surface, while the HTTP widget-run route
+# (/admin/api/dashboards/widgets/<id>/run, @admin_required only) executed ANY
+# widget with no grant check — so a normal admin could create an internal_db /
+# external_postgres widget over the dashboards CRUD and RUN it to read an
+# UNGRANTED table, bypassing the whole boundary. The executor now grant-checks
+# every widget via _dh_widget_grant_error. This pins that fix.
+
+def test_widget_run_route_enforces_grants():
+    _clear_grants()
+    dash = app.execute_db("INSERT INTO dashboards (name) VALUES ('sec-085') RETURNING id")
+    did = dash["id"]
+    # An internal_db (app DB, cid 0) widget over the UNGRANTED table 'leads'.
+    w = app.execute_db(
+        "INSERT INTO dashboard_widgets (dashboard_id, name, widget_type, "
+        "source_type, source_config) VALUES (%s,'w','table','internal_db',%s::jsonb) "
+        "RETURNING id", (did, json.dumps({"table": "leads"})))
+    wid = w["id"]
+    run_url = "/admin/api/dashboards/widgets/%d/run" % wid
+    try:
+        # Normal admin, NO grant ⇒ the run route refuses (bypass closed).
+        c = app.app.test_client()
+        with c.session_transaction() as s:
+            s["admin_logged_in"] = True
+            s["admin_role"] = "client"
+            s["_csrf_token"] = "t"
+        r = c.post(run_url, headers={"X-CSRF-Token": "t"})
+        assert r.status_code == 403, r.get_data(as_text=True)
+        assert "access" in (r.get_json() or {}).get("error", "").lower()
+
+        # Super-admin ⇒ the grant gate is a no-op (not a 403).
+        rs = _super_client().post(run_url, headers={"X-CSRF-Token": "t"})
+        assert rs.status_code != 403, rs.get_data(as_text=True)
+
+        # Grant 'leads' ⇒ the same normal admin can now run it (gate allows).
+        _grant("leads", connection_id=0)
+        r2 = c.post(run_url, headers={"X-CSRF-Token": "t"})
+        assert r2.status_code != 403, r2.get_data(as_text=True)
+    finally:
+        app.execute_db("DELETE FROM dashboard_widgets WHERE id=%s", (wid,))
+        app.execute_db("DELETE FROM dashboards WHERE id=%s", (did,))
         _clear_grants()

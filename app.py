@@ -34003,6 +34003,18 @@ def admin_run_widget(wid):
     )
     if not row:
         return jsonify({"error": "Widget not found"}), 404
+    # Task 085 security boundary — close the widget-run bypass found in security
+    # review. The AI tools grant-check widgets at CREATE time, but THIS executor
+    # is reachable directly over HTTP (@admin_required, not super-admin) for ANY
+    # widget — including ones a normal admin created via the dashboards CRUD. So
+    # enforce the SAME per-table grant rule here at RUN time (the only point data
+    # actually flows): a normal admin can't read an ungranted table by creating +
+    # running an external_postgres / internal_db widget. _dh_widget_grant_error is
+    # a no-op (returns None) for super-admins and out-of-request/system callers, so
+    # their dashboards are unaffected.
+    _wgerr = _dh_widget_grant_error(row.get("source_type"), row.get("source_config") or {})
+    if _wgerr:
+        return jsonify({"error": _wgerr}), 403
     cfg = row.get("source_config") or {}
     try:
         if row["source_type"] == "builtin":
