@@ -2485,6 +2485,228 @@ def _invalidate_prompt_cache():
         _PROMPT_CACHE_LOADED = False
         _PROMPT_CACHE.clear()
 
+
+# =============================================================================
+# ADMIN-AI DYNAMIC CONFIG  (task 088) — admin-chat PERSONAS as code-defaults a
+# super-admin can override in the DB (via the "Admin AI" tab). Mirrors the
+# editable-prompt machinery above: a registry of built-in defaults, a process
+# cache for the hot path (personas are read on EVERY admin-chat turn), and a
+# FAIL-OPEN accessor that degrades to the code defaults if the table is missing
+# or empty (brand-new DB pre-seed) or the DB errors. The boot-time seed/sync
+# (preserve human edits) lives in app.py beside sync_ai_prompts(); the
+# super-admin CRUD lives in admin/admin_ai.py. The slash-command/capability/
+# starter PALETTE is front-end-only (the backend never reads it), so it has no
+# hot-path cache here — its registry + endpoint are added in phase 3.
+# =============================================================================
+
+# Process-level persona cache. Loaded once from admin_chat_personas; refreshed
+# only on a super-admin save/reset (via _invalidate_admin_persona_cache()).
+_ADMIN_PERSONA_CACHE = {}
+_ADMIN_PERSONA_CACHE_LOADED = False
+_ADMIN_PERSONA_CACHE_LOCK = threading.Lock()
+
+
+def _admin_persona_registry():
+    """Ordered catalog of the 6 BUILT-IN admin-chat personas — the single source
+    of truth that (a) app.py derives ADMIN_CHAT_PERSONAS from, (b) sync_admin_personas()
+    seeds the admin_chat_personas table from, and (c) get_admin_personas() falls
+    back to when the DB is unavailable. Fields:
+
+      persona_key   stable id (the value sent as the pinned persona / router output)
+      label         human name (shown in the persona pill + the SSE 'persona' event)
+      icon/description  UI-ONLY (persona pill + Admin AI editor); never reach the model
+      prompt_suffix appended to the system prompt when this persona is active
+      tool_prefixes substring/exact name-prefixes that survive the per-round tool
+                    filter; None = "every tool" (a real tri-state vs [] = "only the
+                    always-keep set" admin_list_tables/admin_describe_table/spawn_agents)
+      extra_tools   exact tool names always kept regardless of tool_prefixes
+      sort_order    display order
+
+    To add a built-in persona: add an entry here. A super-admin adds CUSTOM
+    personas through the Admin AI tab (stored as is_builtin=FALSE rows)."""
+    return [
+        {"persona_key": "general", "label": "General", "icon": "💬",
+         "description": "Balanced assistant, every tool available",
+         "prompt_suffix": "",
+         "tool_prefixes": None, "extra_tools": [], "sort_order": 0},
+        {"persona_key": "research", "label": "Research", "icon": "🔎",
+         "description": "Evidence-first; web search + KB, cites sources",
+         "prompt_suffix": (
+             "\n\nPERSONA: Research. Prefer evidence over opinion. When the "
+             "answer depends on facts you don't have, call admin_web_search "
+             "or lookup_knowledge_base before answering. Cite sources with "
+             "their URL or [source: …] markers."),
+         "tool_prefixes": ["admin_web_search", "lookup_", "admin_describe_",
+                           "admin_list_tables", "admin_run_sql"],
+         "extra_tools": ["spawn_agents"], "sort_order": 10},
+        {"persona_key": "data_analyst", "label": "Data Analyst", "icon": "📊",
+         "description": "Grounds numbers in SQL + overview/recent tools",
+         "prompt_suffix": (
+             "\n\nPERSONA: Data Analyst. Use admin_run_sql and the "
+             "admin_overview_* / admin_recent_* / admin_skill_usage_stats "
+             "tools to ground every number. Show small tables when listing "
+             "comparisons. Prefer concrete counts over adjectives."),
+         "tool_prefixes": ["admin_run_sql", "admin_describe_", "admin_list_",
+                           "admin_recent_", "admin_overview_",
+                           "admin_skill_usage_stats", "admin_analyze_"],
+         "extra_tools": ["spawn_agents"], "sort_order": 20},
+        {"persona_key": "code", "label": "Code", "icon": "💻",
+         "description": "Concise, precise; exact schema/column names",
+         "prompt_suffix": (
+             "\n\nPERSONA: Code. Be concise and precise. Use fenced code "
+             "blocks with language hints. Reference column / table / file "
+             "names exactly. Prefer admin_describe_table over guessing a "
+             "schema."),
+         "tool_prefixes": ["admin_describe_", "admin_list_", "admin_run_sql",
+                           "admin_web_search"],
+         "extra_tools": ["spawn_agents"], "sort_order": 30},
+        {"persona_key": "creative", "label": "Creative", "icon": "🎨",
+         "description": "Drafts copy via approval-gated propose tools",
+         "prompt_suffix": (
+             "\n\nPERSONA: Creative. Draft confident, original copy. When "
+             "the admin asks for ideas, suggest 2-3 distinct directions. "
+             "Use admin_propose_* tools to draft content the owner can "
+             "approve."),
+         "tool_prefixes": ["admin_propose_draft_", "admin_propose_create_",
+                           "admin_propose_insert", "admin_propose_update",
+                           "lookup_"],
+         "extra_tools": ["spawn_agents"], "sort_order": 40},
+        {"persona_key": "ops", "label": "Ops", "icon": "🛠",
+         "description": "Orders, forms, bookings, automations — terse",
+         "prompt_suffix": (
+             "\n\nPERSONA: Ops. Focus on day-to-day operations: orders, "
+             "form submissions, bookings, messaging, automations. Always "
+             "use the dedicated admin_recent_* and admin_list_automations "
+             "tools first. Be terse — operators want answers, not essays."),
+         "tool_prefixes": ["admin_recent_", "admin_list_automations",
+                           "admin_get_automation", "admin_propose_",
+                           "admin_mcp_", "lookup_business_info"],
+         "extra_tools": ["spawn_agents"], "sort_order": 50},
+    ]
+
+
+def _admin_persona_defaults():
+    """{persona_key: full-dict copy} for the built-ins — the fail-open + seed
+    source. Returns fresh dict copies so callers can't mutate the registry."""
+    return {p["persona_key"]: dict(p) for p in _admin_persona_registry()}
+
+
+def _admin_persona_row_to_dict(r):
+    """Normalize a DB row from admin_chat_personas into the same dict shape the
+    registry uses. Handles JSONB columns whether the driver returns them already
+    parsed (list/None) or as raw JSON text. tool_prefixes stays tri-state: SQL
+    NULL → None (= every tool)."""
+    import json as _json
+
+    def _jload(v, fallback):
+        if v is None:
+            return fallback
+        if isinstance(v, (list, dict)):
+            return v
+        try:
+            return _json.loads(v)
+        except Exception:
+            return fallback
+
+    tp = r.get("tool_prefixes")
+    tool_prefixes = None if tp is None else _jload(tp, None)
+    return {
+        "persona_key": r["persona_key"],
+        "label": r.get("label") or "",
+        "icon": r.get("icon") or "",
+        "description": r.get("description") or "",
+        "prompt_suffix": r.get("prompt_suffix") or "",
+        "tool_prefixes": tool_prefixes,
+        "extra_tools": _jload(r.get("extra_tools"), []) or [],
+        "enabled": bool(r.get("enabled", True)),
+        "is_builtin": bool(r.get("is_builtin", False)),
+        "sort_order": r.get("sort_order") or 0,
+    }
+
+
+def _load_admin_persona_cache():
+    """Load all ENABLED persona rows into the process cache exactly once."""
+    global _ADMIN_PERSONA_CACHE_LOADED
+    with _ADMIN_PERSONA_CACHE_LOCK:
+        if _ADMIN_PERSONA_CACHE_LOADED:
+            return
+        cache = {}
+        try:
+            rows = query_db(
+                "SELECT persona_key, label, icon, description, prompt_suffix, "
+                "tool_prefixes, extra_tools, enabled, is_builtin, sort_order "
+                "FROM admin_chat_personas WHERE enabled = TRUE "
+                "ORDER BY sort_order, persona_key")
+            for r in rows or []:
+                cache[r["persona_key"]] = _admin_persona_row_to_dict(r)
+        except Exception as e:
+            # Table may not exist yet on a brand-new DB before migrate/seed —
+            # fine: get_admin_personas() falls back to the registry defaults.
+            print(f"[admin_personas] cache load skipped: {e}")
+            cache = {}
+        _ADMIN_PERSONA_CACHE.clear()
+        _ADMIN_PERSONA_CACHE.update(cache)
+        _ADMIN_PERSONA_CACHE_LOADED = True
+
+
+def get_admin_personas():
+    """Active admin-chat personas keyed by persona_key, served from the process
+    cache (free at request time, no DB round-trip).
+
+    FAIL-OPEN: any DB error OR an empty/never-seeded table yields the built-in
+    registry defaults, so the admin chat's persona routing + tool-filtering never
+    breaks. ALWAYS contains a 'general' entry — it is the universal fallback used
+    by _admin_apply_persona(), so even if a super-admin somehow removed/disabled
+    it we re-add it from the registry."""
+    if not _ADMIN_PERSONA_CACHE_LOADED:
+        _load_admin_persona_cache()
+    if not _ADMIN_PERSONA_CACHE:
+        return _admin_persona_defaults()
+    out = dict(_ADMIN_PERSONA_CACHE)
+    if "general" not in out:
+        out["general"] = _admin_persona_defaults()["general"]
+    return out
+
+
+def get_admin_personas_all():
+    """ALL persona rows (incl. disabled) for the super-admin CRUD editor, ordered
+    for display. Direct query (not the hot-path cache). Fail-open to the built-in
+    registry list (marked as defaults) so the editor still renders on a fresh DB."""
+    try:
+        rows = query_db(
+            "SELECT persona_key, label, icon, description, prompt_suffix, "
+            "tool_prefixes, extra_tools, enabled, is_builtin, sort_order, "
+            "updated_by, updated_at "
+            "FROM admin_chat_personas ORDER BY sort_order, persona_key")
+        if rows:
+            out = []
+            for r in rows:
+                d = _admin_persona_row_to_dict(r)
+                d["updated_by"] = r.get("updated_by")
+                out.append(d)
+            return out
+    except Exception as e:
+        print(f"[admin_personas] list-all skipped: {e}")
+    # Fail-open: present the built-ins as enabled defaults.
+    out = []
+    for p in _admin_persona_registry():
+        d = dict(p)
+        d.update({"enabled": True, "is_builtin": True, "updated_by": None})
+        out.append(d)
+    return out
+
+
+def _invalidate_admin_persona_cache():
+    """Force the next get_admin_personas() to reload from the DB. Called after a
+    super-admin save/reset/delete and by sync_admin_personas() at boot. Takes the
+    same lock the loader uses, so an invalidation can never be lost to a load
+    in-flight (same guarantee as _invalidate_prompt_cache())."""
+    global _ADMIN_PERSONA_CACHE_LOADED
+    with _ADMIN_PERSONA_CACHE_LOCK:
+        _ADMIN_PERSONA_CACHE_LOADED = False
+        _ADMIN_PERSONA_CACHE.clear()
+
+
 # =============================================================================
 # COST / BILLING INFRA  (moved from app.py - Track B / task 078, piece #2)
 # =============================================================================

@@ -771,6 +771,12 @@ from core import (  # noqa: E402 - re-export the DB layer that now lives in core
     _ai_prompt_registry, _ai_prompt_defaults,  # editable-prompt catalog + default resolver
     get_prompt, _invalidate_prompt_cache, _load_prompt_cache,  # in-memory prompt cache API
     _PROMPT_CACHE,                             # the cache dict (kept exported for parity)
+    # --- dynamic admin-AI personas (task 088): registry of built-in defaults +
+    #     fail-open cached accessor + cache invalidator. ADMIN_CHAT_PERSONAS is
+    #     derived from the registry below; the live read path uses get_admin_personas().
+    _admin_persona_registry, _admin_persona_defaults,
+    get_admin_personas, get_admin_personas_all, _invalidate_admin_persona_cache,
+    _load_admin_persona_cache,
     # --- cost/billing infra (Track B / task 078, piece #2): price cache + spend/cap readers ---
     _PRICE_CACHE, _PRICE_CACHE_EXP, _PRICE_CACHE_TTL_SEC,  # model_prices TTL cache (parity)
     _invalidate_price_cache, get_model_price,  # price-cache invalidator + lookup
@@ -19259,6 +19265,61 @@ def sync_ai_prompts():
     _invalidate_prompt_cache()
 
 
+# --- task 088: seed the editable admin-AI config (personas + palette) ---------
+def sync_admin_personas():
+    """Seed admin_chat_personas with the built-in registry defaults, preserving
+    super-admin edits — the structured analog of sync_ai_prompts().
+
+    Per row, the upsert only refreshes when ``updated_by IS NULL`` (machine-seeded,
+    never human-touched) AND a built-in field actually differs from the code
+    default — so changing a registry default propagates on the next boot WITHOUT
+    clobbering a super-admin's saved edit (their save stamps ``updated_by`` and the
+    WHERE clause then skips the whole row) and WITHOUT needless updated_at churn.
+    tool_prefixes is stored tri-state: a registry None → SQL NULL (= every tool),
+    a list → JSONB array."""
+    for p in _admin_persona_registry():
+        try:
+            tp = p.get("tool_prefixes")
+            execute_db(
+                "INSERT INTO admin_chat_personas "
+                "(tenant_id, persona_key, label, icon, description, prompt_suffix, "
+                " tool_prefixes, extra_tools, enabled, is_builtin, sort_order) "
+                "VALUES (1, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, TRUE, TRUE, %s) "
+                "ON CONFLICT (tenant_id, persona_key) DO UPDATE SET "
+                "  label=EXCLUDED.label, icon=EXCLUDED.icon, "
+                "  description=EXCLUDED.description, prompt_suffix=EXCLUDED.prompt_suffix, "
+                "  tool_prefixes=EXCLUDED.tool_prefixes, extra_tools=EXCLUDED.extra_tools, "
+                "  is_builtin=TRUE, sort_order=EXCLUDED.sort_order, updated_at=NOW() "
+                "WHERE admin_chat_personas.updated_by IS NULL AND ("
+                "     admin_chat_personas.label         IS DISTINCT FROM EXCLUDED.label "
+                "  OR admin_chat_personas.icon          IS DISTINCT FROM EXCLUDED.icon "
+                "  OR admin_chat_personas.description    IS DISTINCT FROM EXCLUDED.description "
+                "  OR admin_chat_personas.prompt_suffix  IS DISTINCT FROM EXCLUDED.prompt_suffix "
+                "  OR admin_chat_personas.tool_prefixes  IS DISTINCT FROM EXCLUDED.tool_prefixes "
+                "  OR admin_chat_personas.extra_tools    IS DISTINCT FROM EXCLUDED.extra_tools "
+                "  OR admin_chat_personas.sort_order     IS DISTINCT FROM EXCLUDED.sort_order)",
+                (p["persona_key"], p.get("label") or "", p.get("icon") or "",
+                 p.get("description") or "", p.get("prompt_suffix") or "",
+                 json.dumps(tp) if tp is not None else None,
+                 json.dumps(p.get("extra_tools") or []),
+                 int(p.get("sort_order") or 0)),
+            )
+        except Exception as e:
+            print(f"[admin_personas] seed failed for {p.get('persona_key')}: {e}")
+    _invalidate_admin_persona_cache()
+
+
+def sync_admin_ai_config():
+    """Boot-time seed for ALL super-admin-editable admin-AI config (task 088):
+    personas now; the slash-command / capability / starter palette joins here in
+    phase 3. Idempotent + preserve-edits, so it is safe to run on every boot.
+
+    MUST be wired into BOTH boot paths — main._bootstrap() AND app.py __main__ —
+    or dev-run and prod-run diverge (see .agents/memory/boot-entrypoints.md, the
+    exact lesson sync_ai_prompts() had to learn)."""
+    sync_admin_personas()
+
+
 # =============================================================================
 # Task #80 — Admin chat multimodal + persona router + parallel subagents.
 #
@@ -19278,74 +19339,16 @@ def sync_ai_prompts():
 #      machinery.
 # =============================================================================
 
-ADMIN_CHAT_PERSONAS = {
-    # name → {label, prompt_suffix, tool_prefixes (substring match list),
-    #         extra_tools (always-included exact names)}
-    "general": {
-        "label": "General",
-        "prompt_suffix": "",
-        "tool_prefixes": None,  # None = no filtering; every tool available
-        "extra_tools": [],
-    },
-    "research": {
-        "label": "Research",
-        "prompt_suffix": (
-            "\n\nPERSONA: Research. Prefer evidence over opinion. When the "
-            "answer depends on facts you don't have, call admin_web_search "
-            "or lookup_knowledge_base before answering. Cite sources with "
-            "their URL or [source: …] markers."),
-        "tool_prefixes": ("admin_web_search", "lookup_", "admin_describe_",
-                          "admin_list_tables", "admin_run_sql"),
-        "extra_tools": ["spawn_agents"],
-    },
-    "data_analyst": {
-        "label": "Data Analyst",
-        "prompt_suffix": (
-            "\n\nPERSONA: Data Analyst. Use admin_run_sql and the "
-            "admin_overview_* / admin_recent_* / admin_skill_usage_stats "
-            "tools to ground every number. Show small tables when listing "
-            "comparisons. Prefer concrete counts over adjectives."),
-        "tool_prefixes": ("admin_run_sql", "admin_describe_", "admin_list_",
-                          "admin_recent_", "admin_overview_",
-                          "admin_skill_usage_stats", "admin_analyze_"),
-        "extra_tools": ["spawn_agents"],
-    },
-    "code": {
-        "label": "Code",
-        "prompt_suffix": (
-            "\n\nPERSONA: Code. Be concise and precise. Use fenced code "
-            "blocks with language hints. Reference column / table / file "
-            "names exactly. Prefer admin_describe_table over guessing a "
-            "schema."),
-        "tool_prefixes": ("admin_describe_", "admin_list_", "admin_run_sql",
-                          "admin_web_search"),
-        "extra_tools": ["spawn_agents"],
-    },
-    "creative": {
-        "label": "Creative",
-        "prompt_suffix": (
-            "\n\nPERSONA: Creative. Draft confident, original copy. When "
-            "the admin asks for ideas, suggest 2-3 distinct directions. "
-            "Use admin_propose_* tools to draft content the owner can "
-            "approve."),
-        "tool_prefixes": ("admin_propose_draft_", "admin_propose_create_",
-                          "admin_propose_insert", "admin_propose_update",
-                          "lookup_"),
-        "extra_tools": ["spawn_agents"],
-    },
-    "ops": {
-        "label": "Ops",
-        "prompt_suffix": (
-            "\n\nPERSONA: Ops. Focus on day-to-day operations: orders, "
-            "form submissions, bookings, messaging, automations. Always "
-            "use the dedicated admin_recent_* and admin_list_automations "
-            "tools first. Be terse — operators want answers, not essays."),
-        "tool_prefixes": ("admin_recent_", "admin_list_automations",
-                          "admin_get_automation", "admin_propose_",
-                          "admin_mcp_", "lookup_business_info"),
-        "extra_tools": ["spawn_agents"],
-    },
-}
+# Task #80 / #088: the 6 BUILT-IN admin-chat personas. The canonical definitions
+# now live in core._admin_persona_registry() so they can (a) seed the editable
+# admin_chat_personas table and (b) serve as the fail-open fallback for
+# get_admin_personas(). This module-level dict is DERIVED from that registry and
+# kept for backward-compatible reads + as the literal fallback object. The LIVE
+# read path is get_admin_personas() (DB → cache → registry); the task-088 phase-1
+# rewrite routes the persona read sites through it so super-admin edits + custom
+# personas take effect. (tool_prefixes is now a list rather than the old tuple —
+# _admin_apply_persona iterates it identically; None still = "every tool".)
+ADMIN_CHAT_PERSONAS = {p["persona_key"]: p for p in _admin_persona_registry()}
 
 
 def _admin_classify_persona(user_message, model="gpt-4o-mini"):
@@ -41905,4 +41908,6 @@ if __name__ == "__main__":
     # Pre-fill the ai_prompts table with current defaults so the super-admin
     # "AI Prompts" editor is never empty (mirrors main._bootstrap()).
     sync_ai_prompts()
+    # Task 088: pre-fill the editable admin-AI config (personas + palette).
+    sync_admin_ai_config()
     app.run(host="0.0.0.0", port=5000, debug=True)
