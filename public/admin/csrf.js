@@ -1373,7 +1373,7 @@
     if (idAttr !== '') _adminChatBranchTextById[idAttr] = String(text || '');
     return `<div class="admin-chat-bubble-user" style="display:flex; flex-direction:column; align-items:flex-end; gap:.25rem; position:relative;" data-testid="bubble-admin-chat-user${idAttr ? '-' + idAttr : ''}">
       ${attHtml}
-      <div style="max-width:80%; background:rgba(59,130,246,0.18); color:#dbeafe; padding:.75rem 1rem; border-radius:.75rem; border:1px solid rgba(59,130,246,0.35); white-space:pre-wrap; word-wrap:break-word; position:relative;">
+      <div style="max-width:min(85%,40rem); background:linear-gradient(135deg,var(--admin-accent),var(--admin-accent-2)); color:#fff; padding:.7rem 1rem; border-radius:.9rem; border:1px solid transparent; white-space:pre-wrap; word-wrap:break-word; position:relative;">
         ${safeText}
         ${idAttr !== '' ? `<div class="acu-actions"><button type="button" class="admin-chat-branch-btn" data-branch-id="${idAttr}" data-testid="button-edit-rerun-${idAttr}" title="Edit &amp; re-run">✎</button></div>` : ''}
       </div>

@@ -127,6 +127,13 @@
   -webkit-backdrop-filter: var(--admin-blur);
   backdrop-filter: var(--admin-blur);
   padding: .6rem .8rem;
+  /* Lift the header above the messages stream. BOTH set backdrop-filter (each
+     is its own stacking context) and are flex siblings with no z-index, so the
+     later-painted #admin-chat-messages was covering the OPEN persona/model/⋯
+     dropdowns (which live inside this header). A positive z-index on the header
+     makes its menus paint above the messages. */
+  position: relative;
+  z-index: 40;
 }
 .admin-chat-shell .admin-chat-header #admin-chat-title{ color: var(--admin-text); }
 .admin-chat-shell .admin-chat-header #admin-chat-title::placeholder{ color: var(--admin-text-muted); opacity: .8; }
@@ -221,6 +228,26 @@
 }
 .admin-chat-shell .admin-chat-bubble-user > div[style*="border-radius"]{
   border-bottom-right-radius: var(--acg-squared) !important;
+}
+/* The "Edit & re-run" pencil sits inside the user bubble (now an accent-gradient
+   fill). Render it as a subtle white-on-accent chip so it reads on the bubble in
+   both themes (bare <button> default would clash). */
+.admin-chat-shell .admin-chat-bubble-user .acu-actions{
+  display: flex; justify-content: flex-end; margin-top: .3rem;
+}
+.admin-chat-shell .admin-chat-bubble-user .admin-chat-branch-btn{
+  background: rgba(255,255,255,.18);
+  border: 1px solid rgba(255,255,255,.28);
+  color: #fff;
+  border-radius: 999px;
+  font-size: .72rem;
+  line-height: 1;
+  padding: .18rem .4rem;
+  cursor: pointer;
+  transition: background .14s;
+}
+.admin-chat-shell .admin-chat-bubble-user .admin-chat-branch-btn:hover{
+  background: rgba(255,255,255,.3);
 }
 
 /* ---- Composer: pill textarea + circular gradient send button ----
@@ -1501,6 +1528,12 @@ html[data-admin-motion="reduce"] .admin-chat-overflow-menu{ animation: none; }
 
 /* A capability group card. */
 .admin-cap-group{
+  /* The tray body is a flex column with overflow-y:auto. Without this, each card
+     is a shrinkable flex item (default flex-shrink:1) and `overflow:hidden` then
+     CLIPS the body (bullet lines + click-to-run example chips) down to just the
+     header when the groups don't all fit — making the tray look empty. Pin the
+     intrinsic height so every card shows its body and the BODY scrolls instead. */
+  flex: 0 0 auto;
   border: 1px solid var(--admin-border);
   border-radius: var(--admin-radius);
   background: color-mix(in srgb, var(--admin-surface) 70%, transparent);
