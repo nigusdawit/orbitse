@@ -1555,6 +1555,12 @@ TO CUSTOMIZE THIS DASHBOARD:
               data-testid="admin-asst-suggest-3">Draft an FAQ answer</button>
     </div>
 
+    <!-- Task 088: inline answer area. Hidden until the first ask; the popover then
+         streams the answer here (no tab switch). Long/rich answers auto-open the
+         full chat overlay. -->
+    <div id="admin-asst-quick-msgs" class="admin-asst-quick-msgs"
+         data-testid="admin-asst-quick-msgs" hidden></div>
+
     <form class="admin-asst-quick-form" onsubmit="event.preventDefault(); adminAsstQuickSend();">
       <input id="admin-asst-quick-input" type="text" autocomplete="off"
              placeholder="Ask the Business Assistant…"

@@ -3451,21 +3451,22 @@
 
   // Bring up the real chat in immersive mode: switch to the admin-chat tab,
   // load it, force admin (not visitor) mode, and expand. Shared by send +
-  // "Open full". Returns once the chat scaffolding is on screen.
+  // Task 088: open the FULL chat as an immersive overlay OVER the current screen,
+  // WITHOUT switching the active tab. The CSS rule
+  // `#tab-admin-chat:has(.admin-chat-expanded){ display:block }` reveals the chat
+  // tab as a fixed overlay on top of whatever tab is showing; collapsing/Esc hides
+  // it again, so the user returns to the exact screen they were on (never the chat
+  // tab). The popover + this overlay share the SAME admin session, so escalating
+  // shows the identical conversation.
   async function adminAsstEnterFullChat() {
     adminAsstCloseQuick();
-    const tabBtn = document.querySelector('[data-testid="tab-admin-chat"]');
-    // switchTab + loadAdminChat are the SAME globals the sidebar button uses.
-    if (typeof switchTab === 'function') switchTab('admin-chat', tabBtn);
-    // Force admin assistant mode if the helper exists (visitor preview has no
-    // sessions/overlay value); ignore if unavailable.
     try { if (typeof adminChatSetMode === 'function') adminChatSetMode('admin'); } catch (e) {}
+    adminChatToggleExpand(true);                       // reveal the overlay (CSS shows it over the current tab)
     if (typeof loadAdminChat === 'function') { try { await loadAdminChat(); } catch (e) {} }
-    adminChatToggleExpand(true);
   }
 
+  // "Open full ⤢" — escalate to the overlay, carrying any half-typed text.
   function adminAsstOpenFull() {
-    // Carry any half-typed text from the popover into the real composer.
     const q = (document.getElementById('admin-asst-quick-input') || {}).value || '';
     adminAsstEnterFullChat().then(function () {
       const real = document.getElementById('admin-chat-input');
@@ -3474,17 +3475,94 @@
     });
   }
 
-  // Forward the popover text into the ONE chat and send it there.
+  // Reveal the popover's inline answer area (and hide the empty-state suggestions).
+  function adminAsstQuickShowMsgs() {
+    const m = document.getElementById('admin-asst-quick-msgs');
+    if (m) m.hidden = false;
+    const sug = document.querySelector('#admin-asst-quick .admin-asst-suggests');
+    if (sug) sug.style.display = 'none';
+    return m;
+  }
+  function adminAsstQuickAppendUser(msgs, text) {
+    if (!msgs) return;
+    const d = document.createElement('div');
+    d.className = 'admin-asst-msg admin-asst-msg-user';
+    d.textContent = text;   // textContent — user text is never interpolated as HTML
+    msgs.appendChild(d);
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  // Task 088: the bubble answers INLINE in the popover. Streams the SAME
+  // /admin/api/chat/stream turn the full chat uses, under the SAME admin session,
+  // so escalating shows the identical conversation. A rich (tool/chart/KB) or long
+  // answer auto-opens the full chat overlay (which renders the persisted turn fully)
+  // — matching "if the answer is too large, open the expanded chat".
+  let _adminAsstStreaming = false;
+  async function adminAsstQuickStream(text, msgs) {
+    if (_adminAsstStreaming) return;
+    _adminAsstStreaming = true;
+    const a = document.createElement('div');
+    a.className = 'admin-asst-msg admin-asst-msg-bot admin-chat-md-body';
+    a.innerHTML = '<span class="admin-asst-typing">● ● ●</span>';
+    if (msgs) { msgs.appendChild(a); msgs.scrollTop = msgs.scrollHeight; }
+    let acc = '', rich = false;
+    const LONG = 700;   // chars; a long answer escalates to the comfortable full view
+    try {
+      const sid = await adminChatEnsureActiveSession();
+      const r = await fetch('/admin/api/chat/stream', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sid, message: text }),
+      });
+      if (!r.ok) {
+        let e = ''; try { e = (await r.json()).error || ''; } catch (_) {}
+        a.innerHTML = '<em>' + adminChatEscape(e || ('HTTP ' + r.status)) + '</em>';
+        return;
+      }
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n'); buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue;
+          const p = line.slice(5).trim(); if (!p) continue;
+          let evt; try { evt = JSON.parse(p); } catch (_) { continue; }
+          if (evt.type === 'token' && evt.content) {
+            acc += evt.content; a.innerHTML = adminChatRenderMd(acc);
+            if (msgs) msgs.scrollTop = msgs.scrollHeight;
+          } else if (evt.type === 'tool_start' || evt.type === 'tool_end'
+                     || evt.type === 'chart' || evt.type === 'kb_retrieval') {
+            rich = true;   // the popover can't render rich artifacts — escalate after the turn
+          } else if (evt.type === 'text' && evt.content) {
+            acc = evt.content; a.innerHTML = adminChatRenderMd(acc);
+            if (msgs) msgs.scrollTop = msgs.scrollHeight;
+          } else if (evt.type === 'done') {
+            if (!acc && evt.content) { acc = evt.content; a.innerHTML = adminChatRenderMd(acc); }
+          } else if (evt.type === 'error') {
+            acc += (acc ? '\n' : '') + '[error] ' + (evt.content || evt.message || '');
+            a.innerHTML = adminChatRenderMd(acc);
+          }
+        }
+      }
+      if (!acc) a.innerHTML = '<em>(no response)</em>';
+      // "too large" / rich → open the full chat overlay (now-persisted turn, full fidelity).
+      if (rich || acc.length > LONG) adminAsstEnterFullChat();
+    } catch (e) {
+      a.innerHTML = '<em>Network error.</em>';
+    } finally {
+      _adminAsstStreaming = false;
+    }
+  }
+
+  // Send from the popover — answers INLINE (never switches tabs). Empty = no-op.
   function adminAsstQuickSend() {
     const inp = document.getElementById('admin-asst-quick-input');
     const text = (inp && inp.value ? inp.value : '').trim();
-    if (!text) { adminAsstOpenFull(); return; }
+    if (!text) return;
     if (inp) inp.value = '';
-    adminAsstEnterFullChat().then(function () {
-      const real = document.getElementById('admin-chat-input');
-      if (real) real.value = text;
-      // adminChatSend reads #admin-chat-input + renders into the (now expanded)
-      // message stream — no second list, no duplicate engine.
-      try { if (typeof adminChatSend === 'function') adminChatSend(); } catch (e) {}
-    });
+    const msgs = adminAsstQuickShowMsgs();
+    adminAsstQuickAppendUser(msgs, text);
+    adminAsstQuickStream(text, msgs);
   }

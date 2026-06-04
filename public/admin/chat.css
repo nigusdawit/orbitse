@@ -365,7 +365,12 @@
    context above the chrome ONLY while the chat is expanded — scoped via :has()
    so it never affects the normal in-tab view or any other tab. 120 > header(50)
    > sidebar(10) ⇒ a true full-viewport immersive overlay. */
-#tab-admin-chat:has(.admin-chat-shell.admin-chat-expanded){ z-index: 120; }
+/* Task 088: also FORCE the chat tab visible while expanded, so the launcher can
+   open the immersive overlay OVER whatever tab is active WITHOUT switchTab. When
+   collapsed, the :has() no longer matches and the tab returns to its normal
+   (hidden-when-inactive) state — so the user lands back on the screen they were
+   on, never the chat tab. */
+#tab-admin-chat:has(.admin-chat-shell.admin-chat-expanded){ z-index: 120; display: block !important; }
 
 .admin-chat-shell.admin-chat-expanded{
   position: fixed;
@@ -694,6 +699,40 @@
 }
 .admin-asst-quick-open:hover{ text-decoration: underline; }
 .admin-asst-quick-open:focus-visible{ outline: 2px solid var(--admin-accent); outline-offset: 2px; }
+
+/* Task 088: inline answer area — the bubble answers right in the popover. Scrolls
+   within a capped height; a long/rich answer auto-opens the full chat overlay. */
+.admin-asst-quick-msgs{
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  max-height: 42vh;
+  overflow-y: auto;
+  padding: .15rem;
+  scrollbar-width: thin;
+}
+.admin-asst-quick-msgs[hidden]{ display: none; }
+.admin-asst-msg{
+  font-size: .85rem;
+  line-height: 1.5;
+  border-radius: .7rem;
+  padding: .45rem .7rem;
+  max-width: 92%;
+  word-wrap: break-word;
+}
+.admin-asst-msg-user{
+  align-self: flex-end;
+  background: linear-gradient(135deg, var(--admin-accent), var(--admin-accent-2));
+  color: #fff;
+  white-space: pre-wrap;
+}
+.admin-asst-msg-bot{
+  align-self: flex-start;
+  background: var(--admin-field);
+  color: var(--admin-text);
+  border: 1px solid var(--admin-border);
+}
+.admin-asst-typing{ opacity: .55; letter-spacing: .1em; }
 
 /* ==========================================================================
    D. SCOPED KEYFRAMES (namespaced — cannot collide with the visitor chat's)
