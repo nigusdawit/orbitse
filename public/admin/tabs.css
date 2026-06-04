@@ -381,3 +381,16 @@
     #tab-admin-ai .admin-ai-del { color:#c0392b;
       border-color:color-mix(in srgb, #c0392b 40%, transparent); }
     @media (max-width:680px) { #tab-admin-ai .admin-ai-grid { grid-template-columns:1fr; } }
+    /* palette editor: sub-nav + auto-fit field grid + flag-checkbox row */
+    #tab-admin-ai .admin-ai-subnav { display:flex; gap:.4rem; flex-wrap:wrap; margin:0 0 1.2rem;
+      border-bottom:1px solid var(--admin-border); padding-bottom:.6rem; }
+    #tab-admin-ai .admin-ai-subtab { font:inherit; font-size:.85rem; font-weight:600; cursor:pointer;
+      padding:.4rem .85rem; border-radius:.5rem; border:1px solid transparent; background:transparent;
+      color:var(--admin-text-muted); }
+    #tab-admin-ai .admin-ai-subtab:hover { color:var(--admin-text);
+      background:color-mix(in srgb, var(--admin-bg) 60%, transparent); }
+    #tab-admin-ai .admin-ai-subtab.is-active { color:var(--admin-text);
+      background:color-mix(in srgb, var(--admin-accent) 14%, transparent);
+      border-color:color-mix(in srgb, var(--admin-accent) 35%, transparent); }
+    #tab-admin-ai .admin-ai-grid.is-auto { grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); }
+    #tab-admin-ai .admin-ai-flags { display:flex; gap:1.2rem; flex-wrap:wrap; margin:.2rem 0 .9rem; }

@@ -724,8 +724,22 @@
     ========================================================================
     */
     // Entry point wired to the nav button (switchTab('admin-ai'); loadAdminAI()).
-    async function loadAdminAI() {
-      await adminAiLoadPersonas();
+    // Reset to the Personas section on each open; each section lazy-loads on show.
+    function loadAdminAI() {
+      const tab = document.querySelector('#tab-admin-ai .admin-ai-subtab[data-aisec="personas"]');
+      adminAiShowSection('personas', tab);
+    }
+
+    // Sub-nav: reveal one section, mark its tab active, lazy-load its data.
+    function adminAiShowSection(section, btn) {
+      document.querySelectorAll('#tab-admin-ai .admin-ai-section').forEach(s => { s.hidden = true; });
+      const sec = document.getElementById('admin-ai-sec-' + section);
+      if (sec) sec.hidden = false;
+      document.querySelectorAll('#tab-admin-ai .admin-ai-subtab').forEach(b => b.classList.remove('is-active'));
+      const t = btn || document.querySelector('#tab-admin-ai .admin-ai-subtab[data-aisec="' + section + '"]');
+      if (t) t.classList.add('is-active');
+      if (section === 'personas') adminAiLoadPersonas();
+      else adminAiLoadPalette(section);
     }
 
     // Split a comma-separated input into a clean list of trimmed, non-empty items.
@@ -958,6 +972,262 @@
         if (!res.ok) { showToast(data.error || 'Delete failed', 'error'); return; }
         showToast('Persona deleted.', 'success');
         await adminAiLoadPersonas();
+      } catch (e) { showToast('Delete failed', 'error'); }
+    }
+
+    /*
+    ------------------------------------------------------------------------
+    PALETTE editor (task 088 phase 3) — slash-commands / capability groups /
+    starters. One generic, field-driven editor for all three entities; the CRUD
+    is keyed by row id (matches admin/admin_ai.py). Field specs below mirror the
+    server columns. `lines`/`examples` (capabilities) edit as text:
+      lines    → one bullet per line
+      examples → one per line: "label | seed | persona | action" (last two optional)
+    ------------------------------------------------------------------------
+    */
+    const ADMIN_AI_PALETTE_FIELDS = {
+      commands: {
+        keyField: 'cmd', keyLabel: 'Command (/name)', keyPlaceholder: '/mycommand',
+        fields: [
+          { id: 'icon', label: 'Icon', type: 'text' },
+          { id: 'group_label', label: 'Group', type: 'text' },
+          { id: 'tool', label: 'Tool (hint)', type: 'text' },
+          { id: 'persona', label: 'Persona', type: 'text' },
+          { id: 'arg', label: 'Arg hint', type: 'text' },
+          { id: 'description', label: 'Description', type: 'text', full: true },
+          { id: 'seed', label: 'Seed prompt', type: 'textarea', full: true },
+        ],
+        flags: [{ id: 'tail', label: 'Leave caret to type arg' }, { id: 'super', label: 'Super-admin only' }],
+      },
+      capabilities: {
+        keyField: 'cap_key', keyLabel: 'Key (slug)', keyPlaceholder: 'my_group',
+        fields: [
+          { id: 'icon', label: 'Icon', type: 'text' },
+          { id: 'title', label: 'Title', type: 'text' },
+          { id: 'lines', label: 'Bullet lines (one per line)', type: 'lines', full: true },
+          { id: 'examples', label: 'Example chips — one per line: label | seed | persona | action', type: 'examples', full: true },
+        ],
+        flags: [{ id: 'grant_aware', label: 'Show data-access badge' }, { id: 'super', label: 'Super-admin only' }],
+      },
+      starters: {
+        keyField: 'starter_key', keyLabel: 'Key (slug)', keyPlaceholder: 'my_starter',
+        fields: [
+          { id: 'icon', label: 'Icon', type: 'text' },
+          { id: 'label', label: 'Label', type: 'text' },
+          { id: 'persona', label: 'Persona', type: 'text' },
+          { id: 'seed', label: 'Seed prompt', type: 'textarea', full: true },
+        ],
+        flags: [{ id: 'super', label: 'Super-admin only' }],
+      },
+    };
+
+    function _adminAiPaletteCardHTML(entity, item, isNew) {
+      const cfg = ADMIN_AI_PALETTE_FIELDS[entity];
+      const id = isNew ? 'new' : item.id;
+      const pfx = 'aip_' + entity + '_' + id;
+      let title, badge = '';
+      if (isNew) {
+        title = '<strong>New ' + esc(entity.replace(/s$/, '')) + '</strong>';
+      } else {
+        title = '<code>' + esc(String(item[cfg.keyField] || '')) + '</code>';
+        badge = item.is_builtin
+          ? '<span class="admin-ai-badge is-builtin">' + (item.is_default ? 'built-in' : 'built-in · edited') + '</span>'
+          : '<span class="admin-ai-badge is-custom">custom</span>';
+      }
+      const keyRow = isNew
+        ? '<label class="admin-ai-full">' + esc(cfg.keyLabel)
+          + '<input id="' + pfx + '_key" placeholder="' + esc(cfg.keyPlaceholder) + '" autocomplete="off"></label>'
+        : '';
+      let smalls = '', fulls = '';
+      cfg.fields.forEach(f => {
+        const fid = pfx + '_' + f.id;
+        if (f.type === 'textarea' || f.type === 'lines' || f.type === 'examples' || f.full) {
+          if (f.type === 'text') {
+            fulls += '<label class="admin-ai-full">' + esc(f.label) + '<input id="' + fid + '"></label>';
+          } else {
+            const rows = f.type === 'examples' ? 4 : 3;
+            fulls += '<label class="admin-ai-full">' + esc(f.label)
+                  + '<textarea id="' + fid + '" rows="' + rows + '"></textarea></label>';
+          }
+        } else {
+          smalls += '<label>' + esc(f.label) + '<input id="' + fid + '"></label>';
+        }
+      });
+      let flags = '';
+      (cfg.flags || []).forEach(fl => {
+        flags += '<label class="admin-ai-toggle"><input type="checkbox" id="' + pfx + '_' + fl.id + '"> '
+              + esc(fl.label) + '</label>';
+      });
+      let actions;
+      if (isNew) {
+        actions = '<button class="btn btn-primary" onclick="adminAiCreatePaletteItem(\'' + entity + '\')">Create</button>'
+                + '<button class="btn btn-secondary" onclick="adminAiCancelNewPalette(\'' + entity + '\')">Cancel</button>';
+      } else {
+        actions = '<button class="btn btn-primary" onclick="adminAiSavePaletteItem(\'' + entity + '\',' + id + ')">Save</button>';
+        actions += item.is_builtin
+          ? '<button class="btn btn-secondary" onclick="adminAiResetPaletteItem(\'' + entity + '\',' + id + ')">Reset</button>'
+          : '<button class="btn btn-secondary admin-ai-del" onclick="adminAiDeletePaletteItem(\'' + entity + '\',' + id + ')">Delete</button>';
+      }
+      return '<div class="admin-ai-card-head"><div class="admin-ai-card-title">' + title + ' ' + badge + '</div>'
+        + '<label class="admin-ai-toggle"><input type="checkbox" id="' + pfx + '_enabled"> Enabled</label></div>'
+        + keyRow
+        + '<div class="admin-ai-grid is-auto">' + smalls
+        + '<label>Order<input id="' + pfx + '_sort" type="number" value="0"></label></div>'
+        + fulls
+        + (flags ? '<div class="admin-ai-flags">' + flags + '</div>' : '')
+        + '<div class="admin-ai-actions">' + actions + '</div>';
+    }
+
+    function _adminAiFillPalette(entity, item) {
+      const cfg = ADMIN_AI_PALETTE_FIELDS[entity];
+      const pfx = 'aip_' + entity + '_' + item.id;
+      const set = (suffix, val) => { const el = document.getElementById(pfx + '_' + suffix); if (el) el.value = val; };
+      cfg.fields.forEach(f => {
+        let v = item[f.id];
+        if (f.type === 'lines') {
+          v = (Array.isArray(v) ? v : []).join('\n');
+        } else if (f.type === 'examples') {
+          v = (Array.isArray(v) ? v : []).map(ex =>
+            [ex.label || '', ex.seed || '', ex.persona || '', ex.action || '']
+              .join(' | ').replace(/(\s*\|\s*)+$/, '')).join('\n');
+        } else {
+          v = (v == null ? '' : v);
+        }
+        set(f.id, v);
+      });
+      set('sort', item.sort_order || 0);
+      const en = document.getElementById(pfx + '_enabled'); if (en) en.checked = item.enabled !== false;
+      (cfg.flags || []).forEach(fl => {
+        const el = document.getElementById(pfx + '_' + fl.id); if (el) el.checked = !!item[fl.id];
+      });
+    }
+
+    function _adminAiReadPalette(entity, id) {
+      const cfg = ADMIN_AI_PALETTE_FIELDS[entity];
+      const pfx = 'aip_' + entity + '_' + id;
+      const g = suffix => document.getElementById(pfx + '_' + suffix);
+      const body = {};
+      cfg.fields.forEach(f => {
+        const el = g(f.id);
+        const val = el ? el.value : '';
+        if (f.type === 'lines') {
+          body[f.id] = val.split('\n').map(s => s.trim()).filter(Boolean);
+        } else if (f.type === 'examples') {
+          body[f.id] = val.split('\n').map(line => {
+            const parts = line.split('|').map(s => s.trim());
+            if (!parts[0] && !parts[1]) return null;
+            const o = { label: parts[0] || '', seed: parts[1] || '' };
+            if (parts[2]) o.persona = parts[2];
+            if (parts[3]) o.action = parts[3];
+            return o;
+          }).filter(Boolean);
+        } else {
+          body[f.id] = val;
+        }
+      });
+      const sortEl = g('sort'); body.sort_order = sortEl ? (parseInt(sortEl.value || '0', 10) || 0) : 0;
+      const enEl = g('enabled'); body.enabled = enEl ? enEl.checked : true;
+      (cfg.flags || []).forEach(fl => { const el = g(fl.id); body[fl.id] = el ? el.checked : false; });
+      return body;
+    }
+
+    async function adminAiLoadPalette(entity) {
+      const wrap = document.getElementById('admin-ai-' + entity + '-list');
+      if (!wrap) return;
+      wrap.innerHTML = '<p class="empty-state">Loading…</p>';
+      try {
+        const res = await fetch('/admin/api/admin-ai/' + entity);
+        if (!res.ok) {
+          wrap.innerHTML = '<p class="empty-state">Only the super admin can manage this.</p>';
+          return;
+        }
+        const data = await res.json();
+        const items = (data && data[entity]) || [];
+        wrap.innerHTML = '';
+        if (!items.length) { wrap.innerHTML = '<p class="empty-state">Nothing yet. Use the “+ Add” button.</p>'; return; }
+        items.forEach(it => {
+          const card = document.createElement('div');
+          card.className = 'card admin-ai-card';
+          card.id = 'aipcard_' + entity + '_' + it.id;
+          card.innerHTML = _adminAiPaletteCardHTML(entity, it, false);
+          wrap.appendChild(card);
+          _adminAiFillPalette(entity, it);
+        });
+      } catch (e) {
+        wrap.innerHTML = '<p class="empty-state">Failed to load.</p>';
+      }
+    }
+
+    function adminAiAddPaletteItem(entity) {
+      if (document.getElementById('aipcard_' + entity + '_new')) {
+        const k = document.getElementById('aip_' + entity + '_new_key'); if (k) k.focus();
+        return;
+      }
+      const wrap = document.getElementById('admin-ai-' + entity + '-list');
+      if (!wrap) return;
+      const empty = wrap.querySelector('.empty-state'); if (empty) empty.remove();
+      const card = document.createElement('div');
+      card.className = 'card admin-ai-card admin-ai-card-new';
+      card.id = 'aipcard_' + entity + '_new';
+      card.innerHTML = _adminAiPaletteCardHTML(entity, {}, true);
+      wrap.insertBefore(card, wrap.firstChild);
+      const en = document.getElementById('aip_' + entity + '_new_enabled'); if (en) en.checked = true;
+      const k = document.getElementById('aip_' + entity + '_new_key'); if (k) k.focus();
+    }
+
+    function adminAiCancelNewPalette(entity) {
+      const card = document.getElementById('aipcard_' + entity + '_new'); if (card) card.remove();
+    }
+
+    async function adminAiCreatePaletteItem(entity) {
+      const cfg = ADMIN_AI_PALETTE_FIELDS[entity];
+      const body = _adminAiReadPalette(entity, 'new');
+      const keyEl = document.getElementById('aip_' + entity + '_new_key');
+      body[cfg.keyField] = ((keyEl && keyEl.value) || '').trim().toLowerCase();
+      if (!body[cfg.keyField]) { showToast('A key is required.', 'error'); return; }
+      try {
+        const res = await fetch('/admin/api/admin-ai/' + entity, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Create failed', 'error'); return; }
+        showToast('Created — live on the next reply.', 'success');
+        adminAiLoadPalette(entity);
+      } catch (e) { showToast('Create failed', 'error'); }
+    }
+
+    async function adminAiSavePaletteItem(entity, id) {
+      const body = _adminAiReadPalette(entity, id);
+      try {
+        const res = await fetch('/admin/api/admin-ai/' + entity + '/' + id, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Save failed', 'error'); return; }
+        showToast('Saved — live on the next reply.', 'success');
+        adminAiLoadPalette(entity);
+      } catch (e) { showToast('Save failed', 'error'); }
+    }
+
+    async function adminAiResetPaletteItem(entity, id) {
+      if (!confirm('Restore this built-in to its default? Your edits will be replaced.')) return;
+      try {
+        const res = await fetch('/admin/api/admin-ai/' + entity + '/' + id + '/reset', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Reset failed', 'error'); return; }
+        showToast('Reset to default.', 'success');
+        adminAiLoadPalette(entity);
+      } catch (e) { showToast('Reset failed', 'error'); }
+    }
+
+    async function adminAiDeletePaletteItem(entity, id) {
+      if (!confirm('Delete this item? This cannot be undone.')) return;
+      try {
+        const res = await fetch('/admin/api/admin-ai/' + entity + '/' + id, { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Delete failed', 'error'); return; }
+        showToast('Deleted.', 'success');
+        adminAiLoadPalette(entity);
       } catch (e) { showToast('Delete failed', 'error'); }
     }
 

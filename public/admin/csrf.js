@@ -1444,8 +1444,10 @@
     // + slash-command palette + capabilities-tray Esc.
     adminChatInstallComposer();
     adminPickInstall();
-    // Task 088: rebuild the persona pill from the DB-backed personas (fail-open).
+    // Task 088: rebuild the persona pill + the slash/capability/starter palette
+    // from the DB-backed config (both fail-open to the static fallbacks).
     adminChatLoadPersonas();
+    adminChatLoadPalette();
     adminChatInstallSlashTrigger();
     adminChatInstallCapEsc();
     const sid = await adminChatEnsureActiveSession();
@@ -2483,6 +2485,27 @@
     const pickEl = document.getElementById('admin-pick-persona');
     if (pickEl && typeof adminPickSyncTrigger === 'function') adminPickSyncTrigger(pickEl);
   }
+
+  // Task 088: the slash-command palette, capability groups, and starter chips are
+  // DB-backed + super-admin-editable. Replace the static fallback arrays with the
+  // server's role-filtered set (super-only rows are already dropped server-side for
+  // a normal admin; the existing client .filter stays as defense). FAIL-OPEN: on any
+  // error or empty payload, keep the static consts so the palette is never blank.
+  async function adminChatLoadPalette() {
+    let data;
+    try {
+      const res = await fetch('/admin/api/chat/palette');
+      if (!res.ok) return;
+      data = await res.json();
+    } catch (e) { return; }
+    if (!data) return;
+    if (Array.isArray(data.commands) && data.commands.length) ADMIN_CMD_MAP = data.commands;
+    if (Array.isArray(data.capabilities) && data.capabilities.length) ADMIN_CAP_GROUPS = data.capabilities;
+    if (Array.isArray(data.starters) && data.starters.length) ADMIN_STARTERS = data.starters;
+    // The empty-state starters may have rendered from the fallback before this
+    // resolved — re-render so they reflect the live set.
+    if (typeof adminChatRenderStarters === 'function') adminChatRenderStarters();
+  }
   // Build the model menu by walking the native select's optgroups/options so
   // the model list stays defined ONCE (in the template) — we never duplicate it.
   function adminPickBuildModelMenu(sel) {
@@ -2692,7 +2715,10 @@
   //   arg      optional placeholder hint shown after the name (e.g. "<sql>")
   //   tail     when true, leave the caret ready for the admin to type the arg
   //   super    when true, super-admin only (hidden for normal admins)
-  const ADMIN_CMD_MAP = [
+  // Task 088: FALLBACK slash-commands. adminChatLoadPalette() replaces this (and
+  // the two arrays below) from /admin/api/chat/palette so super-admin edits show;
+  // `let` so it can be reassigned. Kept as the fail-open default if the fetch fails.
+  let ADMIN_CMD_MAP = [
     // ---- Data & SQL ----
     { cmd: '/tables',     icon: '🗂', group: 'Data & SQL', tool: 'admin_list_tables',
       desc: 'List the database tables (admin_list_tables)',
@@ -3043,7 +3069,7 @@
   // ===== Task 087: empty-state starters =====
   // Role-aware chips shown only when the message list has no real bubbles. Each
   // seeds the composer (+ optional persona) via adminChatSeedComposer.
-  const ADMIN_STARTERS = [
+  let ADMIN_STARTERS = [   // task 088: fallback; replaced by adminChatLoadPalette()
     { icon: '📈', label: 'Give me a 7-day overview', persona: 'data_analyst',
       seed: 'Give me a 7-day overview of my site: visitors, chats, orders and form submissions.' },
     { icon: '🧠', label: 'Analyze visitor chat topics',
@@ -3106,7 +3132,7 @@
   //
   // Each group: { key, icon, title, super?, lines:[…], examples:[{label, persona?, seed}] }.
   // Tools referenced are REAL (verified against ADMIN_TOOLS, app.py ~18197).
-  const ADMIN_CAP_GROUPS = [
+  let ADMIN_CAP_GROUPS = [   // task 088: fallback; replaced by adminChatLoadPalette()
     { key: 'data', icon: '🧮', title: 'Data & SQL',
       lines: [
         'List + describe your tables (admin_list_tables / admin_describe_table).',
