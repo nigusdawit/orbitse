@@ -179,7 +179,7 @@ def test_extra_defaults():
     assert d["header_style"] == "sticky"
     assert d["button_style"] == "solid"
     assert d["motion_speed"] == "normal"
-    assert d["line_height"] == 1.5
+    assert d["line_height"] == 1.3
     assert d["border_width"] == 1.0
     # Per-theme base colours flattened to <key>_dark/<key>_light for the pickers.
     assert d["bg_dark"] == "#0b1220" and d["bg_light"] == "#eef2fb"
@@ -260,6 +260,27 @@ def test_custom_presets_roundtrip_cap_sanitize():
     # Persisted.
     d = app._admin_appearance()
     assert len(d["custom_presets"]) == len(saved)
+    _reset_extra(c)
+
+
+def test_custom_preset_id_sanitized_against_xss():
+    # SECURITY regression (task 089 review): a custom-preset id is reflected into
+    # client-side markup, so a crafted id carrying HTML/JS must be stripped to
+    # [a-z0-9] on BOTH save and read — never stored or echoed verbatim.
+    c = _sa()
+    evil = {"id": "x'><img src=x onerror=alert(1)>", "label": "Evil",
+            "settings": {"accent": "#abcdef"}}
+    j = c.put("/admin/api/admin-appearance",
+              json={"custom_presets": [evil]}, headers={"X-CSRF-Token": "t"}).get_json()
+    saved = j["custom_presets"]
+    assert len(saved) == 1
+    pid = saved[0]["id"]
+    assert pid and all(ch.islower() or ch.isdigit() for ch in pid)   # [a-z0-9] only
+    for bad in ("<", ">", "'", '"', " ", "(", ")", "="):
+        assert bad not in pid
+    # the read path sanitizes too (so a pre-existing bad row can't reach the DOM)
+    rid = app._admin_appearance()["custom_presets"][0]["id"]
+    assert "<" not in rid and "'" not in rid and ">" not in rid
     _reset_extra(c)
 
 

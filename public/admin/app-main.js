@@ -196,7 +196,7 @@
       color_success:'#22c55e', color_warning:'#f59e0b', color_danger:'#ef4444', color_info:'#3b82f6',
       accent3:'#22d3ee', color_link:'#6c8aff', color_focus:'#6c8cff',
       glow_color_1:'#3b82f6', glow_color_2:'#8b5cf6',
-      head_font:'serif', font_weight:'normal', letter_spacing:0, line_height:1.5,
+      head_font:'serif', font_weight:'normal', letter_spacing:0, line_height:1.3,
       shadow:'medium', border_width:1, focus_style:'ring',
       content_width:'full', header_style:'sticky', button_style:'solid', motion_speed:'normal',
       bg_dark:'#0b1220', bg_light:'#eef2fb', surface_dark:'#1e2940', surface_light:'#ffffff',
@@ -227,7 +227,7 @@
       {k:'glow_color_2',  v:'--admin-glow-2',       d:'#8b5cf6'},
       {k:'border_width',  v:'--admin-border-width', d:1, unit:'px'},
       {k:'letter_spacing',v:'--admin-letter-spacing', d:0, unit:'em'},
-      {k:'line_height',   v:'--admin-line-height',  d:1.5}
+      {k:'line_height',   v:'--admin-line-height',  d:1.3}
     ];
     var _AP_ATTRS = [
       {k:'shadow',        a:'data-admin-shadow',   d:'medium'},
@@ -406,7 +406,7 @@
     // re-applyable preset stored in AP.custom_presets and persisted via the
     // normal PUT (the server caps the count + validates each one).
     function _apHash(s){ var h=0,i; for(i=0;i<s.length;i++){ h=((h<<5)-h+s.charCodeAt(i))|0; } return h; }
-    function _apHex(v){ return /^#[0-9a-fA-F]{3,8}$/.test(v) ? v : '#6c8cff'; }
+    function _apHex(v){ return /^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(v) ? v : '#6c8cff'; }
     function apSavePreset(){
       var inp=document.getElementById('ap-preset-name'), name=((inp&&inp.value)||'').trim();
       if(!name){ _apTxt('ap-status','Name your preset first.'); if(inp) inp.focus(); return; }
@@ -428,21 +428,33 @@
       AP.custom_presets=(AP.custom_presets||[]).filter(function(p){ return p.id!==id; });
       apRenderCustomPresets(); apPersist(true);
     }
+    function _apId(v){ return String(v||'').replace(/[^a-z0-9]/g,''); }  // mirror server: ids are [a-z0-9] only
     function apRenderCustomPresets(){
       var host=document.getElementById('ap-custom-presets'); if(!host) return;
       var list=AP.custom_presets||[];
       if(!list.length){ host.innerHTML='<div class="gx-hint" style="grid-column:1/-1">No saved presets yet — tune the theme, name it, and hit “Save current”.</div>'; return; }
+      // SECURITY: build markup with NO inline handlers and only validated/derived
+      // values — the id is sanitized to [a-z0-9] (the server does the same on
+      // read+write), colours go through _apHex, and labels are set via textContent
+      // below. Handlers attach via addEventListener, so a malformed id can never
+      // break out of an attribute or execute as JS (defense-in-depth vs the
+      // server-side id whitelist).
       host.innerHTML=list.map(function(p){
         var s=p.settings||{}, a=_apHex(s.accent||'#6c8cff'), a2=_apHex(s.accent2||a);
-        return '<button type="button" class="ap-preset" onclick="apApplyCustomPreset(\''+p.id+'\')">'
+        return '<button type="button" class="ap-preset" data-pid="'+_apId(p.id)+'">'
           +'<span class="sw" style="background:linear-gradient(135deg,'+a+','+a2+')"></span>'
           +'<span class="ap-preset-lbl"></span>'
-          +'<span class="ap-preset-x" title="Delete" onclick="apDeletePreset(\''+p.id+'\',event)">×</span></button>';
+          +'<span class="ap-preset-x" title="Delete" data-del="1">×</span></button>';
       }).join('');
-      // Labels via textContent (never innerHTML) — XSS-safe even though the
-      // server also validates the label.
       var lbls=host.querySelectorAll('.ap-preset-lbl');
       list.forEach(function(p,i){ if(lbls[i]) lbls[i].textContent=p.label; });
+      host.querySelectorAll('.ap-preset[data-pid]').forEach(function(btn){
+        var id=btn.getAttribute('data-pid');
+        btn.addEventListener('click', function(ev){
+          if(ev.target && ev.target.getAttribute('data-del')){ ev.stopPropagation(); apDeletePreset(id); }
+          else apApplyCustomPreset(id);
+        });
+      });
     }
     function apSetMode(m){ AP.mode = m; apApply(); apInitBaseColors(); apPersist(true); }
     function adminToggleTheme(){ AP.mode = (AP.mode==='light' ? 'dark' : 'light'); apApply(); apInitBaseColors(); apPersist(true); }

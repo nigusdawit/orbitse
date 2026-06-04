@@ -24084,7 +24084,7 @@ _ADMIN_APPEARANCE_EXTRA = {
     "font_weight":    {"kind": "enum", "default": "normal",
                        "choices": ("light", "normal", "medium", "semibold")},
     "letter_spacing": {"kind": "num", "default": 0.0, "lo": -0.02, "hi": 0.08},
-    "line_height":    {"kind": "num", "default": 1.5, "lo": 1.2, "hi": 1.9},
+    "line_height":    {"kind": "num", "default": 1.3, "lo": 1.2, "hi": 1.9},  # 1.3 ≈ the body's "normal", so the default stays a no-op (honest slider)
     # C · shape & depth
     "shadow":       {"kind": "enum", "default": "medium",
                      "choices": ("none", "soft", "medium", "strong")},
@@ -24108,7 +24108,7 @@ _ADMIN_APPEARANCE_EXTRA = {
     "border":  {"kind": "pcolor", "default": {"dark": "#2a3344", "light": "#d4dae6"}},
 }
 
-_HEX_RE = re.compile(r"^#[0-9a-fA-F]{3,8}$")
+_HEX_RE = re.compile(r"^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\Z")  # valid CSS hex lengths only; \Z (not $) so a trailing newline can't slip through
 # How many saved custom presets we keep (defensive cap so the blob can't grow
 # unbounded) and the max length of a preset's display label.
 _ADMIN_PRESET_CAP = 24
@@ -24166,8 +24166,9 @@ def _appearance_extra_blob(data):
     """Build the MINIMAL admin_theme_extra blob to persist from a PUT payload:
     only knobs that differ from their code default (so future default changes
     still reach untouched knobs) + only customized per-theme base colours +
-    the validated custom-preset list. Returns (blob_dict, flat, base_overrides)
-    where flat/base_overrides are the validated values to echo back."""
+    the validated custom-preset list. Returns (blob_dict, flat, base_overrides,
+    presets) where flat/base_overrides/presets are the validated values to echo
+    back."""
     flat, base_overrides = _coerce_appearance_extra(data)
     blob = dict(base_overrides)  # customized per-theme base colours only
     for key, spec in _ADMIN_APPEARANCE_EXTRA.items():
@@ -24215,7 +24216,11 @@ def _coerce_custom_presets(raw):
     for item in raw[:_ADMIN_PRESET_CAP]:
         if not isinstance(item, dict):
             continue
-        pid = str(item.get("id") or "").strip()[:_ADMIN_PRESET_LABEL_MAX]
+        # SECURITY: the id is reflected into client-side preset-swatch markup, so
+        # constrain it to [a-z0-9] (matches the client's hashed-id shape). This
+        # runs on READ and WRITE, so any crafted/pre-existing bad id is sanitized
+        # before it can reach the DOM — prevents stored DOM-XSS via a preset id.
+        pid = re.sub(r"[^a-z0-9]", "", str(item.get("id") or "").lower())[:_ADMIN_PRESET_LABEL_MAX]
         label = str(item.get("label") or "").strip()[:_ADMIN_PRESET_LABEL_MAX]
         if not pid or not label:
             continue
