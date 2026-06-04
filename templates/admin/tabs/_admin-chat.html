@@ -85,6 +85,13 @@
                   data-testid="button-admin-chat-export-json">↓ .json</button>
           <button class="acm-btn" onclick="adminChatClear()" title="Clear messages (keeps the session; use Del in the sidebar to remove the session entirely)"
                   data-testid="button-admin-chat-clear">Clear msgs</button>
+          <!-- Task 086: expand the chat into a full-viewport glass overlay with a
+               split canvas for charts/tables. Pure VIEW toggle — adds/removes
+               .admin-chat-expanded on .admin-chat-shell; collapse/Esc restores
+               the in-tab layout exactly. -->
+          <button class="acm-btn admin-chat-expand-btn" onclick="adminChatToggleExpand()"
+                  title="Expand to full screen (Esc to collapse)"
+                  aria-pressed="false" data-testid="button-admin-chat-expand">⤢ Expand</button>
         </div>
 
         <div id="admin-chat-messages" data-testid="admin-chat-messages" style="flex:1; min-height:400px; max-height:60vh; overflow-y:auto; padding:1rem; background:var(--admin-bg); border:1px solid var(--admin-border); border-radius:.75rem; display:flex; flex-direction:column; gap:.75rem;">
@@ -120,6 +127,21 @@
         </form>
 
       </div>
+
+      <!-- Task 086: split CANVAS panel. Third direct child of .admin-chat-shell
+           so it becomes the right column of the grid ONLY when the shell is
+           .admin-chat-expanded.has-canvas (otherwise display:none). Charts /
+           tables / KPI artifacts the assistant renders inline are mirrored +
+           enlarged here by adminChatPushCanvas() while expanded. No second chat
+           engine — this is a view of the latest artifact. -->
+      <section id="admin-chat-canvas" data-testid="admin-chat-canvas" aria-label="Chat canvas">
+        <div class="admin-chat-canvas-head">
+          <span class="admin-chat-canvas-title">Canvas</span>
+        </div>
+        <div id="admin-chat-canvas-body" class="admin-chat-canvas-body" data-testid="admin-chat-canvas-body">
+          <div class="admin-chat-canvas-empty" data-testid="admin-chat-canvas-empty">Your charts &amp; tables appear here.</div>
+        </div>
+      </section>
     </div>
 
     <!-- System prompt editor modal -->

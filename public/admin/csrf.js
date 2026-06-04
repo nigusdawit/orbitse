@@ -1980,7 +1980,7 @@
       if (lastBubble) lastBubble.insertAdjacentHTML('beforeend', userBubbleExtras);
     }
     box.insertAdjacentHTML('beforeend',
-      `<div id="admin-chat-thinking" style="color:var(--admin-text-muted); font-size:.9rem; align-self:flex-start;">Thinking…</div>`);
+      `<div id="admin-chat-thinking" class="admin-chat-typing" aria-label="Assistant is typing" data-testid="admin-chat-thinking"><span class="admin-chat-typing-dot"></span><span class="admin-chat-typing-dot"></span><span class="admin-chat-typing-dot"></span></div>`);
     input.value = '';
     sendBtn.disabled = true;
     // Clear the pending-attachment strip now that the turn is in flight.
@@ -2119,6 +2119,13 @@
                 } else {
                   toolBox.insertAdjacentHTML('beforeend', html);
                 }
+                // Task 086: mirror the finished tool card into the split canvas
+                // when expanded, so the latest artifact is visible enlarged on
+                // the right. We push a fresh copy built from the same markup
+                // (never move the inline node out of the message stream).
+                try {
+                  if (typeof adminChatPushCanvasHtml === 'function') adminChatPushCanvasHtml(html);
+                } catch (e) {}
                 const proposal = adminChatPickProposal(t.result_preview);
                 if (proposal) {
                   toolBox.insertAdjacentHTML('beforeend',
@@ -2128,6 +2135,13 @@
               } else if (evt.type === 'chart' && evt.spec) {
                 // Datahub (task 057): the assistant drew a chart/KPI/table inline.
                 try { adminChatRenderChart(toolBox, evt.spec); } catch (e) {}
+                // Task 086: when the immersive overlay is open, ALSO mirror this
+                // artifact (enlarged) into the split canvas. Re-render from the
+                // spec into a fresh node so the canvas copy is independent of the
+                // inline one (no DOM move that would disturb the message stream).
+                try {
+                  if (typeof adminChatPushCanvasChart === 'function') adminChatPushCanvasChart(evt.spec);
+                } catch (e) {}
                 adminChatScrollDown();
               } else if (evt.type === 'usage' && evt.usage) {
                 // Per-round token + cost badge appended under bubble.
@@ -2206,4 +2220,202 @@
       sendBtn.disabled = false;
       adminChatScrollDown();
     }
+  }
+
+  // ===== Admin Chat — Expand / immersive overlay + split canvas (task 086) =====
+  // PURE FRONT-END VIEW over the one chat engine. Toggling adds/removes the
+  // .admin-chat-expanded class on .admin-chat-shell; all the layout (fullscreen
+  // glass overlay, split chat|canvas) is CSS-driven in /admin/chat.css. The
+  // existing #admin-chat-* element ids + markup are untouched, so streaming,
+  // sessions, modals, etc. all keep working in either state.
+
+  function adminChatIsExpanded() {
+    const shell = document.getElementById('admin-chat-shell');
+    return !!(shell && shell.classList.contains('admin-chat-expanded'));
+  }
+
+  // Toggle (or force) the immersive overlay. `force` true=expand, false=collapse,
+  // undefined=toggle. Idempotent; safe to call when the chat tab isn't built yet.
+  function adminChatToggleExpand(force) {
+    const shell = document.getElementById('admin-chat-shell');
+    if (!shell) return;
+    const next = (typeof force === 'boolean') ? force : !shell.classList.contains('admin-chat-expanded');
+    shell.classList.toggle('admin-chat-expanded', next);
+    // Reflect state on the header button (label + a11y).
+    const btn = document.querySelector('[data-testid="button-admin-chat-expand"]');
+    if (btn) {
+      btn.textContent = next ? '⤡ Collapse' : '⤢ Expand';
+      btn.setAttribute('aria-pressed', next ? 'true' : 'false');
+      btn.setAttribute('title', next ? 'Collapse to the tab (Esc)' : 'Expand to full screen (Esc to collapse)');
+    }
+    // The launcher pill hides while the overlay is up (the chat is already open).
+    document.body.classList.toggle('admin-asst-overlay-open', next);
+    if (next) {
+      // Bind a one-shot Esc-to-collapse for this session of the overlay.
+      adminChatInstallEscCollapse();
+      adminChatScrollDown();
+    } else {
+      // Collapsing returns to today's tab exactly; reset focus-rail state so the
+      // next expand starts with the sessions rail visible.
+      shell.classList.remove('rail-collapsed');
+    }
+  }
+
+  // Esc collapses the overlay. Installed once; the handler is a no-op unless the
+  // shell is currently expanded, so it never interferes with the in-tab view or
+  // the modals (which manage their own Esc/backdrop close).
+  let _adminChatEscBound = false;
+  function adminChatInstallEscCollapse() {
+    if (_adminChatEscBound) return;
+    _adminChatEscBound = true;
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Escape') return;
+      if (!adminChatIsExpanded()) return;
+      // Don't steal Esc from an open chat modal (prompt/skills/kb/cite/branch).
+      if (document.querySelector('.admin-chat-modal-backdrop.open')) return;
+      adminChatToggleExpand(false);
+    });
+  }
+
+  // Reveal the canvas column (sets .has-canvas) and clear the empty-state the
+  // first time an artifact lands. No-op if the canvas elements aren't present.
+  function adminChatCanvasActivate() {
+    const shell = document.getElementById('admin-chat-shell');
+    const body  = document.getElementById('admin-chat-canvas-body');
+    if (!shell || !body) return null;
+    shell.classList.add('has-canvas');
+    const empty = body.querySelector('.admin-chat-canvas-empty');
+    if (empty) empty.remove();
+    return body;
+  }
+
+  // v1 canvas behaviour = show the LATEST artifact. Replace prior content so the
+  // canvas always mirrors the most recent chart/table/tool result. (Kept simple
+  // + extensible: swap the innerHTML reset for an append to stack multiples.)
+  function adminChatPushCanvas(node) {
+    if (!adminChatIsExpanded()) return;          // only mirror while immersive
+    const body = adminChatCanvasActivate();
+    if (!body || !node) return;
+    body.innerHTML = '';
+    body.appendChild(node);
+  }
+
+  // Mirror a CHART/TABLE/KPI artifact into the canvas by RE-RENDERING from its
+  // spec (so the canvas copy is a fresh, independent node — never a move of the
+  // inline one). adminChatRenderChart appends into the container we pass.
+  function adminChatPushCanvasChart(spec) {
+    if (!adminChatIsExpanded() || !spec) return;
+    const body = adminChatCanvasActivate();
+    if (!body) return;
+    body.innerHTML = '';
+    try { adminChatRenderChart(body, spec); } catch (e) {}
+  }
+
+  // Mirror an already-built artifact HTML string (e.g. a tool card) into the
+  // canvas. We parse it into a node so no live inline element is relocated.
+  function adminChatPushCanvasHtml(html) {
+    if (!adminChatIsExpanded() || !html) return;
+    const body = adminChatCanvasActivate();
+    if (!body) return;
+    body.innerHTML = html;
+  }
+
+  // ===== Floating "Business Assistant" launcher (task 086) =====
+  // A global entry point that ESCALATES into the one real chat. The popover has
+  // a quick composer + suggestions + "Open full"; it never renders its own
+  // message list — sending forwards the text into the real #admin-chat-input and
+  // calls adminChatSend() (after switching to the tab + opening the overlay).
+
+  function adminAsstQuickEl()    { return document.getElementById('admin-asst-quick'); }
+  function adminAsstLauncherEl() { return document.getElementById('admin-asst-launcher'); }
+
+  function adminAsstOpenQuick() {
+    const pop = adminAsstQuickEl();
+    if (!pop) return;
+    pop.classList.add('open');
+    const btn = adminAsstLauncherEl();
+    if (btn) btn.setAttribute('aria-expanded', 'true');
+    const inp = document.getElementById('admin-asst-quick-input');
+    if (inp) setTimeout(function () { try { inp.focus(); } catch (e) {} }, 30);
+    adminAsstInstallOutsideClose();
+  }
+  function adminAsstCloseQuick() {
+    const pop = adminAsstQuickEl();
+    if (!pop) return;
+    pop.classList.remove('open');
+    const btn = adminAsstLauncherEl();
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  }
+  function adminAsstToggleQuick() {
+    const pop = adminAsstQuickEl();
+    if (!pop) return;
+    if (pop.classList.contains('open')) adminAsstCloseQuick();
+    else adminAsstOpenQuick();
+  }
+
+  // Close the popover on outside-click / Esc. Bound once; the listeners are
+  // cheap no-ops while the popover is closed.
+  let _adminAsstOutsideBound = false;
+  function adminAsstInstallOutsideClose() {
+    if (_adminAsstOutsideBound) return;
+    _adminAsstOutsideBound = true;
+    document.addEventListener('mousedown', function (ev) {
+      const pop = adminAsstQuickEl();
+      if (!pop || !pop.classList.contains('open')) return;
+      const btn = adminAsstLauncherEl();
+      if (pop.contains(ev.target) || (btn && btn.contains(ev.target))) return;
+      adminAsstCloseQuick();
+    });
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Escape') return;
+      const pop = adminAsstQuickEl();
+      if (pop && pop.classList.contains('open')) adminAsstCloseQuick();
+    });
+  }
+
+  // Tap a suggested prompt → fill the quick input (and send immediately).
+  function adminAsstQuickSuggest(btn) {
+    const inp = document.getElementById('admin-asst-quick-input');
+    if (inp && btn) inp.value = btn.textContent.trim();
+    adminAsstQuickSend();
+  }
+
+  // Bring up the real chat in immersive mode: switch to the admin-chat tab,
+  // load it, force admin (not visitor) mode, and expand. Shared by send +
+  // "Open full". Returns once the chat scaffolding is on screen.
+  async function adminAsstEnterFullChat() {
+    adminAsstCloseQuick();
+    const tabBtn = document.querySelector('[data-testid="tab-admin-chat"]');
+    // switchTab + loadAdminChat are the SAME globals the sidebar button uses.
+    if (typeof switchTab === 'function') switchTab('admin-chat', tabBtn);
+    // Force admin assistant mode if the helper exists (visitor preview has no
+    // sessions/overlay value); ignore if unavailable.
+    try { if (typeof adminChatSetMode === 'function') adminChatSetMode('admin'); } catch (e) {}
+    if (typeof loadAdminChat === 'function') { try { await loadAdminChat(); } catch (e) {} }
+    adminChatToggleExpand(true);
+  }
+
+  function adminAsstOpenFull() {
+    // Carry any half-typed text from the popover into the real composer.
+    const q = (document.getElementById('admin-asst-quick-input') || {}).value || '';
+    adminAsstEnterFullChat().then(function () {
+      const real = document.getElementById('admin-chat-input');
+      if (real && q.trim()) real.value = q;
+      if (real) { try { real.focus(); } catch (e) {} }
+    });
+  }
+
+  // Forward the popover text into the ONE chat and send it there.
+  function adminAsstQuickSend() {
+    const inp = document.getElementById('admin-asst-quick-input');
+    const text = (inp && inp.value ? inp.value : '').trim();
+    if (!text) { adminAsstOpenFull(); return; }
+    if (inp) inp.value = '';
+    adminAsstEnterFullChat().then(function () {
+      const real = document.getElementById('admin-chat-input');
+      if (real) real.value = text;
+      // adminChatSend reads #admin-chat-input + renders into the (now expanded)
+      // message stream — no second list, no duplicate engine.
+      try { if (typeof adminChatSend === 'function') adminChatSend(); } catch (e) {}
+    });
   }
