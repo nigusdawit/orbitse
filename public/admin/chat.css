@@ -82,6 +82,24 @@
   #tab-admin-chat.tab-content.active .admin-chat-shell > div{ min-height: 0; height: 100%; }
   #tab-admin-chat.tab-content.active #admin-chat-messages{ flex: 1; max-height: none !important; min-height: 0 !important; }
 }
+
+/* ---- Auto-hide admin top bar (task 088) ----
+   The 56px top bar slides up out of view; moving the mouse near the top of the
+   screen (or focusing a header control) reveals it (app-main.js toggles
+   body.admin-chrome-hidden). When hidden, the layout reclaims the 56px so the
+   content — especially the full-height chat — fills the whole viewport. */
+.admin-header{ transition: transform .28s ease; will-change: transform; }
+body.admin-chrome-hidden .admin-header{ transform: translateY(-100%); }
+.admin-layout{ transition: margin-top .28s ease; }
+body.admin-chrome-hidden .admin-layout{ margin-top: calc(-1 * var(--admin-header-h, 56px)); min-height: 100vh; }
+body.admin-chrome-hidden .sidebar{ top: 0; height: 100vh; }
+@media (min-width: 901px){
+  #tab-admin-chat.tab-content.active{ transition: height .28s ease; }
+  body.admin-chrome-hidden #tab-admin-chat.tab-content.active{ height: 100vh; }
+}
+@media (prefers-reduced-motion: reduce){
+  .admin-header, .admin-layout, #tab-admin-chat.tab-content.active{ transition: none; }
+}
 /* Soft radial accent glow bloom behind the glass (token-driven via --admin-glow
    so the Appearance "glow" slider controls intensity). Non-interactive. */
 .admin-chat-shell::before{

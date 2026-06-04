@@ -1256,6 +1256,50 @@
 
     /*
     ========================================================================
+    AUTO-HIDE ADMIN TOP BAR (task 088)
+    ========================================================================
+    The top bar slides up out of view; bringing the mouse near the top of the
+    screen (≤14px), hovering the bar, or focusing a control in it reveals it.
+    Toggles body.admin-chrome-hidden (CSS in /admin/chat.css does the slide +
+    reclaims the 56px). Starts hidden after a short grace period so the user
+    sees the bar first. Pointer-only (no touch) — touch devices keep the bar.
+    */
+    function adminChromeAutoHideInit() {
+      var header = document.querySelector('.admin-header');
+      if (!header || header.dataset.autohideBound === '1') return;
+      header.dataset.autohideBound = '1';
+      // Publish the layout's natural top offset so the CSS reclaims EXACTLY that
+      // distance when hidden (the bar + its gap is ~85px, not the 56px the layout
+      // math assumes). Measure only while shown (when hidden the layout is pulled up).
+      var layoutEl = document.querySelector('.admin-layout');
+      function syncHeaderH() {
+        if (document.body.classList.contains('admin-chrome-hidden')) return;
+        var px = layoutEl ? Math.round(layoutEl.getBoundingClientRect().top + window.scrollY) : header.offsetHeight;
+        document.documentElement.style.setProperty('--admin-header-h', px + 'px');
+      }
+      syncHeaderH();
+      window.addEventListener('resize', syncHeaderH);
+      var hideT;
+      function show() { clearTimeout(hideT); document.body.classList.remove('admin-chrome-hidden'); }
+      function hideSoon() { clearTimeout(hideT); hideT = setTimeout(function () { document.body.classList.add('admin-chrome-hidden'); }, 600); }
+      document.addEventListener('mousemove', function (e) {
+        if (e.clientY <= 14) show();
+        else if (e.clientY > 90) hideSoon();
+      });
+      header.addEventListener('mouseenter', show);
+      header.addEventListener('focusin', show);
+      header.addEventListener('focusout', hideSoon);
+      hideSoon();   // auto-hide shortly after load
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', adminChromeAutoHideInit);
+    } else {
+      adminChromeAutoHideInit();
+    }
+
+
+    /*
+    ========================================================================
     HTML ESCAPE — Prevent XSS when rendering user content
     ========================================================================
     */
