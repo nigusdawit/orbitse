@@ -13999,10 +13999,11 @@ def _dh_intro_columns(cid, kind, url, table):
 
 # Sentinel returned by _dh_allowed_tables() meaning "no restriction at all"
 # (super-admin or out-of-request caller). Callers MUST treat this as a bypass —
-# never as a literal table name. We use a module-level object identity (not the
-# string "ALL", which could collide with a real table) so the bypass check is
-# unambiguous: `allowed is _DH_ALLOW_ALL`.
-_DH_ALLOW_ALL = "ALL"
+# never as a literal table name. It is a unique module-level object (NOT a
+# string, which could be re-created elsewhere and break an `is` check, nor
+# collide with a real table name) so the bypass test is unambiguous and
+# identity-based: `allowed is _DH_ALLOW_ALL`.
+_DH_ALLOW_ALL = object()
 
 
 def _dh_grants_apply():
