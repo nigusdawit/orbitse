@@ -3395,6 +3395,17 @@
   function adminAsstQuickEl()    { return document.getElementById('admin-asst-quick'); }
   function adminAsstLauncherEl() { return document.getElementById('admin-asst-launcher'); }
 
+  // task 091 — show the "Business Assistant" label for a few seconds on load,
+  // then collapse the launcher to just the orb (CSS animates the slide; it
+  // re-expands on hover/focus). Runs once; the button stays clickable collapsed.
+  function adminAsstAutoCollapse() {
+    var el = adminAsstLauncherEl(); if (!el) return;
+    clearTimeout(adminAsstAutoCollapse._t);
+    adminAsstAutoCollapse._t = setTimeout(function () { el.classList.add('collapsed'); }, 4200);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', adminAsstAutoCollapse);
+  else adminAsstAutoCollapse();
+
   function adminAsstOpenQuick() {
     const pop = adminAsstQuickEl();
     if (!pop) return;
