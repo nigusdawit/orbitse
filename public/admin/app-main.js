@@ -9308,6 +9308,8 @@
         // Audit log loads in parallel — never blocks the rest of the
         // tab. Failure here renders an inline hint, not a tab error.
         _loadSuperAdminAudit();
+        // task 092 P2 — Sentry error queue, same parallel / non-blocking pattern.
+        _loadSentryAlerts();
       } catch (e) {
         loading.textContent = 'Could not load developer console: ' + e.message;
       }
@@ -9338,6 +9340,97 @@
       if (outcome === 'logout') return 'var(--admin-text-muted)';
       if (outcome === 'ttl_expired') return 'var(--admin-text-muted)';
       return 'var(--admin-text-muted)';
+    }
+
+    // ---- Error Tracking (Sentry) panel — task 092 P2 ----------------------
+    // Mirrors _loadSuperAdminAudit: a parallel, non-blocking load into the
+    // Developer tab. EVERY field on an alert is attacker-influenced (it came in
+    // through a Sentry webhook payload), so all of it renders HTML-escaped via
+    // _escAuditCell, and the permalink only becomes an <a href> when it's an
+    // http(s) URL (blocks javascript:/data: href injection).
+    function _sentrySafeUrl(u) {
+      const s = String(u || '');
+      return (/^https?:\/\//i.test(s)) ? s : '';
+    }
+
+    function _sentryStatusControl(id, status) {
+      const cur = String(status || 'new');
+      const opts = ['new', 'ack', 'fixed'].map(function (s) {
+        return '<option value="' + s + '"' + (s === cur ? ' selected' : '') + '>' + s + '</option>';
+      }).join('');
+      // id is forced numeric in the handler call → no injection via onchange.
+      return '<select data-testid="select-sentry-status-' + Number(id) + '" ' +
+        'onchange="_setSentryAlertStatus(' + Number(id) + ', this.value)" ' +
+        'style="font-size:0.8125rem; padding:0.2rem 0.4rem;">' + opts + '</select>';
+    }
+
+    async function _loadSentryAlerts() {
+      const wrap = document.getElementById('developer-sentry');
+      if (!wrap) return;
+      try {
+        const res = await fetch('/admin/api/sentry/alerts?limit=100', { credentials: 'same-origin' });
+        const data = await res.json().catch(() => ({}));
+        if (!data || data.ok === false || !Array.isArray(data.alerts)) {
+          const hint = (data && data.error)
+            ? 'Sentry alerts unavailable: ' + _escAuditCell(data.error) + '. The 0034 migration may not have run yet — restart the workflow.'
+            : 'Sentry alerts unavailable.';
+          wrap.innerHTML = '<div class="empty-state" style="padding:0.75rem;" data-testid="text-developer-sentry-error">' + hint + '</div>';
+          return;
+        }
+        if (data.alerts.length === 0) {
+          wrap.innerHTML = '<div class="empty-state" style="padding:0.75rem;" data-testid="text-developer-sentry-empty">No Sentry issues received yet. Configure a Sentry issue-alert webhook → <code>/api/sentry/webhook</code>.</div>';
+          return;
+        }
+        const rows = data.alerts.map(function (a) {
+          const lvl = String(a.level || 'error');
+          const lvlColor = (lvl === 'fatal' || lvl === 'error') ? '#dc2626'
+            : (lvl === 'warning' ? '#d97706' : 'var(--admin-text-muted)');
+          const url = _sentrySafeUrl(a.permalink);
+          const link = url
+            ? '<a href="' + _escAuditCell(url) + '" target="_blank" rel="noopener noreferrer">open ↗</a>'
+            : '<span style="color:var(--admin-text-muted);">—</span>';
+          const culprit = a.culprit
+            ? '<div style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.15rem;">' + _escAuditCell(a.culprit) + '</div>'
+            : '';
+          return '<tr data-testid="row-developer-sentry-' + (a.id || '') + '">' +
+            '<td style="padding:0.4rem 0.6rem; font-size:0.8125rem;">' + _escAuditCell(a.title) + culprit + '</td>' +
+            '<td style="padding:0.4rem 0.6rem; font-size:0.8125rem; color:' + lvlColor + '; font-weight:600;">' + _escAuditCell(lvl) + '</td>' +
+            '<td style="padding:0.4rem 0.6rem; font-size:0.8125rem; text-align:right;">' + _escAuditCell(String(a.event_count || 1)) + '</td>' +
+            '<td style="padding:0.4rem 0.6rem; font-size:0.8125rem; white-space:nowrap;">' + _fmtAuditTs(a.last_seen || a.received_at) + '</td>' +
+            '<td style="padding:0.4rem 0.6rem; font-size:0.8125rem;">' + _sentryStatusControl(a.id, a.status) + '</td>' +
+            '<td style="padding:0.4rem 0.6rem; font-size:0.8125rem;">' + link + '</td>' +
+            '</tr>';
+        }).join('');
+        wrap.innerHTML =
+          '<table style="width:100%; border-collapse:collapse;" data-testid="table-developer-sentry">' +
+          '<thead><tr style="text-align:left; color:var(--admin-text-muted); font-size:0.75rem; text-transform:uppercase; letter-spacing:0.05em;">' +
+          '<th style="padding:0.4rem 0.6rem;">Issue</th>' +
+          '<th style="padding:0.4rem 0.6rem;">Level</th>' +
+          '<th style="padding:0.4rem 0.6rem; text-align:right;">Count</th>' +
+          '<th style="padding:0.4rem 0.6rem;">Last seen</th>' +
+          '<th style="padding:0.4rem 0.6rem;">Status</th>' +
+          '<th style="padding:0.4rem 0.6rem;">Link</th>' +
+          '</tr></thead><tbody>' + rows + '</tbody></table>';
+      } catch (e) {
+        wrap.innerHTML = '<div class="empty-state" style="padding:0.75rem;" data-testid="text-developer-sentry-error">Could not load Sentry alerts: ' + _escAuditCell(e.message) + '</div>';
+        if (window.appReportError) window.appReportError(e, 'app-main.js:_loadSentryAlerts');
+      }
+    }
+
+    async function _setSentryAlertStatus(id, status) {
+      try {
+        const res = await fetch('/admin/api/sentry/alerts/' + Number(id) + '/status', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: String(status) }),
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        _loadSentryAlerts();  // reflect new ordering / counts
+      } catch (e) {
+        if (window.appReportError) window.appReportError(e, 'app-main.js:_setSentryAlertStatus');
+        alert('Could not update status: ' + e.message);
+      }
     }
 
     async function _loadSuperAdminAudit() {

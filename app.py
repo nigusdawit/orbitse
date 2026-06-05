@@ -42233,6 +42233,16 @@ app.register_blueprint(products_bp)
 from admin.ai_control import ai_control_bp  # noqa: E402
 app.register_blueprint(ai_control_bp)
 
+# Observability blueprint (task 092 P2): the Sentry -> app webhook intake +
+# super-admin read/triage API. 3 routes — POST /api/sentry/webhook (PUBLIC, but
+# HMAC-SHA256 signature-verified against SENTRY_WEBHOOK_SECRET; the public path
+# is correctly OUTSIDE the /admin CSRF scope and uses signature auth instead),
+# GET /admin/api/sentry/alerts (list) + POST /admin/api/sentry/alerts/<id>/status
+# (triage), both @admin_required + in-body _require_super_admin_role() (from
+# core). Gives the error-fixing agents a read path the write-only DSN can't.
+from admin.observability import observability_bp  # noqa: E402
+app.register_blueprint(observability_bp)
+
 
 def _resolve_velo_callback_url():
     """Pick the public URL VELO Master should call back to for /api/velo/command.

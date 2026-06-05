@@ -4,6 +4,7 @@ DELETE /admin/api/admin-ai/personas/<key>
 DELETE /admin/api/ai-cache/<int:cache_id>
 DELETE /admin/api/automations/<int:aid>
 DELETE /admin/api/blog/<int:post_id>
+DELETE /admin/api/callbacks/<int:cb_id>
 DELETE /admin/api/chat/sessions/<session_id>
 DELETE /admin/api/custom-knowledge/<int:rid>
 DELETE /admin/api/custom-sections/<int:section_id>/items/<int:item_id>
@@ -24,8 +25,10 @@ DELETE /admin/api/forms/<int:form_id>/fields/<int:field_id>
 DELETE /admin/api/gallery-cards/<int:card_id>
 DELETE /admin/api/generated-pages/<int:page_id>
 DELETE /admin/api/kb/<int:doc_id>
+DELETE /admin/api/leads/<int:lead_id>
 DELETE /admin/api/mcp/servers/<int:rid>
 DELETE /admin/api/media/<int:media_id>
+DELETE /admin/api/meetings/<int:mt_id>
 DELETE /admin/api/messaging/campaigns/<int:cid>
 DELETE /admin/api/messaging/subscribers/<int:sid>
 DELETE /admin/api/messaging/templates/<int:tid>
@@ -54,6 +57,8 @@ DELETE /admin/api/team/<int:item_id>
 DELETE /admin/api/testimonials/<int:item_id>
 DELETE /admin/api/video-gallery/<int:item_id>
 DELETE /admin/api/visitor-personas/<int:persona_id>
+DELETE /admin/api/visitor-profiles/<int:vp_id>
+DELETE /admin/api/voice-calls/<int:call_id>
 DELETE /admin/api/voice-intros/<int:intro_id>
 DELETE /admin/api/wp-plugin/onboarding-links/<int:lid>
 DELETE,GET,PATCH,POST,PUT /api/velo/
@@ -188,6 +193,7 @@ GET /admin/api/scrape-schedules
 GET /admin/api/scraper-settings
 GET /admin/api/secrets/status
 GET /admin/api/section-visibility
+GET /admin/api/sentry/alerts
 GET /admin/api/seo
 GET /admin/api/services
 GET /admin/api/services/<int:svc_id>/addons
@@ -304,8 +310,11 @@ GET,POST /api/velo/command
 GET,POST /automations/hook/<token>
 GET,PUT /admin/api/ai-cache/settings
 PATCH /admin/api/bookings/<int:bk_id>
+PATCH /admin/api/callbacks/<int:cb_id>
 PATCH /admin/api/chat/sessions/<session_id>
 PATCH /admin/api/cost/prices/<int:row_id>
+PATCH /admin/api/leads/<int:lead_id>
+PATCH /admin/api/meetings/<int:mt_id>
 PATCH /admin/api/products/<int:pid>/stock
 PATCH /admin/api/scrape-schedules/<int:schedule_id>
 PATCH /admin/api/sphere-settings/enabled
@@ -371,6 +380,7 @@ POST /admin/api/gallery-cards
 POST /admin/api/kb/<int:doc_id>/reindex
 POST /admin/api/kb/preview
 POST /admin/api/kb/upload
+POST /admin/api/leads
 POST /admin/api/mcp/servers
 POST /admin/api/mcp/servers/<int:rid>/oauth/disconnect
 POST /admin/api/mcp/servers/<int:rid>/oauth/start
@@ -418,6 +428,7 @@ POST /admin/api/scrape-schedules/<int:schedule_id>/resume
 POST /admin/api/scrape-schedules/<int:schedule_id>/run-now
 POST /admin/api/secrets/set
 POST /admin/api/secrets/unset
+POST /admin/api/sentry/alerts/<int:alert_id>/status
 POST /admin/api/seo/generate
 POST /admin/api/services
 POST /admin/api/services/<int:svc_id>/addons
@@ -453,6 +464,7 @@ POST /api/events/<string:slug>/rsvp
 POST /api/forms/<slug>/partial
 POST /api/forms/<slug>/submit
 POST /api/generated-pages
+POST /api/sentry/webhook
 POST /api/service-bookings/<string:token>/contract
 POST /api/services/<string:slug>/book
 POST /api/services/<string:slug>/booking-partial
