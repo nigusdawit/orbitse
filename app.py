@@ -24106,6 +24106,12 @@ _ADMIN_APPEARANCE_EXTRA = {
     "text":    {"kind": "pcolor", "default": {"dark": "#e8edf6", "light": "#19233a"}},
     "muted":   {"kind": "pcolor", "default": {"dark": "#aab2c0", "light": "#5b6577"}},
     "border":  {"kind": "pcolor", "default": {"dark": "#2a3344", "light": "#d4dae6"}},
+    # F · navigation shell (task 090) — BEHAVIOUR knobs, NOT CSS. Super-admin sets
+    # the org-wide default nav + whether normal admins may switch their own view.
+    # Validated/persisted via the same registry path, but intentionally absent from
+    # _ADMIN_EXTRA_VAR_MAP and the dashboard data-attr list, so they never emit CSS.
+    "nav_default":        {"kind": "enum", "default": "classic", "choices": ("classic", "workspaces")},
+    "nav_allow_override": {"kind": "bool", "default": True},
 }
 
 _HEX_RE = re.compile(r"^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\Z")  # valid CSS hex lengths only; \Z (not $) so a trailing newline can't slip through
@@ -24147,7 +24153,10 @@ def _coerce_appearance_extra(src):
             v = str(src.get(key) or "").strip()
             flat[key] = v if v in spec["choices"] else spec["default"]
         elif kind == "bool":
-            flat[key] = bool(src.get(key))
+            # Respect the spec default when the key is ABSENT (the stored blob omits
+            # defaults), so a True-default bool reads back True — not False. An
+            # explicit False in the payload still coerces to False.
+            flat[key] = bool(src.get(key, spec["default"]))
         elif kind == "pcolor":
             for theme in ("dark", "light"):
                 fk = "%s_%s" % (key, theme)

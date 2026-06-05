@@ -223,6 +223,19 @@
           <label class="ap-check"><input type="checkbox" id="ap-motion" onchange="apToggle('reduce_motion',this.checked)"> Reduce motion</label>
         </div>
 
+        <!-- Navigation governance (task 090) — super-admin only (the whole tab is). -->
+        <div class="gx-card ap-seg-wrap">
+          <div class="gx-card-h"><span class="gx-ico">&#9776;</span>Navigation</div>
+          <div class="gx-hint" style="margin-bottom:.7rem">Pick the admin's default navigation. <b>Classic</b> is today's sidebar; <b>Workspaces</b> is the module rail + &#8984;K palette. This sets the org-wide default — use the header toggle to change just your own view.</div>
+          <div class="gx-field"><label class="gx-label">Default navigation</label>
+            <div class="gx-seg" data-ap-seg="nav_default">
+              <button type="button" data-val="classic"    onclick="apSet('nav_default','classic')">Classic</button>
+              <button type="button" data-val="workspaces" onclick="apSet('nav_default','workspaces')">Workspaces</button>
+            </div>
+          </div>
+          <label class="ap-check"><input type="checkbox" id="ap-nav-override" onchange="apToggle('nav_allow_override',this.checked)"> Let other admins switch their own view</label>
+        </div>
+
         <div class="gx-hint" id="ap-status" style="min-height:1.2em"></div>
       </div>
 
