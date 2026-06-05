@@ -82,6 +82,8 @@ import httpx
 import psycopg2
 import psycopg2.extras
 import sentry_sdk
+import logging
+from sentry_sdk.integrations.logging import LoggingIntegration
 from cryptography.fernet import Fernet, InvalidToken
 
 import io
@@ -217,6 +219,10 @@ if sentry_dsn:
         environment=os.environ.get("SENTRY_ENV", "production"),
         send_default_pii=False,       # Don't send personally identifiable information
         before_send=_sentry_before_send,  # noise filter + live mute toggle (fail-open)
+        # task 092 — route Python logging into Sentry: any app.logger.error/
+        # exception(...) becomes an event. level=None disables breadcrumb capture
+        # (avoids noise); only ERROR-level+ logs are sent as events.
+        integrations=[LoggingIntegration(level=None, event_level=logging.ERROR)],
     )
     if SENTRY_RELEASE:                # omit entirely if we couldn't derive one
         _sentry_init_kwargs["release"] = SENTRY_RELEASE
@@ -741,6 +747,7 @@ ELEVENLABS_API_BASE = "https://api.elevenlabs.io/v1"
 # the tests all keep resolving unchanged. Full implementation: see core.py.
 from core import (  # noqa: E402 - re-export the DB layer that now lives in core.py
     get_db, query_db, execute_db,            # public DB API (used throughout app.py)
+    capture_exc,                             # task 092 — report HANDLED exceptions to Sentry
     _init_db_pool, _resolve_pool_sizes,      # pool internals referenced by the tests
     _DB_POOL_MIN, _DB_POOL_MAX,              # pool-size constants (stats endpoint + tests)
     current_tenant_id,                       # tenant resolver (returns 1); 84 call sites + velo_handlers
@@ -6106,7 +6113,8 @@ def plugin_update_manifest():
     try:
         with open(manifest_path) as f:
             data = json.load(f)
-    except Exception:
+    except Exception as e:
+        capture_exc(e, "plugin_update_manifest")
         return jsonify({"error": "manifest unreadable"}), 500
     zip_name = data.get("zip", "ai-concierge.zip")
     if not _PLUGIN_ZIP_RE.match(zip_name):
@@ -6211,6 +6219,7 @@ def wp_plugin_build():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
+        capture_exc(e, "wp_plugin_build")
         print(f"[wp-plugin] build failed: {e}")
         return jsonify({"error": "Build failed. Check the server logs."}), 500
     return jsonify({"ok": True, "bumped": bumped, "version": info["version"],
@@ -6887,6 +6896,7 @@ def setup_wizard_preset(name):
         with open(path, "r", encoding="utf-8") as f:
             return jsonify(_wizard_json.load(f))
     except Exception as e:
+        capture_exc(e, "setup_wizard_preset")
         return jsonify({"error": str(e)}), 500
 
 
@@ -6956,6 +6966,7 @@ def setup_wizard_post():
             "INSERT INTO site_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING"
         )
     except Exception as e:
+        capture_exc(e, "setup_wizard_post")
         return jsonify({"error": f"Could not initialise site_settings row: {e}"}), 500
 
     # Atomic claim. Two concurrent POSTs would both pass the earlier gate
@@ -6970,6 +6981,7 @@ def setup_wizard_post():
             "RETURNING id"
         )
     except Exception as e:
+        capture_exc(e, "setup_wizard_post")
         return jsonify({"error": f"Could not reserve setup slot: {e}"}), 500
     if not claimed:
         return jsonify({"error": "Setup is already in progress or has finished."}), 409
@@ -6996,6 +7008,7 @@ def setup_wizard_post():
     try:
         summary = bootstrap_install({"template": tpl})
     except Exception as e:
+        capture_exc(e, "setup_wizard_post")
         released, rel_err = _release_claim()
         return jsonify({
             "ok": False,
@@ -7061,6 +7074,7 @@ def setup_wizard_post():
         # Reload module-level cache so the current process accepts the new pw.
         ADMIN_PASSWORD = pw
     except Exception as _pw_err:
+        capture_exc(_pw_err, "setup_wizard_post")
         released, rel_err = _release_claim()
         return jsonify({
             "ok": False,
@@ -8911,6 +8925,7 @@ def api_event_rsvp(slug):
                     },
                 )
             except Exception as e:
+                capture_exc(e, "api_event_rsvp")
                 conn.rollback()
                 return jsonify({"error": f"Stripe error: {e}"}), 502
 
@@ -20727,9 +20742,10 @@ def admin_agent_chat_stream():
                     persist_fn=_ai_activity_persist,
                     redact_enabled=get_ai_setting("redact_enabled")):
                 yield f"data: {json.dumps(evt)}\n\n"
-        except Exception:
+        except Exception as e:
             import traceback
             traceback.print_exc()
+            capture_exc(e, "admin_chat_stream")  # task 092 — SSE errors bypass FlaskIntegration
             yield (
                 "data: "
                 + json.dumps({
@@ -20910,6 +20926,7 @@ def admin_chat_attachment_upload():
     try:
         storage.get_storage().write_bytes(storage_key, blob, content_type=mime)
     except Exception as e:
+        capture_exc(e, "admin_chat_attachment_upload")
         print(f"[admin_chat] storage write failed: {e}")
         return jsonify({"error": "storage write failed"}), 500
 
@@ -20934,6 +20951,7 @@ def admin_chat_attachment_upload():
         )
         att_id = int(row["id"]) if isinstance(row, dict) and row.get("id") else None
     except Exception as e:
+        capture_exc(e, "admin_chat_attachment_upload")
         print(f"[admin_chat] attachment insert failed: {e}")
         return jsonify({"error": "db insert failed"}), 500
 
@@ -20986,6 +21004,7 @@ def admin_chat_transcribe():
         except (TypeError, ValueError):
             duration = 0.0
     except Exception as e:
+        capture_exc(e, "admin_chat_transcribe")
         print(f"[admin_chat] whisper failed: {e}")
         return jsonify({"error": "transcription failed"}), 500
     _log_voice_usage(feature_type="stt_whisper", char_count=len(text),
@@ -24707,6 +24726,7 @@ def _render_pdf_to_slide_rows(pdf_bytes, created_files, fitz_mod, pil_image_mod)
                 )
                 created_files.append(unique_name)
             except Exception as _e:
+                capture_exc(_e, "_render_pdf_to_slide_rows")
                 # Storage write failure is a server-side problem, not the
                 # admin's fault — return 500 so they don't think their
                 # file is malformed.
@@ -24719,6 +24739,7 @@ def _render_pdf_to_slide_rows(pdf_bytes, created_files, fitz_mod, pil_image_mod)
                 "narration_text": narration[:5000],
             })
     except Exception as e:
+        capture_exc(e, "_render_pdf_to_slide_rows")
         # Rendering loop blew up after we'd already validated the PDF
         # opened — that means something internal failed (PyMuPDF crash,
         # corrupt page object, etc.), not bad user input.
@@ -24856,11 +24877,13 @@ def admin_import_presentation():
     if kind in ("pdf", "office"):
         try:
             import fitz  # PyMuPDF
-        except ImportError:
+        except ImportError as e:
+            capture_exc(e, "admin_import_presentation")
             return jsonify({"error": "Deck import unavailable: PyMuPDF not installed."}), 500
         try:
             from PIL import Image as _PILImage
-        except ImportError:
+        except ImportError as e:
+            capture_exc(e, "admin_import_presentation")
             return jsonify({"error": "Deck import unavailable: Pillow not installed."}), 500
 
         src_bytes = files[0].read()
@@ -24906,6 +24929,7 @@ def admin_import_presentation():
                 storage.get_storage().write_fileobj(unique_name, f)
                 created_files.append(unique_name)
             except Exception as e:
+                capture_exc(e, "admin_import_presentation")
                 _cleanup_created_files()
                 return jsonify({"error": f"Could not save uploaded image: {str(e)[:300]}"}), 500
             slide_rows.append({
@@ -24953,6 +24977,7 @@ def admin_import_presentation():
                 )
         conn.commit()
     except Exception as e:
+        capture_exc(e, "admin_import_presentation")
         try: conn.rollback()
         except Exception: pass
         _cleanup_created_files()
@@ -26823,6 +26848,7 @@ def admin_generate_seo():
             "seo_keywords": keywords,
         })
     except Exception as e:
+        capture_exc(e, "admin_generate_seo")
         return jsonify({"error": f"Failed to generate SEO suggestions: {str(e)}"}), 500
 
 
@@ -28026,6 +28052,7 @@ def admin_devconsole_test_email():
             "provider_id": result.get("id"),
         })
     except messaging.MessagingError as e:
+        capture_exc(e, "admin_devconsole_test_email")
         return jsonify({"ok": False, "to": to_email, "error": str(e)}), 502
 
 
@@ -28063,6 +28090,7 @@ def admin_devconsole_test_sms():
             "segments": result.get("num_segments"),
         })
     except messaging.MessagingError as e:
+        capture_exc(e, "admin_devconsole_test_sms")
         return jsonify({"ok": False, "to": to_phone, "error": str(e)}), 502
 
 
@@ -28080,6 +28108,7 @@ def admin_devconsole_reregister_velo():
         register_with_velo(force=True)
         return jsonify({"ok": True})
     except Exception as e:
+        capture_exc(e, "admin_devconsole_reregister_velo")
         return jsonify({"ok": False, "error": str(e)}), 502
 
 
@@ -28186,6 +28215,7 @@ def admin_stripe_set_mode():
         _ss.set_mode(mode)
         _sc.invalidate_cache()
     except Exception as e:
+        capture_exc(e, "admin_stripe_set_mode")
         return jsonify({"ok": False, "error": str(e)}), 500
     return jsonify({
         "ok": True,
@@ -28207,6 +28237,7 @@ def admin_stripe_set_autosync():
     try:
         _ss.set_autosync(enabled)
     except Exception as e:
+        capture_exc(e, "admin_stripe_set_autosync")
         return jsonify({"ok": False, "error": str(e)}), 500
     return jsonify({"ok": True, "autosync_products": enabled})
 
@@ -28354,6 +28385,7 @@ def admin_secrets_status():
             "platform": "replit" if _env_manager.is_replit_platform() else "other",
         })
     except Exception as e:
+        capture_exc(e, "admin_secrets_status")
         return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
 
 
@@ -28389,6 +28421,7 @@ def admin_secrets_set():
     except _env_manager.EnvManagerError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:
+        capture_exc(e, "admin_secrets_set")
         return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
 
 
@@ -28412,6 +28445,7 @@ def admin_secrets_unset():
     except _env_manager.EnvManagerError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:
+        capture_exc(e, "admin_secrets_unset")
         return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
 
 
@@ -28895,6 +28929,7 @@ def admin_update_appearance():
              font_family, surface, sidebar, high_contrast, reduce_motion,
              json.dumps(extra_blob)))
     except Exception as e:
+        capture_exc(e, "admin_update_appearance")
         print(f"[appearance] save failed: {type(e).__name__}: {e}")
         return jsonify({"error": "Could not save appearance."}), 500
     # Echo the authoritative validated values: the existing 14 keys (unchanged
@@ -30598,10 +30633,12 @@ def api_voice_tts():
             elevenlabs_model=model if provider == "elevenlabs" else "",
         )
     except RuntimeError as e:
+        capture_exc(e, "api_voice_tts")
         # Configuration / missing-key errors are user-facing
         print(f"[TTS config error] {e}")
         return jsonify({"error": str(e)}), 503
     except Exception as e:
+        capture_exc(e, "api_voice_tts")
         print(f"[TTS generation error] {e}")
         return jsonify({"error": "TTS generation failed"}), 500
 
@@ -30908,6 +30945,7 @@ def api_voice_stt():
         except (TypeError, ValueError):
             duration = 0.0
     except Exception as e:
+        capture_exc(e, "api_voice_stt")
         print(f"[Whisper STT error] {e}")
         return jsonify({"error": "Transcription failed"}), 500
 
@@ -30979,8 +31017,10 @@ def api_voice_sample():
             sample_model = model or "tts-1"
             sample_voice = voice_id or "alloy"
     except RuntimeError as e:
+        capture_exc(e, "api_voice_sample")
         return jsonify({"error": str(e)}), 503
     except Exception as e:
+        capture_exc(e, "api_voice_sample")
         print(f"[Voice sample error] {e}")
         return jsonify({"error": "Sample generation failed"}), 500
 
@@ -31126,6 +31166,7 @@ def admin_list_elevenlabs_voices():
             }), 502
         body = resp.json() or {}
     except Exception as e:
+        capture_exc(e, "admin_list_elevenlabs_voices")
         print(f"[ElevenLabs voices error] {e}")
         return jsonify({"error": "Failed to fetch ElevenLabs voices", "voices": []}), 500
 
@@ -31292,6 +31333,7 @@ def admin_generate_intro_audio(intro_id):
             )
             log_voice_id = openai_voice
     except Exception as e:
+        capture_exc(e, "admin_generate_intro_audio")
         print(f"[Admin TTS generation error] provider={'elevenlabs' if use_elevenlabs else 'openai'} {e}")
         return jsonify({"error": str(e)}), 500
 
@@ -31570,6 +31612,7 @@ def api_checkout_create_payment_intent():
                     automatic_payment_methods={"enabled": True},
                 )
             except Exception as e:
+                capture_exc(e, "api_checkout_create_payment_intent")
                 conn.rollback()
                 return jsonify({"error": f"Stripe error: {e}"}), 502
 
@@ -31584,6 +31627,7 @@ def api_checkout_create_payment_intent():
                 "order_id": order_id,
             })
     except Exception as e:
+        capture_exc(e, "api_checkout_create_payment_intent")
         conn.rollback()
         return jsonify({"error": str(e)}), 500
     finally:
@@ -32388,6 +32432,7 @@ def api_book_service(slug):
                 "checkout_url": session.url,
             }), 201
         except Exception as e:
+            capture_exc(e, "api_book_service")
             execute_db(
                 "UPDATE service_bookings SET status = 'cancelled', "
                 "payment_status = 'expired' WHERE id = %s",
@@ -32609,7 +32654,8 @@ def api_stripe_webhook():
 
     try:
         stripe = stripe_client.get_stripe()
-    except RuntimeError:
+    except RuntimeError as e:
+        capture_exc(e, "api_stripe_webhook")
         return jsonify({"error": "Stripe not configured"}), 503
 
     if secret:
@@ -32865,6 +32911,7 @@ def admin_orders_refund(oid):
             kwargs["amount"] = int(data["amount_cents"])
         refund = stripe.Refund.create(**kwargs)
     except Exception as e:
+        capture_exc(e, "admin_orders_refund")
         return jsonify({"error": f"Stripe refund failed: {e}"}), 502
 
     # Stripe refund succeeded — mark refunded and restore stock atomically.
@@ -33368,6 +33415,7 @@ def admin_overview_stats():
             "ai_attributed_leads_week": ai_attributed_leads_week,
         })
     except Exception as e:
+        capture_exc(e, "admin_overview_stats")
         app.logger.exception("overview stats failed: %s", e)
         return jsonify({"error": "Failed to load stats"}), 500
 
@@ -34156,6 +34204,7 @@ def admin_datahub_grantable_tables(cid):
     try:
         objs = _dh_intro_objects(cid, kind, url)
     except Exception as e:
+        capture_exc(e, "admin_datahub_grantable_tables")
         print(f"[datahub] grantable-tables introspect failed (conn {cid}): "
               f"{type(e).__name__}: {e}")
         return jsonify({"error": "Could not connect to that database."}), 502
@@ -40070,6 +40119,7 @@ def admin_review_requests_create():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
+        capture_exc(e, "admin_review_requests_create")
         return jsonify({"error": f"Failed to create request: {e}"}), 500
     if body.get("send_now", True):
         # Kick the dispatcher in a background thread so the admin doesn't
@@ -40817,6 +40867,7 @@ def admin_messaging_ai_draft():
                                        model="gpt-4o-mini")
         text = (response.choices[0].message.content or "").strip()
     except Exception as e:
+        capture_exc(e, "admin_messaging_ai_draft")
         return jsonify({"error": f"AI drafting failed: {e}"}), 502
     cleaned = re.sub(r"^```(?:json)?\s*", "", text)
     cleaned = re.sub(r"\s*```$", "", cleaned)

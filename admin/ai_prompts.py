@@ -33,6 +33,7 @@ Registered in app.py via app.register_blueprint(ai_prompts_bp), after tenancy_bp
 from flask import Blueprint, request, jsonify, session
 
 from core import (
+    capture_exc,
     query_db,
     execute_db,
     admin_required,
@@ -119,6 +120,7 @@ def admin_update_ai_prompt(key):
             (key, content, who),
         )
     except Exception as e:
+        capture_exc(e, "ai_prompts.admin_update_ai_prompt")
         print(f"[ai-prompts] save failed for {key}: {e}")
         return jsonify({"error": "save_failed"}), 500
     _invalidate_prompt_cache()
@@ -149,6 +151,7 @@ def admin_reset_ai_prompt(key):
             (key, default_text, who),
         )
     except Exception as e:
+        capture_exc(e, "ai_prompts.admin_reset_ai_prompt")
         print(f"[ai-prompts] reset failed for {key}: {e}")
         return jsonify({"error": "reset_failed"}), 500
     _invalidate_prompt_cache()

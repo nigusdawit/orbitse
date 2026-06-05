@@ -35,6 +35,7 @@ Registered in app.py via app.register_blueprint(ai_control_bp), after products_b
 from flask import Blueprint, request, jsonify
 
 from core import (
+    capture_exc,
     query_db,
     admin_required,
     _require_super_admin_role,
@@ -96,6 +97,7 @@ def admin_set_ai_control(key):
     except ValueError as ve:
         return jsonify({"error": "invalid", "detail": str(ve)}), 400
     except Exception as e:
+        capture_exc(e, "ai_control.admin_set_ai_control")
         print(f"[ai-control] set {key} failed: {e}")
         return jsonify({"error": "save_failed", "detail": str(e)}), 500
 
@@ -114,6 +116,7 @@ def admin_reset_ai_control(key):
     except ValueError as ve:
         return jsonify({"error": "invalid", "detail": str(ve)}), 400
     except Exception as e:
+        capture_exc(e, "ai_control.admin_reset_ai_control")
         print(f"[ai-control] reset {key} failed: {e}")
         return jsonify({"error": "reset_failed", "detail": str(e)}), 500
 
