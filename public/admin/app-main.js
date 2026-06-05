@@ -6558,6 +6558,7 @@
         }).join('');
       } catch (err) {
         console.error('Error loading pages:', err);
+        window.appReportError(err, 'app-main.js:loadPages');
       }
     }
 
@@ -6582,6 +6583,7 @@
         modal.style.display = 'block';
       } catch (err) {
         console.error('Error previewing page:', err);
+        window.appReportError(err, 'app-main.js:previewPage');
       }
     }
 
@@ -6603,6 +6605,7 @@
         loadPages();
       } catch (err) {
         console.error('Error updating page:', err);
+        window.appReportError(err, 'app-main.js:togglePageStatus');
       }
     }
 
@@ -6613,6 +6616,7 @@
         loadPages();
       } catch (err) {
         console.error('Error deleting page:', err);
+        window.appReportError(err, 'app-main.js:deletePage');
       }
     }
 
@@ -6652,6 +6656,7 @@
         renderSphereImages(data.custom_images || []);
       } catch (err) {
         console.error('Error loading sphere settings:', err);
+        window.appReportError(err, 'app-main.js:loadSphereSettings');
       }
     }
 
@@ -6675,6 +6680,7 @@
         }
       } catch (err) {
         console.error('Error toggling sphere enabled:', err);
+        window.appReportError(err, 'app-main.js:toggleSphereEnabled');
         if (status) { status.textContent = 'Save failed'; status.style.color = '#f87171'; }
       }
     }
@@ -6705,6 +6711,7 @@
         alert('Sphere settings saved!');
       } catch (err) {
         console.error('Error saving sphere settings:', err);
+        window.appReportError(err, 'app-main.js:saveSphereSettings');
         alert('Error saving sphere settings');
       }
     }
@@ -6784,6 +6791,7 @@
         loadSphereSettings();
       } catch (err) {
         console.error('Error adding sphere image:', err);
+        window.appReportError(err, 'app-main.js:addSphereImage');
       }
     }
 
@@ -6799,6 +6807,7 @@
         }
       } catch (err) {
         console.error('Error uploading image:', err);
+        window.appReportError(err, 'app-main.js:uploadSphereImage');
       }
       input.value = '';
     }
@@ -6810,6 +6819,7 @@
         loadSphereSettings();
       } catch (err) {
         console.error('Error deleting sphere image:', err);
+        window.appReportError(err, 'app-main.js:deleteSphereImage');
       }
     }
 
@@ -6854,6 +6864,7 @@
         onSttProviderChange();
       } catch (err) {
         console.error('Error loading voice settings:', err);
+        window.appReportError(err, 'app-main.js:loadVoiceSettings');
       }
     }
 
@@ -7501,6 +7512,7 @@
       } catch (err) {
         if (err.authExpired) return; /* adminFetch already handled it */
         console.error('Error saving voice settings:', err);
+        window.appReportError(err, 'app-main.js:saveVoiceSettings');
         showToast('Could not save voice settings', 'error');
       } finally {
         restore();
@@ -7634,6 +7646,7 @@
       } catch (err) {
         if (err.authExpired) { restore(); return; }
         console.error('Voice preview error:', err);
+        window.appReportError(err, 'app-main.js:playVoicePreview');
         showToast('Could not generate sample', 'error');
         restore();
       }
@@ -7692,6 +7705,7 @@
       } catch (err) {
         if (err.authExpired) return;
         console.error('ElevenLabs voices fetch error:', err);
+        window.appReportError(err, 'app-main.js:loadElevenLabsVoices');
         select.innerHTML = '<option value="">— Error —</option>';
         status.textContent = 'Failed to load voices: ' + err.message;
         status.style.color = '#a64242';
@@ -7732,6 +7746,7 @@
         renderVoiceIntros();
       } catch (err) {
         console.error('Error loading voice intros:', err);
+        window.appReportError(err, 'app-main.js:loadVoiceIntros');
       }
     }
 
@@ -7899,6 +7914,7 @@
         showToast(id ? 'Intro updated' : 'Intro created');
       } catch (err) {
         console.error('Error saving voice intro:', err);
+        window.appReportError(err, 'app-main.js:saveVoiceIntro');
         showToast('Could not save intro', 'error');
       }
     }
@@ -7911,6 +7927,7 @@
         showToast('Intro deleted');
       } catch (err) {
         console.error('Error deleting voice intro:', err);
+        window.appReportError(err, 'app-main.js:deleteVoiceIntro');
       }
     }
 
@@ -7937,6 +7954,7 @@
       } catch (err) {
         if (err.authExpired) return;
         console.error('Error generating audio:', err);
+        window.appReportError(err, 'app-main.js:generateVoiceIntroAudio');
         showToast('Could not generate audio', 'error');
       } finally {
         restore();
@@ -7967,6 +7985,7 @@
         }
       } catch (err) {
         console.error('Error loading voice usage:', err);
+        window.appReportError(err, 'app-main.js:loadVoiceUsage');
       }
     }
 
@@ -8271,7 +8290,7 @@
         }
       }
       if (typeof _mediaPickerState.onSelect === 'function') {
-        try { _mediaPickerState.onSelect(item); } catch (e) { console.error(e); }
+        try { _mediaPickerState.onSelect(item); } catch (e) { console.error(e); window.appReportError(e, 'app-main.js:_pickMediaItem'); }
       }
       closeMediaPicker();
     }
@@ -8565,6 +8584,7 @@
         if (updatedEl) updatedEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
       } catch (e) {
         console.error('overview load failed', e);
+        window.appReportError(e, 'app-main.js:loadOverview');
         if (grid) grid.innerHTML = '<div class="overview-empty">Could not load overview stats.</div>';
       }
     }
@@ -15221,6 +15241,7 @@
         if (updated) updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
       } catch (e) {
         console.error('wp-plugin load failed', e);
+        window.appReportError(e, 'app-main.js:loadWpPlugin');
         document.getElementById('wp-release-info').innerHTML =
           '<div class="empty-state" style="color:#ef4444;">Could not load: ' + escapeHTML(String(e.message || e)) + '</div>';
       }
@@ -15488,6 +15509,7 @@
         if (updated) updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
       } catch (e) {
         console.error('plans/features load failed', e);
+        window.appReportError(e, 'app-main.js:loadPlansFeatures');
         if (list) list.innerHTML = '<div class="empty-state" style="padding:1.5rem; color:#ef4444;">Could not load features: ' + escapeHTML(String(e.message || e)) + '</div>';
       }
     }
@@ -15575,6 +15597,7 @@
         loadPlansFeatures();
       } catch (e) {
         console.error('toggle failed', e);
+        window.appReportError(e, 'app-main.js:togglePlanFeature');
         input.checked = !enabled;
         showToast('Failed to toggle: ' + (e.message || e), 'error');
       } finally {
@@ -15611,6 +15634,7 @@
         if (updated) updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
       } catch (e) {
         console.error('cost load failed', e);
+        window.appReportError(e, 'app-main.js:loadCost');
       }
     }
 
@@ -15767,6 +15791,7 @@
         });
       } catch (e) {
         console.error('cost series failed', e);
+        window.appReportError(e, 'app-main.js:loadCostSeries');
       }
     }
 
@@ -15836,6 +15861,7 @@
         set('cost-cap-digest-email', c.digest_email || '');
       } catch (e) {
         console.error('cap load failed', e);
+        window.appReportError(e, 'app-main.js:loadCostCap');
       }
     }
 

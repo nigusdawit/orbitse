@@ -319,6 +319,7 @@ async function loadAllData() {
 
   } catch (error) {
     console.error('Failed to load site data:', error);
+    window.appReportError(error, 'script.js:loadAllData');
     hideLoadingScreen();
   }
 }
@@ -5841,6 +5842,7 @@ async function initChatbot() {
 
   } catch (error) {
     console.error('Failed to initialize chatbot:', error);
+    window.appReportError(error, 'script.js:initChatbot');
   }
 }
 
@@ -6676,6 +6678,7 @@ async function chatSendStreaming(message, wasCollapsed) {
               saveGeneratedPage(autoHtml, autoTitle);
             } catch (canvasErr) {
               console.error('Canvas auto-open error:', canvasErr, canvasErr.stack);
+              window.appReportError(canvasErr, 'script.js:chatSendStreaming');
               /* Graceful fallback — just show a trimmed preview in the hero */
               const heroEl = document.getElementById('hero-description');
               if (heroEl) typeHeroText(heroEl, displayText.substring(0, 150) + '…');
@@ -6793,6 +6796,7 @@ async function chatSendStreaming(message, wasCollapsed) {
 
   } catch (error) {
     console.error('Chat error:', error);
+    window.appReportError(error, 'script.js:chatSendStreaming');
     showBarThinking(false);
     chatShowTyping(false);
     chatSetStatus(null);
@@ -8017,6 +8021,7 @@ function executeCommand(cmd) {
       .catch(err => {
         chatShowTyping(false);
         console.error('Service booking error:', err);
+        window.appReportError(err, 'script.js:executeCommand.bookService');
         chatAddMessage('agent', 'I had trouble submitting that booking. Could we try again in a moment?');
       });
       break;
@@ -8160,6 +8165,7 @@ function executeCommand(cmd) {
       .catch(err => {
         chatShowTyping(false);
         console.error('Form submission error:', err);
+        window.appReportError(err, 'script.js:executeCommand.submitForm');
         chatAddMessage('agent', 'I had trouble submitting your information. Please try again in a moment.');
       });
       break;

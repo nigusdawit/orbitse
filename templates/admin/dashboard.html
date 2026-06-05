@@ -56,6 +56,11 @@ TO CUSTOMIZE THIS DASHBOARD:
   <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
   <!-- CSRF token: rotated per session, validated on every state-changing /admin/* request. -->
   <meta name="csrf-token" content="{{ csrf_token }}">
+  {# task 092 P1 — browser Sentry boot (config + appReportError shim + async CDN
+     loader). Built server-side; "" when no DSN, so this renders nothing when
+     Sentry is off. Early in <head> so window.appReportError exists before any
+     admin script runs. #}
+  {% if sentry_html %}{{ sentry_html|safe }}{% endif %}
   <title>Admin Dashboard</title>
 
   <!-- Google Fonts — same as the main site for visual consistency -->

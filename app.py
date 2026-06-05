@@ -228,6 +228,93 @@ if sentry_dsn:
         _sentry_init_kwargs["release"] = SENTRY_RELEASE
     sentry_sdk.init(**_sentry_init_kwargs)
 
+
+# -----------------------------------------------------------------------------
+# Frontend (browser) Sentry — task 092 P1
+# -----------------------------------------------------------------------------
+# The init above only covers Python. To genuinely "catch all errors" we also
+# boot Sentry in the browser on BOTH the admin dashboard and the public site —
+# unhandled JS errors were a 100% blind spot before this. Same no-build
+# convention as the rest of the app (a CDN <script>, no bundler).
+#
+# The browser SDK version is a config knob so the owner can pin/bump it without
+# a code change (every version is served from browser.sentry-cdn.com).
+SENTRY_BROWSER_VERSION = (os.environ.get("SENTRY_BROWSER_VERSION") or "8.55.0").strip()
+
+
+def _frontend_sentry_config():
+    """Browser Sentry config for server-rendered pages, or None to inject nothing.
+
+    Returns None whenever no DSN is configured, so pages stay byte-identical and
+    the SDK never loads when Sentry is off. The DSN is publish-safe by design
+    (browser DSNs are meant to live in client code); we prefer a dedicated
+    SENTRY_DSN_FRONTEND when the owner wants a separate browser project, else
+    fall back to the same SENTRY_DSN the backend uses. `enabled` mirrors the
+    super-admin error-tracking mute toggle the backend before_send honors, so
+    turning it off (and reloading) stops browser capture too. Fail-open: an
+    unreadable toggle is treated as enabled (the injected JS still self-guards)."""
+    dsn = (os.environ.get("SENTRY_DSN_FRONTEND") or os.environ.get("SENTRY_DSN") or "").strip()
+    if not dsn:
+        return None
+    try:
+        enabled = bool(get_ai_setting("error_tracking_enabled"))
+    except Exception:
+        enabled = True  # fail-open: toggle unreadable -> allow (JS self-guards)
+    return {
+        "dsn": dsn,
+        "environment": os.environ.get("SENTRY_ENV", "production"),
+        "release": SENTRY_RELEASE or "",
+        "enabled": enabled,
+        "v": SENTRY_BROWSER_VERSION,
+    }
+
+
+def _build_frontend_sentry_html():
+    """Full <script> block that boots browser Sentry — task 092 P1.
+
+    ONE source of truth used by BOTH shells: the admin dashboard (passed to
+    dashboard.html as `sentry_html`, rendered with |safe) and the public site
+    (string-injected at the <!-- SENTRY_INJECT --> placeholder in
+    _render_app_shell_response). Returns "" when no DSN is configured.
+
+    The block, in order:
+      1. window.__SENTRY_CONFIG__ - the server-rendered config. (Deliberately
+         NOT window.__SENTRY__, which the SDK reserves for its internal hub.)
+      2. window.appReportError(err, where) - the browser twin of core.py's
+         capture_exc(): report a CAUGHT error. Defined synchronously so call
+         sites never hit "undefined"; no-ops until the SDK is live; never throws.
+      3. an async loader that injects the versioned CDN bundle and calls
+         Sentry.init() on load - which auto-captures window.onerror +
+         unhandledrejection (every UNHANDLED browser error).
+    Every part is wrapped in try/catch so a Sentry hiccup can't break the page.
+    The DSN/release/env are owner-controlled env values (not user input); we
+    still neutralize any "</script>" sequence in the JSON defensively."""
+    cfg = _frontend_sentry_config()
+    if not cfg:
+        return ""
+    import json as _json
+    blob = _json.dumps(cfg, separators=(",", ":")).replace("</", "<\\/")
+    return (
+        "<script>"
+        "window.__SENTRY_CONFIG__=" + blob + ";"
+        "window.appReportError=function(err,where){try{"
+        "if(window.Sentry&&window.Sentry.captureException){"
+        "window.Sentry.captureException(err,where?{tags:{handled_at:String(where).slice(0,120),error_kind:'handled'}}:undefined);"
+        "}}catch(e){}};"
+        "(function(){try{var c=window.__SENTRY_CONFIG__;"
+        "if(!c||!c.dsn||!c.enabled)return;"
+        "var s=document.createElement('script');"
+        "s.src='https://browser.sentry-cdn.com/'+(c.v||'8.55.0')+'/bundle.min.js';"
+        "s.crossOrigin='anonymous';"
+        "s.onload=function(){try{if(window.Sentry&&window.Sentry.init){"
+        "window.Sentry.init({dsn:c.dsn,environment:c.environment,release:c.release||undefined,sendDefaultPii:false});"
+        "}}catch(e){}};"
+        "document.head.appendChild(s);"
+        "}catch(e){}})();"
+        "</script>"
+    )
+
+
 # =============================================================================
 # APP CONFIGURATION
 # =============================================================================
@@ -8037,6 +8124,19 @@ def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_
                 html_content = html_content.replace(
                     "</head>", injection + "\n</head>", 1
                 )
+
+        # task 092 P1 — boot browser Sentry on the public site (mirrors the
+        # admin shell via the SAME _build_frontend_sentry_html() builder). The
+        # block is "" when no DSN is set, so replacing the placeholder with ""
+        # cleanly removes it and the homepage stays byte-identical with Sentry
+        # off. Legacy designs saved before the placeholder existed get the
+        # before-</head> fallback (the loader is async + self-guarded, so its
+        # position in <head> is not sensitive like the preconnect hints are).
+        sentry_html = _build_frontend_sentry_html()
+        if "<!-- SENTRY_INJECT -->" in html_content:
+            html_content = html_content.replace("<!-- SENTRY_INJECT -->", sentry_html)
+        elif sentry_html:
+            html_content = html_content.replace("</head>", sentry_html + "\n</head>", 1)
 
         # ----------------------------------------------------------------
         # First-paint logo treatment + accent-gradient body class injection
@@ -24409,6 +24509,8 @@ def admin_dashboard():
         has_feature=tenant_has_feature,
         is_super_admin=_is_super_admin,
         appearance=_admin_appearance(),
+        # task 092 P1 — browser Sentry boot block ("" when no DSN). |safe in tpl.
+        sentry_html=_build_frontend_sentry_html(),
     )
 
 
