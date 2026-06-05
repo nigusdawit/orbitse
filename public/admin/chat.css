@@ -609,7 +609,7 @@ body:has(#tab-admin-chat.tab-content.active) #admin-asst-quick{ display: none !i
   box-shadow: var(--admin-shadow);
   -webkit-backdrop-filter: var(--admin-blur);
   backdrop-filter: var(--admin-blur);
-  transition: transform .18s var(--acg-spring), box-shadow .18s ease, border-color .18s ease;
+  transition: transform .18s var(--acg-spring), box-shadow .18s ease, border-color .18s ease, padding .35s ease, gap .3s ease;
 }
 #admin-asst-launcher:hover{
   transform: translateY(-2px);
@@ -635,7 +635,15 @@ body:has(#tab-admin-chat.tab-content.active) #admin-asst-quick{ display: none !i
   background: linear-gradient(135deg, var(--admin-accent), var(--admin-accent-2));
   box-shadow: 0 4px 12px color-mix(in srgb, var(--admin-accent) 40%, transparent);
 }
-.admin-asst-launcher-label{ white-space: nowrap; }
+.admin-asst-launcher-label{ white-space: nowrap; overflow: hidden; max-width: 12rem; opacity: 1; transition: max-width .35s ease, opacity .25s ease; }
+/* task 091 — after a few seconds on load the launcher collapses to just the orb
+   (the label slides away). Hover / keyboard-focus re-expands it; the button
+   stays fully clickable while collapsed. */
+#admin-asst-launcher.collapsed{ gap: 0; padding: .55rem; }
+#admin-asst-launcher.collapsed .admin-asst-launcher-label{ max-width: 0; opacity: 0; }
+#admin-asst-launcher.collapsed:hover, #admin-asst-launcher.collapsed:focus-visible{ gap: .55rem; padding: .6rem 1.05rem .6rem .7rem; }
+#admin-asst-launcher.collapsed:hover .admin-asst-launcher-label,
+#admin-asst-launcher.collapsed:focus-visible .admin-asst-launcher-label{ max-width: 12rem; opacity: 1; }
 /* Idle micro-bob to draw the eye (disabled under reduce-motion below). */
 #admin-asst-launcher .admin-asst-launcher-orb{ animation: adminAsstBob 3.4s ease-in-out infinite; }
 /* Hide the pill while the immersive overlay is up (the chat is already open). */
