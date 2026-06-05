@@ -275,7 +275,9 @@ def _build_frontend_sentry_html():
     ONE source of truth used by BOTH shells: the admin dashboard (passed to
     dashboard.html as `sentry_html`, rendered with |safe) and the public site
     (string-injected at the <!-- SENTRY_INJECT --> placeholder in
-    _render_app_shell_response). Returns "" when no DSN is configured.
+    _render_app_shell_response). ALWAYS returns at least the appReportError shim
+    (so the ~36 swept-in call sites are safe even with Sentry OFF); the SDK config
+    + CDN loader are appended only when a DSN is configured.
 
     The block, in order:
       1. window.__SENTRY_CONFIG__ - the server-rendered config. (Deliberately
@@ -289,18 +291,29 @@ def _build_frontend_sentry_html():
     Every part is wrapped in try/catch so a Sentry hiccup can't break the page.
     The DSN/release/env are owner-controlled env values (not user input); we
     still neutralize any "</script>" sequence in the JSON defensively."""
-    cfg = _frontend_sentry_config()
-    if not cfg:
-        return ""
-    import json as _json
-    blob = _json.dumps(cfg, separators=(",", ":")).replace("</", "<\\/")
-    return (
-        "<script>"
-        "window.__SENTRY_CONFIG__=" + blob + ";"
-        "window.appReportError=function(err,where){try{"
+    # The appReportError shim is emitted ALWAYS — even with no DSN — because the
+    # ~36 `window.appReportError(e, ...)` call sites swept into the admin + public
+    # JS are UNGUARDED. Were the shim missing (Sentry off, the silo default), each
+    # of those calls would throw `TypeError: ... is not a function` INSIDE its
+    # catch block and abort the recovery code after it (e.g. leaving the public
+    # loading screen stuck). As a guaranteed-present global no-op it makes them
+    # safe; it only forwards to Sentry once the SDK is actually live; never throws.
+    # `|| function` so it's idempotent if the real SDK or a prior block defined it.
+    shim = (
+        "<script>window.appReportError=window.appReportError||function(err,where){try{"
         "if(window.Sentry&&window.Sentry.captureException){"
         "window.Sentry.captureException(err,where?{tags:{handled_at:String(where).slice(0,120),error_kind:'handled'}}:undefined);"
-        "}}catch(e){}};"
+        "}}catch(e){}};</script>"
+    )
+    cfg = _frontend_sentry_config()
+    if not cfg:
+        # Sentry off → just the safe no-op shim. No SDK, no network, no config.
+        return shim
+    import json as _json
+    blob = _json.dumps(cfg, separators=(",", ":")).replace("</", "<\\/")
+    loader = (
+        "<script>"
+        "window.__SENTRY_CONFIG__=" + blob + ";"
         "(function(){try{var c=window.__SENTRY_CONFIG__;"
         "if(!c||!c.dsn||!c.enabled)return;"
         "var s=document.createElement('script');"
@@ -313,6 +326,7 @@ def _build_frontend_sentry_html():
         "}catch(e){}})();"
         "</script>"
     )
+    return shim + loader
 
 
 # =============================================================================
@@ -8127,11 +8141,12 @@ def _render_app_shell_response(page=None, section_ids=None, initial_section_dom_
 
         # task 092 P1 — boot browser Sentry on the public site (mirrors the
         # admin shell via the SAME _build_frontend_sentry_html() builder). The
-        # block is "" when no DSN is set, so replacing the placeholder with ""
-        # cleanly removes it and the homepage stays byte-identical with Sentry
-        # off. Legacy designs saved before the placeholder existed get the
-        # before-</head> fallback (the loader is async + self-guarded, so its
-        # position in <head> is not sensitive like the preconnect hints are).
+        # builder always returns at least the tiny appReportError no-op shim (so
+        # the swept-in JS call sites are safe even with Sentry off), plus the SDK
+        # loader when a DSN is set. Legacy designs saved before the placeholder
+        # existed get the before-</head> fallback (the loader is async +
+        # self-guarded, so its position in <head> is not sensitive like the
+        # preconnect hints are).
         sentry_html = _build_frontend_sentry_html()
         if "<!-- SENTRY_INJECT -->" in html_content:
             html_content = html_content.replace("<!-- SENTRY_INJECT -->", sentry_html)
