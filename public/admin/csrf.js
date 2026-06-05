@@ -204,6 +204,7 @@
       adminChatRenderSessions();
     } catch (e) {
       console.error('sessions load failed', e);
+      window.appReportError(e, 'csrf.js:adminChatLoadSessions');
     }
   }
   function adminChatRenderSessionsDebounced() {
@@ -303,7 +304,7 @@
       if (data && data.session_id) {
         localStorage.setItem(ADMIN_CHAT_KEYS.admin, data.session_id);
       }
-    } catch(e) { console.error('new session failed', e); }
+    } catch(e) { console.error('new session failed', e); window.appReportError(e, 'csrf.js:adminChatNewSession'); }
     await adminChatLoadSessions();
     await loadAdminChat();
   }
@@ -343,7 +344,7 @@
         await adminChatLoadSessions();
         await loadAdminChat();
       }
-    } catch(e) { console.error('fork failed', e); }
+    } catch(e) { console.error('fork failed', e); window.appReportError(e, 'csrf.js:adminChatForkSession'); }
   }
 
   // ---- Header (title / model / config) ---------------------------------

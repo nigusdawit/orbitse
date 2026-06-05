@@ -35,7 +35,7 @@ import sys
 
 from flask import Blueprint, request, jsonify
 
-from core import query_db, execute_db, get_db, admin_required, _slugify
+from core import query_db, execute_db, get_db, admin_required, _slugify, capture_exc
 
 sitebuilder_bp = Blueprint("sitebuilder", __name__)
 
@@ -439,6 +439,7 @@ def admin_set_page_sections(page_id):
                 )
         conn.commit()
     except Exception as e:
+        capture_exc(e, "sitebuilder.admin_set_page_sections")
         try:
             conn.rollback()
         except Exception:

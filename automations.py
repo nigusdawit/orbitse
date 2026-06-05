@@ -47,6 +47,7 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
+from core import capture_exc  # task 092 — report handled exceptions to Sentry
 
 
 # =============================================================================
@@ -1381,6 +1382,7 @@ def _execute_run(run_id: int) -> None:
         try:
             output = impl(rendered_cfg, ctx)
         except Exception as e:
+            capture_exc(e, "automations.execute_step")  # task 092
             output = {"ok": False, "error": f"{e}\n{traceback.format_exc()[:1000]}"}
         elapsed_ms = int((time.time() - started) * 1000)
 
@@ -1434,6 +1436,7 @@ def _execute_run_safely(run_id: int) -> None:
     try:
         _execute_run(run_id)
     except Exception as e:
+        capture_exc(e, "automations.execute_run")  # task 092
         _finish_run(run_id, "failed", [], f"Engine error: {e}\n{traceback.format_exc()[:1000]}")
     finally:
         _release_slot()

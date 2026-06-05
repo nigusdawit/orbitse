@@ -55,6 +55,27 @@ from pylego import config as _pylego_config
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 
+def capture_exc(exc, where=""):
+    """Send a CAUGHT exception to Sentry (no-op without a DSN; never raises).
+
+    Use in fail-open `except` blocks that RETURN an error response instead of
+    letting the exception bubble to Flask's integration — those handled errors
+    are otherwise invisible to Sentry (task 092). `where` is a free-text tag
+    ("file.func") for triage; tag `error_kind=handled` distinguishes these from
+    unhandled crashes. Wrapping is itself fail-open: reporting never raises."""
+    try:
+        with sentry_sdk.push_scope() as scope:
+            scope.set_tag("error_kind", "handled")
+            if where:
+                scope.set_tag("handled_at", str(where)[:120])
+            sentry_sdk.capture_exception(exc)
+    except Exception:
+        try:
+            sentry_sdk.capture_exception(exc)
+        except Exception:
+            pass
+
+
 # =============================================================================
 # DATABASE HELPERS  (moved verbatim from app.py - Track B / B1)
 # =============================================================================

@@ -73,6 +73,12 @@ FONTS:
        without needing JavaScript. See app.py serve_index() and _build_seo_meta_html(). -->
   <!-- SEO_META_INJECT -->
 
+  <!-- SENTRY_INJECT — replaced server-side (app.py _build_frontend_sentry_html)
+       with the browser-Sentry boot <script> when a SENTRY_DSN is configured, or
+       with nothing when it isn't. Placed early so the async SDK loader is
+       scheduled before the heavy third-party scripts below. -->
+  <!-- SENTRY_INJECT -->
+
   <!-- Stylesheet -->
   <link rel="stylesheet" href="/styles.css?v=20260429b">
 

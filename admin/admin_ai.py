@@ -36,6 +36,7 @@ import re
 from flask import Blueprint, request, jsonify, session
 
 from core import (
+    capture_exc,
     query_db,
     execute_db,
     admin_required,
@@ -188,6 +189,7 @@ def admin_ai_create_persona():
              fields["description"], fields["prompt_suffix"], fields["tool_prefixes"],
              fields["extra_tools"], fields["enabled"], fields["sort_order"], _who()))
     except Exception as e:
+        capture_exc(e, "admin_ai.admin_ai_create_persona")
         print(f"[admin-ai] create persona failed: {e}")
         return jsonify({"error": "create_failed"}), 500
     _invalidate_admin_persona_cache()
@@ -223,6 +225,7 @@ def admin_ai_update_persona(key):
              fields["tool_prefixes"], fields["extra_tools"], fields["enabled"],
              fields["sort_order"], _who(), _ADMIN_AI_TENANT, key))
     except Exception as e:
+        capture_exc(e, "admin_ai.admin_ai_update_persona")
         print(f"[admin-ai] update persona {key} failed: {e}")
         return jsonify({"error": "update_failed"}), 500
     _invalidate_admin_persona_cache()
@@ -254,6 +257,7 @@ def admin_ai_reset_persona(key):
              json.dumps(p.get("extra_tools") or []), int(p.get("sort_order") or 0),
              _ADMIN_AI_TENANT, key))
     except Exception as e:
+        capture_exc(e, "admin_ai.admin_ai_reset_persona")
         print(f"[admin-ai] reset persona {key} failed: {e}")
         return jsonify({"error": "reset_failed"}), 500
     _invalidate_admin_persona_cache()
@@ -482,6 +486,7 @@ def admin_ai_create_palette(entity):
             f"INSERT INTO {cfg['table']} (tenant_id, {', '.join(allcols)}, enabled, is_builtin, sort_order, updated_by) "
             f"VALUES (%s, {ph}, %s, FALSE, %s, %s)", tuple(params))
     except Exception as e:
+        capture_exc(e, "admin_ai.admin_ai_create_palette")
         print(f"[admin-ai] create {entity} failed: {e}")
         return jsonify({"error": "create_failed"}), 500
     return jsonify({"ok": True, "key": fields[keyc]}), 201
@@ -514,6 +519,7 @@ def admin_ai_update_palette(entity, item_id):
             f"UPDATE {cfg['table']} SET {', '.join(set_parts)} WHERE tenant_id=%s AND id=%s",
             tuple(params))
     except Exception as e:
+        capture_exc(e, "admin_ai.admin_ai_update_palette")
         print(f"[admin-ai] update {entity} {item_id} failed: {e}")
         return jsonify({"error": "update_failed"}), 500
     return jsonify({"ok": True, "id": item_id})
@@ -552,6 +558,7 @@ def admin_ai_reset_palette(entity, item_id):
             f"UPDATE {cfg['table']} SET {', '.join(set_parts)} WHERE tenant_id=%s AND id=%s",
             tuple(params))
     except Exception as e:
+        capture_exc(e, "admin_ai.admin_ai_reset_palette")
         print(f"[admin-ai] reset {entity} {item_id} failed: {e}")
         return jsonify({"error": "reset_failed"}), 500
     return jsonify({"ok": True, "id": item_id, "is_default": True})

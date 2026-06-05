@@ -6558,6 +6558,7 @@
         }).join('');
       } catch (err) {
         console.error('Error loading pages:', err);
+        window.appReportError(err, 'app-main.js:loadPages');
       }
     }
 
@@ -6582,6 +6583,7 @@
         modal.style.display = 'block';
       } catch (err) {
         console.error('Error previewing page:', err);
+        window.appReportError(err, 'app-main.js:previewPage');
       }
     }
 
@@ -6603,6 +6605,7 @@
         loadPages();
       } catch (err) {
         console.error('Error updating page:', err);
+        window.appReportError(err, 'app-main.js:togglePageStatus');
       }
     }
 
@@ -6613,6 +6616,7 @@
         loadPages();
       } catch (err) {
         console.error('Error deleting page:', err);
+        window.appReportError(err, 'app-main.js:deletePage');
       }
     }
 
@@ -6652,6 +6656,7 @@
         renderSphereImages(data.custom_images || []);
       } catch (err) {
         console.error('Error loading sphere settings:', err);
+        window.appReportError(err, 'app-main.js:loadSphereSettings');
       }
     }
 
@@ -6675,6 +6680,7 @@
         }
       } catch (err) {
         console.error('Error toggling sphere enabled:', err);
+        window.appReportError(err, 'app-main.js:toggleSphereEnabled');
         if (status) { status.textContent = 'Save failed'; status.style.color = '#f87171'; }
       }
     }
@@ -6705,6 +6711,7 @@
         alert('Sphere settings saved!');
       } catch (err) {
         console.error('Error saving sphere settings:', err);
+        window.appReportError(err, 'app-main.js:saveSphereSettings');
         alert('Error saving sphere settings');
       }
     }
@@ -6784,6 +6791,7 @@
         loadSphereSettings();
       } catch (err) {
         console.error('Error adding sphere image:', err);
+        window.appReportError(err, 'app-main.js:addSphereImage');
       }
     }
 
@@ -6799,6 +6807,7 @@
         }
       } catch (err) {
         console.error('Error uploading image:', err);
+        window.appReportError(err, 'app-main.js:uploadSphereImage');
       }
       input.value = '';
     }
@@ -6810,6 +6819,7 @@
         loadSphereSettings();
       } catch (err) {
         console.error('Error deleting sphere image:', err);
+        window.appReportError(err, 'app-main.js:deleteSphereImage');
       }
     }
 
@@ -6854,6 +6864,7 @@
         onSttProviderChange();
       } catch (err) {
         console.error('Error loading voice settings:', err);
+        window.appReportError(err, 'app-main.js:loadVoiceSettings');
       }
     }
 
@@ -7501,6 +7512,7 @@
       } catch (err) {
         if (err.authExpired) return; /* adminFetch already handled it */
         console.error('Error saving voice settings:', err);
+        window.appReportError(err, 'app-main.js:saveVoiceSettings');
         showToast('Could not save voice settings', 'error');
       } finally {
         restore();
@@ -7634,6 +7646,7 @@
       } catch (err) {
         if (err.authExpired) { restore(); return; }
         console.error('Voice preview error:', err);
+        window.appReportError(err, 'app-main.js:playVoicePreview');
         showToast('Could not generate sample', 'error');
         restore();
       }
@@ -7692,6 +7705,7 @@
       } catch (err) {
         if (err.authExpired) return;
         console.error('ElevenLabs voices fetch error:', err);
+        window.appReportError(err, 'app-main.js:loadElevenLabsVoices');
         select.innerHTML = '<option value="">— Error —</option>';
         status.textContent = 'Failed to load voices: ' + err.message;
         status.style.color = '#a64242';
@@ -7732,6 +7746,7 @@
         renderVoiceIntros();
       } catch (err) {
         console.error('Error loading voice intros:', err);
+        window.appReportError(err, 'app-main.js:loadVoiceIntros');
       }
     }
 
@@ -7899,6 +7914,7 @@
         showToast(id ? 'Intro updated' : 'Intro created');
       } catch (err) {
         console.error('Error saving voice intro:', err);
+        window.appReportError(err, 'app-main.js:saveVoiceIntro');
         showToast('Could not save intro', 'error');
       }
     }
@@ -7911,6 +7927,7 @@
         showToast('Intro deleted');
       } catch (err) {
         console.error('Error deleting voice intro:', err);
+        window.appReportError(err, 'app-main.js:deleteVoiceIntro');
       }
     }
 
@@ -7937,6 +7954,7 @@
       } catch (err) {
         if (err.authExpired) return;
         console.error('Error generating audio:', err);
+        window.appReportError(err, 'app-main.js:generateVoiceIntroAudio');
         showToast('Could not generate audio', 'error');
       } finally {
         restore();
@@ -7967,6 +7985,7 @@
         }
       } catch (err) {
         console.error('Error loading voice usage:', err);
+        window.appReportError(err, 'app-main.js:loadVoiceUsage');
       }
     }
 
@@ -8271,7 +8290,7 @@
         }
       }
       if (typeof _mediaPickerState.onSelect === 'function') {
-        try { _mediaPickerState.onSelect(item); } catch (e) { console.error(e); }
+        try { _mediaPickerState.onSelect(item); } catch (e) { console.error(e); window.appReportError(e, 'app-main.js:_pickMediaItem'); }
       }
       closeMediaPicker();
     }
@@ -8565,6 +8584,7 @@
         if (updatedEl) updatedEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
       } catch (e) {
         console.error('overview load failed', e);
+        window.appReportError(e, 'app-main.js:loadOverview');
         if (grid) grid.innerHTML = '<div class="overview-empty">Could not load overview stats.</div>';
       }
     }
@@ -9288,6 +9308,8 @@
         // Audit log loads in parallel — never blocks the rest of the
         // tab. Failure here renders an inline hint, not a tab error.
         _loadSuperAdminAudit();
+        // task 092 P2 — Sentry error queue, same parallel / non-blocking pattern.
+        _loadSentryAlerts();
       } catch (e) {
         loading.textContent = 'Could not load developer console: ' + e.message;
       }
@@ -9318,6 +9340,97 @@
       if (outcome === 'logout') return 'var(--admin-text-muted)';
       if (outcome === 'ttl_expired') return 'var(--admin-text-muted)';
       return 'var(--admin-text-muted)';
+    }
+
+    // ---- Error Tracking (Sentry) panel — task 092 P2 ----------------------
+    // Mirrors _loadSuperAdminAudit: a parallel, non-blocking load into the
+    // Developer tab. EVERY field on an alert is attacker-influenced (it came in
+    // through a Sentry webhook payload), so all of it renders HTML-escaped via
+    // _escAuditCell, and the permalink only becomes an <a href> when it's an
+    // http(s) URL (blocks javascript:/data: href injection).
+    function _sentrySafeUrl(u) {
+      const s = String(u || '');
+      return (/^https?:\/\//i.test(s)) ? s : '';
+    }
+
+    function _sentryStatusControl(id, status) {
+      const cur = String(status || 'new');
+      const opts = ['new', 'ack', 'fixed'].map(function (s) {
+        return '<option value="' + s + '"' + (s === cur ? ' selected' : '') + '>' + s + '</option>';
+      }).join('');
+      // id is forced numeric in the handler call → no injection via onchange.
+      return '<select data-testid="select-sentry-status-' + Number(id) + '" ' +
+        'onchange="_setSentryAlertStatus(' + Number(id) + ', this.value)" ' +
+        'style="font-size:0.8125rem; padding:0.2rem 0.4rem;">' + opts + '</select>';
+    }
+
+    async function _loadSentryAlerts() {
+      const wrap = document.getElementById('developer-sentry');
+      if (!wrap) return;
+      try {
+        const res = await fetch('/admin/api/sentry/alerts?limit=100', { credentials: 'same-origin' });
+        const data = await res.json().catch(() => ({}));
+        if (!data || data.ok === false || !Array.isArray(data.alerts)) {
+          const hint = (data && data.error)
+            ? 'Sentry alerts unavailable: ' + _escAuditCell(data.error) + '. The 0034 migration may not have run yet — restart the workflow.'
+            : 'Sentry alerts unavailable.';
+          wrap.innerHTML = '<div class="empty-state" style="padding:0.75rem;" data-testid="text-developer-sentry-error">' + hint + '</div>';
+          return;
+        }
+        if (data.alerts.length === 0) {
+          wrap.innerHTML = '<div class="empty-state" style="padding:0.75rem;" data-testid="text-developer-sentry-empty">No Sentry issues received yet. Configure a Sentry issue-alert webhook → <code>/api/sentry/webhook</code>.</div>';
+          return;
+        }
+        const rows = data.alerts.map(function (a) {
+          const lvl = String(a.level || 'error');
+          const lvlColor = (lvl === 'fatal' || lvl === 'error') ? '#dc2626'
+            : (lvl === 'warning' ? '#d97706' : 'var(--admin-text-muted)');
+          const url = _sentrySafeUrl(a.permalink);
+          const link = url
+            ? '<a href="' + _escAuditCell(url) + '" target="_blank" rel="noopener noreferrer">open ↗</a>'
+            : '<span style="color:var(--admin-text-muted);">—</span>';
+          const culprit = a.culprit
+            ? '<div style="font-size:0.75rem; color:var(--admin-text-muted); margin-top:0.15rem;">' + _escAuditCell(a.culprit) + '</div>'
+            : '';
+          return '<tr data-testid="row-developer-sentry-' + (a.id || '') + '">' +
+            '<td style="padding:0.4rem 0.6rem; font-size:0.8125rem;">' + _escAuditCell(a.title) + culprit + '</td>' +
+            '<td style="padding:0.4rem 0.6rem; font-size:0.8125rem; color:' + lvlColor + '; font-weight:600;">' + _escAuditCell(lvl) + '</td>' +
+            '<td style="padding:0.4rem 0.6rem; font-size:0.8125rem; text-align:right;">' + _escAuditCell(String(a.event_count || 1)) + '</td>' +
+            '<td style="padding:0.4rem 0.6rem; font-size:0.8125rem; white-space:nowrap;">' + _fmtAuditTs(a.last_seen || a.received_at) + '</td>' +
+            '<td style="padding:0.4rem 0.6rem; font-size:0.8125rem;">' + _sentryStatusControl(a.id, a.status) + '</td>' +
+            '<td style="padding:0.4rem 0.6rem; font-size:0.8125rem;">' + link + '</td>' +
+            '</tr>';
+        }).join('');
+        wrap.innerHTML =
+          '<table style="width:100%; border-collapse:collapse;" data-testid="table-developer-sentry">' +
+          '<thead><tr style="text-align:left; color:var(--admin-text-muted); font-size:0.75rem; text-transform:uppercase; letter-spacing:0.05em;">' +
+          '<th style="padding:0.4rem 0.6rem;">Issue</th>' +
+          '<th style="padding:0.4rem 0.6rem;">Level</th>' +
+          '<th style="padding:0.4rem 0.6rem; text-align:right;">Count</th>' +
+          '<th style="padding:0.4rem 0.6rem;">Last seen</th>' +
+          '<th style="padding:0.4rem 0.6rem;">Status</th>' +
+          '<th style="padding:0.4rem 0.6rem;">Link</th>' +
+          '</tr></thead><tbody>' + rows + '</tbody></table>';
+      } catch (e) {
+        wrap.innerHTML = '<div class="empty-state" style="padding:0.75rem;" data-testid="text-developer-sentry-error">Could not load Sentry alerts: ' + _escAuditCell(e.message) + '</div>';
+        if (window.appReportError) window.appReportError(e, 'app-main.js:_loadSentryAlerts');
+      }
+    }
+
+    async function _setSentryAlertStatus(id, status) {
+      try {
+        const res = await fetch('/admin/api/sentry/alerts/' + Number(id) + '/status', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: String(status) }),
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        _loadSentryAlerts();  // reflect new ordering / counts
+      } catch (e) {
+        if (window.appReportError) window.appReportError(e, 'app-main.js:_setSentryAlertStatus');
+        alert('Could not update status: ' + e.message);
+      }
     }
 
     async function _loadSuperAdminAudit() {
@@ -15221,6 +15334,7 @@
         if (updated) updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
       } catch (e) {
         console.error('wp-plugin load failed', e);
+        window.appReportError(e, 'app-main.js:loadWpPlugin');
         document.getElementById('wp-release-info').innerHTML =
           '<div class="empty-state" style="color:#ef4444;">Could not load: ' + escapeHTML(String(e.message || e)) + '</div>';
       }
@@ -15488,6 +15602,7 @@
         if (updated) updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
       } catch (e) {
         console.error('plans/features load failed', e);
+        window.appReportError(e, 'app-main.js:loadPlansFeatures');
         if (list) list.innerHTML = '<div class="empty-state" style="padding:1.5rem; color:#ef4444;">Could not load features: ' + escapeHTML(String(e.message || e)) + '</div>';
       }
     }
@@ -15575,6 +15690,7 @@
         loadPlansFeatures();
       } catch (e) {
         console.error('toggle failed', e);
+        window.appReportError(e, 'app-main.js:togglePlanFeature');
         input.checked = !enabled;
         showToast('Failed to toggle: ' + (e.message || e), 'error');
       } finally {
@@ -15611,6 +15727,7 @@
         if (updated) updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
       } catch (e) {
         console.error('cost load failed', e);
+        window.appReportError(e, 'app-main.js:loadCost');
       }
     }
 
@@ -15767,6 +15884,7 @@
         });
       } catch (e) {
         console.error('cost series failed', e);
+        window.appReportError(e, 'app-main.js:loadCostSeries');
       }
     }
 
@@ -15836,6 +15954,7 @@
         set('cost-cap-digest-email', c.digest_email || '');
       } catch (e) {
         console.error('cap load failed', e);
+        window.appReportError(e, 'app-main.js:loadCostCap');
       }
     }
 

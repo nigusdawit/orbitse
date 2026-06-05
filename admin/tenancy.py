@@ -23,6 +23,7 @@ Registered in app.py via app.register_blueprint(tenancy_bp), after crm_bp.
 from flask import Blueprint, request, jsonify
 
 from core import (
+    capture_exc,
     query_db,
     admin_required,
     _require_super_admin_role,
@@ -68,6 +69,7 @@ def admin_list_tenant_features():
             "plans": [dict(p) for p in plans],
         })
     except Exception as e:
+        capture_exc(e, "tenancy.admin_list_tenant_features")
         print(f"[plans] list_tenant_features failed: {e}")
         return jsonify({"error": "failed_to_list_features", "detail": str(e)}), 500
 
@@ -94,5 +96,6 @@ def admin_toggle_tenant_feature(name):
     except ValueError as ve:
         return jsonify({"error": "unknown_feature", "feature": name, "detail": str(ve)}), 400
     except Exception as e:
+        capture_exc(e, "tenancy.admin_toggle_tenant_feature")
         print(f"[plans] toggle feature {name} failed: {e}")
         return jsonify({"error": "toggle_failed", "detail": str(e)}), 500
