@@ -173,6 +173,18 @@ KNOWN_VARS: list[dict] = [
     {"key": "SENTRY_ENV", "level": "optional", "category": "Observability",
      "description": "Environment label sent with each Sentry event (e.g. 'production').",
      "sensitive": False, "restart": True},
+    {"key": "SENTRY_WEBHOOK_SECRET", "level": "optional", "category": "Observability",
+     "description": "Verifies inbound Sentry issue-alert webhooks (HMAC). Required for POST /api/sentry/webhook to accept events into the Developer-tab error queue.",
+     "sensitive": True, "restart": False},
+    {"key": "SENTRY_DSN_FRONTEND", "level": "optional", "category": "Observability",
+     "description": "Browser Sentry DSN for front-end JS errors (defaults to SENTRY_DSN if unset). Takes effect on the next page load.",
+     "sensitive": True, "restart": False},
+    {"key": "SENTRY_BROWSER_VERSION", "level": "optional", "category": "Observability",
+     "description": "Pin the browser Sentry SDK version loaded from the CDN (default 8.55.0).",
+     "sensitive": False, "restart": True},
+    {"key": "AGENT_WEBHOOK_URL", "level": "optional", "category": "Observability",
+     "description": "If set, each verified Sentry alert is POSTed to this fixed URL so a fix-agent gets pushed every issue.",
+     "sensitive": False, "restart": False},
 
     # ---- VELO Master integration ----
     {"key": "VELO_MASTER_URL", "level": "optional", "category": "VELO Master",
