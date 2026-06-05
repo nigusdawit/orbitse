@@ -305,6 +305,7 @@ def test_fail_open_garbage_blob():
 def test_nav_settings_defaults():
     # Defaults must be classic + override-allowed. nav_allow_override is the
     # bool-default case that must read True even though the blob omits defaults.
+    _reset_extra(_sa())  # isolate from any prior test that may have set these
     d = app._admin_appearance()
     assert d["nav_default"] == "classic"
     assert d["nav_allow_override"] is True

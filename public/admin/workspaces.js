@@ -180,7 +180,7 @@
   function canOverride() { return !!(NAV.isSuper || NAV.allowOverride); }
   function currentMode() { return root.classList.contains('nav-pref-workspaces') ? 'workspaces' : 'classic'; }
   function setMode(mode, persist) {
-    if (mode === 'workspaces') { ensureBuilt(); root.classList.add('nav-pref-workspaces'); root.classList.add('nav-ready'); }
+    if (mode === 'workspaces') { ensureBuilt(); root.classList.add('nav-pref-workspaces'); markReady(); }
     else { root.classList.remove('nav-pref-workspaces'); }
     if (persist) { try { localStorage.setItem('adminNav', mode); } catch (e) {} }
     updateToggle();
@@ -192,6 +192,13 @@
     var ws = currentMode() === 'workspaces';
     t.innerHTML = ws ? '&#9776; Classic view' : '&#9638; Workspaces';
     t.setAttribute('aria-pressed', ws ? 'true' : 'false');
+  }
+
+  // Confirm the shell booted: cancel the boot script's self-heal timer so it
+  // can't later strip nav-pref-workspaces out from under a healthy shell.
+  function markReady() {
+    root.classList.add('nav-ready');
+    try { if (window.__wsHealTimer) { clearTimeout(window.__wsHealTimer); window.__wsHealTimer = null; } } catch (e) {}
   }
 
   function ensureBuilt() {
@@ -211,11 +218,15 @@
       updateToggle();
       // ⌘K — available in both modes
       doc.addEventListener('keydown', function (ev) {
-        if ((ev.metaKey || ev.ctrlKey) && (ev.key === 'k' || ev.key === 'K')) { ev.preventDefault(); openPalette(); }
+        if ((ev.metaKey || ev.ctrlKey) && (ev.key === 'k' || ev.key === 'K')) {
+          var a = doc.activeElement;
+          if (a && a.isContentEditable) return; // don't steal an RTE's insert-link (Cmd/Ctrl-K)
+          ev.preventDefault(); openPalette();
+        }
       });
       var cb = $('#ws-cmdk-btn'); if (cb) { cb.style.display = ''; cb.addEventListener('click', openPalette); }
       // If the boot script (or default) resolved to workspaces, build + confirm.
-      if (root.classList.contains('nav-pref-workspaces')) { ensureBuilt(); root.classList.add('nav-ready'); }
+      if (root.classList.contains('nav-pref-workspaces')) { ensureBuilt(); markReady(); }
     } catch (e) {
       // FAIL-SAFE: never strand the admin — revert to the classic sidebar.
       try { root.classList.remove('nav-pref-workspaces'); } catch (_) {}
