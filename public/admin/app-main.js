@@ -201,7 +201,10 @@
       content_width:'full', header_style:'sticky', button_style:'solid', motion_speed:'normal',
       bg_dark:'#0b1220', bg_light:'#eef2fb', surface_dark:'#1e2940', surface_light:'#ffffff',
       text_dark:'#e8edf6', text_light:'#19233a', muted_dark:'#aab2c0', muted_light:'#5b6577',
-      border_dark:'#2a3344', border_light:'#d4dae6'};
+      border_dark:'#2a3344', border_light:'#d4dae6',
+      // task 090 — nav governance (BEHAVIOUR, not CSS): persisted + echoed via the
+      // appearance save path; super-admin sets these in the Appearance "Navigation" card.
+      nav_default:'classic', nav_allow_override:true};
     var AP = Object.assign({}, _AP_DEFAULTS, (window.__ADMIN_APPEARANCE__ || {}));
     // custom_presets is real state we persist; the other server-computed
     // presentation keys aren't part of the editable model — drop them so the
@@ -326,6 +329,7 @@
       });
       var hc=document.getElementById('ap-contrast'); if(hc) hc.checked=!!AP.high_contrast;
       var rm=document.getElementById('ap-motion');   if(rm) rm.checked=!!AP.reduce_motion;
+      var no=document.getElementById('ap-nav-override'); if(no) no.checked=!!AP.nav_allow_override; // task 090
       var glassOnly=(AP.surface==='glass');
       ['ap-blur','ap-glass'].forEach(function(id){ var e=document.getElementById(id);
         if(e){ e.disabled=!glassOnly; e.style.opacity=glassOnly?'':'.4'; }});
@@ -411,7 +415,9 @@
       var inp=document.getElementById('ap-preset-name'), name=((inp&&inp.value)||'').trim();
       if(!name){ _apTxt('ap-status','Name your preset first.'); if(inp) inp.focus(); return; }
       var settings={};
-      Object.keys(_AP_DEFAULTS).forEach(function(k){ if(k!=='custom_presets') settings[k]=AP[k]; });
+      // task 090 — exclude nav governance (not a theme attribute) + custom_presets from the snapshot.
+      var _skip={custom_presets:1, nav_default:1, nav_allow_override:1};
+      Object.keys(_AP_DEFAULTS).forEach(function(k){ if(!_skip[k]) settings[k]=AP[k]; });
       var id='c'+Math.abs(_apHash(name)).toString(36);
       AP.custom_presets=(AP.custom_presets||[]).filter(function(p){ return p.id!==id; });
       AP.custom_presets.push({id:id, label:name.slice(0,40), settings:settings});
