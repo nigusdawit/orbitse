@@ -295,3 +295,34 @@ def test_fail_open_garbage_blob():
     assert d["base_overrides"] == {} and d["custom_presets"] == []
     # Reset to a clean empty object.
     app.execute_db("UPDATE site_settings SET admin_theme_extra='{}'::jsonb WHERE id=1")
+
+
+# ---------------------------------------------------------------------------
+# Task 090 — navigation governance (Classic vs Workspaces shell). Two behaviour
+# knobs in admin_theme_extra, super-admin-set: nav_default + nav_allow_override.
+# ---------------------------------------------------------------------------
+
+def test_nav_settings_defaults():
+    # Defaults must be classic + override-allowed. nav_allow_override is the
+    # bool-default case that must read True even though the blob omits defaults.
+    d = app._admin_appearance()
+    assert d["nav_default"] == "classic"
+    assert d["nav_allow_override"] is True
+
+
+def test_nav_settings_save_validate():
+    c = _sa()
+    app.execute_db("INSERT INTO site_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+    # Super-admin sets org default = workspaces and locks normal-admin switching.
+    j = c.put("/admin/api/admin-appearance",
+              json={"nav_default": "workspaces", "nav_allow_override": False},
+              headers={"X-CSRF-Token": "t"}).get_json()
+    assert j["nav_default"] == "workspaces" and j["nav_allow_override"] is False
+    d = app._admin_appearance()
+    assert d["nav_default"] == "workspaces" and d["nav_allow_override"] is False
+    # Invalid enum falls back to the safe default; bool re-enabled and persists.
+    j2 = c.put("/admin/api/admin-appearance",
+               json={"nav_default": "fancy", "nav_allow_override": True},
+               headers={"X-CSRF-Token": "t"}).get_json()
+    assert j2["nav_default"] == "classic" and j2["nav_allow_override"] is True
+    _reset_extra(c)
