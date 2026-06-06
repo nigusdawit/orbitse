@@ -22,7 +22,13 @@ import time
 
 from flask import Blueprint, request, jsonify
 
-from core import query_db, admin_required, _is_super_admin
+from core import (
+    query_db,
+    admin_required,
+    _is_super_admin,
+    _require_super_admin_role,
+    current_tenant_id,
+)
 
 shell_bp = Blueprint("shell", __name__)
 
@@ -219,3 +225,108 @@ def admin_global_search():
         pass
 
     return jsonify({"groups": groups})
+
+
+# ===========================================================================
+# Home command center (task 094, gap §1) — super-admin overview aggregations.
+# All read-only, additive, fail-open (every source in its own try/except). They
+# touch CRM PII + revenue, so each route gates on _require_super_admin_role() in
+# the body (mirrors admin/crm.py), not just @admin_required.
+# ===========================================================================
+
+# "Hot" uncontacted-lead threshold for the needs-attention widget. The gap doc
+# §2.8 says ≥80; we start at 70 to catch more (one constant, easily tuned).
+_HOT_LEAD_SCORE = 70
+
+
+@shell_bp.route("/admin/api/overview/attention", methods=["GET"])
+@admin_required
+def admin_overview_attention():
+    """Needs-attention action list for the Home command center (gap §1.1). Super-admin
+    only. Each source in its own try/except → fail-open (one source failing drops one
+    item, never the response). Items are deep-linkable: {kind, severity, title, detail,
+    count, tab, loader}. An empty list (a quiet command center) is the healthy state."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    tid = current_tenant_id()
+    items = []
+
+    # 1) Hot uncontacted leads (>1h old, lead_score >= threshold via visitor_profiles).
+    try:
+        r = query_db(
+            "SELECT COUNT(*) AS n FROM leads l "
+            "LEFT JOIN visitor_profiles vp "
+            "  ON vp.visitor_id = l.visitor_id AND vp.tenant_id = l.tenant_id "
+            "WHERE l.tenant_id = %s AND l.status = 'new' "
+            "  AND l.created_at < NOW() - INTERVAL '1 hour' "
+            "  AND COALESCE(vp.lead_score, 0) >= %s",
+            (tid, _HOT_LEAD_SCORE), fetchone=True) or {}
+        n = int(r.get("n") or 0)
+        if n:
+            items.append({
+                "kind": "hot_leads_uncontacted", "severity": "warn", "count": n,
+                "title": "%d hot lead%s waiting > 1h" % (n, "" if n == 1 else "s"),
+                "detail": "Uncontacted, lead score ≥ %d" % _HOT_LEAD_SCORE,
+                "tab": "crm", "loader": "loadCrm"})
+    except Exception:
+        pass
+
+    # 2) Missing required / recommended keys — reuse the secrets-banner filter
+    #    (env_manager is a standalone module; import locally to avoid a top-level dep).
+    try:
+        import env_manager
+        rows = env_manager.get_status() or []
+        req = [r for r in rows if (not r.get("set")) and r.get("level") == "required"]
+        rec = [r for r in rows if (not r.get("set")) and r.get("level") == "recommended"]
+        if req:
+            items.append({
+                "kind": "missing_required_keys", "severity": "critical", "count": len(req),
+                "title": "%d required key%s not configured" % (len(req), "" if len(req) == 1 else "s"),
+                "detail": ", ".join([str(r.get("key")) for r in req][:5]),
+                "tab": "secrets", "loader": "loadSecrets"})
+        if rec:
+            items.append({
+                "kind": "missing_recommended_keys", "severity": "info", "count": len(rec),
+                "title": "%d recommended key%s not set" % (len(rec), "" if len(rec) == 1 else "s"),
+                "detail": ", ".join([str(r.get("key")) for r in rec][:5]),
+                "tab": "secrets", "loader": "loadSecrets"})
+    except Exception:
+        pass
+
+    # 3) Drafts / unpublished content (one combined item).
+    try:
+        d_blog = int((query_db("SELECT COUNT(*) AS n FROM blog_posts WHERE status='draft'",
+                               fetchone=True) or {}).get("n") or 0)
+    except Exception:
+        d_blog = 0
+    try:
+        d_pages = int((query_db("SELECT COUNT(*) AS n FROM pages WHERE enabled = FALSE",
+                                fetchone=True) or {}).get("n") or 0)
+    except Exception:
+        d_pages = 0
+    drafts = d_blog + d_pages
+    if drafts:
+        items.append({
+            "kind": "draft_content", "severity": "info", "count": drafts,
+            "title": "%d draft / unpublished item%s" % (drafts, "" if drafts == 1 else "s"),
+            "detail": "%d blog draft(s), %d hidden page(s)" % (d_blog, d_pages),
+            "tab": "blog", "loader": "loadBlog"})
+
+    # 4) Failed automations in the last 7 days.
+    try:
+        r = query_db(
+            "SELECT COUNT(*) AS n FROM automation_runs "
+            "WHERE status='failed' AND queued_at >= NOW() - INTERVAL '7 days'",
+            fetchone=True) or {}
+        n = int(r.get("n") or 0)
+        if n:
+            items.append({
+                "kind": "failed_automations", "severity": "warn", "count": n,
+                "title": "%d automation run%s failed (7d)" % (n, "" if n == 1 else "s"),
+                "detail": "Check the Automations log",
+                "tab": "automations", "loader": "loadAutomations"})
+    except Exception:
+        pass
+
+    return jsonify({"ok": True, "items": items})

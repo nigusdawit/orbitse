@@ -8569,6 +8569,7 @@
       // of the main overview stats so a 500 on either doesn't break
       // the other.
       _loadOverviewSecretsBanner();
+      renderOverviewAttention();   // 094 §1.1 — needs-attention widget (parallel, fail-open)
       try {
         const res = await fetch('/admin/api/overview/stats', { credentials: 'same-origin' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -8677,6 +8678,44 @@
           <div class="kpi-sub">${escapeHTML(c.sub)}</div>
         </div>
       `).join('');
+    }
+
+    // 094 §1.1 — Needs-attention widget. Renders /admin/api/overview/attention items
+    // as deep-linkable rows; empty list → stay hidden (a quiet command center is good);
+    // fail-open → hidden on error (mirrors the secrets banner). All text via escapeHTML;
+    // the CTA's tab/loader are server-fixed enums (not user input).
+    async function renderOverviewAttention() {
+      const el = document.getElementById('overview-attention');
+      if (!el) return;
+      try {
+        const res = await fetch('/admin/api/overview/attention', { credentials: 'same-origin' });
+        const data = await res.json().catch(() => ({}));
+        const items = (data && Array.isArray(data.items)) ? data.items : [];
+        if (!items.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+        const rows = items.map(function (it) {
+          const sev = (it.severity === 'critical' || it.severity === 'warn' || it.severity === 'info') ? it.severity : 'info';
+          return '<div class="ov-attn-row" data-testid="attn-' + escapeHTML(String(it.kind || '')) + '">' +
+            '<span class="ov-attn-dot ' + sev + '"></span>' +
+            '<div class="ov-attn-text"><div class="ov-attn-title">' + escapeHTML(String(it.title || '')) + '</div>' +
+            '<div class="ov-attn-detail">' + escapeHTML(String(it.detail || '')) + '</div></div>' +
+            '<button class="btn-secondary ov-attn-cta" data-tab="' + escapeHTML(String(it.tab || '')) + '" data-loader="' + escapeHTML(String(it.loader || '')) + '">Review &rarr;</button>' +
+            '</div>';
+        }).join('');
+        el.innerHTML = '<div class="ov-attn-head">Needs attention</div>' + rows;
+        el.style.display = '';
+        Array.prototype.slice.call(el.querySelectorAll('.ov-attn-cta')).forEach(function (b) {
+          b.addEventListener('click', function () {
+            try {
+              var tab = b.getAttribute('data-tab'), loader = b.getAttribute('data-loader');
+              var btn = document.querySelector('[data-testid="tab-' + tab + '"]');
+              if (window.switchTab) switchTab(tab, btn);
+              if (loader && window[loader]) window[loader]();
+            } catch (e) {}
+          });
+        });
+      } catch (e) {
+        el.style.display = 'none';
+      }
     }
 
     // Activity Pulse — grouped 7-day metrics across every feature

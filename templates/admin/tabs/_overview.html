@@ -15,6 +15,10 @@
          if the admin doesn't open the Secrets tab themselves. -->
     <div id="overview-secrets-banner" data-testid="banner-overview-secrets" style="display:none;"></div>
 
+    <!-- 094 §1.1 — Needs-attention widget. Populated by renderOverviewAttention()
+         from /admin/api/overview/attention; hidden when there's nothing to act on. -->
+    <section id="overview-attention" data-testid="section-attention" style="display:none;"></section>
+
     <div class="kpi-grid" id="overview-kpi-grid">
       <!-- Filled by loadOverview() -->
       <div class="kpi-card kpi-skeleton"></div>

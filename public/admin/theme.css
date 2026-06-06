@@ -507,3 +507,21 @@
     .sidebar-group-label, .sidebar-section-heading{ cursor:pointer; user-select:none; display:flex; align-items:center; justify-content:space-between; }
     .gx-nav-chev{ font-size:.9em; opacity:.45; transition:transform .15s; margin-left:.4rem; }
     .collapsed > .gx-nav-chev{ transform:rotate(-90deg); }
+
+    /* 094 §1.1 — Home needs-attention widget (scoped to #overview-attention; light+dark via tokens). */
+    #overview-attention{ margin:0 0 1rem; padding:.85rem 1rem; border-radius:14px;
+      border:1px solid var(--admin-border); background:var(--admin-surface); }
+    #overview-attention .ov-attn-head{ font-size:.7rem; font-weight:800; letter-spacing:.06em;
+      text-transform:uppercase; color:var(--admin-text-muted); margin-bottom:.4rem; }
+    #overview-attention .ov-attn-row{ display:flex; align-items:center; gap:.75rem; padding:.5rem 0;
+      border-top:1px solid var(--admin-border); }
+    #overview-attention .ov-attn-row:first-of-type{ border-top:0; }
+    #overview-attention .ov-attn-dot{ width:9px; height:9px; border-radius:50%; flex:none; }
+    #overview-attention .ov-attn-dot.critical{ background:var(--admin-danger,#ef4444); }
+    #overview-attention .ov-attn-dot.warn{ background:var(--admin-warning,#f59e0b); }
+    #overview-attention .ov-attn-dot.info{ background:var(--admin-accent,#60a5fa); }
+    #overview-attention .ov-attn-text{ flex:1 1 auto; min-width:0; }
+    #overview-attention .ov-attn-title{ font-size:.9rem; font-weight:600; color:var(--admin-text); }
+    #overview-attention .ov-attn-detail{ font-size:.78rem; color:var(--admin-text-muted);
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    #overview-attention .ov-attn-cta{ flex:none; }
