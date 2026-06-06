@@ -98,6 +98,19 @@ body.admin-chrome-hidden .ws-rail, body.admin-chrome-hidden .ws-subnav{ top:0; h
   font-weight:700; font-size:14px; cursor:pointer; }
 .ws-new-create:disabled{ opacity:.6; cursor:default; }
 
+/* ---- gx-table row-action + bulk-select helper (task 093, gap §0.5) ---- */
+.gx-table .gx-check-th, .gx-table .gx-check-td{ width:34px; text-align:center; }
+.gx-table .gx-check, .gx-table .gx-check-all{ cursor:pointer; }
+.gx-bulkbar{ position:sticky; bottom:0; z-index:5; display:flex; align-items:center; gap:10px; margin-top:8px;
+  padding:10px 14px; border-radius:12px; background:var(--admin-surface); border:1px solid var(--admin-border-light);
+  box-shadow:var(--admin-shadow); -webkit-backdrop-filter:var(--admin-blur); backdrop-filter:var(--admin-blur); }
+.gx-bulkbar[hidden]{ display:none; }
+.gx-bulk-count{ font-weight:700; font-size:13px; color:var(--admin-text); }
+.gx-bulk-btn{ padding:6px 12px; border-radius:8px; border:1px solid var(--admin-border); background:var(--admin-surface);
+  color:var(--admin-text); font:inherit; font-size:13px; font-weight:600; cursor:pointer; }
+.gx-bulk-btn:hover{ border-color:var(--admin-accent); }
+.gx-bulk-clear{ margin-left:auto; background:none; border:0; color:var(--admin-text-muted); font:inherit; font-size:13px; cursor:pointer; }
+
 /* ---- ⌘K command palette (wired in P2) ---- */
 .ws-cmdk{ position:fixed; inset:0; z-index:120; display:none; align-items:flex-start; justify-content:center;
   background:rgba(0,0,0,.45); -webkit-backdrop-filter:blur(3px); backdrop-filter:blur(3px); padding-top:12vh; }
