@@ -82,8 +82,14 @@ body.admin-chrome-hidden .ws-rail, body.admin-chrome-hidden .ws-subnav{ top:0; h
 .ws-cmdk-list{ overflow-y:auto; padding:6px; }
 .ws-cmdk-item{ display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:10px; cursor:pointer;
   color:var(--admin-text); font-size:13.5px; }
-.ws-cmdk-item .ws-cmdk-grp{ margin-left:auto; font-size:11px; color:var(--admin-text-muted); }
+.ws-cmdk-item .ws-cmdk-t{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:0 0 auto; max-width:60%; }
+.ws-cmdk-item .ws-cmdk-sub{ flex:1 1 auto; min-width:0; font-size:11.5px; color:var(--admin-text-muted);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ws-cmdk-item .ws-cmdk-grp{ margin-left:auto; flex:0 0 auto; font-size:11px; color:var(--admin-text-muted); }
 .ws-cmdk-item.sel, .ws-cmdk-item:hover{ background:var(--admin-surface-hover); }
+/* record-search group header (task 093, gap §0.1) */
+.ws-cmdk-head{ font-size:10px; font-weight:800; letter-spacing:.06em; text-transform:uppercase;
+  color:var(--admin-text-muted); opacity:.7; padding:10px 12px 4px; }
 .ws-cmdk-empty{ padding:22px; text-align:center; color:var(--admin-text-muted); font-size:13px; }
 
 @media (prefers-reduced-motion: reduce){ .ws-mod, .ws-nav{ transition:none; } }

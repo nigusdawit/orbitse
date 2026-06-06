@@ -74,3 +74,70 @@ def test_nav_counts_served_from_cache():
     j = c.get("/admin/api/nav-counts").get_json()
     assert j["counts"] == {"tab-sentinel": 4242}
     _bust()                                              # leave cache clean for other tests
+
+
+# ---- P2: GET /admin/api/search (record search) ----
+
+def test_search_requires_auth():
+    r = app.app.test_client().get("/admin/api/search?q=test")
+    assert r.status_code in (401, 403, 302)
+
+
+def test_search_short_query_returns_empty():
+    c = _sa()
+    assert c.get("/admin/api/search?q=a").get_json() == {"groups": []}   # <2 chars
+
+
+def test_search_malformed_query_ok():
+    # Pure-wildcard query ("%%") must not error — q is a bound ILIKE param.
+    c = _sa()
+    r = c.get("/admin/api/search?q=%25%25")
+    assert r.status_code == 200
+    assert isinstance(r.get_json().get("groups"), list)
+
+
+def test_search_finds_records_super():
+    c = _sa()
+    app.execute_db("INSERT INTO leads (tenant_id, name, email) VALUES (1, %s, %s)",
+                   ("Zorptastic Probe", "zorp@probe.test"))
+    app.execute_db("INSERT INTO pages (slug, title) VALUES (%s, %s) ON CONFLICT (slug) DO NOTHING",
+                   ("zorptastic-probe", "Zorptastic Probe Page"))
+    try:
+        j = c.get("/admin/api/search?q=zorptastic").get_json()
+        types = {g["type"]: g for g in j["groups"]}
+        assert "lead" in types, j                       # super sees the PII lead group
+        assert any("Zorptastic" in (it["label"] or "") for it in types["lead"]["items"])
+        assert types["lead"]["items"][0]["tabAction"] == "tab-crm"
+        assert "page" in types
+        assert types["page"]["items"][0]["tabAction"] == "tab-pages"
+    finally:
+        app.execute_db("DELETE FROM leads WHERE email=%s", ("zorp@probe.test",))
+        app.execute_db("DELETE FROM pages WHERE slug=%s", ("zorptastic-probe",))
+
+
+def test_search_pii_hidden_from_client():
+    if not CLIENT_PW:
+        return
+    app.execute_db("INSERT INTO leads (tenant_id, name, email) VALUES (1, %s, %s)",
+                   ("Zorptastic Probe", "zorp@probe.test"))
+    app.execute_db("INSERT INTO pages (slug, title) VALUES (%s, %s) ON CONFLICT (slug) DO NOTHING",
+                   ("zorptastic-probe", "Zorptastic Probe Page"))
+    try:
+        cc = app.app.test_client()
+        cc.post("/admin/login", data={"password": CLIENT_PW})
+        with cc.session_transaction() as s:
+            s["_csrf_token"] = "t"
+        j = cc.get("/admin/api/search?q=zorptastic").get_json()
+        types = {g["type"] for g in j["groups"]}
+        assert "lead" not in types                      # PII hidden from non-super
+        assert "page" in types                          # non-PII still searchable
+    finally:
+        app.execute_db("DELETE FROM leads WHERE email=%s", ("zorp@probe.test",))
+        app.execute_db("DELETE FROM pages WHERE slug=%s", ("zorptastic-probe",))
+
+
+def test_search_settings_static_map():
+    c = _sa()
+    j = c.get("/admin/api/search?q=appearance").get_json()
+    setting = [g for g in j["groups"] if g["type"] == "setting"]
+    assert setting and any(it["tabAction"] == "tab-appearance" for it in setting[0]["items"])

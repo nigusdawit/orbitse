@@ -145,7 +145,7 @@
   }
 
   /* ---- ⌘K command palette (works in both modes) ---- */
-  var pal = null, palItems = [], palSel = 0;
+  var pal = null, palItems = [], palSel = 0, _palTimer = null, _palSeq = 0;
   function tabEntries() {
     return $all('.tab-btn').map(function (b) {
       var t = b.getAttribute('data-testid') || '';
@@ -155,27 +155,60 @@
   function buildPalette() {
     if (pal) return;
     pal = doc.createElement('div'); pal.className = 'ws-cmdk'; pal.id = 'ws-cmdk';
-    pal.innerHTML = '<div class="ws-cmdk-box"><input type="text" placeholder="Jump to a section… (type to filter)" aria-label="Command search"><div class="ws-cmdk-list"></div></div>';
+    pal.innerHTML = '<div class="ws-cmdk-box"><input type="text" placeholder="Search tabs, contacts, pages, orders…" aria-label="Command search"><div class="ws-cmdk-list"></div></div>';
     doc.body.appendChild(pal);
     pal.addEventListener('click', function (e) { if (e.target === pal) closePalette(); });
     var inp = pal.querySelector('input');
     inp.addEventListener('input', function () { renderPalette(this.value); });
     inp.addEventListener('keydown', palKey);
   }
+  /* One row. e = {testid|tabAction, label, sublabel?, grp}. i = its index in palItems. */
+  function _palRow(e, i) {
+    var it = doc.createElement('div'); it.className = 'ws-cmdk-item' + (i === 0 ? ' sel' : '');
+    var t = doc.createElement('span'); t.className = 'ws-cmdk-t'; t.textContent = e.label;   // textContent: XSS-safe
+    it.appendChild(t);
+    if (e.sublabel) { var s = doc.createElement('span'); s.className = 'ws-cmdk-sub'; s.textContent = e.sublabel; it.appendChild(s); }
+    var g = doc.createElement('span'); g.className = 'ws-cmdk-grp'; g.textContent = e.grp || '';
+    it.appendChild(g);
+    it.addEventListener('click', function () { choosePalette(i); });
+    return it;
+  }
   function renderPalette(q) {
-    q = (q || '').trim().toLowerCase();
+    q = (q || '').trim();
+    var ql = q.toLowerCase();
     var list = pal.querySelector('.ws-cmdk-list'); palSel = 0;
-    palItems = tabEntries().filter(function (e) { return !q || e.label.toLowerCase().indexOf(q) >= 0 || e.grp.toLowerCase().indexOf(q) >= 0; });
-    if (!palItems.length) { list.innerHTML = '<div class="ws-cmdk-empty">No matches</div>'; return; }
+    // instant layer — tab/section matches (unchanged behaviour, jumps with no round-trip)
+    palItems = tabEntries().filter(function (e) { return !ql || e.label.toLowerCase().indexOf(ql) >= 0 || e.grp.toLowerCase().indexOf(ql) >= 0; });
     list.innerHTML = '';
-    palItems.forEach(function (e, i) {
-      var it = doc.createElement('div'); it.className = 'ws-cmdk-item' + (i === 0 ? ' sel' : '');
-      var t = doc.createElement('span'); t.textContent = e.label;                 // textContent: XSS-safe
-      var g = doc.createElement('span'); g.className = 'ws-cmdk-grp'; g.textContent = e.grp;
-      it.appendChild(t); it.appendChild(g);
-      it.addEventListener('click', function () { choosePalette(i); });
-      list.appendChild(it);
-    });
+    palItems.forEach(function (e, i) { list.appendChild(_palRow(e, i)); });
+    if (!palItems.length) list.innerHTML = '<div class="ws-cmdk-empty">No matches</div>';
+    // async layer — record search (debounced + stale-guarded, server-fed, fail-open)
+    if (ql.length >= 2) _searchRecords(q, list);
+  }
+  function _searchRecords(q, list) {
+    var seq = ++_palSeq;
+    if (_palTimer) clearTimeout(_palTimer);
+    _palTimer = setTimeout(function () {
+      try {
+        fetch('/admin/api/search?q=' + encodeURIComponent(q), { credentials: 'same-origin' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (d) {
+            if (seq !== _palSeq || !pal.classList.contains('open')) return;   // superseded keystroke / closed
+            if (!d || !Array.isArray(d.groups) || !d.groups.length) return;
+            var empty = list.querySelector('.ws-cmdk-empty'); if (empty) empty.remove();
+            d.groups.forEach(function (grp) {
+              if (!grp || !Array.isArray(grp.items) || !grp.items.length) return;
+              var h = doc.createElement('div'); h.className = 'ws-cmdk-head'; h.textContent = grp.label || grp.type || ''; list.appendChild(h);
+              grp.items.forEach(function (rec) {
+                var e = { tabAction: rec.tabAction, label: rec.label || '', sublabel: rec.sublabel || '', grp: grp.label || '' };
+                var i = palItems.length; palItems.push(e);
+                list.appendChild(_palRow(e, i));
+              });
+            });
+          })
+          .catch(function () {}); // fail-open: records just don't appear
+      } catch (e) {}
+    }, 180);
   }
   function moveSel(d) {
     var items = pal.querySelectorAll('.ws-cmdk-item'); if (!items.length) return;
@@ -183,7 +216,7 @@
     palSel = (palSel + d + items.length) % items.length;
     items[palSel].classList.add('sel'); items[palSel].scrollIntoView({ block: 'nearest' });
   }
-  function choosePalette(i) { var e = palItems[i]; if (!e) return; closePalette(); var rb = realBtn(e.testid); if (rb) rb.click(); }
+  function choosePalette(i) { var e = palItems[i]; if (!e) return; closePalette(); var rb = realBtn(e.testid || e.tabAction); if (rb) rb.click(); }
   function palKey(ev) {
     if (ev.key === 'ArrowDown') { ev.preventDefault(); moveSel(1); }
     else if (ev.key === 'ArrowUp') { ev.preventDefault(); moveSel(-1); }

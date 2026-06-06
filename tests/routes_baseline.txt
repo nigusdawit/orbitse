@@ -192,6 +192,7 @@ GET /admin/api/scrape-jobs/<int:job_id>
 GET /admin/api/scrape-jobs/<int:job_id>/diff
 GET /admin/api/scrape-schedules
 GET /admin/api/scraper-settings
+GET /admin/api/search
 GET /admin/api/secrets/status
 GET /admin/api/section-visibility
 GET /admin/api/sentry/alerts
