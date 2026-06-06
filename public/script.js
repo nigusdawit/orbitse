@@ -7772,29 +7772,36 @@ function executeCommand(cmd) {
     */
     case 'generatePage':
     case 'generateHTML': {
-      /* If the page was already drawn live during streaming, just finalize
-         (remove the "Building" indicator, flush any remaining queue) and
-         skip the one-shot re-render — re-rendering would reset all the
-         CSS animations the visitor just watched play. Otherwise fall back
-         to the one-shot renderer for fast/non-streamed responses. */
+      /* The live "assembly" stream (the pulsing "Building" overlay shown while
+         the HTML arrives) is only a PROGRESS affordance — we never rely on it
+         for the final result. Here's why: the AI's standard page template hides
+         every section with `opacity:0` and reveals them with a single
+         DOMContentLoaded-gated IntersectionObserver script. When the page is
+         streamed in chunk-by-chunk via insertAdjacentHTML, those <script>s do
+         NOT execute on insert, and re-running them on "finish" happens AFTER the
+         iframe's DOMContentLoaded has already fired — so the reveal listener
+         never runs and all the sections stay invisible. The visitor is then
+         left staring at a blank / "stuck on Building" page even though the HTML
+         is fully present and saved.
+
+         So once the complete command has arrived we ALWAYS tear down the live
+         stream and do an authoritative one-shot render of the full HTML:
+         openImmersivePage() writes the COMPLETE document into the iframe via
+         srcdoc, which makes the browser parse it fresh and run every <script>
+         in normal load order (DOMContentLoaded fires correctly), so all
+         content reveals reliably. The only cost is the CSS intro animations
+         replay once — a fair trade for a page that actually shows up. */
       if (isImmersivePageStreaming()) {
-        /* Did the live stream actually deliver content to the iframe? It only
-           counts if the iframe handshake landed (ready) AND we queued some
-           HTML (written > 0). If either is false — e.g. the cross-iframe
-           postMessage handshake never arrived, or no safe HTML boundary was
-           flushed — the visitor would be left staring at a blank "Building"
-           page. In that case we fall back to the reliable one-shot renderer,
-           which writes the full HTML straight into the iframe document so the
-           page always appears. */
-        const st = _immersiveStream;
-        const delivered = !!(st && st.ready && st.completed && st.written > 0);
-        finishImmersivePageStreaming();
+        /* Drop the live-stream listener + state; we're replacing the whole
+           iframe document below, so there's no need to flush 'finish'. */
         resetImmersiveStreamState();
-        if (!delivered && (cmd.html || '').trim()) {
-          openImmersivePage(cmd.html);
-        }
+      }
+      if ((cmd.html || '').trim()) {
+        openImmersivePage(cmd.html);
       } else {
-        openImmersivePage(cmd.html || '');
+        /* Defensive: a page command with no HTML should never strand the
+           visitor on the "Building" overlay. */
+        closeImmersivePage();
       }
       openSidePanel();
       saveGeneratedPage(cmd.html || '', cmd.title || '');
