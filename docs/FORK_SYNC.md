@@ -64,6 +64,24 @@ them through creating their own fork and the daily loop.
 
 ---
 
+## Convenience scripts
+
+`scripts/` has three helpers (run with `bash scripts/<name>.sh`; on Windows use Git
+Bash). They default to `upstream` = master and `origin` = your fork, and **never
+force-push**:
+
+| script | who | what it does |
+|--------|-----|--------------|
+| `sync-down.sh` | everyone | fetch master + merge into your `main` + push your fork (pull *theirs*) |
+| `sync-up.sh`   | maintainer / push-rights | fast-forward your `main` up to master (stops if master moved — run sync-down first) |
+| `publish.sh`   | teammates | push your current feature branch to your fork + print the PR link into master |
+
+If your master remote isn't named `upstream` (the maintainer's repo also wires it as
+`roofing`), either pass it — `MASTER_REMOTE=roofing bash scripts/sync-up.sh` — or add
+the alias once: `git remote add upstream https://github.com/Aaltaye/roofing-concierge.git`.
+
+---
+
 ## Recovery
 
 roofing's pre-unification state is preserved on the branch

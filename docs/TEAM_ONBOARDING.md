@@ -71,6 +71,11 @@ git checkout main
 git pull upstream main
 ```
 
+### Shortcuts (optional)
+The repo ships helper scripts (run with Git Bash on Windows):
+- `bash scripts/sync-down.sh` — does "start from latest master" in one step (fetch + merge + push your fork).
+- `bash scripts/publish.sh` — pushes your current feature branch and prints the PR link into master.
+
 ---
 
 ## 3. Rules of the road
