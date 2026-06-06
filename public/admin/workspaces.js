@@ -72,6 +72,30 @@
     } catch (e) {}
   }
 
+  /* ---- header health pill (task 093, gap §0.2) — fed by GET /admin/api/shell/health ---- */
+  var _healthTimer = null;
+  function loadHealth() {
+    var el = $('#ws-status'); if (!el) return;
+    try {
+      fetch('/admin/api/shell/health', { credentials: 'same-origin' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (!d || !d.status) return;   // fail-open: leave the pill as-is on a bad reply
+          var st = (d.status === 'live' || d.status === 'degraded' || d.status === 'down') ? d.status : 'degraded';
+          var label = st === 'live' ? 'Concierge live' : (st === 'degraded' ? 'Concierge degraded' : 'Concierge offline');
+          el.className = 'ws-status is-' + st;
+          el.textContent = label;        // textContent: XSS-safe (status is a server enum)
+          el.title = d.detail || (d.provider ? ('Provider: ' + d.provider) : '');
+          el.hidden = false;
+        })
+        .catch(function () {});           // fail-open: pill stays hidden on a transient blip
+    } catch (e) {}
+  }
+  function startHealthPill() {
+    loadHealth();
+    try { if (_healthTimer) clearInterval(_healthTimer); _healthTimer = setInterval(loadHealth, 60000); } catch (e) {}
+  }
+
   /* ---- rail ---- */
   function buildRail() {
     var rail = $('#ws-rail'); if (!rail) return;
@@ -276,6 +300,7 @@
         }
       });
       var cb = $('#ws-cmdk-btn'); if (cb) { cb.style.display = ''; cb.addEventListener('click', openPalette); }
+      startHealthPill();   // task 093 — header status pill (shown in both nav modes)
       // If the boot script (or default) resolved to workspaces, build + confirm.
       if (root.classList.contains('nav-pref-workspaces')) { ensureBuilt(); markReady(); }
     } catch (e) {

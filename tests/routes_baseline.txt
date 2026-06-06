@@ -200,6 +200,7 @@ GET /admin/api/seo
 GET /admin/api/services
 GET /admin/api/services/<int:svc_id>/addons
 GET /admin/api/services/<int:svc_id>/availability
+GET /admin/api/shell/health
 GET /admin/api/site-designs
 GET /admin/api/site-designs/<int:design_id>
 GET /admin/api/site-mode

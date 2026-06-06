@@ -141,3 +141,47 @@ def test_search_settings_static_map():
     j = c.get("/admin/api/search?q=appearance").get_json()
     setting = [g for g in j["groups"] if g["type"] == "setting"]
     assert setting and any(it["tabAction"] == "tab-appearance" for it in setting[0]["items"])
+
+
+# ---- P3: GET /admin/api/shell/health (status pill) ----
+
+def _bust_health():
+    app._HEALTH_PILL_CACHE["ts"] = 0.0
+
+
+def _set_provider(p):
+    app.execute_db(
+        "INSERT INTO agent_provider_settings (id, provider, openai_model, claude_model) "
+        "VALUES (1, %s, 'gpt-4o-mini', 'claude-sonnet-4-5') "
+        "ON CONFLICT (id) DO UPDATE SET provider = EXCLUDED.provider", (p,))
+
+
+def test_health_requires_auth():
+    r = app.app.test_client().get("/admin/api/shell/health")
+    assert r.status_code in (401, 403, 302)
+
+
+def test_health_live_on_default_provider():
+    c = _sa()
+    _set_provider("openai")          # default; openai_client is always constructed
+    _bust_health()
+    try:
+        j = c.get("/admin/api/shell/health").get_json()
+        assert j["status"] == "live", j
+        assert "provider" in j
+    finally:
+        _set_provider("openai")
+        _bust_health()
+
+
+def test_health_degraded_when_claude_without_key():
+    c = _sa()
+    _set_provider("claude")          # configured provider unusable (no ANTHROPIC key/client in tests)
+    _bust_health()
+    try:
+        j = c.get("/admin/api/shell/health").get_json()
+        assert j["status"] in ("degraded", "down"), j
+        assert j.get("detail")       # explains why (Claude not initialized)
+    finally:
+        _set_provider("openai")      # restore so other tests/UX see a healthy default
+        _bust_health()
