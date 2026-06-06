@@ -5,4 +5,5 @@
 - [pytest suite env sensitivity](test-suite-env-sensitivity.md) — `pytest tests/` in the live workspace shows many FALSE failures (leaking SUPER_ADMIN_KEY/secrets, missing SSO_SIGNING_SECRET/CLIENT_PASSWORD); run with a clean env; trust app-boot+migrations as the real health signal.
 - [Dual boot entrypoints](boot-entrypoints.md) — boot-time seeding/sync must be added to BOTH main._bootstrap() and app.py __main__; write-invalidated caches must take the loader's lock.
 - [query_db fetchone gotcha](query-db-fetchone.md) — query_db returns a LIST by default; single-row callers using row.get(...) need fetchone=True or it raises and is often silently swallowed.
+- [generated_pages reuse policy](generated-pages-reuse-policy.md) — the "saved AI page" reuse status filter lives in ~6 spots (PAGE LIBRARY prompt, lookup tool x2, by-slug x2, a draft-list prompt block); change them in lockstep or the model gets contradictory signals.
 - [OpenAI client key wiring](openai-client-key-wiring.md) — chat/embeddings use the Replit proxy var AI_INTEGRATIONS_OPENAI_API_KEY; voice uses direct OPENAI_API_KEY. Adding only OPENAI_API_KEY won't fix chat unless a direct-key fallback exists.
