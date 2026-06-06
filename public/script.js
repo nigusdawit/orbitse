@@ -7772,31 +7772,38 @@ function executeCommand(cmd) {
     */
     case 'generatePage':
     case 'generateHTML': {
-      /* The live "assembly" stream (the pulsing "Building" overlay shown while
-         the HTML arrives) is only a PROGRESS affordance — we never rely on it
-         for the final result. Here's why: the AI's standard page template hides
-         every section with `opacity:0` and reveals them with a single
-         DOMContentLoaded-gated IntersectionObserver script. When the page is
-         streamed in chunk-by-chunk via insertAdjacentHTML, those <script>s do
-         NOT execute on insert, and re-running them on "finish" happens AFTER the
-         iframe's DOMContentLoaded has already fired — so the reveal listener
-         never runs and all the sections stay invisible. The visitor is then
-         left staring at a blank / "stuck on Building" page even though the HTML
-         is fully present and saved.
-
-         So once the complete command has arrived we ALWAYS tear down the live
-         stream and do an authoritative one-shot render of the full HTML:
-         openImmersivePage() writes the COMPLETE document into the iframe via
-         srcdoc, which makes the browser parse it fresh and run every <script>
-         in normal load order (DOMContentLoaded fires correctly), so all
-         content reveals reliably. The only cost is the CSS intro animations
-         replay once — a fair trade for a page that actually shows up. */
+      /* The page is rendered LIVE as it streams (the visitor watches it build
+         up section by section). The streaming renderer now reveals each
+         .animate-in block as it arrives (see the iframe bootstrap in
+         buildImmersivePageDoc), so the page is actually visible while it builds
+         — it no longer sits blank/"stuck on Building". Here, once the full
+         command has arrived, we just FINALIZE the stream (remove the "Building"
+         pulse, flush the last chunk) and KEEP what the visitor watched assemble
+         — re-rendering would discard it and replay every animation from zero. */
       if (isImmersivePageStreaming()) {
-        /* Drop the live-stream listener + state; we're replacing the whole
-           iframe document below, so there's no need to flush 'finish'. */
+        /* Did the live stream actually deliver content to the iframe? It only
+           counts if the cross-iframe handshake landed (ready), the command
+           closed (completed) AND we queued some HTML (written > 0). If any is
+           false — e.g. the postMessage handshake never arrived, or no safe HTML
+           boundary was flushed — the visitor would be left on a blank
+           "Building" page, so we fall back to the reliable one-shot renderer,
+           which writes the full HTML straight into the iframe document. */
+        const st = _immersiveStream;
+        const delivered = !!(st && st.ready && st.completed && st.written > 0);
+        finishImmersivePageStreaming();
         resetImmersiveStreamState();
-      }
-      if ((cmd.html || '').trim()) {
+        if (!delivered) {
+          if ((cmd.html || '').trim()) {
+            /* Stream didn't land — one-shot the full HTML so the page shows. */
+            openImmersivePage(cmd.html);
+          } else {
+            /* Nothing delivered AND no HTML to fall back to — don't strand the
+               visitor on a blank "Building" overlay; close it outright. */
+            closeImmersivePage();
+          }
+        }
+      } else if ((cmd.html || '').trim()) {
+        /* No live stream ran (fast / non-streamed response): one-shot render. */
         openImmersivePage(cmd.html);
       } else {
         /* Defensive: a page command with no HTML should never strand the
@@ -9139,10 +9146,38 @@ function buildImmersivePageDoc(bodyHtml, streamToken) {
           if (d.token && d.token !== STREAM_TOKEN) return;
           var root = document.getElementById('__stream_root__');
           if (d.type === 'append' && typeof d.html === 'string' && root) {
-            try { root.insertAdjacentHTML('beforeend', d.html); } catch (err) {}
+            try {
+              root.insertAdjacentHTML('beforeend', d.html);
+              /* Reveal the sections that just streamed in. The AI's pages hide
+                 every block with .animate-in{opacity:0} and only reveal them
+                 via a DOMContentLoaded-gated IntersectionObserver that can NOT
+                 run mid-stream (insertAdjacentHTML never executes <script>, and
+                 DOMContentLoaded already fired). So we reveal them ourselves —
+                 on the next two frames, so the browser first paints the hidden
+                 (opacity:0) state and then animates the .visible transition.
+                 This is what makes the page genuinely build up gradually. */
+              var fresh = root.querySelectorAll('.animate-in:not(.visible)');
+              if (fresh.length) {
+                requestAnimationFrame(function () {
+                  requestAnimationFrame(function () {
+                    for (var k = 0; k < fresh.length; k++) {
+                      fresh[k].classList.add('visible');
+                    }
+                  });
+                });
+              }
+            } catch (err) {}
           } else if (d.type === 'finish') {
             var pulse = document.querySelector('.__streaming_pulse__');
             if (pulse) pulse.remove();
+            /* Belt-and-suspenders: reveal anything still hidden (a final chunk
+               can land in the same tick as 'finish' before its rAF reveal). */
+            try {
+              if (root) {
+                var rem = root.querySelectorAll('.animate-in:not(.visible)');
+                for (var j = 0; j < rem.length; j++) rem[j].classList.add('visible');
+              }
+            } catch (e2) {}
             /* insertAdjacentHTML parses <script> tags into the DOM but
                does NOT execute them. Re-run any inline/external scripts
                the AI included (e.g. IntersectionObserver setups that toggle
