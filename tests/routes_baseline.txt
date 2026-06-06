@@ -161,6 +161,7 @@ GET /admin/api/messaging/status
 GET /admin/api/messaging/subscribers
 GET /admin/api/messaging/templates
 GET /admin/api/messaging/templates/<int:tid>/preview
+GET /admin/api/nav-counts
 GET /admin/api/offers
 GET /admin/api/onboarding/snapshot
 GET /admin/api/onboarding/snapshot/summary
@@ -191,6 +192,7 @@ GET /admin/api/scrape-jobs/<int:job_id>
 GET /admin/api/scrape-jobs/<int:job_id>/diff
 GET /admin/api/scrape-schedules
 GET /admin/api/scraper-settings
+GET /admin/api/search
 GET /admin/api/secrets/status
 GET /admin/api/section-visibility
 GET /admin/api/sentry/alerts
@@ -198,6 +200,7 @@ GET /admin/api/seo
 GET /admin/api/services
 GET /admin/api/services/<int:svc_id>/addons
 GET /admin/api/services/<int:svc_id>/availability
+GET /admin/api/shell/health
 GET /admin/api/site-designs
 GET /admin/api/site-designs/<int:design_id>
 GET /admin/api/site-mode

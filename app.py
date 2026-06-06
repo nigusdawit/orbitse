@@ -26805,6 +26805,54 @@ def admin_get_llm_provider():
     })
 
 
+# task 093 P3 — header status pill ("● Concierge live"). Config-reachability only (no
+# provider round-trip) + a 30s TTL cache, so the always-visible header poll never costs
+# a DB/API hit per call. Lives here (not the shell blueprint) because it reads app.py
+# provider globals. Fail-open: any error degrades the pill, never 500s.
+_HEALTH_PILL_CACHE = {"val": None, "ts": 0.0}
+_HEALTH_PILL_TTL_SEC = 30.0
+
+
+def _shell_health_snapshot():
+    """Cheap health read for the status pill — is a usable LLM provider configured?
+    No network call (config + client-presence only). Never raises."""
+    provider, model, detail, configured = "openai", "", "", True
+    try:
+        provider, model = get_active_llm_provider()   # raises if Claude selected w/o key
+    except LLMProviderUnavailable as e:
+        configured = False
+        detail = str(e)
+    except Exception as e:
+        configured = False
+        detail = "provider check failed"
+        capture_exc(e, "shell_health_snapshot")
+    has_client = (openai_client is not None) or (anthropic_client is not None)
+    if configured and has_client:
+        status = "live"
+    elif has_client:
+        status = "degraded"   # configured provider broken, but a client exists as fallback
+    else:
+        status = "down"
+    return {"status": status, "provider": provider, "model": model, "detail": detail}
+
+
+@app.route("/admin/api/shell/health", methods=["GET"])
+@admin_required
+def admin_shell_health():
+    """Status-pill health (task 093 P3). @admin_required; 30s-cached; fail-open."""
+    now = _time.time()
+    c = _HEALTH_PILL_CACHE
+    if c["val"] is not None and (now - c["ts"]) < _HEALTH_PILL_TTL_SEC:
+        return jsonify(c["val"])
+    try:
+        snap = _shell_health_snapshot()
+    except Exception:
+        snap = {"status": "degraded", "provider": "", "model": "", "detail": ""}
+    c["val"] = snap
+    c["ts"] = now
+    return jsonify(snap)
+
+
 @app.route("/admin/api/llm-provider", methods=["PUT"])
 @admin_required
 def admin_update_llm_provider():
@@ -42264,6 +42312,13 @@ app.register_blueprint(dashboards_bp)
 # call sites).
 from admin.crm import crm_bp  # noqa: E402
 app.register_blueprint(crm_bp)
+
+# Shell blueprint (task 093, gap §0): Workspaces shell cross-cutting read APIs.
+# P1 = GET /admin/api/nav-counts — live sub-nav badge counts, 30s-cached, fail-open;
+# PII/leads counted super-admin-only in-body. @admin_required (from core), imports only
+# from core. Record-search + health-pill routes land in later phases of this task.
+from admin.shell import shell_bp  # noqa: E402
+app.register_blueprint(shell_bp)
 
 # Tenancy blueprint (Track B): the super-admin Plans & Features management API —
 # GET /admin/api/tenant/features (roster + on/off state) and PATCH

@@ -55,7 +55,116 @@
   function moduleOf(testid) { return (tabToMod[testid] || {}).mod || 'setup'; }
   function moduleLabel(id) { var m = WS_MODULES.filter(function (x) { return x.id === id; })[0]; return m ? m.label : 'More'; }
 
-  var state = { viewMod: 'home', built: false };
+  var state = { viewMod: 'home', built: false, counts: null };
+
+  /* ---- live sub-nav counts (task 093, gap §0.3) — fed by GET /admin/api/nav-counts ---- */
+  function fmtCount(n) {
+    n = Number(n) || 0;
+    if (n >= 1000) { var v = n / 1000; return (v >= 10 ? Math.round(v) : v.toFixed(1).replace(/\.0$/, '')) + 'k'; }
+    return String(n);
+  }
+  function loadNavCounts() {
+    try {
+      fetch('/admin/api/nav-counts', { credentials: 'same-origin' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) { if (d && d.counts && typeof d.counts === 'object') { state.counts = d.counts; buildSubnav(); } })
+        .catch(function () {}); // fail-open: no counts → items render exactly as before
+    } catch (e) {}
+  }
+
+  /* ---- header health pill (task 093, gap §0.2) — fed by GET /admin/api/shell/health ---- */
+  var _healthTimer = null;
+  function loadHealth() {
+    var el = $('#ws-status'); if (!el) return;
+    try {
+      fetch('/admin/api/shell/health', { credentials: 'same-origin' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (!d || !d.status) return;   // fail-open: leave the pill as-is on a bad reply
+          var st = (d.status === 'live' || d.status === 'degraded' || d.status === 'down') ? d.status : 'degraded';
+          var label = st === 'live' ? 'Concierge live' : (st === 'degraded' ? 'Concierge degraded' : 'Concierge offline');
+          el.className = 'ws-status is-' + st;
+          el.textContent = label;        // textContent: XSS-safe (status is a server enum)
+          el.title = d.detail || (d.provider ? ('Provider: ' + d.provider) : '');
+          el.hidden = false;
+        })
+        .catch(function () {});           // fail-open: pill stays hidden on a transient blip
+    } catch (e) {}
+  }
+  function startHealthPill() {
+    loadHealth();
+    try { if (_healthTimer) clearInterval(_healthTimer); _healthTimer = setInterval(loadHealth, 60000); } catch (e) {}
+  }
+
+  /* ---- "+ New" quick-create (task 093, gap §0.4) — proxies to the EXISTING create
+     routes (CSRF auto-added by csrf.js's fetch wrapper); on success lands the user on
+     the owning tab. Super-only types are hidden for non-super sessions (the server
+     still 403s — this is just UX). ---- */
+  var WS_NEW_TYPES = [
+    { id: 'contact', label: 'Contact', sup: true, tab: 'tab-crm', url: '/admin/api/leads',
+      fields: [{ k: 'name', ph: 'Full name' }, { k: 'email', ph: 'Email', type: 'email' }, { k: 'phone', ph: 'Phone' }], ok: 'Contact added' },
+    { id: 'page', label: 'Page', sup: false, tab: 'tab-pages', url: '/admin/api/pages',
+      fields: [{ k: 'slug', ph: 'URL slug (e.g. about)', req: true }, { k: 'title', ph: 'Title (optional)' }], ok: 'Page created' },
+    { id: 'offer', label: 'Offer', sup: true, tab: 'tab-offers', url: '/admin/api/offers',
+      fields: [{ k: 'title', ph: 'Offer title', req: true }], ok: 'Offer created' }
+  ];
+  var newPop = null;
+  function _newTypes() { return WS_NEW_TYPES.filter(function (t) { return (!t.sup || NAV.isSuper) && realBtn(t.tab); }); }
+  function buildNewPop() {
+    if (newPop) return;
+    newPop = doc.createElement('div'); newPop.className = 'ws-cmdk ws-newpop'; newPop.id = 'ws-newpop';
+    newPop.innerHTML = '<div class="ws-cmdk-box ws-newbox"><div class="ws-new-body"></div></div>';
+    doc.body.appendChild(newPop);
+    newPop.addEventListener('click', function (e) { if (e.target === newPop) closeNewPop(); });
+    doc.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeNewPop(); });
+  }
+  function openNewPop() { buildNewPop(); _newMenu(); newPop.classList.add('open'); }
+  function closeNewPop() { if (newPop) newPop.classList.remove('open'); }
+  function _newMenu() {
+    var body = newPop.querySelector('.ws-new-body'); body.innerHTML = '';
+    var h = doc.createElement('div'); h.className = 'ws-new-h'; h.textContent = 'Create new…'; body.appendChild(h);
+    _newTypes().forEach(function (t) {
+      var b = doc.createElement('button'); b.type = 'button'; b.className = 'ws-menu-item'; b.textContent = t.label;
+      b.addEventListener('click', function () { _newForm(t); });
+      body.appendChild(b);
+    });
+  }
+  function _newForm(t) {
+    var body = newPop.querySelector('.ws-new-body'); body.innerHTML = '';
+    var h = doc.createElement('div'); h.className = 'ws-new-h'; h.textContent = 'New ' + t.label; body.appendChild(h);
+    var inputs = {};
+    t.fields.forEach(function (f) {
+      var inp = doc.createElement('input'); inp.type = f.type || 'text'; inp.className = 'ws-new-input';
+      inp.placeholder = f.ph + (f.req ? ' *' : ''); body.appendChild(inp); inputs[f.k] = inp;
+    });
+    var err = doc.createElement('div'); err.className = 'ws-new-err'; body.appendChild(err);
+    var row = doc.createElement('div'); row.className = 'ws-new-actions';
+    var cancel = doc.createElement('button'); cancel.type = 'button'; cancel.className = 'ws-menu-item'; cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', _newMenu);
+    var create = doc.createElement('button'); create.type = 'button'; create.className = 'ws-new-create'; create.textContent = 'Create';
+    create.addEventListener('click', function () { _newSubmit(t, inputs, err, create); });
+    row.appendChild(cancel); row.appendChild(create); body.appendChild(row);
+    var first = body.querySelector('input'); if (first) setTimeout(function () { first.focus(); }, 10);
+  }
+  function _newSubmit(t, inputs, err, btn) {
+    err.textContent = '';
+    var payload = {}, k;
+    for (k in inputs) payload[k] = inputs[k].value.trim();
+    var missing = t.fields.filter(function (f) { return f.req && !payload[f.k]; });
+    if (missing.length) { err.textContent = 'Please fill the required field.'; return; }
+    if (t.id === 'contact' && !(payload.name || payload.email || payload.phone)) { err.textContent = 'Provide at least a name, email, or phone.'; return; }
+    btn.disabled = true; btn.textContent = 'Creating…';
+    fetch(t.url, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }).catch(function () { return { ok: r.ok, j: {} }; }); })
+      .then(function (res) {
+        btn.disabled = false; btn.textContent = 'Create';
+        if (!res.ok) { err.textContent = (res.j && res.j.error) ? res.j.error : 'Could not create.'; return; }
+        closeNewPop();
+        try { if (window.showToast) showToast(t.ok, 'success'); } catch (e) {}
+        var rb = realBtn(t.tab); if (rb) rb.click();   // land on the owning tab's list
+      })
+      .catch(function () { btn.disabled = false; btn.textContent = 'Create'; err.textContent = 'Network error.'; });
+  }
 
   /* ---- rail ---- */
   function buildRail() {
@@ -84,6 +193,8 @@
     var ic = doc.createElement('span'); ic.className = 'ws-ic'; var svg = btn ? btnIcon(btn) : null; if (svg) ic.appendChild(svg);
     var t = doc.createElement('span'); t.className = 'ws-t'; t.textContent = btn ? btnLabel(btn) : testid; // textContent: XSS-safe
     el.appendChild(ic); el.appendChild(t);
+    var n = state.counts ? state.counts[testid] : null;   // task 093 — live badge count
+    if (typeof n === 'number') { var cnt = doc.createElement('span'); cnt.className = 'ws-count'; cnt.textContent = fmtCount(n); el.appendChild(cnt); }
     el.addEventListener('click', function () { var rb = realBtn(testid); if (rb) rb.click(); });
     return el;
   }
@@ -128,7 +239,7 @@
   }
 
   /* ---- ⌘K command palette (works in both modes) ---- */
-  var pal = null, palItems = [], palSel = 0;
+  var pal = null, palItems = [], palSel = 0, _palTimer = null, _palSeq = 0;
   function tabEntries() {
     return $all('.tab-btn').map(function (b) {
       var t = b.getAttribute('data-testid') || '';
@@ -138,27 +249,61 @@
   function buildPalette() {
     if (pal) return;
     pal = doc.createElement('div'); pal.className = 'ws-cmdk'; pal.id = 'ws-cmdk';
-    pal.innerHTML = '<div class="ws-cmdk-box"><input type="text" placeholder="Jump to a section… (type to filter)" aria-label="Command search"><div class="ws-cmdk-list"></div></div>';
+    pal.innerHTML = '<div class="ws-cmdk-box"><input type="text" placeholder="Search tabs, contacts, pages, orders…" aria-label="Command search"><div class="ws-cmdk-list"></div></div>';
     doc.body.appendChild(pal);
     pal.addEventListener('click', function (e) { if (e.target === pal) closePalette(); });
     var inp = pal.querySelector('input');
     inp.addEventListener('input', function () { renderPalette(this.value); });
     inp.addEventListener('keydown', palKey);
   }
+  /* One row. e = {testid|tabAction, label, sublabel?, grp}. i = its index in palItems. */
+  function _palRow(e, i) {
+    var it = doc.createElement('div'); it.className = 'ws-cmdk-item' + (i === 0 ? ' sel' : '');
+    var t = doc.createElement('span'); t.className = 'ws-cmdk-t'; t.textContent = e.label;   // textContent: XSS-safe
+    it.appendChild(t);
+    if (e.sublabel) { var s = doc.createElement('span'); s.className = 'ws-cmdk-sub'; s.textContent = e.sublabel; it.appendChild(s); }
+    var g = doc.createElement('span'); g.className = 'ws-cmdk-grp'; g.textContent = e.grp || '';
+    it.appendChild(g);
+    it.addEventListener('click', function () { choosePalette(i); });
+    return it;
+  }
   function renderPalette(q) {
-    q = (q || '').trim().toLowerCase();
+    q = (q || '').trim();
+    var ql = q.toLowerCase();
+    _palSeq++;   // every keystroke (incl. shrink/clear) supersedes any in-flight record fetch
     var list = pal.querySelector('.ws-cmdk-list'); palSel = 0;
-    palItems = tabEntries().filter(function (e) { return !q || e.label.toLowerCase().indexOf(q) >= 0 || e.grp.toLowerCase().indexOf(q) >= 0; });
-    if (!palItems.length) { list.innerHTML = '<div class="ws-cmdk-empty">No matches</div>'; return; }
+    // instant layer — tab/section matches (unchanged behaviour, jumps with no round-trip)
+    palItems = tabEntries().filter(function (e) { return !ql || e.label.toLowerCase().indexOf(ql) >= 0 || e.grp.toLowerCase().indexOf(ql) >= 0; });
     list.innerHTML = '';
-    palItems.forEach(function (e, i) {
-      var it = doc.createElement('div'); it.className = 'ws-cmdk-item' + (i === 0 ? ' sel' : '');
-      var t = doc.createElement('span'); t.textContent = e.label;                 // textContent: XSS-safe
-      var g = doc.createElement('span'); g.className = 'ws-cmdk-grp'; g.textContent = e.grp;
-      it.appendChild(t); it.appendChild(g);
-      it.addEventListener('click', function () { choosePalette(i); });
-      list.appendChild(it);
-    });
+    palItems.forEach(function (e, i) { list.appendChild(_palRow(e, i)); });
+    if (!palItems.length) list.innerHTML = '<div class="ws-cmdk-empty">No matches</div>';
+    // async layer — record search (debounced + stale-guarded, server-fed, fail-open)
+    if (ql.length >= 2) _searchRecords(q, list);
+  }
+  function _searchRecords(q, list) {
+    var seq = _palSeq;   // renderPalette bumps _palSeq on every keystroke (stale-guard)
+    if (_palTimer) clearTimeout(_palTimer);
+    _palTimer = setTimeout(function () {
+      try {
+        fetch('/admin/api/search?q=' + encodeURIComponent(q), { credentials: 'same-origin' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (d) {
+            if (seq !== _palSeq || !pal.classList.contains('open')) return;   // superseded keystroke / closed
+            if (!d || !Array.isArray(d.groups) || !d.groups.length) return;
+            var empty = list.querySelector('.ws-cmdk-empty'); if (empty) empty.remove();
+            d.groups.forEach(function (grp) {
+              if (!grp || !Array.isArray(grp.items) || !grp.items.length) return;
+              var h = doc.createElement('div'); h.className = 'ws-cmdk-head'; h.textContent = grp.label || grp.type || ''; list.appendChild(h);
+              grp.items.forEach(function (rec) {
+                var e = { tabAction: rec.tabAction, label: rec.label || '', sublabel: rec.sublabel || '', grp: grp.label || '' };
+                var i = palItems.length; palItems.push(e);
+                list.appendChild(_palRow(e, i));
+              });
+            });
+          })
+          .catch(function () {}); // fail-open: records just don't appear
+      } catch (e) {}
+    }, 180);
   }
   function moveSel(d) {
     var items = pal.querySelectorAll('.ws-cmdk-item'); if (!items.length) return;
@@ -166,7 +311,7 @@
     palSel = (palSel + d + items.length) % items.length;
     items[palSel].classList.add('sel'); items[palSel].scrollIntoView({ block: 'nearest' });
   }
-  function choosePalette(i) { var e = palItems[i]; if (!e) return; closePalette(); var rb = realBtn(e.testid); if (rb) rb.click(); }
+  function choosePalette(i) { var e = palItems[i]; if (!e) return; closePalette(); var rb = realBtn(e.testid || e.tabAction); if (rb) rb.click(); }
   function palKey(ev) {
     if (ev.key === 'ArrowDown') { ev.preventDefault(); moveSel(1); }
     else if (ev.key === 'ArrowUp') { ev.preventDefault(); moveSel(-1); }
@@ -207,6 +352,7 @@
     var cur = activeTestid(); state.viewMod = cur ? moduleOf(cur) : 'home';
     buildRail(); buildSubnav();
     state.built = true;
+    loadNavCounts();   // task 093 — fetch live sub-nav counts, re-render when they land
   }
 
   function init() {
@@ -225,12 +371,15 @@
         }
       });
       var cb = $('#ws-cmdk-btn'); if (cb) { cb.style.display = ''; cb.addEventListener('click', openPalette); }
+      startHealthPill();   // task 093 — header status pill (shown in both nav modes)
+      var nb = $('#ws-newbtn'); if (nb && _newTypes().length) { nb.hidden = false; nb.style.display = ''; nb.addEventListener('click', openNewPop); }  // task 093 — "+ New"
       // If the boot script (or default) resolved to workspaces, build + confirm.
       if (root.classList.contains('nav-pref-workspaces')) { ensureBuilt(); markReady(); }
     } catch (e) {
       // FAIL-SAFE: never strand the admin — revert to the classic sidebar.
       try { root.classList.remove('nav-pref-workspaces'); } catch (_) {}
       try { if (window.__wsHealTimer) clearTimeout(window.__wsHealTimer); } catch (_) {}
+      try { if (_healthTimer) clearInterval(_healthTimer); } catch (_) {}
       if (window.console && console.warn) console.warn('[workspaces] init failed, staying on Classic:', e);
     }
   }
