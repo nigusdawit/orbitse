@@ -6800,6 +6800,17 @@ async function chatSendStreaming(message, wasCollapsed) {
     showBarThinking(false);
     chatShowTyping(false);
     chatSetStatus(null);
+    /* CRITICAL: if a page build was already in progress (the immersive
+       "Building" overlay opened during streaming), any error thrown after
+       that point would otherwise leave the overlay frozen on "Building"
+       forever — the success path that sends the iframe its 'finish' message
+       never runs. Tear the overlay + stream state down here so the visitor
+       is returned to the site instead of a stuck build. closeImmersivePage()
+       is a no-op when the overlay isn't open, so this is always safe. */
+    try {
+      closeImmersivePage();
+      resetImmersiveStreamState();
+    } catch (e) { /* never let teardown mask the original error message */ }
     /* Tear down any in-flight sentence-streaming TTS so the visitor doesn't
        keep hearing fragments of an aborted reply. */
     if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakCancel === 'function') {
@@ -9379,10 +9390,16 @@ function finalizeImmersivePageStreaming() {
     resetImmersiveStreamState();
   } else {
     /* Not ready yet: keep the listener so 'finish' is delivered on ready,
-       then reset (see the ready handler). Fallback reset after 5s so we never
-       leak the listener if the iframe never reports ready. */
+       then reset (see the ready handler). Fallback after 5s so we never leak
+       the listener if the iframe never reports ready. In that case the
+       'finish' (and any page content) was never delivered, so the "Building"
+       pulse would be stuck forever — close the overlay outright instead of
+       only dropping the listener, returning the visitor to the site. */
     state.pendingReset = true;
-    state._resetTimer = setTimeout(() => { resetImmersiveStreamState(); }, 5000);
+    state._resetTimer = setTimeout(() => {
+      closeImmersivePage();
+      resetImmersiveStreamState();
+    }, 5000);
   }
 }
 
