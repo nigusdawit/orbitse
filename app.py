@@ -22535,6 +22535,44 @@ def _visitor_tool_status(name):
     return _VISITOR_TOOL_STATUS.get(name, "Gathering information…")
 
 
+# Broad / research-heavy intent detection for the visitor concierge.
+# Questions like "tell me everything", "give me a full rundown" or "compare
+# your options" legitimately need more lookup rounds than a quick one-off
+# question, so when one is detected the loop grants the larger, admin-
+# controlled tool-round budget instead of the normal one. The match is
+# deliberately loose (intent + length signals): a false positive only means a
+# slightly bigger budget — never a wrong answer — and the final round always
+# forces a reply regardless, so this can never strand a visitor.
+_VISITOR_RESEARCH_HEAVY_RE = re.compile(
+    r"\b("
+    r"tell me (everything|all|what i need)|"
+    r"everything (about|you|i need)|"
+    r"what (do|should) i (need to )?know|"
+    r"(full|complete|detailed|in[\-\s]?depth|comprehensive)\s+"
+    r"(overview|rundown|breakdown|summary|picture|details)|"
+    r"give me (a |the )?(full|complete|detailed|rundown|overview|breakdown)|"
+    r"walk me through|"
+    r"compare|versus|\bvs\b|pros and cons|"
+    r"all (your|the) (services|options|packages|offerings|plans)|"
+    r"overview of|breakdown of|everything you (offer|have|do|provide)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _visitor_is_research_heavy(message):
+    """True when a visitor message reads as a broad, research-heavy ask that
+    warrants the larger tool-round budget. Loose by design (see the regex note
+    above). Very long, multi-part messages are also treated as research-heavy
+    because they tend to need several lookups to answer well."""
+    text = (message or "").strip()
+    if not text:
+        return False
+    if _VISITOR_RESEARCH_HEAVY_RE.search(text):
+        return True
+    return len(text.split()) >= 40
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """
@@ -23443,11 +23481,33 @@ def api_chat():
             # and loop back into another streaming completion. Otherwise we
             # break and emit the final text/command events.
             #
-            # Capped at 4 rounds per visitor turn to bound cost — in practice
-            # one or two rounds is enough (1 lookup + 1 reply).
+            # The number of rounds per visitor turn is an admin-controlled
+            # budget (see below) — in practice one or two rounds is enough
+            # (1 lookup + 1 reply); broad research questions get more.
             full_text = ""        # all visible reply tokens, every round
             tool_logs = []        # observability — what lookups ran
-            max_rounds = 4
+            # Tool-round budget — super-admin controlled (AI Control tab).
+            # Everyday questions use the "normal" budget; broad / research-heavy
+            # questions auto-bump to the larger "complex" budget so the
+            # concierge can gather more before answering. Both are operator
+            # knobs (DB > env > default 4 / 6); we clamp to a sane 1..12 ceiling
+            # so a mis-set value can never run away on cost/latency. The final
+            # round always answers with NO tools (see _round_tools below), so a
+            # turn can never end empty no matter how large the budget is.
+            try:
+                _rounds_normal = int(get_ai_setting("visitor_max_tool_rounds") or 4)
+            except Exception:
+                _rounds_normal = 4
+            try:
+                _rounds_complex = int(get_ai_setting("visitor_max_tool_rounds_complex") or 4)
+            except Exception:
+                _rounds_complex = _rounds_normal
+            if _visitor_is_research_heavy(message):
+                # Never smaller than the normal budget even if mis-configured.
+                max_rounds = max(_rounds_normal, _rounds_complex)
+            else:
+                max_rounds = _rounds_normal
+            max_rounds = max(1, min(max_rounds, 12))
             # Phase 6: per-turn activity accumulator → ai_activity_log (surface
             # 'visitor'). Pre-initialized so the finally can always log even if
             # we bail early. Tracked only; never affects the reply.

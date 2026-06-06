@@ -3534,6 +3534,21 @@ def _ai_control_registry():
          "group": "Visitor AI", "label": "Visitor: history token budget",
          "env": "VISITOR_CHAT_HISTORY_TOKEN_BUDGET",
          "description": "Trim old visitor turns to fit this many tokens. 0 = off."},
+        {"key": "visitor_max_tool_rounds", "attr": "visitor_max_tool_rounds", "type": "int",
+         "group": "Visitor AI", "label": "Visitor: max tool rounds (normal)",
+         "env": "VISITOR_CHAT_MAX_TOOL_ROUNDS",
+         "description": "How many lookup rounds the concierge may run before it must "
+                        "answer an everyday question. Higher = it can gather more before "
+                        "replying, but each round is another paid model call + more wait. "
+                        "The final round always answers with no tools, so a turn can "
+                        "never get stuck. Default 4."},
+        {"key": "visitor_max_tool_rounds_complex", "attr": "visitor_max_tool_rounds_complex", "type": "int",
+         "group": "Visitor AI", "label": "Visitor: max tool rounds (big / research questions)",
+         "env": "VISITOR_CHAT_MAX_TOOL_ROUNDS_COMPLEX",
+         "description": "Bigger budget auto-applied to broad, research-heavy questions "
+                        "(e.g. 'tell me everything', 'compare your options'). Set it equal "
+                        "to the normal budget to switch the auto-bump off. Capped at 12. "
+                        "Default 6."},
         # Observability — error tracking (task 084). Live MUTE switch for Sentry.
         # Deliberately NOT in _AI_INERT: error tracking is observability and must
         # keep running even when the AI master switch is OFF, so it falls through
@@ -3597,6 +3612,8 @@ _AI_INERT = {
     "visual_content_enabled": False, "autopublish_enabled": False,
     "visitor_llm_max_retries": 0, "visitor_provider_fallback": False,
     "visitor_fallback_model": "", "visitor_history_token_budget": 0,
+    # Master-kill reverts to the fixed pre-knob budget (4 rounds, no auto-bump).
+    "visitor_max_tool_rounds": 4, "visitor_max_tool_rounds_complex": 4,
 }
 
 

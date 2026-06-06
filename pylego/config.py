@@ -237,6 +237,8 @@ class PylegoConfig:
     visitor_provider_fallback_enabled: bool
     visitor_fallback_model: str
     visitor_history_token_budget: int
+    visitor_max_tool_rounds: int
+    visitor_max_tool_rounds_complex: int
 
     # ---- Safety (task 029) --------------------------------------------------
     # sqlguard/structured default OFF (they can affect behavior — they're a
@@ -344,6 +346,11 @@ def _build() -> PylegoConfig:
         visitor_provider_fallback_enabled=_env_bool("VISITOR_CHAT_PROVIDER_FALLBACK", False),
         visitor_fallback_model=os.environ.get("VISITOR_CHAT_FALLBACK_MODEL", "").strip(),
         visitor_history_token_budget=_env_int("VISITOR_CHAT_HISTORY_TOKEN_BUDGET", 0),
+        # Tool-round budgets for the visitor concierge (admin-controlled).
+        # Normal = everyday quick questions; complex = auto-applied to broad,
+        # research-heavy asks. Default 4/6 = current behavior + a modest bump.
+        visitor_max_tool_rounds=_env_int("VISITOR_CHAT_MAX_TOOL_ROUNDS", 4),
+        visitor_max_tool_rounds_complex=_env_int("VISITOR_CHAT_MAX_TOOL_ROUNDS_COMPLEX", 6),
         # Safety — wired in 029.
         sqlguard_enabled=_env_bool("ADMIN_SQLGUARD_ENABLED", False),
         structured_enabled=_env_bool("ADMIN_STRUCTURED_ARGS_ENABLED", False),
