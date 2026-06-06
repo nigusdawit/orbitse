@@ -8650,20 +8650,22 @@
       // append commerce + AI cards when there's any activity to report,
       // so a brand-new install with zero orders doesn't get cluttered
       // with five "0" cards.
+      // 094 P0 — the mock's headline set surfaced as DEFAULT cards: Conversations·today,
+      // New leads·7d, Avg lead score, Bookings·7d (+ the two foundational cards).
       const cards = [
         { label: 'Visitors today',      value: _fmtNumber(d.visitors_today),  sub: _fmtNumber(d.visitors_week) + ' this week' },
         { label: 'Page views today',    value: _fmtNumber(d.pageviews_today), sub: '' },
-        { label: 'New leads today',     value: _fmtNumber(d.leads_today),     sub: _fmtNumber(d.leads_week) + ' this week' },
-        { label: 'Chat sessions today', value: _fmtNumber(d.chats_today),     sub: _fmtNumber(d.chats_week) + ' this week' },
+        { label: 'Conversations today', value: _fmtNumber(d.chats_today),     sub: _fmtNumber(d.chats_week) + ' this week' },
+        { label: 'New leads · 7d',      value: _fmtNumber(d.leads_week),      sub: _fmtNumber(d.leads_today) + ' today' },
+        { label: 'Avg lead score',      value: _fmtNumber(d.avg_lead_score),  sub: 'across profiled visitors' },
+        { label: 'Bookings · 7d',       value: _fmtNumber(d.bookings_week),   sub: _fmtNumber(d.bookings_today) + ' today' },
       ];
+      // Conditional commerce/AI cards — only when there's activity, to avoid 0-clutter.
       if ((d.skill_calls_week || 0) > 0 || (d.skill_calls_today || 0) > 0) {
         cards.push({ label: 'Skill calls today', value: _fmtNumber(d.skill_calls_today), sub: _fmtNumber(d.skill_calls_week) + ' this week' });
       }
       if ((d.orders_week || 0) > 0 || (d.orders_today || 0) > 0) {
         cards.push({ label: 'Orders today', value: _fmtNumber(d.orders_today), sub: _fmtNumber(d.orders_week) + ' this week' });
-      }
-      if ((d.bookings_week || 0) > 0 || (d.bookings_today || 0) > 0) {
-        cards.push({ label: 'Bookings today', value: _fmtNumber(d.bookings_today), sub: _fmtNumber(d.bookings_week) + ' this week' });
       }
       if ((d.revenue_week || 0) > 0 || (d.revenue_today || 0) > 0) {
         cards.push({ label: 'Revenue today', value: _fmtMoney(d.revenue_today), sub: _fmtMoney(d.revenue_week) + ' this week' });
