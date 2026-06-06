@@ -1,0 +1,18 @@
+{# admin/tabs/_activity.html — 094 §1.2 cross-module activity feed (super-admin).
+   One reverse-chron stream of business events from /admin/api/activity-feed,
+   rendered by loadActivityFeed('full'). Auto-lists in the Workspaces rail because
+   it's a gated .tab-btn (dashboard.html). #}
+<div id="tab-activity" class="tab-content">
+  <div class="content-header">
+    <h2>Activity</h2>
+    <div style="display:flex; gap:0.5rem; align-items:center;">
+      <button class="btn-secondary" onclick="loadActivityFeed('full')" data-testid="button-activity-refresh">Refresh</button>
+    </div>
+  </div>
+  <p style="color:var(--admin-text-muted); margin:0 0 1rem; font-size:0.875rem;">
+    One stream of recent business events — orders, leads, callbacks, meetings, content edits, and notable AI events.
+  </p>
+  <div id="activity-feed-full" class="ov-feed" data-testid="list-activity-full">
+    <div class="overview-empty">Loading…</div>
+  </div>
+</div>

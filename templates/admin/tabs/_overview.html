@@ -31,6 +31,15 @@
       <!-- Filled by loadOverview() with AI provider, skills, presentations -->
     </div>
 
+    <!-- 094 §1.2 — cross-module recent activity (compact; full list on the Activity tab). -->
+    <div class="overview-panel" id="overview-activity-panel" style="margin:1rem 0;">
+      <div class="overview-panel-head" style="display:flex; justify-content:space-between; align-items:center;">
+        <h3 style="margin:0;">Recent activity</h3>
+        <a href="#" onclick="switchTab('activity', document.querySelector('[data-testid=tab-activity]')); loadActivityFeed('full'); return false;">View all &rarr;</a>
+      </div>
+      <div id="overview-activity-feed" class="ov-feed" data-testid="list-activity-feed"><div class="overview-empty">Loading…</div></div>
+    </div>
+
     <!-- Activity Pulse — last-7-days aggregates across every feature
          area (sales, bookings, AI engagement, automation/outreach,
          growth). Filled by renderActivityPulse() from /admin/api/overview/stats.

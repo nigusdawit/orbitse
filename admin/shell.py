@@ -19,6 +19,7 @@ Imports come from core (never app — that would be circular). Registered in app
 app.register_blueprint(shell_bp), right after crm_bp.
 """
 import time
+from datetime import datetime, timezone
 
 from flask import Blueprint, request, jsonify
 
@@ -330,3 +331,109 @@ def admin_overview_attention():
         pass
 
     return jsonify({"ok": True, "items": items})
+
+
+# Content tables whose edits read as "page/content changes" (not raw config churn).
+_FEED_CONTENT_TABLES = (
+    "pages", "blog_posts", "page_sections", "faqs", "testimonials",
+    "team_members", "events", "products", "gallery_cards", "experiences",
+)
+
+
+@shell_bp.route("/admin/api/activity-feed", methods=["GET"])
+@admin_required
+def admin_activity_feed():
+    """Cross-module business-event stream for the Home command center (gap §1.2).
+    Super-admin only. Per-source SELECT…LIMIT then a Python merge-sort by EPOCH (so we
+    never compare tz-aware vs naive datetimes); each source in its own try/except
+    (fail-open). NEVER selects secret/PII blobs (snapshot_json / final_answer /
+    user_message). Query: ?limit= (default 30, max 100), optional ?kinds=order,lead,…"""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    tid = current_tenant_id()
+    try:
+        limit = max(1, min(int(request.args.get("limit") or 30), 100))
+    except (TypeError, ValueError):
+        limit = 30
+    kinds_arg = (request.args.get("kinds") or "").strip()
+    want = set(k.strip() for k in kinds_arg.split(",") if k.strip()) if kinds_arg else None
+
+    events = []
+
+    def _src(kind, sql, params, build):
+        if want is not None and kind not in want:
+            return
+        try:
+            for r in (query_db(sql, params) or []):
+                e = build(r)
+                if e and e.get("_epoch") is not None:
+                    e["kind"] = kind
+                    events.append(e)
+        except Exception:
+            pass
+
+    _src("order",
+         "SELECT order_number, total_cents, customer_email, "
+         "EXTRACT(EPOCH FROM COALESCE(paid_at, created_at)) AS _epoch "
+         "FROM orders WHERE status IN ('paid','fulfilled','completed') "
+         "ORDER BY COALESCE(paid_at, created_at) DESC LIMIT %s", (limit,),
+         lambda r: {"_epoch": r.get("_epoch"),
+                    "title": "Order %s paid" % (r.get("order_number") or ""),
+                    "detail": "$%.2f · %s" % (float(r.get("total_cents") or 0) / 100.0, r.get("customer_email") or ""),
+                    "tab": "orders", "loader": "loadOrders"})
+
+    _src("lead",
+         "SELECT name, email, interest, source, EXTRACT(EPOCH FROM created_at) AS _epoch "
+         "FROM leads WHERE tenant_id=%s ORDER BY created_at DESC LIMIT %s", (tid, limit),
+         lambda r: {"_epoch": r.get("_epoch"),
+                    "title": "New lead: %s" % (r.get("name") or r.get("email") or "—"),
+                    "detail": " · ".join([x for x in [r.get("interest"), r.get("source")] if x]),
+                    "tab": "crm", "loader": "loadCrm"})
+
+    _src("callback",
+         "SELECT name, reason, EXTRACT(EPOCH FROM created_at) AS _epoch "
+         "FROM callback_requests WHERE tenant_id=%s ORDER BY created_at DESC LIMIT %s", (tid, limit),
+         lambda r: {"_epoch": r.get("_epoch"),
+                    "title": "Callback requested",
+                    "detail": " · ".join([x for x in [r.get("name"), r.get("reason")] if x]),
+                    "tab": "crm", "loader": "loadCrm"})
+
+    _src("meeting",
+         "SELECT name, requested_time, status, EXTRACT(EPOCH FROM created_at) AS _epoch "
+         "FROM meetings WHERE tenant_id=%s ORDER BY created_at DESC LIMIT %s", (tid, limit),
+         lambda r: {"_epoch": r.get("_epoch"),
+                    "title": "Meeting %s" % (r.get("status") or "requested"),
+                    "detail": " · ".join([x for x in [r.get("name"), r.get("requested_time")] if x]),
+                    "tab": "crm", "loader": "loadCrm"})
+
+    # page/content edits — title from table_name+row_id ONLY; snapshot_json never read.
+    _src("page_edit",
+         "SELECT table_name, row_id, EXTRACT(EPOCH FROM created_at) AS _epoch "
+         "FROM admin_setting_snapshots WHERE table_name = ANY(%s) "
+         "ORDER BY created_at DESC LIMIT %s", (list(_FEED_CONTENT_TABLES), limit),
+         lambda r: {"_epoch": r.get("_epoch"),
+                    "title": "Edited %s" % (r.get("table_name") or "content"),
+                    "detail": ("#%s" % r.get("row_id")) if r.get("row_id") else "",
+                    "tab": "changes", "loader": ""})
+
+    # notable AI events — status/model ONLY; final_answer/user_message never read.
+    _src("ai_event",
+         "SELECT status, model, EXTRACT(EPOCH FROM created_at) AS _epoch "
+         "FROM ai_activity_log WHERE tenant_id=%s "
+         "AND (COALESCE(status,'') NOT IN ('', 'ok') OR COALESCE(error_text,'') <> '') "
+         "ORDER BY created_at DESC LIMIT %s", (tid, limit),
+         lambda r: {"_epoch": r.get("_epoch"),
+                    "title": "AI %s" % (r.get("status") or "event"),
+                    "detail": r.get("model") or "",
+                    "tab": "ai-activity", "loader": "loadAiActivity"})
+
+    events.sort(key=lambda e: e["_epoch"], reverse=True)
+    out = []
+    for e in events[:limit]:
+        try:
+            e["ts"] = datetime.fromtimestamp(float(e.pop("_epoch")), timezone.utc).isoformat()
+        except Exception:
+            e["ts"] = None
+        out.append(e)
+    return jsonify({"ok": True, "events": out})

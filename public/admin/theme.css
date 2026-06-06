@@ -525,3 +525,17 @@
     #overview-attention .ov-attn-detail{ font-size:.78rem; color:var(--admin-text-muted);
       overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     #overview-attention .ov-attn-cta{ flex:none; }
+
+    /* 094 §1.2 — cross-module activity feed (scoped; light+dark via tokens). */
+    .ov-feed .ov-feed-row{ display:flex; align-items:flex-start; gap:.65rem; padding:.5rem .25rem;
+      border-bottom:1px solid var(--admin-border); cursor:pointer; }
+    .ov-feed .ov-feed-row:hover{ background:var(--admin-surface-hover); }
+    .ov-feed .ov-feed-row:last-child{ border-bottom:0; }
+    .ov-feed .ov-feed-ico{ flex:none; font-size:1rem; line-height:1.2; opacity:.85; }
+    .ov-feed .ov-feed-text{ flex:1 1 auto; min-width:0; }
+    .ov-feed .ov-feed-title{ font-size:.88rem; font-weight:600; color:var(--admin-text);
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .ov-feed .ov-feed-detail{ font-size:.78rem; color:var(--admin-text-muted);
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .ov-feed .ov-feed-meta{ flex:none; margin-left:auto; color:var(--admin-text-muted);
+      font-size:.75rem; white-space:nowrap; padding-left:.5rem; }

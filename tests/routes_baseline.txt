@@ -67,6 +67,7 @@ GET /
 GET /<path:filename>
 GET /<section_slug>
 GET /admin
+GET /admin/api/activity-feed
 GET /admin/api/admin-ai/<entity>
 GET /admin/api/admin-ai/personas
 GET /admin/api/ai-activity

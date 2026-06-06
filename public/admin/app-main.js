@@ -8570,6 +8570,7 @@
       // the other.
       _loadOverviewSecretsBanner();
       renderOverviewAttention();   // 094 §1.1 — needs-attention widget (parallel, fail-open)
+      loadActivityFeed('overview'); // 094 §1.2 — recent-activity feed (parallel, fail-open)
       try {
         const res = await fetch('/admin/api/overview/stats', { credentials: 'same-origin' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -8715,6 +8716,44 @@
         });
       } catch (e) {
         el.style.display = 'none';
+      }
+    }
+
+    // 094 §1.2 — cross-module activity feed. scope==='overview' → compact (8) into
+    // #overview-activity-feed; otherwise the full list into #activity-feed-full.
+    // Fail-open (error/403 → empty state). Rows deep-link to the owning tab. Text escaped.
+    async function loadActivityFeed(scope) {
+      const overview = (scope === 'overview');
+      const el = document.getElementById(overview ? 'overview-activity-feed' : 'activity-feed-full');
+      if (!el) return;
+      const limit = overview ? 8 : 60;
+      try {
+        const res = await fetch('/admin/api/activity-feed?limit=' + limit, { credentials: 'same-origin' });
+        const data = await res.json().catch(() => ({}));
+        const events = (data && Array.isArray(data.events)) ? data.events : [];
+        if (!events.length) { el.innerHTML = '<div class="overview-empty">No recent activity yet.</div>'; return; }
+        const ICON = { order: '🛒', lead: '👤', callback: '📞', meeting: '📅', page_edit: '✏️', ai_event: '🤖' };
+        el.innerHTML = events.map(function (ev) {
+          var ic = ICON[ev.kind] || '•';
+          return '<div class="ov-feed-row" data-tab="' + escapeHTML(String(ev.tab || '')) + '" data-loader="' + escapeHTML(String(ev.loader || '')) + '">' +
+            '<span class="ov-feed-ico">' + ic + '</span>' +
+            '<div class="ov-feed-text"><div class="ov-feed-title">' + escapeHTML(String(ev.title || '')) + '</div>' +
+            '<div class="ov-feed-detail">' + escapeHTML(String(ev.detail || '')) + '</div></div>' +
+            '<span class="ov-feed-meta">' + escapeHTML(_fmtRelative(ev.ts)) + '</span></div>';
+        }).join('');
+        Array.prototype.slice.call(el.querySelectorAll('.ov-feed-row')).forEach(function (row) {
+          row.addEventListener('click', function () {
+            try {
+              var tab = row.getAttribute('data-tab'), loader = row.getAttribute('data-loader');
+              if (!tab) return;
+              var btn = document.querySelector('[data-testid="tab-' + tab + '"]');
+              if (window.switchTab) switchTab(tab, btn);
+              if (loader && window[loader]) window[loader]();
+            } catch (e) {}
+          });
+        });
+      } catch (e) {
+        el.innerHTML = '<div class="overview-empty">Could not load activity.</div>';
       }
     }
 
