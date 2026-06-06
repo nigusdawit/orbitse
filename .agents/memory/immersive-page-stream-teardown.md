@@ -32,7 +32,7 @@ overlay isn't open, so calling them unconditionally is safe). Treat
 "overlay opened during stream" as something that MUST be closed on success,
 error, AND timeout.
 
-## The deeper root cause: streamed sections stay invisible until a script runs
+## The deeper root cause: live chunk-streaming can never reveal the AI's pages
 
 There is a SECOND, distinct "stuck on Building / blank page" failure that is NOT
 a teardown gap. The AI's standard generatePage template hides every section with
@@ -47,21 +47,14 @@ pages commonly gate setup on `DOMContentLoaded`, so the re-cloned script's
 listener never fires. Result: all sections stay at `opacity:0` → a blank page
 even though the HTML is fully present and the row is saved.
 
-**The fix (current behavior):** the iframe streaming bootstrap reveals content
-ITSELF as it streams — after each `append` it selects newly-inserted
-`.animate-in:not(.visible)` and adds `.visible` on a double `requestAnimationFrame`
-(paint hidden, then transition in). The `finish` handler force-reveals any
-remaining `.animate-in` before re-running scripts. This keeps the page building up
-GRADUALLY (the user watches it assemble) AND makes streamed content visible
-without depending on the AI's DOMContentLoaded-gated reveal script.
-The generatePage/generateHTML command handler then just FINALIZES the stream
-(`finishImmersivePageStreaming()` + `resetImmersiveStreamState()`) and KEEPS the
-streamed render when it `delivered` (`ready && completed && written>0`); it only
-one-shots `openImmersivePage(cmd.html)` as a fallback when the stream did NOT
-deliver, and `closeImmersivePage()` when there's no HTML at all.
-**Why:** the user explicitly wants the gradual build — do NOT one-shot
-re-render on the delivered path (it discards the assembly and replays every
-animation from zero).
+**The fix (current behavior):** the generatePage/generateHTML command handler
+ALWAYS does an authoritative one-shot `openImmersivePage(cmd.html)` once the full
+command arrives — it writes the COMPLETE document into the iframe via `srcdoc`, so
+the browser parses it fresh and runs every `<script>` in normal load order
+(`DOMContentLoaded` fires correctly) and all content reveals. The live "assembly"
+stream is now purely a progress affordance; never trust it for the final result.
+**Why:** correctness beats the streaming animation — the only cost is the CSS
+intro replays once.
 
 ## Slowness ("long thinking") is generation time, not research rounds
 
