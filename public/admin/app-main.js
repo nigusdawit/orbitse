@@ -8571,6 +8571,7 @@
       _loadOverviewSecretsBanner();
       renderOverviewAttention();   // 094 §1.1 — needs-attention widget (parallel, fail-open)
       loadActivityFeed('overview'); // 094 §1.2 — recent-activity feed (parallel, fail-open)
+      loadOverviewRevenue();        // 094 §1.3 — revenue by source (parallel, fail-open)
       try {
         const res = await fetch('/admin/api/overview/stats', { credentials: 'same-origin' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -8754,6 +8755,34 @@
         });
       } catch (e) {
         el.innerHTML = '<div class="overview-empty">Could not load activity.</div>';
+      }
+    }
+
+    // 094 §1.3 — revenue by REAL module (store / bookings / events) with a proportional
+    // bar per source + an overall total. Range from #ov-rev-range. Fail-open; text escaped.
+    async function loadOverviewRevenue() {
+      const el = document.getElementById('overview-revenue');
+      if (!el) return;
+      const sel = document.getElementById('ov-rev-range');
+      const range = sel ? sel.value : '7d';
+      try {
+        const res = await fetch('/admin/api/overview/revenue-by-source?range=' + encodeURIComponent(range), { credentials: 'same-origin' });
+        const data = await res.json().catch(() => ({}));
+        const sources = (data && Array.isArray(data.sources)) ? data.sources : [];
+        if (!sources.length) { el.innerHTML = '<div class="overview-empty">No revenue in this range.</div>'; return; }
+        const max = Math.max.apply(null, sources.map(function (s) { return s.revenue || 0; }).concat([1]));
+        const rows = sources.map(function (s) {
+          var pct = Math.max(0, Math.min(100, Math.round(((s.revenue || 0) / max) * 100)));
+          return '<div class="ov-rev-row">' +
+            '<div class="ov-rev-label">' + escapeHTML(String(s.label || s.key || '')) + '</div>' +
+            '<div class="ov-rev-bar-wrap"><div class="ov-rev-bar" style="width:' + pct + '%"></div></div>' +
+            '<div class="ov-rev-val">' + escapeHTML(_fmtMoney(s.revenue || 0)) +
+            ' <span class="ov-rev-count">(' + escapeHTML(_fmtNumber(s.count || 0)) + ')</span></div>' +
+            '</div>';
+        }).join('');
+        el.innerHTML = '<div class="ov-rev-total">Total: ' + escapeHTML(_fmtMoney(data.total || 0)) + '</div>' + rows;
+      } catch (e) {
+        el.innerHTML = '<div class="overview-empty">Could not load revenue.</div>';
       }
     }
 

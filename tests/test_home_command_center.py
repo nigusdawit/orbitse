@@ -126,3 +126,39 @@ def test_activity_feed_requires_super_admin():
     with cc.session_transaction() as s:
         s["_csrf_token"] = "t"
     assert cc.get("/admin/api/activity-feed").status_code == 403
+
+
+# ---- P3: GET /admin/api/overview/revenue-by-source ----
+
+def test_revenue_by_source_real_modules():
+    c = _sa()
+    app.execute_db("INSERT INTO orders (order_number, total_cents, status) VALUES (%s, 10000, 'paid') "
+                   "ON CONFLICT (order_number) DO NOTHING", ("REV-PROBE-1",))
+    app.execute_db("INSERT INTO service_bookings (booking_token, client_name, client_email, "
+                   "amount_paid_cents, payment_status) VALUES (%s, %s, %s, 20000, 'paid') "
+                   "ON CONFLICT (booking_token) DO NOTHING", ("rev-tok-1", "Rev Client", "rev@probe.test"))
+    try:
+        j = c.get("/admin/api/overview/revenue-by-source?range=7d").get_json()
+        assert j["ok"] is True
+        by_key = {s["key"]: s for s in j["sources"]}
+        assert {"store", "bookings", "events"} <= set(by_key.keys()), by_key   # real modules only
+        assert by_key["store"]["revenue"] >= 100.0
+        assert by_key["bookings"]["revenue"] >= 200.0
+        assert abs(j["total"] - round(sum(s["revenue"] for s in j["sources"]), 2)) < 0.01  # total == sum
+        assert c.get("/admin/api/overview/revenue-by-source?range=all").status_code == 200
+        assert c.get("/admin/api/overview/revenue-by-source?range=30d").status_code == 200
+    finally:
+        app.execute_db("DELETE FROM orders WHERE order_number=%s", ("REV-PROBE-1",))
+        app.execute_db("DELETE FROM service_bookings WHERE booking_token=%s", ("rev-tok-1",))
+
+
+def test_revenue_requires_super_admin():
+    r = app.app.test_client().get("/admin/api/overview/revenue-by-source")
+    assert r.status_code in (401, 403, 302)
+    if not CLIENT_PW:
+        return
+    cc = app.app.test_client()
+    cc.post("/admin/login", data={"password": CLIENT_PW})
+    with cc.session_transaction() as s:
+        s["_csrf_token"] = "t"
+    assert cc.get("/admin/api/overview/revenue-by-source").status_code == 403

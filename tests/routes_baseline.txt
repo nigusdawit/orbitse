@@ -169,6 +169,7 @@ GET /admin/api/onboarding/snapshot/summary
 GET /admin/api/orders
 GET /admin/api/orders/<int:oid>
 GET /admin/api/overview/attention
+GET /admin/api/overview/revenue-by-source
 GET /admin/api/overview/stats
 GET /admin/api/page-sections
 GET /admin/api/pages

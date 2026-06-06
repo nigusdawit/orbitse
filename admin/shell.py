@@ -437,3 +437,68 @@ def admin_activity_feed():
             e["ts"] = None
         out.append(e)
     return jsonify({"ok": True, "events": out})
+
+
+# Range key → window in days (None = all-time). Small local helper (no app.py import).
+_RANGE_DAYS = {"7d": 7, "30d": 30, "90d": 90}
+
+
+@shell_bp.route("/admin/api/overview/revenue-by-source", methods=["GET"])
+@admin_required
+def admin_revenue_by_source():
+    """Revenue segmented by the revenue MODULES that actually exist in the schema —
+    Store orders / Service bookings / Event tickets — NOT the mock's fictional
+    catering/membership/gift categories (no such tables). + an optional UTM-source
+    drill-down for bookings (the only attribution column in the schema). Super-admin
+    only; every source in its own try/except (fail-open). ?range=7d|30d|90d|all.
+    Table/column names are hard-coded literals; only the day-window is parameterized."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    rk = (request.args.get("range") or "7d").strip().lower()
+    days = None if rk == "all" else _RANGE_DAYS.get(rk, 7)
+
+    sources = []
+    total = {"v": 0.0}
+
+    def _revenue(key, label, table, rev_col, base_where):
+        try:
+            sql = ("SELECT COALESCE(SUM(%s),0) AS rev, COUNT(*) AS n FROM %s WHERE %s"
+                   % (rev_col, table, base_where))
+            params = ()
+            if days is not None:
+                sql += " AND created_at >= NOW() - (%s * INTERVAL '1 day')"
+                params = (days,)
+            r = query_db(sql, params, fetchone=True) or {}
+            rev = round(float(r.get("rev") or 0) / 100.0, 2)
+            sources.append({"key": key, "label": label, "revenue": rev, "count": int(r.get("n") or 0)})
+            total["v"] += rev
+        except Exception:
+            pass
+
+    _revenue("store", "Store orders", "orders", "total_cents",
+             "status IN ('paid','fulfilled','completed')")
+    _revenue("bookings", "Service bookings", "service_bookings", "amount_paid_cents",
+             "amount_paid_cents > 0")
+    _revenue("events", "Event tickets", "event_rsvps", "payment_amount",
+             "payment_status = 'paid'")
+
+    # Optional UTM-source drill-down (bookings — the only table with attribution).
+    by_utm = []
+    try:
+        sql = ("SELECT utm_source AS source, COALESCE(SUM(amount_paid_cents),0) AS rev "
+               "FROM service_bookings "
+               "WHERE amount_paid_cents > 0 AND COALESCE(utm_source,'') <> ''")
+        params = ()
+        if days is not None:
+            sql += " AND created_at >= NOW() - (%s * INTERVAL '1 day')"
+            params = (days,)
+        sql += " GROUP BY utm_source ORDER BY rev DESC LIMIT 8"
+        for r in (query_db(sql, params) or []):
+            by_utm.append({"source": r.get("source") or "—",
+                           "revenue": round(float(r.get("rev") or 0) / 100.0, 2)})
+    except Exception:
+        by_utm = []
+
+    return jsonify({"ok": True, "range": rk, "currency": "USD",
+                    "sources": sources, "total": round(total["v"], 2), "by_utm": by_utm})

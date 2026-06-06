@@ -539,3 +539,14 @@
       overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .ov-feed .ov-feed-meta{ flex:none; margin-left:auto; color:var(--admin-text-muted);
       font-size:.75rem; white-space:nowrap; padding-left:.5rem; }
+
+    /* 094 §1.3 — revenue by source (scoped; proportional bars via tokens). */
+    .ov-rev .ov-rev-total{ font-weight:700; font-size:.9rem; color:var(--admin-text); margin-bottom:.5rem; }
+    .ov-rev .ov-rev-row{ display:flex; align-items:center; gap:.6rem; padding:.35rem 0; }
+    .ov-rev .ov-rev-label{ flex:0 0 38%; font-size:.85rem; color:var(--admin-text);
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .ov-rev .ov-rev-bar-wrap{ flex:1 1 auto; height:8px; border-radius:6px; background:var(--admin-surface-hover); overflow:hidden; }
+    .ov-rev .ov-rev-bar{ height:100%; border-radius:6px;
+      background:linear-gradient(90deg, var(--admin-accent), var(--admin-accent-2, var(--admin-accent))); }
+    .ov-rev .ov-rev-val{ flex:none; font-size:.82rem; color:var(--admin-text); white-space:nowrap; }
+    .ov-rev .ov-rev-count{ color:var(--admin-text-muted); }

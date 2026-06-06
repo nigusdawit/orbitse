@@ -31,6 +31,19 @@
       <!-- Filled by loadOverview() with AI provider, skills, presentations -->
     </div>
 
+    <!-- 094 §1.3 — revenue by real module (store / bookings / events). -->
+    <div class="overview-panel" id="overview-revenue-panel" style="margin:1rem 0;">
+      <div class="overview-panel-head" style="display:flex; justify-content:space-between; align-items:center;">
+        <h3 style="margin:0;">Revenue by source</h3>
+        <select id="ov-rev-range" data-testid="select-rev-range" onchange="loadOverviewRevenue()">
+          <option value="7d">7 days</option>
+          <option value="30d">30 days</option>
+          <option value="90d">90 days</option>
+        </select>
+      </div>
+      <div id="overview-revenue" class="ov-rev" data-testid="list-revenue-source"><div class="overview-empty">Loading…</div></div>
+    </div>
+
     <!-- 094 §1.2 — cross-module recent activity (compact; full list on the Activity tab). -->
     <div class="overview-panel" id="overview-activity-panel" style="margin:1rem 0;">
       <div class="overview-panel-head" style="display:flex; justify-content:space-between; align-items:center;">
