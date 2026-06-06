@@ -1,0 +1,3 @@
+# Keep shell scripts as LF on every platform so `bash scripts/*.sh` runs on Windows
+# (Git Bash) without CRLF / "bad interpreter" / $'\r' errors.
+*.sh text eol=lf
