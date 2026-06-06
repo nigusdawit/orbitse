@@ -6320,6 +6320,15 @@ async function chatSendStreaming(message, wasCollapsed) {
        AFTER the assistant's final reply bubble is finalized, so the chips
        appear right under the AI's "we have 9am, 10am, 2pm…" line. */
     let availabilityResults = [];
+    /* Live-streaming into the fullscreen formatted-text canvas. If that page is
+       already on screen when this message starts, we stream the reply into it
+       (like the chat bubble) instead of leaving it static until the very end.
+       canvasPrevHtml snapshots what was showing so a short reply / command can
+       restore it instead of stranding a "Responding…" placeholder on screen. */
+    const canvasWasOpen = isFullscreenCanvasOpen();
+    let canvasStreamActive = false;
+    let canvasStreamLastRender = 0;
+    let canvasPrevHtml = null;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -6382,6 +6391,24 @@ async function chatSendStreaming(message, wasCollapsed) {
                  in parallel with the rest of the AI's reply still arriving. */
               if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakFeed === 'function') {
                 window.VoiceAgent.streamSpeakFeed(displayTokens);
+              }
+              /* Live-stream the reply into the fullscreen canvas when that page
+                 was already open. Throttled — re-parsing markdown on every token
+                 is wasteful. The final, properly-titled page is rendered after
+                 the stream ends (or the previous page restored for short
+                 replies / commands) by the canvas-sync block below. */
+              if (canvasWasOpen) {
+                if (!canvasStreamActive) {
+                  const _cv = document.getElementById('fullscreen-canvas-content');
+                  canvasPrevHtml = _cv ? _cv.innerHTML : null;
+                  openCanvasStreaming();
+                  canvasStreamActive = true;
+                }
+                const _now = Date.now();
+                if (_now - canvasStreamLastRender > 80) {
+                  appendCanvasStreaming(displayTokens);
+                  canvasStreamLastRender = _now;
+                }
               }
             } else {
               /* Inside the command block — try to live-render a generatePage
@@ -6708,25 +6735,34 @@ async function chatSendStreaming(message, wasCollapsed) {
         }
       }
 
-      /* EVOLVING RESPONSE PAGE: if the fullscreen formatted-text canvas is
-         already on screen, keep it alive as the visitor keeps chatting. When
-         the new reply is long/structured (same rule the landing page uses to
-         first open it), re-render it into the SAME canvas in place — so the
-         "response page" the visitor is reading updates instead of going stale
-         while the chat panel quietly logs the reply. Short replies return null
-         from buildResponseCanvas() and leave the current page untouched.
-         Skipped when a command is pending — commands render their own visual
-         surface (immersive page, slides, etc.). */
-      if (!pendingCommand && displayText && isFullscreenCanvasOpen()) {
+      /* ── FULLSCREEN CANVAS SYNC (incl. live-stream finalize) ──
+         Only when the formatted-text canvas was already open before this reply
+         (the landing-page first-open path renders + saves its own page, so we
+         must not collide with it). If we streamed the reply into the canvas
+         live, this swaps the placeholder for the final state; otherwise it just
+         keeps the open "response page" in sync as the visitor keeps chatting:
+           • long text, no command → render the final titled page in place + save
+           • short text / command  → restore whatever page was on screen before,
+             so a live-stream placeholder is never left stranded.
+         Commands render their own visual surface (immersive page, slides…). */
+      if (canvasWasOpen) {
         try {
-          const evolved = buildResponseCanvas(displayText, message);
+          const evolved = (!pendingCommand && displayText)
+            ? buildResponseCanvas(displayText, message)
+            : null;
           if (evolved) {
             openFullscreenCanvas(evolved.html);
             saveGeneratedPage(evolved.html, evolved.title);
+          } else if (canvasStreamActive && canvasPrevHtml !== null) {
+            openFullscreenCanvas(canvasPrevHtml);
           }
         } catch (evolveErr) {
-          console.error('Canvas in-place update error:', evolveErr);
+          console.error('Canvas sync error:', evolveErr);
           window.appReportError(evolveErr, 'script.js:chatSendStreaming');
+          /* On any failure, don't leave a streaming placeholder stranded. */
+          if (canvasStreamActive && canvasPrevHtml !== null) {
+            try { openFullscreenCanvas(canvasPrevHtml); } catch (_) {}
+          }
         }
       }
 
@@ -9060,37 +9096,84 @@ function buildResponseCanvas(displayText, message) {
   else if (hasTable) eyebrowLabel = 'Details';
   else if (hasList) eyebrowLabel = 'Highlights';
 
+  /* Build the canvas markup via the shared shell so the live-streaming
+     placeholder and this final render are visually identical. */
+  const html = _buildCanvasShell(eyebrowLabel, autoTitle, renderMarkdown(displayText));
+  return { html, title: autoTitle };
+}
+
+/**
+ * Build the frosted-glass canvas shell (accent header + body card) shared by
+ * the final render (buildResponseCanvas) and the live-streaming placeholder,
+ * so the page doesn't visually "jump" when the stream is swapped for the
+ * final, properly-titled version.
+ *
+ * @param {string} eyebrowLabel - Small uppercase label above the title.
+ * @param {string} title - The page title.
+ * @param {string} innerHtml - Pre-rendered body HTML (already markdown).
+ *   NOTE: sanitized wholesale by openFullscreenCanvas before it hits the DOM.
+ * @returns {string} Full canvas HTML string.
+ */
+function _buildCanvasShell(eyebrowLabel, title, innerHtml) {
   /* Grab the site's theme tokens */
   const styles = getComputedStyle(document.documentElement);
   const accent = styles.getPropertyValue('--color-accent').trim() || '#c9a96e';
   const serif = styles.getPropertyValue('--font-serif').trim() || 'Playfair Display, serif';
   const sans = styles.getPropertyValue('--font-sans').trim() || 'DM Sans, sans-serif';
 
-  /* Render the markdown content */
-  const renderedContent = renderMarkdown(displayText);
-
-  /* Sanitize helper — uses DOMPurify if loaded, otherwise escapeHtml */
+  /* Sanitize the plain-text bits; the body HTML is sanitized wholesale by
+     openFullscreenCanvas before it ever reaches the DOM. */
   const sanitize = (str) => typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(str) : escapeHtml(str);
 
   /* Build a premium frosted-glass canvas matching the design system */
-  const html =
+  return (
     `<div style="max-width:900px;margin:0 auto;padding:2.5rem;width:100%;">` +
 
       /* Header section with gradient accent background */
       `<div style="background:linear-gradient(135deg,rgba(${hexToRgb(accent)},0.08),transparent);border-radius:1rem 1rem 0 0;padding:2rem 2rem 1.5rem;border:1px solid rgba(255,255,255,0.06);border-bottom:none;">` +
         `<div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.2em;color:${accent};margin-bottom:0.75rem;font-family:${sans};font-weight:500;">${sanitize(eyebrowLabel)}</div>` +
-        `<div style="font-family:${serif};font-size:clamp(1.4rem,3vw,2rem);font-weight:700;color:#fff;line-height:1.25;">${sanitize(autoTitle)}</div>` +
+        `<div style="font-family:${serif};font-size:clamp(1.4rem,3vw,2rem);font-weight:700;color:#fff;line-height:1.25;">${sanitize(title)}</div>` +
         `<div style="width:3rem;height:2px;background:${accent};opacity:0.4;margin-top:1rem;border-radius:1px;"></div>` +
       `</div>` +
 
       /* Content body in a frosted glass card */
       `<div style="background:rgba(255,255,255,0.03);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.08);border-radius:0 0 1rem 1rem;padding:2rem;box-shadow:0 8px 32px rgba(0,0,0,0.2),inset 0 1px 0 rgba(255,255,255,0.05);">` +
-        `<div class="canvas-markdown" style="line-height:1.85;font-size:0.95rem;color:rgba(255,255,255,0.85);font-family:${sans};">${renderedContent}</div>` +
+        `<div class="canvas-markdown" style="line-height:1.85;font-size:0.95rem;color:rgba(255,255,255,0.85);font-family:${sans};">${innerHtml}</div>` +
       `</div>` +
 
-    `</div>`;
+    `</div>`
+  );
+}
 
-  return { html, title: autoTitle };
+/**
+ * Open the fullscreen canvas as a LIVE-STREAMING surface: the same frosted
+ * shell with a "Responding…" header and an empty body that
+ * appendCanvasStreaming() fills as tokens arrive. Used when the canvas is
+ * already on screen and the visitor sends a new message, so the reply streams
+ * into the page (like the chat bubble) instead of snapping in at the end.
+ */
+function openCanvasStreaming() {
+  const shell = _buildCanvasShell('Responding…', 'One moment…', '<span style="opacity:0.5;">▍</span>');
+  openFullscreenCanvas(shell);
+}
+
+/**
+ * Re-render the streaming canvas body with the markdown accumulated so far.
+ * Cheap-ish but callers MUST throttle it (re-parsing markdown every token is
+ * wasteful). Sanitized via DOMPurify before insertion. Keeps the newest text
+ * scrolled into view as it grows.
+ *
+ * @param {string} markdownSoFar - The reply text accumulated up to now.
+ */
+function appendCanvasStreaming(markdownSoFar) {
+  const content = document.getElementById('fullscreen-canvas-content');
+  if (!content) return;
+  const body = content.querySelector('.canvas-markdown');
+  if (!body) return;
+  const rendered = renderMarkdown(markdownSoFar);
+  body.innerHTML = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(rendered) : rendered;
+  /* Keep the latest streamed text in view as it grows. */
+  content.scrollTop = content.scrollHeight;
 }
 
 /**
