@@ -96,6 +96,76 @@
     try { if (_healthTimer) clearInterval(_healthTimer); _healthTimer = setInterval(loadHealth, 60000); } catch (e) {}
   }
 
+  /* ---- "+ New" quick-create (task 093, gap §0.4) — proxies to the EXISTING create
+     routes (CSRF auto-added by csrf.js's fetch wrapper); on success lands the user on
+     the owning tab. Super-only types are hidden for non-super sessions (the server
+     still 403s — this is just UX). ---- */
+  var WS_NEW_TYPES = [
+    { id: 'contact', label: 'Contact', sup: true, tab: 'tab-crm', url: '/admin/api/leads',
+      fields: [{ k: 'name', ph: 'Full name' }, { k: 'email', ph: 'Email', type: 'email' }, { k: 'phone', ph: 'Phone' }], ok: 'Contact added' },
+    { id: 'page', label: 'Page', sup: false, tab: 'tab-pages', url: '/admin/api/pages',
+      fields: [{ k: 'slug', ph: 'URL slug (e.g. about)', req: true }, { k: 'title', ph: 'Title (optional)' }], ok: 'Page created' },
+    { id: 'offer', label: 'Offer', sup: true, tab: 'tab-offers', url: '/admin/api/offers',
+      fields: [{ k: 'title', ph: 'Offer title', req: true }], ok: 'Offer created' }
+  ];
+  var newPop = null;
+  function _newTypes() { return WS_NEW_TYPES.filter(function (t) { return (!t.sup || NAV.isSuper) && realBtn(t.tab); }); }
+  function buildNewPop() {
+    if (newPop) return;
+    newPop = doc.createElement('div'); newPop.className = 'ws-cmdk ws-newpop'; newPop.id = 'ws-newpop';
+    newPop.innerHTML = '<div class="ws-cmdk-box ws-newbox"><div class="ws-new-body"></div></div>';
+    doc.body.appendChild(newPop);
+    newPop.addEventListener('click', function (e) { if (e.target === newPop) closeNewPop(); });
+    doc.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeNewPop(); });
+  }
+  function openNewPop() { buildNewPop(); _newMenu(); newPop.classList.add('open'); }
+  function closeNewPop() { if (newPop) newPop.classList.remove('open'); }
+  function _newMenu() {
+    var body = newPop.querySelector('.ws-new-body'); body.innerHTML = '';
+    var h = doc.createElement('div'); h.className = 'ws-new-h'; h.textContent = 'Create new…'; body.appendChild(h);
+    _newTypes().forEach(function (t) {
+      var b = doc.createElement('button'); b.type = 'button'; b.className = 'ws-menu-item'; b.textContent = t.label;
+      b.addEventListener('click', function () { _newForm(t); });
+      body.appendChild(b);
+    });
+  }
+  function _newForm(t) {
+    var body = newPop.querySelector('.ws-new-body'); body.innerHTML = '';
+    var h = doc.createElement('div'); h.className = 'ws-new-h'; h.textContent = 'New ' + t.label; body.appendChild(h);
+    var inputs = {};
+    t.fields.forEach(function (f) {
+      var inp = doc.createElement('input'); inp.type = f.type || 'text'; inp.className = 'ws-new-input';
+      inp.placeholder = f.ph + (f.req ? ' *' : ''); body.appendChild(inp); inputs[f.k] = inp;
+    });
+    var err = doc.createElement('div'); err.className = 'ws-new-err'; body.appendChild(err);
+    var row = doc.createElement('div'); row.className = 'ws-new-actions';
+    var cancel = doc.createElement('button'); cancel.type = 'button'; cancel.className = 'ws-menu-item'; cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', _newMenu);
+    var create = doc.createElement('button'); create.type = 'button'; create.className = 'ws-new-create'; create.textContent = 'Create';
+    create.addEventListener('click', function () { _newSubmit(t, inputs, err, create); });
+    row.appendChild(cancel); row.appendChild(create); body.appendChild(row);
+    var first = body.querySelector('input'); if (first) setTimeout(function () { first.focus(); }, 10);
+  }
+  function _newSubmit(t, inputs, err, btn) {
+    err.textContent = '';
+    var payload = {}, k;
+    for (k in inputs) payload[k] = inputs[k].value.trim();
+    var missing = t.fields.filter(function (f) { return f.req && !payload[f.k]; });
+    if (missing.length) { err.textContent = 'Please fill the required field.'; return; }
+    if (t.id === 'contact' && !(payload.name || payload.email || payload.phone)) { err.textContent = 'Provide at least a name, email, or phone.'; return; }
+    btn.disabled = true; btn.textContent = 'Creating…';
+    fetch(t.url, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }).catch(function () { return { ok: r.ok, j: {} }; }); })
+      .then(function (res) {
+        btn.disabled = false; btn.textContent = 'Create';
+        if (!res.ok) { err.textContent = (res.j && res.j.error) ? res.j.error : 'Could not create.'; return; }
+        closeNewPop();
+        try { if (window.showToast) showToast(t.ok, 'success'); } catch (e) {}
+        var rb = realBtn(t.tab); if (rb) rb.click();   // land on the owning tab's list
+      })
+      .catch(function () { btn.disabled = false; btn.textContent = 'Create'; err.textContent = 'Network error.'; });
+  }
+
   /* ---- rail ---- */
   function buildRail() {
     var rail = $('#ws-rail'); if (!rail) return;
@@ -301,6 +371,7 @@
       });
       var cb = $('#ws-cmdk-btn'); if (cb) { cb.style.display = ''; cb.addEventListener('click', openPalette); }
       startHealthPill();   // task 093 — header status pill (shown in both nav modes)
+      var nb = $('#ws-newbtn'); if (nb && _newTypes().length) { nb.hidden = false; nb.style.display = ''; nb.addEventListener('click', openNewPop); }  // task 093 — "+ New"
       // If the boot script (or default) resolved to workspaces, build + confirm.
       if (root.classList.contains('nav-pref-workspaces')) { ensureBuilt(); markReady(); }
     } catch (e) {

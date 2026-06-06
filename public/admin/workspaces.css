@@ -78,6 +78,26 @@ body.admin-chrome-hidden .ws-rail, body.admin-chrome-hidden .ws-subnav{ top:0; h
 .ws-status.is-degraded::before{ color:var(--admin-warning,#f59e0b); }
 .ws-status.is-down::before{ color:var(--admin-danger,#ef4444); }
 
+/* ---- "+ New" quick-create (task 093, gap §0.4) ---- */
+.ws-newbtn{ background:var(--admin-accent); border:1px solid var(--admin-accent); cursor:pointer; color:#fff;
+  display:inline-flex; align-items:center; height:38px; padding:0 14px; border-radius:10px; font:inherit;
+  font-size:13px; font-weight:700; }
+.ws-newbtn:hover{ filter:brightness(1.06); }
+.ws-newbox{ width:min(380px,92vw); max-height:none; }
+.ws-new-body{ display:flex; flex-direction:column; gap:8px; padding:14px; }
+.ws-new-h{ font-family:var(--admin-head-font); font-weight:700; font-size:16px; color:var(--admin-text); padding:2px 2px 6px; }
+.ws-menu-item{ text-align:left; padding:9px 12px; border-radius:10px; background:none; border:0; color:var(--admin-text);
+  font:inherit; font-size:14px; cursor:pointer; }
+.ws-menu-item:hover{ background:var(--admin-surface-hover); }
+.ws-new-input{ padding:9px 11px; border:1px solid var(--admin-border); border-radius:9px; background:var(--admin-surface);
+  color:var(--admin-text); font:inherit; font-size:14px; }
+.ws-new-input:focus{ outline:none; border-color:var(--admin-accent); }
+.ws-new-err{ color:var(--admin-danger,#ef4444); font-size:12px; min-height:1em; }
+.ws-new-actions{ display:flex; justify-content:flex-end; gap:8px; padding-top:4px; }
+.ws-new-create{ padding:9px 16px; border-radius:9px; border:0; background:var(--admin-accent); color:#fff; font:inherit;
+  font-weight:700; font-size:14px; cursor:pointer; }
+.ws-new-create:disabled{ opacity:.6; cursor:default; }
+
 /* ---- ⌘K command palette (wired in P2) ---- */
 .ws-cmdk{ position:fixed; inset:0; z-index:120; display:none; align-items:flex-start; justify-content:center;
   background:rgba(0,0,0,.45); -webkit-backdrop-filter:blur(3px); backdrop-filter:blur(3px); padding-top:12vh; }

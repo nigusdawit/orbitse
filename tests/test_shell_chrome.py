@@ -185,3 +185,31 @@ def test_health_degraded_when_claude_without_key():
     finally:
         _set_provider("openai")      # restore so other tests/UX see a healthy default
         _bust_health()
+
+
+# ---- P4: quick-create reuses existing create routes (no new routes) ----
+
+def test_quick_create_routes_for_super():
+    c = _sa()
+    rp = c.post("/admin/api/pages", json={"slug": "qc-probe-093", "title": "QC Probe"},
+                headers={"X-CSRF-Token": "t"})
+    assert rp.status_code in (200, 201), rp.get_data(as_text=True)
+    rl = c.post("/admin/api/leads", json={"name": "QC Probe Lead"}, headers={"X-CSRF-Token": "t"})
+    assert rl.status_code == 200 and rl.get_json().get("ok")
+    ro = c.post("/admin/api/offers", json={"title": "QC Probe Offer"}, headers={"X-CSRF-Token": "t"})
+    assert ro.status_code in (200, 201), ro.get_data(as_text=True)
+    app.execute_db("DELETE FROM pages WHERE slug=%s", ("qc-probe-093",))
+    app.execute_db("DELETE FROM leads WHERE name=%s", ("QC Probe Lead",))
+    app.execute_db("DELETE FROM offers WHERE title=%s", ("QC Probe Offer",))
+
+
+def test_quick_create_super_gates_for_client():
+    if not CLIENT_PW:
+        return
+    cc = app.app.test_client()
+    cc.post("/admin/login", data={"password": CLIENT_PW})
+    with cc.session_transaction() as s:
+        s["_csrf_token"] = "t"
+    # The menu hides Contact/Offer for non-super; the server enforces it regardless.
+    assert cc.post("/admin/api/leads", json={"name": "x"}, headers={"X-CSRF-Token": "t"}).status_code == 403
+    assert cc.post("/admin/api/offers", json={"title": "x"}, headers={"X-CSRF-Token": "t"}).status_code == 403
