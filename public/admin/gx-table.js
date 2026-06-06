@@ -12,8 +12,10 @@
    table}}) that the owning tab listens for (the per-row routes already exist).
 
    DECLARATIVE + IDEMPOTENT (safe to call again after a re-render) + a NO-OP on tables
-   that don't opt in. Auto-enhances on load; call window.gxTable.enhance(tableEl) after
-   you re-render a table's rows. Never throws. */
+   that don't opt in. The OPT-IN TRIGGER is the `data-gx-actions` attribute (the
+   `gx-table` CLASS alone is also a pre-existing styling class, so we must NOT enhance
+   on the class). Auto-enhances every `table[data-gx-actions]` on load; call
+   window.gxTable.enhance(tableEl) after you re-render a table's rows. Never throws. */
 (function () {
   'use strict';
   var doc = document;
@@ -41,6 +43,8 @@
   function enhance(t) {
     try {
       if (!t || !t.querySelector) return;
+      // TRUE opt-in: leave styling-only gx-tables (no actions, no gx-id rows) untouched.
+      if (!t.getAttribute('data-gx-actions') && !t.querySelector('tbody tr[data-gx-id]')) return;
       if (t.getAttribute('data-gx-on') === '1') { _addRowChecks(t); _sync(t); return; }  // re-render: just (re)wire new rows
       t.setAttribute('data-gx-on', '1');
       var actions = _parseActions(t.getAttribute('data-gx-actions'));
@@ -89,7 +93,8 @@
   }
 
   function enhanceAll(root) {
-    try { Array.prototype.slice.call((root || doc).querySelectorAll('table.gx-table')).forEach(enhance); } catch (e) {}
+    // Only tables that explicitly opted in (data-gx-actions) — NOT the styling class.
+    try { Array.prototype.slice.call((root || doc).querySelectorAll('table[data-gx-actions]')).forEach(enhance); } catch (e) {}
   }
 
   window.gxTable = { enhance: enhance, enhanceAll: enhanceAll, sync: _sync };

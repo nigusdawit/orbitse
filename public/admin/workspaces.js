@@ -270,6 +270,7 @@
   function renderPalette(q) {
     q = (q || '').trim();
     var ql = q.toLowerCase();
+    _palSeq++;   // every keystroke (incl. shrink/clear) supersedes any in-flight record fetch
     var list = pal.querySelector('.ws-cmdk-list'); palSel = 0;
     // instant layer — tab/section matches (unchanged behaviour, jumps with no round-trip)
     palItems = tabEntries().filter(function (e) { return !ql || e.label.toLowerCase().indexOf(ql) >= 0 || e.grp.toLowerCase().indexOf(ql) >= 0; });
@@ -280,7 +281,7 @@
     if (ql.length >= 2) _searchRecords(q, list);
   }
   function _searchRecords(q, list) {
-    var seq = ++_palSeq;
+    var seq = _palSeq;   // renderPalette bumps _palSeq on every keystroke (stale-guard)
     if (_palTimer) clearTimeout(_palTimer);
     _palTimer = setTimeout(function () {
       try {
@@ -378,6 +379,7 @@
       // FAIL-SAFE: never strand the admin — revert to the classic sidebar.
       try { root.classList.remove('nav-pref-workspaces'); } catch (_) {}
       try { if (window.__wsHealTimer) clearTimeout(window.__wsHealTimer); } catch (_) {}
+      try { if (_healthTimer) clearInterval(_healthTimer); } catch (_) {}
       if (window.console && console.warn) console.warn('[workspaces] init failed, staying on Classic:', e);
     }
   }
