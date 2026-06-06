@@ -6607,16 +6607,12 @@ async function chatSendStreaming(message, wasCollapsed) {
           const heroEl = document.getElementById('hero-description');
           if (heroEl) typeHeroText(heroEl, shortText || displayText);
         } else {
-          /* No command — check if text should go to the canvas instead
-             of the hero. Force canvas when:
-             1. User explicitly asked for visual content
-             2. Response is too long (>4 sentences, >6 lines, or structured) */
-          const visualRequest = /show me|visually|visualize|make it visual|display it|let me see|can i see/i.test(message);
-          const sentenceCount = (displayText.match(/[.!?:]+\s/g) || []).length + 1;
-          const lineCount = (displayText.match(/\n/g) || []).length + 1;
-          const hasStructuredContent = /^#{1,4}\s|^\|.+\|$|^[-*]\s.+\n[-*]\s/m.test(displayText);
-          const isLongContent = visualRequest || sentenceCount > 4 || lineCount > 6 || (displayText.length > 250 && hasStructuredContent);
-          if (isLongContent) {
+          /* No command — check if the text is long/structured enough to take
+             over the screen as the fullscreen canvas (vs. a short hero line).
+             buildResponseCanvas() returns the canvas payload when it qualifies,
+             or null to keep it inline in the hero. */
+          const canvasPayload = buildResponseCanvas(displayText, message);
+          if (canvasPayload) {
             try {
               /* Build a short hero preview from the first 1-2 sentences */
               const cleanedForPreview = displayText.replace(/^#{1,4}\s+/gm, '').replace(/\*\*(.+?)\*\*/g, '$1').replace(/^\s*[-*]\s/gm, '').trim();
@@ -6625,57 +6621,9 @@ async function chatSendStreaming(message, wasCollapsed) {
               const heroEl = document.getElementById('hero-description');
               if (heroEl) typeHeroText(heroEl, shortText + ' Let me show you more…');
 
-              /* Extract a meaningful title from the content */
-              const headingMatch = displayText.match(/^#{1,4}\s+(.+)/m);
-              const boldMatch = displayText.match(/\*\*(.+?)\*\*/);
-              const firstSentence = displayText.split(/[.!?]\s/)[0] || '';
-              const autoTitle = headingMatch
-                ? headingMatch[1].replace(/\*\*/g, '')
-                : (boldMatch ? boldMatch[1] : (firstSentence.length < 60 ? firstSentence : 'Overview'));
-
-              /* Determine a contextual eyebrow label based on content type */
-              const hasTable = /\|.+\|/.test(displayText);
-              const hasList = /^[-*]\s/m.test(displayText) || /^\d+\.\s/m.test(displayText);
-              const hasComparison = /compar|vs\.?|versus|differ/i.test(displayText);
-              let eyebrowLabel = 'Overview';
-              if (visualRequest) eyebrowLabel = 'Visual Overview';
-              else if (hasComparison) eyebrowLabel = 'Comparison';
-              else if (hasTable) eyebrowLabel = 'Details';
-              else if (hasList) eyebrowLabel = 'Highlights';
-
-              /* Grab the site's theme tokens */
-              const styles = getComputedStyle(document.documentElement);
-              const accent = styles.getPropertyValue('--color-accent').trim() || '#c9a96e';
-              const serif = styles.getPropertyValue('--font-serif').trim() || 'Playfair Display, serif';
-              const sans = styles.getPropertyValue('--font-sans').trim() || 'DM Sans, sans-serif';
-
-              /* Render the markdown content */
-              const renderedContent = renderMarkdown(displayText);
-
-              /* Sanitize helper — uses DOMPurify if loaded, otherwise escapeHtml */
-              const sanitize = (str) => typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(str) : escapeHtml(str);
-
-              /* Build a premium frosted-glass canvas matching the design system */
-              const autoHtml =
-                `<div style="max-width:900px;margin:0 auto;padding:2.5rem;width:100%;">` +
-
-                  /* Header section with gradient accent background */
-                  `<div style="background:linear-gradient(135deg,rgba(${hexToRgb(accent)},0.08),transparent);border-radius:1rem 1rem 0 0;padding:2rem 2rem 1.5rem;border:1px solid rgba(255,255,255,0.06);border-bottom:none;">` +
-                    `<div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.2em;color:${accent};margin-bottom:0.75rem;font-family:${sans};font-weight:500;">${sanitize(eyebrowLabel)}</div>` +
-                    `<div style="font-family:${serif};font-size:clamp(1.4rem,3vw,2rem);font-weight:700;color:#fff;line-height:1.25;">${sanitize(autoTitle)}</div>` +
-                    `<div style="width:3rem;height:2px;background:${accent};opacity:0.4;margin-top:1rem;border-radius:1px;"></div>` +
-                  `</div>` +
-
-                  /* Content body in a frosted glass card */
-                  `<div style="background:rgba(255,255,255,0.03);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.08);border-radius:0 0 1rem 1rem;padding:2rem;box-shadow:0 8px 32px rgba(0,0,0,0.2),inset 0 1px 0 rgba(255,255,255,0.05);">` +
-                    `<div class="canvas-markdown" style="line-height:1.85;font-size:0.95rem;color:rgba(255,255,255,0.85);font-family:${sans};">${renderedContent}</div>` +
-                  `</div>` +
-
-                `</div>`;
-
-              openFullscreenCanvas(autoHtml);
+              openFullscreenCanvas(canvasPayload.html);
               openSidePanel();
-              saveGeneratedPage(autoHtml, autoTitle);
+              saveGeneratedPage(canvasPayload.html, canvasPayload.title);
             } catch (canvasErr) {
               console.error('Canvas auto-open error:', canvasErr, canvasErr.stack);
               window.appReportError(canvasErr, 'script.js:chatSendStreaming');
@@ -6757,6 +6705,28 @@ async function chatSendStreaming(message, wasCollapsed) {
         streamBubble.remove();
         if (window.VoiceAgent && typeof window.VoiceAgent.streamSpeakCancel === 'function') {
           window.VoiceAgent.streamSpeakCancel();
+        }
+      }
+
+      /* EVOLVING RESPONSE PAGE: if the fullscreen formatted-text canvas is
+         already on screen, keep it alive as the visitor keeps chatting. When
+         the new reply is long/structured (same rule the landing page uses to
+         first open it), re-render it into the SAME canvas in place — so the
+         "response page" the visitor is reading updates instead of going stale
+         while the chat panel quietly logs the reply. Short replies return null
+         from buildResponseCanvas() and leave the current page untouched.
+         Skipped when a command is pending — commands render their own visual
+         surface (immersive page, slides, etc.). */
+      if (!pendingCommand && displayText && isFullscreenCanvasOpen()) {
+        try {
+          const evolved = buildResponseCanvas(displayText, message);
+          if (evolved) {
+            openFullscreenCanvas(evolved.html);
+            saveGeneratedPage(evolved.html, evolved.title);
+          }
+        } catch (evolveErr) {
+          console.error('Canvas in-place update error:', evolveErr);
+          window.appReportError(evolveErr, 'script.js:chatSendStreaming');
         }
       }
 
@@ -9042,6 +9012,94 @@ function openSidePanel() {
   panel.classList.add('active');
 }
 
+
+/**
+ * Decide whether an AI text reply is "long / structured" enough to warrant the
+ * fullscreen formatted-text canvas (vs. a short hero line or a chat bubble),
+ * and if so build the premium frosted-glass canvas markup for it.
+ *
+ * This centralizes BOTH the long-vs-short decision AND the canvas HTML so every
+ * caller uses identical rules and styling:
+ *   1. the landing page first-open path (collapsed bar → opens the canvas), and
+ *   2. the "already on the canvas, keep it evolving" path (a new long reply
+ *      arrives while the canvas is open → re-render it in place).
+ *
+ * @param {string} displayText - The AI's full reply text (markdown).
+ * @param {string} message - The visitor's message (used for "show me…" intent).
+ * @returns {{html: string, title: string}|null} Canvas payload, or null when
+ *   the reply is short enough to stay inline (caller keeps it in hero/chat).
+ */
+function buildResponseCanvas(displayText, message) {
+  if (!displayText || !displayText.trim()) return null;
+
+  /* Long-vs-short heuristic. Force the canvas when:
+       1. the visitor explicitly asked for visual content, or
+       2. the reply is long (>4 sentences, >6 lines, or 250+ chars structured). */
+  const visualRequest = /show me|visually|visualize|make it visual|display it|let me see|can i see/i.test(message || '');
+  const sentenceCount = (displayText.match(/[.!?:]+\s/g) || []).length + 1;
+  const lineCount = (displayText.match(/\n/g) || []).length + 1;
+  const hasStructuredContent = /^#{1,4}\s|^\|.+\|$|^[-*]\s.+\n[-*]\s/m.test(displayText);
+  const isLongContent = visualRequest || sentenceCount > 4 || lineCount > 6 || (displayText.length > 250 && hasStructuredContent);
+  if (!isLongContent) return null;
+
+  /* Extract a meaningful title from the content */
+  const headingMatch = displayText.match(/^#{1,4}\s+(.+)/m);
+  const boldMatch = displayText.match(/\*\*(.+?)\*\*/);
+  const firstSentence = displayText.split(/[.!?]\s/)[0] || '';
+  const autoTitle = headingMatch
+    ? headingMatch[1].replace(/\*\*/g, '')
+    : (boldMatch ? boldMatch[1] : (firstSentence.length < 60 ? firstSentence : 'Overview'));
+
+  /* Determine a contextual eyebrow label based on content type */
+  const hasTable = /\|.+\|/.test(displayText);
+  const hasList = /^[-*]\s/m.test(displayText) || /^\d+\.\s/m.test(displayText);
+  const hasComparison = /compar|vs\.?|versus|differ/i.test(displayText);
+  let eyebrowLabel = 'Overview';
+  if (visualRequest) eyebrowLabel = 'Visual Overview';
+  else if (hasComparison) eyebrowLabel = 'Comparison';
+  else if (hasTable) eyebrowLabel = 'Details';
+  else if (hasList) eyebrowLabel = 'Highlights';
+
+  /* Grab the site's theme tokens */
+  const styles = getComputedStyle(document.documentElement);
+  const accent = styles.getPropertyValue('--color-accent').trim() || '#c9a96e';
+  const serif = styles.getPropertyValue('--font-serif').trim() || 'Playfair Display, serif';
+  const sans = styles.getPropertyValue('--font-sans').trim() || 'DM Sans, sans-serif';
+
+  /* Render the markdown content */
+  const renderedContent = renderMarkdown(displayText);
+
+  /* Sanitize helper — uses DOMPurify if loaded, otherwise escapeHtml */
+  const sanitize = (str) => typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(str) : escapeHtml(str);
+
+  /* Build a premium frosted-glass canvas matching the design system */
+  const html =
+    `<div style="max-width:900px;margin:0 auto;padding:2.5rem;width:100%;">` +
+
+      /* Header section with gradient accent background */
+      `<div style="background:linear-gradient(135deg,rgba(${hexToRgb(accent)},0.08),transparent);border-radius:1rem 1rem 0 0;padding:2rem 2rem 1.5rem;border:1px solid rgba(255,255,255,0.06);border-bottom:none;">` +
+        `<div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.2em;color:${accent};margin-bottom:0.75rem;font-family:${sans};font-weight:500;">${sanitize(eyebrowLabel)}</div>` +
+        `<div style="font-family:${serif};font-size:clamp(1.4rem,3vw,2rem);font-weight:700;color:#fff;line-height:1.25;">${sanitize(autoTitle)}</div>` +
+        `<div style="width:3rem;height:2px;background:${accent};opacity:0.4;margin-top:1rem;border-radius:1px;"></div>` +
+      `</div>` +
+
+      /* Content body in a frosted glass card */
+      `<div style="background:rgba(255,255,255,0.03);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.08);border-radius:0 0 1rem 1rem;padding:2rem;box-shadow:0 8px 32px rgba(0,0,0,0.2),inset 0 1px 0 rgba(255,255,255,0.05);">` +
+        `<div class="canvas-markdown" style="line-height:1.85;font-size:0.95rem;color:rgba(255,255,255,0.85);font-family:${sans};">${renderedContent}</div>` +
+      `</div>` +
+
+    `</div>`;
+
+  return { html, title: autoTitle };
+}
+
+/**
+ * Is the fullscreen formatted-text canvas currently on screen?
+ * @returns {boolean}
+ */
+function isFullscreenCanvasOpen() {
+  return !!document.getElementById('fullscreen-canvas')?.classList.contains('active');
+}
 
 /**
  * Open the fullscreen canvas with AI-generated HTML.
