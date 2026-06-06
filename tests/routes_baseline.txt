@@ -161,6 +161,7 @@ GET /admin/api/messaging/status
 GET /admin/api/messaging/subscribers
 GET /admin/api/messaging/templates
 GET /admin/api/messaging/templates/<int:tid>/preview
+GET /admin/api/nav-counts
 GET /admin/api/offers
 GET /admin/api/onboarding/snapshot
 GET /admin/api/onboarding/snapshot/summary

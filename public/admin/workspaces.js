@@ -55,7 +55,22 @@
   function moduleOf(testid) { return (tabToMod[testid] || {}).mod || 'setup'; }
   function moduleLabel(id) { var m = WS_MODULES.filter(function (x) { return x.id === id; })[0]; return m ? m.label : 'More'; }
 
-  var state = { viewMod: 'home', built: false };
+  var state = { viewMod: 'home', built: false, counts: null };
+
+  /* ---- live sub-nav counts (task 093, gap §0.3) — fed by GET /admin/api/nav-counts ---- */
+  function fmtCount(n) {
+    n = Number(n) || 0;
+    if (n >= 1000) { var v = n / 1000; return (v >= 10 ? Math.round(v) : v.toFixed(1).replace(/\.0$/, '')) + 'k'; }
+    return String(n);
+  }
+  function loadNavCounts() {
+    try {
+      fetch('/admin/api/nav-counts', { credentials: 'same-origin' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) { if (d && d.counts && typeof d.counts === 'object') { state.counts = d.counts; buildSubnav(); } })
+        .catch(function () {}); // fail-open: no counts → items render exactly as before
+    } catch (e) {}
+  }
 
   /* ---- rail ---- */
   function buildRail() {
@@ -84,6 +99,8 @@
     var ic = doc.createElement('span'); ic.className = 'ws-ic'; var svg = btn ? btnIcon(btn) : null; if (svg) ic.appendChild(svg);
     var t = doc.createElement('span'); t.className = 'ws-t'; t.textContent = btn ? btnLabel(btn) : testid; // textContent: XSS-safe
     el.appendChild(ic); el.appendChild(t);
+    var n = state.counts ? state.counts[testid] : null;   // task 093 — live badge count
+    if (typeof n === 'number') { var cnt = doc.createElement('span'); cnt.className = 'ws-count'; cnt.textContent = fmtCount(n); el.appendChild(cnt); }
     el.addEventListener('click', function () { var rb = realBtn(testid); if (rb) rb.click(); });
     return el;
   }
@@ -207,6 +224,7 @@
     var cur = activeTestid(); state.viewMod = cur ? moduleOf(cur) : 'home';
     buildRail(); buildSubnav();
     state.built = true;
+    loadNavCounts();   // task 093 — fetch live sub-nav counts, re-render when they land
   }
 
   function init() {

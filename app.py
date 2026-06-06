@@ -42265,6 +42265,13 @@ app.register_blueprint(dashboards_bp)
 from admin.crm import crm_bp  # noqa: E402
 app.register_blueprint(crm_bp)
 
+# Shell blueprint (task 093, gap §0): Workspaces shell cross-cutting read APIs.
+# P1 = GET /admin/api/nav-counts — live sub-nav badge counts, 30s-cached, fail-open;
+# PII/leads counted super-admin-only in-body. @admin_required (from core), imports only
+# from core. Record-search + health-pill routes land in later phases of this task.
+from admin.shell import shell_bp  # noqa: E402
+app.register_blueprint(shell_bp)
+
 # Tenancy blueprint (Track B): the super-admin Plans & Features management API —
 # GET /admin/api/tenant/features (roster + on/off state) and PATCH
 # /admin/api/tenant/features/<name> (flip one). @admin_required + in-body
