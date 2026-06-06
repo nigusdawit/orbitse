@@ -6563,6 +6563,19 @@ async function chatSendStreaming(message, wasCollapsed) {
       chatAddMessage('agent', "That page got cut off before it finished building. Could you ask me to try again?");
     }
 
+    /* Empty-reply safety net: the stream finished but produced no visible
+       text, no command, no availability chips, and no live page build. Without
+       this the visitor is left staring at a cleared spinner with no answer
+       (e.g. the model spent its whole tool budget without ever synthesizing a
+       reply). Surface a friendly retry prompt so a turn never ends in silence.
+       Mirrors the early-return pattern used by the 'error' event above. */
+    if (!displayText && !pendingCommand && !pageStreamStarted &&
+        availabilityResults.length === 0) {
+      if (streamBubble) { streamBubble.remove(); streamBubble = null; }
+      chatAddMessage('agent', "Sorry — I couldn't put that together just now. Could you try asking again?");
+      return;
+    }
+
     /* Determine if this response navigates to a gallery card */
     const isNavigate = pendingCommand && pendingCommand.action === 'navigate';
     const isSubmitForm = pendingCommand && pendingCommand.action === 'submitForm';

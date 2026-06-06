@@ -13476,16 +13476,21 @@ def _stream_round_openai(model, messages, tools, max_tokens=4096, temperature=0.
             _client = openai_client.with_options(timeout=_t)
     except Exception:
         _client = openai_client  # fail-open to current behavior
-    stream = _client.chat.completions.create(
+    _create_kw = dict(
         model=model,
         messages=messages,
-        tools=tools,
-        tool_choice="auto",
         max_tokens=max_tokens,
         temperature=temperature,
         stream=True,
         stream_options={"include_usage": True},
     )
+    # Only advertise tools when we actually have some. The OpenAI API rejects
+    # an empty `tools=[]` together with `tool_choice="auto"`, so a deliberately
+    # tool-less round (e.g. the final-answer synthesis round) must omit both.
+    if tools:
+        _create_kw["tools"] = tools
+        _create_kw["tool_choice"] = "auto"
+    stream = _client.chat.completions.create(**_create_kw)
     tool_calls_acc = {}
     finish_reason = None
     usage_info = None
@@ -23679,6 +23684,16 @@ def api_chat():
                 # gpt-4o family output limit (16384) and is well under Claude's.
                 _VISITOR_ROUND_MAX_TOKENS = 16000
 
+                # Force a final-answer round when the model has used up its
+                # tool budget. On the last allowed round we offer NO tools, so
+                # the model MUST synthesize a reply from what it already
+                # gathered instead of requesting yet more tools and ending the
+                # turn with an empty answer (which strands the visitor on a
+                # spinner with no response). Earlier rounds keep the full tool
+                # set, so this only ever kicks in for pathological many-tool
+                # turns that would otherwise return nothing.
+                _round_tools = [] if _round_idx == max_rounds - 1 else active_tools
+
                 def _v_open_claude(_m):
                     # Task 079: pass the system messages as an ORDERED LIST (not a
                     # joined string) so _stream_round_claude can cache ONLY the
@@ -23687,12 +23702,12 @@ def api_chat():
                     # parts are re-joined "\n\n" → byte-identical to the prior call.
                     _ss, _cm = _messages_for_claude_parts(messages)
                     return _stream_round_claude(
-                        _m, _ss, _cm, _tools_for_claude(active_tools),
+                        _m, _ss, _cm, _tools_for_claude(_round_tools),
                         max_tokens=_VISITOR_ROUND_MAX_TOKENS)
 
                 def _v_open_openai(_m):
                     return _stream_round_openai(
-                        _m, messages, active_tools,
+                        _m, messages, _round_tools,
                         max_tokens=_VISITOR_ROUND_MAX_TOKENS)
 
                 _v_fb_on = get_ai_setting("visitor_provider_fallback")
