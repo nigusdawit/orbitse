@@ -1,11 +1,16 @@
-{# admin/tabs/_chat-history.html — 'chat-history' tab panel. Carved from dashboard.html
-   (task 076 F3). Rendered into the shell via {% include %}; inherits Jinja
-   context (appearance / has_feature / is_super_admin). #}
+{# admin/tabs/_chat-history.html — Conversations inbox (task 095, gap §2.4).
+   3-pane operational inbox: thread list | transcript (+ human-takeover composer) |
+   context side-panel. Reworked from the old read-only table. All new CSS is SCOPED to
+   #tab-chat-history .gxi-* so the global .btn/.card/.badge shared across the other 67
+   tabs are untouched. Light + dark via --admin-* tokens. #}
 <div id="tab-chat-history" class="tab-content">
     <div class="gx-head">
       <div>
-        <h2 class="gx-title">Chat History</h2>
-        <p class="gx-sub">View AI assistant conversations and analytics.</p>
+        <h2 class="gx-title">Conversations</h2>
+        <p class="gx-sub">Live inbox — transcripts, visitor context, and human takeover.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <button class="btn-secondary" onclick="loadChatHistory()" data-testid="button-chat-refresh">Refresh</button>
       </div>
     </div>
 
@@ -20,27 +25,80 @@
         <div class="gx-stat-value" id="stat-unique-visitors">0</div></div>
     </div>
 
-    <table class="data-table" id="chat-history-table">
-      <thead>
-        <tr>
-          <th>Date</th>
-          <th>Messages</th>
-          <th>Visitor</th>
-          <th>Device</th>
-          <th>First Message</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody id="chat-history-tbody">
-        <tr><td colspan="6" class="empty-state">Loading...</td></tr>
-      </tbody>
-    </table>
-
-    <div id="chat-detail-panel" class="form-panel" style="display:none; margin-top: 1.5rem;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-        <h3 id="chat-detail-title">Conversation</h3>
-        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('chat-detail-panel').style.display='none'" data-testid="button-close-chat-detail">Close</button>
+    <div class="gxi-inbox">
+      <!-- Pane 1: thread list -->
+      <div class="gxi-threads" id="inbox-thread-list" data-testid="inbox-thread-list">
+        <div class="empty-state" style="padding:1rem;">Loading…</div>
       </div>
-      <div id="chat-detail-messages" style="max-height: 400px; overflow-y: auto;"></div>
+
+      <!-- Pane 2: transcript + human-takeover composer (composer wired in P2) -->
+      <div class="gxi-transcript-pane">
+        <div class="gxi-transcript-head" id="inbox-transcript-head"></div>
+        <div class="gxi-msgs" id="inbox-transcript" data-testid="inbox-transcript">
+          <div class="empty-state gxi-placeholder">Select a conversation to view its transcript.</div>
+        </div>
+        <div class="gxi-composer" id="inbox-composer" style="display:none;">
+          <textarea id="inbox-compose-text" rows="2" placeholder="Reply as a human…" data-testid="input-human-reply"></textarea>
+          <div class="gxi-composer-actions">
+            <button class="btn-secondary gxi-pause-btn" id="inbox-pause-btn" type="button" onclick="inboxTogglePause()" data-testid="button-pause-ai">Pause AI</button>
+            <button class="btn gxi-send-btn" id="inbox-send-btn" type="button" onclick="inboxSendHuman()" data-testid="button-send-human">Send as human</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pane 3: context side-panel -->
+      <div class="gxi-context" id="inbox-context" data-testid="inbox-context">
+        <div class="empty-state" style="padding:1rem;">No conversation selected.</div>
+      </div>
     </div>
+
+    <style>
+      /* 095 §2.4 inbox — scoped to #tab-chat-history so nothing leaks to other tabs. */
+      #tab-chat-history .gxi-inbox{ display:grid; grid-template-columns:280px 1fr 320px; gap:0;
+        border:1px solid var(--admin-border); border-radius:14px; overflow:hidden; margin-top:1rem;
+        height:min(620px, calc(100vh - 320px)); background:var(--admin-surface); }
+      #tab-chat-history .gxi-threads{ border-right:1px solid var(--admin-border); overflow-y:auto; }
+      #tab-chat-history .gxi-thread{ display:block; width:100%; text-align:left; border:0; background:none;
+        font:inherit; cursor:pointer; padding:.6rem .75rem; border-bottom:1px solid var(--admin-border);
+        color:var(--admin-text); }
+      #tab-chat-history .gxi-thread:hover{ background:var(--admin-surface-hover); }
+      #tab-chat-history .gxi-thread.active{ background:color-mix(in srgb,var(--admin-accent) 14%,transparent); }
+      #tab-chat-history .gxi-th-top{ display:flex; align-items:center; gap:.4rem; }
+      #tab-chat-history .gxi-th-vid{ font-weight:600; font-size:.82rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      #tab-chat-history .gxi-th-time{ margin-left:auto; font-size:.7rem; color:var(--admin-text-muted); white-space:nowrap; }
+      #tab-chat-history .gxi-th-msg{ font-size:.76rem; color:var(--admin-text-muted); overflow:hidden;
+        text-overflow:ellipsis; white-space:nowrap; margin-top:.15rem; }
+      #tab-chat-history .gxi-dot{ width:8px; height:8px; border-radius:50%; flex:none; background:#22c55e; }
+      #tab-chat-history .gxi-chip{ font-size:.6rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em;
+        padding:0 .35em; border-radius:999px; background:var(--admin-warning,#f59e0b); color:#000; }
+      #tab-chat-history .gxi-transcript-pane{ display:flex; flex-direction:column; min-width:0; }
+      #tab-chat-history .gxi-transcript-head{ padding:.5rem .75rem; border-bottom:1px solid var(--admin-border);
+        font-size:.8rem; color:var(--admin-text-muted); min-height:1.2rem; }
+      #tab-chat-history .gxi-msgs{ flex:1 1 auto; overflow-y:auto; padding:.75rem; }
+      #tab-chat-history .gxi-msg{ margin-bottom:.6rem; }
+      #tab-chat-history .gxi-msg-role{ font-size:.62rem; text-transform:uppercase; letter-spacing:.05em;
+        color:var(--admin-text-muted); margin-bottom:.15rem; }
+      #tab-chat-history .gxi-msg-body{ padding:.5rem .65rem; border-radius:10px; font-size:.85rem; white-space:pre-wrap;
+        word-break:break-word; background:var(--admin-surface-hover); }
+      #tab-chat-history .gxi-msg-user .gxi-msg-body{ background:color-mix(in srgb,var(--admin-accent) 10%,transparent); }
+      #tab-chat-history .gxi-msg-human .gxi-msg-body{ background:color-mix(in srgb,var(--admin-success,#22c55e) 16%,transparent);
+        border:1px solid color-mix(in srgb,var(--admin-success,#22c55e) 40%,transparent); }
+      #tab-chat-history .gxi-msg-human .gxi-msg-role{ color:var(--admin-success,#22c55e); }
+      #tab-chat-history .gxi-composer{ border-top:1px solid var(--admin-border); padding:.6rem .75rem; }
+      #tab-chat-history .gxi-composer textarea{ width:100%; resize:vertical; border:1px solid var(--admin-border);
+        border-radius:9px; background:var(--admin-surface); color:var(--admin-text); font:inherit; font-size:.85rem; padding:.5rem; }
+      #tab-chat-history .gxi-composer-actions{ display:flex; justify-content:flex-end; gap:.5rem; margin-top:.5rem; }
+      #tab-chat-history .gxi-context{ border-left:1px solid var(--admin-border); overflow-y:auto; padding:.85rem; }
+      #tab-chat-history .gxi-ctx-card{ margin-bottom:.85rem; }
+      #tab-chat-history .gxi-ctx-h{ font-size:.65rem; font-weight:800; letter-spacing:.06em; text-transform:uppercase;
+        color:var(--admin-text-muted); margin-bottom:.3rem; }
+      #tab-chat-history .gxi-score{ font-size:1.6rem; font-weight:800; color:var(--admin-text); }
+      #tab-chat-history .gxi-tags{ display:flex; flex-wrap:wrap; gap:.3rem; }
+      #tab-chat-history .gxi-tag{ font-size:.72rem; padding:.1rem .45rem; border-radius:999px;
+        background:var(--admin-surface-hover); color:var(--admin-text); }
+      #tab-chat-history .gxi-ctx-row{ font-size:.82rem; color:var(--admin-text); margin:.15rem 0; }
+      #tab-chat-history .gxi-ctx-muted{ color:var(--admin-text-muted); font-size:.8rem; }
+      @media (max-width:900px){ #tab-chat-history .gxi-inbox{ grid-template-columns:1fr; height:auto; }
+        #tab-chat-history .gxi-threads, #tab-chat-history .gxi-context{ border:0; border-bottom:1px solid var(--admin-border); max-height:240px; } }
+    </style>
   </div>

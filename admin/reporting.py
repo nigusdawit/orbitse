@@ -17,9 +17,17 @@ Imports come from core (never app - that would be circular).
 """
 import json
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, session
 
-from core import query_db, admin_required
+from core import (
+    query_db,
+    execute_db,
+    admin_required,
+    _require_super_admin_role,
+    current_tenant_id,
+    _vp_as_list,
+    capture_exc,
+)
 
 reporting_bp = Blueprint("reporting", __name__)
 
@@ -34,12 +42,20 @@ def admin_chat_history():
     per_page = int(request.args.get("per_page", 50))
     offset = (page - 1) * per_page
 
+    # 095 §2.4 — additive columns for the inbox: ai_paused (LEFT JOIN the takeover
+    # table, which the bootstrap guarantees exists), plus last-message time/role to
+    # drive live/unread markers. Existing keys (c.*, message_count, first_message)
+    # are unchanged, so the legacy table renderer keeps working.
     conversations = query_db("""
         SELECT c.*,
             c.visitor_id,
             (SELECT COUNT(*) FROM chat_messages WHERE conversation_id = c.id) as message_count,
-            (SELECT content FROM chat_messages WHERE conversation_id = c.id AND role = 'user' ORDER BY id LIMIT 1) as first_message
+            (SELECT content FROM chat_messages WHERE conversation_id = c.id AND role = 'user' ORDER BY id LIMIT 1) as first_message,
+            COALESCE(t.ai_paused, FALSE) as ai_paused,
+            (SELECT created_at FROM chat_messages WHERE conversation_id = c.id ORDER BY id DESC LIMIT 1) as last_message_at,
+            (SELECT role FROM chat_messages WHERE conversation_id = c.id ORDER BY id DESC LIMIT 1) as last_role
         FROM chat_conversations c
+        LEFT JOIN conversation_takeover t ON t.conversation_id = c.id
         ORDER BY c.updated_at DESC
         LIMIT %s OFFSET %s
     """, (per_page, offset))
@@ -71,6 +87,172 @@ def admin_chat_detail(conv_id):
         "SELECT * FROM chat_messages WHERE conversation_id = %s ORDER BY created_at", (conv_id,)
     )
     return jsonify({"conversation": conv, "messages": messages or []})
+
+
+@reporting_bp.route("/admin/api/conversations/<int:conv_id>/context", methods=["GET"])
+@admin_required
+def admin_conversation_context(conv_id):
+    """Side-panel context for a conversation (task 095, gap §2.4). SUPER-ADMIN only
+    (visitor PII). Returns the visitor_profile (lead_score / interests / needs / summary
+    — 'intent' ≈ interests+needs, the closest existing signal), a derived source channel
+    (latest page_views utm/referrer for the visitor), and the linked lead, if any. Each
+    section is independently try/except'd → a missing profile/lead/source yields an empty
+    section, never a 500."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    conv = query_db("SELECT id, visitor_id FROM chat_conversations WHERE id=%s", (conv_id,), fetchone=True)
+    if not conv:
+        return jsonify({"error": "Conversation not found"}), 404
+    vid = (conv.get("visitor_id") or "").strip()
+    tid = current_tenant_id()
+
+    profile = None
+    try:
+        if vid:
+            p = query_db(
+                "SELECT lead_score, interests, needs, consent, summary, turns "
+                "FROM visitor_profiles WHERE tenant_id=%s AND visitor_id=%s",
+                (tid, vid), fetchone=True)
+            if p:
+                profile = {
+                    "lead_score": int(p.get("lead_score") or 0),
+                    "interests": _vp_as_list(p.get("interests")),
+                    "needs": _vp_as_list(p.get("needs")),
+                    "consent": bool(p.get("consent")),
+                    "summary": p.get("summary") or "",
+                    "turns": int(p.get("turns") or 0),
+                }
+    except Exception:
+        profile = None
+
+    source = ""
+    try:
+        if vid:
+            s = query_db(
+                "SELECT utm_source, referrer_url FROM page_views "
+                "WHERE visitor_id=%s ORDER BY id DESC LIMIT 1", (vid,), fetchone=True) or {}
+            utm = (s.get("utm_source") or "").strip()
+            ref = (s.get("referrer_url") or "").strip()
+            source = ("UTM: " + utm) if utm else (("Referral: " + ref) if ref else "Direct")
+    except Exception:
+        source = ""
+
+    lead = None
+    try:
+        if vid:
+            l = query_db(
+                "SELECT id, name, email, phone, status, interest FROM leads "
+                "WHERE tenant_id=%s AND visitor_id=%s ORDER BY id DESC LIMIT 1",
+                (tid, vid), fetchone=True)
+            if l:
+                lead = {"id": l["id"], "name": l.get("name") or "", "email": l.get("email") or "",
+                        "phone": l.get("phone") or "", "status": l.get("status") or "",
+                        "interest": l.get("interest") or ""}
+    except Exception:
+        lead = None
+
+    return jsonify({"ok": True, "visitor_id": vid, "profile": profile, "source": source, "lead": lead})
+
+
+# ---- 095 §2.4 human takeover (super-admin only; MUTATING) -------------------
+# Pausing the AI for a conversation is stored in conversation_takeover. The live
+# /api/chat SSE generator reads ai_paused at the top of generate() and, if set,
+# records the visitor's message + skips the LLM (see app._persist_visitor_user_message
+# + the gate in api_chat). Releasing flips ai_paused back to FALSE so the AI resumes.
+
+def _takeover_upsert(conv_id, ai_paused, who):
+    """Upsert the conversation_takeover row. Sets ai_paused + bookkeeping stamps:
+    taken_over_at is set once (kept on re-takeover), released_at is stamped when
+    ai_paused goes FALSE and cleared when it goes TRUE. Raises on DB error so the
+    caller's try/except can capture + 500."""
+    execute_db(
+        "INSERT INTO conversation_takeover "
+        "  (conversation_id, ai_paused, taken_over_by, taken_over_at, released_at, updated_at) "
+        "VALUES (%s, %s, %s, CASE WHEN %s THEN NOW() END, CASE WHEN %s THEN NULL ELSE NOW() END, NOW()) "
+        "ON CONFLICT (conversation_id) DO UPDATE SET "
+        "  ai_paused      = EXCLUDED.ai_paused, "
+        "  taken_over_by  = EXCLUDED.taken_over_by, "
+        "  taken_over_at  = COALESCE(conversation_takeover.taken_over_at, EXCLUDED.taken_over_at), "
+        "  released_at    = CASE WHEN EXCLUDED.ai_paused THEN NULL ELSE NOW() END, "
+        "  updated_at     = NOW()",
+        (conv_id, bool(ai_paused), who, bool(ai_paused), bool(ai_paused)),
+    )
+
+
+@reporting_bp.route("/admin/api/conversations/<int:conv_id>/takeover", methods=["POST"])
+@admin_required
+def admin_conversation_takeover(conv_id):
+    """Pause the AI for a conversation (human takeover). Super-admin only."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    conv = query_db("SELECT id FROM chat_conversations WHERE id=%s", (conv_id,), fetchone=True)
+    if not conv:
+        return jsonify({"error": "Conversation not found"}), 404
+    try:
+        _takeover_upsert(conv_id, True, session.get("admin_role", "admin"))
+    except Exception as e:
+        capture_exc(e, "admin_conversation_takeover")
+        return jsonify({"error": "takeover_failed"}), 500
+    return jsonify({"ok": True, "ai_paused": True})
+
+
+@reporting_bp.route("/admin/api/conversations/<int:conv_id>/release", methods=["POST"])
+@admin_required
+def admin_conversation_release(conv_id):
+    """Resume the AI for a conversation (release the human takeover). Super-admin only."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    conv = query_db("SELECT id FROM chat_conversations WHERE id=%s", (conv_id,), fetchone=True)
+    if not conv:
+        return jsonify({"error": "Conversation not found"}), 404
+    try:
+        _takeover_upsert(conv_id, False, session.get("admin_role", "admin"))
+    except Exception as e:
+        capture_exc(e, "admin_conversation_release")
+        return jsonify({"error": "release_failed"}), 500
+    return jsonify({"ok": True, "ai_paused": False})
+
+
+@reporting_bp.route("/admin/api/conversations/<int:conv_id>/message", methods=["POST"])
+@admin_required
+def admin_conversation_message(conv_id):
+    """Send a human reply into a conversation. Inserts a chat_messages row with
+    role='agent_human' and, as a side effect, PAUSES the AI (a human is now
+    handling the thread, so the AI must not also reply). The visitor receives it
+    via the public agent-messages poll (P3). Super-admin only.
+
+    SECURITY: the content is operator-authored but is treated as untrusted on the
+    way OUT to the visitor — the public widget renders agent_human messages as
+    TEXT (textContent), never HTML, so an operator can't inject script into a
+    visitor's page. We also bound the length."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    conv = query_db("SELECT id FROM chat_conversations WHERE id=%s", (conv_id,), fetchone=True)
+    if not conv:
+        return jsonify({"error": "Conversation not found"}), 404
+    data = request.get_json(silent=True) or {}
+    content = (data.get("content") or "").strip()
+    if not content:
+        return jsonify({"error": "empty"}), 400
+    content = content[:8000]   # bound — chat_messages.content is TEXT but keep it sane
+    try:
+        # Sending implies takeover: pause the AI so it won't also answer this turn.
+        _takeover_upsert(conv_id, True, session.get("admin_role", "admin"))
+        row = execute_db(
+            "INSERT INTO chat_messages (conversation_id, role, content) "
+            "VALUES (%s, 'agent_human', %s) RETURNING id",
+            (conv_id, content),
+        )
+        execute_db("UPDATE chat_conversations SET updated_at = NOW() WHERE id = %s RETURNING id", (conv_id,))
+    except Exception as e:
+        capture_exc(e, "admin_conversation_message")
+        return jsonify({"error": "send_failed"}), 500
+    msg_id = row.get("id") if isinstance(row, dict) else None
+    return jsonify({"ok": True, "id": msg_id, "ai_paused": True})
 
 
 # ---- analytics (pageview aggregates + daily chart), verbatim from app.py ----

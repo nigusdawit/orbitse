@@ -720,18 +720,24 @@ def _audit_super_admin(action, outcome, reason=None):
                 pass
 
 
-def _chat_rate_check(key, throttled=False):
+def _chat_rate_check(key, throttled=False, max_override=None):
     """Return (allowed: bool, retry_after_sec: int).
 
     When `throttled=True` (request-scoped flag set by enforce_cost_cap
     on tenants in 'throttle' cap mode), the per-window budget drops to
     a much tighter 5/min so a tenant that's already over their monthly
     cap can't keep burning chat tokens at 30/min while we wait for the
-    next billing period."""
+    next billing period.
+
+    `max_override` (optional) sets a custom per-window ceiling for THIS key,
+    used by lighter-weight pollers that legitimately call more often than the
+    30/min chat budget (e.g. the human-takeover reply poll at ~12/min/visitor) —
+    a generous ceiling there is purely an anti-enumeration / anti-DoS guard, not
+    a UX throttle. Ignored when `throttled` is set (the cap-mode floor wins)."""
     now = _time.time()
     cutoff = now - _CHAT_RATE_WINDOW_SEC
     bucket = [t for t in _CHAT_RATE.get(key, []) if t > cutoff]
-    max_req = 5 if throttled else _CHAT_RATE_MAX
+    max_req = 5 if throttled else (max_override if max_override is not None else _CHAT_RATE_MAX)
     if len(bucket) >= max_req:
         retry_after = int(_CHAT_RATE_WINDOW_SEC - (now - bucket[0])) + 1
         _CHAT_RATE[key] = bucket
@@ -1422,6 +1428,20 @@ def init_db():
                     created_at      TIMESTAMP DEFAULT NOW()
                 );
                 CREATE INDEX IF NOT EXISTS idx_chat_msg_conv ON chat_messages (conversation_id);
+
+                -- Conversation takeover / AI-pause state (task 095, gap §2.4). One row
+                -- per conversation a human took over; NO row = normal AI mode. Kept off
+                -- chat_conversations (the hot per-turn write path). Also in migration 0035.
+                CREATE TABLE IF NOT EXISTS conversation_takeover (
+                    conversation_id INTEGER PRIMARY KEY REFERENCES chat_conversations(id) ON DELETE CASCADE,
+                    tenant_id       INTEGER NOT NULL DEFAULT 1,
+                    ai_paused       BOOLEAN NOT NULL DEFAULT FALSE,
+                    taken_over_by   TEXT NOT NULL DEFAULT '',
+                    taken_over_at   TIMESTAMP,
+                    released_at     TIMESTAMP,
+                    updated_at      TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS conversation_takeover_active_idx ON conversation_takeover (tenant_id, ai_paused);
 
                 -- Uploaded images
                 CREATE TABLE IF NOT EXISTS uploaded_images (
@@ -22573,6 +22593,115 @@ def _visitor_is_research_heavy(message):
     return len(text.split()) >= 40
 
 
+def _persist_visitor_user_message(session_id, visitor_id, message):
+    """Find-or-create the visitor's conversation by session_id and persist their
+    user message. Returns conv_id (or None on any failure — fail-open).
+
+    Extracted for the human-takeover gate (task 095 §2.4): when an operator has
+    paused the AI for a conversation we still want the visitor's question recorded
+    so it shows in the inbox, but we skip the LLM + the assistant-row insert. This
+    mirrors the live persistence block's find-or-create EXACTLY (device/ua/ip
+    capture + first-message new_chat dispatch + updated_at bump) so a paused
+    conversation is indistinguishable from a normal one apart from the missing AI
+    reply. Must run inside request context (it reads request.headers) — it does,
+    since /api/chat streams its SSE generator within the request context (the live
+    persistence blocks below read request.headers the same way)."""
+    if not session_id:
+        return None
+    try:
+        ua = request.headers.get("User-Agent", "")
+        device = "mobile" if any(m in ua.lower() for m in ["mobile", "android", "iphone"]) else "desktop"
+        ip = (request.headers.get("X-Forwarded-For", request.remote_addr or "") or "").split(",")[0].strip()[:45]
+        conv = query_db(
+            "SELECT id FROM chat_conversations WHERE session_id = %s ORDER BY id DESC LIMIT 1",
+            (session_id,), fetchone=True,
+        )
+        is_new_conversation = not conv
+        if not conv:
+            conv = execute_db(
+                "INSERT INTO chat_conversations (session_id, visitor_id, visitor_ip, device_type, user_agent) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (session_id, visitor_id, ip, device, ua[:500]),
+            )
+        conv_id = conv["id"]
+        if is_new_conversation:
+            try:
+                automations.dispatch_event("new_chat", {
+                    "conversation_id": conv_id, "session_id": session_id,
+                    "visitor_id": visitor_id, "device_type": device,
+                    "first_message": message,
+                })
+            except Exception:
+                pass
+        execute_db("UPDATE chat_conversations SET updated_at = NOW() WHERE id = %s RETURNING id", (conv_id,))
+        execute_db(
+            "INSERT INTO chat_messages (conversation_id, role, content) VALUES (%s, 'user', %s) RETURNING id",
+            (conv_id, message),
+        )
+        return conv_id
+    except Exception as _e:
+        print(f"[takeover] _persist_visitor_user_message failed: {_e}")
+        return None
+
+
+@app.route("/api/chat/agent-messages", methods=["GET"])
+def api_chat_agent_messages():
+    """Public, session-scoped poll for human-operator (agent_human) replies.
+
+    Task 095 §2.4 P3. The visitor widget polls this while its chat panel is open
+    so a human-takeover reply (inserted by an operator via /admin/api/conversations
+    /<id>/message) appears in the visitor's chat WITHOUT a reload — visitor chat is
+    otherwise request/response SSE with no server push channel.
+
+    Read-only and unauthenticated, keyed on the caller's OWN session_id exactly
+    like POST /api/chat (the session_id is the per-page-load bearer the visitor
+    already holds; it scopes the read to that one conversation). Returns only
+    role='agent_human' rows with id > `after`, so the client polls incrementally.
+    Fail-open: ANY error returns an empty list so a hiccup here can never break
+    the widget."""
+    session_id = (request.args.get("session_id") or "").strip()
+    if not session_id:
+        return jsonify({"messages": []})
+    # Per-IP anti-enumeration / anti-DoS guard. session_id is the read capability
+    # (an unguessable crypto.randomUUID on current clients), so this is secondary
+    # defense, not a UX throttle — a generous 120/min ceiling tolerates many
+    # same-NAT visitors polling at ~12/min while still blocking a brute-force
+    # sweep of guessed session_ids. Fail SOFT: a throttled poll returns an empty
+    # list (the widget just retries next cycle), never a 429 that breaks chat.
+    _allowed, _ = _chat_rate_check(f"agentpoll:{_client_ip()}", max_override=120)
+    if not _allowed:
+        return jsonify({"messages": []})
+    try:
+        after = int(request.args.get("after") or 0)
+    except (TypeError, ValueError):
+        after = 0
+    try:
+        conv = query_db(
+            "SELECT id FROM chat_conversations WHERE session_id = %s ORDER BY id DESC LIMIT 1",
+            (session_id,), fetchone=True,
+        )
+        if not conv:
+            return jsonify({"messages": []})
+        rows = query_db(
+            "SELECT id, content, created_at FROM chat_messages "
+            "WHERE conversation_id = %s AND role = 'agent_human' AND id > %s "
+            "ORDER BY id ASC LIMIT 50",
+            (conv["id"], after),
+        )
+        msgs = [{
+            "id": r["id"],
+            "content": r.get("content") or "",
+            "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+        } for r in (rows or [])]
+        return jsonify({"messages": msgs})
+    except Exception as _e:
+        # Fail-open (return empty), but still record for observability.
+        try:
+            capture_exc(_e, "api_chat_agent_messages")
+        except Exception:
+            pass
+        return jsonify({"messages": []})
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """
@@ -23469,6 +23598,30 @@ def api_chat():
         messages, get_ai_setting("visitor_history_token_budget"), None)
 
     def generate():
+        # ---- 095 §2.4 HUMAN-TAKEOVER GATE (fail-open) -------------------
+        # If an operator has taken this conversation over (conversation_takeover
+        # .ai_paused = TRUE), DO NOT run the LLM: record the visitor's message so
+        # it appears in the inbox, emit a tiny 'paused' + 'done' so the widget
+        # clears its typing state (the human's reply arrives via the P3 agent-
+        # messages poll, NOT an AI bubble), and return. The whole gate is wrapped
+        # in try/except and on ANY error falls through to normal AI handling — a
+        # takeover-table hiccup can never break visitor chat. The check is one
+        # indexed lookup (session_id) added to the hot path; cheap + bounded.
+        try:
+            if session_id:
+                _tk = query_db(
+                    "SELECT t.ai_paused FROM chat_conversations c "
+                    "JOIN conversation_takeover t ON t.conversation_id = c.id "
+                    "WHERE c.session_id = %s ORDER BY c.id DESC LIMIT 1",
+                    (session_id,), fetchone=True,
+                )
+                if _tk and _tk.get("ai_paused"):
+                    _persist_visitor_user_message(session_id, visitor_id, message)
+                    yield f"data: {json.dumps({'type': 'paused'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
+        except Exception as _gate_e:
+            print(f"[takeover] gate check failed, falling through to AI: {_gate_e}")
         _chat_ctx_token = None   # task 048: reset handle for the turn-context var
         try:
             # ---- Streaming tool-call loop ---------------------------------

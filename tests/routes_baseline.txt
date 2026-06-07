@@ -108,6 +108,7 @@ GET /admin/api/content/assets
 GET /admin/api/content/drafts
 GET /admin/api/content/drafts/<int:did>
 GET /admin/api/content/types
+GET /admin/api/conversations/<int:conv_id>/context
 GET /admin/api/cost/by-model
 GET /admin/api/cost/by-surface
 GET /admin/api/cost/cap
@@ -243,6 +244,7 @@ GET /admin/sso
 GET /api/blog
 GET /api/blog/<string:slug>
 GET /api/business-info
+GET /api/chat/agent-messages
 GET /api/chatbot-settings
 GET /api/custom-section/<int:section_id>/items
 GET /api/events
@@ -358,6 +360,9 @@ POST /admin/api/content/generate
 POST /admin/api/content/visual/embed
 POST /admin/api/content/visual/generate
 POST /admin/api/content/visual/stitch
+POST /admin/api/conversations/<int:conv_id>/message
+POST /admin/api/conversations/<int:conv_id>/release
+POST /admin/api/conversations/<int:conv_id>/takeover
 POST /admin/api/custom-knowledge
 POST /admin/api/custom-sections/<int:section_id>/items
 POST /admin/api/custom-sql

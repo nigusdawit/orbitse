@@ -25,6 +25,7 @@
     apiBase: "", embedKey: "", mount: null, sessionId: "", visitorId: "",
     settings: {}, gallery: [], history: [], open: false,
     els: {}, immersive: null,
+    lastAgentMsgId: 0, _agentPollTimer: null,   // 095 §2.4 P3 human-takeover poll
   };
 
   function api(p) { return (S.apiBase || "") + p; }
@@ -35,7 +36,18 @@
     if (S.embedKey) h["X-Embed-Key"] = S.embedKey;
     return h;
   }
-  function uid(p) { return p + Math.random().toString(36).slice(2) + Date.now().toString(36); }
+  function uid(p) {
+    // session_id (uid("cs_")) doubles as the read capability for the agent-reply
+    // poll, so prefer crypto-strong randomness over Math.random()+timestamp.
+    try {
+      if (global.crypto && typeof global.crypto.randomUUID === "function") return p + global.crypto.randomUUID();
+      if (global.crypto && global.crypto.getRandomValues) {
+        var a = new Uint8Array(16); global.crypto.getRandomValues(a);
+        return p + Array.prototype.map.call(a, function (b) { return ("0" + b.toString(16)).slice(-2); }).join("");
+      }
+    } catch (e) { /* fall through */ }
+    return p + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  }
   function esc(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -321,6 +333,7 @@
     text = (text || "").trim(); if (!text) return;
     addMsg("user", text);
     S.history.push({ role: "user", content: text });
+    startAgentPolling();   // 095 §2.4 P3: a conversation now exists — watch for human replies
     var bubble = addMsg("agent", "", true);
     var tokenBuf = "", displayBuf = "", pageStarted = false, inCmd = false;
     if (global.VoiceAgent) try { global.VoiceAgent.streamSpeakBegin(); } catch (e) {}
@@ -379,19 +392,56 @@
           executeCommand(ev.command);
         } else if (ev.type === "availability") {
           /* booking-slot chips land with the commerce milestone */
+        } else if (ev.type === "paused") {
+          // 095 §2.4 P3: human takeover — no AI reply will stream for this turn.
+          // Drop the empty streaming bubble; the operator's reply arrives via the
+          // agent-messages poll (already started above).
+          if (bubble && bubble.parentNode) bubble.parentNode.removeChild(bubble);
         } else if (ev.type === "error") {
           bubble.innerHTML = md(ev.content || "Something went wrong.");
         }
       }
       function finalize() {
         if (global.VoiceAgent) try { global.VoiceAgent.streamSpeakEnd(displayBuf); } catch (e) {}
-        S.history.push({ role: "assistant", content: displayBuf });
+        if (displayBuf) S.history.push({ role: "assistant", content: displayBuf });
       }
       return pump();
     }).catch(function () {
       bubble.innerHTML = md("Connection issue. Please try again.");
       if (global.VoiceAgent) try { global.VoiceAgent.streamSpeakCancel(); } catch (e) {}
     });
+  }
+
+  /* =======================================================================
+   * 095 §2.4 P3: human-takeover reply poller
+   * Embed chat is request/response SSE with NO server push, so once the visitor
+   * sends a message we poll /api/chat/agent-messages (session-scoped, public,
+   * CORS-enabled because it's under the /api/chat embeddable prefix) and render
+   * operator replies. Rendered as TEXT (addMsg(..., false) → textContent), NOT
+   * markdown: the embed has no DOMPurify, so text is the safe choice and an
+   * operator reply can never inject HTML into the host page. Fail-open.
+   * ===================================================================== */
+  function pollAgentReplies() {
+    try {
+      if (typeof document !== "undefined" && document.hidden) return;
+      if (!S.sessionId) return;
+      fetch(api("/api/chat/agent-messages?session_id=" + encodeURIComponent(S.sessionId) +
+        "&after=" + (S.lastAgentMsgId || 0)), { headers: hdrs(), mode: "cors" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (!d || !d.messages) return;
+          d.messages.forEach(function (m) {
+            addMsg("agent", m.content || "", false);   // TEXT — XSS-safe
+            S.history.push({ role: "assistant", content: m.content || "" });
+            if (m.id > (S.lastAgentMsgId || 0)) S.lastAgentMsgId = m.id;
+          });
+        }).catch(function () {});
+    } catch (e) {}
+  }
+  function startAgentPolling() {
+    if (S._agentPollTimer) return;   // idempotent
+    S._agentPollTimer = setInterval(pollAgentReplies, 5000);
+    pollAgentReplies();              // immediate first check
   }
 
   /* =======================================================================
