@@ -5634,6 +5634,9 @@ from urllib.parse import urlparse as _embed_urlparse
 _EMBEDDABLE_PREFIXES = (
     "/api/chat", "/api/chatbot-settings", "/api/voice/", "/api/forms/",
     "/api/gallery-cards", "/api/products", "/api/services", "/api/presentations/",
+    # /api/theme is a public, read-only palette/font feed. Allowing it cross-origin
+    # lets the embedded widget brand-match the site (colours + fonts) on any host.
+    "/api/theme",
 )
 
 
