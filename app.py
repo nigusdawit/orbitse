@@ -6545,7 +6545,12 @@ _SUPER_ADMIN_PROTECTED_PREFIXES = (
 
 
 def _super_admin_key():
-    return os.environ.get("SUPER_ADMIN_KEY") or ""
+    # .strip() so a stray trailing newline/space accidentally pasted into the
+    # SUPER_ADMIN_KEY secret value can't cause a permanent mismatch. The key the
+    # operator types into the unlock box is also stripped (see super_admin_unlock),
+    # so without this a copy-paste with a trailing newline would always be rejected
+    # even when the visible characters are correct.
+    return (os.environ.get("SUPER_ADMIN_KEY") or "").strip()
 
 
 def _super_admin_lock_enabled():
