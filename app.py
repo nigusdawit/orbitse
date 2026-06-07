@@ -22587,6 +22587,56 @@ def _visitor_is_research_heavy(message):
     return len(text.split()) >= 40
 
 
+def _persist_visitor_user_message(session_id, visitor_id, message):
+    """Find-or-create the visitor's conversation by session_id and persist their
+    user message. Returns conv_id (or None on any failure — fail-open).
+
+    Extracted for the human-takeover gate (task 095 §2.4): when an operator has
+    paused the AI for a conversation we still want the visitor's question recorded
+    so it shows in the inbox, but we skip the LLM + the assistant-row insert. This
+    mirrors the live persistence block's find-or-create EXACTLY (device/ua/ip
+    capture + first-message new_chat dispatch + updated_at bump) so a paused
+    conversation is indistinguishable from a normal one apart from the missing AI
+    reply. Must run inside request context (it reads request.headers) — it does,
+    since /api/chat streams its SSE generator within the request context (the live
+    persistence blocks below read request.headers the same way)."""
+    if not session_id:
+        return None
+    try:
+        ua = request.headers.get("User-Agent", "")
+        device = "mobile" if any(m in ua.lower() for m in ["mobile", "android", "iphone"]) else "desktop"
+        ip = (request.headers.get("X-Forwarded-For", request.remote_addr or "") or "").split(",")[0].strip()[:45]
+        conv = query_db(
+            "SELECT id FROM chat_conversations WHERE session_id = %s ORDER BY id DESC LIMIT 1",
+            (session_id,), fetchone=True,
+        )
+        is_new_conversation = not conv
+        if not conv:
+            conv = execute_db(
+                "INSERT INTO chat_conversations (session_id, visitor_id, visitor_ip, device_type, user_agent) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (session_id, visitor_id, ip, device, ua[:500]),
+            )
+        conv_id = conv["id"]
+        if is_new_conversation:
+            try:
+                automations.dispatch_event("new_chat", {
+                    "conversation_id": conv_id, "session_id": session_id,
+                    "visitor_id": visitor_id, "device_type": device,
+                    "first_message": message,
+                })
+            except Exception:
+                pass
+        execute_db("UPDATE chat_conversations SET updated_at = NOW() WHERE id = %s RETURNING id", (conv_id,))
+        execute_db(
+            "INSERT INTO chat_messages (conversation_id, role, content) VALUES (%s, 'user', %s) RETURNING id",
+            (conv_id, message),
+        )
+        return conv_id
+    except Exception as _e:
+        print(f"[takeover] _persist_visitor_user_message failed: {_e}")
+        return None
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """
@@ -23483,6 +23533,30 @@ def api_chat():
         messages, get_ai_setting("visitor_history_token_budget"), None)
 
     def generate():
+        # ---- 095 §2.4 HUMAN-TAKEOVER GATE (fail-open) -------------------
+        # If an operator has taken this conversation over (conversation_takeover
+        # .ai_paused = TRUE), DO NOT run the LLM: record the visitor's message so
+        # it appears in the inbox, emit a tiny 'paused' + 'done' so the widget
+        # clears its typing state (the human's reply arrives via the P3 agent-
+        # messages poll, NOT an AI bubble), and return. The whole gate is wrapped
+        # in try/except and on ANY error falls through to normal AI handling — a
+        # takeover-table hiccup can never break visitor chat. The check is one
+        # indexed lookup (session_id) added to the hot path; cheap + bounded.
+        try:
+            if session_id:
+                _tk = query_db(
+                    "SELECT t.ai_paused FROM chat_conversations c "
+                    "JOIN conversation_takeover t ON t.conversation_id = c.id "
+                    "WHERE c.session_id = %s ORDER BY c.id DESC LIMIT 1",
+                    (session_id,), fetchone=True,
+                )
+                if _tk and _tk.get("ai_paused"):
+                    _persist_visitor_user_message(session_id, visitor_id, message)
+                    yield f"data: {json.dumps({'type': 'paused'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
+        except Exception as _gate_e:
+            print(f"[takeover] gate check failed, falling through to AI: {_gate_e}")
         _chat_ctx_token = None   # task 048: reset handle for the turn-context var
         try:
             # ---- Streaming tool-call loop ---------------------------------

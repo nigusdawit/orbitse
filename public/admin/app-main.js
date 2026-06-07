@@ -2136,6 +2136,7 @@
        same /admin/api/chat-history payload (now carrying ai_paused/last_role/
        last_message_at — see reporting.admin_chat_history). */
     let _inboxActiveConv = null;     // currently-open conversation id (re-highlight on refresh)
+    let _inboxConvs = [];            // last-loaded conversation rows (for ai_paused lookup)
 
     async function loadChatHistory() {
       try {
@@ -2151,6 +2152,7 @@
         const list = document.getElementById('inbox-thread-list');
         if (!list) return;
         const convs = data.conversations || [];
+        _inboxConvs = convs;   // cache for ai_paused lookups (composer state)
 
         if (!convs.length) {
           list.innerHTML = '<div class="empty-state" style="padding:1rem;">No conversations yet. They appear here once visitors use the chatbot.</div>';
@@ -2258,6 +2260,8 @@
 
       // Right pane — visitor context (super-admin gated server-side; 403 → hide).
       loadConversationContext(convId);
+      // Show + sync the human-takeover composer for this conversation.
+      _inboxSyncComposer();
     }
 
     // Back-compat alias: anything still calling viewConversation(id) keeps working.
@@ -2300,6 +2304,82 @@
         el.innerHTML = html;
       } catch (e) {
         el.innerHTML = '<div class="gxi-ctx-muted" style="padding:.5rem;">Context unavailable.</div>';
+      }
+    }
+
+    /* ---- 095 §2.4 P2: human takeover composer ----------------------------
+       The composer (Pause AI / Send as human) is shown whenever a conversation
+       is open. "Pause AI" toggles conversation_takeover.ai_paused via the
+       super-admin takeover/release routes; "Send as human" posts an agent_human
+       message (which also pauses the AI server-side). All POSTs go to /admin/*,
+       so csrf.js auto-injects the X-CSRF-Token header. */
+    function _inboxSyncComposer() {
+      const composer = document.getElementById('inbox-composer');
+      const pauseBtn = document.getElementById('inbox-pause-btn');
+      if (composer) composer.style.display = (_inboxActiveConv != null) ? '' : 'none';
+      if (pauseBtn) {
+        const conv = _inboxConvs.find(c => c.id === _inboxActiveConv);
+        const paused = !!(conv && conv.ai_paused);
+        pauseBtn.textContent = paused ? 'Resume AI' : 'Pause AI';
+      }
+    }
+
+    async function inboxTogglePause() {
+      if (_inboxActiveConv == null) return;
+      const conv = _inboxConvs.find(c => c.id === _inboxActiveConv);
+      const paused = !!(conv && conv.ai_paused);
+      const action = paused ? 'release' : 'takeover';   // flip
+      try {
+        const res = await fetch(`/admin/api/conversations/${_inboxActiveConv}/${action}`, {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        if (!res.ok) { showToast(paused ? 'Could not resume AI' : 'Could not pause AI', 'error'); return; }
+        const d = await res.json();
+        if (conv) conv.ai_paused = !!d.ai_paused;
+        _inboxSyncComposer();
+        showToast(d.ai_paused ? 'AI paused — you are handling this chat' : 'AI resumed', 'success');
+        loadChatHistory();   // refresh thread chips/markers
+      } catch (e) {
+        showToast('Action failed', 'error');
+      }
+    }
+
+    async function inboxSendHuman() {
+      if (_inboxActiveConv == null) return;
+      const ta = document.getElementById('inbox-compose-text');
+      const content = ((ta && ta.value) || '').trim();
+      if (!content) return;
+      const btn = document.getElementById('inbox-send-btn');
+      if (btn) btn.disabled = true;
+      try {
+        const res = await fetch(`/admin/api/conversations/${_inboxActiveConv}/message`, {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content }),
+        });
+        if (!res.ok) { showToast('Could not send reply', 'error'); return; }
+        const d = await res.json();
+        if (ta) ta.value = '';
+        // Sending implies takeover server-side; reflect it locally.
+        const conv = _inboxConvs.find(c => c.id === _inboxActiveConv);
+        if (conv) conv.ai_paused = true;
+        // Optimistically append the human bubble (textContent — never HTML).
+        const tEl = document.getElementById('inbox-transcript');
+        if (tEl) {
+          const div = document.createElement('div');
+          div.className = 'gxi-msg gxi-msg-human';
+          div.innerHTML = '<div class="gxi-msg-role">Human</div><div class="gxi-msg-body"></div>';
+          div.querySelector('.gxi-msg-body').textContent = content;
+          tEl.appendChild(div);
+          tEl.scrollTop = tEl.scrollHeight;
+        }
+        _inboxSyncComposer();
+        loadChatHistory();   // refresh thread chips/markers
+      } catch (e) {
+        showToast('Send failed', 'error');
+      } finally {
+        if (btn) btn.disabled = false;
       }
     }
 

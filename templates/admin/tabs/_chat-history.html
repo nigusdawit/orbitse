@@ -40,8 +40,8 @@
         <div class="gxi-composer" id="inbox-composer" style="display:none;">
           <textarea id="inbox-compose-text" rows="2" placeholder="Reply as a human…" data-testid="input-human-reply"></textarea>
           <div class="gxi-composer-actions">
-            <button class="btn-secondary gxi-pause-btn" id="inbox-pause-btn" type="button" data-testid="button-pause-ai">Pause AI</button>
-            <button class="btn gxi-send-btn" id="inbox-send-btn" type="button" data-testid="button-send-human">Send as human</button>
+            <button class="btn-secondary gxi-pause-btn" id="inbox-pause-btn" type="button" onclick="inboxTogglePause()" data-testid="button-pause-ai">Pause AI</button>
+            <button class="btn gxi-send-btn" id="inbox-send-btn" type="button" onclick="inboxSendHuman()" data-testid="button-send-human">Send as human</button>
           </div>
         </div>
       </div>

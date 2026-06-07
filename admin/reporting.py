@@ -17,14 +17,16 @@ Imports come from core (never app - that would be circular).
 """
 import json
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, session
 
 from core import (
     query_db,
+    execute_db,
     admin_required,
     _require_super_admin_role,
     current_tenant_id,
     _vp_as_list,
+    capture_exc,
 )
 
 reporting_bp = Blueprint("reporting", __name__)
@@ -151,6 +153,106 @@ def admin_conversation_context(conv_id):
         lead = None
 
     return jsonify({"ok": True, "visitor_id": vid, "profile": profile, "source": source, "lead": lead})
+
+
+# ---- 095 §2.4 human takeover (super-admin only; MUTATING) -------------------
+# Pausing the AI for a conversation is stored in conversation_takeover. The live
+# /api/chat SSE generator reads ai_paused at the top of generate() and, if set,
+# records the visitor's message + skips the LLM (see app._persist_visitor_user_message
+# + the gate in api_chat). Releasing flips ai_paused back to FALSE so the AI resumes.
+
+def _takeover_upsert(conv_id, ai_paused, who):
+    """Upsert the conversation_takeover row. Sets ai_paused + bookkeeping stamps:
+    taken_over_at is set once (kept on re-takeover), released_at is stamped when
+    ai_paused goes FALSE and cleared when it goes TRUE. Raises on DB error so the
+    caller's try/except can capture + 500."""
+    execute_db(
+        "INSERT INTO conversation_takeover "
+        "  (conversation_id, ai_paused, taken_over_by, taken_over_at, released_at, updated_at) "
+        "VALUES (%s, %s, %s, CASE WHEN %s THEN NOW() END, CASE WHEN %s THEN NULL ELSE NOW() END, NOW()) "
+        "ON CONFLICT (conversation_id) DO UPDATE SET "
+        "  ai_paused      = EXCLUDED.ai_paused, "
+        "  taken_over_by  = EXCLUDED.taken_over_by, "
+        "  taken_over_at  = COALESCE(conversation_takeover.taken_over_at, EXCLUDED.taken_over_at), "
+        "  released_at    = CASE WHEN EXCLUDED.ai_paused THEN NULL ELSE NOW() END, "
+        "  updated_at     = NOW()",
+        (conv_id, bool(ai_paused), who, bool(ai_paused), bool(ai_paused)),
+    )
+
+
+@reporting_bp.route("/admin/api/conversations/<int:conv_id>/takeover", methods=["POST"])
+@admin_required
+def admin_conversation_takeover(conv_id):
+    """Pause the AI for a conversation (human takeover). Super-admin only."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    conv = query_db("SELECT id FROM chat_conversations WHERE id=%s", (conv_id,), fetchone=True)
+    if not conv:
+        return jsonify({"error": "Conversation not found"}), 404
+    try:
+        _takeover_upsert(conv_id, True, session.get("admin_role", "admin"))
+    except Exception as e:
+        capture_exc(e, "admin_conversation_takeover")
+        return jsonify({"error": "takeover_failed"}), 500
+    return jsonify({"ok": True, "ai_paused": True})
+
+
+@reporting_bp.route("/admin/api/conversations/<int:conv_id>/release", methods=["POST"])
+@admin_required
+def admin_conversation_release(conv_id):
+    """Resume the AI for a conversation (release the human takeover). Super-admin only."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    conv = query_db("SELECT id FROM chat_conversations WHERE id=%s", (conv_id,), fetchone=True)
+    if not conv:
+        return jsonify({"error": "Conversation not found"}), 404
+    try:
+        _takeover_upsert(conv_id, False, session.get("admin_role", "admin"))
+    except Exception as e:
+        capture_exc(e, "admin_conversation_release")
+        return jsonify({"error": "release_failed"}), 500
+    return jsonify({"ok": True, "ai_paused": False})
+
+
+@reporting_bp.route("/admin/api/conversations/<int:conv_id>/message", methods=["POST"])
+@admin_required
+def admin_conversation_message(conv_id):
+    """Send a human reply into a conversation. Inserts a chat_messages row with
+    role='agent_human' and, as a side effect, PAUSES the AI (a human is now
+    handling the thread, so the AI must not also reply). The visitor receives it
+    via the public agent-messages poll (P3). Super-admin only.
+
+    SECURITY: the content is operator-authored but is treated as untrusted on the
+    way OUT to the visitor — the public widget renders agent_human messages as
+    TEXT (textContent), never HTML, so an operator can't inject script into a
+    visitor's page. We also bound the length."""
+    guard = _require_super_admin_role()
+    if guard:
+        return guard
+    conv = query_db("SELECT id FROM chat_conversations WHERE id=%s", (conv_id,), fetchone=True)
+    if not conv:
+        return jsonify({"error": "Conversation not found"}), 404
+    data = request.get_json(silent=True) or {}
+    content = (data.get("content") or "").strip()
+    if not content:
+        return jsonify({"error": "empty"}), 400
+    content = content[:8000]   # bound — chat_messages.content is TEXT but keep it sane
+    try:
+        # Sending implies takeover: pause the AI so it won't also answer this turn.
+        _takeover_upsert(conv_id, True, session.get("admin_role", "admin"))
+        row = execute_db(
+            "INSERT INTO chat_messages (conversation_id, role, content) "
+            "VALUES (%s, 'agent_human', %s) RETURNING id",
+            (conv_id, content),
+        )
+        execute_db("UPDATE chat_conversations SET updated_at = NOW() WHERE id = %s RETURNING id", (conv_id,))
+    except Exception as e:
+        capture_exc(e, "admin_conversation_message")
+        return jsonify({"error": "send_failed"}), 500
+    msg_id = row.get("id") if isinstance(row, dict) else None
+    return jsonify({"ok": True, "id": msg_id, "ai_paused": True})
 
 
 # ---- analytics (pageview aggregates + daily chart), verbatim from app.py ----
