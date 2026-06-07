@@ -6260,7 +6260,7 @@ async function chatSendStreaming(message, wasCollapsed) {
        A persistent visitor ID is stored in localStorage so the admin
        can still track returning visitors across sessions. */
     if (!window._chatSessionId) {
-      window._chatSessionId = 'cs_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+      window._chatSessionId = chatGenSessionId();
     }
     if (!localStorage.getItem('chat_visitor_id')) {
       localStorage.setItem('chat_visitor_id', 'cv_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10));
@@ -6944,7 +6944,33 @@ function chatAddMessage(role, text) {
    read-only, public) while the page is open and render new replies as agent
    bubbles via the existing chatAddMessage path (which DOMPurify-sanitizes).
    Fail-open: any error is swallowed so a hiccup can never break the widget. */
+/* Unguessable session id. session_id doubles as the READ CAPABILITY for the
+   agent-reply poll (/api/chat/agent-messages is keyed on it), so it must be
+   cryptographically random — not Math.random()+timestamp, which is guessable.
+   Falls back for ancient browsers. Function declaration → hoisted, so the
+   earlier mint sites resolve it. */
+function chatGenSessionId() {
+  try {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+      return 'cs_' + window.crypto.randomUUID();
+    }
+    if (window.crypto && window.crypto.getRandomValues) {
+      const a = new Uint8Array(16); window.crypto.getRandomValues(a);
+      return 'cs_' + Array.from(a, b => ('0' + b.toString(16)).slice(-2)).join('');
+    }
+  } catch (e) { /* fall through */ }
+  return 'cs_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+}
+
+/* Cursor for the agent-reply poll. Persisted in sessionStorage so a page reload
+   during/after a takeover resumes from the last-seen id instead of re-fetching
+   (and re-rendering) operator replies that chatHistory already restored. */
 window._chatLastAgentMsgId = window._chatLastAgentMsgId || 0;
+try {
+  if (!window._chatLastAgentMsgId) {
+    window._chatLastAgentMsgId = parseInt(sessionStorage.getItem('_chatLastAgentMsgId') || '0', 10) || 0;
+  }
+} catch (e) { /* sessionStorage may be blocked — fail-open */ }
 let _agentReplyPollTimer = null;
 
 async function _pollAgentReplyOnce() {
@@ -6967,7 +6993,10 @@ async function _pollAgentReplyOnce() {
           if (typeof persistChatHistory === 'function') persistChatHistory();
         }
       } catch (_) {}
-      if (m.id > (window._chatLastAgentMsgId || 0)) window._chatLastAgentMsgId = m.id;
+      if (m.id > (window._chatLastAgentMsgId || 0)) {
+        window._chatLastAgentMsgId = m.id;
+        try { sessionStorage.setItem('_chatLastAgentMsgId', String(m.id)); } catch (e) {}
+      }
     }
   } catch (_) { /* fail-open */ }
 }
@@ -10301,7 +10330,7 @@ function syncSplitToChat() {
 (function initVisitorTracking() {
   /* Ensure session and visitor IDs exist (same ones the chat uses) */
   if (!window._chatSessionId) {
-    window._chatSessionId = 'cs_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+    window._chatSessionId = chatGenSessionId();
   }
   if (!localStorage.getItem('chat_visitor_id')) {
     localStorage.setItem('chat_visitor_id', 'cv_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10));

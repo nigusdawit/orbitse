@@ -36,7 +36,18 @@
     if (S.embedKey) h["X-Embed-Key"] = S.embedKey;
     return h;
   }
-  function uid(p) { return p + Math.random().toString(36).slice(2) + Date.now().toString(36); }
+  function uid(p) {
+    // session_id (uid("cs_")) doubles as the read capability for the agent-reply
+    // poll, so prefer crypto-strong randomness over Math.random()+timestamp.
+    try {
+      if (global.crypto && typeof global.crypto.randomUUID === "function") return p + global.crypto.randomUUID();
+      if (global.crypto && global.crypto.getRandomValues) {
+        var a = new Uint8Array(16); global.crypto.getRandomValues(a);
+        return p + Array.prototype.map.call(a, function (b) { return ("0" + b.toString(16)).slice(-2); }).join("");
+      }
+    } catch (e) { /* fall through */ }
+    return p + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  }
   function esc(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")

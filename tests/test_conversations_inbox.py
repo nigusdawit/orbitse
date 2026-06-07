@@ -180,3 +180,27 @@ def test_agent_messages_poll_endpoint():
         assert c.get("/api/chat/agent-messages").get_json()["messages"] == []
     finally:
         app.execute_db("DELETE FROM chat_conversations WHERE id=%s", (cid,))
+
+
+def test_agent_messages_poll_rate_limited():
+    """Anti-enumeration defense: the poll endpoint has a generous per-IP ceiling
+    (120/min). Past it, it fails SOFT (empty list) — never a 429 that would break
+    the widget. We prove a hot loop eventually stops returning the real reply."""
+    sess = "ci-sess-rl"
+    conv = app.execute_db("INSERT INTO chat_conversations (session_id, visitor_id) VALUES (%s,%s) RETURNING id",
+                          (sess, "ci-vid-rl"))
+    cid = conv["id"]
+    app.execute_db("INSERT INTO chat_messages (conversation_id, role, content) "
+                   "VALUES (%s,'agent_human','reply') RETURNING id", (cid,))
+    c = app.app.test_client()
+    try:
+        throttled = False
+        for _ in range(140):
+            r = c.get("/api/chat/agent-messages?session_id=%s" % sess)
+            assert r.status_code == 200          # never a 429 — always fail-soft
+            if r.get_json()["messages"] == []:   # the real reply stopped coming → throttled
+                throttled = True
+                break
+        assert throttled, "expected the poll endpoint to throttle to empty past its per-IP ceiling"
+    finally:
+        app.execute_db("DELETE FROM chat_conversations WHERE id=%s", (cid,))

@@ -720,18 +720,24 @@ def _audit_super_admin(action, outcome, reason=None):
                 pass
 
 
-def _chat_rate_check(key, throttled=False):
+def _chat_rate_check(key, throttled=False, max_override=None):
     """Return (allowed: bool, retry_after_sec: int).
 
     When `throttled=True` (request-scoped flag set by enforce_cost_cap
     on tenants in 'throttle' cap mode), the per-window budget drops to
     a much tighter 5/min so a tenant that's already over their monthly
     cap can't keep burning chat tokens at 30/min while we wait for the
-    next billing period."""
+    next billing period.
+
+    `max_override` (optional) sets a custom per-window ceiling for THIS key,
+    used by lighter-weight pollers that legitimately call more often than the
+    30/min chat budget (e.g. the human-takeover reply poll at ~12/min/visitor) —
+    a generous ceiling there is purely an anti-enumeration / anti-DoS guard, not
+    a UX throttle. Ignored when `throttled` is set (the cap-mode floor wins)."""
     now = _time.time()
     cutoff = now - _CHAT_RATE_WINDOW_SEC
     bucket = [t for t in _CHAT_RATE.get(key, []) if t > cutoff]
-    max_req = 5 if throttled else _CHAT_RATE_MAX
+    max_req = 5 if throttled else (max_override if max_override is not None else _CHAT_RATE_MAX)
     if len(bucket) >= max_req:
         retry_after = int(_CHAT_RATE_WINDOW_SEC - (now - bucket[0])) + 1
         _CHAT_RATE[key] = bucket
@@ -22654,6 +22660,15 @@ def api_chat_agent_messages():
     the widget."""
     session_id = (request.args.get("session_id") or "").strip()
     if not session_id:
+        return jsonify({"messages": []})
+    # Per-IP anti-enumeration / anti-DoS guard. session_id is the read capability
+    # (an unguessable crypto.randomUUID on current clients), so this is secondary
+    # defense, not a UX throttle — a generous 120/min ceiling tolerates many
+    # same-NAT visitors polling at ~12/min while still blocking a brute-force
+    # sweep of guessed session_ids. Fail SOFT: a throttled poll returns an empty
+    # list (the widget just retries next cycle), never a 429 that breaks chat.
+    _allowed, _ = _chat_rate_check(f"agentpoll:{_client_ip()}", max_override=120)
+    if not _allowed:
         return jsonify({"messages": []})
     try:
         after = int(request.args.get("after") or 0)

@@ -2233,6 +2233,7 @@
       try {
         const res = await fetch(`/admin/api/chat-history/${convId}`, { credentials: 'same-origin' });
         const data = await res.json();
+        if (_inboxActiveConv !== convId) return;   // a newer conversation was opened mid-fetch — drop stale paint
         const conv = data.conversation || {};
         if (headEl) {
           headEl.textContent = (conv.started_at ? new Date(conv.started_at).toLocaleString() : 'Conversation')
@@ -2276,6 +2277,7 @@
       el.innerHTML = '<div class="gxi-ctx-muted" style="padding:.5rem;">Loading context…</div>';
       try {
         const res = await fetch(`/admin/api/conversations/${convId}/context`, { credentials: 'same-origin' });
+        if (_inboxActiveConv !== convId) return;   // stale — a newer conversation was opened mid-fetch
         if (res.status === 403) {
           el.innerHTML = '<div class="gxi-ctx-muted" style="padding:.5rem;">Visitor context is super-admin only.</div>';
           return;
