@@ -3081,6 +3081,33 @@ def compute_mtd_spend(tenant_id=None):
     return out
 
 
+def compute_today_spend(tenant_id=None):
+    """Sum the three cost ledgers for TODAY (created_at >= midnight, server tz).
+    Mirrors compute_mtd_spend but day-scoped; backs the AI Control daily spend
+    cap (task 096). Returns chat_usd/voice_usd/sms_usd/total_usd (floats, never
+    None); fail-open to zeros so a query hiccup can never block a request."""
+    tid = tenant_id if tenant_id is not None else current_tenant_id()
+    out = {"chat_usd": 0.0, "voice_usd": 0.0, "sms_usd": 0.0, "total_usd": 0.0}
+    try:
+        a = query_db(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS s FROM api_cost_events "
+            "WHERE tenant_id = %s AND created_at >= CURRENT_DATE", (tid,), fetchone=True)
+        v = query_db(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS s FROM voice_cost_events "
+            "WHERE tenant_id = %s AND created_at >= CURRENT_DATE", (tid,), fetchone=True)
+        s = query_db(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS s FROM sms_cost_events "
+            "WHERE tenant_id = %s AND created_at >= CURRENT_DATE", (tid,), fetchone=True)
+        out["chat_usd"] = _to_float((a or {}).get("s"))
+        out["voice_usd"] = _to_float((v or {}).get("s"))
+        out["sms_usd"] = _to_float((s or {}).get("s"))
+        out["total_usd"] = out["chat_usd"] + out["voice_usd"] + out["sms_usd"]
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        print(f"[cost] compute_today_spend failed: {e}")
+    return out
+
+
 def get_tenant_cost_cap(tenant_id=None):
     """Read the tenant_cost_caps row, returning a dict with sane defaults
     if no row exists yet (e.g. fresh tenant before init_db re-runs)."""
@@ -3267,6 +3294,21 @@ def _ai_control_registry():
          "group": "Safety", "label": "Redact secrets in activity/logs",
          "env": "ADMIN_REDACT_ENABLED",
          "description": "Mask emails/keys/phones in the observability log + stored activity. Log-only; safe to leave on."},
+        # Safety / profanity filter (task 096) — softens the VISITOR concierge's
+        # replies at the source (system-prompt steer), so it covers the live
+        # token stream. Inert-OFF under the master kill-switch.
+        {"key": "safety_filter_enabled", "attr": "safety_filter_enabled", "type": "bool",
+         "group": "Safety", "label": "Safety / profanity filter",
+         "env": "SAFETY_FILTER_ENABLED",
+         "description": "Keep the visitor concierge professional and family-friendly: instruct it to avoid "
+                        "profanity/slurs and soften harsh language. Source-side, so it covers the live reply stream."},
+        # Cost guardrail (task 096) — a hard DAILY spend cap that pauses ALL AI.
+        # Amount-only (0 = off); independent of the cost_dashboard feature.
+        {"key": "daily_spend_cap_usd", "attr": "daily_spend_cap_usd", "type": "float",
+         "group": "Cost", "label": "Daily spend cap (USD · 0 = off)",
+         "env": "DAILY_SPEND_CAP_USD",
+         "description": "Pause ALL AI for the rest of the day once today's total spend (chat + voice + SMS) "
+                        "reaches this many dollars. 0 disables. Raise or clear it here to resume immediately."},
         # Speed / Routing (Phase 6 / task 040) — route short, simple turns to a
         # cheaper/faster model. Applies to BOTH admin + visitor chat. Off = every
         # turn uses its configured default model (no change).
@@ -3595,6 +3637,7 @@ _AI_INERT = {
     "fallback_model": "", "rate_limit_enabled": False,
     "history_token_budget": 0, "history_summarize_enabled": False,
     "respcache_enabled": False, "sqlguard_enabled": False,
+    "safety_filter_enabled": False,  # task 096: filter off under master kill-switch
     "redact_enabled": False, "activity_logging_enabled": False,
     "model_routing_enabled": False, "prompt_cache_enabled": False,
     "visitor_profiles_enabled": False, "newsletter_signup_enabled": False,
