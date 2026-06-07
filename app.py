@@ -898,7 +898,7 @@ from core import (  # noqa: E402 - re-export the DB layer that now lives in core
     _PRICE_CACHE, _PRICE_CACHE_EXP, _PRICE_CACHE_TTL_SEC,  # model_prices TTL cache (parity)
     _invalidate_price_cache, get_model_price,  # price-cache invalidator + lookup
     _current_period, _to_float,                # month-bucket helper + float coercer
-    compute_mtd_spend, get_tenant_cost_cap,    # MTD spend summer + cost-cap reader
+    compute_mtd_spend, compute_today_spend, get_tenant_cost_cap,  # MTD + today spend summers + cost-cap reader
     # --- slug normaliser (Track B / task 078, piece #3): canonical _slugify ---
     _slugify,                                  # products/pages/presentations slug generator
     _product_row_to_dict,                      # product row serializer (public + admin product routes)
@@ -4664,6 +4664,28 @@ def _compose_scope_paragraph():
     )
 
 
+def _compose_safety_paragraph():
+    """Return a system-prompt paragraph that keeps the visitor concierge
+    professional + family-friendly (task 096, gap §3.4). Returns "" when the
+    safety_filter_enabled AI Control knob is off (default) → the prompt is
+    unchanged. Appended (not prepended) as a final reminder. Source-side softening
+    is deliberate: the visitor streams reply tokens live, so a post-hoc text
+    filter would mismatch what was already shown — steering the model covers the
+    live stream + the persisted/cached copies. Fail-open (never raises)."""
+    try:
+        if not get_ai_setting("safety_filter_enabled"):
+            return ""
+    except Exception:
+        return ""
+    return (
+        "\n\nSAFETY & TONE: Keep every reply professional, warm, and family-friendly. "
+        "Do not use profanity, slurs, or crude or demeaning language, and do not echo such "
+        "language back even if the visitor uses it. If a reply would otherwise be harsh or "
+        "blunt, rephrase it politely. Never produce hateful, harassing, sexual, or violent "
+        "content; if asked for it, decline briefly and steer back to how you can help.\n"
+    )
+
+
 # set_tenant_feature moved to core.py (Track B, FEATURE-FLAG SUBSYSTEM);
 # re-exported via the `from core import` block above.
 
@@ -4917,6 +4939,21 @@ def enforce_cost_cap(surface="chat"):
                          so chat falls back to a tighter rate limit and
                          TTS falls back to the cheaper OpenAI provider
       * 'strict_block' — 402 when over cap (payment required)"""
+    # task 096 — hard DAILY spend cap (AI Control knob), checked FIRST and
+    # independently of the cost_dashboard feature + the monthly cap below. 0 = off
+    # → we skip the spend query entirely (zero overhead when unset, the default).
+    # Fail-OPEN: any error proceeds (a glitch must never block a paying request).
+    try:
+        _daily_cap = float(get_ai_setting("daily_spend_cap_usd") or 0)
+        if _daily_cap > 0:
+            _today = compute_today_spend().get("total_usd", 0.0)
+            if _today >= _daily_cap:
+                return jsonify({"error": "cap_reached", "scope": "daily",
+                                "message": "The AI is paused for today (daily spend cap reached). "
+                                           "Raise or clear the cap in Admin → AI Control.",
+                                "spent": round(_today, 4), "cap": _daily_cap}), 402
+    except Exception as _e:
+        capture_exc(_e, "enforce_cost_cap.daily")
     if not tenant_has_feature("cost_dashboard"):
         return None
     cap_row = get_tenant_cost_cap()
@@ -22810,6 +22847,13 @@ def api_chat():
         active_prompt = (active_prompt or "") + _compose_scope_paragraph()
     except Exception as _e:
         print(f"[scope] failed to compose paragraph: {_e}")
+
+    # task 096 — optional safety/profanity softening (AI Control knob). Returns
+    # "" when off, so unaffected tenants get the prompt unchanged. Fail-open.
+    try:
+        active_prompt = (active_prompt or "") + _compose_safety_paragraph()
+    except Exception as _e:
+        print(f"[safety] failed to compose paragraph: {_e}")
 
     # ----- THEME INJECTION -----
     # Build the theme string from defaults + any admin overrides

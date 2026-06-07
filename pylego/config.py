@@ -249,6 +249,17 @@ class PylegoConfig:
     structured_enabled: bool
     redact_enabled: bool
 
+    # ---- AI guardrails (task 096) -------------------------------------------
+    # daily_spend_cap_usd: pause ALL AI when today's total cost (chat+voice+sms)
+    # reaches this many USD. 0.0 = disabled (default) → no cap, no extra spend
+    # query. Amount-only — NOT in core._AI_INERT; falls back to 0.0 under the
+    # master kill-switch (same pattern as rate_limit_max).
+    daily_spend_cap_usd: float
+    # safety_filter_enabled: when ON, append a softening instruction to the
+    # visitor concierge's system prompt (professional/family-friendly, no
+    # profanity). Inert-OFF under the master kill-switch.
+    safety_filter_enabled: bool
+
     @property
     def langfuse_active(self) -> bool:
         """True only when obs is on AND real Langfuse keys are present."""
@@ -355,6 +366,9 @@ def _build() -> PylegoConfig:
         sqlguard_enabled=_env_bool("ADMIN_SQLGUARD_ENABLED", False),
         structured_enabled=_env_bool("ADMIN_STRUCTURED_ARGS_ENABLED", False),
         redact_enabled=_env_bool("ADMIN_REDACT_ENABLED", True),  # log-only → safe default-on
+        # AI guardrails — wired in 096. Inert at default (no cap, filter off).
+        daily_spend_cap_usd=_env_float("DAILY_SPEND_CAP_USD", 0.0),
+        safety_filter_enabled=_env_bool("SAFETY_FILTER_ENABLED", False),
     )
 
 
