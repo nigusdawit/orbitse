@@ -108,6 +108,7 @@ GET /admin/api/content/assets
 GET /admin/api/content/drafts
 GET /admin/api/content/drafts/<int:did>
 GET /admin/api/content/types
+GET /admin/api/conversations/<int:conv_id>/context
 GET /admin/api/cost/by-model
 GET /admin/api/cost/by-surface
 GET /admin/api/cost/cap

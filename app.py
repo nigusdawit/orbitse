@@ -1423,6 +1423,20 @@ def init_db():
                 );
                 CREATE INDEX IF NOT EXISTS idx_chat_msg_conv ON chat_messages (conversation_id);
 
+                -- Conversation takeover / AI-pause state (task 095, gap §2.4). One row
+                -- per conversation a human took over; NO row = normal AI mode. Kept off
+                -- chat_conversations (the hot per-turn write path). Also in migration 0035.
+                CREATE TABLE IF NOT EXISTS conversation_takeover (
+                    conversation_id INTEGER PRIMARY KEY REFERENCES chat_conversations(id) ON DELETE CASCADE,
+                    tenant_id       INTEGER NOT NULL DEFAULT 1,
+                    ai_paused       BOOLEAN NOT NULL DEFAULT FALSE,
+                    taken_over_by   TEXT NOT NULL DEFAULT '',
+                    taken_over_at   TIMESTAMP,
+                    released_at     TIMESTAMP,
+                    updated_at      TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS conversation_takeover_active_idx ON conversation_takeover (tenant_id, ai_paused);
+
                 -- Uploaded images
                 CREATE TABLE IF NOT EXISTS uploaded_images (
                     id            SERIAL PRIMARY KEY,
