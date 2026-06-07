@@ -67,6 +67,7 @@ GET /
 GET /<path:filename>
 GET /<section_slug>
 GET /admin
+GET /admin/api/activity-feed
 GET /admin/api/admin-ai/<entity>
 GET /admin/api/admin-ai/personas
 GET /admin/api/ai-activity
@@ -167,6 +168,8 @@ GET /admin/api/onboarding/snapshot
 GET /admin/api/onboarding/snapshot/summary
 GET /admin/api/orders
 GET /admin/api/orders/<int:oid>
+GET /admin/api/overview/attention
+GET /admin/api/overview/revenue-by-source
 GET /admin/api/overview/stats
 GET /admin/api/page-sections
 GET /admin/api/pages

@@ -8569,6 +8569,9 @@
       // of the main overview stats so a 500 on either doesn't break
       // the other.
       _loadOverviewSecretsBanner();
+      renderOverviewAttention();   // 094 §1.1 — needs-attention widget (parallel, fail-open)
+      loadActivityFeed('overview'); // 094 §1.2 — recent-activity feed (parallel, fail-open)
+      loadOverviewRevenue();        // 094 §1.3 — revenue by source (parallel, fail-open)
       try {
         const res = await fetch('/admin/api/overview/stats', { credentials: 'same-origin' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -8650,20 +8653,22 @@
       // append commerce + AI cards when there's any activity to report,
       // so a brand-new install with zero orders doesn't get cluttered
       // with five "0" cards.
+      // 094 P0 — the mock's headline set surfaced as DEFAULT cards: Conversations·today,
+      // New leads·7d, Avg lead score, Bookings·7d (+ the two foundational cards).
       const cards = [
         { label: 'Visitors today',      value: _fmtNumber(d.visitors_today),  sub: _fmtNumber(d.visitors_week) + ' this week' },
         { label: 'Page views today',    value: _fmtNumber(d.pageviews_today), sub: '' },
-        { label: 'New leads today',     value: _fmtNumber(d.leads_today),     sub: _fmtNumber(d.leads_week) + ' this week' },
-        { label: 'Chat sessions today', value: _fmtNumber(d.chats_today),     sub: _fmtNumber(d.chats_week) + ' this week' },
+        { label: 'Conversations today', value: _fmtNumber(d.chats_today),     sub: _fmtNumber(d.chats_week) + ' this week' },
+        { label: 'New leads · 7d',      value: _fmtNumber(d.leads_week),      sub: _fmtNumber(d.leads_today) + ' today' },
+        { label: 'Avg lead score',      value: _fmtNumber(d.avg_lead_score),  sub: 'across profiled visitors' },
+        { label: 'Bookings · 7d',       value: _fmtNumber(d.bookings_week),   sub: _fmtNumber(d.bookings_today) + ' today' },
       ];
+      // Conditional commerce/AI cards — only when there's activity, to avoid 0-clutter.
       if ((d.skill_calls_week || 0) > 0 || (d.skill_calls_today || 0) > 0) {
         cards.push({ label: 'Skill calls today', value: _fmtNumber(d.skill_calls_today), sub: _fmtNumber(d.skill_calls_week) + ' this week' });
       }
       if ((d.orders_week || 0) > 0 || (d.orders_today || 0) > 0) {
         cards.push({ label: 'Orders today', value: _fmtNumber(d.orders_today), sub: _fmtNumber(d.orders_week) + ' this week' });
-      }
-      if ((d.bookings_week || 0) > 0 || (d.bookings_today || 0) > 0) {
-        cards.push({ label: 'Bookings today', value: _fmtNumber(d.bookings_today), sub: _fmtNumber(d.bookings_week) + ' this week' });
       }
       if ((d.revenue_week || 0) > 0 || (d.revenue_today || 0) > 0) {
         cards.push({ label: 'Revenue today', value: _fmtMoney(d.revenue_today), sub: _fmtMoney(d.revenue_week) + ' this week' });
@@ -8675,6 +8680,110 @@
           <div class="kpi-sub">${escapeHTML(c.sub)}</div>
         </div>
       `).join('');
+    }
+
+    // 094 §1.1 — Needs-attention widget. Renders /admin/api/overview/attention items
+    // as deep-linkable rows; empty list → stay hidden (a quiet command center is good);
+    // fail-open → hidden on error (mirrors the secrets banner). All text via escapeHTML;
+    // the CTA's tab/loader are server-fixed enums (not user input).
+    async function renderOverviewAttention() {
+      const el = document.getElementById('overview-attention');
+      if (!el) return;
+      try {
+        const res = await fetch('/admin/api/overview/attention', { credentials: 'same-origin' });
+        const data = await res.json().catch(() => ({}));
+        const items = (data && Array.isArray(data.items)) ? data.items : [];
+        if (!items.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+        const rows = items.map(function (it) {
+          const sev = (it.severity === 'critical' || it.severity === 'warn' || it.severity === 'info') ? it.severity : 'info';
+          return '<div class="ov-attn-row" data-testid="attn-' + escapeHTML(String(it.kind || '')) + '">' +
+            '<span class="ov-attn-dot ' + sev + '"></span>' +
+            '<div class="ov-attn-text"><div class="ov-attn-title">' + escapeHTML(String(it.title || '')) + '</div>' +
+            '<div class="ov-attn-detail">' + escapeHTML(String(it.detail || '')) + '</div></div>' +
+            '<button class="btn-secondary ov-attn-cta" data-tab="' + escapeHTML(String(it.tab || '')) + '" data-loader="' + escapeHTML(String(it.loader || '')) + '">Review &rarr;</button>' +
+            '</div>';
+        }).join('');
+        el.innerHTML = '<div class="ov-attn-head">Needs attention</div>' + rows;
+        el.style.display = '';
+        Array.prototype.slice.call(el.querySelectorAll('.ov-attn-cta')).forEach(function (b) {
+          b.addEventListener('click', function () {
+            try {
+              var tab = b.getAttribute('data-tab'), loader = b.getAttribute('data-loader');
+              var btn = document.querySelector('[data-testid="tab-' + tab + '"]');
+              if (window.switchTab) switchTab(tab, btn);
+              if (loader && window[loader]) window[loader]();
+            } catch (e) {}
+          });
+        });
+      } catch (e) {
+        el.style.display = 'none';
+      }
+    }
+
+    // 094 §1.2 — cross-module activity feed. scope==='overview' → compact (8) into
+    // #overview-activity-feed; otherwise the full list into #activity-feed-full.
+    // Fail-open (error/403 → empty state). Rows deep-link to the owning tab. Text escaped.
+    async function loadActivityFeed(scope) {
+      const overview = (scope === 'overview');
+      const el = document.getElementById(overview ? 'overview-activity-feed' : 'activity-feed-full');
+      if (!el) return;
+      const limit = overview ? 8 : 60;
+      try {
+        const res = await fetch('/admin/api/activity-feed?limit=' + limit, { credentials: 'same-origin' });
+        const data = await res.json().catch(() => ({}));
+        const events = (data && Array.isArray(data.events)) ? data.events : [];
+        if (!events.length) { el.innerHTML = '<div class="overview-empty">No recent activity yet.</div>'; return; }
+        const ICON = { order: '🛒', lead: '👤', callback: '📞', meeting: '📅', page_edit: '✏️', ai_event: '🤖' };
+        el.innerHTML = events.map(function (ev) {
+          var ic = ICON[ev.kind] || '•';
+          return '<div class="ov-feed-row" data-tab="' + escapeHTML(String(ev.tab || '')) + '" data-loader="' + escapeHTML(String(ev.loader || '')) + '">' +
+            '<span class="ov-feed-ico">' + ic + '</span>' +
+            '<div class="ov-feed-text"><div class="ov-feed-title">' + escapeHTML(String(ev.title || '')) + '</div>' +
+            '<div class="ov-feed-detail">' + escapeHTML(String(ev.detail || '')) + '</div></div>' +
+            '<span class="ov-feed-meta">' + escapeHTML(_fmtRelative(ev.ts)) + '</span></div>';
+        }).join('');
+        Array.prototype.slice.call(el.querySelectorAll('.ov-feed-row')).forEach(function (row) {
+          row.addEventListener('click', function () {
+            try {
+              var tab = row.getAttribute('data-tab'), loader = row.getAttribute('data-loader');
+              if (!tab) return;
+              var btn = document.querySelector('[data-testid="tab-' + tab + '"]');
+              if (window.switchTab) switchTab(tab, btn);
+              if (loader && window[loader]) window[loader]();
+            } catch (e) {}
+          });
+        });
+      } catch (e) {
+        el.innerHTML = '<div class="overview-empty">Could not load activity.</div>';
+      }
+    }
+
+    // 094 §1.3 — revenue by REAL module (store / bookings / events) with a proportional
+    // bar per source + an overall total. Range from #ov-rev-range. Fail-open; text escaped.
+    async function loadOverviewRevenue() {
+      const el = document.getElementById('overview-revenue');
+      if (!el) return;
+      const sel = document.getElementById('ov-rev-range');
+      const range = sel ? sel.value : '7d';
+      try {
+        const res = await fetch('/admin/api/overview/revenue-by-source?range=' + encodeURIComponent(range), { credentials: 'same-origin' });
+        const data = await res.json().catch(() => ({}));
+        const sources = (data && Array.isArray(data.sources)) ? data.sources : [];
+        if (!sources.length) { el.innerHTML = '<div class="overview-empty">No revenue in this range.</div>'; return; }
+        const max = Math.max.apply(null, sources.map(function (s) { return s.revenue || 0; }).concat([1]));
+        const rows = sources.map(function (s) {
+          var pct = Math.max(0, Math.min(100, Math.round(((s.revenue || 0) / max) * 100)));
+          return '<div class="ov-rev-row">' +
+            '<div class="ov-rev-label">' + escapeHTML(String(s.label || s.key || '')) + '</div>' +
+            '<div class="ov-rev-bar-wrap"><div class="ov-rev-bar" style="width:' + pct + '%"></div></div>' +
+            '<div class="ov-rev-val">' + escapeHTML(_fmtMoney(s.revenue || 0)) +
+            ' <span class="ov-rev-count">(' + escapeHTML(_fmtNumber(s.count || 0)) + ')</span></div>' +
+            '</div>';
+        }).join('');
+        el.innerHTML = '<div class="ov-rev-total">Total: ' + escapeHTML(_fmtMoney(data.total || 0)) + '</div>' + rows;
+      } catch (e) {
+        el.innerHTML = '<div class="overview-empty">Could not load revenue.</div>';
+      }
     }
 
     // Activity Pulse — grouped 7-day metrics across every feature

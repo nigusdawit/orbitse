@@ -33601,6 +33601,18 @@ def admin_overview_stats():
         except Exception:
             pass
 
+        # 094 P0 — avg lead score across profiled visitors (0 when the Visitor-CRM
+        # knob has never run). Wrapped like every other block so an empty/missing
+        # visitor_profiles table degrades to 0 instead of 500-ing Overview.
+        avg_lead_score = 0
+        try:
+            _als = query_db(
+                "SELECT AVG(lead_score) AS a FROM visitor_profiles WHERE lead_score > 0",
+                fetchone=True) or {}
+            avg_lead_score = int(round(float(_als.get("a") or 0)))
+        except Exception:
+            pass
+
         return jsonify({
             "visitors_today": int(visitors_today["n"] or 0),
             "visitors_week":  int(visitors_week["n"]  or 0),
@@ -33646,6 +33658,7 @@ def admin_overview_stats():
             "subscribers_week":         subscribers_week,
             "subscribers_total":        subscribers_total,
             "ai_attributed_leads_week": ai_attributed_leads_week,
+            "avg_lead_score":           avg_lead_score,  # 094 P0
         })
     except Exception as e:
         capture_exc(e, "admin_overview_stats")

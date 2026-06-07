@@ -211,6 +211,12 @@ TO CUSTOMIZE THIS DASHBOARD:
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
       Overview
     </button>
+    {% if is_super_admin() %}
+    <button class="tab-btn" onclick="switchTab('activity', this); loadActivityFeed('full');" data-testid="tab-activity">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      Activity
+    </button>
+    {% endif %}
     {% if is_super_admin() or has_feature('dashboards') %}
     <button class="tab-btn" onclick="switchTab('dashboards', this); loadDashboards();" data-testid="tab-dashboards">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
@@ -613,6 +619,9 @@ TO CUSTOMIZE THIS DASHBOARD:
   revenue (if any), a 14-day visitor sparkline, and the latest leads.
   -->
   {% include "admin/tabs/_overview.html" %}
+
+  {# 094 §1.2 — cross-module activity feed tab (super-admin; auto-lists in Workspaces) #}
+  {% include "admin/tabs/_activity.html" %}
 
   <!--
   ========================================================================
